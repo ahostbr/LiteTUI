@@ -1274,6 +1274,7 @@ class LiteTUI(App):
     def _new_convo(self) -> None:
         """Create .convos/<uuid>/ with its seed files. Leaves conversation alone."""
         self.convo_id = str(uuid.uuid4())
+        self._refresh_ctx_label()   # the footer names the conversation
         self.convo_dir = CONVO_DIR / self.convo_id
         self.convo_path = self.convo_dir / TRANSCRIPT_NAME
         try:
@@ -1452,6 +1453,7 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        self._refresh_ctx_label()   # resumed into a different conversation
         # The restored system message already names THIS store (it was written
         # with this uuid), so it is not rebuilt — rebuilding would overwrite
         # whatever the agent or /system had changed it to.
@@ -1517,6 +1519,10 @@ class LiteTUI(App):
         think = self.thinking_level or "default"
         parts = [p for p in (self.model_id, mode, f"think:{think}") if p]
         self.sub_title = " \u00b7 ".join(parts)
+        # The footer carries the thinking level too, and it only refreshed on a
+        # context update -- so /think changed the header instantly and left the
+        # footer lying until the next completion came back.
+        self._refresh_ctx_label()
 
     def action_toggle_tools(self) -> None:
         self.tools_enabled = not self.tools_enabled
@@ -1565,14 +1571,48 @@ class LiteTUI(App):
 
     @property
     def ctx_label_text(self) -> Text:
+        """The footer: who I am, how hard I am thinking, which conversation,
+        and how full the window is.
+
+        Built as ONE Text on the ONE existing label. Do not mount a widget per
+        field: Footer RECOMPOSES, and a fixed `id` on a recomposed child raises
+        DuplicateIds the moment the removal has not landed before the mount --
+        that crashed the whole app once. The label is addressed by CLASS for the
+        same reason; duplicate classes degrade to a stale label, not a traceback.
+        """
+        t = Text()
+
+        # Identity, but only when the seat actually holds it. An unregistered
+        # seat displaying a name it does not own is worse than showing nothing:
+        # it is a green light for a registration that never happened.
+        seat = getattr(self, "seat", None)
+        if seat is not None and getattr(seat, "registered", False):
+            t.append(str(seat.name), "bold #7d8799")
+        elif seat is not None:
+            t.append("unregistered", "#e5534b")
+        else:
+            t.append("no seat", "#5c6370")
+
+        sep = "  \u00b7  "
+        t.append(sep, "#5c6370")
+        t.append(f"think:{self.thinking_level or 'default'}", "#5c6370")
+
+        if self.convo_id:
+            t.append(sep, "#5c6370")
+            t.append(self.convo_id[:8], "#5c6370")
+
+        t.append(sep, "#5c6370")
+
         used, mx = self.ctx_used, self.ctx_max
         if used is None and mx is None:
-            return Text("ctx \u2014", "dim")
+            t.append("ctx \u2014", "dim")
+            return t
         u = f"{used:,}" if used is not None else "\u2014"
         m = f"{mx:,}" if mx is not None else "?"
         pct = (used / mx) if (used is not None and mx) else 0.0
         style = "bold #e5534b" if pct >= 0.9 else ("#e8a33d" if pct >= 0.7 else "#7d8799")
-        return Text(f"ctx {u} / {m}", style)
+        t.append(f"ctx {u} / {m}", style)
+        return t
 
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
@@ -1581,7 +1621,14 @@ class LiteTUI(App):
         # query_one would raise TooManyMatches if a recompose ever left two
         # behind; update every match instead so a transient duplicate is
         # cosmetic rather than an exception on a hot reactive path.
-        labels = list(self.query(".ctx-label"))
+        try:
+            labels = list(self.query(".ctx-label"))
+        except Exception:
+            # No screen on the stack yet. _update_header and the conversation
+            # setup both run before mount, and self.query() RAISES in that
+            # window rather than returning empty -- so the "not composed yet"
+            # guard below could never be reached from those callers.
+            return
         if not labels:
             return  # footer not composed yet; it reads the value when it composes
         text = self.ctx_label_text
