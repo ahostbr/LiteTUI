@@ -130,7 +130,14 @@ class Seat:
                  # missing field is why dead LiteTUI rows accumulate (the
                  # janitor's dead-owner purge keys on session_pid too). The real
                  # fix is in liteharness-oss, not a workaround here.
-                 "--takeover"],
+                 "--takeover",
+                 # OUR OWN pid, so the fleet can tell this seat from a corpse.
+                 # Both mechanisms that read presence.session_pid treat a falsy
+                 # one as not-live: the takeover guard (so a running seat's name
+                 # was stealable) and the janitor's dead-owner purge (so dead
+                 # rows piled up -- four ghosts on the roster). Added to the CLI
+                 # as an opt-in flag; requires liteharness with --session-pid.
+                 "--session-pid", str(os.getpid())],
                 timeout=30,
             )
             self.registered = r.returncode == 0
