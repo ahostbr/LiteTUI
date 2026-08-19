@@ -28,6 +28,7 @@ import os
 import subprocess
 import threading
 import time
+import ttyguard
 from pathlib import Path
 
 MCP_CONFIG_NAME = "mcp.json"
@@ -120,18 +121,17 @@ class MCPServer:
         env.update({str(k): str(v) for k, v in (self.cfg.get("env") or {}).items()})
         # A child that inherits the console writes over the TUI. stderr is
         # redirected for exactly that reason; see the module docstring.
-        self.proc = subprocess.Popen(
+        self.proc = ttyguard.popen(
             [command, *args],
             cwd=str(self.cfg.get("cwd") or self.cwd),
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self._log,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            # utf-8/replace decode and the no-console-window flag are
+            # ttyguard's defaults; the envelope runs the terminal repair
+            # once after the spawn and does not own the process.
         )
         self._request(
             "initialize",

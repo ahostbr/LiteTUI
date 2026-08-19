@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
+import ttyguard
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,15 +65,14 @@ class Seat:
         on register.
         """
         try:
-            r = subprocess.run(
+            r = ttyguard.run(
                 [sys.executable, "-m", "liteharness.cli", "register",
                  "--agent-id", self.agent_id,
                  "--cli", self.cli,
                  "--model", self.model,
                  "--tier", self.tier,
                  "--name", self.name],
-                capture_output=True, text=True, timeout=30,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=30,
             )
             self.registered = r.returncode == 0
             if not self.registered:
@@ -89,11 +88,10 @@ class Seat:
         if not self.registered:
             return
         try:
-            subprocess.run(
+            ttyguard.run(
                 [sys.executable, "-m", "liteharness.cli", "deregister",
                  "--agent-id", self.agent_id],
-                capture_output=True, text=True, timeout=15,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=15,
             )
         except Exception:
             pass
@@ -146,11 +144,10 @@ class Seat:
                 # NO --priority flag: this CLI has no such option, and unknown tokens
                 # fall through into the message body — combined with --body-file that
                 # is "both given" -> exit 1. Every send would fail for it.
-                r = subprocess.run(
+                r = ttyguard.run(
                     [sys.executable, "-m", "liteharness.cli", "send", to,
                      "--body-file", str(tmp), "--from", self.agent_id],
-                    capture_output=True, text=True, timeout=30,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    timeout=30,
                 )
                 return r.returncode == 0
             finally:
@@ -250,10 +247,9 @@ def discover() -> str:
     paint over the TUI.
     """
     try:
-        r = subprocess.run(
+        r = ttyguard.run(
             [sys.executable, "-m", "liteharness.cli", "discover"],
-            capture_output=True, text=True, timeout=30,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=30,
         )
         out = (r.stdout or r.stderr or "").strip()
         return out or "(discover returned nothing)"
