@@ -1,0 +1,34 @@
+# ── Never commit: real conversation data ─────────────────────────
+# .convos/<uuid>/ holds actual transcripts plus the agent's memory.md,
+# soul.md and handoff.md. These are Ryan's conversations, not fixtures.
+.convos/
+
+# ── Never commit: screenshots ────────────────────────────────────
+# A desktop capture can contain anything that was on screen.
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.webp
+
+# ── Per-machine / regenerable ────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# ── Agent/editor tool state, not the product ─────────────────────
+.claude/
+.codex/
+.litesuite/
+.liteeditor/
+SCRATCHPAD/
+
+# ── Runtime artefacts ────────────────────────────────────────────
+*.log
+chrome-bridge/relay.pid
+chrome-bridge/shots/

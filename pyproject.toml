@@ -1,0 +1,13 @@
+[project]
+name = "lmstudio-chat"
+version = "0.1.0"
+description = "TUI chat client for LM Studio with image support"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.89.0",
+    "openai>=1.0.0",
+    "Pillow>=10.0.0",
+]
+
+[project.scripts]
+lmstudio-chat = "app:main"
