@@ -48,9 +48,12 @@ Every conversation gets a directory:
 ```
 
 The agent is told its own uuid and absolute path in the system prompt, and
-`memory.md`, `soul.md` and `handoff.md` are **injected into every prompt**,
-re-read from disk each turn. A file it writes on one turn is visible on the
-next. Index lines are capped at ~50 tokens: pointers, never the memory itself.
+`memory.md`, `soul.md` and `handoff.md` are injected **once**, into the system
+message at the start of the conversation — a snapshot, not a live view. They
+are not re-sent each turn: three files on every request is affordable at 1M
+context and is not on a local 27B, where it crowds out the conversation. To
+see current contents the agent reads them with the `read` tool, and the prompt
+says so. Index lines are capped at ~50 tokens: pointers, never the memory itself.
 
 ### The transcript is append-only, always
 
@@ -115,6 +118,61 @@ The summarisation call forces `reasoning_effort: "none"` regardless of
 `/think`: at the server default a 12k budget was spent entirely on the thinking
 trace and returned an **empty** answer, and a compaction that returns nothing is
 worse than not compacting.
+
+## Skills
+
+`skills/<name>/SKILL.md`, same shape Claude Code uses — YAML frontmatter with
+`name` and `description`, then the body.
+
+Only the **index** (name + one line each) goes into the system prompt. The body
+loads on demand through the `skill` tool. Inlining every body would spend the
+context window on instructions the model doesn't need this turn; an index with
+no way to open it would be worse.
+
+A directory with no `SKILL.md` is skipped. One that can't be read becomes a
+skill whose description says so — a skill that vanishes on a decode error looks
+exactly like one that was never written.
+
+## MCP
+
+A standard `mcp.json` in the repo root:
+
+```json
+{ "mcpServers": {
+    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+} }
+```
+
+Each server's tools are registered as `mcp__<server>__<tool>` and dispatched
+like any other tool, so the agent loop has no MCP-specific branch. `disabled:
+true` skips one.
+
+A server that fails to start is **recorded, not swallowed** — the others still
+load. A tool that silently never appears looks like one the model chose not to
+use.
+
+> Server stderr goes to `mcp.log`, never to the terminal. An MCP server is a
+> long-running child process, and a child that inherits this console paints
+> straight over a TUI that owns every cell.
+
+## Harness seat
+
+LiteTUI registers as a LiteHarness agent and monitors its own inbox, so other
+agents can reach it and mail **wakes** it — the message is delivered as a turn.
+
+It does **not** run `liteharness.hooks watch` or `check_inbox`. Both are
+consumers that move files out of `inbox/new/` for whichever agent id they
+resolve, and a second consumer on a shared mailbox is the defect the
+`ls-liteharness` fix retracted — mail vanished for three hours. `watch_inbox`
+also writes to stdout, which a Textual app cannot survive.
+
+Instead it reads the maildir directly under one rule:
+
+> **Only ever touch a file whose `to` is this agent.**
+
+Anything addressed elsewhere is left in `new/` exactly as found — unread,
+unmoved, unclaimed. Expired messages (past `ttl_minutes`) are cleared without
+delivery; the agent's own echo is skipped.
 
 ## Tests
 

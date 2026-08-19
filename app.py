@@ -13,6 +13,10 @@ import uuid
 from html.parser import HTMLParser
 from pathlib import Path
 
+import harness as harness_mod
+import mcp_client
+import skills as skills_mod
+
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -30,6 +34,7 @@ from rich.text import Text
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_IMAGE_DIM = 1536
+ROOT = Path(__file__).parent
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "systemprompt.md"
 
 # ── Conversation persistence ─────────────────────────────────────
@@ -40,6 +45,10 @@ SYSTEM_PROMPT_FILE = Path(__file__).parent / "systemprompt.md"
 #     handoff.md    what is in flight, for whoever picks this up
 #     memories/     the actual notes: i-learned-this.md, uncapped
 CONVO_DIR = Path(__file__).parent / ".convos"
+#: Marks an already-injected store block inside the system message. Detection
+#: by MARKER rather than a flag is what makes /resume correct: a flag lives in
+#: memory and dies with the process; the marker is persisted with the message.
+STORE_HEADER = "## Your store, loaded once at the start of this conversation"
 TRANSCRIPT_NAME = "convo.jsonl"
 MEMORIES_DIR = "memories"
 
@@ -52,8 +61,8 @@ CONVO_SEED_FILES = {
         "POINTERS ONLY. ~50 tokens (about 200 chars) per line, hard. Enough to\n"
         "decide whether to open the file, nothing more. If you are explaining\n"
         "the thing here, it belongs in the topic file instead.\n\n"
-        "This file is injected into every prompt, so a long line costs you on\n"
-        "every turn and crowds out other entries.\n\n"
+        "This file is injected into the system prompt ONCE, at the start of the\n"
+        "conversation, so a long line permanently crowds out other entries.\n\n"
         "Append and edit only — never rewrite it to make it shorter. A line\n"
         "removed here orphans a file that nothing will ever open again.\n\n"
         "---\n\n"
@@ -177,10 +186,12 @@ by absolute path.
 
 Rules that make this worth doing:
 
-1. THE THREE FILES BELOW ARE ALREADY IN THIS PROMPT — you are reading their
-   current contents, refreshed every turn. Do not re-read them with a tool
-   just to see what they say. DO open a file in `{MEMORIES_DIR}/` when an
-   index line suggests it holds what you need; those are not injected.
+1. THE THREE FILES BELOW WERE INJECTED ONCE, AT THE START OF THIS
+   CONVERSATION — they are a SNAPSHOT, not a live view, and they are not
+   re-sent each turn. If you have written to any of them since, or you need
+   their current contents, READ THEM WITH THE `read` TOOL. DO open a file in
+   `{MEMORIES_DIR}/` when an index line suggests it holds what you need;
+   those are never injected.
 2. WRITE THE DURABLE THING ONLY — a decision, a root cause, a reusable
    pattern, a preference. Not what just happened; the transcript has that.
 3. APPEND AND EDIT, NEVER COMPACT. Do not rewrite memory.md to shorten it.
@@ -949,10 +960,25 @@ class LiteTUI(App):
         self._convo_loading = False  # suppress writes while replaying from disk
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
         self._persist_error: str | None = None
+        self._store_injected = False  # see STORE_HEADER; once per conversation
         self.client = AsyncOpenAI(
             base_url="http://localhost:1234/v1",
             api_key="lm-studio",
         )
+        # Discovered ONCE, before the first system prompt is built -- the skill
+        # index rides in that prompt, so discovering later would ship a prompt
+        # that omits every skill for the first turn.
+        self.skills = skills_mod.discover(ROOT)
+        self.mcp = mcp_client.MCPManager(ROOT)
+        self.mcp.load()
+        self._mcp_dispatch = self.mcp.dispatch()
+        # A seat in the fleet, like any other agent. Registration is
+        # deferred to the first poll tick so the roster shows the real
+        # model rather than the empty string it holds before _connect.
+        self.seat = harness_mod.Seat(
+            agent_id=harness_mod.new_agent_id(), name="LiteTUI", model="",
+        )
+        self._seat_started = False
         self._new_convo()
         self._load_system_prompt()
 
@@ -971,6 +997,67 @@ class LiteTUI(App):
     def on_mount(self) -> None:
         self.query_one("#message-input", Input).focus()
         self._connect()
+        self._inbox_monitor()
+
+    @work(exclusive=True, group="inbox")
+    async def _inbox_monitor(self) -> None:
+        """Register the seat, then wake this agent when its own mail lands.
+
+        Deliberately NOT `liteharness.hooks watch`: that is a second consumer
+        on a shared mailbox (the defect the ls-liteharness fix retracted) and
+        it writes to stdout, which paints over a Textual screen. harness.poll
+        claims ONLY messages addressed to this seat.
+        """
+        await asyncio.sleep(2)  # let _connect settle so the model is known
+        self.seat.model = self.model_id or "unknown"
+        ok = await asyncio.to_thread(self.seat.register)
+        self._seat_started = True
+        if ok:
+            self._system(
+                f"harness seat online · {self.seat.name} · {self.seat.agent_id[:8]}"
+            )
+        else:
+            # Say so once. A seat nobody can reach that reports nothing is
+            # indistinguishable from one that is simply idle.
+            self._system(f"harness seat OFFLINE ({self.seat.error or 'unknown'})")
+            return
+        try:
+            while True:
+                await asyncio.sleep(harness_mod.POLL_SECONDS)
+                msgs = await asyncio.to_thread(self.seat.poll)
+                for m in msgs:
+                    self._deliver_inbox(m)
+        except asyncio.CancelledError:
+            raise
+
+    def _deliver_inbox(self, msg: dict) -> None:
+        """Show the message, then WAKE the agent with it as a user turn.
+
+        Queued rather than dropped when a turn is already running: mail that
+        arrives mid-turn is exactly the mail worth not losing.
+        """
+        text = harness_mod.format_message(msg)
+        self._user_bubble(text, False)
+        self._append({"role": "user", "content": text})
+        if not self._chat_running():
+            self._stream()
+
+    def _all_tools(self) -> list[dict]:
+        """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
+        specs = list(TOOLS)
+        if self.skills:
+            specs.append(skills_mod.SKILL_TOOL_SPEC)
+        specs.extend(self.mcp.tool_specs())
+        return specs
+
+    def _dispatch_for(self, name: str):
+        """Resolve a tool name across all three sources, static first."""
+        fn = TOOL_DISPATCH.get(name)
+        if fn is not None:
+            return fn
+        if name == "skill":
+            return lambda args: skills_mod.load(self.skills, args.get("name", ""))
+        return self._mcp_dispatch.get(name)
 
     def _system_prompt_text(self) -> str:
         """systemprompt.md + the store block + the tools block, in that order.
@@ -985,6 +1072,11 @@ class LiteTUI(App):
             base = (base + memory_prompt(self.convo_id, self.convo_dir)).strip()
         if self.tools_enabled:
             base = (base + TOOLS_PROMPT).strip()
+            # Pointers only; bodies load through the `skill` tool. Gated on
+            # tools_enabled because without that tool the index would
+            # advertise something the model has no way to open.
+            if self.skills:
+                base = (base + skills_mod.index_block(self.skills)).strip()
         return base
 
     def _load_system_prompt(self) -> None:
@@ -1020,7 +1112,7 @@ class LiteTUI(App):
             )
         return text
 
-    def _store_block(self) -> str:
+    def _store_block(self, live: bool = False) -> str:
         # memory.md is capped hardest ON PURPOSE: it is an index, and an index
         # that needs more than this has stopped being one.
         parts = []
@@ -1030,23 +1122,53 @@ class LiteTUI(App):
                 parts.append(f"### {name} (current contents)\n\n{body}")
         if not parts:
             return ""
+        if live:
+            return (
+                "\n\n## Your store, as it stands right now\n\n"
+                "Re-read from disk just now.\n\n" + "\n\n".join(parts) + "\n"
+            )
+        # RULING (Ryan, 2026-08-19): injected ONCE, not per turn. Re-sending
+        # three files every turn is affordable at 1M context and is NOT on a
+        # local 27B, where it crowds out the conversation itself. The text
+        # below must not promise a per-turn refresh -- an instruction that
+        # quietly stopped being true is worse than no instruction at all.
         return (
-            "\n\n## Your store, as it stands right now\n\n"
-            "Read from disk this turn. If you change these files, the change "
-            "appears here on your next turn.\n\n" + "\n\n".join(parts) + "\n"
+            "\n\n" + STORE_HEADER + "\n\n"
+            "This is a SNAPSHOT taken at the start of the conversation, not a "
+            "live view, and it is NOT re-sent each turn. If you have written to "
+            "these files since, or need their current contents, read them with "
+            "the `read` tool.\n\n" + "\n\n".join(parts) + "\n"
         )
 
-    def _request_messages(self) -> list[dict]:
-        """self.conversation with the live store merged into the system message."""
-        msgs = list(self.conversation)
+    def _inject_store_once(self) -> None:
+        """Merge the store into the system message, exactly once per conversation.
+
+        Written INTO self.conversation and persisted with an `edit` record, not
+        merged into the outgoing request only: a block that exists solely in the
+        request must be rebuilt every turn, which is the cost being removed.
+        """
+        if self._store_injected:
+            return
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            return  # no system message yet; try again next turn
+        current = self.conversation[0].get("content", "")
+        if not isinstance(current, str):
+            return
+        if STORE_HEADER in current:
+            self._store_injected = True  # resumed a convo that already has it
+            return
         block = self._store_block()
         if not block:
-            return msgs
-        if msgs and msgs[0].get("role") == "system":
-            msgs[0] = {**msgs[0], "content": msgs[0].get("content", "") + block}
-        else:
-            msgs.insert(0, {"role": "system", "content": block.strip()})
-        return msgs
+            return  # empty store: nothing to inject, and no marker to leave
+        self.conversation[0] = {**self.conversation[0], "content": current + block}
+        self._store_injected = True
+        if not self._convo_loading:
+            self._edit(0, "store injected once")
+
+    def _request_messages(self) -> list[dict]:
+        """The conversation as sent. The store rides in message 0, injected once."""
+        self._inject_store_once()
+        return list(self.conversation)
 
     # \u2500\u2500 Persistence (.convos/<uuid>/convo.jsonl) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     #
@@ -1761,7 +1883,7 @@ class LiteTUI(App):
                 "stream_options": {"include_usage": True},
             }
             if self.tools_enabled:
-                kwargs["tools"] = TOOLS
+                kwargs["tools"] = self._all_tools()
             # Sent via extra_body so the value lands in the JSON verbatim: the
             # OpenAI client types reasoning_effort as a fixed Literal, and two
             # of LM Studio's six ("none", "xhigh") are not in it.
@@ -1900,7 +2022,7 @@ class LiteTUI(App):
                 except Exception as e:
                     result, ok = f"[error] invalid tool arguments: {e}", False
                 else:
-                    fn = TOOL_DISPATCH.get(name)
+                    fn = self._dispatch_for(name)
                     if fn is None:
                         result, ok = f"[error] unknown tool: {name}", False
                     else:
@@ -1982,7 +2104,7 @@ class LiteTUI(App):
         if system:
             # Merge the live store in, so it can see what memory.md already
             # holds and update rather than duplicate.
-            block = self._store_block()
+            block = self._store_block(live=True)
             ask.insert(0, {**system, "content": system.get("content", "") + block})
 
         # Tools are passed so STEP 1 of COMPACT_PROMPT can actually happen.
@@ -2005,7 +2127,7 @@ class LiteTUI(App):
                     "extra_body": {"reasoning_effort": "none"},
                 }
                 if self.tools_enabled:
-                    kwargs["tools"] = TOOLS
+                    kwargs["tools"] = self._all_tools()
 
                 resp = await self.client.chat.completions.create(**kwargs)
                 msg = resp.choices[0].message
@@ -2041,7 +2163,7 @@ class LiteTUI(App):
                         fargs = json.loads(c.function.arguments or "{}")
                         if not isinstance(fargs, dict):
                             raise ValueError("arguments must be a JSON object")
-                        fn = TOOL_DISPATCH.get(fname)
+                        fn = self._dispatch_for(fname)
                         result = (
                             await asyncio.to_thread(fn, fargs)
                             if fn
