@@ -15,6 +15,7 @@ from pathlib import Path
 
 import harness as harness_mod
 import mcp_client
+import sanitize
 import skills as skills_mod
 
 from textual import events
@@ -276,6 +277,12 @@ def tool_bash(args: dict) -> str:
             text=True,
             timeout=timeout,
             cwd=str(Path.cwd()),
+            # The child does NOT inherit the TUI's stdin. With mouse tracking
+            # on, the terminal delivers SGR reports to the foreground reader;
+            # a child that reads stdin echoes them straight into this result.
+            # DEVNULL gives interactive children an immediate EOF instead of
+            # stealing the user's keystrokes.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as e:
         partial = _truncate_tail((e.stdout or "") + (e.stderr or ""))
@@ -2054,6 +2061,17 @@ class LiteTUI(App):
                             ok = True
                         except Exception as e:
                             result, ok = f"[error] {type(e).__name__}: {e}", False
+                # ── one hygiene point for every tool result ──────────
+                # bash, read, web_fetch, harness, skill and every MCP tool
+                # pass through here and nowhere else, so this is where they
+                # get cleaned — not per tool: a new tool would forget it, and
+                # per-tool is where the bypass would hide. Strip BEFORE the
+                # display AND before the model: the same string serves both,
+                # and the escape bytes are what shred the terminal and burn
+                # context on noise the model cannot use. Then re-assert the
+                # terminal modes a child may have changed (sanitize.py: why).
+                result = sanitize.strip_escapes(result)
+                sanitize.reset_terminal_modes()
                 if msg is not None:
                     msg.set_result(result, ok)
                 self._scroll_down()
