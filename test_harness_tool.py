@@ -24,7 +24,7 @@ def seat(registered=True, agent_id="11111111-1111-1111-1111-111111111111"):
     s = harness_mod.Seat(agent_id=agent_id, name="LiteTUI", model="qwen")
     s.registered = registered
     s.sent = []
-    s.send = lambda to, body, priority="normal": (s.sent.append((to, body)) or True)
+    s.send = lambda to, body: (s.sent.append((to, body)) or True)
     return s
 
 

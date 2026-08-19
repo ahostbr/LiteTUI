@@ -136,17 +136,19 @@ class Seat:
                 out.append(msg)
         return out
 
-    def send(self, to: str, body: str, priority: str = "normal") -> bool:
+    def send(self, to: str, body: str) -> bool:
         """Reply into the fleet. Uses --body-file: an inline double-quoted
         message runs backticks as shell commands and still reports success."""
         try:
             tmp = INBOX_ROOT.parent / f".litetui_send_{uuid.uuid4().hex}.txt"
             tmp.write_text(body, encoding="utf-8")
             try:
+                # NO --priority flag: this CLI has no such option, and unknown tokens
+                # fall through into the message body — combined with --body-file that
+                # is "both given" -> exit 1. Every send would fail for it.
                 r = subprocess.run(
                     [sys.executable, "-m", "liteharness.cli", "send", to,
-                     "--body-file", str(tmp), "--from", self.agent_id,
-                     "--priority", priority],
+                     "--body-file", str(tmp), "--from", self.agent_id],
                     capture_output=True, text=True, timeout=30,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
