@@ -14,6 +14,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import harness as harness_mod
+import chrome_tool
+import pccontrol_tool
 import mcp_client
 import sanitize
 import skills as skills_mod
@@ -1169,6 +1171,10 @@ class LiteTUI(App):
         # more useful than the tool silently not existing.
         if self.model_type != "llm":
             specs.append(VIEW_IMAGE_TOOL_SPEC)
+        if pccontrol_tool.SCRIPT.exists():
+            specs.append(pccontrol_tool.PCCONTROL_TOOL_SPEC)
+        if chrome_tool.SCRIPT.exists():
+            specs.append(chrome_tool.CHROME_TOOL_SPEC)
         if self.skills:
             specs.append(skills_mod.SKILL_TOOL_SPEC)
         # Only offered once the seat is actually registered. Advertising fleet
@@ -1190,6 +1196,10 @@ class LiteTUI(App):
             return lambda args: harness_mod.run(self.seat, args)
         if name == "view_image":
             return self._tool_view_image
+        if name == "pccontrol":
+            return pccontrol_tool.run
+        if name == "chrome":
+            return chrome_tool.run
         return self._mcp_dispatch.get(name)
 
     def _system_prompt_text(self) -> str:
