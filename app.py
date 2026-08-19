@@ -110,6 +110,27 @@ CONVO_SEED_FILES = {
 # rest of the UI; everything else passes through unchanged.
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
+# 🔴 A LEVEL THIS SERVER ACCEPTS IS NOT A LEVEL THE LOADED MODEL ACCEPTS, AND THE
+# DIFFERENCE IS SILENT. The set above came from LM Studio's generic 400 body. A
+# model loaded as a VIRTUAL MODEL carries its OWN narrower set, and a value
+# outside it is DROPPED with a 200 rather than refused with a 400. Measured
+# 2026-08-19 in LM Studio's own log while this app sent reasoning_effort=none:
+#
+#   Reasoning setting 'off' is not a valid option for reasoning level field
+#   'ext.virtualModel.customField.qwen.qwen3.827b.reasoningEffort'.
+#   Valid options are: xhigh, medium, low. Skipping this field.
+#
+# "Skipping this field" is the whole problem: the request succeeds, so `/think
+# off` reports success, and the model then reasons at the SERVER DEFAULT (xhigh)
+# -- the most expensive setting there is, on the box with the least context to
+# spare, precisely when the user asked for the least.
+#
+# /api/v0/models does not expose the field, so this cannot be validated up
+# front. It IS detectable in band, which is what _warn_reasoning_ignored does:
+# if the user asked for `off` and a reasoning trace arrives anyway, the field
+# was dropped. Detect the MECHANISM (a trace exists), never the string.
+LEAST_THINKING_FALLBACK = "low"
+
 # How many trailing messages /compact keeps verbatim after the summary.
 COMPACT_KEEP_RECENT = 4
 
@@ -502,6 +523,26 @@ class ChatMessage(Static):
     pass
 
 
+def _at_bottom(widget, slack: int = 2) -> bool:
+    """Is this scrollable already parked at (or within `slack` lines of) the end?
+
+    The whole point of autoscroll here is to FOLLOW a stream, and the whole
+    danger is yanking a reader who has scrolled up to read something. Both call
+    sites ask this first, so following happens only when the reader was already
+    following.
+
+    `slack` exists because scroll_y is a float and a stream lands fractions of a
+    line at a time; requiring exact equality would drop out of follow mode after
+    the first token and never return. Fails OPEN (returns True) if the widget
+    does not expose scroll geometry -- an over-eager scroll is a visual nit, a
+    silently dead autoscroll is the bug being fixed.
+    """
+    try:
+        return widget.scroll_y >= widget.max_scroll_y - slack
+    except Exception:
+        return True
+
+
 class ThinkingHeader(Static):
     """Clickable header row that toggles the parent thinking block."""
 
@@ -541,10 +582,19 @@ class ThinkingBlock(Vertical):
 
     def append(self, token: str) -> None:
         self._buffer += token
+        # This never scrolled the VerticalScroll it owns, so the trace grew
+        # below the fold with the viewport pinned at the top. Measure BEFORE
+        # the content grows: afterwards we are no longer at the bottom by
+        # definition, so the test would always read "not following".
+        follow = _at_bottom(self.scroll)
         # NOTE: use the `content` setter, not .update() — in textual 8.0.2
         # update() does not invalidate the content-size cache, so an
         # auto-height parent would freeze at the first (small) height.
         self.text.content = Text(self._buffer + " \u258c")
+        if follow:
+            # After the refresh: the scroll extent does not grow until the
+            # new content has been re-measured.
+            self.call_after_refresh(self.scroll.scroll_end, animate=False)
 
     def finalize(self) -> None:
         self.text.content = Text(self._buffer)
@@ -961,6 +1011,8 @@ class LiteTUI(App):
         # xhigh, so "unset" is not "off" — /think off is a different thing and
         # sends "none" explicitly.
         self.thinking_level: str | None = None
+        # One warning per session: this is a config truth, not a per-turn event.
+        self._reasoning_ignored_warned = False
         self.convo_id: str = ""
         self.convo_dir: Path | None = None
         self.convo_path: Path | None = None  # <convo_dir>/convo.jsonl
@@ -1592,8 +1644,44 @@ class LiteTUI(App):
         self._scroll_down()
         return w
 
-    def _scroll_down(self) -> None:
-        self.query_one("#chat-log").scroll_end(animate=False)
+    def _warn_reasoning_ignored(self) -> None:
+        """The server sent a reasoning trace after we asked for none.
+
+        That is proof the `reasoning_effort` field was skipped rather than
+        honoured -- the request returned 200, so nothing else can tell us. Said
+        once per session: it is a property of the loaded model, not of the turn.
+        """
+        if self._reasoning_ignored_warned:
+            return
+        self._reasoning_ignored_warned = True
+        self._system(
+            "Thinking is set to 'off', but the server sent a reasoning trace "
+            "anyway.\n"
+            "LM Studio SKIPPED reasoning_effort='none' for this model instead of "
+            "refusing it -- a virtual model carries its own narrower set of "
+            "levels, and a value outside it is dropped with a 200.\n"
+            f"The model is now reasoning at the SERVER DEFAULT (xhigh), the most "
+            f"expensive setting. Use /think {LEAST_THINKING_FALLBACK} for the "
+            "least thinking this model actually supports."
+        )
+
+    def _scroll_down(self, *, only_if_following: bool = False) -> None:
+        """Scroll the conversation log to the bottom.
+
+        `only_if_following` is for the STREAMING path. An unconditional
+        scroll_end during a long thinking trace yanks the viewport away from a
+        reader who deliberately scrolled up -- worse than the missing autoscroll
+        it would be fixing. During a stream we follow the tail only when the
+        reader was already at the tail.
+
+        Discrete events (a new bubble, a tool call, the final render) still
+        scroll unconditionally: those are the user's own action or the end of
+        the turn, where jumping to the bottom is what they want.
+        """
+        log = self.query_one("#chat-log")
+        if only_if_following and not _at_bottom(log):
+            return
+        log.scroll_end(animate=False)
 
     # ── Image handling ───────────────────────────────────────────
 
@@ -1949,10 +2037,18 @@ class LiteTUI(App):
                         if thinking is None:
                             thinking = ThinkingBlock()
                             widget.mount(thinking, before=widget.body)
+                        if self.thinking_level == "off":
+                            self._warn_reasoning_ignored()
                         thinking.append(token)
+                        # The stream had NO autoscroll AT ALL: neither this
+                        # branch nor the answer branch below called it, so the
+                        # log only moved at the final render -- which is why it
+                        # read as "only scrolls when the message comes through".
+                        self._scroll_down(only_if_following=True)
                     if delta.content:
                         text_full += delta.content
                         widget.body.content = text_full + " \u258c"
+                        self._scroll_down(only_if_following=True)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
                         # chunk is already in hand, and the dialog promises that
