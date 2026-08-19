@@ -18,7 +18,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Input, Static
+from textual.widgets import Button, Footer, Header, Input, OptionList, Static
+from textual.widgets.option_list import Option
 from textual.worker import WorkerState
 from textual import work, on
 from openai import AsyncOpenAI
@@ -584,6 +585,75 @@ class ToolMessage(Static):
         self.content = Text.assemble(*parts)
 
 
+class PickerScreen(ModalScreen[str | None]):
+    """A clickable list modal. Returns the chosen option's id, or None.
+
+    Shared by /model and /resume so the two never drift into different
+    interactions — the pattern is identical, only the rows differ.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, title: str, rows: list[tuple[str, str]], current: str | None = None,
+                 hint: str = "↑↓ move · Enter or click to select · Esc to cancel"):
+        super().__init__()
+        self._title = title
+        self._rows = rows          # (id, label)
+        self._current = current
+        self._hint = hint
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker-box"):
+            yield Static(self._title, id="picker-title")
+            yield OptionList(
+                *[Option(label, id=oid) for oid, label in self._rows], id="picker-list"
+            )
+            yield Static(self._hint, id="picker-hint")
+
+    def on_mount(self) -> None:
+        ol = self.query_one(OptionList)
+        if self._current is not None:
+            ids = [oid for oid, _ in self._rows]
+            if self._current in ids:
+                ol.highlighted = ids.index(self._current)
+        ol.focus()
+
+    @on(OptionList.OptionSelected)
+    def _selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class HelpScreen(ModalScreen[None]):
+    """Scrollable, dismissable help. Same content as /help, readable."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=False),
+        Binding("q", "close", "Close", show=False),
+    ]
+
+    def __init__(self, body: str):
+        super().__init__()
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-box"):
+            yield Static("Commands & keys", id="help-title")
+            with VerticalScroll(id="help-scroll"):
+                yield Static(self._body, id="help-body")
+            with Horizontal(id="help-buttons"):
+                yield Button("Close", variant="primary", id="help-close")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#help-close")
+    def _close(self) -> None:
+        self.dismiss(None)
+
+
 class ConfirmStop(ModalScreen[bool]):
     """Yes/No before interrupting a running turn.
 
@@ -634,7 +704,12 @@ class ContextFooter(Footer):
 
     def compose(self) -> ComposeResult:
         yield from super().compose()
-        label = Static("", id="ctx-label")
+        # CLASS, not id. Footer recomposes (Textual removes its children and
+        # re-runs compose), and a fixed `id` on a recomposed child raises
+        # DuplicateIds the moment the removal has not landed before the mount.
+        # That crashed the whole app; duplicate CLASSES are legal, so the worst
+        # case degrades to a stale label instead of a traceback.
+        label = Static("", classes="ctx-label")
         app = self.app
         if hasattr(app, "ctx_label_text"):
             label.content = app.ctx_label_text
@@ -737,14 +812,60 @@ class LMStudioChat(App):
         margin: 0 1 1 1;
     }
 
-    #ctx-label {
+    .ctx-label {
         dock: right;
         padding-right: 1;
         background: $footer-background;
     }
 
-    ConfirmStop {
+    ConfirmStop, PickerScreen, HelpScreen {
         align: center middle;
+    }
+
+    #picker-box {
+        width: 78;
+        max-height: 80%;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: thick $primary;
+    }
+
+    #picker-title, #help-title {
+        text-style: bold;
+        color: $primary-lighten-2;
+        padding-bottom: 1;
+    }
+
+    #picker-list {
+        height: auto;
+        max-height: 20;
+        background: $surface;
+        border: none;
+    }
+
+    #picker-hint, #confirm-sub {
+        color: $text-muted;
+        padding-top: 1;
+    }
+
+    #help-box {
+        width: 88;
+        height: 80%;
+        padding: 1 2;
+        background: $surface;
+        border: thick $primary;
+    }
+
+    #help-scroll {
+        height: 1fr;
+        scrollbar-size: 1 1;
+    }
+
+    #help-buttons {
+        height: auto;
+        align: center middle;
+        padding-top: 1;
     }
 
     #confirm-box {
@@ -777,7 +898,10 @@ class LMStudioChat(App):
     """
 
     BINDINGS = [
-        Binding("escape", "stop_turn", "Stop turn", priority=True),
+        # NOT priority=True: a priority app binding wins over the focused
+        # SCREEN, so Esc inside a modal fired stop_turn instead of the
+        # modal's own cancel and the picker could not be dismissed.
+        Binding("escape", "stop_turn", "Stop turn"),
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+o", "paste_image", "Paste Image"),
         Binding("ctrl+x", "clear_image", "Clear Image"),
@@ -1232,11 +1356,15 @@ class LMStudioChat(App):
         self._refresh_ctx_label()
 
     def _refresh_ctx_label(self) -> None:
-        try:
-            label = self.query_one("#ctx-label", Static)
-        except Exception:
-            return  # footer not composed yet; it picks up the value when it composes
-        label.content = self.ctx_label_text
+        # query_one would raise TooManyMatches if a recompose ever left two
+        # behind; update every match instead so a transient duplicate is
+        # cosmetic rather than an exception on a hot reactive path.
+        labels = list(self.query(".ctx-label"))
+        if not labels:
+            return  # footer not composed yet; it reads the value when it composes
+        text = self.ctx_label_text
+        for label in labels:
+            label.content = text
 
     @work(exclusive=True, group="ctx")
     async def _fetch_ctx_window(self) -> None:
@@ -1389,6 +1517,25 @@ class LMStudioChat(App):
             )
         except Exception as e:
             self.notify(f"Paste failed: {e}", severity="error", timeout=3)
+
+    # ── Modal callbacks ──────────────────────────────────────────
+
+    def _on_model_picked(self, model_id: str | None) -> None:
+        if not model_id or model_id == self.model_id:
+            return
+        self.model_id = model_id
+        self._update_header()
+        self._fetch_ctx_window()
+        self._system(f"Switched to: {self.model_id}")
+
+    def _on_convo_picked(self, path_str: str | None) -> None:
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path == self.convo_path:
+            self._system("Already in that conversation.")
+            return
+        self._resume(path)
 
     # ── Stopping a turn ──────────────────────────────────────────
 
@@ -1977,11 +2124,35 @@ class LMStudioChat(App):
                     if uid == arg or uid.startswith(arg):
                         target = row
                         break
-            if target is None:
+            if target is None and arg:
                 self._system(
-                    f"Usage: /resume <number|id>   (1-{len(rows)}; see /convos)"
-                    if arg
-                    else f"Usage: /resume <number|id>   (1-{len(rows)}; see /convos)"
+                    f"No conversation matches {arg!r}. Run /resume with no argument to pick one."
+                )
+                return
+            if target is None:
+                # Same picker as /model, so the two interactions cannot drift.
+                items = []
+                for path_, _meta, msgs_ in rows[:40]:
+                    stamp = time.strftime("%m-%d %H:%M", time.localtime(path_.stat().st_mtime))
+                    turns = sum(1 for x in msgs_ if x.get("role") in ("user", "assistant"))
+                    memdir = path_.parent / MEMORIES_DIR
+                    nmem = len(list(memdir.glob("*.md"))) if memdir.exists() else 0
+                    badge = f" ✎{nmem}" if nmem else "   "
+                    items.append(
+                        (
+                            str(path_),
+                            f"{stamp}  {turns:>3} msg{badge}  "
+                            f"{self._fmt_size(path_.stat().st_size):>7}  "
+                            f"{self._convo_title(msgs_)}",
+                        )
+                    )
+                self.push_screen(
+                    PickerScreen(
+                        "Resume a conversation",
+                        items,
+                        current=str(self.convo_path) if self.convo_path else None,
+                    ),
+                    self._on_convo_picked,
                 )
                 return
             self._resume(target[0])
@@ -2005,12 +2176,19 @@ class LMStudioChat(App):
                     self._system(f"Switched to: {self.model_id}")
                 else:
                     self._system(f"Model not found: {arg}")
+            elif not self.available_models:
+                self._system("No models discovered — try /reconnect")
             else:
-                listing = "\n".join(
-                    f"  {'> ' if m == self.model_id else '  '}{i+1}. {m}"
-                    for i, m in enumerate(self.available_models)
+                # Clickable picker. `/model <n>` and `/model <name>` are handled
+                # above and still work, so scripting and muscle memory survive.
+                rows = [
+                    (m, ("▸ " if m == self.model_id else "  ") + m)
+                    for m in self.available_models
+                ]
+                self.push_screen(
+                    PickerScreen("Select a model", rows, current=self.model_id),
+                    self._on_model_picked,
                 )
-                self._system(f"Current: {self.model_id}\n{listing}\nUse /model <number> to switch")
 
         elif name == "/reconnect":
             self._connect()
@@ -2019,7 +2197,8 @@ class LMStudioChat(App):
             self.exit()
 
         elif name in ("/help", "/?"):
-            self._system(
+            # Scrollable modal with a Close button; the text is unchanged.
+            self.push_screen(HelpScreen(
                 "/new /clear      start a new conversation (new file on disk)\n"
                 "/system <text>   set the system prompt\n"
                 "/model [n]       show or switch model\n"
@@ -2037,7 +2216,7 @@ class LMStudioChat(App):
                 f"       soul.md, handoff.md and {MEMORIES_DIR}/ \u2014 the agent is told\n"
                 "       its own path in the system prompt and manages them itself\n"
                 "footer: live context usage \u2014 ctx used / window"
-            )
+            ))
 
         else:
             self._system(f"Unknown: {name} — try /help")

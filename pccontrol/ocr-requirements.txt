@@ -1,5 +1,0 @@
-winrt-runtime
-winrt-windows.foundation
-winrt-windows.storage
-winrt-windows.graphics.imaging
-winrt-windows.media.ocr
