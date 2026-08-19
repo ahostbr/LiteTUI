@@ -35,13 +35,29 @@ _SPAWN = re.compile(r"subprocess\.(run|Popen|call|check_output|check_call)\(")
 # The envelope itself, and this file (which must name the pattern to scan for
 # it — the regex text does not self-match, but the whitelist is defence in
 # depth, not faith).
-_WHITELIST = {"ttyguard.py", "test_ttyguard.py"}
+_WHITELIST = {"ttyguard.py"}
+
+
+def _is_runtime(name: str) -> bool:
+    """Is this a module the TUI actually loads?
+
+    The envelope's claim is about the RUNTIME, and so is this scan. A test may
+    legitimately spawn a child, and a test may legitimately CONTAIN the pattern
+    as a string in its own assertion -- test_desktop_tools.py does exactly that,
+    asserting two wrappers make no raw call, and the scan reported it as a
+    violation. A MENTION reported as a CALL: the same failure this regex is
+    `(`-anchored to avoid, arriving one level up.
+
+    A scan that fires on a file nobody can fix is a scan somebody switches off.
+    """
+    return not name.startswith("test_")
+
 
 
 def test_no_child_process_escapes_the_envelope():
     violations = []
     for f in sorted(REPO.glob("*.py")):
-        if f.name in _WHITELIST:
+        if f.name in _WHITELIST or not _is_runtime(f.name):
             continue
         text = f.read_text(encoding="utf-8", errors="replace")
         for i, line in enumerate(text.splitlines(), 1):

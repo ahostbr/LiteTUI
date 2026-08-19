@@ -14,8 +14,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import harness as harness_mod
+import config
 import chrome_tool
 import pccontrol_tool
+import ttyguard
 import mcp_client
 import sanitize
 import skills as skills_mod
@@ -293,19 +295,18 @@ def tool_bash(args: dict) -> str:
     except (TypeError, ValueError):
         timeout = BASH_DEFAULT_TIMEOUT_S
     try:
-        proc = subprocess.run(
+        # Through the envelope, which owns stdin=DEVNULL, errors="replace",
+        # CREATE_NO_WINDOW and the terminal repair. Those used to be spelled out
+        # here, per site — which is a convention, and one copy-paste away from
+        # being lost. errors="replace" in particular is not cosmetic: under
+        # strict decoding one byte undecodable in the active locale kills
+        # subprocess's reader THREAD, the traceback goes to stderr, and this
+        # call returns "(no output)" while the child really did produce output.
+        proc = ttyguard.run(
             command,
             shell=True,
-            capture_output=True,
-            text=True,
             timeout=timeout,
             cwd=str(Path.cwd()),
-            # The child does NOT inherit the TUI's stdin. With mouse tracking
-            # on, the terminal delivers SGR reports to the foreground reader;
-            # a child that reads stdin echoes them straight into this result.
-            # DEVNULL gives interactive children an immediate EOF instead of
-            # stealing the user's keystrokes.
-            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as e:
         partial = _truncate_tail((e.stdout or "") + (e.stderr or ""))
@@ -1063,7 +1064,7 @@ class LiteTUI(App):
         self._persist_error: str | None = None
         self._store_injected = False  # see STORE_HEADER; once per conversation
         self.client = AsyncOpenAI(
-            base_url="http://localhost:1234/v1",
+            base_url=config.BASE_URL,
             api_key="lm-studio",
         )
         # Discovered ONCE, before the first system prompt is built -- the skill
@@ -1627,7 +1628,9 @@ class LiteTUI(App):
                 self._system("No chat model loaded in LM Studio")
         except Exception as e:
             self.sub_title = "Disconnected"
-            self._system(f"Could not connect to localhost:1234 — {e}")
+            # The one that rots silently: it kept naming localhost after the
+            # client could be pointed elsewhere, so the error blamed the wrong host.
+            self._system(f"Could not connect to {config.LM_HOST} — {e}")
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -1719,7 +1722,7 @@ class LiteTUI(App):
 
         def _get() -> int | None:
             req = urllib.request.Request(
-                "http://localhost:1234/api/v0/models",
+                config.API_URL,
                 headers={"User-Agent": "LiteTUI"},
             )
             with urllib.request.urlopen(req, timeout=5) as r:
@@ -1945,11 +1948,9 @@ class LiteTUI(App):
         except Exception:
             pass
         try:
-            import subprocess
-
-            out = subprocess.run(
+            out = ttyguard.run(
                 ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
-                capture_output=True, text=True, timeout=5,
+                timeout=5,
             )
             if out.returncode == 0 and out.stdout:
                 return out.stdout.rstrip("\r\n")
