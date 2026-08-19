@@ -43,6 +43,32 @@ def new_agent_id() -> str:
     return str(uuid.uuid4())
 
 
+def _resolved_name(stdout: str) -> str | None:
+    """The name the registry ACTUALLY assigned, from register's own output.
+
+    `self.name` is what we ASKED for. The registry may hand back something else
+    -- a live holder of that name means takeover refuses and a generated name is
+    issued instead. Anything that displays `seat.name` without this (the footer
+    does) would show a name the fleet does not know the agent by, which is worse
+    than showing nothing: it disagrees with `discover` while looking authoritative.
+
+    Parsed from `Registered agent <id>: cli=..., model=..., tier=..., name=<n>`.
+    Returns None if the line is not in that shape, so a format change degrades to
+    "keep the requested name" rather than to an exception on the startup path.
+    """
+    for line in (stdout or "").splitlines():
+        if "name=" not in line:
+            continue
+        tail = line.rsplit("name=", 1)[1].strip()
+        # Trailing `, team=...` / ` @pane...` segments are appended after name.
+        for stop in (",", " "):
+            if stop in tail:
+                tail = tail.split(stop, 1)[0]
+        if tail:
+            return tail
+    return None
+
+
 class Seat:
     """This LiteTUI session's identity in the harness."""
 
@@ -71,11 +97,46 @@ class Seat:
                  "--cli", self.cli,
                  "--model", self.model,
                  "--tier", self.tier,
-                 "--name", self.name],
+                 "--name", self.name,
+                 # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
+                 #
+                 # The agent id is minted per PROCESS and persisted nowhere, so
+                 # every launch is a new agent to the fleet -- that part is
+                 # correct and must stay (the conversation id cannot be reused
+                 # for it: convo_id changes WITHIN a process on /new and resume,
+                 # so identity would shift mid-session and two windows resuming
+                 # the same conversation would be two consumers on one mailbox).
+                 #
+                 # But without --takeover the NAME cannot carry across either:
+                 # the previous process still holds "LiteTUI" in the registry, so
+                 # the name is refused and a random one is generated instead.
+                 # Measured on the live roster 2026-08-19 -- SIX rows for one
+                 # seat: LiteTUI, BlackGrid, HazeCrypt, PrimeWard, HotPack,
+                 # CyanWedge. Anyone who wrote down a name had a stale pointer
+                 # one restart later.
+                 #
+                 # --takeover is DOCUMENTED to evict only a ghost and to refuse
+                 # a genuinely live holder. ⚠ THAT GUARD DOES NOT PROTECT THIS
+                 # SEAT, and I measured it rather than assuming: two live probes,
+                 # and the second took the name from the first.
+                 #
+                 # _agent_record_live reads presence.session_pid and treats a
+                 # falsy one as NOT live. session_pid is written by
+                 # liteharness.hooks and never by `liteharness.cli register` --
+                 # the path we use. So this seat always reads as a ghost.
+                 #
+                 # Cosmetic only: two windows at once trade the NAME, and mail is
+                 # addressed by agent_id, so nothing is misdelivered. The same
+                 # missing field is why dead LiteTUI rows accumulate (the
+                 # janitor's dead-owner purge keys on session_pid too). The real
+                 # fix is in liteharness-oss, not a workaround here.
+                 "--takeover"],
                 timeout=30,
             )
             self.registered = r.returncode == 0
-            if not self.registered:
+            if self.registered:
+                self.name = _resolved_name(r.stdout) or self.name
+            else:
                 self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
             return self.registered
         except FileNotFoundError:
