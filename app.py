@@ -438,6 +438,34 @@ TOOL_DISPATCH: dict[str, object] = {
     "web_fetch": tool_web_fetch,
 }
 
+# The model CANNOT see an image through a tool result. A tool result is a
+# role:"tool" message whose content is a STRING; images are only visible as an
+# image_url block on a role:"user" message. So this tool does not return the
+# picture -- it stages it, and the tool loop injects a user turn carrying the
+# image through the same door the paste path uses. Returning base64 here would
+# burn a megabyte of context to show the model nothing.
+VIEW_IMAGE_TOOL_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "view_image",
+        "description": (
+            "Look at an image file on disk. Give an absolute path. The image is "
+            "attached to the conversation and you will see it in the next message "
+            "-- the result of this call is only a confirmation, not the picture."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to a png/jpg/gif/webp/bmp file",
+                }
+            },
+            "required": ["path"],
+        },
+    },
+}
+
 TOOLS = [
     {
         "type": "function",
@@ -1016,6 +1044,11 @@ class LiteTUI(App):
         self.thinking_level: str | None = None
         # One warning per session: this is a config truth, not a per-turn event.
         self._reasoning_ignored_warned = False
+        # Images staged by view_image during a tool round, drained into a
+        # role:"user" turn once the round's tool results are appended.
+        self._pending_tool_images: list[tuple[str, str]] = []
+        # "vlm" | "llm" | None, learned from the same request as the ctx window.
+        self.model_type: str | None = None
         # tok/s accounting, reset per turn by _tps_start.
         self._tps_t0: float | None = None
         self._tps_n = 0
@@ -1131,6 +1164,11 @@ class LiteTUI(App):
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
         specs = list(TOOLS)
+        # Offered unless we KNOW the model cannot see (type "llm"). Unknown
+        # stays offered: the tool reports the precondition itself, which is
+        # more useful than the tool silently not existing.
+        if self.model_type != "llm":
+            specs.append(VIEW_IMAGE_TOOL_SPEC)
         if self.skills:
             specs.append(skills_mod.SKILL_TOOL_SPEC)
         # Only offered once the seat is actually registered. Advertising fleet
@@ -1150,6 +1188,8 @@ class LiteTUI(App):
             return lambda args: skills_mod.load(self.skills, args.get("name", ""))
         if name == "harness":
             return lambda args: harness_mod.run(self.seat, args)
+        if name == "view_image":
+            return self._tool_view_image
         return self._mcp_dispatch.get(name)
 
     def _system_prompt_text(self) -> str:
@@ -1679,13 +1719,17 @@ class LiteTUI(App):
             )
             for m in models or []:
                 if m.get("id") == mid:
-                    return int(m.get("loaded_context_length") or m.get("max_context_length"))
+                    return (
+                        int(m.get("loaded_context_length") or m.get("max_context_length")),
+                        m.get("type"),
+                    )
             return None
 
         try:
-            val = await asyncio.to_thread(_get)
+            got = await asyncio.to_thread(_get)
         except Exception:
-            val = None  # server hiccup — footer just shows "?" for the window size
+            got = None  # server hiccup — footer just shows "?" for the window size
+        val, self.model_type = got if got else (None, None)
         self.ctx_max = val
         self._refresh_ctx_label()
 
@@ -2050,6 +2094,51 @@ class LiteTUI(App):
         except Exception:
             return None
 
+    def _tool_view_image(self, args: dict) -> str:
+        """Stage an image for the model to actually see. Never raises.
+
+        Returns a short CONFIRMATION, not the image. See VIEW_IMAGE_TOOL_SPEC
+        for why returning the bytes here would show the model nothing.
+        """
+        raw = str(args.get("path") or "").strip().strip('"').strip("'")
+        if not raw:
+            return "[error] view_image: `path` is required (absolute path to an image file)"
+
+        # State the vision precondition rather than letting the server 400.
+        # LM Studio accepts images only when the model loads as type "vlm"; a
+        # GGUF shipped without an mmproj projector loads as "llm" and rejects
+        # the request with an HTTP 400 that says nothing about projectors.
+        if self.model_type == "llm":
+            return (
+                f"[error] view_image: the loaded model ({self.model_id}) is type 'llm', "
+                "not 'vlm' -- it has no vision projector (mmproj), so images cannot be "
+                "sent to it at all. Load a vision build of the model first."
+            )
+
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        if not path.exists():
+            return f"[error] view_image: no such file: {path}"
+        if not path.is_file():
+            return f"[error] view_image: not a file: {path}"
+        if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            return (
+                f"[error] view_image: {path.suffix or 'no extension'} is not a supported "
+                "image type (png, jpg, jpeg, gif, webp, bmp)"
+            )
+
+        b64 = self._load_image_file(path)
+        if b64 is None:
+            return f"[error] view_image: could not decode {path.name} as an image"
+
+        self._pending_tool_images.append((str(path), b64))
+        kb = len(b64) * 3 // 4 // 1024
+        return (
+            f"Attached {path.name} ({kb} KB encoded). It is in the next message -- "
+            "look there, not here."
+        )
+
     # ── Chat logic ───────────────────────────────────────────────
 
     @on(Input.Submitted, "#message-input")
@@ -2319,6 +2408,37 @@ class LiteTUI(App):
                         "content": result,
                     }
                 )
+
+            # 🔴 THE ONLY DOOR AN IMAGE CAN COME THROUGH.
+            #
+            # A tool result is a role:"tool" message whose content is a STRING.
+            # No amount of base64 in that string makes the model see a picture;
+            # it would describe nothing, confidently, having spent a megabyte of
+            # context to do it. Images are visible ONLY as an image_url block on
+            # a role:"user" message -- exactly what the paste path builds.
+            #
+            # So view_image stages, and this drains: after the round's tool
+            # results are appended (order matters -- every tool_call_id must be
+            # answered before a non-tool turn appears) and before the next
+            # request goes out.
+            if self._pending_tool_images:
+                staged = self._pending_tool_images
+                self._pending_tool_images = []
+                content: list = []
+                for _path, b64 in staged:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    })
+                names = ", ".join(Path(p).name for p, _ in staged)
+                content.append({
+                    "type": "text",
+                    "text": (
+                        f"[view_image] {names} — attached for you to look at now."
+                    ),
+                })
+                self._append({"role": "user", "content": content})
+                self._user_bubble(f"[view_image] {names}", True)
 
         self._system(
             f"[stopped \u2014 reached {TOOL_MAX_ITERATIONS} tool iterations in one turn]"
