@@ -1085,9 +1085,15 @@ class LiteTUI(App):
             # The model cannot see the UI line above, and the system prompt was
             # built before registration finished. Without this it holds fleet
             # tools it has no idea it is entitled to use.
-            self._append({
-                "role": "system",
-                "content": (
+            # 🔴 MERGED INTO THE FIRST SYSTEM MESSAGE, NOT APPENDED AS A SECOND ONE.
+            # A second role:"system" turn is rejected outright by some chat
+            # templates: qwen/qwen3.8-27b returns HTTP 500 "Jinja Exception:
+            # System message must be at the beginning" for it, while the
+            # @iq2_xxs build of the same model accepts it. So this failed only
+            # after a /model switch, which reads as the new model being broken
+            # rather than as our message shape being wrong.
+            # Same approach as _inject_store_once: extend conversation[0].
+            self._append_to_system((
                     f"You are registered in the LiteHarness fleet as "
                     f"{self.seat.name} (id {self.seat.agent_id}, tier {self.seat.tier}). "
                     "Other agents can message you and their mail arrives as a user turn "
@@ -1095,8 +1101,7 @@ class LiteTUI(App):
                     "action=discover to see who is online, action=send with `to` and "
                     "`body` to reply. Reply to the SENDER id from the [inbox from ...] "
                     "line, never to your own id."
-                ),
-            })
+                ))
         else:
             # Say so once. A seat nobody can reach that reports nothing is
             # indistinguishable from one that is simply idle.
@@ -1685,6 +1690,27 @@ class LiteTUI(App):
         self._refresh_ctx_label()
 
     # ── Message display ──────────────────────────────────────────────────────────
+
+    def _append_to_system(self, text: str) -> None:
+        """Extend the FIRST system message rather than adding another one.
+
+        Multiple role:"system" turns are not portable. qwen/qwen3.8-27b's chat
+        template raises "System message must be at the beginning" and the request
+        fails with a 500; other builds of the same model accept it. Anything the
+        model must know belongs in the one system turn it is guaranteed to read.
+        """
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            self._append({"role": "system", "content": text})
+            return
+        current = self.conversation[0].get("content") or ""
+        if text in current:
+            return                      # idempotent across resume/re-register
+        self.conversation[0] = {
+            **self.conversation[0],
+            "content": (current.rstrip() + "\n\n" + text) if current else text,
+        }
+        if not getattr(self, "_convo_loading", False):
+            self._edit(0, "system prompt extended")
 
     def _system(self, text: str) -> None:
         log = self.query_one("#chat-log")
