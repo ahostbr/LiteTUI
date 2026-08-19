@@ -998,6 +998,9 @@ class LiteTUI(App):
 
     pending_image: reactive[str | None] = reactive(None)
     ctx_used: reactive[int | None] = reactive(None)
+    # Generation speed of the most recent turn. Survives the turn so the footer
+    # keeps showing the last measurement while idle rather than blanking.
+    tps: reactive[float | None] = reactive(None)
 
     def __init__(self):
         super().__init__()
@@ -1013,6 +1016,10 @@ class LiteTUI(App):
         self.thinking_level: str | None = None
         # One warning per session: this is a config truth, not a per-turn event.
         self._reasoning_ignored_warned = False
+        # tok/s accounting, reset per turn by _tps_start.
+        self._tps_t0: float | None = None
+        self._tps_n = 0
+        self._tps_painted = 0.0
         self.convo_id: str = ""
         self.convo_dir: Path | None = None
         self.convo_path: Path | None = None  # <convo_dir>/convo.jsonl
@@ -1612,7 +1619,20 @@ class LiteTUI(App):
         pct = (used / mx) if (used is not None and mx) else 0.0
         style = "bold #e5534b" if pct >= 0.9 else ("#e8a33d" if pct >= 0.7 else "#7d8799")
         t.append(f"ctx {u} / {m}", style)
+        self._append_tps(t, sep)
         return t
+
+    def _append_tps(self, t: Text, sep: str) -> None:
+        """Generation speed, last of all -- the label is `dock: right`, so the
+        end of this Text is the right edge of the footer."""
+        if self.tps is None:
+            return
+        t.append(sep, "#5c6370")
+        # Coloured by how it FEELS to use, not by an absolute scale: this is a
+        # local model on one GPU, and the number that matters is whether the
+        # answer arrives faster than you read it.
+        style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
+        t.append(f"{self.tps:.1f} tok/s", style)
 
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
@@ -1690,6 +1710,49 @@ class LiteTUI(App):
         log.mount(w)
         self._scroll_down()
         return w
+
+    # -- tok/s -----------------------------------------------------------
+    #
+    # Timed from the FIRST token, not from the request, so this is generation
+    # speed and not generation-plus-prompt-processing. On a 262k-context model
+    # prompt processing can dominate, and folding it in would report a number
+    # that says more about the prompt than about the model.
+
+    def _tps_start(self) -> None:
+        self._tps_t0 = None
+        self._tps_n = 0
+        self._tps_painted = 0.0
+
+    def _tps_tick(self) -> None:
+        """One streamed delta arrived. Live estimate only -- see _tps_final."""
+        now = time.monotonic()
+        if self._tps_t0 is None:
+            self._tps_t0 = now
+            return          # nothing to divide by yet
+        self._tps_n += 1
+        elapsed = now - self._tps_t0
+        # Repaint at most 4x/second. The footer is one Static, but this runs on
+        # every token of every turn, and a repaint per token on a 27B is a real
+        # cost paid to render a number that changes in the third decimal.
+        if elapsed >= 0.4 and now - self._tps_painted >= 0.25:
+            self.tps = self._tps_n / elapsed
+            self._tps_painted = now
+
+    def _tps_final(self, completion_tokens: int) -> None:
+        """Settle to the exact figure the server reports.
+
+        The live number counts STREAM DELTAS, which are only approximately
+        tokens. `usage.completion_tokens` is the server's own count and includes
+        reasoning tokens, so it matches what the model actually generated.
+        """
+        if self._tps_t0 is None or not completion_tokens:
+            return
+        elapsed = time.monotonic() - self._tps_t0
+        if elapsed > 0:
+            self.tps = completion_tokens / elapsed
+
+    def watch_tps(self, value: float | None) -> None:
+        self._refresh_ctx_label()
 
     def _warn_reasoning_ignored(self) -> None:
         """The server sent a reasoning trace after we asked for none.
@@ -2058,6 +2121,7 @@ class LiteTUI(App):
                     else self.thinking_level
                 }
 
+            self._tps_start()
             try:
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
@@ -2071,6 +2135,7 @@ class LiteTUI(App):
                     u = getattr(chunk, "usage", None)
                     if u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
+                        self._tps_final(int(getattr(u, "completion_tokens", 0) or 0))
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -2080,6 +2145,7 @@ class LiteTUI(App):
                         delta, "reasoning", None
                     )
                     if token:
+                        self._tps_tick()
                         reasoning += token
                         if thinking is None:
                             thinking = ThinkingBlock()
@@ -2093,6 +2159,7 @@ class LiteTUI(App):
                         # read as "only scrolls when the message comes through".
                         self._scroll_down(only_if_following=True)
                     if delta.content:
+                        self._tps_tick()
                         text_full += delta.content
                         widget.body.content = text_full + " \u258c"
                         self._scroll_down(only_if_following=True)

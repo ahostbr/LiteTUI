@@ -30,13 +30,21 @@ class FakeSeat:
 
 class FakeApp:
     ctx_label_text = app_mod.LiteTUI.ctx_label_text
+    _append_tps = app_mod.LiteTUI._append_tps
+    _tps_start = app_mod.LiteTUI._tps_start
+    _tps_tick = app_mod.LiteTUI._tps_tick
+    _tps_final = app_mod.LiteTUI._tps_final
 
-    def __init__(self, seat=None, think=None, convo="", used=None, mx=None):
+    def __init__(self, seat=None, think=None, convo="", used=None, mx=None, tps=None):
         self.seat = seat
         self.thinking_level = think
         self.convo_id = convo
         self.ctx_used = used
         self.ctx_max = mx
+        self.tps = tps
+        self._tps_t0 = None
+        self._tps_n = 0
+        self._tps_painted = 0.0
 
 
 CONVO = "4f3a1c9d-2b7e-4a11-9c30-8e5f6d1b2a44"
@@ -75,6 +83,67 @@ chk("_refresh_ctx_label still updates EVERY match (a transient duplicate is cosm
     'for label in labels:' in src)
 chk("changing the thinking level refreshes the footer, not just the header",
     "_update_header" in src and src.count("self._refresh_ctx_label()") >= 4)
+
+print("\n=== tok/s ===")
+import time as _t
+
+a = FakeApp(FakeSeat(True), "low", CONVO, 5087, 100096)
+chk("absent before any turn -> the footer simply omits it",
+    "tok/s" not in a.ctx_label_text.plain)
+
+a = FakeApp(FakeSeat(True), "low", CONVO, 5087, 100096, tps=42.34)
+line = a.ctx_label_text.plain
+print("   ", line)
+chk("rendered to one decimal", "42.3 tok/s" in line)
+chk("\U0001F534 LAST on the line -- the label is dock:right, so this IS the right edge",
+    line.rstrip().endswith("42.3 tok/s"))
+chk("ctx still sits to its left", line.index("ctx 5,087") < line.index("42.3 tok/s"))
+
+print("\n=== the clock starts at the first token, and that token is not counted ===")
+a = FakeApp()
+a._tps_start()
+chk("a fresh turn clears the clock", a._tps_t0 is None and a._tps_n == 0)
+a._tps_tick()
+chk("first delta starts the clock and counts nothing (nothing to divide by yet)",
+    a._tps_t0 is not None and a._tps_n == 0)
+a._tps_tick()
+a._tps_tick()
+chk("later deltas count", a._tps_n == 2)
+
+print("\n=== the SERVER's count replaces the delta estimate ===")
+a = FakeApp()
+a._tps_start()
+a._tps_tick()
+a._tps_t0 = _t.monotonic() - 2.0     # pretend 2s of generation
+a._tps_n = 10                        # the live estimate had counted 10 deltas
+a._tps_final(60)                     # the server says 60 real tokens
+chk("uses usage.completion_tokens, not the delta count",
+    a.tps is not None and abs(a.tps - 30.0) < 1.0)
+chk("...which is 3x what the delta estimate alone would have shown", a.tps > 20)
+
+print("\n=== it never divides by zero, and never fabricates a rate ===")
+a = FakeApp()
+a._tps_start()
+a._tps_final(100)
+chk("\U0001F534 no first token yet -> stays None rather than inventing a number",
+    a.tps is None)
+a = FakeApp()
+a._tps_start()
+a._tps_tick()
+a._tps_final(0)
+chk("server reported 0 completion tokens -> left alone", a.tps is None)
+
+print("\n=== repaint throttle: this runs on EVERY token of every turn ===")
+a = FakeApp()
+a._tps_start()
+a._tps_tick()
+a._tps_t0 = _t.monotonic() - 1.0
+a._tps_tick()
+first_paint = a._tps_painted
+for _ in range(50):
+    a._tps_tick()
+chk("50 further deltas do not repaint 50 times", a._tps_painted == first_paint)
+chk("...and the value is still live", a.tps is not None)
 
 print(f"\n{sum(ok)}/{len(ok)} passed")
 sys.exit(0 if all(ok) else 1)
