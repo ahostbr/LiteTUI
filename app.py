@@ -1016,6 +1016,21 @@ class LiteTUI(App):
             self._system(
                 f"harness seat online · {self.seat.name} · {self.seat.agent_id[:8]}"
             )
+            # The model cannot see the UI line above, and the system prompt was
+            # built before registration finished. Without this it holds fleet
+            # tools it has no idea it is entitled to use.
+            self._append({
+                "role": "system",
+                "content": (
+                    f"You are registered in the LiteHarness fleet as "
+                    f"{self.seat.name} (id {self.seat.agent_id}, tier {self.seat.tier}). "
+                    "Other agents can message you and their mail arrives as a user turn "
+                    "prefixed [inbox from <id>]. Use the `harness` tool to answer: "
+                    "action=discover to see who is online, action=send with `to` and "
+                    "`body` to reply. Reply to the SENDER id from the [inbox from ...] "
+                    "line, never to your own id."
+                ),
+            })
         else:
             # Say so once. A seat nobody can reach that reports nothing is
             # indistinguishable from one that is simply idle.
@@ -1047,6 +1062,11 @@ class LiteTUI(App):
         specs = list(TOOLS)
         if self.skills:
             specs.append(skills_mod.SKILL_TOOL_SPEC)
+        # Only offered once the seat is actually registered. Advertising fleet
+        # verbs to an agent with no return address produces confident sends
+        # that go nowhere.
+        if self.seat.registered:
+            specs.append(harness_mod.HARNESS_TOOL_SPEC)
         specs.extend(self.mcp.tool_specs())
         return specs
 
@@ -1057,6 +1077,8 @@ class LiteTUI(App):
             return fn
         if name == "skill":
             return lambda args: skills_mod.load(self.skills, args.get("name", ""))
+        if name == "harness":
+            return lambda args: harness_mod.run(self.seat, args)
         return self._mcp_dispatch.get(name)
 
     def _system_prompt_text(self) -> str:

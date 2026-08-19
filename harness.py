@@ -192,3 +192,121 @@ def format_message(msg: dict) -> str:
     pri = msg.get("priority") or "normal"
     body = (msg.get("body") or "").strip()
     return f"[inbox from {frm} · {pri}]\n{body}"
+
+
+# ── Agent-facing tool ────────────────────────────────────────────────────────
+#
+# The seat registered and received mail from the very first version, and the
+# agent had no way to ANSWER any of it — reachable, but mute. These are the
+# fleet primitives it actually needs, exposed as ONE tool with an action rather
+# than four separate ones, so the model picks a verb instead of inventing CLI
+# syntax.
+#
+# `send` routes through Seat.send, which writes the body to a FILE and passes
+# --body-file. That is not style: an inline double-quoted message runs backticks
+# as shell commands AND still reports success, so a model that puts a code fence
+# in a message would silently execute it.
+
+HARNESS_TOOL_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "harness",
+        "description": (
+            "Talk to the LiteHarness agent fleet. Actions: "
+            "whoami — your agent id, name, tier and whether registration succeeded; "
+            "discover — which agents are online right now; "
+            "send — message another agent (requires `to` and `body`); "
+            "check — poll your inbox immediately instead of waiting for the monitor."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["whoami", "discover", "send", "check"],
+                    "description": "Which fleet operation to perform",
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Target agent id, from discover (send only)",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Message text to deliver (send only)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+}
+
+
+def discover() -> str:
+    """Who is online, as the CLI reports it.
+
+    Output is captured, never inherited — a child writing to this console would
+    paint over the TUI.
+    """
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "liteharness.cli", "discover"],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        out = (r.stdout or r.stderr or "").strip()
+        return out or "(discover returned nothing)"
+    except FileNotFoundError:
+        return "[error] liteharness is not installed"
+    except Exception as e:
+        return f"[error] discover: {type(e).__name__}: {e}"
+
+
+def run(seat, args: dict) -> str:
+    """Dispatch the `harness` tool. Never raises — every path returns text."""
+    # str() first: a model can emit a number or null here, and .strip() on a
+    # non-str raises AttributeError from inside a tool that promises never to.
+    action = str(args.get("action") or "").strip().lower()
+
+    if action == "whoami":
+        lines = [
+            f"agent_id   : {seat.agent_id}",
+            f"name       : {seat.name}",
+            f"tier       : {seat.tier}",
+            f"cli        : {seat.cli}",
+            f"model      : {seat.model}",
+            f"registered : {seat.registered}",
+        ]
+        if seat.error:
+            lines.append(f"error      : {seat.error}")
+        return "\n".join(lines)
+
+    if action == "discover":
+        return discover()
+
+    if action == "check":
+        msgs = seat.poll()
+        if not msgs:
+            return "(no new messages)"
+        return "\n\n".join(format_message(m) for m in msgs)
+
+    if action == "send":
+        to = str(args.get("to") or "").strip()
+        body = str(args.get("body") or "")
+        if not to:
+            return "[error] send: `to` is required — get an agent id from discover"
+        if not body.strip():
+            return "[error] send: `body` is required"
+        if to == seat.agent_id:
+            # watch_inbox drops from == to by design, so this could never arrive.
+            return (
+                "[error] send: that is your OWN id. The watcher drops self-addressed "
+                "mail, so it would be silently discarded rather than delivered."
+            )
+        if not seat.registered:
+            return "[error] send: this seat is not registered, so it has no return address"
+        return f"sent to {to[:8]}" if seat.send(to, body) else f"[error] send to {to[:8]} failed"
+
+    return (
+        f"[error] unknown action {action!r} — valid actions are "
+        "whoami, discover, send, check"
+    )
