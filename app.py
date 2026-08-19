@@ -1,4 +1,4 @@
-"""LM Studio Chat — TUI client with image support."""
+"""LiteTUI — a terminal chat client and agent harness for a local LM Studio model."""
 
 import asyncio
 import base64
@@ -13,6 +13,7 @@ import uuid
 from html.parser import HTMLParser
 from pathlib import Path
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -376,7 +377,7 @@ def tool_web_fetch(args: dict) -> str:
         return "[error] 'url' must start with http:// or https://"
     try:
         req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0 (compatible; LMStudioChat)"}
+            url, headers={"User-Agent": "Mozilla/5.0 (compatible; LiteTUI)"}
         )
         with urllib.request.urlopen(req, timeout=WEB_FETCH_TIMEOUT_S) as r:
             ctype = (r.headers.get("Content-Type") or "").lower()
@@ -716,10 +717,10 @@ class ContextFooter(Footer):
         yield label
 
 
-class LMStudioChat(App):
+class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
-    TITLE = "LM Studio Chat"
+    TITLE = "LiteTUI"
     SUB_TITLE = "Connecting..."
 
     CSS = """
@@ -904,7 +905,25 @@ class LMStudioChat(App):
         Binding("escape", "stop_turn", "Stop turn"),
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+o", "paste_image", "Paste Image"),
-        Binding("ctrl+x", "clear_image", "Clear Image"),
+        # Ctrl+V: Input._on_paste already handles BRACKETED paste, but a
+        # terminal that does not send it (plain conhost) delivers nothing at
+        # all — which is why images worked (Ctrl+O reads the clipboard
+        # directly) while text silently did not. This reads the OS clipboard
+        # by the same logic, so both paths work regardless of the terminal.
+        # priority=True is REQUIRED, and it is the whole bug: Input binds
+        # ctrl+v to its OWN action_paste, which reads TEXTUAL's internal
+        # clipboard -- empty unless something inside the app copied there --
+        # so Ctrl+V was handled, did nothing, and reported nothing. The
+        # focused widget beats a non-priority App binding. Safe here because
+        # action_paste_text returns early on a ModalScreen (the inverse of
+        # the escape bug above, where priority was WRONG).
+        Binding("ctrl+v", "paste_text", "Paste", priority=True),
+        # Textual ships the selection machinery and binds NO key to it:
+        # App.BINDINGS is only ctrl+q/ctrl+c, so a drag selected text that
+        # nothing could copy. ctrl+shift+c, because ctrl+c is help_quit.
+        Binding("ctrl+shift+c", "screen.copy_text", "Copy selection"),
+        # Same collision as ctrl+v: Input binds ctrl+x to cut.
+        Binding("ctrl+x", "clear_image", "Clear Image", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear Chat"),
         Binding("ctrl+t", "toggle_tools", "Tools on/off"),
     ]
@@ -944,7 +963,7 @@ class LMStudioChat(App):
             "  Image attached — Ctrl+X to remove", id="image-indicator"
         )
         yield Input(
-            placeholder="Message... (Ctrl+O paste image | /help for commands)",
+            placeholder="Message... (Ctrl+V paste | Ctrl+O image | /help)",
             id="message-input",
         )
         yield ContextFooter()
@@ -1376,7 +1395,7 @@ class LMStudioChat(App):
         def _get() -> int | None:
             req = urllib.request.Request(
                 "http://localhost:1234/api/v0/models",
-                headers={"User-Agent": "LMStudioChat"},
+                headers={"User-Agent": "LiteTUI"},
             )
             with urllib.request.urlopen(req, timeout=5) as r:
                 data = json.load(r)
@@ -1475,6 +1494,79 @@ class LMStudioChat(App):
                 return p, m.group(2).strip()
 
         return None, text
+
+    def _clipboard_text(self) -> str | None:
+        """OS clipboard as text, or None. Windows-first, then a portable path.
+
+        tkinter is stdlib and in-process, so it is tried first; it raises when
+        the clipboard holds no text (an image, or nothing), which is a MISS and
+        not an error. PowerShell is the fallback because a hidden Tk root can
+        fail outright in some hosts, and a paste that dies silently is the bug
+        being fixed here.
+        """
+        try:
+            import tkinter
+
+            root = tkinter.Tk()
+            root.withdraw()
+            try:
+                return root.clipboard_get()
+            finally:
+                root.destroy()
+        except Exception:
+            pass
+        try:
+            import subprocess
+
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0 and out.stdout:
+                return out.stdout.rstrip("\r\n")
+        except Exception:
+            pass
+        return None
+
+    def _insert_into_input(self, text: str) -> int:
+        """Splice text at the cursor. Returns the number of chars inserted."""
+        # A multi-line paste would otherwise submit on the first newline and
+        # drop the rest; join instead so nothing is lost.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if "\n" in text:
+            text = " ".join(part for part in text.split("\n") if part.strip())
+        if not text:
+            return 0
+        inp = self.query_one("#message-input", Input)
+        pos = inp.cursor_position
+        inp.value = inp.value[:pos] + text + inp.value[pos:]
+        inp.cursor_position = pos + len(text)
+        inp.focus()
+        return len(text)
+
+    def on_paste(self, event: events.Paste) -> None:
+        """Bracketed paste, when the terminal does send it."""
+        if not event.text:
+            return
+        # Only take over while the Input is focused; a modal has its own.
+        if isinstance(self.screen, ModalScreen):
+            return
+        if self._insert_into_input(event.text):
+            event.stop()
+
+    def action_paste_text(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        text = self._clipboard_text()
+        if not text:
+            self.notify(
+                "No text in clipboard. Ctrl+O pastes an image.",
+                severity="warning", timeout=3,
+            )
+            return
+        n = self._insert_into_input(text)
+        if n:
+            self.notify(f"Pasted {n} chars", timeout=1)
 
     def action_paste_image(self) -> None:
         try:
@@ -2226,7 +2318,7 @@ class LMStudioChat(App):
 
 
 def main():
-    LMStudioChat().run()
+    LiteTUI().run()
 
 
 if __name__ == "__main__":

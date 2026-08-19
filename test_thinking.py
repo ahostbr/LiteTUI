@@ -2,7 +2,7 @@
 
 import asyncio
 
-from app import LMStudioChat, AssistantMessage, ThinkingBlock, ThinkingHeader
+from app import LiteTUI, AssistantMessage, ThinkingBlock, ThinkingHeader
 
 
 def get_text(w) -> str:
@@ -26,7 +26,7 @@ async def wait_stream_done(app, timeout_s: float = 180.0) -> bool:
 
 
 async def main() -> None:
-    app = LMStudioChat()
+    app = LiteTUI()
     async with app.run_test(size=(120, 32)) as pilot:
         # Wait for connection
         for _ in range(60):

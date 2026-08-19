@@ -11,7 +11,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from app import LMStudioChat as A
+from app import LiteTUI as A
 
 results = []
 
