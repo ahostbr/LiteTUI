@@ -2120,9 +2120,19 @@ class LiteTUI(App):
         it would be fixing. During a stream we follow the tail only when the
         reader was already at the tail.
 
-        Discrete events (a new bubble, a tool call, the final render) still
-        scroll unconditionally: those are the user's own action or the end of
-        the turn, where jumping to the bottom is what they want.
+        Discrete events (a new bubble, a tool call, the final render, AND a new
+        thinking block appearing) still scroll unconditionally: those are the
+        user's own action or the start/end of a turn, where jumping to the
+        bottom is what they want.
+
+        A NEW THINKING BLOCK WAS THE ONE MISSING FROM THAT LIST, and it read as
+        "the log only moves once the answer arrives". Mounting the assistant
+        bubble plus the block grows the log by more than _at_bottom's 2-line
+        slack in a single frame, so by the time the first reasoning token calls
+        in, the reader is judged to have scrolled up -- by the app's OWN newly
+        mounted content -- and following is refused for the whole turn. The
+        guard written to protect a reader who scrolled up was firing on content
+        nobody had scrolled away from.
         """
         # The setting gates the STREAM path only. `only_if_following` is what the
         # stream passes, so guarding on it keeps discrete events (new bubble,
@@ -2542,6 +2552,8 @@ class LiteTUI(App):
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
                             widget.mount(thinking, before=widget.body)
+                            # Discrete event -> unconditional. See _scroll_down.
+                            self._scroll_down()
                         if self.thinking_level == "off":
                             self._warn_reasoning_ignored()
                         # None when show_thinking is off. The trace still arrives and is
@@ -3222,6 +3234,9 @@ class LiteTUI(App):
                 "/reconnect       reconnect   |   /quit  exit\n"
                 "Esc     stop the current turn (asks first; Esc again = force)\n"
                 "Ctrl+T  toggle agent tools (bash, read, write, web_fetch)\n"
+                "drag    select text  |  Ctrl+Shift+C  copy the selection\n"
+                "Shift+drag  select with the TERMINAL instead (system clipboard) \u2014\n"
+                "        the app captures the mouse, so a plain drag never reaches it\n"
                 f"store: {CONVO_DIR.name}/<uuid>/ holds convo.jsonl, memory.md,\n"
                 f"       soul.md, handoff.md and {MEMORIES_DIR}/ \u2014 the agent is told\n"
                 "       its own path in the system prompt and manages them itself\n"

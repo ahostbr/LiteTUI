@@ -172,5 +172,20 @@ chk("...and sits on the reasoning branch, where the evidence actually is",
 chk("the narrowed valid set is recorded in source, with its provenance",
     "ext.virtualModel.customField" in src2 and "Skipping this field" in src2)
 
+print("\n=== a NEW thinking block jumps the log to the bottom ===")
+src3 = Path(app_mod.__file__).read_text(encoding='utf-8')
+mount = src3.find('thinking = ThinkingBlock()')
+chk('the mount site exists', mount > 0)
+window = src3[mount:mount + 400]
+chk('🔴 an UNCONDITIONAL _scroll_down() sits with the mount',
+    'self._scroll_down()' in window)
+chk('...and it is NOT the conditional form (that is what never fired)',
+    'self._scroll_down(only_if_following=True)' not in window)
+# The conditional form must still exist for per-token growth, or a reader
+# who scrolls up mid-trace would be yanked back on every token.
+chk('per-token growth stays conditional elsewhere',
+    'self._scroll_down(only_if_following=True)' in src3)
+
+
 print(f"\n{sum(ok)}/{len(ok)} passed")
 sys.exit(0 if all(ok) else 1)
