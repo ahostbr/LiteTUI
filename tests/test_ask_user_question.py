@@ -1,0 +1,235 @@
+"""Drive ask_user_question through Textual's headless pilot — a real running app.
+
+Covers both halves of the feature:
+  * the BRIDGE: run() called from a worker thread against a live app must
+    block, push the widget, return the serialized string, and leave the app
+    clean — exactly what app.py's `asyncio.to_thread(fn, args)` dispatch does;
+  * the WIDGET, per Ryan's locked spec (2026-08-20):
+    - multi-select checkboxes (NOT radio),
+    - jumpable step bar (Tab/Arrows, not strictly sequential),
+    - toggleable answered-checkbox per step (untick clears the question),
+    - a "Type something" note field on every question,
+    - Submit commits everything; "Chat about this" returns the PARTIAL state;
+      Esc cancels with no answers.
+"""
+import asyncio
+import sys
+import tempfile
+import threading
+from pathlib import Path
+
+# The repo root, one level up since the tests moved into tests/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import app as m
+import ask_user_question as aq
+
+m.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-auq-"))
+ok = []
+
+
+def chk(label, cond):
+    ok.append(bool(cond))
+    print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
+
+
+QUESTIONS = [
+    {"label": "Liveness",
+     "question": "Which check proves a live inbox watcher?",
+     "options": [
+         {"title": "Poll loop heartbeat", "description": "mtime advances"},
+         {"title": "Roster re-read"},
+         {"title": "Both, plus the janitor run"},
+     ]},
+    {"label": "Spot the bug",
+     "question": "Which lines are wrong?",
+     "options": [{"title": "line 10"}, {"title": "line 22"}, {"title": "line 31"}]},
+    {"label": "Junctions",
+     "question": "How to store the junction?",
+     "options": [{"title": "One file"}, {"title": "One dir per seat"}]},
+]
+
+ARGS = {"questions": QUESTIONS}
+
+
+def make_app():
+    a = m.LiteTUI()
+    a.available_models = ["a-model"]
+    a.model_id = "a-model"
+    a._connect = lambda: None          # never touch the network in a test
+    a._fetch_ctx_window = lambda: None
+    return a
+
+
+async def wait_for(pilot, pred, timeout=5.0):
+    import time
+    t0 = time.monotonic()
+    while not pred():
+        if time.monotonic() - t0 > timeout:
+            raise TimeoutError("condition never became true")
+        await pilot.pause()
+
+
+def call_in_thread():
+    box = []
+    t = threading.Thread(target=lambda: box.append(aq.run(ARGS)), daemon=True)
+    t.start()
+    return box, t
+
+
+async def main():
+    print("=== parsing: valid, lenient, and actionable errors ===")
+    states = aq._parse_questions(ARGS)
+    chk("three questions parsed", len(states) == 3)
+    chk("labels carried through", states[0].label == "Liveness")
+    chk("options carried through", states[0].options[0]["title"] == "Poll loop heartbeat")
+    lenient = aq._parse_questions({"questions": [
+        {"question": "Pick one", "options": ["plain string option", "another"]},
+    ]})
+    chk("string options accepted (local-model leniency)",
+        lenient[0].options[0]["title"] == "plain string option")
+    chk("missing label defaulted", lenient[0].label == "Question 1")
+    e1 = aq.run({"questions": []})
+    chk("empty list rejected with a message", e1.startswith("[error]") and "non-empty" in e1)
+    e2 = aq.run({"questions": [{"label": "x", "options": [{"title": "a"}]}]})
+    chk("missing question text rejected", "question" in e2)
+    e3 = aq.run({"questions": [{"label": "x", "question": "q", "options": "nope"}]})
+    chk("non-list options rejected", "options" in e3)
+
+    print("\n=== serialization: submit / chat / cancel ===")
+    s = aq._serialize({
+        "action": "submit",
+        "questions": [
+            {"label": "Liveness", "question": "q",
+             "options": [{"title": "a", "description": ""}, {"title": "b"}],
+             "selected": [0, 1], "note": "my note", "answered": True},
+            {"label": "Junctions", "question": "q",
+             "options": [{"title": "c"}], "selected": [], "note": "", "answered": False},
+        ],
+    })
+    chk("submit header", s.startswith("[ask_user_question] SUBMITTED — 1 of 2 answered"))
+    chk("selections marked", "[x] a" in s and "[x] b" in s and "[ ] c" in s)
+    chk("note carried", "note: my note" in s)
+    c = aq._serialize({
+        "action": "chat",
+        "questions": [{"label": "Liveness", "question": "q",
+                       "options": [{"title": "a"}], "selected": [0], "note": "", "answered": True}],
+    })
+    chk("chat marked partial", "CHAT ABOUT THIS" in c and "PARTIAL" in c)
+    x = aq._serialize({"action": "cancelled", "questions": []})
+    chk("cancel says no answers", "CANCELLED" in x and "No answers" in x)
+
+    print("\n=== BRIDGE + WIDGET: run() from a worker thread against a live app ===")
+    a = make_app()
+    async with a.run_test(size=(120, 30)) as pilot:
+        chk("spec registered by _all_tools",
+            any(t["function"]["name"] == "ask_user_question" for t in a._all_tools()))
+        chk("dispatch resolves to aq.run", a._dispatch_for("ask_user_question") is aq.run)
+
+        box, t = call_in_thread()
+        await wait_for(pilot, lambda: isinstance(a.screen, aq.AskUserQuestionScreen))
+        scr = a.screen
+        chk("AskUserQuestionScreen is on top while run() blocks", True)
+        chk("three steps in the bar", len(list(scr.query(".auq-step-label"))) == 3)
+        chk("active step is first", scr.query_one("#auq-lab-0").has_class("active"))
+        rows = list(scr.query_one("#auq-qbody-0").query(".auq-row"))
+        chk("q1 body: 3 option rows + note row", len(rows) == 4)
+
+        # multi-select: tick two options on q1 (Enter toggles, does NOT dismiss)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        chk("multi-select: two options ticked", scr._states[0].selected == {0, 1})
+        chk("untoggle works (toggle, not radio)", True)  # proven by the next line
+        await pilot.press("up", "enter")
+        await pilot.pause()
+        chk("unticking clears that option", scr._states[0].selected == {1})
+        await pilot.press("up", "enter")
+        await pilot.pause()
+        chk("re-ticking works", scr._states[0].selected == {0, 1})
+        chk("step 1 checkbox now answered", scr.query_one("#auq-box-0").has_class("answered"))
+
+        # jumpable: right -> q2, tab -> q3, shift+tab back to q2
+        await pilot.press("right")
+        await pilot.pause()
+        chk("right jumped to q2", scr._active == 1)
+        await pilot.press("tab")
+        await pilot.pause()
+        chk("tab jumped to q3", scr._active == 2)
+        await pilot.press("shift+tab")
+        await pilot.pause()
+        chk("shift+tab back to q2", scr._active == 1)
+        await pilot.press("enter")
+        await pilot.pause()
+        chk("q2 option ticked after jump", scr._states[1].selected == {0})
+
+        # note field on q2: down to the note row (index 3, past 3 options),
+        # enter focuses the input, type
+        await pilot.press("down", "down", "down", "enter")
+        await pilot.pause()
+        chk("cursor reached the note row", scr._cursor == 3)
+        chk("note input focused", a.focused is not None and a.focused.id == "auq-note-input")
+        await pilot.press("k", "e", "y")
+        await pilot.pause()
+        chk("note stored on the ACTIVE question", scr._states[1].note == "key")
+        chk("q2 counts as answered (note alone suffices)", scr._states[1].answered)
+
+        # toggleable step checkbox: untick q2's answer box clears it
+        await pilot.click(scr.query_one("#auq-box-1"))
+        await pilot.pause()
+        chk("step untick cleared q2 selections", scr._states[1].selected == set())
+        chk("step untick cleared q2 note", scr._states[1].note == "")
+        chk("q2 no longer answered", not scr._states[1].answered)
+
+        # "Chat about this" = partial state early exit
+        await pilot.click(scr.query_one("#auq-chat"))
+        t.join(timeout=5)
+        chk("run() returned after Chat about this", not t.is_alive() and len(box) == 1)
+        res = box[0]
+        chk("chat result marked partial", "CHAT ABOUT THIS" in res and "PARTIAL" in res)
+        chk("q1 selections in the result", "[x] Poll loop heartbeat" in res and "[x] Roster re-read" in res)
+        chk("q2 in the result as not answered", "Spot the bug — not answered" in res)
+        chk("widget dismissed, app clean", a.screen is not scr and a.screen_stack)
+
+    print("\n=== SUBMIT commits everything ===")
+    b = make_app()
+    async with b.run_test(size=(120, 30)) as pilot:
+        box, t = call_in_thread()
+        await wait_for(pilot, lambda: isinstance(b.screen, aq.AskUserQuestionScreen))
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("down", "down", "down", "enter")  # to the note row (index 3)
+        await pilot.pause()
+        await pilot.press("a", "n", "o")             # note on q1
+        await pilot.pause()
+        scr = b.screen
+        chk("q1 answered before submit", scr._states[0].answered)
+        await pilot.click(scr.query_one("#auq-submit"))
+        t.join(timeout=5)
+        res = box[0]
+        chk("submit result", res.startswith("[ask_user_question] SUBMITTED — 1 of 3 answered"))
+        chk("selection + note both returned", "[x] Poll loop heartbeat" in res and "note: ano" in res)
+        chk("unanswered question present, marked", "Spot the bug — not answered" in res)
+
+    print("\n=== ESC cancels with no answers ===")
+    c = make_app()
+    async with c.run_test(size=(120, 30)) as pilot:
+        box, t = call_in_thread()
+        await wait_for(pilot, lambda: isinstance(c.screen, aq.AskUserQuestionScreen))
+        scr = c.screen
+        await pilot.press("enter")
+        await pilot.pause()
+        chk("something was ticked before cancel", scr._states[0].selected == {0})
+        await pilot.press("escape")
+        t.join(timeout=5)
+        res = box[0]
+        chk("cancel result", "CANCELLED" in res and "No answers" in res)
+        chk("cancel did not record the tick",
+            "Poll loop heartbeat" not in res and "do not assume any option" in res)
+        chk("widget dismissed", c.screen is not scr)
+
+    print(f"\n{sum(ok)}/{len(ok)} passed")
+    sys.exit(0 if all(ok) else 1)
+
+
+asyncio.run(main())

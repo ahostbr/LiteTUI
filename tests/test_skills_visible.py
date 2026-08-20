@@ -1,0 +1,171 @@
+"""Skills must be visible to the HUMAN, not just to the model.
+
+`discover()` skips a directory with no SKILL.md silently, and that is correct —
+a scratch folder is not a broken skill. But it means a MISNAMED or MISPLACED
+skill is indistinguishable from one that was never written, which is the exact
+failure skills.py's own docstring warns about for the model ("a capability with
+no pointer is indistinguishable from an absent one"). The human had the same
+blind spot: nothing listed what had been found, or what had been passed over.
+"""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import pytest
+
+import app as app_mod
+import skills as skills_mod
+
+app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-skills-"))
+
+
+#: The real ROOT, captured before any test moves it.
+_REAL_ROOT = app_mod.ROOT
+
+
+@pytest.fixture(autouse=True)
+def _restore_root():
+    """ROOT is a MODULE GLOBAL. Mutating it leaks into every other test module
+    in the same pytest process — the suite ran fine alone and collapsed when run
+    together. Always put it back."""
+    yield
+    app_mod.ROOT = _REAL_ROOT
+
+
+def _app_with(tmp_root: Path):
+    app_mod.ROOT = tmp_root
+    a = app_mod.LiteTUI()
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    a._apply_context_length = lambda: None
+    return a
+
+
+def _make_skill(base: Path, folder: str, name: str, desc: str) -> None:
+    d = base / folder
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {desc}\n---\n\nBody of {name}.\n",
+        encoding="utf-8",
+    )
+
+
+def test_disabled_skills_yield_a_list_not_a_dict():
+    """load() iterates its argument; a dict would yield KEYS, not Skill objects.
+
+    Latent rather than live — load() is only reachable when self.skills is
+    truthy — but the two branches must agree on type or the bug waits.
+    """
+    from settings import Settings
+
+    a = app_mod.LiteTUI()
+    a.settings = Settings(skills_enabled=False)
+    a.skills = skills_mod.discover(app_mod.ROOT) if a.settings.skills_enabled else []
+    assert isinstance(a.skills, list)
+
+
+@pytest.mark.asyncio
+async def test_slash_skills_names_what_was_SKIPPED():
+    """The whole point. A folder without SKILL.md must be REPORTED, not hidden.
+
+    This is the discriminating case: discovery already worked for valid skills,
+    and the failure being fixed is invisible skipping.
+    """
+    root = Path(tempfile.mkdtemp(prefix="skills-root-"))
+    base = root / "skills"
+    _make_skill(base, "good-one", "good-one", "a real skill")
+    (base / "typo-folder").mkdir(parents=True)          # no SKILL.md
+    (base / "another-mistake").mkdir(parents=True)      # no SKILL.md
+
+    a = _app_with(root)
+    msgs: list[str] = []
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        a._system = lambda s: msgs.append(s)
+        a._handle_command("/skills")
+        await pilot.pause()
+
+    out = msgs[-1]
+    assert "good-one" in out, "the loaded skill was not listed"
+    assert "typo-folder" in out, "a SKIPPED folder was not reported — the bug"
+    assert "another-mistake" in out
+    assert "no SKILL.md" in out, "skipped folders were listed without saying why"
+
+
+@pytest.mark.asyncio
+async def test_slash_skills_shows_what_the_MODEL_would_get():
+    """/skills <name> must print the body, not a summary of it.
+
+    A preview that paraphrases cannot answer "why did the model do that?".
+    """
+    root = Path(tempfile.mkdtemp(prefix="skills-root2-"))
+    _make_skill(root / "skills", "probe", "probe", "d")
+    (root / "skills" / "probe" / "SKILL.md").write_text(
+        "---\nname: probe\ndescription: d\n---\n\nUNIQUE-BODY-MARKER-42\n", encoding="utf-8"
+    )
+
+    a = _app_with(root)
+    msgs: list[str] = []
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        a._system = lambda s: msgs.append(s)
+        a._handle_command("/skills probe")
+        await pilot.pause()
+    assert "UNIQUE-BODY-MARKER-42" in msgs[-1]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_directory_says_what_it_expects():
+    """"0 skills" with no explanation sends you to read the source."""
+    root = Path(tempfile.mkdtemp(prefix="skills-root3-"))
+    (root / "skills").mkdir(parents=True)
+
+    a = _app_with(root)
+    msgs: list[str] = []
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        a._system = lambda s: msgs.append(s)
+        a._handle_command("/skills")
+        await pilot.pause()
+    out = msgs[-1]
+    assert "SKILL.md" in out, "an empty directory did not say what it wants"
+
+
+@pytest.mark.asyncio
+async def test_disabled_says_so_rather_than_reporting_zero():
+    """"0 skills" and "skills are off" are different facts.
+
+    Reporting the first when the second is true sends you hunting for a missing
+    file that is not missing.
+    """
+    from settings import Settings
+
+    root = Path(tempfile.mkdtemp(prefix="skills-root4-"))
+    _make_skill(root / "skills", "present", "present", "d")
+
+    a = _app_with(root)
+    a.settings = Settings(skills_enabled=False)
+    a.skills = []
+    msgs: list[str] = []
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        a._system = lambda s: msgs.append(s)
+        a._handle_command("/skills")
+        await pilot.pause()
+    assert "OFF" in msgs[-1] or "off" in msgs[-1]
+
+
+def test_the_shipped_example_skill_is_discoverable():
+    """The repo's own skills/ must actually parse — a broken example is worse
+    than none, because it is what the next skill gets copied from."""
+    # The repo root, not tests/ — this file moved and the skills/ it checks did not.
+    repo = Path(__file__).resolve().parent.parent
+    found = skills_mod.discover(repo)
+    assert found, "the shipped skills/ directory discovered nothing"
+    names = {s.name for s in found}
+    assert "look-at-the-screen" in names
+    one = next(s for s in found if s.name == "look-at-the-screen")
+    assert one.description, "the example skill has no description to index"
+    assert len(one.description) <= skills_mod.MAX_DESC_CHARS
