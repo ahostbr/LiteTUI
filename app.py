@@ -1173,6 +1173,8 @@ class LiteTUI(App):
         self.convo_id: str = ""
         self.convo_dir: Path | None = None
         self.convo_path: Path | None = None  # <convo_dir>/convo.jsonl
+        # Staged-but-not-created. See _new_convo / _materialise_convo.
+        self._convo_pending = False
         self._convo_loading = False  # suppress writes while replaying from disk
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
         self._persist_error: str | None = None
@@ -1380,7 +1382,9 @@ class LiteTUI(App):
     # per exchange.
 
     def _read_store_file(self, name: str, cap: int) -> str:
-        if self.convo_dir is None:
+        # A staged conversation has no directory yet, so there is nothing to
+        # read. Deliberately does NOT materialise: reading must not create.
+        if self.convo_dir is None or getattr(self, "_convo_pending", False):
             return ""
         p = self.convo_dir / name
         try:
@@ -1474,11 +1478,36 @@ class LiteTUI(App):
     #             by a full copy on every compaction and every Ctrl+T.
 
     def _new_convo(self) -> None:
-        """Create .convos/<uuid>/ with its seed files. Leaves conversation alone."""
+        """STAGE a conversation: pick its id and paths, touch no disk.
+
+        Nothing is created until the user actually says something. Booting the
+        app to run /resume used to mint a throwaway conversation first, so the
+        list you opened /resume to read filled with the debris of opening it.
+
+        The id and paths are assigned here anyway, so the footer can name the
+        conversation and /clear can report where it will live.
+        """
         self.convo_id = str(uuid.uuid4())
         self._refresh_ctx_label()   # the footer names the conversation
         self.convo_dir = CONVO_DIR / self.convo_id
         self.convo_path = self.convo_dir / TRANSCRIPT_NAME
+        self._convo_pending = True
+
+    def _materialise_convo(self) -> None:
+        """Create the staged conversation on disk. Idempotent.
+
+        Writes meta, then a SNAPSHOT of whatever is already in memory — the
+        system prompt is appended at boot, long before this runs, and the
+        snapshot is what carries it into the file. _read_convo already handles
+        `type: "snapshot"` by replacing the message list, so a conversation born
+        here reads back identically to one written record by record.
+        """
+        if not getattr(self, "_convo_pending", False):
+            return
+        if self.convo_dir is None or self.convo_path is None:
+            return
+        self._convo_pending = False   # cleared FIRST: _write_record below would
+                                      # otherwise see pending and skip its writes
         try:
             (self.convo_dir / MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
             for fname, seed in CONVO_SEED_FILES.items():
@@ -1502,6 +1531,10 @@ class LiteTUI(App):
                 **({"agent_id": seat.agent_id} if seat is not None else {}),
             }
         )
+        # Everything said before the first user message (the system prompt) was
+        # held in memory only. This is where it reaches disk.
+        if self.conversation:
+            self._snapshot("materialised on first message")
 
     def _note_persist_error(self, e: Exception) -> None:
         if self._persist_error is not None:
@@ -1516,6 +1549,13 @@ class LiteTUI(App):
 
     def _write_record(self, rec: dict) -> None:
         if self.convo_path is None or self._convo_loading:
+            return
+        # Staged but not born: keep it in memory. _materialise_convo() snapshots
+        # self.conversation when it creates the file, so nothing written here
+        # would have been lost — and NOT writing is the entire point, otherwise
+        # the boot-time system prompt creates the directory it was meant to
+        # avoid creating.
+        if getattr(self, "_convo_pending", False):
             return
         try:
             self.convo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1658,6 +1698,11 @@ class LiteTUI(App):
             return
 
         self.conversation = msgs
+        # The staged conversation is abandoned WITHOUT being written — that is
+        # the whole point of staging. Clearing the flag before reassigning the
+        # paths also stops a later write from materialising the RESUMED store as
+        # if it were new.
+        self._convo_pending = False
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
@@ -1771,7 +1816,14 @@ class LiteTUI(App):
                     self.model_id = self.available_models[0]
                 self._update_header()
                 self._fetch_ctx_window()
-                self._apply_context_length()
+                # 🔴 DO NOT auto-apply the context length here. This used to call
+                # _apply_context_length() on EVERY connect, which shells out to
+                # `lms load <model> --context-length N`. Every app boot — including
+                # every test that constructs LiteTUI — therefore LOADED A MODEL.
+                # Concurrent boots loaded several at once and can OOM the machine.
+                # Loading weights is expensive and destructive to whatever is
+                # already resident; it must be an explicit act, never a side
+                # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
                 if self.tools_enabled:
                     self._system(f"agent loop: up to {self.settings.tool_iterations} tool iterations per turn (/settings)")
@@ -2460,6 +2512,10 @@ class LiteTUI(App):
                 return
 
         has_image = image_b64 is not None
+        # This is the moment a conversation earns its directory. Everything
+        # before it — boot, the system prompt, a /model switch, an abandoned
+        # /resume — leaves nothing on disk.
+        self._materialise_convo()
         self._user_bubble(text, has_image)
 
         # Build API message content
@@ -2988,6 +3044,17 @@ class LiteTUI(App):
         except OSError as e:
             self._system(f"Settings applied for this session but NOT saved: {e}")
             path = None
+
+        # Loading weights is EXPLICIT and only on an actual change. This is the
+        # only caller: it used to run on every connect, so every app boot (and
+        # every test that constructed the app) loaded a model, several at once
+        # under a parallel suite. A context length you did not just ask for must
+        # never move resident weights.
+        if (
+            new.default_context_length
+            and new.default_context_length != old.default_context_length
+        ):
+            self._apply_context_length()
 
         # Apply the ones with immediate effect.
         self.tools_enabled = new.tools_enabled

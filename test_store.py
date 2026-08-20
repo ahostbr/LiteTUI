@@ -26,6 +26,10 @@ def make_app(with_store=True):
     a = m.LiteTUI()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
+    # Conversations are created LAZILY (on the first user message), so the
+    # directory does not exist yet. These tests are about store INJECTION, not
+    # about when the store is born — materialise it so there is one to inject.
+    a._materialise_convo()
     if with_store:
         (a.convo_dir / "memory.md").write_text("- [thing](t.md) — a pointer\n", encoding="utf-8")
         (a.convo_dir / "soul.md").write_text("Prefers `dir` over `ls` on Windows.\n", encoding="utf-8")

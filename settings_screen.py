@@ -144,9 +144,18 @@ class SettingsScreen(ModalScreen[Settings | None]):
                 with TabPane("Model", id="tab-model"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        # The configured default MUST appear as an option even
+                        # when the server is not serving it, or Textual refuses
+                        # the value and the WHOLE PANEL fails to open. Models are
+                        # discovered asynchronously, so "not in the list" is the
+                        # normal state for the first moment of every launch —
+                        # this crashed intermittently and read as haunted.
                         model_choices = [("(whatever LM Studio has loaded)", "")] + [
                             (m, m) for m in self._models
                         ]
+                        _cur = self._start.default_model
+                        if _cur and _cur not in self._models:
+                            model_choices.append((f"{_cur}  (not currently served)", _cur))
                         locked = settings_mod.source_of("default_model")
                         with Vertical(classes="set-row"):
                             yield Label("Default model", classes="set-label")

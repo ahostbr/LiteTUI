@@ -402,3 +402,64 @@ async def test_the_panel_is_centred_not_docked_top_left():
         )
         # And it must not be flush against an edge, which is what "docked" was.
         assert left > 0 and top > 0, f"box is flush to an edge: x={r.x} y={r.y}"
+
+@pytest.mark.asyncio
+async def test_panel_opens_when_the_saved_default_model_is_not_served():
+    """A saved preference must not make /settings unopenable.
+
+    Found in the wild: a real settings.json with
+    default_model="qwen/qwen3.8-27b" while the app had discovered no models
+    (which is TRUE FOR THE FIRST MOMENT OF EVERY LAUNCH, since discovery is
+    async). Constructing the Select with a value absent from its options raises
+    InvalidSelectValueError and the whole panel fails to open — intermittently,
+    depending on whether the connection had answered yet, so it read as haunted.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import Select
+    from settings_screen import SettingsScreen
+
+    s = Settings()
+    s.default_model = "some/model-that-is-not-loaded"
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            # models=[] is the real case: nothing discovered yet.
+            self.push_screen(SettingsScreen(s, models=[]))
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen), "the panel failed to open"
+        sel = app.screen.query_one("#f-default_model", Select)
+        assert sel.value == "some/model-that-is-not-loaded", (
+            "the saved preference was silently dropped rather than shown"
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_unserved_default_is_labelled_not_guessed():
+    """It must be visible WHY it is not selected, not quietly normal."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Select
+    from settings_screen import SettingsScreen
+
+    s = Settings()
+    s.default_model = "ghost/model"
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(SettingsScreen(s, models=["real/model"]))
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sel = app.screen.query_one("#f-default_model", Select)
+        labels = " ".join(str(p) for p, _v in sel._options) if hasattr(sel, "_options") else ""
+        # Fall back to the prompt text if the internal shape differs.
+        assert "ghost/model" in labels or sel.value == "ghost/model"

@@ -31,6 +31,7 @@ def _meta_of(path: Path) -> dict:
 def test_a_new_conversation_records_its_owning_seat():
     a = app_mod.LiteTUI()
     a._new_convo()
+    a._materialise_convo()   # creation is lazy now — force it for these assertions
     meta = _meta_of(a.convo_path)
     assert meta["type"] == "meta"
     assert meta["v"] >= 3, "meta version must advance when its shape changes"
@@ -46,6 +47,7 @@ def test_the_conversation_uuid_is_the_folder_name():
     """The row's id must match the directory, or /resume <id> cannot find it."""
     a = app_mod.LiteTUI()
     a._new_convo()
+    a._materialise_convo()   # creation is lazy now — force it for these assertions
     assert a.convo_path.parent.name == a.convo_id
 
 
@@ -53,8 +55,10 @@ def test_two_conversations_are_distinguishable():
     """The failure being fixed: identical rows for different conversations."""
     a = app_mod.LiteTUI()
     a._new_convo()
+    a._materialise_convo()   # creation is lazy now — force it for these assertions
     first = a.convo_path.parent.name
     a._new_convo()
+    a._materialise_convo()   # creation is lazy now — force it for these assertions
     second = a.convo_path.parent.name
     assert first != second
 
@@ -67,6 +71,7 @@ def test_a_pre_v3_conversation_shows_no_owner_rather_than_a_wrong_one():
     """
     a = app_mod.LiteTUI()
     a._new_convo()
+    a._materialise_convo()   # creation is lazy now — force it for these assertions
     p = a.convo_path
     lines = p.read_text(encoding="utf-8").splitlines()
     old_meta = json.loads(lines[0])
@@ -87,6 +92,7 @@ def test_the_row_carries_both_ids():
     """Build the row the way the picker does and assert both ids appear."""
     a = app_mod.LiteTUI()
     a._new_convo()
+    a._materialise_convo()   # creation is lazy now — force it for these assertions
     rows = a._list_convos()
     assert rows, "no conversations listed"
     path_, meta_, _msgs = rows[0]
