@@ -14,7 +14,13 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import harness as harness_mod
+from dataclasses import fields as fields_of
+
 import config
+import settings as settings_mod
+from settings import Settings, sampling_kwargs
+from settings_screen import SettingsScreen
+import ask_user_question
 import chrome_tool
 import pccontrol_tool
 import ttyguard
@@ -236,7 +242,10 @@ Rules that make this worth doing:
 
 TOOL_MAX_LINES = 2000
 TOOL_MAX_BYTES = 50 * 1024  # 50KB
-TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))  # safety cap on the tool loop (env-overridable; was 12)
+# Fallback only. The live value is self.settings.tool_iterations, editable in
+# /settings; env LM_TOOL_ITERS still wins over both (see settings.ENV_OVERRIDES).
+# This constant remains so module-level users and tests keep a sane number.
+TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))
 WEB_FETCH_MAX_CHARS = 20_000
 WEB_FETCH_TIMEOUT_S = 20
 BASH_DEFAULT_TIMEOUT_S = 120
@@ -949,6 +958,100 @@ class LiteTUI(App):
         padding-top: 1;
     }
 
+    /* ── Settings ─────────────────────────────────────────── */
+
+    #set-box {
+        width: 92;
+        height: 88%;
+        padding: 1 2;
+        background: $surface;
+        border: thick $primary;
+    }
+
+    #set-title {
+        text-style: bold;
+        color: $primary-lighten-2;
+    }
+
+    #set-sub {
+        color: $text-muted;
+        padding-bottom: 1;
+    }
+
+    /* The whole point: the body scrolls, so a knob added last is still
+       reachable. A settings panel that outgrows the terminal and cannot
+       scroll hides exactly the options nobody has tried yet. */
+    #set-scroll {
+        height: 1fr;
+        scrollbar-size: 1 1;
+        padding-right: 1;
+    }
+
+    .set-head {
+        text-style: bold;
+        color: $accent;
+        background: $boost;
+        padding: 0 1;
+        margin: 1 0 1 0;
+    }
+
+    .set-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .set-indent {
+        padding-left: 4;
+        margin-bottom: 0;
+    }
+
+    .set-label {
+        color: $text;
+        text-style: bold;
+    }
+
+    .set-label-inline {
+        color: $text;
+        text-style: bold;
+        padding-left: 1;
+    }
+
+    .set-switchline {
+        height: auto;
+        align-vertical: middle;
+    }
+
+    .set-help {
+        color: $text-muted;
+        padding-left: 1;
+    }
+
+    .set-input {
+        width: 100%;
+    }
+
+    /* A disabled control must LOOK disabled: it is env-locked, and a field
+       that silently ignores typing reads as a broken app. */
+    .set-input:disabled, Select:disabled {
+        opacity: 0.5;
+    }
+
+    #set-error {
+        color: $error;
+        height: auto;
+        padding: 0 1;
+    }
+
+    #set-buttons {
+        height: auto;
+        padding-top: 1;
+        align-horizontal: right;
+    }
+
+    #set-buttons Button {
+        margin-left: 2;
+    }
+
     #help-box {
         width: 88;
         height: 80%;
@@ -1035,10 +1138,12 @@ class LiteTUI(App):
 
     def __init__(self):
         super().__init__()
+        # Every knob, loaded once: defaults < settings.json < environment.
+        self.settings: Settings = settings_mod.load()
         self.conversation: list[dict] = []
         self.model_id: str = ""
         self.available_models: list[str] = []
-        self.tools_enabled = True
+        self.tools_enabled = self.settings.tools_enabled
         self.ctx_max: int | None = None  # effective context window (tokens), from LM Studio
         # None = send no reasoning_effort at all, which is what this app did
         # before /think existed. LM Studio's own default for an ABSENT value is
@@ -1081,6 +1186,9 @@ class LiteTUI(App):
             agent_id=harness_mod.new_agent_id(), name="LiteTUI", model="",
         )
         self._seat_started = False
+        # The question widget must reach the RUNNING app instance to
+        # turn can ever call the tool.
+        ask_user_question.set_app(self)
         self._new_convo()
         self._load_system_prompt()
 
@@ -1176,6 +1284,9 @@ class LiteTUI(App):
             specs.append(pccontrol_tool.PCCONTROL_TOOL_SPEC)
         if chrome_tool.SCRIPT.exists():
             specs.append(chrome_tool.CHROME_TOOL_SPEC)
+        # Always available: it renders inside this very app and has
+        # no external precondition (unlike the browser tools' SCRIPT check).
+        specs.append(ask_user_question.ASK_USER_QUESTION_TOOL_SPEC)
         if self.skills:
             specs.append(skills_mod.SKILL_TOOL_SPEC)
         # Only offered once the seat is actually registered. Advertising fleet
@@ -1201,6 +1312,8 @@ class LiteTUI(App):
             return pccontrol_tool.run
         if name == "chrome":
             return chrome_tool.run
+        if name == "ask_user_question":
+            return ask_user_question.run
         return self._mcp_dispatch.get(name)
 
     def _system_prompt_text(self) -> str:
@@ -1616,7 +1729,7 @@ class LiteTUI(App):
                 self._fetch_ctx_window()
                 self._system(f"Connected — model: {self.model_id}")
                 if self.tools_enabled:
-                    self._system(f"agent loop: up to {TOOL_MAX_ITERATIONS} tool iterations per turn (env LM_TOOL_ITERS)")
+                    self._system(f"agent loop: up to {self.settings.tool_iterations} tool iterations per turn (/settings)")
                 if len(self.available_models) > 1:
                     listing = "\n".join(
                         f"  {'> ' if m == self.model_id else '  '}{i+1}. {m}"
@@ -1768,6 +1881,53 @@ class LiteTUI(App):
         }
         if not getattr(self, "_convo_loading", False):
             self._edit(0, "system prompt extended")
+
+    def _clear_screen(self, *, note: str | None = None) -> None:
+        """Wipe the RENDERED transcript. The conversation is untouched.
+
+        Deliberately distinct from /clear, which resets the conversation and
+        starts a new file. This is the display only — the model's context is
+        exactly what it was a moment ago.
+
+        Why it is needed at all: after a compaction the log still shows every
+        message that was just REPLACED by the summary, and the compaction notice
+        even said "Scrollback above is untouched." So the screen kept rendering
+        context that no longer exists, and scrolling up read as history when it
+        was a record of something the model can no longer see.
+        """
+        self.query_one("#chat-log").remove_children()
+        if note:
+            self._system(note)
+
+    def _maybe_autocompact(self) -> None:
+        """Compact by itself once the window passes the configured percent.
+
+        Checked after a turn settles, never mid-stream: compaction rewrites
+        self.conversation, and doing that while a response is still being
+        appended would race the very messages it is summarising.
+
+        Needs headroom by design. A threshold near 100 leaves no room for the
+        compaction request itself to produce a summary, which is the failure it
+        exists to prevent.
+        """
+        if not self.settings.autocompact_enabled:
+            return
+        if not self.ctx_max or not self.ctx_used:
+            return  # window size unknown - never guess a threshold
+        pct = self.ctx_used * 100 // self.ctx_max
+        if pct < self.settings.autocompact_at_percent:
+            return
+        if getattr(self, "_autocompact_running", False):
+            return
+        self._autocompact_running = True
+        self._system(
+            f"Auto-compacting - context at {pct}% of "
+            f"{self.ctx_max:,} (threshold {self.settings.autocompact_at_percent}%)."
+        )
+        try:
+            self._handle_command("/compact")
+        finally:
+            self._autocompact_running = False
 
     def _system(self, text: str) -> None:
         log = self.query_one("#chat-log")
@@ -2217,7 +2377,7 @@ class LiteTUI(App):
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         self._stop_requested = False
-        for _iteration in range(TOOL_MAX_ITERATIONS):
+        for _iteration in range(self.settings.tool_iterations):
             if self._stop_requested:
                 break
             widget = self._assistant_bubble()
@@ -2232,9 +2392,17 @@ class LiteTUI(App):
                 # Live store merged in here, not stored on self.conversation.
                 "messages": self._request_messages(),
                 "stream": True,
-                "max_tokens": 16384 if self.tools_enabled else 4096,
+                "max_tokens": (
+                    self.settings.max_tokens_tools
+                    if self.tools_enabled
+                    else self.settings.max_tokens_chat
+                ),
                 "stream_options": {"include_usage": True},
             }
+            # Optional LM Studio sampling flags. Only the ones actually SET are
+            # sent: an unset knob must leave the server's own default in charge,
+            # which sending an invented zero would not.
+            kwargs.update(sampling_kwargs(self.settings))
             if self.tools_enabled:
                 kwargs["tools"] = self._all_tools()
             # Sent via extra_body so the value lands in the JSON verbatim: the
@@ -2369,9 +2537,13 @@ class LiteTUI(App):
                     '[stopped by you — partial reply kept'
                     + (', pending tool calls discarded]' if tool_acc else ']')
                 )
+                self.call_after_refresh(self._maybe_autocompact)
                 return
 
             if not tool_acc:
+                # Turn is over. Check the window AFTER this worker exits:
+                # _compact shares group="chat" and would cancel us mid-frame.
+                self.call_after_refresh(self._maybe_autocompact)
                 return  # plain answer — agent loop done
 
             # Execute each tool call, display the result, feed it back.
@@ -2452,7 +2624,7 @@ class LiteTUI(App):
                 self._user_bubble(f"[view_image] {names}", True)
 
         self._system(
-            f"[stopped \u2014 reached {TOOL_MAX_ITERATIONS} tool iterations in one turn]"
+            f"[stopped \u2014 reached {self.settings.tool_iterations} tool iterations in one turn — raise it in /settings]"
         )
 
     # ── Compaction ───────────────────────────────────────────────
@@ -2495,7 +2667,7 @@ class LiteTUI(App):
             self._system("Nothing to compact yet — have a conversation first.")
             return
 
-        tail = self._safe_tail(body, COMPACT_KEEP_RECENT)
+        tail = self._safe_tail(body, self.settings.compact_keep_recent)
         head = body[: len(body) - len(tail)] if tail else body
         if not head:
             self._system("Nothing to compact — everything is already recent.")
@@ -2520,18 +2692,30 @@ class LiteTUI(App):
         summary = ""
         writes: list[str] = []
         try:
-            for _ in range(COMPACT_MAX_TOOL_ITERS):
+            for _ in range(self.settings.compact_max_tool_iters):
                 kwargs: dict = {
                     "model": self.model_id or "local-model",
                     "messages": ask,
                     "stream": False,
-                    "max_tokens": 2048,
-                    # Forced to "none" regardless of /think. Measured on this
-                    # box: with reasoning unset (server default xhigh) a 12k
-                    # budget was spent entirely on the thinking trace and the
-                    # answer came back EMPTY. Summarising is extraction; a
-                    # compaction that returns nothing is worse than none.
-                    "extra_body": {"reasoning_effort": "none"},
+                    "max_tokens": self.settings.compact_max_tokens,
+                    # 🔴 THE OLD MITIGATION WAS DEFEATED BY A MECHANISM THIS
+                    # FILE ALREADY DOCUMENTS ELSEWHERE. It forced "none" and cut
+                    # the budget to 2048 after a 12k budget was eaten by the
+                    # thinking trace. But see _warn_reasoning_ignored: a VIRTUAL
+                    # MODEL whose own level set lacks "none" DROPS the field with
+                    # a 200 and reasons at ITS default (xhigh) anyway. So forcing
+                    # "none" bought nothing and the smaller budget guaranteed the
+                    # failure -- reasoning consumed all 2048 and the summary was
+                    # never written. That is the observed
+                    #   "Compact failed - no summary produced".
+                    # Send a level the model actually accepts, and give it room.
+                    "extra_body": {
+                        "reasoning_effort": (
+                            "none"
+                            if self.settings.compact_thinking_level == "off"
+                            else self.settings.compact_thinking_level
+                        )
+                    },
                 }
                 if self.tools_enabled:
                     kwargs["tools"] = self._all_tools()
@@ -2595,7 +2779,10 @@ class LiteTUI(App):
         if not summary:
             self._system(
                 "Compact failed — no summary produced "
-                f"(gave up after {COMPACT_MAX_TOOL_ITERS} tool rounds). "
+                f"(gave up after {self.settings.compact_max_tool_iters} tool rounds). "
+                "The usual cause is the reasoning trace consuming the whole token budget\n"
+                "before any summary is written. Raise Compact max tokens, or lower Compact\n"
+                "thinking level, in /settings.\n"
                 "Conversation unchanged."
                 + (f"\nStore writes that DID land: {', '.join(writes)}" if writes else "")
             )
@@ -2628,16 +2815,114 @@ class LiteTUI(App):
         self._system(
             f"Compacted: {before_count} messages → {len(self.conversation)} "
             f"({before_chars:,} → {after_chars:,} chars, −{pct}%). "
-            f"Kept the last {len(tail)}. Scrollback above is untouched."
+            f"Kept the last {len(tail)}."
+            + ("" if self.settings.clear_screen_after_compact
+               else " Scrollback above is untouched — it shows messages the model"
+                    " can no longer see.")
             + store_note
         )
+        if self.settings.clear_screen_after_compact:
+            # Everything above this point was just replaced by the summary.
+            # Leaving it rendered means the screen and the context disagree.
+            summary_note = (
+                f"Compacted {before_count} messages into a summary "
+                f"({before_chars:,} chars, -{pct}%). Screen cleared so what you can "
+                f"scroll back to matches what the model can actually see. "
+                f"The full transcript is still on disk in this conversation's file."
+            )
+            self._clear_screen(note=summary_note)
 
     # ── Commands ─────────────────────────────────────────────────
+
+    def _mcp_server_names(self) -> list[str]:
+        """Server names from mcp.json, for the per-server toggles.
+
+        Returns [] rather than raising when MCP is absent or unreadable: a
+        settings screen that cannot open because an optional config file is
+        malformed is worse than one that shows no MCP section.
+        """
+        try:
+            mgr = getattr(self, "mcp", None)
+            if mgr is not None and getattr(mgr, "servers", None):
+                return sorted(mgr.servers.keys())
+            import json as _json
+            from pathlib import Path as _Path
+            cfg = _Path(__file__).resolve().parent / "mcp.json"
+            if cfg.exists():
+                data = _json.loads(cfg.read_text(encoding="utf-8"))
+                servers = data.get("mcpServers") or data.get("servers") or {}
+                if isinstance(servers, dict):
+                    return sorted(servers.keys())
+        except Exception:
+            pass
+        return []
+
+    def _on_settings_saved(self, new: Settings | None) -> None:
+        """Persist and apply. None = the user cancelled, so change nothing."""
+        if new is None:
+            return
+        old = self.settings
+        self.settings = new
+        try:
+            path = settings_mod.save(new)
+        except OSError as e:
+            self._system(f"Settings applied for this session but NOT saved: {e}")
+            path = None
+
+        # Apply the ones with immediate effect.
+        self.tools_enabled = new.tools_enabled
+        if new.thinking_level != old.thinking_level:
+            self.thinking_level = new.thinking_level
+            self._reasoning_ignored_warned = False  # re-arm: it is per-config
+        self._update_header()
+        self._refresh_ctx_label()
+
+        changed = [
+            f.name for f in fields_of(Settings)
+            if getattr(old, f.name) != getattr(new, f.name)
+        ]
+        if not changed:
+            self._system("Settings unchanged.")
+            return
+
+        note = f"Settings saved ({len(changed)} changed): {', '.join(changed[:8])}"
+        if len(changed) > 8:
+            note += f", +{len(changed) - 8} more"
+        if path:
+            note += f"\n  {path.name}"
+        # Say plainly which ones do NOT take effect now, rather than letting a
+        # user conclude the control is broken when nothing appears to happen.
+        deferred = [c for c in changed if c in ("lm_host", "default_model",
+                                                "default_context_length",
+                                                "mcp_enabled", "mcp_disabled_servers",
+                                                "skills_enabled")]
+        if deferred:
+            note += ("\n  Applies on next /reconnect: " + ", ".join(deferred))
+        self._system(note)
 
     def _handle_command(self, cmd: str) -> None:
         parts = cmd.split(maxsplit=1)
         name = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
+
+        if name in ("/clear-screen", "/clearscreen", "/cls"):
+            # The DISPLAY only. /clear resets the conversation; this does not.
+            self._clear_screen(
+                note="Screen cleared. The conversation is unchanged - the model "
+                     "still has everything it had a moment ago."
+            )
+            return
+
+        if name in ("/settings", "/config", "/set"):
+            self.push_screen(
+                SettingsScreen(
+                    self.settings,
+                    models=self.available_models,
+                    mcp_servers=self._mcp_server_names(),
+                ),
+                self._on_settings_saved,
+            )
+            return
 
         if name in ("/clear", "/reset", "/new"):
             self.conversation.clear()
@@ -2820,14 +3105,16 @@ class LiteTUI(App):
         elif name in ("/help", "/?"):
             # Scrollable modal with a Close button; the text is unchanged.
             self.push_screen(HelpScreen(
+                "/settings        open the settings panel (every knob, scrollable)\n"
                 "/new /clear      start a new conversation (new file on disk)\n"
+                "/clear-screen    clear the DISPLAY only \u2014 conversation untouched\n"
                 "/system <text>   set the system prompt\n"
                 "/model [n]       show or switch model\n"
                 "/think [level]   thinking level: "
                 + ", ".join(THINKING_LEVELS)
                 + ", unset\n"
                 "/compact [hint]  summarise older messages, keep the last "
-                f"{COMPACT_KEEP_RECENT}\n"
+                f"{self.settings.compact_keep_recent}\n"
                 "/convos          list saved conversations\n"
                 "/resume <n|id>   load a saved conversation (id = uuid prefix)\n"
                 "/reconnect       reconnect   |   /quit  exit\n"

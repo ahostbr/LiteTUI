@@ -1,0 +1,260 @@
+"""Settings store + /settings screen.
+
+WHAT THESE ARE FOR
+The two caps that prompted this work were invisible because they were literals
+inside a request. The risk in replacing them with a settings object is a NEW
+invisible failure: a screen that renders but whose controls do not read back,
+or a saved file that silently loses a field. So these tests assert the
+round-trip and the read-back, not "does it construct".
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import fields
+
+import pytest
+
+import settings as settings_mod
+from settings import Settings, sampling_kwargs
+
+
+# ── Store ────────────────────────────────────────────────────────────────────
+
+
+def test_defaults_are_sane():
+    s = Settings()
+    assert s.autocompact_at_percent == 80
+    assert s.autocompact_enabled is True
+    assert s.clear_screen_after_compact is True
+    assert s.tool_iterations == 48
+    # The bug this whole change exists to fix: 2048 could not fit a summary
+    # once reasoning was counted against it.
+    assert s.compact_max_tokens > 2048
+
+
+def test_roundtrip_preserves_every_field(tmp_path):
+    s = Settings()
+    s.temperature = 0.42
+    s.seed = 7
+    s.stop = ["<|end|>", "STOP"]
+    s.default_model = "qwen/qwen3.8-27b"
+    s.default_context_length = 131072
+    s.mcp_disabled_servers = ["chrome"]
+    s.autocompact_at_percent = 65
+    settings_mod.save(s, root=tmp_path)
+
+    back = settings_mod.load(root=tmp_path)
+    for f in fields(Settings):
+        assert getattr(back, f.name) == getattr(s, f.name), f.name
+
+
+def test_unset_is_none_not_zero(tmp_path):
+    """None must survive the round trip as None.
+
+    temperature=0.0 and temperature=unset are different requests. If absence
+    were stored as 0 the server's own default would be silently overridden.
+    """
+    s = Settings()
+    assert s.temperature is None
+    settings_mod.save(s, root=tmp_path)
+    back = settings_mod.load(root=tmp_path)
+    assert back.temperature is None
+    assert back.seed is None
+    assert sampling_kwargs(back) == {}
+
+
+def test_corrupt_file_does_not_stop_startup(tmp_path):
+    (tmp_path / settings_mod.SETTINGS_FILENAME).write_text("{not json", encoding="utf-8")
+    s = settings_mod.load(root=tmp_path)
+    assert s.tool_iterations == 48  # fell back to defaults rather than raising
+
+
+def test_unknown_key_in_file_is_ignored(tmp_path):
+    (tmp_path / settings_mod.SETTINGS_FILENAME).write_text(
+        json.dumps({"tool_iterations": 99, "from_a_future_version": True}),
+        encoding="utf-8",
+    )
+    s = settings_mod.load(root=tmp_path)
+    assert s.tool_iterations == 99
+    assert not hasattr(s, "from_a_future_version")
+
+
+def test_bad_value_falls_back_without_killing_the_rest(tmp_path):
+    (tmp_path / settings_mod.SETTINGS_FILENAME).write_text(
+        json.dumps({"tool_iterations": "abc", "autocompact_at_percent": 55}),
+        encoding="utf-8",
+    )
+    s = settings_mod.load(root=tmp_path)
+    assert s.tool_iterations == 48       # reverted
+    assert s.autocompact_at_percent == 55  # the good one still applied
+
+
+# ── Env precedence ───────────────────────────────────────────────────────────
+
+
+def test_env_beats_file(tmp_path, monkeypatch):
+    """The pre-existing LM_TOOL_ITERS knob must keep winning."""
+    settings_mod.save(Settings(tool_iterations=10), root=tmp_path)
+    monkeypatch.setenv("LM_TOOL_ITERS", "77")
+    s = settings_mod.load(root=tmp_path)
+    assert s.tool_iterations == 77
+    assert settings_mod.source_of("tool_iterations") == "LM_TOOL_ITERS"
+
+
+def test_no_env_means_no_lock(tmp_path, monkeypatch):
+    monkeypatch.delenv("LM_TOOL_ITERS", raising=False)
+    assert settings_mod.source_of("tool_iterations") is None
+
+
+def test_empty_env_var_does_not_override(tmp_path, monkeypatch):
+    """An exported-but-empty var must not blank a real setting."""
+    settings_mod.save(Settings(lm_host="http://box:9999"), root=tmp_path)
+    monkeypatch.setenv("LITETUI_LM_HOST", "")
+    s = settings_mod.load(root=tmp_path)
+    assert s.lm_host == "http://box:9999"
+
+
+# ── Screen ───────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_screen_mounts_and_reads_back_edits():
+    """Mount for real and confirm a typed value reaches the returned Settings.
+
+    A screen that renders but whose controls do not read back is exactly the
+    failure this replaces — a control that looks like it works and does not.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input, Switch
+    from settings_screen import SettingsScreen
+
+    captured: dict = {}
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                SettingsScreen(Settings(), models=["m1", "m2"], mcp_servers=["srv"]),
+                lambda r: captured.setdefault("result", r),
+            )
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+
+        # Every non-env field must have a control; a missing one is a knob that
+        # silently cannot be changed.
+        for name in ("tool_iterations", "compact_max_tokens",
+                     "autocompact_at_percent", "max_tokens_tools"):
+            screen.query_one(f"#f-{name}", Input)
+        for name in ("autocompact_enabled", "clear_screen_after_compact",
+                     "tools_enabled", "skills_enabled", "mcp_enabled"):
+            screen.query_one(f"#f-{name}", Switch)
+        screen.query_one("#mcp-srv", Switch)
+
+        screen.query_one("#f-tool_iterations", Input).value = "120"
+        screen.query_one("#f-autocompact_at_percent", Input).value = "70"
+        screen.query_one("#f-temperature", Input).value = "0.85"
+        screen.query_one("#f-clear_screen_after_compact", Switch).value = False
+        screen.query_one("#mcp-srv", Switch).value = False
+
+        screen.action_save()
+        await pilot.pause()
+
+    result = captured.get("result")
+    assert isinstance(result, Settings)
+    assert result.tool_iterations == 120
+    assert result.autocompact_at_percent == 70
+    assert result.temperature == 0.85
+    assert result.clear_screen_after_compact is False
+    assert result.mcp_disabled_servers == ["srv"]
+
+
+@pytest.mark.asyncio
+async def test_screen_refuses_invalid_and_does_not_dismiss():
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input
+    from settings_screen import SettingsScreen
+
+    captured: dict = {}
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                SettingsScreen(Settings()), lambda r: captured.setdefault("result", r)
+            )
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#f-tool_iterations", Input).value = "not-a-number"
+        screen.action_save()
+        await pilot.pause()
+        # Still open — a bad value must not be silently swallowed and dismissed.
+        assert isinstance(app.screen, SettingsScreen)
+        assert "result" not in captured
+
+        # And an out-of-range percent is named, not clamped behind your back.
+        screen.query_one("#f-tool_iterations", Input).value = "48"
+        screen.query_one("#f-autocompact_at_percent", Input).value = "150"
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+        assert "result" not in captured
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_none():
+    from textual.app import App, ComposeResult
+    from settings_screen import SettingsScreen
+
+    captured: dict = {}
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                SettingsScreen(Settings()), lambda r: captured.setdefault("result", r)
+            )
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.action_cancel()
+        await pilot.pause()
+    assert captured.get("result", "missing") is None
+
+
+@pytest.mark.asyncio
+async def test_env_locked_field_is_disabled(monkeypatch):
+    """A field the env owns must render disabled, not editable-and-ignored."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input
+    from settings_screen import SettingsScreen
+
+    monkeypatch.setenv("LM_TOOL_ITERS", "33")
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(SettingsScreen(settings_mod.load()))
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        field = app.screen.query_one("#f-tool_iterations", Input)
+        assert field.disabled is True
