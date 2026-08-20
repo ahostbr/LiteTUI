@@ -129,6 +129,17 @@ class Settings:
     show_thinking: bool = True
     autoscroll: bool = True
 
+    # ── Footer ───────────────────────────────────────────────────────────────
+    #: Each field of the status footer, individually. Defaults match what the
+    #: footer showed before it was configurable, EXCEPT the percent — which was
+    #: already being computed to choose the colour and then discarded.
+    footer_show_seat: bool = True
+    footer_show_thinking: bool = True
+    footer_show_convo: bool = True
+    footer_show_context: bool = True
+    footer_show_context_pct: bool = True
+    footer_show_tps: bool = True
+
 
 #: field name → environment variable that overrides it.
 #: Both pre-existing knobs are preserved by name so nothing that worked breaks.

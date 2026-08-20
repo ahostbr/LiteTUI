@@ -44,8 +44,20 @@ INDIRECT: dict[str, str] = {
 }
 
 
+#: Local aliases for the settings object, e.g. `s = self.settings`. Without
+#: these the detector reports a FALSE POSITIVE for every field read through
+#: a short name — which it did the moment the footer fields were added,
+#: claiming six dead controls that were all live.
+_ALIASES = sorted(
+    set(re.findall(r"\b([A-Za-z_]\w*)\s*=\s*self\.settings\b", APP)) | {"self.settings"}
+)
+
+
 def _reads(field: str, source: str = APP) -> bool:
-    return re.search(r"settings\." + re.escape(field) + r"\b", source) is not None
+    for base in _ALIASES:
+        if re.search(re.escape(base) + r"\." + re.escape(field) + r"\b", source):
+            return True
+    return False
 
 
 def test_every_setting_is_read_somewhere():

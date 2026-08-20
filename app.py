@@ -1085,6 +1085,12 @@ class LiteTUI(App):
         align-vertical: middle;
     }
 
+    .set-subhead {
+        color: $text-muted;
+        text-style: bold;
+        margin: 1 0 0 0;
+    }
+
     .set-help {
         color: $text-muted;
         padding-left: 1;
@@ -1916,41 +1922,79 @@ class LiteTUI(App):
         DuplicateIds the moment the removal has not landed before the mount --
         that crashed the whole app once. The label is addressed by CLASS for the
         same reason; duplicate classes degrade to a stale label, not a traceback.
+
+        Every field is individually hideable from /settings. Fields are appended
+        in order and there is ONE return: an early return for a missing value is
+        what previously made tok/s unreachable whenever the context window had
+        not resolved.
         """
+        s = self.settings
+        sep = "  \u00b7  "
         t = Text()
+
+        def add(chunk: str, style: str) -> None:
+            if t.plain:
+                t.append(sep, "#5c6370")
+            t.append(chunk, style)
 
         # Identity, but only when the seat actually holds it. An unregistered
         # seat displaying a name it does not own is worse than showing nothing:
         # it is a green light for a registration that never happened.
-        seat = getattr(self, "seat", None)
-        if seat is not None and getattr(seat, "registered", False):
-            t.append(str(seat.name), "bold #7d8799")
-        elif seat is not None:
-            t.append("unregistered", "#e5534b")
-        else:
-            t.append("no seat", "#5c6370")
+        if s.footer_show_seat:
+            seat = getattr(self, "seat", None)
+            if seat is not None and getattr(seat, "registered", False):
+                add(str(seat.name), "bold #7d8799")
+            elif seat is not None:
+                add("unregistered", "#e5534b")
+            else:
+                add("no seat", "#5c6370")
 
-        sep = "  \u00b7  "
-        t.append(sep, "#5c6370")
-        t.append(f"think:{self.thinking_level or 'default'}", "#5c6370")
+        if s.footer_show_thinking:
+            add(f"think:{self.thinking_level or 'default'}", "#5c6370")
 
-        if self.convo_id:
-            t.append(sep, "#5c6370")
-            t.append(self.convo_id[:8], "#5c6370")
-
-        t.append(sep, "#5c6370")
+        if s.footer_show_convo and self.convo_id:
+            add(self.convo_id[:8], "#5c6370")
 
         used, mx = self.ctx_used, self.ctx_max
-        if used is None and mx is None:
-            t.append("ctx \u2014", "dim")
-            return t
-        u = f"{used:,}" if used is not None else "\u2014"
-        m = f"{mx:,}" if mx is not None else "?"
-        pct = (used / mx) if (used is not None and mx) else 0.0
-        style = "bold #e5534b" if pct >= 0.9 else ("#e8a33d" if pct >= 0.7 else "#7d8799")
-        t.append(f"ctx {u} / {m}", style)
-        self._append_tps(t, sep)
+        pct = (used / mx) if (used is not None and mx) else None
+        # One scale for both the count and the percent, so they cannot disagree
+        # about how alarming the same number is.
+        ctx_style = (
+            "bold #e5534b" if (pct is not None and pct >= 0.9)
+            else ("#e8a33d" if (pct is not None and pct >= 0.7) else "#7d8799")
+        )
+
+        if s.footer_show_context:
+            if used is None and mx is None:
+                add("ctx \u2014", "dim")
+            else:
+                u = f"{used:,}" if used is not None else "\u2014"
+                m = f"{mx:,}" if mx is not None else "?"
+                add(f"ctx {u} / {m}", ctx_style)
+
+        # The percent was ALREADY computed to pick the colour above and then
+        # discarded, so the footer knew how full the window was and made you do
+        # the division. Shown as its own field so it can be kept when the raw
+        # counts are hidden — for most turns the ratio is the only part anyone
+        # actually reads.
+        if s.footer_show_context_pct and pct is not None:
+            add(f"{pct * 100:.0f}%", ctx_style)
+
+        if s.footer_show_tps:
+            self._append_tps_into(t, sep)
+
         return t
+
+    def _append_tps_into(self, t: Text, sep: str) -> None:
+        if self.tps is None:
+            return
+        if t.plain:
+            t.append(sep, "#5c6370")
+        # Coloured by how it FEELS to use, not by an absolute scale: this is a
+        # local model on one GPU, and the number that matters is whether the
+        # answer arrives faster than you read it.
+        style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
+        t.append(f"{self.tps:.1f} tok/s", style)
 
     def _append_tps(self, t: Text, sep: str) -> None:
         """Generation speed, last of all -- the label is `dock: right`, so the

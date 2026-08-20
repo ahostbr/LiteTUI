@@ -326,6 +326,32 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "autoscroll", "Follow output",
                             "Keep the log pinned to the newest message while streaming.",
                         )
+                        yield Static("FOOTER", classes="set-subhead")
+                        yield from self._switch_row(
+                            "footer_show_seat", "Agent name",
+                            "Also hides the red 'unregistered' warning — that field "
+                            "reports a registration that did not happen.",
+                        )
+                        yield from self._switch_row(
+                            "footer_show_thinking", "Thinking level", "e.g. think:medium",
+                        )
+                        yield from self._switch_row(
+                            "footer_show_convo", "Conversation id",
+                            "First 8 characters of the uuid.",
+                        )
+                        yield from self._switch_row(
+                            "footer_show_context", "Context used / max",
+                            "The raw token counts, e.g. ctx 23,133 / 120,064.",
+                        )
+                        yield from self._switch_row(
+                            "footer_show_context_pct", "Context percent",
+                            "How full the window is. Worth keeping on its own when the "
+                            "raw counts are hidden — usually the only part read.",
+                        )
+                        yield from self._switch_row(
+                            "footer_show_tps", "Tokens per second",
+                            "Generation speed of the last turn.",
+                        )
 
                     yield Static("", id="set-error")
                     with Horizontal(id="set-buttons"):

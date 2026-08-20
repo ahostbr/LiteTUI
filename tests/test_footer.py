@@ -31,12 +31,21 @@ class FakeSeat:
 
 class FakeApp:
     ctx_label_text = app_mod.LiteTUI.ctx_label_text
-    _append_tps = app_mod.LiteTUI._append_tps
+    # Renamed when the early-return bug was fixed: the old _append_tps could be
+    # skipped entirely when the context window had not resolved.
+    _append_tps_into = app_mod.LiteTUI._append_tps_into
     _tps_start = app_mod.LiteTUI._tps_start
     _tps_tick = app_mod.LiteTUI._tps_tick
     _tps_final = app_mod.LiteTUI._tps_final
 
-    def __init__(self, seat=None, think=None, convo="", used=None, mx=None, tps=None):
+    def __init__(self, seat=None, think=None, convo="", used=None, mx=None, tps=None,
+                 settings=None):
+        # The footer reads per-field toggles now. Default them ALL ON so every
+        # assertion below keeps testing the field it was written for rather than
+        # accidentally passing because the field is switched off.
+        from settings import Settings
+
+        self.settings = settings if settings is not None else Settings()
         self.seat = seat
         self.thinking_level = think
         self.convo_id = convo
