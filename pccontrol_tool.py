@@ -30,7 +30,11 @@ from pathlib import Path
 import ttyguard
 
 ROOT = Path(__file__).parent
-SCRIPT = ROOT / "pccontrol" / "pccontrol.py"
+# Lives under tools/ since 2026-08-20. The gate below is
+# `SCRIPT.exists()`: a wrong path does not error, it removes the tool
+# from the model's list entirely — the capability just stops existing,
+# with nothing said. Moving this directory REQUIRES editing this line.
+SCRIPT = ROOT / "tools" / "pccontrol" / "pccontrol.py"
 SCREENSHOT = ROOT / "pccontrol" / "screenshot.ps1"
 
 #: Verbs that move the mouse or press keys. Grouped so the description can warn

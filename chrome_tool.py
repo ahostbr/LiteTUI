@@ -27,7 +27,11 @@ from pathlib import Path
 import ttyguard
 
 ROOT = Path(__file__).parent
-SCRIPT = ROOT / "chrome-bridge" / "bridge.py"
+# Lives under tools/ since 2026-08-20. The gate below is
+# `SCRIPT.exists()`: a wrong path does not error, it removes the tool
+# from the model's list entirely — the capability just stops existing,
+# with nothing said. Moving this directory REQUIRES editing this line.
+SCRIPT = ROOT / "tools" / "chrome-bridge" / "bridge.py"
 SHOT_DIR = ROOT / "chrome-bridge"
 
 ACTIONS = ("ping", "tabs", "nav", "text", "click", "shot")
