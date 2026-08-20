@@ -32,7 +32,16 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select, Static, Switch
+from textual.widgets import (
+    Button,
+    Input,
+    Label,
+    Select,
+    Static,
+    Switch,
+    TabbedContent,
+    TabPane,
+)
 
 import settings as settings_mod
 from settings import Settings
@@ -126,175 +135,194 @@ class SettingsScreen(ModalScreen[Settings | None]):
         with Vertical(id="set-box"):
             yield Static("Settings", id="set-title")
             yield Static(
-                "Everything the app can be told to do. Esc cancels · Ctrl+S saves",
+                "Esc cancels · Ctrl+S saves · ←/→ or click to change tab",
                 id="set-sub",
             )
-            with VerticalScroll(id="set-scroll"):
-                # ── Model ────────────────────────────────────────────────────
-                yield Static("MODEL", classes="set-head")
-                model_choices = [("(whatever LM Studio has loaded)", "")] + [
-                    (m, m) for m in self._models
-                ]
-                locked = settings_mod.source_of("default_model")
-                with Vertical(classes="set-row"):
-                    yield Label("Default model", classes="set-label")
-                    yield Select(
-                        model_choices,
-                        value=self._start.default_model or "",
-                        id="f-default_model",
-                        allow_blank=False,
-                        disabled=locked is not None,
-                    )
-                    yield Static(
-                        (f"LOCKED by ${locked}.  " if locked else "")
-                        + "Selected on connect when the server is serving it.",
-                        classes="set-help",
-                    )
-                yield from self._switch_row(
-                    "pin_default_model",
-                    "Re-apply on every connect",
-                    "Off = only pick it when nothing is loaded. On = always switch back to it.",
-                )
-                yield from self._text_row(
-                    "default_context_length",
-                    "Load with context length",
-                    "Tokens. Blank leaves the server's own configured length alone. "
-                    "A larger window costs VRAM and can drop tok/s sharply.",
-                    placeholder="e.g. 131072",
-                )
-                yield from self._text_row(
-                    "lm_host", "LM Studio host",
-                    "Scheme + host + port, no trailing path.",
-                    placeholder="http://localhost:1234",
-                )
+            # One tab per section. Each pane scrolls on its own, so no section
+            # can push another off the bottom.
+            with TabbedContent(id="set-tabs"):
+                with TabPane("Model", id="tab-model"):
+                    with VerticalScroll(classes="set-scroll"):
 
-                # ── Generation ───────────────────────────────────────────────
-                yield Static("GENERATION", classes="set-head")
-                yield from self._select_row(
-                    "thinking_level", "Thinking level", THINKING_CHOICES,
-                    "A level THIS SERVER accepts is not always one the LOADED model "
-                    "accepts — a virtual model drops an unsupported value with a 200 "
-                    "and reasons at its own default instead.",
-                )
-                yield from self._text_row(
-                    "max_tokens_tools", "Max tokens (tools on)",
-                    "Response budget for an agent turn. Reasoning is spent from this "
-                    "budget, so a low value can consume the whole allowance thinking "
-                    "and emit nothing.",
-                )
-                yield from self._text_row(
-                    "max_tokens_chat", "Max tokens (tools off)",
-                    "Response budget for a plain chat turn.",
-                )
-                yield from self._text_row(
-                    "temperature", "Temperature", "Blank = server default.", "0.0 – 2.0"
-                )
-                yield from self._text_row("top_p", "Top-p", "Nucleus sampling. Blank = default.")
-                yield from self._text_row("top_k", "Top-k", "Blank = default.")
-                yield from self._text_row("min_p", "Min-p", "Blank = default.")
-                yield from self._text_row(
-                    "repeat_penalty", "Repeat penalty", "Blank = default."
-                )
-                yield from self._text_row(
-                    "presence_penalty", "Presence penalty", "Blank = default."
-                )
-                yield from self._text_row(
-                    "frequency_penalty", "Frequency penalty", "Blank = default."
-                )
-                yield from self._text_row(
-                    "seed", "Seed",
-                    "Fixed seed for reproducible output. Blank = random each turn.",
-                )
-                yield from self._text_row(
-                    "stop", "Stop strings",
-                    "Comma-separated. Blank = none.",
-                )
+                        model_choices = [("(whatever LM Studio has loaded)", "")] + [
+                            (m, m) for m in self._models
+                        ]
+                        locked = settings_mod.source_of("default_model")
+                        with Vertical(classes="set-row"):
+                            yield Label("Default model", classes="set-label")
+                            yield Select(
+                                model_choices,
+                                value=self._start.default_model or "",
+                                id="f-default_model",
+                                allow_blank=False,
+                                disabled=locked is not None,
+                            )
+                            yield Static(
+                                (f"LOCKED by ${locked}.  " if locked else "")
+                                + "Selected on connect when the server is serving it.",
+                                classes="set-help",
+                            )
+                        yield from self._switch_row(
+                            "pin_default_model",
+                            "Re-apply on every connect",
+                            "Off = only pick it when nothing is loaded. On = always switch back to it.",
+                        )
+                        yield from self._text_row(
+                            "default_context_length",
+                            "Load with context length",
+                            "Tokens. Blank leaves the server's own configured length alone. "
+                            "A larger window costs VRAM and can drop tok/s sharply.",
+                            placeholder="e.g. 131072",
+                        )
+                        yield from self._text_row(
+                            "lm_host", "LM Studio host",
+                            "Scheme + host + port, no trailing path.",
+                            placeholder="http://localhost:1234",
+                        )
 
-                # ── Agent loop ───────────────────────────────────────────────
-                yield Static("AGENT LOOP", classes="set-head")
-                yield from self._switch_row(
-                    "tools_enabled", "Tools enabled",
-                    "Off = plain chat, no bash/read/write/web_fetch.",
-                )
-                yield from self._text_row(
-                    "tool_iterations", "Tool iterations per turn",
-                    "The cap behind '[stopped — reached N tool iterations in one "
-                    "turn]'. Raise it for long agent runs.",
-                )
+                        # ── Generation ───────────────────────────────────────────────
+                with TabPane("Generation", id="tab-generation"):
+                    with VerticalScroll(classes="set-scroll"):
 
-                # ── Compaction ───────────────────────────────────────────────
-                yield Static("COMPACTION", classes="set-head")
-                yield from self._switch_row(
-                    "autocompact_enabled", "Auto-compact",
-                    "Compact by itself once the context window passes the threshold below.",
-                )
-                yield from self._text_row(
-                    "autocompact_at_percent", "Auto-compact at (% of window)",
-                    "Needs headroom: compaction is itself a request, and one that "
-                    "fires at 99% has no room left to write the summary that would "
-                    "have saved the session.",
-                )
-                yield from self._switch_row(
-                    "clear_screen_after_compact", "Clear screen after compacting",
-                    "After compacting, the log still shows messages that were just "
-                    "REPLACED — the screen and the real context disagree. Clearing "
-                    "makes what you can scroll back to match what the model can see.",
-                )
-                yield from self._text_row(
-                    "compact_max_tokens", "Compact max tokens",
-                    "Budget for the summary itself. This was hardcoded at 2048 and is "
-                    "why compaction returned no summary: reasoning consumed the whole "
-                    "allowance before any summary was written.",
-                )
-                yield from self._select_row(
-                    "compact_thinking_level", "Compact thinking level", THINKING_CHOICES,
-                    "'off' is cheapest but is the value most likely to be silently "
-                    "dropped by a virtual model, which then reasons at ITS default.",
-                )
-                yield from self._text_row(
-                    "compact_max_tool_iters", "Compact tool rounds",
-                    "How many tool round-trips compaction may take while persisting.",
-                )
-                yield from self._text_row(
-                    "compact_keep_recent", "Keep recent messages",
-                    "How many trailing messages survive verbatim after the summary.",
-                )
+                        yield from self._select_row(
+                            "thinking_level", "Thinking level", THINKING_CHOICES,
+                            "A level THIS SERVER accepts is not always one the LOADED model "
+                            "accepts — a virtual model drops an unsupported value with a 200 "
+                            "and reasons at its own default instead.",
+                        )
+                        yield from self._text_row(
+                            "max_tokens_tools", "Max tokens (tools on)",
+                            "Response budget for an agent turn. Reasoning is spent from this "
+                            "budget, so a low value can consume the whole allowance thinking "
+                            "and emit nothing.",
+                        )
+                        yield from self._text_row(
+                            "max_tokens_chat", "Max tokens (tools off)",
+                            "Response budget for a plain chat turn.",
+                        )
+                        yield from self._text_row(
+                            "temperature", "Temperature", "Blank = server default.", "0.0 – 2.0"
+                        )
+                        yield from self._text_row("top_p", "Top-p", "Nucleus sampling. Blank = default.")
+                        yield from self._text_row("top_k", "Top-k", "Blank = default.")
+                        yield from self._text_row("min_p", "Min-p", "Blank = default.")
+                        yield from self._text_row(
+                            "repeat_penalty", "Repeat penalty", "Blank = default."
+                        )
+                        yield from self._text_row(
+                            "presence_penalty", "Presence penalty", "Blank = default."
+                        )
+                        yield from self._text_row(
+                            "frequency_penalty", "Frequency penalty", "Blank = default."
+                        )
+                        yield from self._text_row(
+                            "seed", "Seed",
+                            "Fixed seed for reproducible output. Blank = random each turn.",
+                        )
+                        yield from self._text_row(
+                            "stop", "Stop strings",
+                            "Comma-separated. Blank = none.",
+                        )
 
-                # ── Capabilities ─────────────────────────────────────────────
-                yield Static("CAPABILITIES", classes="set-head")
-                yield from self._switch_row(
-                    "skills_enabled", "Skills",
-                    "Load skills/<name>/SKILL.md. The index goes in the system "
-                    "prompt; bodies load on demand.",
-                )
-                yield from self._switch_row(
-                    "mcp_enabled", "MCP servers",
-                    "Start the servers declared in mcp.json.",
-                )
-                if self._mcp_servers:
-                    disabled = set(self._start.mcp_disabled_servers)
-                    for name in self._mcp_servers:
-                        with Vertical(classes="set-row set-indent"):
-                            with Horizontal(classes="set-switchline"):
-                                yield Switch(
-                                    value=name not in disabled, id=f"mcp-{name}"
-                                )
-                                yield Label(name, classes="set-label-inline")
-                else:
-                    yield Static(
-                        "  No mcp.json servers discovered.", classes="set-help"
-                    )
+                        # ── Agent loop ───────────────────────────────────────────────
+                with TabPane("Agent loop", id="tab-agent"):
+                    with VerticalScroll(classes="set-scroll"):
 
-                # ── Interface ────────────────────────────────────────────────
-                yield Static("INTERFACE", classes="set-head")
-                yield from self._switch_row(
-                    "show_thinking", "Show thinking blocks",
-                    "Render the model's reasoning trace in the transcript.",
-                )
-                yield from self._switch_row(
-                    "autoscroll", "Follow output",
-                    "Keep the log pinned to the newest message while streaming.",
-                )
+                        yield from self._switch_row(
+                            "tools_enabled", "Tools enabled",
+                            "Off = plain chat, no bash/read/write/web_fetch.",
+                        )
+                        yield from self._text_row(
+                            "tool_iterations", "Tool iterations per turn",
+                            "The cap behind '[stopped — reached N tool iterations in one "
+                            "turn]'. Raise it for long agent runs.",
+                        )
+
+                        # ── Compaction ───────────────────────────────────────────────
+                with TabPane("Compaction", id="tab-compaction"):
+                    with VerticalScroll(classes="set-scroll"):
+
+                        yield from self._switch_row(
+                            "autocompact_enabled", "Auto-compact",
+                            "Compact by itself once the context window passes the threshold below.",
+                        )
+                        yield from self._text_row(
+                            "autocompact_at_percent", "Auto-compact at (% of window)",
+                            "Needs headroom: compaction is itself a request, and one that "
+                            "fires at 99% has no room left to write the summary that would "
+                            "have saved the session.",
+                        )
+                        yield from self._switch_row(
+                            "clear_screen_after_compact", "Clear screen after compacting",
+                            "After compacting, the log still shows messages that were just "
+                            "REPLACED — the screen and the real context disagree. Clearing "
+                            "makes what you can scroll back to match what the model can see.",
+                        )
+                        yield from self._text_row(
+                            "compact_max_tokens", "Compact max tokens",
+                            "Budget for the summary itself. This was hardcoded at 2048 and is "
+                            "why compaction returned no summary: reasoning consumed the whole "
+                            "allowance before any summary was written.",
+                        )
+                        yield from self._select_row(
+                            "compact_thinking_level", "Compact thinking level", THINKING_CHOICES,
+                            "'off' is cheapest but is the value most likely to be silently "
+                            "dropped by a virtual model, which then reasons at ITS default.",
+                        )
+                        yield from self._text_row(
+                            "compact_max_tool_iters", "Compact tool rounds",
+                            "How many tool round-trips compaction may take while persisting.",
+                        )
+                        yield from self._text_row(
+                            "compact_keep_recent", "Keep recent messages",
+                            "How many trailing messages survive verbatim after the summary.",
+                        )
+
+                        # ── Capabilities ─────────────────────────────────────────────
+                with TabPane("Capabilities", id="tab-capabilities"):
+                    with VerticalScroll(classes="set-scroll"):
+
+                        yield from self._switch_row(
+                            "skills_enabled", "Skills",
+                            "Load skills/<name>/SKILL.md. The index goes in the system "
+                            "prompt; bodies load on demand.",
+                        )
+                        yield from self._switch_row(
+                            "mcp_enabled", "MCP servers",
+                            "Start the servers declared in mcp.json.",
+                        )
+                        if self._mcp_servers:
+                            disabled = set(self._start.mcp_disabled_servers)
+                            for name in self._mcp_servers:
+                                with Vertical(classes="set-row set-indent"):
+                                    with Horizontal(classes="set-switchline"):
+                                        yield Switch(
+                                            value=name not in disabled, id=f"mcp-{name}"
+                                        )
+                                        yield Label(name, classes="set-label-inline")
+                        else:
+                            yield Static(
+                                "  No mcp.json servers discovered.", classes="set-help"
+                            )
+
+                        # ── Interface ────────────────────────────────────────────────
+                with TabPane("Interface", id="tab-interface"):
+                    with VerticalScroll(classes="set-scroll"):
+
+                        yield from self._switch_row(
+                            "show_thinking", "Show thinking blocks",
+                            "Render the model's reasoning trace in the transcript.",
+                        )
+                        yield from self._switch_row(
+                            "autoscroll", "Follow output",
+                            "Keep the log pinned to the newest message while streaming.",
+                        )
+
+                    yield Static("", id="set-error")
+                    with Horizontal(id="set-buttons"):
+                        yield Button("Save", variant="primary", id="set-save")
+                        yield Button("Cancel", id="set-cancel")
+                        yield Button("Restore defaults", variant="warning", id="set-defaults")
 
             yield Static("", id="set-error")
             with Horizontal(id="set-buttons"):
@@ -308,6 +336,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
         """Read every control into a new Settings, raising ValueError by name."""
         out = replace(self._start)
         typemap = {f.name: str(f.type) for f in fields(Settings)}
+        missing: list[str] = []
 
         for f in fields(Settings):
             name = f.name
@@ -318,6 +347,12 @@ class SettingsScreen(ModalScreen[Settings | None]):
             try:
                 widget = self.query_one(f"#f-{name}")
             except Exception:
+                # NEVER `continue` here. A field whose widget is missing is a
+                # field that cannot be saved, and skipping it silently is how a
+                # save reports success while dropping half your settings — the
+                # exact failure the dead-control audit found. If TabbedContent
+                # ever mounts panes lazily, this is the line that catches it.
+                missing.append(name)
                 continue
 
             t = typemap[name]
@@ -359,6 +394,13 @@ class SettingsScreen(ModalScreen[Settings | None]):
             if not sw.value:
                 disabled.append(srv)
         out.mcp_disabled_servers = disabled
+
+        if missing:
+            raise ValueError(
+                "no control found for: "
+                + ", ".join(missing)
+                + " — refusing to save a partial settings object"
+            )
 
         # Range checks that would otherwise fail confusingly at request time.
         if not (1 <= out.autocompact_at_percent <= 99):

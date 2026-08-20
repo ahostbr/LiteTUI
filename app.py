@@ -981,19 +981,22 @@ class LiteTUI(App):
     /* The whole point: the body scrolls, so a knob added last is still
        reachable. A settings panel that outgrows the terminal and cannot
        scroll hides exactly the options nobody has tried yet. */
-    #set-scroll {
+    /* One scroll per TAB PANE now, not one for the whole panel. Each section
+       is its own short surface, so nothing pushes another off the bottom. */
+    #set-tabs {
+        height: 1fr;
+    }
+
+    .set-scroll {
         height: 1fr;
         scrollbar-size: 1 1;
         padding-right: 1;
     }
 
-    .set-head {
-        text-style: bold;
-        color: $accent;
-        background: $boost;
-        padding: 0 1;
-        margin: 1 0 1 0;
+    #set-tabs Tabs {
+        background: $surface;
     }
+
 
     .set-row {
         height: auto;

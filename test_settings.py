@@ -258,3 +258,92 @@ async def test_env_locked_field_is_disabled(monkeypatch):
         await pilot.pause()
         field = app.screen.query_one("#f-tool_iterations", Input)
         assert field.disabled is True
+
+@pytest.mark.asyncio
+async def test_every_field_is_reachable_without_opening_its_tab():
+    """A field in a tab you never opened must still be collected.
+
+    This is the assumption tabs rest on: TabbedContent mounts ALL panes and only
+    HIDES the inactive ones. If it ever mounts lazily, _collect() would find no
+    widget for those fields — and before the tab split it would have SILENTLY
+    SKIPPED them, saving a partial settings object with no error.
+    """
+    from dataclasses import fields as dc_fields
+    from textual.app import App, ComposeResult
+    from settings_screen import SettingsScreen
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(SettingsScreen(Settings(), models=["m1"], mcp_servers=["srv"]))
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        # Only the FIRST tab is active. Every other field lives in a hidden pane.
+        unreachable = []
+        for f in dc_fields(Settings):
+            if f.name == "mcp_disabled_servers":
+                continue  # rendered as per-server switches, not one control
+            if settings_mod.source_of(f.name):
+                continue  # env-locked fields are intentionally absent
+            try:
+                screen.query_one(f"#f-{f.name}")
+            except Exception:
+                unreachable.append(f.name)
+        assert unreachable == [], (
+            "these fields are not queryable while their tab is inactive: "
+            + ", ".join(unreachable)
+        )
+
+
+@pytest.mark.asyncio
+async def test_collect_refuses_a_partial_save_instead_of_skipping():
+    """A missing control must raise, never be silently dropped.
+
+    _collect() used to `continue` past a field whose widget it could not find.
+    That turns a broken screen into a save that reports success and loses
+    settings — indistinguishable, to the user, from the app ignoring them.
+    """
+    from textual.app import App, ComposeResult
+    from settings_screen import SettingsScreen
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(SettingsScreen(Settings()))
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        # Remove one control to simulate a pane that never mounted.
+        screen.query_one("#f-tool_iterations").remove()
+        await pilot.pause()
+        with pytest.raises(ValueError, match="no control found for"):
+            screen._collect()
+
+
+@pytest.mark.asyncio
+async def test_the_six_sections_are_tabs():
+    from textual.app import App, ComposeResult
+    from textual.widgets import TabPane
+    from settings_screen import SettingsScreen
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(SettingsScreen(Settings()))
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panes = app.screen.query(TabPane)
+        assert len(panes) == 6, f"expected 6 section tabs, found {len(panes)}"
