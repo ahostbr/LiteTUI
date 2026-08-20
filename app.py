@@ -1215,6 +1215,9 @@ class LiteTUI(App):
         self.available_models: list[str] = []
         self.tools_enabled = self.settings.tools_enabled
         self.ctx_max: int | None = None  # effective context window (tokens), from LM Studio
+        #: Is ctx_max the LOADED window, or merely the model's ceiling? Anything
+        #: that divides by ctx_max must check this first.
+        self.ctx_loaded: bool = False
         # None = send no reasoning_effort at all, which is what this app did
         # before /think existed. LM Studio's own default for an ABSENT value is
         # xhigh, so "unset" is not "off" — /think off is a different thing and
@@ -1990,7 +1993,13 @@ class LiteTUI(App):
             else:
                 u = f"{used:,}" if used is not None else "\u2014"
                 m = f"{mx:,}" if mx is not None else "?"
-                add(f"ctx {u} / {m}", ctx_style)
+                # A NOT-LOADED model's number is its CEILING, not its window.
+                # Printing it unmarked is how "ctx / 262,144" can sit in the
+                # footer while LM Studio is about to serve the model at 8k.
+                if mx is not None and not getattr(self, "ctx_loaded", False):
+                    add(f"ctx {u} / {m} max", "#5c6370")
+                else:
+                    add(f"ctx {u} / {m}", ctx_style)
 
         # The percent was ALREADY computed to pick the colour above and then
         # discarded, so the footer knew how full the window was and made you do
@@ -2050,18 +2059,44 @@ class LiteTUI(App):
             label.content = text
 
     @work(exclusive=True, group="ctxload")
-    async def _apply_context_length(self) -> None:
+    async def _apply_context_length(self, force: bool = False) -> None:
         """Ask LM Studio to (re)load the active model at the configured window.
 
-        No-ops when unset, or when the model already reports that length — a
-        reload is expensive and evicts the loaded weights, so doing it when
-        nothing would change is a cost with no effect.
+        A reload evicts the resident weights, so it must not happen when it
+        would change nothing — and must not be SKIPPED when it would.
+
+        `force` separates the two callers. A /settings save where the number
+        changed is an explicit instruction and always applies, including
+        LOWERING the window to free VRAM. A model switch only applies when the
+        model is not already serving at least that much.
+
+        🪤 THE OLD GUARD (`self.ctx_max == want`) COULD NEVER FIRE. LM Studio
+        clamps: ask for 120,000 and it loads 120,064, so the readout never
+        equals the request. Harmless with one caller on a changed value; a
+        reload on every switch as soon as there are more. Compare against what
+        was ASKED, and treat "at least as much" as satisfied.
+
+        Reads the model's state FRESH rather than trusting self.ctx_max, which
+        _fetch_ctx_window fills from a separate worker and may still be the
+        PREVIOUS model's number at this moment.
         """
         want = self.settings.default_context_length
         if not want or not self.model_id:
             return
-        if self.ctx_max == want:
-            return
+
+        # Only the non-forced path needs to know the current state. Reading
+        # first when we are going to load regardless is a pure cost — and it
+        # cost a real failure: the extra round-trip pushed the load past the
+        # window a test waits in, so the explicit-change control went red.
+        if not force:
+            try:
+                info = await asyncio.to_thread(self._read_model_info, self.model_id)
+            except Exception:
+                info = None
+            if info:
+                cur, _typ, is_loaded = info
+                if is_loaded and cur and cur >= want:
+                    return
 
         def _load() -> tuple[int, str]:
             # Through ttyguard, never raw subprocess: `lms` is a child that can
@@ -2097,37 +2132,48 @@ class LiteTUI(App):
         # readout is what we got, and LM Studio may clamp to what fits in VRAM.
         self._fetch_ctx_window()
 
+    @staticmethod
+    def _read_model_info(mid: str):
+        """(window, type, loaded) for `mid`, or None. Blocking — use a thread.
+
+        🔴 `loaded` IS THE POINT OF THIS RETURN VALUE. This used to read
+        `loaded_context_length or max_context_length` and hand back one number,
+        so a model that was merely INSTALLED reported its ceiling as its
+        window: qwen/qwen3.8-27b came back 262,144 while LM Studio would
+        JIT-load it at the server default.
+
+        A ceiling is not a window. The footer displayed it, and
+        _maybe_autocompact divided by it — 80% of 262,144 is 209,715 tokens,
+        unreachable inside an 8k window, so the threshold could never fire.
+        """
+        req = urllib.request.Request(config.API_URL, headers={"User-Agent": "LiteTUI"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.load(r)
+        models = (
+            data if isinstance(data, list) else (data.get("models") or data.get("data"))
+        )
+        for m in models or []:
+            if m.get("id") == mid:
+                loaded_len = m.get("loaded_context_length")
+                if loaded_len:
+                    return int(loaded_len), m.get("type"), True
+                return int(m.get("max_context_length") or 0) or None, m.get("type"), False
+        return None
+
     @work(exclusive=True, group="ctx")
     async def _fetch_ctx_window(self) -> None:
         """Ask LM Studio's native API for the active model's context window."""
         if not self.model_id:
             return
         mid = self.model_id
-
-        def _get() -> int | None:
-            req = urllib.request.Request(
-                config.API_URL,
-                headers={"User-Agent": "LiteTUI"},
-            )
-            with urllib.request.urlopen(req, timeout=5) as r:
-                data = json.load(r)
-            models = (
-                data if isinstance(data, list) else (data.get("models") or data.get("data"))
-            )
-            for m in models or []:
-                if m.get("id") == mid:
-                    return (
-                        int(m.get("loaded_context_length") or m.get("max_context_length")),
-                        m.get("type"),
-                    )
-            return None
-
         try:
-            got = await asyncio.to_thread(_get)
+            got = await asyncio.to_thread(self._read_model_info, mid)
         except Exception:
             got = None  # server hiccup — footer just shows "?" for the window size
-        val, self.model_type = got if got else (None, None)
-        self.ctx_max = val
+        if got:
+            self.ctx_max, self.model_type, self.ctx_loaded = got
+        else:
+            self.ctx_max, self.model_type, self.ctx_loaded = None, None, False
         self._refresh_ctx_label()
 
     # ── Message display ──────────────────────────────────────────────────────────
@@ -2170,6 +2216,22 @@ class LiteTUI(App):
         if note:
             self._system(note)
 
+    def _resync_ctx_if_stale(self) -> None:
+        """Re-read the window once the model is genuinely resident.
+
+        🔴 WITHOUT THIS, REFUSING TO GUESS BECOMES REFUSING TO EVER FIRE. At
+        boot the selected model is often not loaded, so ctx_max is its ceiling
+        and _maybe_autocompact correctly declines to divide by it. Then the
+        first message makes LM Studio JIT-load the model — and nothing asks
+        again, so ctx_loaded stays False for the whole session and auto-compact
+        never runs at all.
+
+        Turning a wrong number into no number is not a fix on its own; the
+        reading has to be retaken once it can be right.
+        """
+        if not getattr(self, "ctx_loaded", False) and self.model_id:
+            self._fetch_ctx_window()
+
     def _maybe_autocompact(self) -> None:
         """Compact by itself once the window passes the configured percent.
 
@@ -2185,6 +2247,14 @@ class LiteTUI(App):
             return
         if not self.ctx_max or not self.ctx_used:
             return  # window size unknown - never guess a threshold
+        if not getattr(self, "ctx_loaded", False):
+            # The model is not loaded, so ctx_max is its CEILING, not its
+            # window. Dividing by it computes a threshold against a number the
+            # session does not have: 80% of 262,144 is 209,715 tokens, which an
+            # 8k window can never reach, so this would silently never fire and
+            # the model would blow its real context instead. Refusing is the
+            # same rule as the line above - never guess a threshold.
+            return
         pct = self.ctx_used * 100 // self.ctx_max
         if pct < self.settings.autocompact_at_percent:
             return
@@ -2499,6 +2569,7 @@ class LiteTUI(App):
         self._update_header()
         self._fetch_ctx_window()
         self._system(f"Switched to: {self.model_id}")
+        self._apply_context_length()
 
     def _on_convo_picked(self, path_str: str | None) -> None:
         if not path_str:
@@ -2843,6 +2914,7 @@ class LiteTUI(App):
             if not tool_acc:
                 # Turn is over. Check the window AFTER this worker exits:
                 # _compact shares group="chat" and would cancel us mid-frame.
+                self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
                 return  # plain answer — agent loop done
 
@@ -3178,7 +3250,11 @@ class LiteTUI(App):
             new.default_context_length
             and new.default_context_length != old.default_context_length
         ):
-            self._apply_context_length()
+            # force=True: the user just typed this number. It applies even when
+            # the model already serves MORE than that — lowering the window to
+            # free VRAM is a legitimate instruction, and a "≥ is fine" guard
+            # would silently ignore it.
+            self._apply_context_length(force=True)
 
         # Apply the ones with immediate effect.
         self.tools_enabled = new.tools_enabled
@@ -3458,6 +3534,10 @@ class LiteTUI(App):
                         self._update_header()
                         self._fetch_ctx_window()
                         self._system(f"Switched to: {self.model_id}")
+                        # An explicit switch is an explicit act — the thing the
+                        # no-load-on-connect rule asks for. Boot still loads
+                        # nothing.
+                        self._apply_context_length()
                     else:
                         self._system(f"Invalid number. Use 1-{len(self.available_models)}")
                 elif arg in self.available_models:
@@ -3465,6 +3545,7 @@ class LiteTUI(App):
                     self._update_header()
                     self._fetch_ctx_window()
                     self._system(f"Switched to: {self.model_id}")
+                    self._apply_context_length()
                 else:
                     self._system(f"Model not found: {arg}")
             elif not self.available_models:
