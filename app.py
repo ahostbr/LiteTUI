@@ -1149,7 +1149,10 @@ class LiteTUI(App):
         # before /think existed. LM Studio's own default for an ABSENT value is
         # xhigh, so "unset" is not "off" — /think off is a different thing and
         # sends "none" explicitly.
-        self.thinking_level: str | None = None
+        # From settings, not hardcoded. This was `None`, so a SAVED thinking
+        # level was ignored on every launch — and it looked like it worked
+        # because saving it in the same session did apply it.
+        self.thinking_level: str | None = self.settings.thinking_level
         # One warning per session: this is a config truth, not a per-turn event.
         self._reasoning_ignored_warned = False
         # Images staged by view_image during a tool round, drained into a
@@ -1169,15 +1172,32 @@ class LiteTUI(App):
         self._persist_error: str | None = None
         self._store_injected = False  # see STORE_HEADER; once per conversation
         self.client = AsyncOpenAI(
-            base_url=config.BASE_URL,
+            # Settings first, then config's env/default. config.BASE_URL is
+            # computed at IMPORT time, so reading it here would pin the client to
+            # the environment and silently ignore a host set in /settings.
+            base_url=f"{self.settings.lm_host.rstrip('/')}/v1",
             api_key="lm-studio",
         )
         # Discovered ONCE, before the first system prompt is built -- the skill
         # index rides in that prompt, so discovering later would ship a prompt
         # that omits every skill for the first turn.
-        self.skills = skills_mod.discover(ROOT)
+        # Honour the setting at DISCOVERY, not at use: an empty index means the
+        # skill tool is never offered and the index block never enters the system
+        # prompt, which is what "off" has to mean for a context-costing feature.
+        self.skills = skills_mod.discover(ROOT) if self.settings.skills_enabled else {}
         self.mcp = mcp_client.MCPManager(ROOT)
-        self.mcp.load()
+        if self.settings.mcp_enabled:
+            self.mcp.load()
+            # Per-server opt-out. Stopping AFTER load rather than filtering the
+            # config keeps mcp.json the single source of what EXISTS, so a
+            # disabled server still appears in /settings to be re-enabled.
+            for name in list(self.settings.mcp_disabled_servers):
+                srv = self.mcp.servers.pop(name, None)
+                if srv is not None:
+                    try:
+                        srv.stop()
+                    except Exception:
+                        pass
         self._mcp_dispatch = self.mcp.dispatch()
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
@@ -1723,10 +1743,23 @@ class LiteTUI(App):
                 if not any(s in m.id.lower() for s in SKIP)
             ]
             if self.available_models:
+                # A configured default wins when the server is serving it. `pin`
+                # re-applies it on EVERY connect; without pin it only fills an
+                # empty/invalid selection, so a mid-session /model switch sticks.
+                want = self.settings.default_model
+                if want and want in self.available_models:
+                    if self.settings.pin_default_model or not self.model_id:
+                        self.model_id = want
+                elif want:
+                    self._system(
+                        f"Default model {want!r} is not being served — using "
+                        f"{self.available_models[0]!r}. (/settings to change it.)"
+                    )
                 if not self.model_id or self.model_id not in self.available_models:
                     self.model_id = self.available_models[0]
                 self._update_header()
                 self._fetch_ctx_window()
+                self._apply_context_length()
                 self._system(f"Connected — model: {self.model_id}")
                 if self.tools_enabled:
                     self._system(f"agent loop: up to {self.settings.tool_iterations} tool iterations per turn (/settings)")
@@ -1743,7 +1776,9 @@ class LiteTUI(App):
             self.sub_title = "Disconnected"
             # The one that rots silently: it kept naming localhost after the
             # client could be pointed elsewhere, so the error blamed the wrong host.
-            self._system(f"Could not connect to {config.LM_HOST} — {e}")
+            # Name the host we ACTUALLY tried. Reporting config.LM_HOST here is
+            # the error-message rot config.py's own docstring warns about.
+            self._system(f"Could not connect to {self.settings.lm_host} — {e}")
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -1825,6 +1860,54 @@ class LiteTUI(App):
         text = self.ctx_label_text
         for label in labels:
             label.content = text
+
+    @work(exclusive=True, group="ctxload")
+    async def _apply_context_length(self) -> None:
+        """Ask LM Studio to (re)load the active model at the configured window.
+
+        No-ops when unset, or when the model already reports that length — a
+        reload is expensive and evicts the loaded weights, so doing it when
+        nothing would change is a cost with no effect.
+        """
+        want = self.settings.default_context_length
+        if not want or not self.model_id:
+            return
+        if self.ctx_max == want:
+            return
+
+        def _load() -> tuple[int, str]:
+            # Through ttyguard, never raw subprocess: `lms` is a child that can
+            # leave the terminal in a mouse-reporting mode, and the envelope is
+            # what repairs it. test_ttyguard enforces this and caught the raw
+            # call this method originally shipped with.
+            proc = ttyguard.run(
+                ["lms", "load", self.model_id, "--context-length", str(want), "--yes"],
+                timeout=300,
+            )
+            return proc.returncode, (proc.stderr or proc.stdout or "").strip()
+
+        self._system(f"Loading {self.model_id} at {want:,} tokens…")
+        try:
+            code, out = await asyncio.to_thread(_load)
+        except FileNotFoundError:
+            self._system(
+                "Context length is set in /settings but the `lms` CLI is not on PATH, "
+                "so it could NOT be applied — the model is running at whatever window "
+                "LM Studio loaded it with."
+            )
+            return
+        except Exception as e:
+            self._system(f"Could not set context length: {type(e).__name__}: {e}")
+            return
+
+        if code != 0:
+            # Report the server's own words. A generic failure here would send
+            # the reader to the wrong place.
+            self._system(f"`lms load` failed ({code}) — context length unchanged.\n{out[:400]}")
+            return
+        # Re-read rather than assume: the request is what we asked for, the
+        # readout is what we got, and LM Studio may clamp to what fits in VRAM.
+        self._fetch_ctx_window()
 
     @work(exclusive=True, group="ctx")
     async def _fetch_ctx_window(self) -> None:
@@ -2021,6 +2104,10 @@ class LiteTUI(App):
     def _scroll_down(self, *, only_if_following: bool = False) -> None:
         """Scroll the conversation log to the bottom.
 
+        Returns immediately when the `autoscroll` setting is off. That switch is
+        about the STREAM: discrete events still scroll, because those are the
+        user's own action and jumping to the bottom is what they asked for.
+
         `only_if_following` is for the STREAMING path. An unconditional
         scroll_end during a long thinking trace yanks the viewport away from a
         reader who deliberately scrolled up -- worse than the missing autoscroll
@@ -2031,6 +2118,11 @@ class LiteTUI(App):
         scroll unconditionally: those are the user's own action or the end of
         the turn, where jumping to the bottom is what they want.
         """
+        # The setting gates the STREAM path only. `only_if_following` is what the
+        # stream passes, so guarding on it keeps discrete events (new bubble,
+        # tool call, final render) scrolling as before.
+        if only_if_following and not self.settings.autoscroll:
+            return
         log = self.query_one("#chat-log")
         if only_if_following and not _at_bottom(log):
             return
@@ -2441,12 +2533,16 @@ class LiteTUI(App):
                     if token:
                         self._tps_tick()
                         reasoning += token
-                        if thinking is None:
+                        if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
                             widget.mount(thinking, before=widget.body)
                         if self.thinking_level == "off":
                             self._warn_reasoning_ignored()
-                        thinking.append(token)
+                        # None when show_thinking is off. The trace still arrives and is
+                        # still echoed back to the model — this hides the VIEW, it does
+                        # not make the request cheaper.
+                        if thinking is not None:
+                            thinking.append(token)
                         # The stream had NO autoscroll AT ALL: neither this
                         # branch nor the answer branch below called it, so the
                         # log only moved at the final render -- which is why it

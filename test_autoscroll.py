@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import app as app_mod
+import settings as settings_mod
 
 ok = []
 
@@ -56,8 +57,16 @@ print("        a dead autoscroll is the bug being fixed)")
 
 print("\n=== _scroll_down honours the flag ===")
 class FakeApp:
-    def __init__(self, log):
+    """Minimal host for _scroll_down.
+
+    Carries `settings` because _scroll_down now gates the STREAM path on the
+    autoscroll preference. Defaulting it ON keeps every assertion below testing
+    what it always tested — the follow/discrete distinction — rather than
+    accidentally passing because the feature is off.
+    """
+    def __init__(self, log, autoscroll=True):
         self._log = log
+        self.settings = settings_mod.Settings(autoscroll=autoscroll)
     def query_one(self, sel):
         return self._log
 
@@ -68,6 +77,21 @@ chk("🔴 streaming + reader scrolled up -> DOES NOT scroll", log.scrolled is Fa
 log = FakeScroll(40.0, 100.0)          # same state, discrete event
 app_mod.LiteTUI._scroll_down(FakeApp(log))
 chk("a discrete event scrolls even when scrolled up (new bubble / tool / final)",
+    log.scrolled is True)
+
+print("\n=== the autoscroll SETTING gates the stream, not discrete events ===")
+log = FakeScroll(100.0, 100.0)         # reader AT the tail, so following
+app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False), only_if_following=True)
+chk("setting off -> stream does NOT scroll even when following", log.scrolled is False)
+
+log = FakeScroll(100.0, 100.0)
+app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=True), only_if_following=True)
+chk("setting on  -> stream scrolls when following (the discriminating pair)",
+    log.scrolled is True)
+
+log = FakeScroll(40.0, 100.0)
+app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False))
+chk("setting off does NOT disable discrete scrolls (a new bubble still jumps)",
     log.scrolled is True)
 
 log = FakeScroll(100.0, 100.0)         # reader is following
