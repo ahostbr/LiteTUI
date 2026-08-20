@@ -76,7 +76,11 @@ chk("...and its python spellings",
 chk("does NOT fire on an ordinary page error",
     not chrome_tool._looks_like_no_relay("404 Not Found"))
 chk("🔴 the hint says it is NORMAL, not a page failure", "NORMAL idle state" in chrome_tool._RELAY_HINT)
-chk("...and gives the actual remedy", "bridge.py serve" in chrome_tool._RELAY_HINT)
+# The remedy CHANGED: it used to say "python chrome-bridge/bridge.py serve",
+# which named the pre-move path AND asked a human to do it. The agent owns
+# the relay's lifecycle now, so the remedy is a call it can make itself.
+chk("...and gives a remedy the agent can perform itself",
+    'action="start"' in chrome_tool._RELAY_HINT)
 
 print("\n=== chrome: shot cannot return the picture ===")
 csrc = Path(chrome_tool.__file__).read_text(encoding="utf-8")

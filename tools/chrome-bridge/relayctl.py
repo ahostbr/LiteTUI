@@ -122,6 +122,24 @@ def start() -> str:
     return "started (not answering yet)"
 
 
+def wait_for_extension(seconds: float = 12.0) -> str:
+    """Block until the Chrome extension has connected, or say it did not.
+
+    start() returns when the RELAY answers. The extension is a separate client
+    that reconnects on its own timer, so there is a window where the port is
+    open and every command still fails. Callers that report "started" during
+    that window are reporting readiness nobody has.
+    """
+    deadline = time.time() + seconds
+    state, detail = probe(1.0)
+    while state != "up" and time.time() < deadline:
+        time.sleep(0.5)
+        state, detail = probe(1.0)
+    if state == "up":
+        return "extension connected ({})".format(detail)
+    return "relay up, extension NOT connected yet ({}) - it reconnects on its own timer; retry".format(detail)
+
+
 def port_owner(port: int) -> int | None:
     """PID actually LISTENING on a port. The pidfile is a claim; this is the fact."""
     if sys.platform != "win32":

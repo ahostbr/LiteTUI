@@ -99,6 +99,14 @@ async function handle(cmd, a) {
         a.y === undefined ? null : a.y,
       ]);
 
+    case "write":
+      return await inject(await resolveTab(a.tab_id), writePage, [
+        a.selector || null,
+        a.text === undefined ? "" : String(a.text),
+        a.clear !== false,
+        a.enter === true,
+      ]);
+
     case "screenshot":
       return await screenshot(
         a.tab_id,
@@ -256,6 +264,87 @@ function readPage(selector) {
     title: document.title,
     text: (root.innerText || "").trim(),
     html: root.innerHTML,
+  };
+}
+
+// Type into a field the way a person does — and, more importantly, the way a
+// FRAMEWORK notices.
+//
+// 🔴 THE REACT TRAP, which is why `el.value = x` is not enough. React installs
+// its OWN `value` setter on the element instance and remembers the last value
+// it wrote. Assigning `el.value` goes through that setter, so React's tracker
+// concludes nothing changed, ignores the input event, and reverts the field on
+// the next render. The field visibly fills and then empties, which reads as
+// "the site rejected it" rather than "we wrote it wrong". Calling the
+// PROTOTYPE's native setter bypasses the instance property, so the tracker sees
+// a genuine change. Vue and Svelte have the same shape.
+function writePage(selector, text, clear, pressEnter) {
+  const el = selector ? document.querySelector(selector) : document.activeElement;
+  if (!el || el === document.body) {
+    return {
+      error: selector
+        ? "selector not found: " + selector
+        : "no focused element — pass a selector, or click the field first",
+    };
+  }
+
+  el.scrollIntoView({ block: "center", inline: "center" });
+  el.focus();
+
+  const tag = el.tagName.toLowerCase();
+
+  if (el.isContentEditable) {
+    if (clear) el.textContent = "";
+    // execCommand is deprecated and still the only thing that inserts into a
+    // rich editor with the caret and events those editors actually listen for.
+    const ok = document.execCommand("insertText", false, text);
+    if (!ok) el.textContent = (clear ? "" : el.textContent) + text;
+    el.dispatchEvent(
+      new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" })
+    );
+  } else if (tag === "select") {
+    el.value = text;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    if (el.value !== text) {
+      return { error: "no <option> with value " + JSON.stringify(text) };
+    }
+  } else if (tag === "input" || tag === "textarea") {
+    const proto =
+      tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    const next = clear ? text : (el.value || "") + text;
+    if (setter) setter.call(el, next);
+    else el.value = next;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  } else {
+    return {
+      error:
+        "<" + tag + "> is not writable — needs an input, textarea, select, or " +
+        "contenteditable element",
+    };
+  }
+
+  if (pressEnter) {
+    // Key events only. A real form.requestSubmit() here would double-submit any
+    // form that already acts on Enter, and a duplicate order is worse than a
+    // form that needs its button clicked.
+    const k = {
+      bubbles: true, cancelable: true,
+      key: "Enter", code: "Enter", keyCode: 13, which: 13,
+    };
+    el.dispatchEvent(new KeyboardEvent("keydown", k));
+    el.dispatchEvent(new KeyboardEvent("keypress", k));
+    el.dispatchEvent(new KeyboardEvent("keyup", k));
+  }
+
+  // Echo what the field HOLDS, not just that we wrote. It is read back
+  // immediately, so a framework that reverts on its next render will still
+  // look fine here — confirm a form with a `text` read when it matters.
+  return {
+    written: true,
+    tag,
+    value: String(el.value ?? el.textContent ?? "").slice(0, 200),
   };
 }
 

@@ -149,6 +149,23 @@ class Chrome:
         """Click by CSS selector, or by viewport coordinates when x and y are given."""
         return self._call("click", selector=selector, x=x, y=y, tab_id=tab_id)
 
+    def write(
+        self,
+        text: str,
+        selector: str | None = None,
+        clear: bool = True,
+        enter: bool = False,
+        tab_id: int | None = None,
+    ) -> dict:
+        """Type into an input, textarea, select or contenteditable.
+
+        With no selector the focused element is used, so `click` then `write`
+        works on fields that have no stable selector.
+        """
+        return self._call(
+            "write", selector=selector, text=text, clear=clear, enter=enter, tab_id=tab_id
+        )
+
     def screenshot(
         self,
         path: str | None = None,
@@ -531,6 +548,13 @@ def _main(argv: list[str]) -> int:
     c.add_argument("--x", type=float)
     c.add_argument("--y", type=float)
 
+    w = sub.add_parser("write", help="type into a field")
+    w.add_argument("text")
+    w.add_argument("selector", nargs="?")
+    w.add_argument("--append", action="store_true", help="keep what is there")
+    w.add_argument("--enter", action="store_true", help="press Enter afterwards")
+    w.add_argument("--tab-id", type=int)
+
     s = sub.add_parser("shot", help="screenshot the visible viewport")
     s.add_argument("path", nargs="?")
     s.add_argument("--tab-id", type=int)
@@ -559,6 +583,10 @@ def _main(argv: list[str]) -> int:
             print(ch.text(a.selector))
         elif a.cmd == "click":
             print(json.dumps(ch.click(a.selector, x=a.x, y=a.y)))
+        elif a.cmd == "write":
+            print(json.dumps(ch.write(
+                a.text, a.selector, clear=not a.append, enter=a.enter, tab_id=a.tab_id
+            )))
         elif a.cmd == "shot":
             shot = ch.screenshot(
                 path=a.path,

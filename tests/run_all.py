@@ -38,6 +38,29 @@ ROOT = TESTS.parent
 SLOW: set[str] = set()
 
 
+def _exits(tree: ast.AST) -> bool:
+    """Does this module actually EXIT when imported?
+
+    `raise SystemExit(...)` or a call to `sys.exit(...)`/`exit(...)` as real
+    code, anywhere in the file. Text that merely LOOKS like one — a traceback
+    quoted in a fixture, a docstring describing the hazard — is not a hazard.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise):
+            exc = node.exc
+            name = getattr(exc, "func", exc)
+            if isinstance(name, ast.Name) and name.id == "SystemExit":
+                return True
+        elif isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr == "exit":
+                if isinstance(f.value, ast.Name) and f.value.id == "sys":
+                    return True
+            elif isinstance(f, ast.Name) and f.id == "exit":
+                return True
+    return False
+
+
 def classify() -> tuple[list[Path], list[Path]]:
     pytest_style, script_style = [], []
     for f in sorted(TESTS.glob("test_*.py")):
@@ -49,7 +72,14 @@ def classify() -> tuple[list[Path], list[Path]]:
         #     test functions, and must run as a script.
         #   * no module-level `def test_*` means pytest would collect nothing
         #     and report a silent pass covering zero assertions.
-        exits = "sys.exit(" in src or "raise SystemExit(" in src
+        # 🔴 THE STATEMENT, NEVER THE STRING. This was a substring check, and
+        # test_chrome_tool.py carries `raise SystemExit(...)` inside a fake
+        # TRACEBACK FIXTURE — a string literal in a test. The check matched
+        # those characters, filed the file as script-style, and its nine
+        # assertions silently stopped running under pytest.
+        #
+        # The parse below was already happening for the other half of this
+        # decision, so the AST cost nothing and was simply not used here.
         try:
             tree = ast.parse(src)
             has_tests = any(
@@ -57,8 +87,12 @@ def classify() -> tuple[list[Path], list[Path]]:
                 and n.name.startswith("test_")
                 for n in tree.body
             )
+            exits = _exits(tree)
         except SyntaxError:
             has_tests = False
+            # Unparseable: fall back to the old blunt check rather than
+            # claiming it is safe to collect.
+            exits = "sys.exit(" in src or "raise SystemExit(" in src
         (script_style if (exits or not has_tests) else pytest_style).append(f)
     return pytest_style, script_style
 

@@ -33,14 +33,23 @@ ROOT = Path(__file__).parent
 # from the model's list entirely — the capability just stops existing,
 # with nothing said. Moving this directory REQUIRES editing this line.
 SCRIPT = ROOT / "tools" / "chrome-bridge" / "bridge.py"
-SHOT_DIR = ROOT / "chrome-bridge"
+RELAY_DIR = SCRIPT.parent
+# 🔴 THIS LINE WAS LEFT BEHIND BY THE SAME MOVE, four lines under the comment
+# warning about it. SCRIPT was repointed and SHOT_DIR was not, so `shot` wrote
+# to a directory that does not exist — the action has been broken since. The
+# warning above was written and then not applied to the constant beneath it.
+SHOT_DIR = RELAY_DIR
 
-ACTIONS = ("ping", "tabs", "nav", "text", "click", "shot")
+ACTIONS = (
+    "ping", "tabs", "nav", "text", "click", "write_text", "shot",
+    "start", "stop", "status",
+)
 
 _RELAY_HINT = (
     "\n[the relay is not running — this is the NORMAL idle state, not a page "
-    "failure. python is the server and the Chrome extension is the client. "
-    "Start it with: python chrome-bridge/bridge.py serve]"
+    "failure. Python is the server and the Chrome extension is the client, so "
+    "with no relay up a connection error is expected. Fix it yourself: call "
+    "this same tool with action=\"start\", then retry.]"
 )
 
 CHROME_TOOL_SPEC = {
@@ -48,14 +57,18 @@ CHROME_TOOL_SPEC = {
     "function": {
         "name": "chrome",
         "description": (
-            "Drive Ryan's real Chrome browser. Actions: ping (is the relay up) - "
-            "tabs (list open tabs) - nav (needs url, optional new_tab) - text "
-            "(page text, optional css selector) - click (css selector, or x and y) - "
-            "shot (screenshot to a file). "
+            "Drive Ryan's real Chrome browser. Actions: start / stop / status "
+            "(the relay this tool talks through) - ping (is the extension "
+            "answering) - tabs (list open tabs) - nav (needs url, optional "
+            "new_tab) - text (page text, optional css selector) - click (css "
+            "selector, or x and y) - write_text (type into a field: needs text, "
+            "optional selector, clear, enter) - shot (screenshot to a file). "
             "shot returns a PATH, not the picture — open it with the view_image "
             "tool to actually see it. "
             "A connection error when nothing is running is the normal idle state, "
-            "not a broken page: the relay has to be started first."
+            "not a broken page — call action=start and retry. "
+            "write_text with no selector types into whatever is focused, so "
+            "click then write_text works on fields with no stable selector."
         ),
         "parameters": {
             "type": "object",
@@ -66,11 +79,53 @@ CHROME_TOOL_SPEC = {
                 "selector": {"type": "string", "description": "CSS selector for text/click"},
                 "x": {"type": "integer", "description": "click by coordinate instead of selector"},
                 "y": {"type": "integer", "description": "click by coordinate instead of selector"},
+                "text": {"type": "string", "description": "write_text: what to type"},
+                "clear": {
+                    "type": "boolean",
+                    "description": "write_text: replace the field (default true); false appends",
+                },
+                "enter": {
+                    "type": "boolean",
+                    "description": "write_text: press Enter afterwards (submits most forms)",
+                },
             },
             "required": ["action"],
         },
     },
 }
+
+
+# The previous wording opened "the relay is running but ..." — and this same
+# string fires on the DIRECT-mode path, where the relay is deliberately stopped.
+# A hint that states a wrong fact sends the reader to the wrong half of the
+# system, which is the opposite of what this module exists for.
+_NO_EXT_HINT = (
+    "\n[no Chrome extension is answering — this is the EXTENSION half, not the "
+    "Python half. Often transient right after action=\"start\" or an extension "
+    "reload: it reconnects on a backoff, and an MV3 service worker that has been "
+    "evicted only wakes on its 30s keepalive alarm, so wait ~35s before "
+    "concluding anything. If it persists the extension needs a manual Reload at "
+    "chrome://extensions, which nothing here can do — extensions cannot script "
+    "chrome:// pages.]"
+)
+
+
+def _looks_like_no_extension(text: str) -> bool:
+    return "no extension connected" in text.lower()
+
+
+def _last_error_line(text: str) -> str:
+    """The cause, not the stack.
+
+    bridge.py surfaces failures as an uncaught ChromeError, so its stderr is a
+    dozen frames ending in one line that says what happened. Handing all of it
+    to a model buries the cause in noise it cannot act on.
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if "Error:" in ln and not ln.startswith(("File ", "Traceback")):
+            return ln
+    return text
 
 
 def _looks_like_no_relay(text: str) -> bool:
@@ -96,10 +151,39 @@ def _run(argv: list[str], timeout: int = 90) -> str:
         return f"[error] chrome: {type(e).__name__}: {e}"
     out = ((r.stdout or "") + (r.stderr or "")).strip()
     if r.returncode != 0 or _looks_like_no_relay(out):
-        msg = f"[error] chrome exit {r.returncode}: {out or '(no output)'}"
+        detail = _last_error_line(out) if out else "(no output)"
+        msg = f"[error] chrome exit {r.returncode}: {detail}"
         if _looks_like_no_relay(out):
             msg += _RELAY_HINT
+        elif _looks_like_no_extension(out):
+            msg += _NO_EXT_HINT
         return msg
+    return out or "(no output)"
+
+
+def _relay(call: str, timeout: int = 60) -> str:
+    """Run one relayctl function in a child and return what it said.
+
+    A CHILD, not an import. relayctl.start() launches the relay DETACHED with
+    its output redirected to log files — importing it here would put that
+    machinery inside the TUI's own process, and this module's contract is that
+    every child goes through ttyguard so nothing can leave the terminal in
+    mouse-reporting mode or take its stdin.
+
+    relayctl is also an interactive dashboard when run as a script, which is
+    why this calls the function rather than the CLI.
+    """
+    code = (
+        "import sys;sys.path.insert(0, r'{}');"
+        "import relayctl;print(relayctl.{})".format(RELAY_DIR, call)
+    )
+    try:
+        r = ttyguard.run([sys.executable, "-c", code], timeout=timeout)
+    except Exception as e:
+        return f"[error] chrome relay: {type(e).__name__}: {e}"
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    if r.returncode != 0:
+        return f"[error] chrome relay exit {r.returncode}: {out or '(no output)'}"
     return out or "(no output)"
 
 
@@ -112,6 +196,26 @@ def run(args: dict) -> str:
         return f"[error] chrome: unknown action {action!r}. Valid: {', '.join(ACTIONS)}"
     if not SCRIPT.exists():
         return f"[error] chrome: bridge not found at {SCRIPT}"
+
+    # The relay's lifecycle belongs to whoever needs it. Before this, an agent
+    # that hit the idle state could only report it and stop.
+    if action == "start":
+        started = _relay("start()")
+        if started.startswith("[error]"):
+            return started
+        # 🔴 THE PORT BEING OPEN IS NOT THE TOOL BEING USABLE. relayctl.start()
+        # returns as soon as the relay answers, but the extension is a CLIENT on
+        # its own reconnect timer — so "started" was true and the very next call
+        # failed. Reporting readiness the caller does not have is the whole
+        # defect this module exists to prevent, so wait for the real thing and
+        # say which state was reached.
+        state = _relay("wait_for_extension(12.0)", timeout=45)
+        return f"relay: {started} — {state}"
+    if action == "stop":
+        return f"relay: {_relay('kill()')}"
+    if action == "status":
+        state = _relay("probe(2.0)")
+        return f"relay: {state}"
 
     if action in ("ping", "tabs"):
         return _run([action])
@@ -142,6 +246,22 @@ def run(args: dict) -> str:
                         f"{args.get('x')!r} and {args.get('y')!r}")
             return _run(["click", "--x", str(x), "--y", str(y)])
         return "[error] chrome click: give a `selector`, or both `x` and `y`"
+
+    if action == "write_text":
+        value = args.get("text")
+        if value is None or str(value) == "":
+            return (
+                "[error] chrome write_text: `text` is required. Give a `selector` "
+                "too, or click the field first and it types into the focused one."
+            )
+        argv = ["write", str(value)]
+        if args.get("selector"):
+            argv.append(str(args["selector"]))
+        if args.get("clear") is False:
+            argv.append("--append")
+        if args.get("enter"):
+            argv.append("--enter")
+        return _run(argv)
 
     # shot: a PATH, never the bytes. See the module docstring.
     out_path = SHOT_DIR / "chrome-shot.png"
