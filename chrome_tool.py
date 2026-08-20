@@ -21,6 +21,7 @@ in mouse-reporting mode or take its stdin.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -82,7 +83,15 @@ def _looks_like_no_relay(text: str) -> bool:
 
 def _run(argv: list[str], timeout: int = 90) -> str:
     try:
-        r = ttyguard.run([sys.executable, str(SCRIPT), *argv], timeout=timeout)
+        # Windows consoles default to cp1252: any page text with a char outside
+        # that set (U+2024, em-dash, emoji - most modern sites) crashed
+        # bridge.py's print() with UnicodeEncodeError (measured 2026-08-20 on a
+        # YouTube page). utf-8 would fix the crash but ttyguard decodes the
+        # capture as cp1252, so the text would arrive as mojibake. cp1252 with
+        # errors=replace is the cleanest path: Latin text prints normally,
+        # out-of-set chars become "?" instead of killing the call.
+        env = dict(os.environ, PYTHONIOENCODING="cp1252:replace")
+        r = ttyguard.run([sys.executable, str(SCRIPT), *argv], timeout=timeout, env=env)
     except Exception as e:
         return f"[error] chrome: {type(e).__name__}: {e}"
     out = ((r.stdout or "") + (r.stderr or "")).strip()
