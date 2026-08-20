@@ -37,6 +37,8 @@ import json
 import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+
+import skills as skills_mod  # for DEFAULT_EXTRA_ROOTS only
 from typing import Any, Literal
 
 SETTINGS_FILENAME = "settings.json"
@@ -132,6 +134,19 @@ class Settings:
 
     # ── Capabilities ─────────────────────────────────────────────────────────
     skills_enabled: bool = True
+    #: Extra skill libraries, scanned after the repo's own `skills/`.
+    #:
+    #: Directories of skills (each holding `<name>/SKILL.md`). `~` expands and
+    #: `*` picks the NEWEST match, so a versioned plugin path follows the
+    #: plugin instead of pinning one release — two literal paths in this repo
+    #: rotted exactly that way on 2026-08-20.
+    #:
+    #: Only the INDEX LINE of each skill reaches the model (name + one-line
+    #: description, ~4k tokens for 77 skills); bodies load on demand through
+    #: the `skill` tool. Emptying this leaves only the repo's own skills.
+    skill_roots: list[str] = field(
+        default_factory=lambda: list(skills_mod.DEFAULT_EXTRA_ROOTS)
+    )
     mcp_enabled: bool = True
     #: Server names from mcp.json to NOT start. Absent = start everything.
     mcp_disabled_servers: list[str] = field(default_factory=list)

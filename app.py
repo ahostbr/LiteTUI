@@ -1258,7 +1258,11 @@ class LiteTUI(App):
         # prompt, which is what "off" has to mean for a context-costing feature.
         # `[]`, not `{}` — discover() returns a LIST, and load() iterates its
         # argument expecting Skill objects. A dict would yield keys.
-        self.skills = skills_mod.discover(ROOT) if self.settings.skills_enabled else []
+        self.skills = (
+            skills_mod.discover_all(ROOT, self.settings.skill_roots)
+            if self.settings.skills_enabled
+            else []
+        )
         self.mcp = mcp_client.MCPManager(ROOT)
         if self.settings.mcp_enabled:
             self.mcp.load()
@@ -3215,26 +3219,48 @@ class LiteTUI(App):
                     "`skill` tool is not offered to the model."
                 )
                 return
-            if not base.is_dir():
-                self._system(
-                    f"No skills directory. Create {base} and put one folder per "
-                    f"skill inside it, each with a SKILL.md."
-                )
-                return
-            dirs = [d for d in sorted(base.iterdir()) if d.is_dir()]
-            loaded = {s.path.parent.name for s in self.skills}
-            skipped = [d.name for d in dirs if d.name not in loaded]
-            lines = [f"{len(self.skills)} skill(s) loaded from {base}"]
+            roots = skills_mod.resolve_roots(self.settings.skill_roots)
+            missing = skills_mod.unresolved_roots(self.settings.skill_roots)
+            block = skills_mod.index_block(self.skills)
+
+            by_source: dict[str, list] = {}
             for s in self.skills:
-                lines.append(f"  {s.name}  —  {s.description or '(no description)'}")
-            if skipped:
-                # The whole point: name what was passed over and why.
+                by_source.setdefault(s.source, []).append(s)
+
+            lines = [
+                f"{len(self.skills)} skill(s) from {len(by_source)} librar"
+                f"{'y' if len(by_source) == 1 else 'ies'} — "
+                f"{len(block):,} chars (~{len(block) // 4:,} tokens) in the system prompt"
+            ]
+            lines.append("")
+            lines.append(f"  [local] {base}" + ("" if base.is_dir() else "  (does not exist)"))
+            for d in roots:
+                lines.append(f"  [{skills_mod._label_for(d)}] {d}")
+            if missing:
+                # A library that resolved to nothing is silent everywhere else.
                 lines.append("")
-                lines.append(f"  {len(skipped)} folder(s) skipped — no SKILL.md inside:")
-                for d in skipped:
-                    lines.append(f"    {d}/")
-            if not dirs:
-                lines.append("  (the directory is empty — one folder per skill, each with a SKILL.md)")
+                lines.append(f"  {len(missing)} configured root(s) matched NOTHING:")
+                for m in missing:
+                    lines.append(f"    {m}")
+
+            for src, group in by_source.items():
+                lines.append("")
+                lines.append(f"  ── {src} ({len(group)}) " + "─" * max(0, 46 - len(src)))
+                for s in group:
+                    lines.append(f"  {s.name}  —  {s.description or '(no description)'}")
+
+            # A folder without a SKILL.md is a scratch folder, not an error —
+            # but a MISNAMED one looks identical, so name what was passed over.
+            if base.is_dir():
+                loaded = {s.path.parent.name for s in self.skills}
+                skipped = [d.name for d in sorted(base.iterdir())
+                           if d.is_dir() and d.name not in loaded]
+                if skipped:
+                    lines.append("")
+                    lines.append(f"  {len(skipped)} local folder(s) skipped — no SKILL.md inside:")
+                    for d in skipped:
+                        lines.append(f"    {d}/")
+
             lines.append("")
             lines.append(
                 "  the model sees only name + description; it calls the `skill` "

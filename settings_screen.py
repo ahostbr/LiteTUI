@@ -302,6 +302,13 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "Load skills/<name>/SKILL.md. The index goes in the system "
                             "prompt; bodies load on demand.",
                         )
+                        yield from self._text_row(
+                            "skill_roots", "Extra skill libraries",
+                            "Comma-separated directories of skills, scanned after this "
+                            "repo's own. ~ expands; * takes the newest match. Only index "
+                            "lines are injected — bodies load on demand.",
+                            placeholder="~/.claude/skills, ~/.claude/plugins/.../*/skills",
+                        )
                         yield from self._switch_row(
                             "mcp_enabled", "MCP servers",
                             "Start the servers declared in mcp.json.",
