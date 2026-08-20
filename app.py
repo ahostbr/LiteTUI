@@ -927,7 +927,10 @@ class LiteTUI(App):
         background: $footer-background;
     }
 
-    ConfirmStop, PickerScreen, HelpScreen {
+    /* Every modal centres in the window. SettingsScreen was missing from this
+       list and rendered docked to the TOP-LEFT — the rule existed, the new
+       screen simply was not in it. */
+    ConfirmStop, PickerScreen, HelpScreen, SettingsScreen {
         align: center middle;
     }
 

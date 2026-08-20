@@ -347,3 +347,48 @@ async def test_the_six_sections_are_tabs():
         await pilot.pause()
         panes = app.screen.query(TabPane)
         assert len(panes) == 6, f"expected 6 section tabs, found {len(panes)}"
+
+@pytest.mark.asyncio
+async def test_the_panel_is_centred_not_docked_top_left():
+    """Geometry, not stylesheet text.
+
+    The panel shipped docked to the top-left while the app's CSS already
+    contained `align: center middle` — SettingsScreen was simply absent from
+    that rule's selector list. Asserting the CSS source would have passed
+    throughout the bug.
+    """
+    import app as app_mod
+    from settings_screen import SettingsScreen
+
+    a = app_mod.LiteTUI()
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    a._apply_context_length = lambda: None
+
+    async with a.run_test(size=(140, 50)) as pilot:
+        a._handle_command("/settings")
+        await pilot.pause()
+        screen = a.screen
+        assert isinstance(screen, SettingsScreen)
+        box = screen.query_one("#set-box")
+        await pilot.pause()
+
+        sw, sh = screen.size.width, screen.size.height
+        r = box.region
+
+        left = r.x
+        right = sw - (r.x + r.width)
+        top = r.y
+        bottom = sh - (r.y + r.height)
+
+        # Centred means the slack is shared. Allow 1 cell for odd remainders.
+        assert abs(left - right) <= 1, (
+            f"not horizontally centred: {left} left vs {right} right "
+            f"(box x={r.x} w={r.width}, screen w={sw})"
+        )
+        assert abs(top - bottom) <= 1, (
+            f"not vertically centred: {top} top vs {bottom} bottom "
+            f"(box y={r.y} h={r.height}, screen h={sh})"
+        )
+        # And it must not be flush against an edge, which is what "docked" was.
+        assert left > 0 and top > 0, f"box is flush to an edge: x={r.x} y={r.y}"
