@@ -38,6 +38,11 @@ DEFAULT_TIER = "worker"
 DEFAULT_CLI = "litetui"
 POLL_SECONDS = 5.0
 
+#: Refresh presence every N polls (5s each -> ~60s). `discover` reads
+#: `last_seen`, which registration writes ONCE, so a seat with no beat decays to
+#: [ghost] while its process is plainly alive -- measured at 10 minutes.
+HEARTBEAT_EVERY = 12
+
 #: Set to a non-empty value to make registration a no-op.
 #:
 #: 🔴 THE SUITE USED TO EVICT THE RUNNING APP FROM THE FLEET. Tests construct
@@ -102,6 +107,59 @@ class Seat:
         self.error: str | None = None
 
     # ── registration ────────────────────────────────────────────────────────
+    def _presence_argv(self) -> list[str]:
+        """Everything both register() and heartbeat() send.
+
+        ONE list, because two copies of one argv will drift — and the drift is
+        invisible: a heartbeat that omitted --session-pid would refresh the
+        timestamp while quietly clearing the field that decides ghost-vs-live.
+        """
+        return [sys.executable, "-m", "liteharness.cli", "register",
+                "--agent-id", self.agent_id,
+                "--cli", self.cli,
+                "--model", self.model,
+                "--tier", self.tier,
+                "--name", self.name,
+                # OUR OWN pid, so the fleet can tell this seat from a corpse.
+                # Both mechanisms that read presence.session_pid treat a falsy
+                # one as not-live: the takeover guard (so a running seat's name
+                # was stealable) and the janitor's dead-owner purge (so dead
+                # rows piled up -- four ghosts on the roster). Added to the CLI
+                # as an opt-in flag; requires liteharness with --session-pid.
+                "--session-pid", str(os.getpid())]
+
+    def heartbeat(self) -> bool:
+        """Refresh presence so the roster keeps showing this seat.
+
+        🔴 WITHOUT THIS THE SEAT REGISTERS ONCE AND ROTS. `last_seen` is written
+        at registration and never again, so `discover` demoted a LIVE app --
+        correct pid, alive process -- to `[ghost] ... 10m ago`. Everything else
+        about the seat can be right and the fleet still loses it.
+
+        There is no heartbeat verb: `register` is documented as "Update agent
+        presence info", and re-registering was MEASURED to refresh last_seen and
+        restore [active].
+
+        ⚠️ NO --takeover. register() claims a name; this only says "still here".
+        A heartbeat that claimed the name every minute would make two instances
+        fight for it forever, and would re-arm the eviction this seat was just
+        the victim of.
+
+        Failure is silent by design: a heartbeat is not news, and a poll-loop
+        that reported every miss would paint the transcript. `registered` is
+        left alone -- a missed beat is not a deregistration.
+        """
+        if not self.registered or harness_disabled():
+            return False
+        try:
+            r = ttyguard.run(self._presence_argv(), timeout=30)
+            if r.returncode == 0:
+                self.name = _resolved_name(r.stdout) or self.name
+                return True
+        except Exception:
+            pass
+        return False
+
     def register(self) -> bool:
         """Announce this seat. Never fatal — LiteTUI runs fine unharnessed.
 
@@ -119,12 +177,7 @@ class Seat:
             return False
         try:
             r = ttyguard.run(
-                [sys.executable, "-m", "liteharness.cli", "register",
-                 "--agent-id", self.agent_id,
-                 "--cli", self.cli,
-                 "--model", self.model,
-                 "--tier", self.tier,
-                 "--name", self.name,
+                self._presence_argv() + [
                  # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
                  #
                  # The agent id is minted per PROCESS and persisted nowhere, so
@@ -148,23 +201,22 @@ class Seat:
                  # and the second took the name from the first.
                  #
                  # _agent_record_live reads presence.session_pid and treats a
-                 # falsy one as NOT live. session_pid is written by
-                 # liteharness.hooks and never by `liteharness.cli register` --
-                 # the path we use. So this seat always reads as a ghost.
+                 # falsy one as NOT live. ✅ FIXED 2026-08-20: the CLI grew an
+                 # opt-in --session-pid, _presence_argv() passes ours, and a
+                 # restored seat was measured reading [active] rather than
+                 # [ghost]. (This block used to say the field was unreachable
+                 # from `liteharness.cli register` and that the seat "always
+                 # reads as a ghost" -- both were true when written and are not
+                 # now.)
                  #
-                 # Cosmetic only: two windows at once trade the NAME, and mail is
-                 # addressed by agent_id, so nothing is misdelivered. The same
-                 # missing field is why dead LiteTUI rows accumulate (the
-                 # janitor's dead-owner purge keys on session_pid too). The real
-                 # fix is in liteharness-oss, not a workaround here.
-                 "--takeover",
-                 # OUR OWN pid, so the fleet can tell this seat from a corpse.
-                 # Both mechanisms that read presence.session_pid treat a falsy
-                 # one as not-live: the takeover guard (so a running seat's name
-                 # was stealable) and the janitor's dead-owner purge (so dead
-                 # rows piled up -- four ghosts on the roster). Added to the CLI
-                 # as an opt-in flag; requires liteharness with --session-pid.
-                 "--session-pid", str(os.getpid())],
+                 # Two windows at once still trade the NAME; mail is addressed by
+                 # agent_id, so nothing is misdelivered.
+                 #
+                 # ⚠️ A LIVE PID IS NOT ENOUGH ON ITS OWN. `last_seen` is written
+                 # once at registration, so a seat with a correct live pid still
+                 # decays to [ghost] -- measured at 10 minutes. heartbeat() is
+                 # what keeps it on the roster.
+                 "--takeover"],
                 timeout=30,
             )
             self.registered = r.returncode == 0

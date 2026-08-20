@@ -36,9 +36,17 @@ def chk(label, cond):
 
 print("=== register asks to reclaim its own name ===")
 src = Path(harness_mod.__file__).read_text(encoding="utf-8")
-reg = src.split("def register", 1)[1].split("def deregister", 1)[0]
+# Slice from _presence_argv, not from register: the argv moved into that helper
+# when heartbeat() started sharing it, and a source-slice test breaks on a
+# refactor that changed no behaviour. Kept as source inspection only for the
+# flag itself; the NAME is now checked behaviourally below, which is what the
+# assertion was always trying to prove.
+reg = src.split("def _presence_argv", 1)[1].split("def deregister", 1)[0]
 chk("--takeover is passed", '"--takeover"' in reg)
-chk("...and the requested name is still passed with it", '"--name", self.name' in reg)
+chk("...and the requested name is still passed with it",
+    "--name" in harness_mod.Seat(agent_id="i", name="Asked", model="m")._presence_argv())
+chk("...and it is the name that was ASKED for",
+    "Asked" in harness_mod.Seat(agent_id="i", name="Asked", model="m")._presence_argv())
 chk("deregister does NOT take over (it is a teardown, not a claim)",
     "--takeover" not in src.split("def deregister", 1)[1].split("def _addressed_to_me", 1)[0])
 

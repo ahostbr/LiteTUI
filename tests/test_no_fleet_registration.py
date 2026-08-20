@@ -15,7 +15,7 @@ diagnosed as a stale-pid bug in the app for some time before the experiment
 Same family as `lms load` on connect and the `.convos` pollution: the app's own
 startup path reaching LIVE SHARED STATE from a test.
 
-THE ARMS, and why there are three:
+THE ARMS, and why the guard needs three of them (heartbeat arms follow):
   1. the runner ARMS the guard      — a guard nothing sets is not a guard
   2. armed, register() is inert     — the behaviour we want
   3. UNARMED, register() DOES fire  — the control. Without it, arm 2 would pass
@@ -130,3 +130,56 @@ def test_control_registration_fires_when_not_disabled(recorder, monkeypatch):
     assert "--takeover" in argv
     assert "--session-pid" in argv
     assert str(os.getpid()) in argv, "the seat must register its OWN pid"
+
+
+# ── heartbeat ─────────────────────────────────────────────────────────────
+#
+# A seat that registers once and never beats decays to [ghost] while its
+# process is plainly alive: `last_seen` is written at registration and never
+# again. Measured 2026-08-20 at 10 minutes, on a seat carrying a LIVE pid —
+# so a correct pid is not sufficient on its own.
+
+
+def test_heartbeat_is_inert_when_the_guard_is_armed(recorder):
+    seat = _seat()
+    seat.registered = True          # pretend a real launch got this far
+    assert seat.heartbeat() is False
+    assert recorder.calls == [], recorder.calls
+
+
+def test_heartbeat_does_nothing_for_a_seat_that_never_registered(recorder, monkeypatch):
+    monkeypatch.delenv(harness_mod.NO_HARNESS_ENV, raising=False)
+    seat = _seat()                  # registered is False
+    assert seat.heartbeat() is False
+    assert recorder.calls == [], "an unregistered seat has no presence to refresh"
+
+
+def test_heartbeat_never_passes_takeover(recorder, monkeypatch):
+    """🔴 THE ARM THAT MATTERS. register() CLAIMS a name; a heartbeat only says
+    "still here". Beating with --takeover would make two instances fight for
+    the name every minute — and would re-arm the eviction this seat was the
+    victim of in the first place.
+    """
+    monkeypatch.delenv(harness_mod.NO_HARNESS_ENV, raising=False)
+    seat = _seat()
+    seat.registered = True
+    assert seat.heartbeat() is True
+
+    assert len(recorder.register_calls) == 1, recorder.calls
+    argv = recorder.register_calls[0]
+    assert "--takeover" not in argv, "a heartbeat must never claim the name"
+    assert "--session-pid" in argv, (
+        "a beat that drops session_pid refreshes the timestamp while clearing "
+        "the field that decides ghost-vs-live"
+    )
+    assert str(os.getpid()) in argv
+
+
+def test_register_and_heartbeat_send_the_same_presence_fields(monkeypatch):
+    """One argv, because two copies drift — and the drift is invisible."""
+    monkeypatch.delenv(harness_mod.NO_HARNESS_ENV, raising=False)
+    seat = _seat()
+    base = seat._presence_argv()
+    for flag in ("--agent-id", "--cli", "--model", "--tier", "--name", "--session-pid"):
+        assert flag in base, flag
+    assert "--takeover" not in base, "takeover belongs to register(), not to the shared argv"

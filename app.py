@@ -1352,11 +1352,25 @@ class LiteTUI(App):
             self._system(f"harness seat OFFLINE ({self.seat.error or 'unknown'})")
             return
         try:
+            # A beat every HEARTBEAT_EVERY polls, not every poll: refreshing
+            # presence costs a subprocess, and `discover` only cares on the
+            # order of minutes. Without ANY beat the seat decays to [ghost]
+            # while the app is plainly running -- `last_seen` is written once,
+            # at registration, and never again.
+            beat = 0
             while True:
                 await asyncio.sleep(harness_mod.POLL_SECONDS)
                 msgs = await asyncio.to_thread(self.seat.poll)
                 for m in msgs:
                     self._deliver_inbox(m)
+
+                beat += 1
+                if beat >= harness_mod.HEARTBEAT_EVERY:
+                    beat = 0
+                    # Silent on failure by design: a missed beat is not news,
+                    # and reporting one would paint the transcript every minute
+                    # that liteharness happened to be busy.
+                    await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
 
