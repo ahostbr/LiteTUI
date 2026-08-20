@@ -1277,7 +1277,9 @@ class LiteTUI(App):
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
         self.seat = harness_mod.Seat(
-            agent_id=harness_mod.new_agent_id(), name="LiteTUI", model="",
+            agent_id=harness_mod.new_agent_id(),
+            name=(self.settings.seat_name or "").strip() or "LiteTUI",
+            model="",
         )
         self._seat_started = False
         # The question widget must reach the RUNNING app instance to

@@ -119,6 +119,17 @@ class Settings:
     #: transcript mean what it appears to mean.
     clear_screen_after_compact: bool = True
 
+    # ── Fleet ────────────────────────────────────────────────────────────────
+    #: The name this seat asks the harness registry for.
+    #:
+    #: Was hardcoded "LiteTUI" in app.py, so every instance asked for the same
+    #: literal and the roster could not tell two of them apart. It is a NAME,
+    #: not an id: mail is addressed by agent_id, so a refused or taken name
+    #: misleads humans reading `discover` without misdelivering anything.
+    #: Blank falls back to "LiteTUI" rather than to a generated name — a seat
+    #: whose name changes every launch is what this replaced.
+    seat_name: str = "LiteTUI"
+
     # ── Capabilities ─────────────────────────────────────────────────────────
     skills_enabled: bool = True
     mcp_enabled: bool = True
@@ -149,6 +160,7 @@ ENV_OVERRIDES: dict[str, str] = {
     "default_model": "LITETUI_MODEL",
     "max_tokens_tools": "LITETUI_MAX_TOKENS",
     "thinking_level": "LITETUI_THINKING",
+    "seat_name": "LITETUI_SEAT_NAME",
 }
 
 

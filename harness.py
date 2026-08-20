@@ -38,6 +38,25 @@ DEFAULT_TIER = "worker"
 DEFAULT_CLI = "litetui"
 POLL_SECONDS = 5.0
 
+#: Set to a non-empty value to make registration a no-op.
+#:
+#: 🔴 THE SUITE USED TO EVICT THE RUNNING APP FROM THE FLEET. Tests construct
+#: LiteTUI, LiteTUI registers, and registration passes --takeover, which is
+#: documented to refuse a live holder and measurably does not (see register()).
+#: So every `python tests/run_all.py` took the name "LiteTUI" from Ryan's
+#: running instance and moved its registry row to ~/.liteharness/.ghost_evicted_*.
+#: Measured 2026-08-20: the live app was pid 474900 and its record was in the
+#: graveyard, while the roster's only LiteTUI row named a dead test process.
+#:
+#: Same family as the `lms load` on connect and the .convos pollution: the app's
+#: own startup path reaching LIVE SHARED STATE from a test. The registry is not
+#: this repo's to write during a test run.
+NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
+
+
+def harness_disabled() -> bool:
+    return bool(os.environ.get(NO_HARNESS_ENV, "").strip())
+
 
 def new_agent_id() -> str:
     return str(uuid.uuid4())
@@ -89,7 +108,15 @@ class Seat:
         Runs as a subprocess with output CAPTURED, not inherited: a child that
         writes to this console corrupts the TUI, and liteharness prints a banner
         on register.
+
+        A no-op under LITETUI_NO_HARNESS, and it says so in `error` rather than
+        reporting a quiet success: the footer then reads "unregistered", which
+        is TRUE. A guard that fakes registration would hide the very state it
+        was added to produce.
         """
+        if harness_disabled():
+            self.error = f"disabled by {NO_HARNESS_ENV}"
+            return False
         try:
             r = ttyguard.run(
                 [sys.executable, "-m", "liteharness.cli", "register",

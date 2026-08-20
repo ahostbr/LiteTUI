@@ -18,6 +18,7 @@ Two separate things, and conflating them is the bug this file guards.
 And the name we DISPLAY must be the name the fleet actually knows. `self.name`
 is only what we asked for.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -79,6 +80,15 @@ def seat_with(result):
 
 import types
 _real_run = harness_mod.ttyguard.run
+
+# The guard that stops the SUITE writing to the live registry
+# (LITETUI_NO_HARNESS, see tests/test_no_fleet_registration.py) returns from
+# register() before ttyguard is consulted. These assertions drive the SUCCESS
+# path against a stub, so lift it here and restore it below.
+#
+# Lifted for this block ONLY. Clearing it for the whole file would re-open the
+# hole for anything added underneath, silently.
+_guard = os.environ.pop(harness_mod.NO_HARNESS_ENV, None)
 try:
     s = seat_with(FakeResult(LINE))
     s.register()
@@ -102,6 +112,8 @@ try:
     chk("...and the failure is recorded", bool(s.error))
 finally:
     harness_mod.ttyguard.run = _real_run
+    if _guard is not None:
+        os.environ[harness_mod.NO_HARNESS_ENV] = _guard
 
 
 print("\n=== the two ids stay separate, deliberately ===")

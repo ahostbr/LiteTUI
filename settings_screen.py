@@ -291,6 +291,12 @@ class SettingsScreen(ModalScreen[Settings | None]):
                 with TabPane("Capabilities", id="tab-capabilities"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        yield from self._text_row(
+                            "seat_name", "Fleet seat name",
+                            "The name this seat asks the LiteHarness registry for, "
+                            "and what the footer and `discover` show. Blank = LiteTUI.",
+                            placeholder="LiteTUI",
+                        )
                         yield from self._switch_row(
                             "skills_enabled", "Skills",
                             "Load skills/<name>/SKILL.md. The index goes in the system "

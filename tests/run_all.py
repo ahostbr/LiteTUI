@@ -25,6 +25,7 @@ Usage:  python tests/run_all.py            (from anywhere)
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,12 @@ def classify() -> tuple[list[Path], list[Path]]:
 
 def main() -> int:
     verbose = "-v" in sys.argv
+
+    # Children inherit this. See tests/conftest.py for why: a test run used to
+    # evict the RUNNING app from the harness registry. conftest covers pytest;
+    # this covers the script-style files, which never import it.
+    os.environ.setdefault("LITETUI_NO_HARNESS", "1")
+
     pyt, scr = classify()
 
     print(f"pytest-style: {len(pyt)}   script-style: {len(scr)}\n")
