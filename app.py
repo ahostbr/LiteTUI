@@ -1487,13 +1487,19 @@ class LiteTUI(App):
                     f.write_text(seed, encoding="utf-8")
         except OSError as e:
             self._note_persist_error(e)
+        # The owning seat, so /resume can say WHOSE conversation this was.
+        # Written at creation because the seat may be renamed or re-registered
+        # later, and the answer wanted is who owned it THEN.
+        seat = getattr(self, "seat", None)
         self._write_record(
             {
                 "type": "meta",
-                "v": 2,
+                "v": 3,
                 "id": self.convo_id,
                 "created": time.time(),
                 "model": self.model_id,
+                **({"agent_name": seat.name} if seat is not None else {}),
+                **({"agent_id": seat.agent_id} if seat is not None else {}),
             }
         )
 
@@ -3152,16 +3158,23 @@ class LiteTUI(App):
             if target is None:
                 # Same picker as /model, so the two interactions cannot drift.
                 items = []
-                for path_, _meta, msgs_ in rows[:40]:
+                for path_, meta_, msgs_ in rows[:40]:
                     stamp = time.strftime("%m-%d %H:%M", time.localtime(path_.stat().st_mtime))
                     turns = sum(1 for x in msgs_ if x.get("role") in ("user", "assistant"))
                     memdir = path_.parent / MEMORIES_DIR
                     nmem = len(list(memdir.glob("*.md"))) if memdir.exists() else 0
                     badge = f" ✎{nmem}" if nmem else "   "
+                    # The conversation's own uuid — on disk all along, never shown.
+                    cid = path_.parent.name[:8]
+                    # The owning seat, only for conversations written since v3
+                    # meta. Older ones show blanks rather than a fabricated name.
+                    who = str(meta_.get("agent_name") or "")[:10]
+                    aid = str(meta_.get("agent_id") or "")[:8]
+                    owner = f"{who} {aid}".strip() or "—"
                     items.append(
                         (
                             str(path_),
-                            f"{stamp}  {turns:>3} msg{badge}  "
+                            f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
                             f"{self._fmt_size(path_.stat().st_size):>7}  "
                             f"{self._convo_title(msgs_)}",
                         )

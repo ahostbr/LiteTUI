@@ -19,6 +19,16 @@ import pytest
 import settings as settings_mod
 from settings import Settings, sampling_kwargs
 
+# Booting LiteTUI creates a real .convos/<uuid>/ before anything is typed, so a
+# test that instantiates the app pollutes the user's conversation list. Redirect
+# it the way test_modals and test_store already do.
+import tempfile
+from pathlib import Path as _Path
+
+import app as _app_mod
+
+_app_mod.CONVO_DIR = _Path(tempfile.mkdtemp(prefix="convos-settings-unit-"))
+
 
 # ── Store ────────────────────────────────────────────────────────────────────
 
