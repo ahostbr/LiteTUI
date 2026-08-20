@@ -39,6 +39,7 @@ from textual.widgets.option_list import Option
 from textual.worker import WorkerState
 from textual import work, on
 from openai import AsyncOpenAI
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
 
@@ -640,13 +641,70 @@ class ThinkingBlock(Vertical):
         self.text.content = Text(self._buffer)
 
 
+def _markdown_to_text(src: str, width: int) -> Text:
+    """Markdown rendered to a styled Text.
+
+    Rich renders the Markdown to SEGMENTS; rebuilding those as a Text keeps
+    every style (bold, bullets, code colour) while giving Textual a visual type
+    it can select from. Falls back to the raw source if rendering ever fails —
+    unstyled but readable and selectable beats an exception mid-turn.
+    """
+    try:
+        console = Console(width=max(1, width), highlight=False)
+        out = Text()
+        for seg in console.render(Markdown(src), console.options.update(width=max(1, width))):
+            if seg.text:
+                out.append(seg.text, seg.style)
+        return out
+    except Exception:
+        return Text(src)
+
+
+class AnswerBody(Static):
+    """The answer text. Rendered as Markdown, and still selectable.
+
+    Textual extracts selected text via Widget.get_selection(), which returns
+    None unless the rendered visual is a Text or Content. A Rich `Markdown`
+    renderable is neither, so the finished answer could not be highlighted or
+    copied — while the thinking block and tool output, both plain text, could.
+
+    Rather than give up the Markdown rendering, extract from a PLAIN-TEXT render
+    taken at the SAME WIDTH. Matching the width is not an optimisation: the
+    selection offsets Textual hands us are positions in what is on SCREEN, so
+    extracting from the raw markdown source would silently return text from a
+    different place.
+    """
+
+    #: Remembered so a resize can re-render at the new width.
+    _markdown_source: str = ""
+
+    def set_markdown(self, src: str) -> None:
+        """Show `src` as markdown, in a form Textual can select.
+
+        Assigning `Markdown(src)` directly is what broke selection: Textual
+        creates a selection only for a widget whose visual is a Text/Content,
+        so the answer became inert the moment the turn finished.
+        """
+        self._markdown_source = src
+        self.content = _markdown_to_text(src, self._render_width())
+
+    def _render_width(self) -> int:
+        return self.content_region.width or self.size.width or 80
+
+    def on_resize(self, _event) -> None:
+        # Re-wrap at the new width. Without this the answer keeps the column
+        # count it was born with and looks broken after a pane resize.
+        if self._markdown_source:
+            self.content = _markdown_to_text(self._markdown_source, self._render_width())
+
+
 class AssistantMessage(Vertical):
     """Assistant bubble — optional thinking block above the answer body."""
 
     def __init__(self) -> None:
         super().__init__(classes="assistant-msg")
         self.thinking: ThinkingBlock | None = None
-        self.body = Static("...", id="answer-body")
+        self.body = AnswerBody("...", id="answer-body")
 
     def compose(self) -> ComposeResult:
         yield self.body
@@ -1192,7 +1250,9 @@ class LiteTUI(App):
         # Honour the setting at DISCOVERY, not at use: an empty index means the
         # skill tool is never offered and the index block never enters the system
         # prompt, which is what "off" has to mean for a context-costing feature.
-        self.skills = skills_mod.discover(ROOT) if self.settings.skills_enabled else {}
+        # `[]`, not `{}` — discover() returns a LIST, and load() iterates its
+        # argument expecting Skill objects. A dict would yield keys.
+        self.skills = skills_mod.discover(ROOT) if self.settings.skills_enabled else []
         self.mcp = mcp_client.MCPManager(ROOT)
         if self.settings.mcp_enabled:
             self.mcp.load()
@@ -1725,7 +1785,7 @@ class LiteTUI(App):
                 if text:
                     w = self._assistant_bubble()
                     try:
-                        w.body.content = Markdown(text)
+                        w.body.set_markdown(text)
                     except Exception:
                         w.body.content = text
                     assistants += 1
@@ -2676,7 +2736,7 @@ class LiteTUI(App):
                 thinking.finalize()
             if text_full:
                 try:
-                    widget.body.content = Markdown(text_full)
+                    widget.body.set_markdown(text_full)
                 except Exception:
                     widget.body.content = text_full
             else:
@@ -3092,6 +3152,51 @@ class LiteTUI(App):
         name = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
 
+        if name in ("/skills", "/skill"):
+            # Discovery is silent by design: a directory with no SKILL.md is a
+            # scratch folder, not an error. That makes a MISNAMED or MISPLACED
+            # skill look exactly like one that was never written — so say what
+            # was found, where it was looked for, and what the model can see.
+            base = ROOT / skills_mod.SKILLS_DIR_NAME
+            if arg:
+                body = skills_mod.load(self.skills, arg)
+                # Show what the MODEL would receive, not a summary of it.
+                self._system(f"[skill {arg!r} — {len(body):,} chars as the model sees it]\n\n{body}")
+                return
+            if not self.settings.skills_enabled:
+                self._system(
+                    "Skills are OFF in /settings, so none were discovered and the "
+                    "`skill` tool is not offered to the model."
+                )
+                return
+            if not base.is_dir():
+                self._system(
+                    f"No skills directory. Create {base} and put one folder per "
+                    f"skill inside it, each with a SKILL.md."
+                )
+                return
+            dirs = [d for d in sorted(base.iterdir()) if d.is_dir()]
+            loaded = {s.path.parent.name for s in self.skills}
+            skipped = [d.name for d in dirs if d.name not in loaded]
+            lines = [f"{len(self.skills)} skill(s) loaded from {base}"]
+            for s in self.skills:
+                lines.append(f"  {s.name}  —  {s.description or '(no description)'}")
+            if skipped:
+                # The whole point: name what was passed over and why.
+                lines.append("")
+                lines.append(f"  {len(skipped)} folder(s) skipped — no SKILL.md inside:")
+                for d in skipped:
+                    lines.append(f"    {d}/")
+            if not dirs:
+                lines.append("  (the directory is empty — one folder per skill, each with a SKILL.md)")
+            lines.append("")
+            lines.append(
+                "  the model sees only name + description; it calls the `skill` "
+                "tool to read a body. /skills <name> shows what it would get."
+            )
+            self._system("\n".join(lines))
+            return
+
         if name in ("/clear-screen", "/clearscreen", "/cls"):
             # The DISPLAY only. /clear resets the conversation; this does not.
             self._clear_screen(
@@ -3300,6 +3405,7 @@ class LiteTUI(App):
             # Scrollable modal with a Close button; the text is unchanged.
             self.push_screen(HelpScreen(
                 "/settings        open the settings panel (every knob, scrollable)\n"
+                "/skills [name]   list discovered skills, or show one as the model sees it\n"
                 "/new /clear      start a new conversation (new file on disk)\n"
                 "/clear-screen    clear the DISPLAY only \u2014 conversation untouched\n"
                 "/system <text>   set the system prompt\n"
