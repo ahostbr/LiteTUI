@@ -215,18 +215,26 @@ def test_every_explicit_model_switch_applies_the_setting():
     Boot is asserted NOT to apply, by the same reading — that rule is what
     stopped the app loading a 27B on every start.
     """
-    src = Path(app_mod.__file__).read_text(encoding="utf-8")
-    switch = src.count('self._system(f"Switched to: {self.model_id}")')
-    assert switch == 3, f"expected 3 switch sites, found {switch}"
+    # The runtime is app.py + the model_switch plugin since the split: two
+    # switch paths moved with /model, the picker callback stayed. Same three
+    # sites, two homes — the count and the pairing both span the pair.
+    app_src = Path(app_mod.__file__).read_text(encoding="utf-8")
+    plug_src = (Path(app_mod.__file__).parent / "plugins" / "model_switch.py").read_text(encoding="utf-8")
+    sites = []
+    for src_text, marker in ((app_src, 'self._system(f"Switched to: {self.model_id}")'),
+                             (plug_src, 'app._system(f"Switched to: {app.model_id}")')):
+        parts = src_text.split(marker)
+        sites.extend(parts[1:])
+    assert len(sites) == 3, f"expected 3 switch sites across app+plugin, found {len(sites)}"
 
     # Each one is followed by an apply.
-    for chunk in src.split('self._system(f"Switched to: {self.model_id}")')[1:]:
+    for chunk in sites:
         head = chunk[:400]
         assert "_apply_context_length()" in head, (
             "a model switch that does not apply the configured context length "
             "leaves LM Studio to JIT-load at its own default"
         )
 
-    connect = src.split("Connected — model:", 1)[0][-1200:]
+    connect = app_src.split("Connected — model:", 1)[0][-1200:]
     assert "_apply_context_length()" not in connect.replace(
         "# _apply_context_length()", ""), "connect must never load a model"

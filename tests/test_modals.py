@@ -10,6 +10,7 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from plugins.help_plugin import HelpScreen
 import paths
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modal-"))
@@ -76,14 +77,14 @@ async def main():
     async with d.run_test() as pilot:
         d._handle_command("/help")
         await pilot.pause()
-        chk("HelpScreen on top", isinstance(d.screen, m.HelpScreen))
+        chk("HelpScreen on top", isinstance(d.screen, HelpScreen))
         body = d.screen.query_one("#help-body", m.Static)
         text = str(body.content)   # Textual 8: Static exposes .content
         chk("help text carried through", "/compact" in text and "Esc" in text)
         btn = d.screen.query_one("#help-close", m.Button)
         await pilot.click(btn)
         await pilot.pause()
-        chk("Close button dismisses", not isinstance(d.screen, m.HelpScreen))
+        chk("Close button dismisses", not isinstance(d.screen, HelpScreen))
 
     print("\n=== Esc-stop dialog still works and is clickable ===")
     e = make_app()

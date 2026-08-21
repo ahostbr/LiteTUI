@@ -645,34 +645,6 @@ class ToolMessage(Static):
         self.content = Text.assemble(*tool_display_parts(self, self.MAX_DISPLAY_LINES))
 
 
-class HelpScreen(ModalScreen[None]):
-    """Scrollable, dismissable help. Same content as /help, readable."""
-
-    BINDINGS = [
-        Binding("escape", "close", "Close", show=False),
-        Binding("q", "close", "Close", show=False),
-    ]
-
-    def __init__(self, body: str):
-        super().__init__()
-        self._body = body
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="help-box"):
-            yield Static("Commands & keys", id="help-title")
-            with VerticalScroll(id="help-scroll"):
-                yield Static(self._body, id="help-body")
-            with Horizontal(id="help-buttons"):
-                yield Button("Close", variant="primary", id="help-close")
-
-    def action_close(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#help-close")
-    def _close(self) -> None:
-        self.dismiss(None)
-
-
 def _theme_palette(app) -> dict:
     """Resolve theme variables to real colours for Rich.
 
@@ -5151,80 +5123,6 @@ class LiteTUI(App):
 
         elif name in ("/calendar", "/cal"):
             self.push_screen(CalendarScreen(self._jobs))
-
-        elif name in ("/model", "/models"):
-            if arg:
-                # Switch by number or name
-                if arg.isdigit():
-                    idx = int(arg) - 1
-                    if 0 <= idx < len(self.available_models):
-                        self.model_id = self.available_models[idx]
-                        self._update_header()
-                        self._fetch_ctx_window()
-                        self._system(f"Switched to: {self.model_id}")
-                        # An explicit switch is an explicit act — the thing the
-                        # no-load-on-connect rule asks for. Boot still loads
-                        # nothing.
-                        self._apply_context_length()
-                    else:
-                        self._system(f"Invalid number. Use 1-{len(self.available_models)}")
-                elif arg in self.available_models:
-                    self.model_id = arg
-                    self._update_header()
-                    self._fetch_ctx_window()
-                    self._system(f"Switched to: {self.model_id}")
-                    self._apply_context_length()
-                else:
-                    self._system(f"Model not found: {arg}")
-            elif not self.available_models:
-                self._system("No models discovered — try /reconnect")
-            else:
-                # Clickable picker. `/model <n>` and `/model <name>` are handled
-                # above and still work, so scripting and muscle memory survive.
-                rows = [
-                    (m, ("▸ " if m == self.model_id else "  ") + m)
-                    for m in self.available_models
-                ]
-                self.push_screen(
-                    PickerScreen("Select a model", rows, current=self.model_id),
-                    self._on_model_picked,
-                )
-
-        elif name == "/reconnect":
-            self._connect()
-
-        elif name in ("/help", "/?"):
-            # Scrollable modal with a Close button; the text is unchanged.
-            self.push_screen(HelpScreen(
-                "/settings        open the settings panel (every knob, scrollable)\n"
-                "/skills [name]   list discovered skills, or show one as the model sees it\n"
-                "/new /clear      start a new conversation (new file on disk)\n"
-                "/clear-screen    clear the DISPLAY only \u2014 conversation untouched\n"
-                "/system <text>   set the system prompt\n"
-                "/model [n]       show or switch model\n"
-                "/think [level]   thinking level: "
-                + ", ".join(THINKING_LEVELS)
-                + ", unset\n"
-                "/mark            drag a marker onto the screen; send ships the "
-                "screenshot + coords here\n"
-                "/cron            scheduled prompts: add/list/rm/on/off/run "
-                "(fires while the app is open)\n"
-                "/calendar /cal   the month; click a day to view, add or edit its jobs\n"
-                "/compact [hint]  summarise older messages, keep the last "
-                f"{self.settings.compact_keep_recent}\n"
-                "/convos          list saved conversations\n"
-                "/resume <n|id>   load a saved conversation (id = uuid prefix)\n"
-                "/reconnect       reconnect   |   /quit  exit\n"
-                "Esc     stop the current turn (asks first; Esc again = force)\n"
-                "Ctrl+T  toggle agent tools (bash, read, write, web_fetch)\n"
-                "drag    select text  |  Ctrl+Shift+C  copy the selection\n"
-                "Shift+drag  select with the TERMINAL instead (system clipboard) \u2014\n"
-                "        the app captures the mouse, so a plain drag never reaches it\n"
-                f"store: {paths.CONVO_DIR.name}/<uuid>/ holds convo.jsonl, memory.md,\n"
-                f"       soul.md, handoff.md and {paths.MEMORIES_DIR}/ \u2014 the agent is told\n"
-                "       its own path in the system prompt and manages them itself\n"
-                "footer: live context usage \u2014 ctx used / window"
-            ))
 
         else:
             self._system(f"Unknown: {name} — try /help")
