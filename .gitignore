@@ -40,3 +40,9 @@ settings.json
 
 # Agent worktrees (git metadata lives in .git/worktrees; the checkout is not source)
 .worktrees/
+
+# Live runtime state at the repo root — same class as settings.json's
+# carve-out. A `git add -A` must never commit a user's schedule.
+jobs.json
+# Stray editor/tool backups.
+*.bak*

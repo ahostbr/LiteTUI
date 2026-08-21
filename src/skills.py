@@ -176,7 +176,13 @@ def unresolved_roots(patterns) -> list[str]:
 
 
 def discover_dir(d: Path, source: str) -> list[Skill]:
-    """Every `<name>/SKILL.md` directly under `d`."""
+    """Every `<name>/SKILL.md` directly under `d`.
+
+    A directory without a SKILL.md is skipped silently — that is a scratch
+    folder, not a broken skill. An UNREADABLE SKILL.md is NOT skipped silently;
+    it becomes a skill whose description says so, because a skill that vanishes
+    on a decode error looks exactly like one that was never written.
+    """
     if not d.is_dir():
         return []
     out: list[Skill] = []
@@ -226,35 +232,13 @@ def discover_all(root: Path, extra=None) -> list[Skill]:
 
 
 def discover(root: Path) -> list[Skill]:
-    """Every `skills/*/SKILL.md` under root, sorted by name.
+    """The repo's own `skills/*/SKILL.md`, as the "local" library.
 
-    A directory without a SKILL.md is skipped silently — that is a scratch
-    folder, not a broken skill. An UNREADABLE SKILL.md is NOT skipped silently;
-    it becomes a skill whose description says so, because a skill that vanishes
-    on a decode error looks exactly like one that was never written.
+    A thin delegation: the walk, the frontmatter parse, and the
+    unreadable-skill doctrine live ONCE, in discover_dir — this function
+    and it used to be structurally identical bodies kept in sync by hand.
     """
-    base = root / SKILLS_DIR_NAME
-    if not base.is_dir():
-        return []
-    out: list[Skill] = []
-    for d in sorted(base.iterdir()):
-        if not d.is_dir():
-            continue
-        f = d / "SKILL.md"
-        if not f.is_file():
-            continue
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            out.append(Skill(d.name, f"[unreadable: {e.__class__.__name__}]", f))
-            continue
-        fm, _ = _parse_frontmatter(text)
-        name = (fm.get("name") or d.name).strip() or d.name
-        desc = (fm.get("description") or "").strip()
-        if len(desc) > MAX_DESC_CHARS:
-            desc = desc[: MAX_DESC_CHARS - 1].rstrip() + "…"
-        out.append(Skill(name, desc, f))
-    return out
+    return discover_dir(root / SKILLS_DIR_NAME, "local")
 
 
 def index_block(skills: list[Skill]) -> str:

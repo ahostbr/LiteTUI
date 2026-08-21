@@ -11,3 +11,9 @@ dependencies = [
 
 [project.scripts]
 lmstudio-chat = "app:main"
+
+[tool.pytest.ini_options]
+# Collection is SCOPED, not left to discovery defaults: without this, any
+# stray *_test.py at the repo root (a scratch file, a tool's leftovers)
+# aborts collection for the entire run before one real test executes.
+testpaths = ["tests"]
