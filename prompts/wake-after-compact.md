@@ -1,0 +1,1 @@
+(auto) Context was just compacted. If you were in the middle of a task, resume it exactly where it left off - your handoff and memory hold what remains. If nothing is pending, reply with one short line saying you are standing by and stop.

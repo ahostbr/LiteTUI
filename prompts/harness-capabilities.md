@@ -1,0 +1,1 @@
+Other agents can message you and their mail arrives as a user turn prefixed [inbox from <id>]. Use the `harness` tool to answer: action=discover to see who is online, action=send with `to` and `body` to reply. Reply to the SENDER id from the [inbox from ...] line, never to your own id.

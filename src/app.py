@@ -55,7 +55,26 @@ MAX_IMAGE_DIM = 1536
 # __file__.parent after the src/ move would silently re-home every
 # store into src/.
 ROOT = Path(__file__).resolve().parent.parent
-SYSTEM_PROMPT_FILE = ROOT / "systemprompt.md"
+PROMPTS_DIR = ROOT / "prompts"
+SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
+
+
+def load_prompt(name: str, **variables: object) -> str:
+    """A prompt from prompts/<name>.md, with {name} placeholders substituted.
+
+    Replacement, not str.format(): these files are meant to be EDITED, and a
+    stray brace in hand-edited prose must not crash the app — only the
+    placeholders that are actually passed get touched.
+
+    A missing file raises FileNotFoundError naming the path, at import time
+    for the module-level prompts — a prompt that silently loads empty would
+    be a model quietly running without its instructions, which is worse than
+    not booting.
+    """
+    text = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+    for key, value in variables.items():
+        text = text.replace("{" + key + "}", str(value))
+    return text
 
 # ── Conversation persistence ─────────────────────────────────────
 # .convos/<uuid>/
@@ -156,103 +175,24 @@ COMPACT_KEEP_RECENT = 4
 # How many tool round-trips /compact may take while persisting to the store.
 COMPACT_MAX_TOOL_ITERS = 8
 
-COMPACT_PROMPT = (
-    "You are about to lose this conversation. The messages below are being "
-    "REPLACED by whatever you produce now, so anything you do not carry across "
-    "is gone.\n\n"
-    "Do TWO things, in this order.\n\n"
-    "STEP 1 — PERSIST, using your write tool, before you summarise.\n"
-    "This is the moment the store exists for. Right now, while you still have "
-    "the full conversation, decide what outlives it:\n"
-    "  • A durable lesson — a root cause, a reusable pattern, a decision and "
-    "its reason? Write the body to a NEW file in your memories/ folder and add "
-    "ONE pointer line to memory.md. The pointer is ~50 tokens, never the memory "
-    "itself.\n"
-    "  • Learned something about how the user works, or been corrected? Update "
-    "soul.md — the correction AND the reason for it.\n"
-    "  • Anything in flight, owed, or deliberately not being done? Rewrite "
-    "handoff.md so the next session can act without re-deriving it.\n"
-    "Skip any of these that genuinely do not apply. Do not invent a lesson to "
-    "have something to write — an honest 'nothing durable happened' is correct "
-    "and common. But if something IS durable, this is your last chance.\n\n"
-    "STEP 2 — then reply with the summary itself, as plain text.\n"
-    "Cover: what the user is trying to achieve; decisions made and the reasons; "
-    "files, paths, commands and identifiers that came up; what has been tried "
-    "and what the result was; and anything still open or owed.\n"
-    "Be specific — names, numbers and paths, not 'we discussed the config'. "
-    "Write it as notes to yourself, not as a report to the user.\n"
-    "Do not describe what you wrote to the store; the summary stands on its own."
-)
+# Loaded from prompts/compact.md — edit the FILE; it is read at import.
+COMPACT_PROMPT = load_prompt("compact")
 
 # The post-compaction ping. User role on purpose: it is the nudge that says
 # "keep going", and the standing-by exit is what keeps the model from
 # inventing a task to resume when there was none - a ping without an exit
 # would cost a full turn every time someone compacted just to free context.
-WAKE_AFTER_COMPACT = (
-    "(auto) Context was just compacted. If you were in the middle of a task, "
-    "resume it exactly where it left off - your handoff and memory hold what "
-    "remains. If nothing is pending, reply with one short line saying you "
-    "are standing by and stop."
-)
+WAKE_AFTER_COMPACT = load_prompt("wake-after-compact")
 
 def memory_prompt(convo_id: str, folder: Path) -> str:
-    """The block appended to systemprompt.md so the agent can find its own store.
-
-    A store the agent cannot name is a store it will never open. This is the
-    dereference: the path arrives in the system prompt every turn, not in a
-    file the agent would have to already know about in order to look up.
-    """
-    p = str(folder).replace("\\", "/")
-    return f"""
-
-## Your conversation store
-
-You are conversation `{convo_id}`. Your own directory is:
-
-    {p}
-
-It already exists and holds four things. Use your read/write/bash tools on them
-by absolute path.
-
-- `{p}/memory.md` — an INDEX you maintain. One line per memory, newest at the
-  top, each pointing at a file in `{MEMORIES_DIR}/`.
-
-  🔴 EVERY INDEX LINE IS A POINTER, NEVER THE MEMORY ITSELF. Hard limit: ~50
-  tokens (about 200 characters) per line — a title, a link, and a hook just
-  long enough to decide whether to open the file. If you find yourself
-  explaining the thing in the index, you are writing it in the wrong file:
-  put it in `{MEMORIES_DIR}/` and leave one line here.
-
-  This whole file is injected into every prompt. A bloated index costs you on
-  every single turn AND pushes older entries out of view, so a long line does
-  not merely waste space — it evicts other memories.
-- `{p}/{MEMORIES_DIR}/` — the memories themselves, one file per idea, e.g.
-  `i-learned-this.md`. Uncapped. Write the durable thing here and add its one
-  line to memory.md.
-- `{p}/soul.md` — who you are here: how this user works, corrections you were
-  given and why, habits that proved useful. Update it when you learn something
-  about working WITH them rather than about the task.
-- `{p}/handoff.md` — what is in flight, what is owed and by whom, what is
-  deliberately not being done, the caveats on your green claims, and your own
-  retractions. Written so the next session can act without re-deriving.
-
-Rules that make this worth doing:
-
-1. THE THREE FILES BELOW WERE INJECTED ONCE, AT THE START OF THIS
-   CONVERSATION — they are a SNAPSHOT, not a live view, and they are not
-   re-sent each turn. If you have written to any of them since, or you need
-   their current contents, READ THEM WITH THE `read` TOOL. DO open a file in
-   `{MEMORIES_DIR}/` when an index line suggests it holds what you need;
-   those are never injected.
-2. WRITE THE DURABLE THING ONLY — a decision, a root cause, a reusable
-   pattern, a preference. Not what just happened; the transcript has that.
-3. APPEND AND EDIT, NEVER COMPACT. Do not rewrite memory.md to shorten it.
-   Deleting an index line orphans a file nothing will open again.
-4. WRITE IT DOWN WHEN YOU GET CORRECTED, including the reason. A rule without
-   its reason gets misapplied later.
-5. BEFORE WRITING A NEW MEMORY, check whether one already covers it. Update
-   that file rather than adding a near-duplicate.
-"""
+    """The block appended to the system prompt so the agent can find its own
+    store. Body lives in prompts/conversation-store.md — read PER CALL, so
+    edits take effect on the next conversation without a restart."""
+    return load_prompt(
+        "conversation-store",
+        convo_id=convo_id,
+        store_path=str(folder).replace("\\", "/"),
+    )
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1662,14 +1602,10 @@ class LiteTUI(App):
             # second one — a resumed conversation already carries one.
             if self._sync_fleet_identity():
                 return
-            self._append_to_system((
-                    self._fleet_identity_sentence()
-                    + "Other agents can message you and their mail arrives as a user turn "
-                    "prefixed [inbox from <id>]. Use the `harness` tool to answer: "
-                    "action=discover to see who is online, action=send with `to` and "
-                    "`body` to reply. Reply to the SENDER id from the [inbox from ...] "
-                    "line, never to your own id."
-                ))
+            self._append_to_system(
+                self._fleet_identity_sentence()
+                + load_prompt("harness-capabilities")
+            )
         else:
             # Say so once. A seat nobody can reach that reports nothing is
             # indistinguishable from one that is simply idle.
