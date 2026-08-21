@@ -1,0 +1,62 @@
+"""The dogfood gate — 'a plugin system that ships none of its own plugins'
+is a recorded failure mode here, so it is a BUILD FAILURE, permanently.
+
+Two claims, both load-bearing:
+1. Real capabilities ship AS plugins (counted by owner, not by API existing).
+2. app.py never re-accretes: the host may import the substrate, never a
+   plugin module — the road back to monolith is gated, not eyeballed.
+"""
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+import app as m  # noqa: E402
+from plugins import PLUGIN_LOAD_ORDER  # noqa: E402
+
+APP_SRC = Path(m.__file__).read_text(encoding="utf-8")
+
+
+def _app():
+    a = m.LiteTUI()
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    return a
+
+
+def test_real_capabilities_ship_as_plugins():
+    a = _app()
+    tool_owners = {e.owner for e in a.plugins.tools}
+    cmd_owners = {e.owner for e in a.plugins.commands.values()} - {"host"}
+    section_owners = {s.owner for s in a.plugins.prompt_sections} - {"host"}
+    row_owners = {r.owner for r in a.plugins.palette_rows}
+    assert len(a.plugins.tools) >= 8, "the tool floor shrank"
+    assert len(tool_owners) >= 5, f"tools come from only {tool_owners}"
+    assert len(cmd_owners) >= 6, f"commands come from only {cmd_owners}"
+    assert section_owners, "no plugin owns a prompt section"
+    assert len(row_owners) >= 1 and len(a.plugins.palette_rows) >= 2
+    assert a.plugins.dynamic, "the MCP dynamic provider vanished"
+    assert len(PLUGIN_LOAD_ORDER) >= 15
+
+
+def test_app_never_imports_a_plugin_module():
+    """The re-accretion guard. app.py owns the substrate import and nothing
+    below it; the day a submodule import appears, the monolith is growing
+    back and this fails before it merges."""
+    assert re.search(r"^\s*(?:from|import)\s+plugins\.", APP_SRC, re.M) is None, (
+        "app.py imports a plugin submodule"
+    )
+    assert "from plugins import" not in APP_SRC, (
+        "app.py from-imports the substrate — module import only, one binding"
+    )
+    # positive control: the substrate import itself IS present.
+    assert re.search(r"^import plugins as plugins_mod$", APP_SRC, re.M)
+
+
+def test_the_reaccretion_guard_can_fail():
+    # The guard is a regex; prove it bites on the exact shapes it forbids.
+    for bad in ("from plugins.core_tools import tool_bash",
+                "import plugins.scheduler_ui",
+                "    from plugins.misc import _cmd_think"):
+        assert re.search(r"^\s*(?:from|import)\s+plugins\.", bad, re.M), bad

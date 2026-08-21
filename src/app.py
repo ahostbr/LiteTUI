@@ -12,7 +12,7 @@ import statistics
 import time
 import urllib.request
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 import harness as harness_mod
@@ -21,18 +21,13 @@ from functools import partial
 
 import config
 import settings as settings_mod
-from settings import THINKING_LEVELS, Settings, sampling_kwargs
+from settings import Settings, sampling_kwargs
 import paths
-from picker import PickerScreen
-from settings_screen import SettingsScreen
 import ttyguard
 import mcp_client
 import sanitize
 from fmt import fmt_dur
 import scheduler as sched_mod
-import calendar_view as calview
-import schedule_builder as sb_mod
-from ticker import NumberTicker
 import tool_context
 import themes as themes_mod
 from colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -47,9 +42,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button, Footer, Header, Input, OptionList, Select, Static, Switch,
-)
-from textual.widgets.option_list import Option
+    Button, Footer, Header, Input, Static, )
 from textual.worker import WorkerState
 from textual import work, on
 from openai import AsyncOpenAI

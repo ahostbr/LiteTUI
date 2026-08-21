@@ -24,6 +24,7 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as app_mod
+from plugins.view_image import VIEW_IMAGE_TOOL_SPEC
 
 ok = []
 
@@ -58,10 +59,17 @@ class FakeApp:
         self.mcp = type("M", (), {"tool_specs": lambda self: []})()
         self._mcp_dispatch = {}
         self.seat = type("S", (), {"registered": False})()
+        # The offer gate lives in the view_image PLUGIN since the split —
+        # register it against THIS fake so the gate closes over the fake's
+        # model_type, exactly as the real loader does against the real app.
+        from plugins import PluginContext, PluginRegistry
+        import plugins.view_image as _vi
+        self.plugins = PluginRegistry()
+        _vi.PLUGIN.register(PluginContext(self, self.plugins, "view-image"))
 
 
 print("=== the spec tells the model where to look ===")
-fn = app_mod.VIEW_IMAGE_TOOL_SPEC["function"]
+fn = VIEW_IMAGE_TOOL_SPEC["function"]
 chk("named view_image", fn["name"] == "view_image")
 chk("requires a path", fn["parameters"]["required"] == ["path"])
 chk("🔴 says the RESULT is not the picture",

@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from textual.widgets import Select
 from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
 import paths
 import scheduler as sched_mod
@@ -176,7 +177,7 @@ def test_running_new_scheduled_job_opens_the_builder_on_daily(tmp_path):
             await pilot.pause()
             ed = a.screen
             assert isinstance(ed, JobScreen)
-            assert ed.query_one("#job-preset", m.Select).value == "daily", (
+            assert ed.query_one("#job-preset", Select).value == "daily", (
                 "palette creation has no day context — it should open daily"
             )
 

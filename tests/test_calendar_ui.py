@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from textual.widgets import OptionList
 from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen, _apply_job_edit
 import paths
 import calendar_view as cv
@@ -217,7 +218,7 @@ def test_the_day_popup_lists_the_right_jobs_in_time_order():
 
             day = a.screen
             assert isinstance(day, DayScreen)
-            ol = day.query_one("#day-list", m.OptionList)
+            ol = day.query_one("#day-list", OptionList)
             ids = [ol.get_option_at_index(i).id for i in range(ol.option_count)]
 
             assert ids == [weekday.id, friday17.id, off.id, "new"], (
@@ -237,7 +238,7 @@ def test_an_empty_day_offers_creation_not_a_dead_end():
             await pilot.pause()
 
             day = a.screen
-            ol = day.query_one("#day-list", m.OptionList)
+            ol = day.query_one("#day-list", OptionList)
             ids = [ol.get_option_at_index(i).id for i in range(ol.option_count)]
             assert "new" in ids
             texts = str(ol.get_option_at_index(0).prompt)
@@ -256,7 +257,7 @@ def test_a_broken_job_appears_in_the_day_popup_and_is_reachable():
             a.screen.open_day(15)
             await pilot.pause()
 
-            ol = a.screen.query_one("#day-list", m.OptionList)
+            ol = a.screen.query_one("#day-list", OptionList)
             ids = [ol.get_option_at_index(i).id for i in range(ol.option_count)]
             assert bad.id in ids
     _run(body())
@@ -390,7 +391,7 @@ def test_creating_from_a_day_prefills_that_day_and_lands_everywhere(tmp_path):
             assert [j.prompt for j in on_disk] == ["water the plants"]
 
             # the day list refreshed to include it
-            ol = a.screen.query_one("#day-list", m.OptionList)
+            ol = a.screen.query_one("#day-list", OptionList)
             ids = [ol.get_option_at_index(i).id for i in range(ol.option_count)]
             assert made.id in ids
 

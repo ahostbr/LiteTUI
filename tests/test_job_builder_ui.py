@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from textual.widgets import Select
 from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
 import paths
 import schedule_builder as sb
@@ -74,7 +75,7 @@ def test_a_recognized_job_opens_with_the_widgets_populated():
             ed = await _open_editor(a, pilot, day=17)   # a Monday
             assert isinstance(ed, JobScreen)
 
-            assert ed.query_one("#job-preset", m.Select).value == "weekdays"
+            assert ed.query_one("#job-preset", Select).value == "weekdays"
             assert ed.query_one("#job-hour", NumberTicker).value == 17
             assert ed.query_one("#job-minute", NumberTicker).value == 30
             assert ed.query_one("#job-schedule", m.Input).display is False, (
@@ -88,7 +89,7 @@ def test_a_broken_schedule_opens_in_custom_with_the_raw_field_shown():
         a = make_app([job(schedule="not a cron", label="bad")])
         async with a.run_test(size=SIZE) as pilot:
             ed = await _open_editor(a, pilot)
-            assert ed.query_one("#job-preset", m.Select).value == "custom"
+            assert ed.query_one("#job-preset", Select).value == "custom"
             assert ed.query_one("#job-schedule", m.Input).display is True
             assert ed.query_one("#job-schedule", m.Input).value == "not a cron"
     _run(body())
@@ -110,8 +111,8 @@ def test_creating_from_a_day_opens_as_a_legible_yearly():
             await pilot.pause()
 
             ed = a.screen
-            assert ed.query_one("#job-preset", m.Select).value == "yearly"
-            assert ed.query_one("#job-month", m.Select).value == 8
+            assert ed.query_one("#job-preset", Select).value == "yearly"
+            assert ed.query_one("#job-month", Select).value == 8
             assert ed.query_one("#job-day", NumberTicker).value == 15
             assert ed.query_one("#job-hour", NumberTicker).value == 9
     _run(body())
@@ -172,7 +173,7 @@ def test_switching_preset_rebuilds_and_retargets_the_form():
         async with a.run_test(size=SIZE) as pilot:
             ed = await _open_editor(a, pilot)
 
-            ed.query_one("#job-preset", m.Select).value = "every_minutes"
+            ed.query_one("#job-preset", Select).value = "every_minutes"
             await pilot.pause()
 
             assert ed.query_one("#job-schedule", m.Input).value == "*/5 * * * *", (
@@ -193,7 +194,7 @@ def test_switching_to_custom_reveals_what_the_builder_built():
             ed.query_one("#job-minute", NumberTicker)._step(+1)
             await pilot.pause()
 
-            ed.query_one("#job-preset", m.Select).value = "custom"
+            ed.query_one("#job-preset", Select).value = "custom"
             await pilot.pause()
             raw = ed.query_one("#job-schedule", m.Input)
             assert raw.display is True
@@ -229,7 +230,7 @@ def test_an_untouched_alias_survives_open_and_save(tmp_path):
         a = make_app([target])
         async with a.run_test(size=SIZE) as pilot:
             ed = await _open_editor(a, pilot)
-            assert ed.query_one("#job-preset", m.Select).value == "daily"
+            assert ed.query_one("#job-preset", Select).value == "daily"
 
             await pilot.click("#job-save")
             await pilot.pause()
@@ -245,7 +246,7 @@ def test_custom_mode_still_refuses_garbage(tmp_path):
         a = make_app([target])
         async with a.run_test(size=SIZE) as pilot:
             ed = await _open_editor(a, pilot)
-            ed.query_one("#job-preset", m.Select).value = "custom"
+            ed.query_one("#job-preset", Select).value = "custom"
             await pilot.pause()
             ed.query_one("#job-schedule", m.Input).value = "* 25 * * *"
             await pilot.pause()

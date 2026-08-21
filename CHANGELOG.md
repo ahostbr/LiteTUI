@@ -18,6 +18,55 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-21
+
+### Changed
+
+- **The plugin split.** app.py went from 5,914 lines to ~4,300 by becoming a
+  HOST: every capability now ships as a plugin in `src/plugins/` — the four
+  floor tools (critical: their absence aborts boot), view_image, pccontrol,
+  chrome, ask_user_question, studio, skills, harness, MCP (as an args-only
+  dynamic provider — unifying the registries must not widen MCP's reach),
+  themes, mark, misc, conversation lifecycle, model switching, help,
+  settings UI, and the whole scheduler (calendar screens moved whole).
+  The substrate (`plugins/__init__.py`) enforces one-owner-per-fact at load
+  time: duplicate tool names, command tokens (aliases included), and
+  prompt-order slots are refused, never shadowed. Per-instance registries —
+  the suite builds many apps per process and they share nothing.
+- **The palette derives.** LiteTUICommands rows come FROM the command
+  registry (plus two explicit escape hatches); the hand-written second
+  table — the drift class a source-grep test existed to police — is gone.
+  The old drift gate was proven tautological by mutation and rebuilt to
+  test what can still fail: derivation completeness and the one embedded
+  command string nothing else exercised.
+- **One home for path anchors** (`paths.py`, module-imported everywhere —
+  a from-import copies the binding, which is how a live-store guard patches
+  one home while code reads another) and for the shared formatter
+  (`fmt.py`), the picker modal (`picker.py`), and THINKING_LEVELS
+  (settings.py).
+
+### Added
+
+- **`/plugins`** — every plugin with its true status (active / disabled /
+  failed: reason), host-registered so the readout cannot be disabled away
+  with a plugin. **`settings.plugins_disabled`** skips non-critical plugins
+  at boot (mirrors `mcp_disabled_servers`; hand-edited in settings.json for
+  now — a per-plugin checkbox UI is a named descope).
+- **Permanent gates:** the dogfood test (real capabilities counted AS
+  plugins, by owner) and the re-accretion guard (app.py may import the
+  substrate, never a plugin module — the road back to monolith fails CI).
+  The ttyguard envelope sweep now recurses into `src/plugins/`, proven by
+  a planted violation before any plugin file existed.
+
+### Fixed
+
+- `/mark` had a latent crash (`tempfile` import swept out with a moved
+  block) — caught by a negative control that ran an enabled plugin's
+  command for real; and the ask_user_question script test was found leaning
+  on the old set_app global's construction-order accident — each section
+  now wires its own app, which is the per-instance registry's argument
+  made flesh.
+
 ## [0.20.0] — 2026-08-21
 
 ### Added

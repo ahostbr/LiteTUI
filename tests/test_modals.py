@@ -10,6 +10,8 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from picker import PickerScreen
+from textual.widgets import OptionList
 from plugins.help_plugin import HelpScreen
 import paths
 
@@ -36,8 +38,8 @@ async def main():
         a._handle_command("/model")
         await pilot.pause()
         scr = a.screen
-        chk("a PickerScreen is on top", isinstance(scr, m.PickerScreen))
-        ol = scr.query_one(m.OptionList)
+        chk("a PickerScreen is on top", isinstance(scr, PickerScreen))
+        ol = scr.query_one(OptionList)
         chk("one row per model", ol.option_count == 3)
         chk("current model is pre-highlighted", ol.highlighted == 1)
         labels = [str(ol.get_option_at_index(i).prompt) for i in range(ol.option_count)]
@@ -47,7 +49,7 @@ async def main():
         # move down and select with the keyboard
         await pilot.press("down", "enter")
         await pilot.pause()
-        chk("picker dismissed after select", not isinstance(a.screen, m.PickerScreen))
+        chk("picker dismissed after select", not isinstance(a.screen, PickerScreen))
         chk("model switched to the highlighted row", a.model_id == "c-model")
 
     print("\n=== escape cancels without changing anything ===")
@@ -55,10 +57,10 @@ async def main():
     async with b.run_test() as pilot:
         b._handle_command("/model")
         await pilot.pause()
-        chk("picker open", isinstance(b.screen, m.PickerScreen))
+        chk("picker open", isinstance(b.screen, PickerScreen))
         await pilot.press("escape")
         await pilot.pause()
-        chk("dismissed", not isinstance(b.screen, m.PickerScreen))
+        chk("dismissed", not isinstance(b.screen, PickerScreen))
         chk("model unchanged", b.model_id == "b-model")
 
     print("\n=== CLICKING a row selects it ===")
@@ -66,10 +68,10 @@ async def main():
     async with c.run_test() as pilot:
         c._handle_command("/model")
         await pilot.pause()
-        ol = c.screen.query_one(m.OptionList)
+        ol = c.screen.query_one(OptionList)
         await pilot.click(ol, offset=(3, 0))   # first visible row
         await pilot.pause()
-        chk("click dismissed the picker", not isinstance(c.screen, m.PickerScreen))
+        chk("click dismissed the picker", not isinstance(c.screen, PickerScreen))
         chk("click selected the clicked row", c.model_id == "a-model")
 
     print("\n=== /help is a scrollable modal with a Close button ===")
@@ -111,7 +113,7 @@ async def main():
         f._handle_command("/model 3")
         await pilot.pause()
         chk("/model <n> still switches without a modal", f.model_id == "c-model")
-        chk("no modal was pushed", not isinstance(f.screen, m.PickerScreen))
+        chk("no modal was pushed", not isinstance(f.screen, PickerScreen))
         f._handle_command("/model a-model")
         await pilot.pause()
         chk("/model <name> still switches", f.model_id == "a-model")

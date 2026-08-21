@@ -108,8 +108,11 @@ m = re.search(r"if token:.*?thinking\.append\(token\)(.{0,400})", src, re.S)
 chk("reasoning-delta branch scrolls", bool(m) and "only_if_following=True" in m.group(1))
 m = re.search(r"if delta\.content:(.{0,400})", src, re.S)
 chk("answer-content branch scrolls", bool(m) and "only_if_following=True" in m.group(1))
-chk("both use follow mode, not a bare scroll_end",
-    src.count("_scroll_down(only_if_following=True)") == 2)
+chk("follow mode is used, never a bare scroll_end",
+    # exactly-2 broke at 0.20.0: glass-box compaction streams too and
+    # legitimately follows. The two regex checks above pin the specific
+    # branches; this counts the FLOOR.
+    src.count("_scroll_down(only_if_following=True)") >= 2)
 
 
 print("\n=== ThinkingBlock follows its own body ===")
@@ -175,7 +178,10 @@ chk("the narrowed valid set is recorded in source, with its provenance",
 
 print("\n=== a NEW thinking block jumps the log to the bottom ===")
 src3 = Path(app_mod.__file__).read_text(encoding='utf-8')
-mount = src3.find('thinking = ThinkingBlock()')
+# rfind, not find: 0.20.0's CompactionCard mounts its own ThinkingBlock
+# EARLIER in the file, and find() silently re-anchored this gate onto the
+# wrong site. The stream's mount is the LAST occurrence.
+mount = src3.rfind('thinking = ThinkingBlock()')
 chk('the mount site exists', mount > 0)
 window = src3[mount:mount + 400]
 chk('🔴 an UNCONDITIONAL _scroll_down() sits with the mount',
