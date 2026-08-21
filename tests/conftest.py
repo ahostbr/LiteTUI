@@ -81,3 +81,46 @@ def _never_write_the_live_settings(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings_mod, "settings_path", redirected)
 
+
+# =============================================================================
+# SCRIPT-STYLE FILES ARE NOT PYTEST MODULES, AND IMPORTING ONE KILLS THE RUN.
+#
+# Measured 2026-08-21: `python -m pytest tests/` reported
+#
+#     INTERNALERROR> ... test_ask_user_question.py, line 232, in main
+#     INTERNALERROR>     sys.exit(0 if all(ok) else 1)
+#     no tests collected
+#
+# ZERO tests, for the whole repository, from an INTERNALERROR. 18 of the 47
+# files in here are standalone scripts: the module body IS the test, it prints
+# "N/M passed", and the last line exits the process. pytest imports every file
+# it collects, so importing one of those runs it and calls sys.exit() *inside
+# the collector*. 13 files do this. Ignoring one only hands the crash to the
+# next.
+#
+# The scripts are not broken -- they run and they assert when invoked directly,
+# which is how the suite has always been run. What was broken is that the
+# STANDARD entry point could not reach the 29 files that ARE pytest tests.
+#
+# ⚠️ WRAPPING THE LAST LINE IN `if __name__ == "__main__"` DOES NOT FIX THIS.
+# The assertions in a script-style file execute at module level ABOVE that
+# line, so a guard stops the exit and lets the body run on import anyway --
+# slower, noisier, and touching whatever the script touches. It would look like
+# a fix and change nothing that matters. Don't collect them at all.
+#
+# 🔴 DERIVED, NOT LISTED. A hardcoded filename list drifts the day someone adds
+# a script, and drifts silently, because the symptom is an INTERNALERROR that
+# blames the new file rather than the stale list. The rule below is the actual
+# distinction: a pytest module defines `def test_`; a script does not.
+def _is_script_style(path: Path) -> bool:
+    """True when the file has no `def test_` -- i.e. nothing pytest can call."""
+    try:
+        return "def test_" not in path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+
+collect_ignore = sorted(
+    p.name for p in Path(__file__).resolve().parent.glob("test_*.py")
+    if _is_script_style(p)
+)
