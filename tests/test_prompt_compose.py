@@ -15,14 +15,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import app as m  # noqa: E402
+import paths  # noqa: E402
 import skills as skills_mod  # noqa: E402
 
 
 def _reference(a) -> str:
     # The pre-refactor _system_prompt_text, verbatim. The CONTRACT.
     base = ""
-    if m.SYSTEM_PROMPT_FILE.exists():
-        base = m.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip()
+    if paths.SYSTEM_PROMPT_FILE.exists():
+        base = paths.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip()
     if a.convo_dir is not None:
         base = (base + m.memory_prompt(a.convo_id, a.convo_dir)).strip()
     if a.tools_enabled:

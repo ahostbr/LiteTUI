@@ -21,7 +21,7 @@ from functools import partial
 import config
 import settings as settings_mod
 from settings import THINKING_LEVELS, Settings, sampling_kwargs
-from paths import CONVO_DIR, MEMORIES_DIR, PROMPTS_DIR, ROOT, SYSTEM_PROMPT_FILE
+import paths
 from picker import PickerScreen
 from settings_screen import SettingsScreen
 import ttyguard
@@ -61,7 +61,7 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_IMAGE_DIM = 1536
 # The path anchors live in paths.py — one owner; test_paths.py proves the
 # resolution. MARK_SCRIPT stays here: it is /mark's fact, not a store's.
-MARK_SCRIPT = ROOT / "tools" / "pccontrol" / "marker_overlay.ps1"
+MARK_SCRIPT = paths.ROOT / "tools" / "pccontrol" / "marker_overlay.ps1"
 
 
 def load_prompt(name: str, **variables: object) -> str:
@@ -76,7 +76,7 @@ def load_prompt(name: str, **variables: object) -> str:
     be a model quietly running without its instructions, which is worse than
     not booting.
     """
-    text = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+    text = (paths.PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
     for key, value in variables.items():
         text = text.replace("{" + key + "}", str(value))
     return text
@@ -91,7 +91,7 @@ CONVO_SEED_FILES = {
     "memory.md": (
         "# Memory Index\n\n"
         "One line per memory, NEWEST AT THE TOP. Bodies live in "
-        f"`{MEMORIES_DIR}/`.\n\n"
+        f"`{paths.MEMORIES_DIR}/`.\n\n"
         "`- [short title](memories/slug.md) — the hook`\n\n"
         "POINTERS ONLY. ~50 tokens (about 200 chars) per line, hard. Enough to\n"
         "decide whether to open the file, nothing more. If you are explaining\n"
@@ -1062,7 +1062,7 @@ def _apply_job_edit(jobs: list, job, result) -> bool:
     else:
         return False
     try:
-        sched_mod.save(jobs, ROOT)
+        sched_mod.save(jobs, paths.ROOT)
     except OSError:
         pass    # an unwritable store must not lose the in-memory edit
     return True
@@ -2149,7 +2149,7 @@ class LiteTUI(App):
         #: Cron jobs, loaded once at construction. A scheduled prompt is an
         #: INPUT nobody typed, so it rides the same held/flushed path as inbox
         #: mail rather than growing a second delivery route.
-        self._jobs: list = sched_mod.load(ROOT)
+        self._jobs: list = sched_mod.load(paths.ROOT)
         # ETA: a rolling median of prompt-eval tokens/sec, learned ONLY from
         # turns that demonstrably reprocessed the prompt (the KV-cache gate in
         # is_reliable_rate_sample). _eta_last_prompt_tokens is the previous
@@ -2181,11 +2181,11 @@ class LiteTUI(App):
         # `[]`, not `{}` — discover() returns a LIST, and load() iterates its
         # argument expecting Skill objects. A dict would yield keys.
         self.skills = (
-            skills_mod.discover_all(ROOT, self.settings.skill_roots)
+            skills_mod.discover_all(paths.ROOT, self.settings.skill_roots)
             if self.settings.skills_enabled
             else []
         )
-        self.mcp = mcp_client.MCPManager(ROOT)
+        self.mcp = mcp_client.MCPManager(paths.ROOT)
         if self.settings.mcp_enabled:
             self.mcp.load()
             # Per-server opt-out. Stopping AFTER load rather than filtering the
@@ -2221,8 +2221,8 @@ class LiteTUI(App):
         _ord = plugins_mod.PROMPT_ORDER
         self.plugins.add_prompt_section(
             "host", _ord["BASE"],
-            lambda: SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip(),
-            enabled=lambda: SYSTEM_PROMPT_FILE.exists(),
+            lambda: paths.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip(),
+            enabled=lambda: paths.SYSTEM_PROMPT_FILE.exists(),
         )
         self.plugins.add_prompt_section(
             "host", _ord["MEMORY"],
@@ -2383,7 +2383,7 @@ class LiteTUI(App):
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
-            sched_mod.save(self._jobs, ROOT)
+            sched_mod.save(self._jobs, paths.ROOT)
         except OSError:
             pass  # an unwritable store must not stop the job from running
 
@@ -2425,7 +2425,7 @@ class LiteTUI(App):
             if not job:
                 return
             self._jobs.remove(job)
-            sched_mod.save(self._jobs, ROOT)
+            sched_mod.save(self._jobs, paths.ROOT)
             self._system(f"/cron: removed {job.id} ({job.label or job.prompt[:40]})")
             return
 
@@ -2434,7 +2434,7 @@ class LiteTUI(App):
             if not job:
                 return
             job.enabled = verb in ("on", "enable")
-            sched_mod.save(self._jobs, ROOT)
+            sched_mod.save(self._jobs, paths.ROOT)
             self._system(f"/cron: {job.id} is now {'ON' if job.enabled else 'OFF'}")
             return
 
@@ -2517,7 +2517,7 @@ class LiteTUI(App):
 
         job = sched_mod.Job(prompt=prompt, schedule=schedule)
         self._jobs.append(job)
-        sched_mod.save(self._jobs, ROOT)
+        sched_mod.save(self._jobs, paths.ROOT)
 
         nxt = cron.next_after(datetime.now())
         when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"
@@ -2668,7 +2668,7 @@ class LiteTUI(App):
             text = (
                 text[:cap]
                 + f"\n\n[... truncated at {cap} chars — {name} is too long to inject "
-                f"in full. Move detail into {MEMORIES_DIR}/ and leave pointers here.]"
+                f"in full. Move detail into {paths.MEMORIES_DIR}/ and leave pointers here.]"
             )
         return text
 
@@ -2762,7 +2762,7 @@ class LiteTUI(App):
         """
         self.convo_id = str(uuid.uuid4())
         self._refresh_ctx_label()   # the footer names the conversation
-        self.convo_dir = CONVO_DIR / self.convo_id
+        self.convo_dir = paths.CONVO_DIR / self.convo_id
         self.convo_path = self.convo_dir / TRANSCRIPT_NAME
         self._convo_pending = True
         self._sync_seat_identity()
@@ -2815,7 +2815,7 @@ class LiteTUI(App):
         self._convo_pending = False   # cleared FIRST: _write_record below would
                                       # otherwise see pending and skip its writes
         try:
-            (self.convo_dir / MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
+            (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
             for fname, seed in CONVO_SEED_FILES.items():
                 f = self.convo_dir / fname
                 if not f.exists():  # never clobber a resumed store
@@ -3024,7 +3024,7 @@ class LiteTUI(App):
         # it verbatim tells the model to answer mail as an id nothing can
         # deliver to. Rewrite that one sentence; leave the rest alone.
         self._sync_fleet_identity()
-        (self.convo_dir / MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
+        (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
         log = self.query_one("#chat-log")
         log.remove_children()
@@ -3049,7 +3049,7 @@ class LiteTUI(App):
         # streamed state that cannot be faithfully reconstructed from the log.
         # It IS still in self.conversation, so the model sees all of it.
         note = f", {tools} tool result(s) restored to context but not redrawn" if tools else ""
-        mem_dir = self.convo_dir / MEMORIES_DIR
+        mem_dir = self.convo_dir / paths.MEMORIES_DIR
         n_mem = len(list(mem_dir.glob("*.md"))) if mem_dir.exists() else 0
         store = ", ".join(
             f for f in CONVO_SEED_FILES if (self.convo_dir / f).exists()
@@ -3057,17 +3057,17 @@ class LiteTUI(App):
         self._system(
             f"Resumed {self.convo_id}\n"
             f"  {users} user / {assistants} assistant message(s){note}\n"
-            f"  store: {store} · {n_mem} file(s) in {MEMORIES_DIR}/\n"
+            f"  store: {store} · {n_mem} file(s) in {paths.MEMORIES_DIR}/\n"
             f"  appending to {self.convo_dir.name}/{path.name}"
         )
         self._scroll_down()
 
     def _list_convos(self) -> list[tuple[Path, dict, list[dict]]]:
         """Returns (transcript_path, meta, messages) newest first."""
-        if not CONVO_DIR.exists():
+        if not paths.CONVO_DIR.exists():
             return []
         out = []
-        for d in CONVO_DIR.iterdir():
+        for d in paths.CONVO_DIR.iterdir():
             if not d.is_dir():
                 continue
             p = d / TRANSCRIPT_NAME
@@ -5135,73 +5135,6 @@ class LiteTUI(App):
             entry.handler(self, name, arg)
             return
 
-        if name in ("/skills", "/skill"):
-            # Discovery is silent by design: a directory with no SKILL.md is a
-            # scratch folder, not an error. That makes a MISNAMED or MISPLACED
-            # skill look exactly like one that was never written — so say what
-            # was found, where it was looked for, and what the model can see.
-            base = ROOT / skills_mod.SKILLS_DIR_NAME
-            if arg:
-                body = skills_mod.load(self.skills, arg)
-                # Show what the MODEL would receive, not a summary of it.
-                self._system(f"[skill {arg!r} — {len(body):,} chars as the model sees it]\n\n{body}")
-                return
-            if not self.settings.skills_enabled:
-                self._system(
-                    "Skills are OFF in /settings, so none were discovered and the "
-                    "`skill` tool is not offered to the model."
-                )
-                return
-            roots = skills_mod.resolve_roots(self.settings.skill_roots)
-            missing = skills_mod.unresolved_roots(self.settings.skill_roots)
-            block = skills_mod.index_block(self.skills)
-
-            by_source: dict[str, list] = {}
-            for s in self.skills:
-                by_source.setdefault(s.source, []).append(s)
-
-            lines = [
-                f"{len(self.skills)} skill(s) from {len(by_source)} librar"
-                f"{'y' if len(by_source) == 1 else 'ies'} — "
-                f"{len(block):,} chars (~{len(block) // 4:,} tokens) in the system prompt"
-            ]
-            lines.append("")
-            lines.append(f"  [local] {base}" + ("" if base.is_dir() else "  (does not exist)"))
-            for d in roots:
-                lines.append(f"  [{skills_mod._label_for(d)}] {d}")
-            if missing:
-                # A library that resolved to nothing is silent everywhere else.
-                lines.append("")
-                lines.append(f"  {len(missing)} configured root(s) matched NOTHING:")
-                for m in missing:
-                    lines.append(f"    {m}")
-
-            for src, group in by_source.items():
-                lines.append("")
-                lines.append(f"  ── {src} ({len(group)}) " + "─" * max(0, 46 - len(src)))
-                for s in group:
-                    lines.append(f"  {s.name}  —  {s.description or '(no description)'}")
-
-            # A folder without a SKILL.md is a scratch folder, not an error —
-            # but a MISNAMED one looks identical, so name what was passed over.
-            if base.is_dir():
-                loaded = {s.path.parent.name for s in self.skills}
-                skipped = [d.name for d in sorted(base.iterdir())
-                           if d.is_dir() and d.name not in loaded]
-                if skipped:
-                    lines.append("")
-                    lines.append(f"  {len(skipped)} local folder(s) skipped — no SKILL.md inside:")
-                    for d in skipped:
-                        lines.append(f"    {d}/")
-
-            lines.append("")
-            lines.append(
-                "  the model sees only name + description; it calls the `skill` "
-                "tool to read a body. /skills <name> shows what it would get."
-            )
-            self._system("\n".join(lines))
-            return
-
         if name in ("/settings", "/config", "/set"):
             self.push_screen(
                 SettingsScreen(
@@ -5213,131 +5146,11 @@ class LiteTUI(App):
             )
             return
 
-        if name in ("/clear", "/reset", "/new"):
-            self.conversation.clear()
-            self._new_convo()  # a fresh file — never reuse the old one
-            self._load_system_prompt()
-            self.query_one("#chat-log").remove_children()
-            self._system(
-                f"New conversation — {self.convo_id}\n"
-                f"  store: {self.convo_dir}\n"
-                f"  memory.md · soul.md · handoff.md · {MEMORIES_DIR}/"
-            )
-
-        elif name == "/system":
-            if arg:
-                if self.conversation and self.conversation[0]["role"] == "system":
-                    self.conversation[0]["content"] = arg
-                else:
-                    self.conversation.insert(
-                        0, {"role": "system", "content": arg}
-                    )
-                self._edit(0, "system prompt changed")
-                preview = arg[:80] + ("..." if len(arg) > 80 else "")
-                self._system(f"System prompt set: {preview}")
-            else:
-                self._system("Usage: /system <prompt>")
-
-        elif name == "/cron":
+        if name == "/cron":
             self._cron_command(arg)
 
         elif name in ("/calendar", "/cal"):
             self.push_screen(CalendarScreen(self._jobs))
-
-        elif name == "/compact":
-            self._compact(arg)
-
-        elif name in ("/convos", "/conversations", "/list"):
-            rows = self._list_convos()
-            if not rows:
-                self._system(f"No saved conversations yet.\nThey land in {CONVO_DIR}")
-                return
-            lines = []
-            total = 0
-            for i, (p, meta, msgs) in enumerate(rows[:30], 1):
-                mark = ">" if p == self.convo_path else " "
-                stamp = time.strftime("%m-%d %H:%M", time.localtime(p.stat().st_mtime))
-                turns = sum(1 for m in msgs if m.get("role") in ("user", "assistant"))
-                mem = p.parent / MEMORIES_DIR
-                n_mem = len(list(mem.glob("*.md"))) if mem.exists() else 0
-                badge = f" ✎{n_mem}" if n_mem else "   "
-                total += p.stat().st_size
-                lines.append(
-                    f" {mark} {i:>2}. {p.parent.name[:8]}  {stamp}  {turns:>3} msg{badge}  "
-                    f"{self._fmt_size(p.stat().st_size):>7}  {self._convo_title(msgs)}"
-                )
-            extra = f"\n(+{len(rows) - 30} older)" if len(rows) > 30 else ""
-            warn = (
-                f"\n\n[!] saving is BROKEN this session: {self._persist_error}"
-                if self._persist_error
-                else ""
-            )
-            self._system(
-                "Saved conversations (newest first):\n"
-                + "\n".join(lines)
-                + extra
-                + f"\n{self._fmt_size(total)} of transcript across {len(rows)} conversation(s)"
-                + "\nUse /resume <number> to load one."
-                + warn
-            )
-
-        elif name == "/resume":
-            rows = self._list_convos()
-            if not rows:
-                self._system("Nothing to resume.")
-                return
-            target = None
-            if arg.isdigit():
-                idx = int(arg) - 1
-                if 0 <= idx < len(rows):
-                    target = rows[idx]
-            elif arg:
-                # Match on the uuid FOLDER, not the transcript stem — every
-                # transcript is named convo.jsonl, so stems no longer identify.
-                for row in rows:
-                    uid = row[0].parent.name
-                    if uid == arg or uid.startswith(arg):
-                        target = row
-                        break
-            if target is None and arg:
-                self._system(
-                    f"No conversation matches {arg!r}. Run /resume with no argument to pick one."
-                )
-                return
-            if target is None:
-                # Same picker as /model, so the two interactions cannot drift.
-                items = []
-                for path_, meta_, msgs_ in rows[:40]:
-                    stamp = time.strftime("%m-%d %H:%M", time.localtime(path_.stat().st_mtime))
-                    turns = sum(1 for x in msgs_ if x.get("role") in ("user", "assistant"))
-                    memdir = path_.parent / MEMORIES_DIR
-                    nmem = len(list(memdir.glob("*.md"))) if memdir.exists() else 0
-                    badge = f" ✎{nmem}" if nmem else "   "
-                    # The conversation's own uuid — on disk all along, never shown.
-                    cid = path_.parent.name[:8]
-                    # The owning seat, only for conversations written since v3
-                    # meta. Older ones show blanks rather than a fabricated name.
-                    who = str(meta_.get("agent_name") or "")[:10]
-                    aid = str(meta_.get("agent_id") or "")[:8]
-                    owner = f"{who} {aid}".strip() or "—"
-                    items.append(
-                        (
-                            str(path_),
-                            f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
-                            f"{self._fmt_size(path_.stat().st_size):>7}  "
-                            f"{self._convo_title(msgs_)}",
-                        )
-                    )
-                self.push_screen(
-                    PickerScreen(
-                        "Resume a conversation",
-                        items,
-                        current=str(self.convo_path) if self.convo_path else None,
-                    ),
-                    self._on_convo_picked,
-                )
-                return
-            self._resume(target[0])
 
         elif name in ("/model", "/models"):
             if arg:
@@ -5407,8 +5220,8 @@ class LiteTUI(App):
                 "drag    select text  |  Ctrl+Shift+C  copy the selection\n"
                 "Shift+drag  select with the TERMINAL instead (system clipboard) \u2014\n"
                 "        the app captures the mouse, so a plain drag never reaches it\n"
-                f"store: {CONVO_DIR.name}/<uuid>/ holds convo.jsonl, memory.md,\n"
-                f"       soul.md, handoff.md and {MEMORIES_DIR}/ \u2014 the agent is told\n"
+                f"store: {paths.CONVO_DIR.name}/<uuid>/ holds convo.jsonl, memory.md,\n"
+                f"       soul.md, handoff.md and {paths.MEMORIES_DIR}/ \u2014 the agent is told\n"
                 "       its own path in the system prompt and manages them itself\n"
                 "footer: live context usage \u2014 ctx used / window"
             ))

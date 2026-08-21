@@ -11,13 +11,14 @@ import sys
 sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "src"))  # Path is aliased _P here
 
 import app as _app_mod
+import paths
 from app import LiteTUI, AssistantMessage, ThinkingBlock, ThinkingHeader
 
 # Booting LiteTUI creates a real .convos/<uuid>/ before anything is typed, so a
 # test that instantiates it leaves an empty conversation in the user's list.
 # `from app import LiteTUI` does not bind CONVO_DIR here, but _new_convo reads
 # the MODULE global at call time, so patching the module is what takes effect.
-_app_mod.CONVO_DIR = _P(tempfile.mkdtemp(prefix="convos-thinking-"))
+paths.CONVO_DIR = _P(tempfile.mkdtemp(prefix="convos-thinking-"))
 
 
 def get_text(w) -> str:

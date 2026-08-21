@@ -29,8 +29,9 @@ import tempfile
 from pathlib import Path
 
 import app as app_mod
+import paths
 
-app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-ident-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-ident-"))
 
 OLD = "c5ea9cf2-641e-4a17-b080-0efae35ac889"
 NEW = "ed8ee93e-e749-4841-8b19-0cdfe0eb0ac1"

@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+import paths
 import scheduler as sched_mod
 
 APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(
@@ -29,7 +30,7 @@ APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(
 
 @pytest.fixture(autouse=True)
 def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(m, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
 
 
 def make_app():

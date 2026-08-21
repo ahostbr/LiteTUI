@@ -10,8 +10,9 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+import paths
 
-m.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modal-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modal-"))
 ok = []
 def chk(label, cond):
     ok.append(bool(cond)); print(f"  {'ok  ' if cond else 'FAIL'}  {label}")

@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+import paths
 import calendar_view as cv
 import scheduler as sched_mod
 
@@ -36,7 +37,7 @@ def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
     _apply_job_edit persists through sched_mod.save(jobs, ROOT), and ROOT is
     the live checkout. A TEST MUST NEVER WRITE A PATH THE RUNNING APP OWNS.
     """
-    monkeypatch.setattr(m, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
 
 
 def job(prompt="p", schedule="@daily", **kw):

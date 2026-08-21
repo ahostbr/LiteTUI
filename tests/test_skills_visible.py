@@ -16,13 +16,14 @@ from pathlib import Path
 import pytest
 
 import app as app_mod
+import paths
 import skills as skills_mod
 
-app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-skills-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-skills-"))
 
 
 #: The real ROOT, captured before any test moves it.
-_REAL_ROOT = app_mod.ROOT
+_REAL_ROOT = paths.ROOT
 
 
 @pytest.fixture(autouse=True)
@@ -31,11 +32,11 @@ def _restore_root():
     in the same pytest process — the suite ran fine alone and collapsed when run
     together. Always put it back."""
     yield
-    app_mod.ROOT = _REAL_ROOT
+    paths.ROOT = _REAL_ROOT
 
 
 def _app_with(tmp_root: Path):
-    app_mod.ROOT = tmp_root
+    paths.ROOT = tmp_root
     a = app_mod.LiteTUI()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
@@ -62,7 +63,7 @@ def test_disabled_skills_yield_a_list_not_a_dict():
 
     a = app_mod.LiteTUI()
     a.settings = Settings(skills_enabled=False)
-    a.skills = skills_mod.discover(app_mod.ROOT) if a.settings.skills_enabled else []
+    a.skills = skills_mod.discover(paths.ROOT) if a.settings.skills_enabled else []
     assert isinstance(a.skills, list)
 
 

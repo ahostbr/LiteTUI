@@ -23,10 +23,11 @@ from pathlib import Path
 import pytest
 
 import app as app_mod
+import paths
 import chrome_tool
 import pccontrol_tool
 
-app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-tools-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-tools-"))
 
 #: Tools that must be offered on a healthy checkout, with the reason each exists.
 EXPECTED = {

@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+import paths
 import schedule_builder as sb
 import scheduler as sched_mod
 from ticker import NumberTicker
@@ -25,7 +26,7 @@ from ticker import NumberTicker
 
 @pytest.fixture(autouse=True)
 def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(m, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
 
 
 def job(prompt="p", schedule="@daily", **kw):

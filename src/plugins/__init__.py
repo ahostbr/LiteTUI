@@ -54,6 +54,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.themes_plugin",
     "plugins.mark_plugin",
     "plugins.misc",
+    "plugins.convo",
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists

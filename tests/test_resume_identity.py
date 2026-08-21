@@ -20,8 +20,9 @@ from pathlib import Path
 import pytest
 
 import app as app_mod
+import paths
 
-app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-resume-id-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-resume-id-"))
 
 
 def _meta_of(path: Path) -> dict:

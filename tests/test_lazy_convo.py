@@ -18,11 +18,12 @@ from pathlib import Path
 import pytest
 
 import app as app_mod
+import paths
 
 
 def _fresh_store() -> Path:
     d = Path(tempfile.mkdtemp(prefix="convos-lazy-"))
-    app_mod.CONVO_DIR = d
+    paths.CONVO_DIR = d
     return d
 
 

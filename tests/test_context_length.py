@@ -35,9 +35,10 @@ from pathlib import Path
 import pytest
 
 import app as app_mod
+import paths
 from settings import Settings
 
-app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-ctx-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-ctx-"))
 
 LOADED, CEILING = 120064, 262144
 

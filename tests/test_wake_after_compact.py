@@ -33,10 +33,11 @@ from pathlib import Path
 import pytest
 
 import app as app_mod
+import paths
 from settings import Settings
 
 # Hermetic convo store, the same way test_context_length.py does it.
-app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-wake-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-wake-"))
 
 
 # ── fakes ──────────────────────────────────────────────────────────────────

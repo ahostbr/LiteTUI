@@ -26,8 +26,9 @@ import tempfile
 from pathlib import Path as _Path
 
 import app as _app_mod
+import paths
 
-_app_mod.CONVO_DIR = _Path(tempfile.mkdtemp(prefix="convos-settings-unit-"))
+paths.CONVO_DIR = _Path(tempfile.mkdtemp(prefix="convos-settings-unit-"))
 
 
 # ── Store ────────────────────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+import paths
 import scheduler as sched_mod
 
 
@@ -34,7 +35,7 @@ def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
     APP OWNS — three live stores in this repo were wrecked by their own suite
     before that rule was written down.
     """
-    monkeypatch.setattr(m, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
 
 
 def make_app():

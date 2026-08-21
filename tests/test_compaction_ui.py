@@ -19,9 +19,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as app_mod
+import paths
 from settings import Settings
 
-app_mod.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-glassbox-"))
+paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-glassbox-"))
 
 
 # ── streaming fakes ────────────────────────────────────────────────────────

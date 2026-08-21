@@ -30,7 +30,10 @@ def test_app_defines_no_second_anchor():
     # instrument — the suite's live-store guards rebind app.CONVO_DIR to tmp
     # paths per-test, and that protection must keep working.)
     src = Path(m.__file__).read_text(encoding="utf-8")
-    assert "from paths import" in src
+    assert "\nimport paths\n" in src
+    # A from-import COPIES the binding — app holding a private copy is how a
+    # test's live-store guard patches one home while code reads another.
+    assert "from paths import" not in src, "from-import copies the binding"
     for defn in ("\nROOT = Path(", "\nCONVO_DIR = ", "\nSYSTEM_PROMPT_FILE = ",
                  "\nPROMPTS_DIR = ", "\nMEMORIES_DIR = "):
         assert defn not in src, f"app.py re-declares {defn.strip()!r} — two owners"
