@@ -17,6 +17,7 @@ from pathlib import Path
 
 import harness as harness_mod
 from dataclasses import fields as fields_of
+from functools import partial
 
 import config
 import settings as settings_mod
@@ -40,6 +41,7 @@ import skills as skills_mod
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -1780,11 +1782,78 @@ class ContextFooter(Footer):
         yield label
 
 
+class LiteTUICommands(Provider):
+    """LiteTUI's features in the command palette.
+
+    The stock palette knows five Textual commands and nothing about this
+    app — 90% of what LiteTUI does was undiscoverable from ctrl+p. Each row
+    here carries the SAME command string the dispatcher handles, invoked
+    through the same `_handle_command` the keyboard uses, so the palette can
+    never grow behaviour of its own. A drift test walks this table against
+    the dispatcher source; a renamed command breaks the test, not the row.
+    """
+
+    def _commands(self):
+        app = self.app
+
+        def cmd(command: str):
+            return partial(app._handle_command, command)
+
+        return [
+            ("Calendar",
+             "The month, every scheduled job on it (/calendar)", cmd("/calendar")),
+            ("New scheduled job",
+             "Create a cron job in the builder form", app._palette_new_job),
+            ("Scheduled jobs",
+             "List cron jobs and their next fires (/cron list)", cmd("/cron list")),
+            ("Settings",
+             "Every knob, scrollable (/settings)", cmd("/settings")),
+            ("Switch model",
+             "Pick from the connected server's models (/model)", cmd("/model")),
+            ("Thinking level",
+             "Show the levels and the current one (/think)", cmd("/think")),
+            ("New conversation",
+             "Fresh transcript on disk (/new)", cmd("/new")),
+            ("Conversations",
+             "List saved conversations (/convos)", cmd("/convos")),
+            ("Compact conversation",
+             "Summarise older turns, keep the recent (/compact)", cmd("/compact")),
+            ("Skills",
+             "List discovered skills and their sources (/skills)", cmd("/skills")),
+            ("Mark the screen",
+             "Draggable ring; send returns screenshot + coords (/mark)", cmd("/mark")),
+            ("Toggle agent tools",
+             "bash, read, write and friends on/off (Ctrl+T)", app.action_toggle_tools),
+            ("Clear screen",
+             "Display only — the conversation is untouched (/clear-screen)",
+             cmd("/clear-screen")),
+            ("Reconnect",
+             "Reconnect to the model server (/reconnect)", cmd("/reconnect")),
+            ("Help",
+             "Commands and keys (/help)", cmd("/help")),
+        ]
+
+    async def discover(self) -> Hits:
+        """The list shown before any query is typed — full feature roll."""
+        for title, help_text, run in self._commands():
+            yield DiscoveryHit(title, run, help=help_text)
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        for title, help_text, run in self._commands():
+            score = matcher.match(title)
+            if score > 0:
+                yield Hit(score, matcher.highlight(title), run, help=help_text)
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
     TITLE = "LiteTUI"
     SUB_TITLE = "Connecting..."
+
+    # The stock providers (theme, keys, quit...) plus ours.
+    COMMANDS = App.COMMANDS | {LiteTUICommands}
 
     CSS = """
     Screen {
@@ -2475,6 +2544,9 @@ class LiteTUI(App):
             self._system(
                 f"harness seat online · {self.seat.name} · {self.seat.agent_id[:8]}"
             )
+            # The harness tool just joined the offer — repaint the
+            # derived tool count. (The one late tool; MCP loads in __init__.)
+            self._update_header()
             # The model cannot see the UI line above, and the system prompt was
             # built before registration finished. Without this it holds fleet
             # tools it has no idea it is entitled to use.
@@ -2648,6 +2720,14 @@ class LiteTUI(App):
             "/cron list | rm <id> | on <id> | off <id> | run <id>\n"
             "schedule: 5-field cron (min hour day month weekday) or "
             "@hourly @daily @weekly @monthly"
+        )
+
+    def _palette_new_job(self) -> None:
+        """Create a job from the command palette — no day picked, so the
+        builder opens on a sensible daily default instead of a date."""
+        self.push_screen(
+            JobScreen(None, prefill_schedule="0 9 * * *"),
+            lambda result: _apply_job_edit(self._jobs, None, result),
         )
 
     def _cron_find(self, token: str):
@@ -3314,9 +3394,21 @@ class LiteTUI(App):
         return out
 
     def _update_header(self) -> None:
-        mode = "tools:4" if self.tools_enabled else "no tools"
+        if self.tools_enabled:
+            # COUNTED, not quoted. "tools:4" was a literal from when there
+            # were exactly four, and it stayed 4 while view_image, chrome,
+            # pccontrol, ask_user_question, skill, harness and the MCP set
+            # arrived — the header lied for weeks. _all_tools() is what the
+            # MODEL is offered, so the header now derives from the same list.
+            mode = f"tools:{len(self._all_tools())}"
+        else:
+            mode = "no tools"
         think = self.thinking_level or "default"
-        parts = [p for p in (self.model_id, mode, f"think:{think}") if p]
+        cwd = str(Path.cwd())
+        home = str(Path.home())
+        if cwd.startswith(home):
+            cwd = "~" + cwd[len(home):]
+        parts = [p for p in (self.model_id, mode, f"think:{think}", cwd) if p]
         self.sub_title = " \u00b7 ".join(parts)
         # The footer carries the thinking level too, and it only refreshed on a
         # context update -- so /think changed the header instantly and left the

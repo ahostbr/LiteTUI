@@ -18,6 +18,34 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-21
+
+### Added
+
+- **The command palette knows the app.** Ctrl+P carried Textual's five stock
+  commands and none of LiteTUI's — 90% of the features were undiscoverable
+  from it. A `LiteTUICommands` provider now serves fifteen rows (calendar,
+  new scheduled job, scheduled jobs, settings, model switch, thinking level,
+  new/list conversations, compact, skills, mark the screen, tool toggle,
+  clear screen, reconnect, help), each routed through the SAME
+  `_handle_command` the keyboard uses, so the palette cannot grow behaviour
+  of its own. A drift gate walks the table against the dispatcher source: a
+  renamed command breaks a test, not a palette row.
+- **The working directory is in the header** (home shown as `~`).
+
+### Fixed
+
+- **The header's tool count was a hardcoded literal.** `tools:4` was written
+  when there were exactly four tools and stayed 4 while view_image, chrome,
+  pccontrol, ask_user_question, skill, harness and the MCP set arrived. The
+  count now derives from `_all_tools()` — the list the model is actually
+  offered — and repaints when the harness tool joins at seat registration
+  (the one tool that arrives late).
+- The gate for the old literal matches the assignment, not the string: the
+  comment retracting `tools:4` quotes it, and a bare grep would flag the
+  retraction as the defect.
+
+
 ## [0.16.0] — 2026-08-21
 
 ### Added
