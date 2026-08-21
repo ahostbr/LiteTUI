@@ -335,3 +335,10 @@ def sampling_kwargs(s: Settings) -> dict[str, Any]:
     if s.stop:
         out["stop"] = list(s.stop)
     return out
+
+
+# "off" is this app's name for the server's "none" so the wording matches
+# the rest of the UI; everything else passes through unchanged. Lives here
+# because two plugins (misc's /think, help's text) and the app's wire path
+# all read it — and plugins must never import app (it runs as __main__).
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")

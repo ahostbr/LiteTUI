@@ -20,7 +20,9 @@ from functools import partial
 
 import config
 import settings as settings_mod
-from settings import Settings, sampling_kwargs
+from settings import THINKING_LEVELS, Settings, sampling_kwargs
+from paths import CONVO_DIR, MEMORIES_DIR, PROMPTS_DIR, ROOT, SYSTEM_PROMPT_FILE
+from picker import PickerScreen
 from settings_screen import SettingsScreen
 import ttyguard
 import mcp_client
@@ -57,14 +59,9 @@ from rich.text import Text
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_IMAGE_DIM = 1536
-# src/ is one level below the repo root, where the DATA lives —
-# .convos, settings.json, skills/, systemprompt.md. Anchoring to
-# __file__.parent after the src/ move would silently re-home every
-# store into src/.
-ROOT = Path(__file__).resolve().parent.parent
-PROMPTS_DIR = ROOT / "prompts"
+# The path anchors live in paths.py — one owner; test_paths.py proves the
+# resolution. MARK_SCRIPT stays here: it is /mark's fact, not a store's.
 MARK_SCRIPT = ROOT / "tools" / "pccontrol" / "marker_overlay.ps1"
-SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
 
 
 def load_prompt(name: str, **variables: object) -> str:
@@ -84,20 +81,11 @@ def load_prompt(name: str, **variables: object) -> str:
         text = text.replace("{" + key + "}", str(value))
     return text
 
-# ── Conversation persistence ─────────────────────────────────────
-# .convos/<uuid>/
-#     convo.jsonl   append-only transcript
-#     memory.md     INDEX the agent maintains — one line per memory
-#     soul.md       who this agent is; persists across resumes
-#     handoff.md    what is in flight, for whoever picks this up
-#     memories/     the actual notes: i-learned-this.md, uncapped
-CONVO_DIR = ROOT / ".convos"
 #: Marks an already-injected store block inside the system message. Detection
 #: by MARKER rather than a flag is what makes /resume correct: a flag lives in
 #: memory and dies with the process; the marker is persisted with the message.
-STORE_HEADER = "## Your store, loaded once at the start of this conversation"
 TRANSCRIPT_NAME = "convo.jsonl"
-MEMORIES_DIR = "memories"
+STORE_HEADER = "## Your store, loaded once at the start of this conversation"
 
 CONVO_SEED_FILES = {
     "memory.md": (
@@ -152,9 +140,6 @@ CONVO_SEED_FILES = {
 # (which omit reasoning_effort entirely):
 #   Invalid 'reasoning_effort' value: 'x'. Supported values: none, minimal,
 #   low, medium, high, xhigh.
-# "off" is this app's name for the server's "none" so the wording matches the
-# rest of the UI; everything else passes through unchanged.
-THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 # 🔴 A LEVEL THIS SERVER ACCEPTS IS NOT A LEVEL THE LOADED MODEL ACCEPTS, AND THE
 # DIFFERENCE IS SILENT. The set above came from LM Studio's generic 400 body. A
@@ -658,47 +643,6 @@ class ToolMessage(Static):
     # internal method that must return a Visual; shadowing it breaks layout.
     def _update_display(self) -> None:
         self.content = Text.assemble(*tool_display_parts(self, self.MAX_DISPLAY_LINES))
-
-
-class PickerScreen(ModalScreen[str | None]):
-    """A clickable list modal. Returns the chosen option's id, or None.
-
-    Shared by /model and /resume so the two never drift into different
-    interactions — the pattern is identical, only the rows differ.
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, title: str, rows: list[tuple[str, str]], current: str | None = None,
-                 hint: str = "↑↓ move · Enter or click to select · Esc to cancel"):
-        super().__init__()
-        self._title = title
-        self._rows = rows          # (id, label)
-        self._current = current
-        self._hint = hint
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="picker-box"):
-            yield Static(self._title, id="picker-title")
-            yield OptionList(
-                *[Option(label, id=oid) for oid, label in self._rows], id="picker-list"
-            )
-            yield Static(self._hint, id="picker-hint")
-
-    def on_mount(self) -> None:
-        ol = self.query_one(OptionList)
-        if self._current is not None:
-            ids = [oid for oid, _ in self._rows]
-            if self._current in ids:
-                ol.highlighted = ids.index(self._current)
-        ol.focus()
-
-    @on(OptionList.OptionSelected)
-    def _selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(event.option.id)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
 
 class HelpScreen(ModalScreen[None]):
@@ -5183,6 +5127,13 @@ class LiteTUI(App):
         parts = cmd.split(maxsplit=1)
         name = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
+
+        # Registry first; the if/elif chain below is the migration-window
+        # fallback and dies when its last branch moves out.
+        entry = self.plugins.commands.get(name)
+        if entry is not None:
+            entry.handler(self, name, arg)
+            return
 
         if name in ("/skills", "/skill"):
             # Discovery is silent by design: a directory with no SKILL.md is a

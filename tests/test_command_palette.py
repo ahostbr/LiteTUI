@@ -92,9 +92,13 @@ def test_every_command_string_in_the_table_is_one_the_dispatcher_handles():
                         and getattr(run.func, "__name__", "") == "_handle_command"):
                     continue
                 token = run.args[0].split()[0]
-                assert f'"{token}"' in APP_SRC, (
-                    f"palette row {title!r} routes to {token} — not found as a "
-                    f"quoted literal in the dispatcher"
+                # Migration-window gate: a token is live if the REGISTRY
+                # dispatches it, or (legacy) it remains a quoted literal in
+                # the shrinking if/elif chain. Tightens to registry-only
+                # when the chain dies.
+                assert token in a.plugins.commands or f'"{token}"' in APP_SRC, (
+                    f"palette row {title!r} routes to {token} — not in the "
+                    f"registry and not a quoted literal in the dispatcher"
                 )
                 checked += 1
             assert checked >= 10, f"only {checked} rows checked — table shrank?"
