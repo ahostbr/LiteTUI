@@ -55,7 +55,9 @@ def test_overlay_handoff_is_atomic():
 
 # --- wiring ------------------------------------------------------------------
 def test_mark_route_exists_and_waits_outside_the_chat_group():
-    assert 'elif name == "/mark":' in APP_SRC
+    # The route lives in the registry since the plugin split.
+    import app as m
+    assert "/mark" in m.LiteTUI().plugins.commands, "/mark is not registered"
     body = APP_SRC.split("async def _mark_wait", 1)[0]
     assert '@work(exclusive=True, group="mark")' in APP_SRC.split(
         "def _start_mark", 1)[1], \

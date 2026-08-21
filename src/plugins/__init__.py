@@ -52,6 +52,8 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.harness_plugin",
     "plugins.mcp_plugin",
     "plugins.themes_plugin",
+    "plugins.mark_plugin",
+    "plugins.misc",
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists

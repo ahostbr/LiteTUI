@@ -5202,14 +5202,6 @@ class LiteTUI(App):
             self._system("\n".join(lines))
             return
 
-        if name in ("/clear-screen", "/clearscreen", "/cls"):
-            # The DISPLAY only. /clear resets the conversation; this does not.
-            self._clear_screen(
-                note="Screen cleared. The conversation is unchanged - the model "
-                     "still has everything it had a moment ago."
-            )
-            return
-
         if name in ("/settings", "/config", "/set"):
             self.push_screen(
                 SettingsScreen(
@@ -5245,35 +5237,6 @@ class LiteTUI(App):
                 self._system(f"System prompt set: {preview}")
             else:
                 self._system("Usage: /system <prompt>")
-
-        elif name in ("/think", "/thinking"):
-            if not arg:
-                current = self.thinking_level or "unset"
-                note = (
-                    "\nunset means the field is not sent at all — LM Studio then "
-                    "applies its OWN default, which is xhigh. 'unset' is not 'off'."
-                )
-                self._system(
-                    f"Thinking level: {current}\n"
-                    f"Levels: {', '.join(THINKING_LEVELS)}, or 'unset'\n"
-                    f"Usage: /think <level>{note}"
-                )
-            elif arg.lower() in ("unset", "default", "server"):
-                self.thinking_level = None
-                self._update_header()
-                self._system("Thinking level unset — LM Studio's default (xhigh) applies.")
-            elif arg.lower() in THINKING_LEVELS:
-                self.thinking_level = arg.lower()
-                self._update_header()
-                wire = "none" if self.thinking_level == "off" else self.thinking_level
-                self._system(f"Thinking level: {self.thinking_level} (sends reasoning_effort={wire!r})")
-            else:
-                self._system(
-                    f"Unknown level: {arg}\nValid: {', '.join(THINKING_LEVELS)}, unset"
-                )
-
-        elif name == "/mark":
-            self._start_mark()
 
         elif name == "/cron":
             self._cron_command(arg)
@@ -5416,9 +5379,6 @@ class LiteTUI(App):
 
         elif name == "/reconnect":
             self._connect()
-
-        elif name in ("/quit", "/exit"):
-            self.exit()
 
         elif name in ("/help", "/?"):
             # Scrollable modal with a Close button; the text is unchanged.
