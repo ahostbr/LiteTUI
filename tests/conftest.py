@@ -17,8 +17,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"          # the modules moved; data stays at ROOT
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 # 🔴 THE SUITE MUST NOT TOUCH THE LIVE FLEET REGISTRY.
 #

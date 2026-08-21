@@ -49,8 +49,12 @@ from rich.text import Text
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_IMAGE_DIM = 1536
-ROOT = Path(__file__).parent
-SYSTEM_PROMPT_FILE = Path(__file__).parent / "systemprompt.md"
+# src/ is one level below the repo root, where the DATA lives —
+# .convos, settings.json, skills/, systemprompt.md. Anchoring to
+# __file__.parent after the src/ move would silently re-home every
+# store into src/.
+ROOT = Path(__file__).resolve().parent.parent
+SYSTEM_PROMPT_FILE = ROOT / "systemprompt.md"
 
 # ── Conversation persistence ─────────────────────────────────────
 # .convos/<uuid>/
@@ -59,7 +63,7 @@ SYSTEM_PROMPT_FILE = Path(__file__).parent / "systemprompt.md"
 #     soul.md       who this agent is; persists across resumes
 #     handoff.md    what is in flight, for whoever picks this up
 #     memories/     the actual notes: i-learned-this.md, uncapped
-CONVO_DIR = Path(__file__).parent / ".convos"
+CONVO_DIR = ROOT / ".convos"
 #: Marks an already-injected store block inside the system message. Detection
 #: by MARKER rather than a flag is what makes /resume correct: a flag lives in
 #: memory and dies with the process; the marker is persisted with the message.
@@ -4035,7 +4039,7 @@ class LiteTUI(App):
                 return sorted(mgr.servers.keys())
             import json as _json
             from pathlib import Path as _Path
-            cfg = _Path(__file__).resolve().parent / "mcp.json"
+            cfg = _Path(__file__).resolve().parent.parent / "mcp.json"
             if cfg.exists():
                 data = _json.loads(cfg.read_text(encoding="utf-8"))
                 servers = data.get("mcpServers") or data.get("servers") or {}

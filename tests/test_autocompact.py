@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 from app import LiteTUI
 
-APP_SRC = Path(__file__).resolve().parent.parent / "app.py"
+APP_SRC = Path(__file__).resolve().parent.parent / "src" / "app.py"
 
 
 def stub(used=8700, mx=10000, enabled=True, at=80, loaded=True, failed_at=None):

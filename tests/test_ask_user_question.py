@@ -19,7 +19,7 @@ import threading
 from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
 import ask_user_question as aq
 

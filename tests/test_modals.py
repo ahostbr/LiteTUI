@@ -8,7 +8,7 @@ import asyncio, sys, tempfile, types
 from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
 
 m.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modal-"))
@@ -114,7 +114,7 @@ async def main():
         await pilot.pause()
         chk("/model <name> still switches", f.model_id == "a-model")
 
-    src = open(r"C:\Projects\LiteTUI\app.py", encoding="utf-8").read()
+    src = open(Path(__file__).resolve().parent.parent / "src" / "app.py", encoding="utf-8").read()
     chk("connection banner listing untouched", src.count("Use /model <number> to switch") == 1)
 
 asyncio.run(main())

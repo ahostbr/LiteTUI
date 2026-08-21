@@ -15,7 +15,7 @@ import sys
 from pathlib import Path as _P
 
 # The repo root, one level up since the tests moved into tests/.
-sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "src"))
 
 from app import LiteTUI as A
 

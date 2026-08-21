@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
-python app.py
+python src\app.py
 pause

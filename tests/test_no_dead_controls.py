@@ -27,7 +27,7 @@ import settings as settings_mod
 from settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root: tests/ is one level down
-APP = (ROOT / "app.py").read_text(encoding="utf-8")
+APP = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
 
 #: Fields consumed through a helper rather than by name. Each entry names the
 #: helper, so a reader can check the claim instead of trusting the list.
@@ -110,7 +110,7 @@ def test_no_setting_is_read_only_by_the_settings_screen():
     The screen renders every field by construction, so it can never be the
     evidence that a field does something.
     """
-    screen = (ROOT / "settings_screen.py").read_text(encoding="utf-8")
+    screen = (ROOT / "src" / "settings_screen.py").read_text(encoding="utf-8")
     assert "f-{name}" in screen or "f-" in screen  # sanity: the screen builds ids
     for f in fields(Settings):
         if f.name in INDIRECT:

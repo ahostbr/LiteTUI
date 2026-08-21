@@ -8,7 +8,7 @@ from pathlib import Path as _P
 import sys
 
 # The repo root, one level up since the tests moved into tests/.
-sys.path.insert(0, str(_P(__file__).resolve().parent.parent))  # Path is aliased _P here
+sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "src"))  # Path is aliased _P here
 
 import app as _app_mod
 from app import LiteTUI, AssistantMessage, ThinkingBlock, ThinkingHeader

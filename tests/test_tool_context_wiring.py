@@ -18,7 +18,7 @@ from app import LiteTUI
 
 call = LiteTUI._contextualise_tool_result
 BIG = "x" * 5000 + "\nline two\n"          # comfortably over the 2000 default
-APP_SRC = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(encoding="utf-8")
 
 
 class FakeMsg:

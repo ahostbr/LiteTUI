@@ -228,7 +228,7 @@ ENV_OVERRIDES: dict[str, str] = {
 
 
 def settings_path(root: Path | None = None) -> Path:
-    return (root or Path(__file__).resolve().parent) / SETTINGS_FILENAME
+    return (root or Path(__file__).resolve().parent.parent) / SETTINGS_FILENAME
 
 
 def _coerce(name: str, raw: Any, current: Any) -> Any:

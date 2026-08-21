@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import sanitize
 import ttyguard
@@ -59,7 +59,7 @@ def _is_runtime(name: str) -> bool:
 
 def test_no_child_process_escapes_the_envelope():
     violations = []
-    for f in sorted(REPO.glob("*.py")):
+    for f in sorted((REPO / "src").glob("*.py")):
         if f.name in _WHITELIST or not _is_runtime(f.name):
             continue
         text = f.read_text(encoding="utf-8", errors="replace")

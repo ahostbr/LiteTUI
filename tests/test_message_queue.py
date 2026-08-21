@@ -20,7 +20,7 @@ from textual.worker import WorkerState
 
 from app import LiteTUI, midturn_action
 
-APP_SRC = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(encoding="utf-8")
 
 
 # --- the mapping: ONE swap, both ways round ----------------------------------

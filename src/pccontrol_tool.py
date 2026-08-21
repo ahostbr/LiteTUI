@@ -29,7 +29,7 @@ from pathlib import Path
 
 import ttyguard
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent  # repo root; src/ is below it
 # Lives under tools/ since 2026-08-20. The gate below is
 # `SCRIPT.exists()`: a wrong path does not error, it removes the tool
 # from the model's list entirely — the capability just stops existing,

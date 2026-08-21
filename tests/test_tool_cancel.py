@@ -30,7 +30,7 @@ import pytest
 import app as app_mod
 from app import LiteTUI
 
-APP_SRC = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(encoding="utf-8")
 
 
 def _pids_with_marker(marker: str) -> list[int]:
