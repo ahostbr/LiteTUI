@@ -23,8 +23,6 @@ import settings as settings_mod
 from settings import Settings, sampling_kwargs
 from settings_screen import SettingsScreen
 import ask_user_question
-import chrome_tool
-import pccontrol_tool
 import studio_tool
 import ttyguard
 import mcp_client
@@ -224,35 +222,6 @@ You have four tools: bash, read, write, web_fetch.
 - web_fetch: fetch an http(s) URL and get its content as plain text (max 20000 chars).
 Use tools whenever they help fulfil the user's request. Inspect tool output before answering. If a call fails, read the error and adapt.
 """
-
-
-# The model CANNOT see an image through a tool result. A tool result is a
-# role:"tool" message whose content is a STRING; images are only visible as an
-# image_url block on a role:"user" message. So this tool does not return the
-# picture -- it stages it, and the tool loop injects a user turn carrying the
-# image through the same door the paste path uses. Returning base64 here would
-# burn a megabyte of context to show the model nothing.
-VIEW_IMAGE_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "view_image",
-        "description": (
-            "Look at an image file on disk. Give an absolute path. The image is "
-            "attached to the conversation and you will see it in the next message "
-            "-- the result of this call is only a confirmation, not the picture."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Absolute path to a png/jpg/gif/webp/bmp file",
-                }
-            },
-            "required": ["path"],
-        },
-    },
-}
 
 
 class ChatMessage(Static):
@@ -2711,15 +2680,6 @@ class LiteTUI(App):
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
         specs = self.plugins.tool_specs()
-        # Offered unless we KNOW the model cannot see (type "llm"). Unknown
-        # stays offered: the tool reports the precondition itself, which is
-        # more useful than the tool silently not existing.
-        if self.model_type != "llm":
-            specs.append(VIEW_IMAGE_TOOL_SPEC)
-        if pccontrol_tool.SCRIPT.exists():
-            specs.append(pccontrol_tool.PCCONTROL_TOOL_SPEC)
-        if chrome_tool.SCRIPT.exists():
-            specs.append(chrome_tool.CHROME_TOOL_SPEC)
         # Always available: it renders inside this very app and has
         # no external precondition (unlike the browser tools' SCRIPT check).
         specs.append(ask_user_question.ASK_USER_QUESTION_TOOL_SPEC)
@@ -2747,18 +2707,12 @@ class LiteTUI(App):
             return lambda args: skills_mod.load(self.skills, args.get("name", ""))
         if name == "harness":
             return lambda args: harness_mod.run(self.seat, args)
-        if name == "view_image":
-            return self._tool_view_image
-        if name == "pccontrol":
-            return pccontrol_tool.run
         if name == "studio":
             # The seat's identity rides in so generate actions can suspend
             # the very model making the call — the GPU is a single pie, and
             # the agent's own brain is the biggest slice (measured 2026-08-21:
             # a 2.4 GB summarizer beside the 29 GB seat near-OOMed the box).
             return lambda args: studio_tool.run(args, seat_model=self.model_id)
-        if name == "chrome":
-            return chrome_tool.run
         if name == "ask_user_question":
             return ask_user_question.run
         return self._mcp_dispatch.get(name)
@@ -4238,7 +4192,7 @@ class LiteTUI(App):
     def _tool_view_image(self, args: dict) -> str:
         """Stage an image for the model to actually see. Never raises.
 
-        Returns a short CONFIRMATION, not the image. See VIEW_IMAGE_TOOL_SPEC
+        Returns a short CONFIRMATION, not the image. See plugins/view_image.py
         for why returning the bytes here would show the model nothing.
         """
         raw = str(args.get("path") or "").strip().strip('"').strip("'")

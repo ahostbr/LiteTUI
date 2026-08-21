@@ -43,6 +43,9 @@ PROMPT_ORDER = {
 # assumption, so the ordering is kept until someone proves it free.
 PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.core_tools",
+    "plugins.view_image",
+    "plugins.pccontrol",
+    "plugins.chrome",
 )
 
 
