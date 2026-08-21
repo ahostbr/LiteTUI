@@ -1,0 +1,185 @@
+# Changelog
+
+LiteTUI — a local-LLM TUI harness with per-conversation memory, a fleet seat,
+and a real tool loop.
+
+Versions below **0.7.0 were assigned retroactively** on 2026-08-20 from the git
+history. They mark real milestones in that history, but they were never tagged
+or released at the time — the project had no version at all until this file
+existed. Everything from 0.7.0 onward is assigned as it happens.
+
+Format follows [Keep a Changelog](https://keepachangelog.com). This project
+uses semantic versioning, pre-1.0: interfaces still move weekly.
+
+The version itself lives in `version.py` and nowhere else. `tests/test_version.py`
+fails if this file's top released heading disagrees with it.
+
+---
+
+## [Unreleased]
+
+### Added
+- **Three modes for what a tool's output costs the conversation** (`tool_context.py`)
+  — `off` (raw, today's behaviour and the measurement baseline),
+  `llm-tool-mask` (observation masking: a placeholder naming tool, size and
+  location; no model call), and `llm-tool-summ` (a side call summarises toward
+  the task, so the main conversation never holds the raw even once). Both
+  processing modes write the raw to a sidecar and leave a dereferenceable
+  pointer, so they differ only in what reaches context — never in what
+  survives. 24 tests, no model required.
+
+> 🔴 **NOT WIRED.** Nothing calls `plan_tool_result` yet. The wiring sites are
+> `app.py` where `role="tool"` messages are built, plus the `tool_call_id`
+> pairing constraint (a replaced result must keep its id), and the settings
+> dropdown. Listed here as Unreleased rather than shipped because a module
+> nothing invokes is not a feature.
+
+---
+
+## [0.7.0] — 2026-08-20
+
+Correctness night: two false-failure sources removed and one long-running race
+closed.
+
+### Added
+- `wake_after_compact` — loop mode resumes the in-flight task after a compaction
+  instead of going quiet. (`f5b17f0`)
+
+### Fixed
+- **Eight tests reported as failures that had already passed.** The child's
+  stdout pipe encoded as cp1252 on Windows, so a red-circle emoji in a label
+  raised `UnicodeEncodeError` *after* every check had succeeded. The tests were
+  never wrong. (`4aa4f20`)
+- **The AskUserQuestion step bar could paint with no active step.** The label's
+  `active` class was set only in an async `on_mount`, so a caller checking the
+  moment the screen was pushed saw it missing — 2 pass / 4 fail over six runs.
+  Now set at compose time, matching what the body already did. 8/8 after.
+  (`140b440`)
+
+---
+
+## [0.6.0] — 2026-08-20
+
+Context accounting and seat identity stop lying.
+
+### Fixed
+- A stale context window persisted for the whole session, and auto-compact
+  stopped firing entirely once the re-read was wired into one of three loop
+  exits. (`15df95d`)
+- The context length set in settings was never applied on a model switch.
+  (`9917585`)
+- **A resumed prompt told the model it was a seat that no longer exists.** The
+  agent id is minted per process; the fleet-identity sentence is written into
+  the system message after registration, so a resumed conversation replayed a
+  dead process's id — and the same prompt tells the model to answer mail as
+  that id. (`f75fd45`)
+
+### Added
+- Chrome relay owns its own lifecycle (`start`/`stop`/`status`), gains
+  `write_text`, and a constant left pointing at a pre-move path is repointed.
+  (`9c112ba`)
+
+---
+
+## [0.5.0] — 2026-08-20
+
+Resume, skills discovery, and a test suite that could survive its own repo.
+
+### Added
+- `/skills` makes discovery visible; scanning several libraries takes the
+  catalogue from 1 to 77, and 13% of them stopped arriving unlabelled —
+  `description: >-` block scalars were being read as the value. (`c4c8713`, `a70f398`)
+- Resume shows the conversation uuid and its owning seat. (`55001fa`)
+- The footer shows context percent, and every field is hideable. (`68909f3`)
+- A test runner that knows pytest-style from script-style files — the two
+  cannot be run the same way, and running one as the other reports failure on
+  working code. (`e8e6502`)
+
+### Fixed
+- **Never load model weights as a side effect.** Connecting was loading a saved
+  preference's weights on every boot. Conversations are created lazily.
+  (`8df2b9e`)
+- **HEAD did not contain the app.** `tools/` and `ask_user_question.py` were in
+  zero commits while the code needing them was committed — a fresh clone lost
+  both. (`cda355b`)
+- The tools/ move silently unregistered pccontrol and chrome; the existence
+  gate was working perfectly against a pre-move constant. (`f35d332`)
+- **The test suite was evicting the running app from the fleet.** Registration
+  passed `--takeover`, which does not spare a live holder. (`a1e8686`)
+- The seat now heartbeats — a live pid was not enough to stay on the roster.
+  (`321f631`)
+
+---
+
+## [0.4.0] — 2026-08-20
+
+Settings become real.
+
+### Added
+- `/settings` panel, auto-compact, `/clear-screen`. (`ab7ae6b`)
+- Tabs, one per section, each scrolling independently. (`b41498c`)
+- Tests that drive `/settings` and `/clear-screen` through a real app.
+  (`229ceff`)
+
+### Fixed
+- **10 of 30 controls were dead** — wired, then guarded so they cannot silently
+  die again. (`e4b235d`)
+- The panel was docked top-left instead of centred. (`a51e7e2`)
+- A new thinking block now jumps the log to the bottom. (`2435dc1`)
+
+---
+
+## [0.3.0] — 2026-08-19
+
+Tools, and an envelope with no bypass.
+
+### Added
+- `view_image` — and it deliberately does not return the image. (`6b781ed`)
+- `pccontrol` and `chrome` as verbs; the wrappers exist for the traps.
+  (`b33109e`)
+- ttyguard phase 2 — the child-process envelope now has no bypass, and the scan
+  is green. (`ee87616`)
+
+### Fixed
+- One system turn, not two — qwen/qwen3.8-27b rejects the second. (`04fe623`)
+
+---
+
+## [0.2.0] — 2026-08-19
+
+The fleet seat becomes a participant rather than a listener.
+
+### Added
+- **The agent gets the fleet verbs.** It could receive mail but not answer.
+  (`3fdbc15`)
+- The footer carries the seat's fleet identity. (`e86e7af`)
+- tok/s in the footer. (`f743dc6`)
+- ttyguard phase 1 — one envelope for every child process. (`f5779bc`)
+
+### Fixed
+- The seat reclaims its own name across restarts and reports the real one.
+  (`2051d7f`)
+- The seat passes its own pid, so the fleet can tell it from a corpse.
+  (`1ec2aa2`)
+- Terminal escapes stripped from tool results; mouse modes re-asserted.
+  (`a482737`)
+- Autoscroll follows the stream; thinking-off no-ops became visible.
+  (`747ea2d`)
+- `Seat.send` no longer passes `--priority`; this CLI has no such flag.
+  (`94e59a1`)
+
+---
+
+## [0.1.0] — 2026-08-18
+
+First commit 2026-08-18 23:42.
+
+### Added
+- **LiteTUI** — a local-LLM TUI harness with per-conversation memory.
+  (`7046082`)
+- MCP servers, skills, a harness seat, and an end to re-injecting the store.
+  (`c919214`)
+- Clickable modals for `/model`, `/help` and the stop dialog. (`ee5c544`)
+
+### Fixed
+- Branded as LiteTUI, and Ctrl+V / Ctrl+X actually reach the app. (`bbb967e`)
