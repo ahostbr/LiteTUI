@@ -3775,7 +3775,7 @@ class LiteTUI(App):
         A corrupt entry is skipped with a note rather than killing the boot:
         settings.json is hand-editable and a typo there must cost one theme,
         not the app."""
-        for name, tokens in (getattr(self.settings, "custom_themes", None) or {}).items():
+        for name, tokens in (self.settings.custom_themes or {}).items():
             try:
                 self.register_theme(themes_mod.theme_from_tokens(name, tokens))
             except Exception as e:
