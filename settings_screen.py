@@ -55,6 +55,12 @@ THINKING_CHOICES = [
     ("xhigh — most expensive", "xhigh"),
 ]
 
+TOOL_CONTEXT_CHOICES = [
+    ("off — raw output enters context (baseline)", "off"),
+    ("llm-tool-mask — pointer placeholder, no model call", "llm-tool-mask"),
+    ("llm-tool-summ — side-call summary toward the task", "llm-tool-summ"),
+]
+
 
 class _Row(Horizontal):
     """One label + control + help line."""
@@ -245,6 +251,25 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "tool_iterations", "Tool iterations per turn",
                             "The cap behind '[stopped — reached N tool iterations in one "
                             "turn]'. Raise it for long agent runs.",
+                        )
+                        yield from self._select_row(
+                            "tool_context_mode", "Tool output context", TOOL_CONTEXT_CHOICES,
+                            "What a tool result contributes to the conversation. Both "
+                            "processing modes park the raw in a sidecar file the model "
+                            "can read back — nothing is destroyed. Mask is free; summ "
+                            "costs one side call. Measure on your own workload.",
+                        )
+                        yield from self._text_row(
+                            "tool_context_threshold_chars", "Tool context threshold (chars)",
+                            "Results smaller than this enter verbatim whatever the mode — "
+                            "a summary can be longer than what it replaces.",
+                        )
+                        yield from self._switch_row(
+                            "enter_interrupts", "Enter interrupts mid-turn",
+                            "OFF: Enter queues a mid-turn message; ctrl+shift+enter "
+                            "interrupts. ON: the two swap — Enter interrupts, the chord "
+                            "queues. Queued messages send when the turn ends; interrupt "
+                            "keeps the partial reply and sends yours next.",
                         )
 
                         # ── Compaction ───────────────────────────────────────────────
@@ -464,6 +489,8 @@ class SettingsScreen(ModalScreen[Settings | None]):
             raise ValueError("tool_iterations: must be at least 1")
         if out.compact_max_tokens < 256:
             raise ValueError("compact_max_tokens: below 256 no summary can fit")
+        if out.tool_context_threshold_chars < 0:
+            raise ValueError("tool_context_threshold_chars: must be >= 0")
         return out
 
     def action_save(self) -> None:

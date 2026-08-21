@@ -88,7 +88,7 @@ def run(cmd, *, timeout=DEFAULT_TIMEOUT_S, stdin=subprocess.DEVNULL,
 
 def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
           stderr=subprocess.PIPE, cwd=None, env=None, bufsize=-1,
-          encoding="utf-8", errors="replace") -> "subprocess.Popen":
+          encoding="utf-8", errors="replace", shell=False) -> "subprocess.Popen":
     """Spawn a LONG-LIVED child under the envelope — the case is the stdio
     MCP server — same window/decode discipline, but the caller owns the
     pipes and the process (the envelope cannot, so it must not, reap it).
@@ -96,6 +96,7 @@ def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     """
     proc = subprocess.Popen(
         cmd,
+        shell=shell,
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,

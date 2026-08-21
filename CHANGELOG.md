@@ -18,21 +18,65 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
-### Added
-- **Three modes for what a tool's output costs the conversation** (`tool_context.py`)
-  — `off` (raw, today's behaviour and the measurement baseline),
-  `llm-tool-mask` (observation masking: a placeholder naming tool, size and
-  location; no model call), and `llm-tool-summ` (a side call summarises toward
-  the task, so the main conversation never holds the raw even once). Both
-  processing modes write the raw to a sidecar and leave a dereferenceable
-  pointer, so they differ only in what reaches context — never in what
-  survives. 24 tests, no model required.
+_(nothing yet)_
 
-> 🔴 **NOT WIRED.** Nothing calls `plan_tool_result` yet. The wiring sites are
-> `app.py` where `role="tool"` messages are built, plus the `tool_call_id`
-> pairing constraint (a replaced result must keep its id), and the settings
-> dropdown. Listed here as Unreleased rather than shipped because a module
-> nothing invokes is not a feature.
+
+## [0.8.0] — 2026-08-21
+
+### Added
+- **Three modes for what a tool's output costs the conversation, WIRED**
+  (`tool_context.py` + `_contextualise_tool_result`) — `off` (raw, the
+  baseline), `llm-tool-mask` (observation masking: placeholder naming tool,
+  size and sidecar path; no model call), `llm-tool-summ` (a side call
+  summarises toward the task; the main conversation never holds the raw even
+  once). Both processing modes park the raw under the conversation's own
+  `tool-raw/` and the placeholder carries the path, so the model can `read` it
+  back — the modes differ only in what reaches context, never in what
+  survives. A failed or empty side call degrades to the mask, not to loss.
+  Selected in /settings; results under the threshold enter verbatim.
+- **Mid-turn message queue with a swappable interrupt chord.** A message sent
+  while the agent is mid-turn no longer cancels the turn (that was never a
+  feature — it was `@work(exclusive=True)` doing what exclusivity does).
+  Default: Enter QUEUES (held, visibly, sent as a real turn when this one
+  ends) and ctrl+shift+enter INTERRUPTS (partial kept, your message next).
+  One setting swaps the two ends. Inbox mail from other agents queues by the
+  same path — measured this week: mail appended mid-turn sat INERT in context
+  for four turns while the model's own inbox tool truthfully reported "(no
+  new messages)", because this monitor had already claimed it.
+- **A tool cancel button** (top-left, beside the palette icon; visible only
+  while a bash subprocess is actually running). Kills the process TREE —
+  `shell=True` makes cmd.exe the child and the real work its grandchild, so a
+  naive kill orphans exactly the thing being cancelled. The turn CARRIES ON:
+  the model receives `[cancelled by user after Xs]` plus whatever the tree
+  wrote before dying, and can react. Esc still stops the whole turn — two
+  different verbs, deliberately. Verified against the process table with a
+  negative arm, per Docs/spec-tool-cancel.md.
+- **Live elapsed + tok/s on the thinking header** (6647a25) and **a projected
+  ETA on the in-flight bubble** (578b436), the latter gated so a KV-cache-hit
+  turn can never teach a misleading rate.
+- **The seat's fleet id now derives from the conversation id** (0852dab), so
+  resuming a conversation keeps its identity instead of minting a stranger
+  and leaving a ghost heartbeating at nothing — one conversation produced
+  three ids in one evening, and a task dispatched to the id last seen was
+  silently never delivered.
+
+### Fixed
+- **Auto-compact can now fire INSIDE a turn** (464f72e). Both checks sat at
+  the agent loop's `return` statements, so a turn that kept calling tools
+  sailed 80 → 84 → 87% without one check; with `tool_iterations: 100` a
+  single turn could eat the window. The loop now tests between iterations
+  and breaks — it never starts the compaction itself, because `_compact` is
+  exclusive in the same worker group and would cancel the loop that called
+  it. A failed compaction also no longer retries identically with no backoff.
+- **Bash timeouts now kill the process tree** — the old path reported
+  `[timed out after Ns]` while the real work kept running detached.
+- **Model and user text is never markup-parsed on its way to the screen**
+  (885aa7a). Four sites assigned raw strings to `.content`; streamed text
+  containing `[key=` matched Textual's tag grammar and killed the turn with
+  `Expected markup value`. Most bracket text fails the grammar, which is why
+  weeks of bracket-heavy bubbles proved nothing.
+
+---
 
 ---
 

@@ -27,6 +27,7 @@ import pccontrol_tool
 import ttyguard
 import mcp_client
 import sanitize
+import tool_context
 import skills as skills_mod
 
 from textual import events
@@ -308,6 +309,23 @@ def _is_binary(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
+#: The ONE cancellable subprocess. Tools execute sequentially in the agent
+#: loop, so a single slot is the honest data structure — a registry keyed by
+#: call id would imply a concurrency the loop does not have.
+_CANCELLABLE: dict = {"proc": None, "cancelled": False}
+
+
+def _kill_tree(pid: int) -> None:
+    """Kill pid and its DESCENDANTS. shell=True means the direct child is
+    cmd.exe and the real work is its grandchild — proc.kill() would kill
+    cmd.exe and leave python running, detached and invisible. taskkill /T
+    walks the tree; /F because a cancel that asks nicely is a suggestion."""
+    try:
+        ttyguard.run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=15)
+    except Exception:
+        pass  # the process may already be gone — that is success, not failure
+
+
 def tool_bash(args: dict) -> str:
     command = (args.get("command") or "").strip()
     if not command:
@@ -316,25 +334,44 @@ def tool_bash(args: dict) -> str:
         timeout = int(args.get("timeout") or BASH_DEFAULT_TIMEOUT_S)
     except (TypeError, ValueError):
         timeout = BASH_DEFAULT_TIMEOUT_S
+    # Through the envelope, which owns errors="replace", CREATE_NO_WINDOW and
+    # the terminal repair. popen (not run) so the HANDLE survives: run() blocks
+    # with the Popen trapped inside it, which is why a runaway bash could not
+    # be cancelled — the process existed and nothing could reach it.
+    t0 = time.monotonic()
     try:
-        # Through the envelope, which owns stdin=DEVNULL, errors="replace",
-        # CREATE_NO_WINDOW and the terminal repair. Those used to be spelled out
-        # here, per site — which is a convention, and one copy-paste away from
-        # being lost. errors="replace" in particular is not cosmetic: under
-        # strict decoding one byte undecodable in the active locale kills
-        # subprocess's reader THREAD, the traceback goes to stderr, and this
-        # call returns "(no output)" while the child really did produce output.
-        proc = ttyguard.run(
+        proc = ttyguard.popen(
             command,
             shell=True,
-            timeout=timeout,
+            stdin=subprocess.DEVNULL,
             cwd=str(Path.cwd()),
         )
-    except subprocess.TimeoutExpired as e:
-        partial = _truncate_tail((e.stdout or "") + (e.stderr or ""))
+    except OSError as e:
+        return f"[error] {type(e).__name__}: {e}"
+    _CANCELLABLE["proc"], _CANCELLABLE["cancelled"] = proc, False
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc.pid)
+        try:
+            out, err = proc.communicate(timeout=10)
+        except Exception:
+            out, err = "", ""
+        partial = _truncate_tail((out or "") + (err or ""))
         return f"[timed out after {timeout}s]\n{partial}".strip()
-    out = proc.stdout or ""
-    err = proc.stderr or ""
+    finally:
+        _CANCELLABLE["proc"] = None
+    if _CANCELLABLE["cancelled"]:
+        # The kill closed the pipes, so communicate() returned with whatever
+        # the tree wrote before dying — the model sees the partial output and
+        # an honest verdict, and the TURN CARRIES ON. That is the difference
+        # between this and Esc, which stops the whole turn.
+        _CANCELLABLE["cancelled"] = False
+        partial = _truncate_tail((out or "") + (("\n[stderr]\n" + err) if err else ""))
+        note = f"[cancelled by user after {_fmt_dur(time.monotonic() - t0)}]"
+        return (note + (("\n" + partial) if partial.strip() else "")).strip()
+    out = out or ""
+    err = err or ""
     if err:
         out = (out + "\n[stderr]\n" + err) if out else "[stderr]\n" + err
     out = _truncate_tail(out)
@@ -596,6 +633,22 @@ def _at_bottom(widget, slack: int = 2) -> bool:
         return True
 
 
+class CancelToolButton(Static):
+    """Top-left header control: kill the in-flight bash TREE, keep the turn.
+
+    Hidden unless a cancellable subprocess is actually running — a control
+    that is visible and does nothing is a lie, and this repo has shipped that
+    class of control before. Visibility is driven by the same repaint tick
+    that animates the elapsed timers, so it needs no timer of its own.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(" ✕ cancel tool ", id="cancel-tool")
+
+    def on_click(self) -> None:
+        self.app.action_cancel_tool()
+
+
 class ThinkingHeader(Static):
     """Clickable header row that toggles the parent thinking block."""
 
@@ -709,6 +762,20 @@ def _fmt_dur(seconds: float) -> str:
         return f"{s:.1f}s"
     m = int(s // 60)
     return f"{m}m {s - m * 60:04.1f}s"
+
+
+def midturn_action(enter_interrupts: bool, alt_chord: bool) -> str:
+    """Pure: what a mid-turn submission does — "queue" or "interrupt".
+
+    ONE mapping with two ends and a boolean that swaps them (Ryan, 2026-08-21:
+    "swapping the default behavior between those two in the settings page").
+    NOT a queue path plus a hardcoded interrupt chord — that shape, under the
+    swapped setting, leaves the user with no way to queue at all.
+
+        enter_interrupts=False:  Enter -> queue      chord -> interrupt
+        enter_interrupts=True:   Enter -> interrupt  chord -> queue
+    """
+    return "interrupt" if (enter_interrupts != alt_chord) else "queue"
 
 
 def render_progress(t0: float, now: float, prompt_tokens=None, learned_rate=None) -> str:
@@ -1019,6 +1086,25 @@ class LiteTUI(App):
     CSS = """
     Screen {
         background: $surface-darken-1;
+        layers: base overlay;
+    }
+
+    #cancel-tool {
+        layer: overlay;
+        offset: 4 0;
+        width: auto;
+        height: 1;
+        display: none;
+        background: $error 40%;
+        color: $text;
+    }
+
+    #cancel-tool:hover {
+        background: $error 70%;
+    }
+
+    #cancel-tool.visible {
+        display: block;
     }
 
     #chat-log {
@@ -1302,6 +1388,11 @@ class LiteTUI(App):
         # SCREEN, so Esc inside a modal fired stop_turn instead of the
         # modal's own cancel and the picker could not be dismissed.
         Binding("escape", "stop_turn", "Stop turn"),
+        # priority=True so the focused Input never swallows it. Whether the
+        # terminal DELIVERS a distinct ctrl+shift+enter is a property of the
+        # terminal + kitty keyboard protocol (Textual's Windows driver enables
+        # it); prove it on a real boot before trusting the chord end.
+        Binding("ctrl+shift+enter", "submit_alt", "Send (swapped)", priority=True, show=False),
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+o", "paste_image", "Paste Image"),
         # Ctrl+V: Input._on_paste already handles BRACKETED paste, but a
@@ -1378,6 +1469,10 @@ class LiteTUI(App):
         self._elapsed_body = None            # AnswerBody in its pre-token phase
         self._elapsed_body_t0: float = 0.0
         self._inflight_tools: list = []      # ToolMessages awaiting their result
+        #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
+        #: Flushed one per turn end — consecutive role:"user" messages are a
+        #: chat-template gamble some models refuse, so each gets its own turn.
+        self._pending_input: list = []
         # ETA: a rolling median of prompt-eval tokens/sec, learned ONLY from
         # turns that demonstrably reprocessed the prompt (the KV-cache gate in
         # is_reliable_rate_sample). _eta_last_prompt_tokens is the previous
@@ -1444,6 +1539,9 @@ class LiteTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        # Overlaid on the header row, beside the palette icon. A Header cannot
+        # take children, so this floats on its own layer at the same y.
+        yield CancelToolButton()
         yield VerticalScroll(id="chat-log")
         yield Static(
             "  Image attached — Ctrl+X to remove", id="image-indicator"
@@ -1534,10 +1632,92 @@ class LiteTUI(App):
         arrives mid-turn is exactly the mail worth not losing.
         """
         text = harness_mod.format_message(msg)
+        if self._chat_running():
+            # HELD, not appended. An appended-mid-turn message lands between
+            # an assistant message and its tool results where nothing announces
+            # it — measured 2026-08-21: the text sat in context for four
+            # turns while the model's own inbox tool said "(no new messages)"
+            # (truthfully — this monitor had already claimed the mail), so the
+            # model trusted the tool over its own context and never acted.
+            # Inert injection is not delivery. Held mail flushes as a REAL
+            # user turn the model cannot miss. Inbox mail always QUEUES —
+            # another agent's mail must never cancel work in flight.
+            self._user_bubble(text, False, queued=True)
+            self._pending_input.append({"content": text, "text": text})
+            return
         self._user_bubble(text, False)
         self._append({"role": "user", "content": text})
-        if not self._chat_running():
-            self._stream()
+        self._stream()
+
+    async def _contextualise_tool_result(self, name: str, raw: str) -> str:
+        """What this tool result contributes to the CONVERSATION (tool_context).
+
+        The tool bubble always shows the raw result — this changes only what
+        the model re-reads on every subsequent turn. The raw is never
+        destroyed: both processing modes park it in a sidecar file under the
+        conversation's own directory and the placeholder carries the path, so
+        the model can `read` it back on demand. Every early return here is the
+        raw itself — the fail-safe direction is the one that keeps everything.
+        """
+        plan = tool_context.plan_tool_result(
+            self.settings.tool_context_mode,
+            name,
+            raw,
+            self.settings.tool_context_threshold_chars,
+        )
+        if plan.route == tool_context.VERBATIM:
+            return raw
+        if self.convo_dir is None:
+            # Nowhere durable to park the raw, so replacing it would be
+            # destructive. Should not happen (a tool result implies a turn,
+            # which implies a materialised conversation) — but "should not"
+            # is not a guard.
+            return raw
+        sidecar = self.convo_dir / "tool-raw"
+        path = sidecar / f"{len(self.conversation):05d}-{name}.txt"
+
+        def _park() -> None:
+            sidecar.mkdir(parents=True, exist_ok=True)
+            path.write_text(raw, encoding="utf-8")
+
+        try:
+            await asyncio.to_thread(_park)
+        except OSError:
+            return raw  # could not store the raw -> do not replace it
+        pointer = str(path)
+        if plan.route == tool_context.ROUTE_MASK:
+            return tool_context.render_mask(name, raw, pointer)
+
+        # ROUTE_SUMMARISE: one throwaway side call. Its context is never
+        # persisted anywhere — the main conversation never holds the raw.
+        task = ""
+        for m in reversed(self.conversation):
+            if m.get("role") == "user":
+                task = self._flatten(m.get("content"))
+                break
+        summary = ""
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model_id or "local-model",
+                messages=[{
+                    "role": "user",
+                    "content": tool_context.summarise_prompt(task, name, raw),
+                }],
+                # Reuses the compact budget knob rather than minting a third
+                # literal: it is already tuned for the local-model failure
+                # where reasoning eats a small budget before any output.
+                max_tokens=self.settings.compact_max_tokens,
+                extra_body={"reasoning_effort": "low"},
+            )
+            summary = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            summary = ""
+        if not summary:
+            # Side call failed or produced nothing: fall back to the MASK.
+            # Still non-lossy (the pointer survives), still cheap — and more
+            # honest than a fabricated one-line "summary".
+            return tool_context.render_mask(name, raw, pointer)
+        return tool_context.render_summary(name, raw, pointer, summary)
 
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
@@ -2535,7 +2715,7 @@ class LiteTUI(App):
         log.mount(ChatMessage(Text(text), classes="system-msg"))
         self._scroll_down()
 
-    def _user_bubble(self, text: str, has_image: bool) -> None:
+    def _user_bubble(self, text: str, has_image: bool, queued: bool = False) -> None:
         log = self.query_one("#chat-log")
         parts: list[str] = []
         if has_image:
@@ -2543,7 +2723,9 @@ class LiteTUI(App):
         if text:
             parts.append(text)
         w = ChatMessage(Text("\n".join(parts)), classes="user-msg")
-        w.border_title = "You"
+        # A message that silently waits is indistinguishable from one that was
+        # dropped — the title is the visibility.
+        w.border_title = "You · queued" if queued else "You"
         log.mount(w)
         self._scroll_down()
 
@@ -2663,6 +2845,15 @@ class LiteTUI(App):
                 or self._inflight_tools
                 or self._thinking_live is not None
             )
+            # The cancel button tracks the PROCESS, not the tool bubble: only
+            # a live subprocess is cancellable, and a button shown for a tool
+            # with nothing to kill would be a control that does nothing.
+            try:
+                self.query_one(CancelToolButton).set_class(
+                    _CANCELLABLE["proc"] is not None, "visible"
+                )
+            except Exception:
+                pass
             if active:
                 if self._elapsed_body is not None:
                     # ETA: project this turn's prompt-processing time from the
@@ -2980,6 +3171,18 @@ class LiteTUI(App):
             w.group == "chat" and w.state is WorkerState.RUNNING for w in self.workers
         )
 
+    def action_cancel_tool(self) -> None:
+        """Kill the in-flight bash tree; the TURN carries on with an honest
+        result the model can react to. Esc (action_stop_turn) stays what it
+        is: stop the whole turn. Two different verbs, deliberately."""
+        proc = _CANCELLABLE["proc"]
+        if proc is None or proc.poll() is not None:
+            self.notify("No cancellable tool is running", timeout=2)
+            return
+        _CANCELLABLE["cancelled"] = True
+        _kill_tree(proc.pid)
+        self.notify("Tool cancelled — the model sees what it wrote so far", timeout=3)
+
     def action_stop_turn(self) -> None:
         if not self._chat_running():
             # Escape with nothing running should be inert, not a dialog.
@@ -3068,10 +3271,21 @@ class LiteTUI(App):
 
     @on(Input.Submitted, "#message-input")
     def handle_submit(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+        value = event.value
+        event.input.value = ""
+        self._submit_text(value, alt_chord=False)
+
+    def action_submit_alt(self) -> None:
+        """ctrl+shift+enter — the OTHER end of the mid-turn mapping."""
+        inp = self.query_one("#message-input", Input)
+        value = inp.value
+        inp.value = ""
+        self._submit_text(value, alt_chord=True)
+
+    def _submit_text(self, value: str, alt_chord: bool) -> None:
+        text = value.strip()
         if not text and not self.pending_image:
             return
-        event.input.value = ""
 
         if text.startswith("/"):
             self._handle_command(text)
@@ -3104,7 +3318,6 @@ class LiteTUI(App):
         # before it — boot, the system prompt, a /model switch, an abandoned
         # /resume — leaves nothing on disk.
         self._materialise_convo()
-        self._user_bubble(text, has_image)
 
         # Build API message content
         if image_b64 and text:
@@ -3126,8 +3339,25 @@ class LiteTUI(App):
         else:
             content = text
 
-        self._append({"role": "user", "content": content})
         self.pending_image = None
+        if self._chat_running():
+            act = midturn_action(self.settings.enter_interrupts, alt_chord)
+            if act == "queue":
+                self._user_bubble(text, has_image, queued=True)
+                self._pending_input.append({"content": content, "text": text})
+                self.notify("Queued — sends when this turn ends", timeout=3)
+                return
+            # Interrupt: soft stop — the existing stop path keeps the partial
+            # reply and discards unanswered tool calls, which is what protects
+            # the tool_call_id pairing. The message goes to the FRONT so the
+            # flush sends it before anything queued behind it.
+            self._user_bubble(text, has_image)
+            self._pending_input.insert(0, {"content": content, "text": text})
+            self._stop_requested = True
+            self.notify("Interrupting — your message sends next", timeout=3)
+            return
+        self._user_bubble(text, has_image)
+        self._append({"role": "user", "content": content})
         self._stream()
 
     @work(exclusive=True, group="chat")
@@ -3411,7 +3641,12 @@ class LiteTUI(App):
                         "role": "tool",
                         "tool_call_id": tc_id,
                         "name": name,
-                        "content": result,
+                        # What the MODEL sees from here on; the bubble above
+                        # showed the raw. Verbatim unless tool_context_mode
+                        # says otherwise (settings).
+                        "content": await self._contextualise_tool_result(
+                            name, result
+                        ),
                     }
                 )
 
@@ -3489,6 +3724,37 @@ class LiteTUI(App):
             tail = tail[1:]
         return tail
 
+    def _flush_pending_input(self) -> None:
+        """Send the oldest held message once the chat group is idle.
+
+        Scheduled from on_worker_state_changed, so EVERY way a chat-group
+        worker ends — plain answer, stop, compact break, iteration cap,
+        cancellation, error — reaches this one flush point, and no future exit
+        path can forget it. If the group is busy again (a compaction, a new
+        turn), retry shortly rather than racing it: _stream and _compact are
+        exclusive in that group, and a flush that streamed now would CANCEL
+        whichever is running.
+        """
+        if not self._pending_input:
+            return
+        if self._chat_running():
+            self.set_timer(0.7, self._flush_pending_input)
+            return
+        item = self._pending_input.pop(0)
+        self._materialise_convo()
+        self._append({"role": "user", "content": item["content"]})
+        self._stream()
+
+    def on_worker_state_changed(self, event) -> None:
+        """The single flush point for held input — fires on every chat-group
+        worker ending, whatever the reason. One site instead of a call at each
+        of _stream's exits, because exits multiply and each new one would have
+        to remember the flush."""
+        if getattr(event.worker, "group", None) != "chat":
+            return
+        if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            self.call_after_refresh(self._flush_pending_input)
+
     def _wake_after_compact(self) -> None:
         """The post-compaction ping: one user message that says "resume the
         in-flight task, or say standing by", then a normal turn.
@@ -3502,6 +3768,10 @@ class LiteTUI(App):
         dropped rather than queued behind it.
         """
         if self._chat_running():
+            return
+        if self._pending_input:
+            # A REAL user message is waiting — it is a better wake than the
+            # synthetic ping, and the flush is about to deliver it.
             return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)

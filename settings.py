@@ -90,6 +90,31 @@ class Settings:
     tool_iterations: int = 48
     tools_enabled: bool = True
 
+    # ── Tool output context (tool_context.py) ────────────────────────────────
+    #: What a tool's output contributes to the conversation: "off" puts the raw
+    #: in verbatim (the baseline), "llm-tool-mask" replaces it with a pointer
+    #: placeholder, "llm-tool-summ" replaces it with a side-call summary. Both
+    #: processing modes park the raw in a sidecar file under the conversation's
+    #: own directory — nothing is destroyed, the model can `read` it back. The
+    #: literature disagrees about mask vs summarise (see tool_context.py), so
+    #: this is a switch to be measured, not a decision.
+    tool_context_mode: str = "off"
+    #: Results under this size enter verbatim whatever the mode: the raw is
+    #: smaller than the machinery around it, and a summary can be LONGER than
+    #: what it replaces.
+    tool_context_threshold_chars: int = 2000
+
+    # ── Mid-turn input (message queue) ───────────────────────────────────────
+    #: The Enter <-> ctrl+shift+enter mapping for a message sent WHILE the
+    #: agent is mid-turn. The two BEHAVIOURS trade places (Ryan, 2026-08-21 —
+    #: "swapping the default behavior between those two in the settings page"):
+    #:   False (default): Enter QUEUES the message · ctrl+shift+enter INTERRUPTS
+    #:   True  (swapped): Enter INTERRUPTS          · ctrl+shift+enter QUEUES
+    #: Queue = hold until the turn ends, then send as a normal turn.
+    #: Interrupt = stop the turn (partial kept), then send yours.
+    #: A message sent while idle just sends, whatever this says.
+    enter_interrupts: bool = False
+
     # ── Compaction ───────────────────────────────────────────────────────────
     compact_max_tool_iters: int = 8
     #: 🔴 WAS HARDCODED AT 2048 AND THAT IS WHY /compact PRODUCED NO SUMMARY.
