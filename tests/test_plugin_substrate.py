@@ -102,8 +102,6 @@ def test_unload_sweeps_every_table_for_one_owner_only():
     b.command(("/cb",), lambda app, n, x: None)
     a.dynamic_tools(lambda: [], lambda n: None)
     a.prompt_section(5, lambda: "")
-    a.theme(object())
-    a.monitor(lambda app: None)
     a.palette_row("row", "", lambda: None)
 
     reg.unload("a")
@@ -111,8 +109,7 @@ def test_unload_sweeps_every_table_for_one_owner_only():
     assert [e.owner for e in reg.tools] == ["b"]
     assert reg.dispatch_for("ta") is None, "unload must also clear the name index"
     assert list(reg.commands) == ["/cb"]
-    assert not reg.dynamic and not reg.prompt_sections
-    assert not reg.themes and not reg.monitors and not reg.palette_rows
+    assert not reg.dynamic and not reg.prompt_sections and not reg.palette_rows
 
 
 # ── loader ──────────────────────────────────────────────────────────────────

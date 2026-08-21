@@ -28,6 +28,12 @@ from settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root: tests/ is one level down
 APP = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+# Readers may live in plugin modules since the plugin split — the gate's
+# claim is about the RUNTIME, so its scope is app.py plus every plugin.
+RUNTIME = APP + "".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((ROOT / "src" / "plugins").rglob("*.py"))
+)
 
 #: Fields consumed through a helper rather than by name. Each entry names the
 #: helper, so a reader can check the claim instead of trusting the list.
@@ -49,11 +55,12 @@ INDIRECT: dict[str, str] = {
 #: a short name — which it did the moment the footer fields were added,
 #: claiming six dead controls that were all live.
 _ALIASES = sorted(
-    set(re.findall(r"\b([A-Za-z_]\w*)\s*=\s*self\.settings\b", APP)) | {"self.settings"}
+    set(re.findall(r"\b([A-Za-z_]\w*)\s*=\s*(?:self|app)\.settings\b", RUNTIME))
+    | {"self.settings", "app.settings"}
 )
 
 
-def _reads(field: str, source: str = APP) -> bool:
+def _reads(field: str, source: str = RUNTIME) -> bool:
     for base in _ALIASES:
         if re.search(re.escape(base) + r"\." + re.escape(field) + r"\b", source):
             return True
@@ -115,4 +122,4 @@ def test_no_setting_is_read_only_by_the_settings_screen():
     for f in fields(Settings):
         if f.name in INDIRECT:
             continue
-        assert _reads(f.name), f"{f.name} is not read by app.py"
+        assert _reads(f.name), f"{f.name} is not read anywhere in the runtime"

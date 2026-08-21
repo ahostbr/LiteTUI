@@ -51,6 +51,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.skills_plugin",
     "plugins.harness_plugin",
     "plugins.mcp_plugin",
+    "plugins.themes_plugin",
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists
@@ -120,8 +121,6 @@ class PluginRegistry:
         self.commands: dict[str, CommandEntry] = {}   # every alias token maps here
         self.palette_rows: list[PaletteRow] = []
         self.prompt_sections: list[PromptSection] = []
-        self.themes: list[tuple[str, Any]] = []
-        self.monitors: list[tuple[str, Callable[[Any], None]]] = []
         self.status: dict[str, str] = {}              # id -> active|disabled|failed: ...
         self._tool_by_name: dict[str, ToolEntry] = {}
 
@@ -168,12 +167,6 @@ class PluginRegistry:
                 )
         self.prompt_sections.append(PromptSection(owner, order, render, enabled))
 
-    def add_theme(self, owner: str, theme) -> None:
-        self.themes.append((owner, theme))
-
-    def add_monitor(self, owner: str, start) -> None:
-        self.monitors.append((owner, start))
-
     # ── consumption (the host's side) ─────────────────────────────────────
 
     def tool_specs(self) -> list[dict]:
@@ -218,8 +211,6 @@ class PluginRegistry:
         self.commands = {t: e for t, e in self.commands.items() if e.owner != owner}
         self.palette_rows = [r for r in self.palette_rows if r.owner != owner]
         self.prompt_sections = [s for s in self.prompt_sections if s.owner != owner]
-        self.themes = [(o, t) for o, t in self.themes if o != owner]
-        self.monitors = [(o, m) for o, m in self.monitors if o != owner]
 
 
 class PluginContext:
@@ -246,12 +237,6 @@ class PluginContext:
 
     def prompt_section(self, order: int, render, enabled=None) -> None:
         self._reg.add_prompt_section(self._owner, order, render, enabled)
-
-    def theme(self, theme) -> None:
-        self._reg.add_theme(self._owner, theme)
-
-    def monitor(self, start) -> None:
-        self._reg.add_monitor(self._owner, start)
 
 
 def register_plugins(
