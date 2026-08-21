@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
 import paths
 import schedule_builder as sb
 import scheduler as sched_mod
@@ -71,7 +72,7 @@ def test_a_recognized_job_opens_with_the_widgets_populated():
         a = make_app([job(schedule="30 17 * * 1-5", label="evening")])
         async with a.run_test(size=SIZE) as pilot:
             ed = await _open_editor(a, pilot, day=17)   # a Monday
-            assert isinstance(ed, m.JobScreen)
+            assert isinstance(ed, JobScreen)
 
             assert ed.query_one("#job-preset", m.Select).value == "weekdays"
             assert ed.query_one("#job-hour", NumberTicker).value == 17
@@ -251,7 +252,7 @@ def test_custom_mode_still_refuses_garbage(tmp_path):
 
             await pilot.click("#job-save")
             await pilot.pause()
-            assert isinstance(a.screen, m.JobScreen), "garbage was saved"
+            assert isinstance(a.screen, JobScreen), "garbage was saved"
             assert "hour" in str(ed.query_one("#job-status", m.Static).render())
             assert target.schedule == "0 9 * * *"
     _run(body())

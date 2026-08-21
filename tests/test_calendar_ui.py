@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen, _apply_job_edit
 import paths
 import calendar_view as cv
 import scheduler as sched_mod
@@ -142,7 +143,7 @@ def test_clicking_a_day_opens_that_day():
             await pilot.click("#cal-grid", offset=(x, y))
             await pilot.pause()
 
-            assert isinstance(a.screen, m.DayScreen), (
+            assert isinstance(a.screen, DayScreen), (
                 "the click did not open a DayScreen — the handler chain is dead"
             )
             assert a.screen.day == date(scr._year, scr._month, 15)
@@ -177,7 +178,7 @@ def test_clicking_a_side_pane_job_opens_its_editor():
 
             await pilot.click("#cal-side", offset=(4, y))
             await pilot.pause()
-            assert isinstance(a.screen, m.JobScreen)
+            assert isinstance(a.screen, JobScreen)
             assert a.screen._job is target
     _run(body())
 
@@ -215,7 +216,7 @@ def test_the_day_popup_lists_the_right_jobs_in_time_order():
             await pilot.pause()
 
             day = a.screen
-            assert isinstance(day, m.DayScreen)
+            assert isinstance(day, DayScreen)
             ol = day.query_one("#day-list", m.OptionList)
             ids = [ol.get_option_at_index(i).id for i in range(ol.option_count)]
 
@@ -286,7 +287,7 @@ def test_editing_a_job_saves_persists_and_repaints_the_month(tmp_path):
             await pilot.press("enter")          # first row = the job
             await pilot.pause()
             ed = a.screen
-            assert isinstance(ed, m.JobScreen)
+            assert isinstance(ed, JobScreen)
             assert ed.query_one("#job-prompt", m.Input).value == "say hi"
             assert ed.query_one("#job-schedule", m.Input).value == "0 9 * * 1-5"
 
@@ -299,7 +300,7 @@ def test_editing_a_job_saves_persists_and_repaints_the_month(tmp_path):
             assert [j.label for j in on_disk] == ["morning"], "the edit never persisted"
 
             # close the day; the month must repaint with the new label
-            assert isinstance(a.screen, m.DayScreen)
+            assert isinstance(a.screen, DayScreen)
             a.screen.action_close()
             await pilot.pause()
             assert a.screen is cal
@@ -330,7 +331,7 @@ def test_an_invalid_schedule_cannot_be_saved_and_names_the_field(tmp_path):
 
             await pilot.click("#job-save")
             await pilot.pause()
-            assert isinstance(a.screen, m.JobScreen), "an invalid schedule was saved"
+            assert isinstance(a.screen, JobScreen), "an invalid schedule was saved"
             assert target.schedule == "0 9 * * *", "the job was mutated anyway"
             assert sched_mod.load(tmp_path) == [], "something persisted on refusal"
     _run(body())
@@ -350,7 +351,7 @@ def test_an_empty_prompt_cannot_be_saved():
 
             await pilot.click("#job-save")      # prompt is empty
             await pilot.pause()
-            assert isinstance(a.screen, m.JobScreen)
+            assert isinstance(a.screen, JobScreen)
             status = str(ed.query_one("#job-status", m.Static).render())
             assert "prompt is empty" in status
     _run(body())
@@ -416,7 +417,7 @@ def test_deleting_takes_two_clicks_and_then_really_deletes(tmp_path):
 
             await pilot.click("#job-delete")
             await pilot.pause()
-            assert isinstance(a.screen, m.JobScreen), "one click must not delete"
+            assert isinstance(a.screen, JobScreen), "one click must not delete"
             assert target in a._jobs
             assert "Really" in str(ed.query_one("#job-delete", m.Button).label)
 
@@ -485,7 +486,7 @@ def test_apply_only_writes_the_edited_fields():
     target.last_fired_slot = "2026-08-21T09:30"
     jobs = [target]
 
-    changed = m._apply_job_edit(jobs, target, ("save", {
+    changed = _apply_job_edit(jobs, target, ("save", {
         "prompt": "new prompt", "schedule": "@hourly", "label": "y",
         "enabled": False, "new_conversation": True,
     }))
@@ -500,5 +501,5 @@ def test_apply_only_writes_the_edited_fields():
 
 def test_apply_with_no_result_changes_nothing(tmp_path):
     target = job()
-    assert m._apply_job_edit([target], target, None) is False
+    assert _apply_job_edit([target], target, None) is False
     assert not sched_mod.jobs_path(tmp_path).exists(), "a cancel wrote the store"

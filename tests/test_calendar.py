@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import calendar_view as cv
 import scheduler as sched_mod
+from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
 
 
 def job(prompt="p", schedule="@daily", **kw):
@@ -239,13 +240,13 @@ def test_slash_calendar_opens_the_screen():
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            assert isinstance(a.screen, m.CalendarScreen)
+            assert isinstance(a.screen, CalendarScreen)
 
             a.screen.dismiss(None)
             await pilot.pause()
             a._handle_command("/cal")           # the alias must work too
             await pilot.pause()
-            assert isinstance(a.screen, m.CalendarScreen)
+            assert isinstance(a.screen, CalendarScreen)
     _run(body())
 
 
@@ -337,7 +338,7 @@ def test_the_calendar_opens_with_no_jobs_at_all():
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            assert isinstance(a.screen, m.CalendarScreen)
+            assert isinstance(a.screen, CalendarScreen)
             side = a.screen.query_one("#cal-side", m.Static)
             painted = str(side.render())
             assert "nothing scheduled" in painted
@@ -355,7 +356,7 @@ def test_a_broken_job_does_not_stop_the_calendar_from_painting():
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            assert isinstance(a.screen, m.CalendarScreen)
+            assert isinstance(a.screen, CalendarScreen)
             side = str(a.screen.query_one("#cal-side", m.Static).render())
             assert "unparseable" in side
     _run(body())

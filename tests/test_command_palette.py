@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
 import paths
 import scheduler as sched_mod
 
@@ -80,29 +81,52 @@ def test_the_palette_covers_the_features_it_was_missing():
     _run(body())
 
 
-def test_every_command_string_in_the_table_is_one_the_dispatcher_handles():
-    """The drift gate. Each _handle_command partial names a command; its
-    first token must appear as a quoted literal in the dispatcher source.
-    Rename /calendar and this fails before a dead palette row ships."""
+def test_the_palette_is_a_complete_derivation_of_the_registry():
+    """The successor to the old drift gate, HONESTLY scoped.
+
+    Derivation made row-token drift structurally impossible: a derived row
+    takes its token FROM the registry, so token-in-registry is a tautology
+    (proven by mutation — renaming /calendar passed the old form). What CAN
+    still fail is the derivation itself: an entry with palette metadata that
+    never becomes a row, a row duplicated per alias, or an escape-hatch row
+    lost. So the gate counts BOTH SIDES from independent walks."""
     async def body():
         a = make_app()
         async with a.run_test(size=(190, 48)):
-            checked = 0
-            for title, _help, run in _table(a):
-                if not (isinstance(run, partial)
-                        and getattr(run.func, "__name__", "") == "_handle_command"):
-                    continue
-                token = run.args[0].split()[0]
-                # Migration-window gate: a token is live if the REGISTRY
-                # dispatches it, or (legacy) it remains a quoted literal in
-                # the shrinking if/elif chain. Tightens to registry-only
-                # when the chain dies.
-                assert token in a.plugins.commands or f'"{token}"' in APP_SRC, (
-                    f"palette row {title!r} routes to {token} — not in the "
-                    f"registry and not a quoted literal in the dispatcher"
-                )
-                checked += 1
-            assert checked >= 10, f"only {checked} rows checked — table shrank?"
+            rows = _table(a)
+            titles = [t for t, _h, _r in rows]
+            assert len(titles) == len(set(titles)), f"duplicated rows: {titles}"
+            palette_entries = {id(e): e.palette for e in a.plugins.commands.values()
+                               if e.palette is not None}
+            for want in palette_entries.values():
+                assert want in titles, f"registered palette {want!r} never became a row"
+            hatch = [r.title for r in a.plugins.palette_rows]
+            for want in hatch:
+                assert want in titles, f"escape-hatch row {want!r} lost in derivation"
+            assert len(rows) == len(palette_entries) + len(hatch), (
+                f"{len(rows)} rows != {len(palette_entries)} palette commands "
+                f"+ {len(hatch)} escape hatches"
+            )
+    _run(body())
+
+
+def test_running_scheduled_jobs_row_reaches_the_cron_list(tmp_path, monkeypatch):
+    """The one escape hatch whose embedded command string ("/cron list")
+    nothing else exercises — a dead token here is now the ONLY way a palette
+    row can rot, so it is run for real."""
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)) as pilot:
+            msgs = []
+            a._system = lambda t: msgs.append(t)
+            row = [r for t, _h, r in _table(a) if t == "Scheduled jobs"]
+            assert row, "Scheduled jobs row missing"
+            row[0]()
+            await pilot.pause()
+            assert msgs and "job" in msgs[-1].lower(), (
+                f"the /cron list embedded in the row did not reach cron: {msgs}"
+            )
     _run(body())
 
 
@@ -139,7 +163,7 @@ def test_running_the_calendar_row_opens_the_calendar():
             run = next(r for t, _h, r in _table(a) if t == "Calendar")
             run()
             await pilot.pause()
-            assert isinstance(a.screen, m.CalendarScreen)
+            assert isinstance(a.screen, CalendarScreen)
     _run(body())
 
 
@@ -151,7 +175,7 @@ def test_running_new_scheduled_job_opens_the_builder_on_daily(tmp_path):
             run()
             await pilot.pause()
             ed = a.screen
-            assert isinstance(ed, m.JobScreen)
+            assert isinstance(ed, JobScreen)
             assert ed.query_one("#job-preset", m.Select).value == "daily", (
                 "palette creation has no day context — it should open daily"
             )
@@ -190,7 +214,7 @@ def test_the_real_palette_reaches_our_rows():
             await pilot.press("down", "enter")
             await pilot.pause()
             await pilot.pause()
-            assert isinstance(a.screen, m.CalendarScreen), (
+            assert isinstance(a.screen, CalendarScreen), (
                 f"the palette flow ended on {type(a.screen).__name__}"
             )
     _run(body())
