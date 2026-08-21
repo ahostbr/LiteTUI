@@ -1672,6 +1672,39 @@ class LiteTUI(App):
         self.convo_dir = CONVO_DIR / self.convo_id
         self.convo_path = self.convo_dir / TRANSCRIPT_NAME
         self._convo_pending = True
+        self._sync_seat_identity()
+
+    def _sync_seat_identity(self) -> None:
+        """Point the seat at the CURRENT conversation.
+
+        Called from the only two places convo_id changes. The seat id used to
+        be a fresh uuid4 per PROCESS, so resuming a conversation joined the
+        fleet as a stranger and left the previous id behind, still heartbeating
+        at nothing. One conversation minted three ids in an evening and a task
+        dispatched to the id last seen was never delivered — `send` exits 0
+        either way, so the misdelivery is silent.
+
+        The seat is NOT re-registered here. heartbeat() sends the same argv as
+        register(), so the next tick registers the new id by itself; doing it
+        here would mean a second blocking subprocess for no gain.
+        """
+        seat = getattr(self, "seat", None)
+        if seat is None or not self.convo_id:
+            return
+        want = harness_mod.agent_id_for_convo(self.convo_id)
+        if want == seat.agent_id:
+            return
+        if seat.registered:
+            # Switching conversations mid-session. The stale row must be
+            # retired EXPLICITLY: it carries this process's pid, so every
+            # liveness check that distinguishes ghost from live would read it
+            # as alive and keep offering it as a delivery target.
+            try:
+                seat.deregister()
+            except Exception:
+                pass  # a roster that keeps a stale row beats a resume that dies
+        seat.agent_id = want
+        seat.registered = False
 
     def _materialise_convo(self) -> None:
         """Create the staged conversation on disk. Idempotent.
@@ -1886,6 +1919,7 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        self._sync_seat_identity()
         self._refresh_ctx_label()   # resumed into a different conversation
         # The restored system message already names THIS store (it was written
         # with this uuid), so it is not rebuilt — rebuilding would overwrite

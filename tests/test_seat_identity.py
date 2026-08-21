@@ -2,12 +2,35 @@
 
 Two separate things, and conflating them is the bug this file guards.
 
-  agent_id   one per PROCESS. Minted fresh each launch, persisted nowhere.
-             That is CORRECT and must stay. The conversation id cannot be
-             reused for it: convo_id changes WITHIN a process (/new, resume),
-             so identity would shift mid-session, and two windows resuming the
-             same conversation would register as one agent -- two consumers on
-             one mailbox, the exact defect harness.py exists to avoid.
+  agent_id   DERIVED FROM THE CONVERSATION as of 2026-08-21, by Ryan's
+             ruling. This block used to say a per-process id "is CORRECT and
+             must stay", and that is now SUPERSEDED -- kept here in full,
+             because its reasoning is still the map of what can go wrong.
+
+             The old objections, and what happened to each:
+
+               "convo_id changes WITHIN a process (/new, resume), so identity
+               would shift mid-session"
+                 -- Half right, and the half it got wrong is the point. Only
+                 /new mints a new convo id; /resume restores the existing one,
+                 which is exactly why it can be reused. A shift now happens
+                 only on a DELIBERATE /new or a switch to another
+                 conversation, and _sync_seat_identity handles it: retire the
+                 stale row, adopt the new id, let the next heartbeat register.
+
+               "two windows resuming the same conversation would register as
+               one agent -- two consumers on one mailbox"
+                 -- STILL TRUE AND STILL OPEN. Not a reason to keep minting a
+                 new identity every launch, which cost more than it saved: one
+                 conversation produced three ids in an evening
+                 (ed8ee93e -> 8113984f -> e8a69016), two of them left
+                 heartbeating at nothing, and a dispatch sent to the id last
+                 seen was silently never delivered. `send` exits 0 either way.
+
+             If the two-window case ever bites, the fix belongs at
+             registration -- refuse or re-randomise when the id is already
+             held by a DIFFERENT live pid -- not in going back to per-process
+             ids. liteharness is ours to change.
 
   name       the durable handle a human or a peer writes down. Without
              --takeover it could not survive a restart, because the previous
@@ -124,13 +147,19 @@ finally:
         os.environ[harness_mod.NO_HARNESS_ENV] = _guard
 
 
-print("\n=== the two ids stay separate, deliberately ===")
+print("\n=== the seat id follows the conversation (Ryan, 2026-08-21) ===")
 app_src = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
-chk("the agent id is minted per process, not taken from the conversation",
-    "agent_id=harness_mod.new_agent_id()" in app_src)
-chk("...and new_agent_id is a fresh uuid4, not derived from convo_id",
+chk("the seat id is DERIVED from the conversation, so a resume keeps it",
+    "_sync_seat_identity" in app_src and "agent_id_for_convo" in app_src)
+chk("...and it is synced from BOTH places convo_id changes, not just one",
+    app_src.count("self._sync_seat_identity()") >= 2)
+chk("...and new_agent_id stays a fresh uuid4 -- the no-conversation fallback",
     "uuid.uuid4()" in Path(harness_mod.__file__).read_text(encoding="utf-8")
     .split("def new_agent_id", 1)[1].split("def ", 1)[0])
+chk("...and the same conversation resolves to the same seat id",
+    harness_mod.agent_id_for_convo("abc") == harness_mod.agent_id_for_convo("abc"))
+chk("...while different conversations do not collide",
+    harness_mod.agent_id_for_convo("abc") != harness_mod.agent_id_for_convo("abd"))
 
 print("\n=== 🔴 THE LIVENESS GUARD DOES NOT PROTECT THIS SEAT -- measured ===")
 # --takeover is documented to refuse a GENUINELY LIVE holder. That guard reads

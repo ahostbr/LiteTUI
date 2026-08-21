@@ -67,6 +67,34 @@ def new_agent_id() -> str:
     return str(uuid.uuid4())
 
 
+def agent_id_for_convo(convo_id: str) -> str:
+    """The seat id for a conversation — the SAME id every time it is resumed.
+
+    🔴 WHY THIS EXISTS. The seat id was a fresh uuid4 per PROCESS, so every
+    resume of the same conversation joined the fleet as a stranger and left the
+    previous id behind as a ghost. Measured in one evening: one conversation,
+    three ids (ed8ee93e -> 8113984f -> e8a69016), two of them still
+    heartbeating on the roster while pointing at nothing. A dispatch addressed
+    to the id you last saw lands in a dead mailbox and `send` still exits 0 —
+    misdelivery here is SILENT.
+
+    The conversation id is already stable across resume (_resume restores it
+    from the meta record), so it is the natural identity. Deriving instead of
+    storing means the id needs no lookup and no fallback branch: given a convo
+    id you can compute the seat id without opening a file, which is exactly
+    what you want while debugging a roster that disagrees with reality.
+
+    Empty convo id -> a random one, preserving the old behaviour for the window
+    before a conversation exists. That case must stay RANDOM rather than
+    resolving to one shared constant, or every seat with no convo would
+    collide on the same id.
+    """
+    cid = (convo_id or "").strip()
+    if not cid:
+        return new_agent_id()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "litetui:seat:" + cid))
+
+
 def _resolved_name(stdout: str) -> str | None:
     """The name the registry ACTUALLY assigned, from register's own output.
 
