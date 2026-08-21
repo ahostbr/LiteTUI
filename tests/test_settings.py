@@ -300,7 +300,7 @@ async def test_every_field_is_reachable_without_opening_its_tab():
         # Only the FIRST tab is active. Every other field lives in a hidden pane.
         unreachable = []
         for f in dc_fields(Settings):
-            if f.name in ("mcp_disabled_servers", "custom_themes"):
+            if f.name in ("mcp_disabled_servers", "custom_themes", "plugins_disabled"):
                 continue  # rendered as per-server switches, not one control
             if settings_mod.source_of(f.name):
                 continue  # env-locked fields are intentionally absent

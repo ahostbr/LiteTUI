@@ -246,6 +246,18 @@ class PluginContext:
         self._reg.add_prompt_section(self._owner, order, render, enabled)
 
 
+def status_command(app, name: str, arg: str) -> None:
+    """/plugins — every plugin with its true status. Host-registered, so it
+    survives any plugin being disabled (a status readout that dies with a
+    disabled plugin reports nothing exactly when it matters). The status
+    dict is insertion-ordered, which IS the load order; keys are manifest
+    ids, or the module name when the module never imported."""
+    lines = [f"{len(app.plugins.status)} plugin(s), load order:"]
+    for pid, status in app.plugins.status.items():
+        lines.append(f"  {status:<9} {pid}")
+    app._system(chr(10).join(lines))
+
+
 def register_plugins(
     app: Any,
     registry: PluginRegistry,

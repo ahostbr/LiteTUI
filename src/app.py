@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import statistics
 import time
 import urllib.request
@@ -1436,7 +1437,17 @@ class LiteTUI(App):
             lambda: TOOLS_PROMPT,
             enabled=lambda: self.tools_enabled,
         )
-        self._plugin_manifests = plugins_mod.register_plugins(self, self.plugins)
+        # The substrate's own status readout — host-registered so it can
+        # never be disabled away with a plugin.
+        self.plugins.add_command(
+            "host", ("/plugins",), plugins_mod.status_command,
+            palette="Plugins",
+            help="Every plugin and its status: active, disabled, failed (/plugins)",
+        )
+        self._plugin_manifests = plugins_mod.register_plugins(
+            self, self.plugins,
+            disabled=frozenset(self.settings.plugins_disabled or ()),
+        )
         self._new_convo()
         self._load_system_prompt()
 

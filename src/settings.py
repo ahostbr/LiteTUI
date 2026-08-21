@@ -188,6 +188,10 @@ class Settings:
     mcp_enabled: bool = True
     #: Server names from mcp.json to NOT start. Absent = start everything.
     mcp_disabled_servers: list[str] = field(default_factory=list)
+    #: Plugin ids to NOT load at boot (applies at next start; the critical
+    #: core-tools plugin ignores this — a harness that cannot read a file
+    #: is a lying boot). Mirrors mcp_disabled_servers.
+    plugins_disabled: list[str] = field(default_factory=list)
 
     # ── Interface ────────────────────────────────────────────────────────────
     #: The active Textual theme, PERSISTED. Chosen from the command palette

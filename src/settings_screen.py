@@ -506,7 +506,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
         for f in fields(Settings):
             name = f.name
-            if name in ("mcp_disabled_servers", "custom_themes"):
+            if name in ("mcp_disabled_servers", "custom_themes", "plugins_disabled"):
                 continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
                 continue  # env owns it; the control is disabled
