@@ -2007,7 +2007,7 @@ class LiteTUI(App):
                     try:
                         w.body.set_markdown(text)
                     except Exception:
-                        w.body.content = text
+                        w.body.content = Text(text)
                     assistants += 1
             elif role == "tool":
                 tools += 1
@@ -2542,7 +2542,7 @@ class LiteTUI(App):
             parts.append("[Image attached]")
         if text:
             parts.append(text)
-        w = ChatMessage("\n".join(parts), classes="user-msg")
+        w = ChatMessage(Text("\n".join(parts)), classes="user-msg")
         w.border_title = "You"
         log.mount(w)
         self._scroll_down()
@@ -3266,7 +3266,7 @@ class LiteTUI(App):
                         self._thinking_done()
                         self._elapsed_stop_body()
                         text_full += delta.content
-                        widget.body.content = text_full + " \u258c"
+                        widget.body.content = Text(text_full + " \u258c")
                         self._scroll_down(only_if_following=True)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
@@ -3323,7 +3323,7 @@ class LiteTUI(App):
                 try:
                     widget.body.set_markdown(text_full)
                 except Exception:
-                    widget.body.content = text_full
+                    widget.body.content = Text(text_full)
             else:
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.
                 if thinking is None:
