@@ -38,6 +38,7 @@ import tool_context
 import themes as themes_mod
 from colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
 import skills as skills_mod
+import plugins as plugins_mod
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -2618,6 +2619,14 @@ class LiteTUI(App):
         # The question widget must reach the RUNNING app instance to
         # turn can ever call the tool.
         ask_user_question.set_app(self)
+        # The plugin substrate. Per INSTANCE, never module-level — the suite
+        # builds many apps in one process, and a shared registry would leak
+        # skills/mcp/seat state between them. Skills discovery and mcp.load()
+        # above stay host-owned lines: inside a plugin's register() their
+        # failure would be swallowed by per-plugin isolation, turning a
+        # broken checkout into a silent half-boot.
+        self.plugins = plugins_mod.PluginRegistry()
+        self._plugin_manifests = plugins_mod.register_plugins(self, self.plugins)
         self._new_convo()
         self._load_system_prompt()
 
@@ -2656,6 +2665,9 @@ class LiteTUI(App):
         self._connect()
         self._inbox_monitor()
         self._cron_monitor()
+        # Plugin activate() hooks — the side-effecting half of the lifecycle,
+        # run where the monitors it will absorb have always started.
+        plugins_mod.activate_plugins(self, self.plugins, self._plugin_manifests)
 
     @work(exclusive=True, group="inbox")
     async def _inbox_monitor(self) -> None:
