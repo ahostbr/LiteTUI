@@ -18,6 +18,36 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-21
+
+### Added
+
+- **The calendar is clickable.** Every day cell opens a popup of that day's
+  jobs; each job opens an editor; every day carries a create row, so an empty
+  day is an invitation rather than a dead end. Side-pane jobs are clickable
+  too. Full keyboard equivalents: arrows/enter in the popup, `n` for new,
+  enter-in-any-field saves the form, escape cancels.
+- **Job editor** with a live schedule preview: the next real fire of what is
+  typed (including the "next year" a passed date resolves to), the per-day
+  fire count, and — when it does not parse — the exact field that is wrong.
+  Save refuses an empty prompt or a broken schedule with the reason visible.
+  Delete takes two clicks, and the Button's own pressed-effect debounce means
+  a hardware double-click cannot blow through both stages.
+- Mechanism: a **hit-map built beside the paint** — the loop that emits each
+  grid line appends one map entry, so the map cannot drift from the drawing.
+  Verified by a triangle test (map says (x,y) → paint shows the digits at
+  (x,y) → a real click there opens the day) and a negative control: a map
+  shifted one line fails both legs.
+
+### Fixed
+
+- The day popup sorted by time alone, so a DISABLED 00:00 job outsorted every
+  working one and Enter edited a job that will not fire. It now ranks what
+  WILL happen: running jobs in time order, then disabled, then broken. The
+  ordering test's fixture had no disabled job and could not see this — the
+  render did.
+
+
 ## [0.14.0] — 2026-08-21
 
 ### Added
