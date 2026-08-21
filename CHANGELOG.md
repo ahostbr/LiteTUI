@@ -18,6 +18,50 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-21
+
+### Added
+
+- **Cron jobs and a scheduler** (`/cron`). A scheduled prompt is an input
+  nobody typed, so it rides the same held-then-flushed path as inbox mail
+  rather than a second delivery route. Standard 5-field cron plus `@daily`
+  and friends; `add`, `list`, `rm`, `on`, `off`, `run`.
+  - Jobs fire **only while LiteTUI is open**. There is no OS-level
+    registration; the store is plain JSON so a headless runner could consume
+    it later.
+  - A slot missed while the app was closed does **not** fire late. Waking to a
+    burst of overdue prompts is worse than missing them: the burst arrives with
+    nothing marking it as late and gets answered as though it were now.
+  - The cron worker has its **own** worker group. In `chat` every tick would
+    cancel the turn in flight — the trap autocompact fell into.
+- **A month calendar** (`/calendar`, `/cal`) in the style of
+  [calcure](https://github.com/anufrievroman/calcure), which is curses-based
+  and therefore Linux/macOS only. This is a rebuild of the look in Textual, so
+  it runs on Windows: calcure's icons and semantic colours, its cell maths
+  (pane ÷ 7 wide, six week rows, height ÷ 6 tall), resolved through the active
+  theme instead of fixed ANSI indices.
+  - Day names fall back to `MON`/`TUE` when the cell is too narrow for the
+    full word — truncating gives `WEDNE` and `THURS`, which are not words.
+  - A day with more jobs than fit says `+n more` instead of dropping them. A
+    calendar that hides an entry tells you the day is free.
+
+### Fixed
+
+- **`pytest` collected ZERO tests for the whole repository.** One test file
+  ended in a bare `asyncio.run(main())` at module level, so the collector
+  imported it, ran it, and took a `SystemExit`; 13 of 47 files were in that
+  state. Nothing noticed because the scripts were all *passing* — they run
+  standalone and exit 0, so the signal everyone looked at was green and the
+  entry point nobody typed was dead. `conftest` now derives `collect_ignore`
+  from whether a file defines `def test_`, and `test_collector_integrity.py`
+  fails if a collected file ever runs itself on import.
+  - Suite: **no tests collected → 393 passing.**
+- A day's `+n more` counted against the times *fetched* rather than the one
+  *displayed*, so a job firing 48 times a day read `+46` while 47 were unshown.
+  The test asserted the wrong value too, which is why it survived until the
+  render was looked at.
+
+
 _(nothing yet)_
 
 ## [0.13.0] — 2026-08-21

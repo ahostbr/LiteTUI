@@ -11,6 +11,7 @@ import statistics
 import time
 import urllib.request
 import uuid
+from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -27,6 +28,8 @@ import pccontrol_tool
 import ttyguard
 import mcp_client
 import sanitize
+import scheduler as sched_mod
+import calendar_view as calview
 import tool_context
 import themes as themes_mod
 from colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -962,6 +965,246 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class CalendarScreen(ModalScreen[None]):
+    """A month of cron jobs, drawn the way calcure draws a month.
+
+    The layout maths are calcure's: cell width is the pane divided by seven,
+    six week rows, the day number at the top-left of its cell, a `\u2502` rule
+    and a side pane. What changed is the paint -- Textual, so it runs on
+    Windows, and theme variables instead of fixed ANSI colours so it follows
+    whichever SHADES theme is on rather than fighting it.
+
+    One Static per pane, each painting a Rich Text sized to the space it has.
+    Forty-two cell widgets would reflow more prettily and would also make the
+    grid a layout problem; this keeps it a drawing problem, which is what it is.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=False),
+        Binding("q", "close", "Close", show=False),
+        Binding("left,h", "prev_month", "Prev", show=False),
+        Binding("right,l", "next_month", "Next", show=False),
+        Binding("t", "today", "Today", show=False),
+    ]
+
+    def __init__(self, jobs: list):
+        super().__init__()
+        self._jobs = jobs
+        today = date.today()
+        self._year, self._month = today.year, today.month
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cal-box"):
+            with Horizontal(id="cal-body"):
+                yield Static(id="cal-grid")
+                yield Static(id="cal-side")
+            yield Static(id="cal-hints")
+
+    def on_mount(self) -> None:
+        self._paint()
+
+    def on_resize(self, _event) -> None:
+        # The grid is drawn to fit, so a resize is a repaint, not a reflow.
+        self._paint()
+
+    # -- painting ---------------------------------------------------------
+
+    def _palette(self) -> dict:
+        """Resolve theme variables to real colours for Rich.
+
+        `$error` and friends are TEXTUAL CSS variables. Rich parses style
+        strings itself and has never heard of them -- it raises MissingStyle,
+        which surfaces as the whole screen refusing to render rather than as a
+        wrong colour. Caught by the live screen tests; no source check could
+        have seen it, because a style string is only parsed when something
+        actually paints.
+
+        Falls back to plain styles rather than raising: a calendar in the
+        wrong colours is worth having, one that will not open is not.
+        """
+        try:
+            theme = self.app.get_theme(self.app.theme)
+        except Exception:
+            theme = None
+        if theme is None:
+            return {"title": "bold", "dayname": "", "weekend": "bold",
+                    "today": "bold reverse", "event": "", "muted": "dim",
+                    "broken": "bold", "off": "strike dim"}
+        return {
+            "title":   f"bold {theme.error}",
+            "dayname": f"{theme.primary}",
+            "weekend": f"{theme.error}",
+            "today":   f"bold {theme.success}",
+            "event":   f"{theme.accent}",
+            "muted":   f"dim {theme.foreground}",
+            "broken":  f"bold {theme.error}",
+            "off":     f"strike dim {theme.foreground}",
+        }
+
+    def _paint(self) -> None:
+        self.query_one("#cal-grid", Static).update(self._grid_text())
+        self.query_one("#cal-side", Static).update(self._side_text())
+        self.query_one("#cal-hints", Static).update(self._hints_text())
+
+    def _grid_text(self) -> Text:
+        grid = self.query_one("#cal-grid", Static)
+        pal = self._palette()
+        width = max(42, grid.size.width or 70)
+        cell = max(6, width // 7)
+
+        # calcure's own maths: the pane, minus the title and day-name rows,
+        # divided by six week rows; one line of that is the day number itself.
+        # A fixed cap made nearly every cell read "+n more" on a tall terminal,
+        # which is honest and useless — seeing what is on a day IS the feature.
+        height = grid.size.height or 30
+        per_cell = max(1, (height - 2) // calview.WEEK_ROWS - 1)
+
+        today = date.today()
+        out = Text()
+
+        title = f"{calview.MONTHS[self._month - 1]} {self._year}"
+        out.append(title + "\n", style=pal["title"])
+
+        # Full names when they fit, the three-letter form when they do not.
+        # Truncating to the cell width is what calcure does and it is fine at a
+        # wide terminal; at cell=11 it yields WEDNE and THURS, which are not
+        # words. Falling back to MON/TUE keeps it readable at any width.
+        longest = max(len(d) for d in calview.DAYS)
+        abbreviate = cell < longest + 1
+        for i, name in enumerate(calview.DAYS):
+            label = name[:3] if abbreviate else name
+            style = pal["weekend"] if calview.is_weekend(i) else pal["dayname"]
+            out.append(label[: cell - 1].ljust(cell), style=style)
+        out.append("\n")
+
+        for week in calview.month_matrix(self._year, self._month):
+            # The day-number row, then one row per event line beneath it --
+            # exactly calcure's stacking inside a cell.
+            rows: list[list[Text]] = []
+            numbers = Text()
+            for col, day in enumerate(week):
+                if not day:
+                    numbers.append(" " * cell)
+                    continue
+                is_today = (day == today.day and self._month == today.month
+                            and self._year == today.year)
+                if is_today:
+                    style = pal["today"]
+                    label = f"{day}{calview.ICON_TODAY}"
+                elif calview.is_weekend(col):
+                    style, label = pal["weekend"], str(day)
+                else:
+                    style, label = "", str(day)
+                numbers.append(label.ljust(cell), style=style)
+            rows.append(numbers)
+
+            # Up to two event lines per cell keeps a month on one screen.
+            cells: list[list[calview.DayEntry]] = []
+            for col, day in enumerate(week):
+                if not day:
+                    cells.append([])
+                    continue
+                cells.append(
+                    calview.entries_for(self._jobs, date(self._year, self._month, day))
+                )
+
+            # cell_lines declares overflow as `+n more` rather than dropping
+            # it. A calendar that silently hides an entry will tell you the day
+            # is free, which is the one thing it must never get wrong.
+            per_cell_lines = [calview.cell_lines(e, limit=per_cell) for e in cells]
+            for line in range(per_cell):
+                if not any(len(ls) > line for ls in per_cell_lines):
+                    break
+                row = Text()
+                for entries, lines in zip(cells, per_cell_lines):
+                    if len(lines) <= line:
+                        row.append(" " * cell)
+                        continue
+                    text = lines[line][: cell - 1].ljust(cell)
+                    overflow = lines[line].endswith("more") and len(entries) > len(lines)
+                    entry = entries[line] if line < len(entries) else None
+                    if overflow:
+                        row.append(text, style=pal["dayname"])
+                    elif entry is not None and entry.broken:
+                        row.append(text, style=pal["broken"])
+                    elif entry is not None and not entry.enabled:
+                        # Dimmed AND struck, calcure's treatment for done: still
+                        # on the calendar, plainly not going to happen.
+                        row.append(text, style=pal["off"])
+                    else:
+                        row.append(text, style=pal["event"])
+                rows.append(row)
+
+            for row in rows:
+                out.append_text(row)
+                out.append("\n")
+            out.append("\n")
+        return out
+
+    def _side_text(self) -> Text:
+        pal = self._palette()
+        out = Text()
+        out.append("JOBS\n", style=pal["title"])
+
+        if not self._jobs:
+            out.append("\nnothing scheduled\n", style=pal["muted"])
+            out.append("\n/cron add @daily <prompt>\n", style=pal["muted"])
+            return out
+
+        today = date.today()
+        for job in self._jobs:
+            try:
+                nxt = job.cron().next_after(datetime.now())
+                when = nxt.strftime("%a %d %H:%M") if nxt else "never"
+                broken = False
+            except Exception:
+                when, broken = "unparseable", True
+
+            if broken:
+                icon, style = calview.ICON_DEADLINE, pal["broken"]
+            elif not job.enabled:
+                icon, style = calview.ICON_DONE, pal["off"]
+            else:
+                icon, style = calview.ICON_IMPORTANT, pal["event"]
+
+            out.append(f"{icon} ", style=style)
+            out.append(f"{(job.label or job.prompt)[:26]}\n", style=style)
+            out.append(f"   {job.schedule}\n", style=pal["muted"])
+            out.append(f"   next {when}\n", style=pal["muted"])
+
+        total = calview.month_totals(self._jobs, self._year, self._month)
+        out.append(f"\n{total:,} fires this month\n", style=pal["muted"])
+        if total > 500:
+            # A runaway schedule reads as harmless in a list. Say it here.
+            out.append("that is a lot — check for a stray */n\n", style=pal["broken"])
+        return out
+
+    def _hints_text(self) -> Text:
+        return Text(
+            "\u2190 \u2192 month  ·  t today  ·  q close  ·  "
+            "/cron add to schedule  ·  jobs fire only while LiteTUI is open",
+            style=self._palette()["muted"],
+        )
+
+    # -- actions ----------------------------------------------------------
+
+    def action_prev_month(self) -> None:
+        self._year, self._month = calview.step_month(self._year, self._month, -1)
+        self._paint()
+
+    def action_next_month(self) -> None:
+        self._year, self._month = calview.step_month(self._year, self._month, 1)
+        self._paint()
+
+    def action_today(self) -> None:
+        today = date.today()
+        self._year, self._month = today.year, today.month
+        self._paint()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class ConfirmStop(ModalScreen[bool]):
     """Yes/No before interrupting a running turn.
 
@@ -1326,6 +1569,40 @@ class LiteTUI(App):
         margin-left: 2;
     }
 
+    /* The calendar. Wide and airy on purpose: calcure's month breathes, and
+       a cramped grid is just a list with extra steps. The side pane is a
+       fixed column so the seven day-cells divide a stable width. */
+    #cal-box {
+        width: 96%;
+        height: 92%;
+        padding: 1 2;
+        background: $surface;
+        border: thick $primary;
+    }
+
+    #cal-body {
+        height: 1fr;
+    }
+
+    #cal-grid {
+        width: 1fr;
+        height: 1fr;
+    }
+
+    /* border-left IS the separator -- calcure draws a literal `|` column, but
+       a real border cannot drift out of alignment with the text beside it. */
+    #cal-side {
+        width: 34;
+        height: 1fr;
+        padding: 0 0 0 2;
+        border-left: solid $primary;
+    }
+
+    #cal-hints {
+        height: 1;
+        padding: 0 1;
+    }
+
     #help-box {
         width: 88;
         height: 80%;
@@ -1472,6 +1749,10 @@ class LiteTUI(App):
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
         self._pending_input: list = []
+        #: Cron jobs, loaded once at construction. A scheduled prompt is an
+        #: INPUT nobody typed, so it rides the same held/flushed path as inbox
+        #: mail rather than growing a second delivery route.
+        self._jobs: list = sched_mod.load(ROOT)
         # ETA: a rolling median of prompt-eval tokens/sec, learned ONLY from
         # turns that demonstrably reprocessed the prompt (the KV-cache gate in
         # is_reliable_rate_sample). _eta_last_prompt_tokens is the previous
@@ -1570,6 +1851,7 @@ class LiteTUI(App):
         self.query_one("#message-input", Input).focus()
         self._connect()
         self._inbox_monitor()
+        self._cron_monitor()
 
     @work(exclusive=True, group="inbox")
     async def _inbox_monitor(self) -> None:
@@ -1658,6 +1940,195 @@ class LiteTUI(App):
         self._user_bubble(text, False)
         self._append({"role": "user", "content": text})
         self._stream()
+
+    @work(exclusive=True, group="cron")
+    async def _cron_monitor(self) -> None:
+        """Fire scheduled prompts while the app is up.
+
+        Its own worker group, deliberately. Sharing "chat" with _stream would
+        make every tick cancel the turn in flight -- the exact trap autocompact
+        fell into, where a checker started work from inside the work it was
+        checking.
+        """
+        while True:
+            await asyncio.sleep(sched_mod.TICK_SECONDS)
+            try:
+                ready = sched_mod.due(self._jobs, datetime.now())
+            except Exception:
+                continue  # a scheduling bug must never take the chat down
+            for job in ready:
+                self._fire_job(job)
+
+    def _fire_job(self, job) -> None:
+        """Deliver a job as a real user turn, holding if one is running.
+
+        The slot is stamped and PERSISTED BEFORE delivery, not after. If the
+        stamp came after, a crash mid-turn would leave the job looking unfired
+        and it would run again on the next tick inside the same minute -- and
+        the failure that produces duplicates is exactly the one you cannot see
+        in a log that only records successes.
+        """
+        now = datetime.now()
+        job.last_fired_slot = sched_mod.slot_of(now)
+        job.run_count += 1
+        try:
+            sched_mod.save(self._jobs, ROOT)
+        except OSError:
+            pass  # an unwritable store must not stop the job from running
+
+        label = job.label or job.id
+        text = job.prompt
+        banner = f"[cron {label} \u00b7 {job.schedule}]\n{text}"
+
+        if job.new_conversation and not self._chat_running():
+            self._handle_command("/new")
+
+        if self._chat_running():
+            # QUEUED, never interrupting. A scheduled prompt is the LEAST
+            # urgent kind of input there is -- nobody is waiting on it, so it
+            # has no business cancelling something a human asked for.
+            self._user_bubble(banner, False, queued=True)
+            self._pending_input.append({"content": text, "text": banner})
+            return
+        self._user_bubble(banner, False)
+        self._append({"role": "user", "content": text})
+        self._stream()
+
+    def _cron_command(self, arg: str) -> None:
+        """/cron — add, list, remove, enable, disable, or fire a job now."""
+        arg = arg.strip()
+        if not arg or arg.lower() in ("list", "ls"):
+            self._cron_list()
+            return
+
+        verb, _, rest = arg.partition(" ")
+        verb = verb.lower()
+        rest = rest.strip()
+
+        if verb == "add":
+            self._cron_add(rest)
+            return
+
+        if verb in ("rm", "del", "remove"):
+            job = self._cron_find(rest)
+            if not job:
+                return
+            self._jobs.remove(job)
+            sched_mod.save(self._jobs, ROOT)
+            self._system(f"/cron: removed {job.id} ({job.label or job.prompt[:40]})")
+            return
+
+        if verb in ("on", "off", "enable", "disable"):
+            job = self._cron_find(rest)
+            if not job:
+                return
+            job.enabled = verb in ("on", "enable")
+            sched_mod.save(self._jobs, ROOT)
+            self._system(f"/cron: {job.id} is now {'ON' if job.enabled else 'OFF'}")
+            return
+
+        if verb == "run":
+            job = self._cron_find(rest)
+            if not job:
+                return
+            # Fires REGARDLESS of schedule and of enabled — "run" is the human
+            # asking for it now, which is a different act from the schedule
+            # coming round. It still stamps the slot, so an actual due-time
+            # inside this same minute will not double up.
+            self._fire_job(job)
+            return
+
+        self._system(
+            "/cron add <schedule> <prompt>   e.g. /cron add @daily summarise my inbox\n"
+            "/cron list | rm <id> | on <id> | off <id> | run <id>\n"
+            "schedule: 5-field cron (min hour day month weekday) or "
+            "@hourly @daily @weekly @monthly"
+        )
+
+    def _cron_find(self, token: str):
+        """Resolve an id prefix or a label to exactly one job, or say why not.
+
+        Ambiguity is reported rather than resolved to the first match: picking
+        one silently is how the wrong job gets deleted.
+        """
+        token = token.strip()
+        if not token:
+            self._system("/cron: which job? Use /cron list to see ids.")
+            return None
+        hits = [j for j in self._jobs
+                if j.id.startswith(token) or (j.label and j.label == token)]
+        if not hits:
+            self._system(f"/cron: no job matches {token!r}. /cron list shows them.")
+            return None
+        if len(hits) > 1:
+            ids = ", ".join(j.id for j in hits)
+            self._system(f"/cron: {token!r} matches {len(hits)} jobs ({ids}) — be more specific.")
+            return None
+        return hits[0]
+
+    def _cron_add(self, rest: str) -> None:
+        if not rest:
+            self._system("/cron add <schedule> <prompt>")
+            return
+
+        tokens = rest.split()
+        if tokens[0].startswith("@"):
+            schedule, prompt = tokens[0], " ".join(tokens[1:])
+        elif len(tokens) > 5:
+            schedule, prompt = " ".join(tokens[:5]), " ".join(tokens[5:])
+        else:
+            self._system(
+                "/cron add: a schedule is 5 fields (min hour day month weekday) "
+                "or an @alias, followed by the prompt.\n"
+                "  /cron add 0 9 * * 1-5 what is on for today?"
+            )
+            return
+
+        if not prompt:
+            self._system("/cron add: that schedule parsed, but there is no prompt after it.")
+            return
+
+        try:
+            cron = sched_mod.Cron.parse(schedule)
+        except sched_mod.CronError as e:
+            # The error names the FIELD. "invalid cron expression" would leave
+            # the person guessing which of five to fix.
+            self._system(f"/cron add: {e}")
+            return
+
+        job = sched_mod.Job(prompt=prompt, schedule=schedule)
+        self._jobs.append(job)
+        sched_mod.save(self._jobs, ROOT)
+
+        nxt = cron.next_after(datetime.now())
+        when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"
+        self._system(f"/cron: added {job.id} — next fire {when}\n  {prompt}")
+
+    def _cron_list(self) -> None:
+        if not self._jobs:
+            self._system(
+                "/cron: no jobs.\n"
+                "  /cron add @daily summarise what I did yesterday\n"
+                "  /cron add */30 * * * * check the build"
+            )
+            return
+
+        now = datetime.now()
+        lines = [f"{len(self._jobs)} job(s) — jobs fire only while LiteTUI is open"]
+        lines.append("")
+        for job in self._jobs:
+            try:
+                nxt = job.cron().next_after(now)
+                when = nxt.strftime("%a %d %b %H:%M") if nxt else "never"
+            except sched_mod.CronError as e:
+                # A job that can never fire must SAY so here. Silently listing
+                # it beside working jobs is how it sits dead for weeks.
+                when = f"BROKEN — {e}"
+            state = "on " if job.enabled else "off"
+            head = f"  {job.id}  {state}  {job.schedule:<16} next {when}"
+            lines.append(head)
+            lines.append(f"        x{job.run_count}  {job.prompt}")
+        self._system("\n".join(lines))
 
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
         """What this tool result contributes to the CONVERSATION (tool_context).
@@ -4333,6 +4804,12 @@ class LiteTUI(App):
         elif name == "/mark":
             self._start_mark()
 
+        elif name == "/cron":
+            self._cron_command(arg)
+
+        elif name in ("/calendar", "/cal"):
+            self.push_screen(CalendarScreen(self._jobs))
+
         elif name == "/compact":
             self._compact(arg)
 
@@ -4486,6 +4963,9 @@ class LiteTUI(App):
                 + ", unset\n"
                 "/mark            drag a marker onto the screen; send ships the "
                 "screenshot + coords here\n"
+                "/cron            scheduled prompts: add/list/rm/on/off/run "
+                "(fires while the app is open)\n"
+                "/calendar /cal   the month, with every scheduled job on it\n"
                 "/compact [hint]  summarise older messages, keep the last "
                 f"{self.settings.compact_keep_recent}\n"
                 "/convos          list saved conversations\n"
