@@ -134,10 +134,10 @@ def test_registration_replaces_rather_than_appending_a_second_line():
     model cannot tell which names the live seat."""
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
     # 2000, was 1200: the radius is a CACHE of "how far into this branch
-        # the call sits", and an unrelated comment inserted above the call
-        # overflowed it while the behaviour stood. The number is not the
-        # contract; the call being in the registration branch is.
-        reg = src.split("harness seat online", 1)[1][:2000]
+    # the call sits", and an unrelated comment inserted above the call
+    # overflowed it while the behaviour stood. The number is not the
+    # contract; the call being in the registration branch is.
+    reg = src.split("harness seat online", 1)[1][:2000]
     assert "_sync_fleet_identity()" in reg, (
         "registration can still append a second identity line onto a resumed prompt"
     )
