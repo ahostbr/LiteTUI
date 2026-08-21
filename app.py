@@ -671,6 +671,46 @@ def _markdown_to_text(src: str, width: int) -> Text:
         return Text(src)
 
 
+def _fmt_dur(seconds: float) -> str:
+    """Human duration, pure. <60s -> 'X.Ys'; >=60s -> 'Mm SS.s'."""
+    s = max(0.0, float(seconds))
+    if s < 60:
+        return f"{s:.1f}s"
+    m = int(s // 60)
+    return f"{m}m {s - m * 60:04.1f}s"
+
+
+def render_progress(t0: float, now: float) -> str:
+    """Pure: the in-flight bubble text while no answer token has arrived yet.
+    Elapsed since t0, with a trailing '…' to signal still working.
+    ETA is added in a later commit, behind a confidence rule."""
+    return f"{_fmt_dur(now - t0)} …"
+
+
+def tool_display_parts(tool, max_lines: int = 12) -> list:
+    """Pure: the (text, style) parts for a ToolMessage's display from its state.
+    Testable without a Textual app (no widget.content / console involved).
+    `tool` needs: tool_name, _args, _result, _ok, _t0, _took."""
+    arg_line = tool._args.replace("\n", " ")
+    if len(arg_line) > 110:
+        arg_line = arg_line[:107] + "..."
+    parts = [(f"\U0001F527 {tool.tool_name}", "bold #e8a33d")]
+    if arg_line:
+        parts.append(("  " + arg_line, "#8b95a7"))
+    if tool._result is not None:
+        lines = tool._result.split("\n")
+        shown = "\n".join(lines[:max_lines])
+        if len(lines) > max_lines:
+            shown += f"\n\u2026 ({len(lines) - max_lines} more lines, {len(tool._result)} chars total)"
+        style = "bold #e5534b" if not tool._ok else "#7d8799"
+        parts.append(("\n" + shown, style))
+    if tool._result is None:
+        parts.append((render_progress(tool._t0, time.monotonic()), "#8b95a7"))
+    else:
+        parts.append(("  ⏱ " + _fmt_dur(tool._took or 0.0), "#5c6470"))
+    return parts
+
+
 class AnswerBody(Static):
     """The answer text. Rendered as Markdown, and still selectable.
 
@@ -734,6 +774,9 @@ class ToolMessage(Static):
         self._args = ""
         self._result: str | None = None
         self._ok = True
+        # Elapsed timing: t0 at creation, _took settled in set_result.
+        self._t0 = time.monotonic()
+        self._took: float | None = None
 
     def set_args(self, args_json: str) -> None:
         self._args = args_json
@@ -742,25 +785,19 @@ class ToolMessage(Static):
     def set_result(self, result: str, ok: bool) -> None:
         self._result = result
         self._ok = ok
+        self._took = time.monotonic() - self._t0
         self._update_display()
+
+    def _tick(self) -> None:
+        """Live elapsed repaint while the call is still running; no-op once the
+        result has landed. Driven by the app's shared elapsed repaint task."""
+        if self._result is None:
+            self._update_display()
 
     # NOTE: must NOT be named `_render` — Textual's Widget._render() is an
     # internal method that must return a Visual; shadowing it breaks layout.
     def _update_display(self) -> None:
-        arg_line = self._args.replace("\n", " ")
-        if len(arg_line) > 110:
-            arg_line = arg_line[:107] + "..."
-        parts: list[tuple[str, str]] = [(f"\U0001F527 {self.tool_name}", "bold #e8a33d")]
-        if arg_line:
-            parts.append(("  " + arg_line, "#8b95a7"))
-        if self._result is not None:
-            lines = self._result.split("\n")
-            shown = "\n".join(lines[: self.MAX_DISPLAY_LINES])
-            if len(lines) > self.MAX_DISPLAY_LINES:
-                shown += f"\n\u2026 ({len(lines) - self.MAX_DISPLAY_LINES} more lines, {len(self._result)} chars total)"
-            style = "bold #e5534b" if not self._ok else "#7d8799"
-            parts.append(("\n" + shown, style))
-        self.content = Text.assemble(*parts)
+        self.content = Text.assemble(*tool_display_parts(self, self.MAX_DISPLAY_LINES))
 
 
 class PickerScreen(ModalScreen[str | None]):
@@ -1255,6 +1292,13 @@ class LiteTUI(App):
         self._convo_pending = False
         self._convo_loading = False  # suppress writes while replaying from disk
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
+        # Elapsed-time display while a turn is in flight (pre-token) and while
+        # tool calls run. The repaint is a task on the worker's own event loop
+        # (interleaves with the stream); the display string is render_progress.
+        self._elapsed_task = None
+        self._elapsed_body = None            # AnswerBody in its pre-token phase
+        self._elapsed_body_t0: float = 0.0
+        self._inflight_tools: list = []      # ToolMessages awaiting their result
         self._persist_error: str | None = None
         self._store_injected = False  # see STORE_HEADER; once per conversation
         self.client = AsyncOpenAI(
@@ -2401,6 +2445,65 @@ class LiteTUI(App):
     def watch_tps(self, value: float | None) -> None:
         self._refresh_ctx_label()
 
+    # -- elapsed time while a turn is in flight -----------------------
+    # Ryan's "..." read as nothing happening while LM Studio chewed the prompt.
+    # While no answer token has arrived (and while tool calls run), the bubble
+    # shows live ELAPSED TIME. The display string is a pure function
+    # (render_progress); this is only the repaint glue. The repaint task runs
+    # on the worker's own event loop, interleaving with the `async for` stream.
+
+    def _elapsed_cancel(self) -> None:
+        task = self._elapsed_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._elapsed_task = None
+
+    def _elapsed_start(self, body) -> None:
+        self._elapsed_cancel()
+        self._elapsed_body = body
+        self._elapsed_body_t0 = time.monotonic()
+        try:
+            self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
+        except RuntimeError:
+            self._elapsed_task = None
+
+    def _elapsed_stop_body(self) -> None:
+        self._elapsed_body = None
+
+    def _tool_begin(self, tool) -> None:
+        if tool not in self._inflight_tools:
+            self._inflight_tools.append(tool)
+        if self._elapsed_task is None or self._elapsed_task.done():
+            try:
+                self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
+            except RuntimeError:
+                self._elapsed_task = None
+
+    def _tool_end(self, tool) -> None:
+        if tool in self._inflight_tools:
+            self._inflight_tools.remove(tool)
+
+    async def _elapsed_repaint(self) -> None:
+        # Repaint the in-flight bubble and any running tool calls ~4x/sec.
+        # Self-retires after ~1s with nothing active, so it never outlives the
+        # turn by long; _elapsed_start also cancels a lingering one.
+        idle = 0.0
+        while True:
+            await asyncio.sleep(0.25)
+            now = time.monotonic()
+            active = self._elapsed_body is not None or self._inflight_tools
+            if active:
+                if self._elapsed_body is not None:
+                    self._elapsed_body.content = render_progress(
+                        self._elapsed_body_t0, now)
+                for tool in self._inflight_tools:
+                    tool._tick()
+                idle = 0.0
+            else:
+                idle += 0.25
+                if idle >= 1.0:
+                    return
+
     def _warn_reasoning_ignored(self) -> None:
         """The server sent a reasoning trace after we asked for none.
 
@@ -2823,6 +2926,7 @@ class LiteTUI(App):
             if self._stop_requested:
                 break
             widget = self._assistant_bubble()
+            self._elapsed_start(widget.body)
             thinking: ThinkingBlock | None = None
             text_full = ""
             reasoning = ""
@@ -2861,6 +2965,7 @@ class LiteTUI(App):
             try:
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
+                self._elapsed_stop_body()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
@@ -2902,6 +3007,7 @@ class LiteTUI(App):
                         self._scroll_down(only_if_following=True)
                     if delta.content:
                         self._tps_tick()
+                        self._elapsed_stop_body()
                         text_full += delta.content
                         widget.body.content = text_full + " \u258c"
                         self._scroll_down(only_if_following=True)
@@ -2930,6 +3036,7 @@ class LiteTUI(App):
                                 if idx not in tool_msgs:
                                     msg = ToolMessage(fn.name)
                                     tool_msgs[idx] = msg
+                                    self._tool_begin(msg)
                                     self.query_one("#chat-log").mount(msg)
                                 self._scroll_down()
                             if fn.arguments:
@@ -2938,11 +3045,13 @@ class LiteTUI(App):
                                     tool_msgs[idx].set_args(slot["arguments"])
                                     self._scroll_down()
             except Exception as e:
+                self._elapsed_stop_body()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
                 return
 
+            self._elapsed_stop_body()
             # Final render of this turn's bubble.
             if thinking is not None:
                 thinking.finalize()
@@ -3031,6 +3140,7 @@ class LiteTUI(App):
                 sanitize.reset_terminal_modes()
                 if msg is not None:
                     msg.set_result(result, ok)
+                    self._tool_end(msg)
                 self._scroll_down()
                 self._append(
                     {
