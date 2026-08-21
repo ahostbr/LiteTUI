@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "litesuite-tools": {
-      "url": "http://localhost:7423/mcp"
+      "url": "http://localhost:7423/mcp",
+      "type": "http"
     }
   }
 }
