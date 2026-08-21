@@ -61,6 +61,37 @@ def _is_binary(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
+def _bash_timeout_result(proc: subprocess.Popen, timeout: int) -> str:
+    """Format the result when the command outran its timeout budget."""
+    ttyguard.kill_tree(proc.pid)
+    try:
+        out, err = proc.communicate(timeout=10)
+    except Exception:
+        out, err = "", ""
+    partial = _truncate_tail((out or "") + (err or ""))
+    return f"[timed out after {timeout}s]\n{partial}".strip()
+
+
+def _bash_cancelled_result(out: str, err: str, t0: float) -> str:
+    """Format the result when the user cancelled a still-running command."""
+    partial = _truncate_tail((out or "") + (("\n[stderr]\n" + err) if err else ""))
+    note = f"[cancelled by user after {fmt_dur(time.monotonic() - t0)}]"
+    return (note + (("\n" + partial) if partial.strip() else "")).strip()
+
+
+def _bash_completed_result(out: str, err: str, returncode: int) -> str:
+    """Format the result of a command that ran to completion."""
+    out = out or ""
+    err = err or ""
+    if err:
+        out = (out + "\n[stderr]\n" + err) if out else "[stderr]\n" + err
+    out = _truncate_tail(out)
+    if returncode != 0:
+        suffix = f"\n\n[command exited with code {returncode}]"
+        out = (out + suffix) if out else suffix.strip()
+    return out or "(no output)"
+
+
 def tool_bash(args: dict) -> str:
     command = (args.get("command") or "").strip()
     if not command:
@@ -87,13 +118,7 @@ def tool_bash(args: dict) -> str:
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        ttyguard.kill_tree(proc.pid)
-        try:
-            out, err = proc.communicate(timeout=10)
-        except Exception:
-            out, err = "", ""
-        partial = _truncate_tail((out or "") + (err or ""))
-        return f"[timed out after {timeout}s]\n{partial}".strip()
+        return _bash_timeout_result(proc, timeout)
     finally:
         ttyguard.CANCELLABLE["proc"] = None
     if ttyguard.CANCELLABLE["cancelled"]:
@@ -102,18 +127,8 @@ def tool_bash(args: dict) -> str:
         # an honest verdict, and the TURN CARRIES ON. That is the difference
         # between this and Esc, which stops the whole turn.
         ttyguard.CANCELLABLE["cancelled"] = False
-        partial = _truncate_tail((out or "") + (("\n[stderr]\n" + err) if err else ""))
-        note = f"[cancelled by user after {fmt_dur(time.monotonic() - t0)}]"
-        return (note + (("\n" + partial) if partial.strip() else "")).strip()
-    out = out or ""
-    err = err or ""
-    if err:
-        out = (out + "\n[stderr]\n" + err) if out else "[stderr]\n" + err
-    out = _truncate_tail(out)
-    if proc.returncode != 0:
-        suffix = f"\n\n[command exited with code {proc.returncode}]"
-        out = (out + suffix) if out else suffix.strip()
-    return out or "(no output)"
+        return _bash_cancelled_result(out, err, t0)
+    return _bash_completed_result(out, err, proc.returncode)
 
 
 def tool_read(args: dict) -> str:

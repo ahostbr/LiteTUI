@@ -102,12 +102,6 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
     # ── Builders ─────────────────────────────────────────────────────────────
 
-    def _group(self, title: str, blurb: str = ""):
-        box = Vertical(classes="set-group")
-        box.border_title = title
-        self._pending_blurb = blurb
-        return box
-
     def _text_row(self, name: str, label: str, help_text: str, placeholder: str = ""):
         locked = settings_mod.source_of(name)
         value = getattr(self._start, name)
@@ -430,12 +424,12 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "Generation speed of the last turn.",
                         )
 
-                    yield Static("", id="set-error")
-                    with Horizontal(id="set-buttons"):
-                        yield Button("Save", variant="primary", id="set-save")
-                        yield Button("Cancel", id="set-cancel")
-                        yield Button("Restore defaults", variant="warning", id="set-defaults")
-
+            # One error line + one button row, OUTSIDE TabbedContent so both
+            # stay visible whichever tab is active. A duplicate copy used to
+            # live inside the last TabPane too — two widgets sharing
+            # "#set-error" meant action_save()'s query_one() always found the
+            # DOM-first one (buried in the Interface tab), so a save error
+            # raised while on any OTHER tab wrote to a Static nobody could see.
             yield Static("", id="set-error")
             with Horizontal(id="set-buttons"):
                 yield Button("Save", variant="primary", id="set-save")

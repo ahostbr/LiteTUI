@@ -12,6 +12,17 @@ from picker import PickerScreen
 from plugins import PluginManifest
 
 
+def _convo_meta_bits(path, msgs) -> tuple[str, int, str]:
+    """Timestamp, turn count, and memory badge — the three bits /convos and
+    /resume both compute per row, from the same path+messages pair."""
+    stamp = time.strftime("%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+    turns = sum(1 for m in msgs if m.get("role") in ("user", "assistant"))
+    mem_dir = path.parent / paths.MEMORIES_DIR
+    n_mem = len(list(mem_dir.glob("*.md"))) if mem_dir.exists() else 0
+    badge = f" ✎{n_mem}" if n_mem else "   "
+    return stamp, turns, badge
+
+
 def _cmd_new(app, name: str, arg: str) -> None:
     app.conversation.clear()
     app._new_convo()  # a fresh file — never reuse the old one
@@ -52,11 +63,7 @@ def _cmd_convos(app, name: str, arg: str) -> None:
     total = 0
     for i, (p, meta, msgs) in enumerate(rows[:30], 1):
         mark = ">" if p == app.convo_path else " "
-        stamp = time.strftime("%m-%d %H:%M", time.localtime(p.stat().st_mtime))
-        turns = sum(1 for m in msgs if m.get("role") in ("user", "assistant"))
-        mem = p.parent / paths.MEMORIES_DIR
-        n_mem = len(list(mem.glob("*.md"))) if mem.exists() else 0
-        badge = f" ✎{n_mem}" if n_mem else "   "
+        stamp, turns, badge = _convo_meta_bits(p, msgs)
         total += p.stat().st_size
         lines.append(
             f" {mark} {i:>2}. {p.parent.name[:8]}  {stamp}  {turns:>3} msg{badge}  "
@@ -104,25 +111,21 @@ def _cmd_resume(app, name: str, arg: str) -> None:
     if target is None:
         # Same picker as /model, so the two interactions cannot drift.
         items = []
-        for path_, meta_, msgs_ in rows[:40]:
-            stamp = time.strftime("%m-%d %H:%M", time.localtime(path_.stat().st_mtime))
-            turns = sum(1 for x in msgs_ if x.get("role") in ("user", "assistant"))
-            memdir = path_.parent / paths.MEMORIES_DIR
-            nmem = len(list(memdir.glob("*.md"))) if memdir.exists() else 0
-            badge = f" ✎{nmem}" if nmem else "   "
+        for path, meta, msgs in rows[:40]:
+            stamp, turns, badge = _convo_meta_bits(path, msgs)
             # The conversation's own uuid — on disk all along, never shown.
-            cid = path_.parent.name[:8]
+            cid = path.parent.name[:8]
             # The owning seat, only for conversations written since v3
             # meta. Older ones show blanks rather than a fabricated name.
-            who = str(meta_.get("agent_name") or "")[:10]
-            aid = str(meta_.get("agent_id") or "")[:8]
+            who = str(meta.get("agent_name") or "")[:10]
+            aid = str(meta.get("agent_id") or "")[:8]
             owner = f"{who} {aid}".strip() or "—"
             items.append(
                 (
-                    str(path_),
+                    str(path),
                     f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
-                    f"{app._fmt_size(path_.stat().st_size):>7}  "
-                    f"{app._convo_title(msgs_)}",
+                    f"{app._fmt_size(path.stat().st_size):>7}  "
+                    f"{app._convo_title(msgs)}",
                 )
             )
         app.push_screen(

@@ -27,6 +27,12 @@ def _cmd_skills(app, name: str, arg: str) -> None:
             "`skill` tool is not offered to the model."
         )
         return
+    app._system(_skills_report(app, base))
+
+
+def _skills_report(app, base) -> str:
+    """The full /skills listing: sources, roots, per-library groups, and
+    what got passed over — everything _cmd_skills shows once gating clears."""
     roots = skills_mod.resolve_roots(app.settings.skill_roots)
     missing = skills_mod.unresolved_roots(app.settings.skill_roots)
     block = skills_mod.index_block(app.skills)
@@ -74,7 +80,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         "  the model sees only name + description; it calls the `skill` "
         "tool to read a body. /skills <name> shows what it would get."
     )
-    app._system("\n".join(lines))
+    return "\n".join(lines)
 
 
 def _register(ctx) -> None:

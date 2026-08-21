@@ -2459,18 +2459,6 @@ class LiteTUI(App):
         style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
         t.append(tps_text(self.tps), style)
 
-    def _append_tps(self, t: Text, sep: str) -> None:
-        """Generation speed, last of all -- the label is `dock: right`, so the
-        end of this Text is the right edge of the footer."""
-        if self.tps is None:
-            return
-        t.append(sep, "#5c6370")
-        # Coloured by how it FEELS to use, not by an absolute scale: this is a
-        # local model on one GPU, and the number that matters is whether the
-        # answer arrives faster than you read it.
-        style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
-        t.append(tps_text(self.tps), style)
-
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
 
