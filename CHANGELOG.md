@@ -20,6 +20,22 @@ fails if this file's top released heading disagrees with it.
 
 _(nothing yet)_
 
+## [0.12.0] — 2026-08-21
+
+### Added
+- **A terminal color picker in the theme creator** ("hex isn't enough").
+  Saturation/value field with half-block doubled resolution, hue bar, the
+  current theme's tokens as clickable presets, live swatch, arrow-key
+  nudging — and the hex box stays as an editable escape hatch whose typed
+  value wins on Enter. Every geometry mapping (click→cell→color) is pure
+  and round-trips per cell, because a picker that returns a slightly
+  different color than the one under the cursor lies with confidence.
+
+### Changed
+- **The runtime moved to `src/`** — run.bat stays in the root. Data
+  (.convos, settings.json, skills/, systemprompt.md) stays at the repo
+  root; all seven path anchors were re-based and proven by resolution.
+
 ## [0.11.0] — 2026-08-21
 
 ### Added

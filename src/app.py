@@ -29,6 +29,7 @@ import mcp_client
 import sanitize
 import tool_context
 import themes as themes_mod
+from colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
 import skills as skills_mod
 
 from textual import events
@@ -1206,6 +1207,58 @@ class LiteTUI(App):
     /* Every modal centres in the window. SettingsScreen was missing from this
        list and rendered docked to the TOP-LEFT — the rule existed, the new
        screen simply was not in it. */
+    ColorPickerScreen {
+        align: center middle;
+    }
+
+    #cp-box {
+        width: 54;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    #cp-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+
+    #cp-hue {
+        margin-top: 1;
+    }
+
+    #cp-presets {
+        margin-top: 1;
+    }
+
+    #cp-row {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #cp-swatch {
+        width: 8;
+        margin-right: 1;
+    }
+
+    #cp-hex {
+        width: 12;
+    }
+
+    #cp-hint {
+        color: $text-muted;
+        margin-left: 1;
+    }
+
+    .ct-color-row {
+        height: 3;
+    }
+
+    .ct-pick {
+        margin-left: 1;
+    }
+
     ConfirmStop, PickerScreen, HelpScreen, SettingsScreen {
         align: center middle;
     }

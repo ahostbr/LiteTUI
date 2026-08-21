@@ -44,6 +44,7 @@ from textual.widgets import (
 )
 
 import settings as settings_mod
+from colorpicker import ColorPickerScreen
 from settings import Settings
 
 THINKING_CHOICES = [
@@ -456,8 +457,36 @@ class SettingsScreen(ModalScreen[Settings | None]):
         for tok in themes_mod.THEME_TOKENS:
             with Vertical(classes="set-row"):
                 yield Label(tok, classes="set-label")
-                yield Input(value=str(resolved.get(tok, "")), id=f"ct-{tok}",
-                            placeholder="#RRGGBB")
+                with Horizontal(classes="ct-color-row"):
+                    yield Input(value=str(resolved.get(tok, "")), id=f"ct-{tok}",
+                                placeholder="#RRGGBB", classes="ct-hex")
+                    # hex stays as the escape hatch; the button is the door.
+                    yield Button("pick", id=f"ctp-{tok}", classes="ct-pick")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if not bid.startswith("ctp-"):
+            return
+        event.stop()
+        tok = bid[4:]
+        box = self.query_one(f"#ct-{tok}", Input)
+        import themes as themes_mod
+        try:
+            resolved = self.app.current_theme.to_color_system().generate()
+            presets = [(t, resolved[t]) for t in themes_mod.THEME_TOKENS
+                       if isinstance(resolved.get(t), str)]
+        except Exception:
+            presets = []
+
+        def _picked(hexv: str | None) -> None:
+            if hexv:
+                box.value = hexv
+
+        self.app.push_screen(
+            ColorPickerScreen(initial=box.value.strip() or "#808080",
+                              presets=presets, token_name=tok),
+            _picked,
+        )
 
     def _collect(self) -> Settings:
         """Read every control into a new Settings, raising ValueError by name."""
