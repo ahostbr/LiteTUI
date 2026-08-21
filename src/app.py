@@ -4120,11 +4120,14 @@ class LiteTUI(App):
             return
         handoff = Path(tempfile.mkdtemp(prefix="litetui_mark_")) / "mark.json"
         try:
-            ttyguard.popen(
+            # No -Label: a spaced label dies through some launch paths, and
+            # the ring is self-explanatory. Keep the HANDLE — a timeout must
+            # take the unanswered ring down, not leave it as screen litter.
+            proc = ttyguard.popen(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                  "-File", str(MARK_SCRIPT),
                  "-Interactive", "-HandoffFile", str(handoff),
-                 "-Color", "cyan", "-Label", "drag me"],
+                 "-Color", "cyan"],
                 stdin=subprocess.DEVNULL,
             )
         except OSError as e:
@@ -4134,10 +4137,10 @@ class LiteTUI(App):
             "Marker up — drag the ring onto the thing, then click send. "
             "(x or Esc cancels; times out in 3 minutes.)"
         )
-        self._mark_wait(handoff)
+        self._mark_wait(handoff, proc)
 
     @work(exclusive=True, group="mark")
-    async def _mark_wait(self, handoff: Path) -> None:
+    async def _mark_wait(self, handoff: Path, proc) -> None:
         """Poll for the overlay's handoff. Group "mark", NOT "chat" — waiting
         for a human to drag a ring must never cancel a running turn, and a
         turn must never cancel the wait."""
@@ -4147,7 +4150,11 @@ class LiteTUI(App):
             if handoff.exists():
                 break
         else:
-            self._system("/mark: timed out — overlay closed without sending.")
+            try:
+                proc.terminate()   # take the unanswered ring down
+            except OSError:
+                pass
+            self._system("/mark: timed out — marker dismissed.")
             return
         try:
             # utf-8-sig: Windows PowerShell's Set-Content -Encoding UTF8
