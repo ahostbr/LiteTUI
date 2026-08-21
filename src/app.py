@@ -1251,14 +1251,6 @@ class LiteTUI(App):
         margin-left: 1;
     }
 
-    .ct-color-row {
-        height: 3;
-    }
-
-    .ct-pick {
-        margin-left: 1;
-    }
-
     ConfirmStop, PickerScreen, HelpScreen, SettingsScreen {
         align: center middle;
     }

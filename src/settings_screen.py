@@ -457,19 +457,29 @@ class SettingsScreen(ModalScreen[Settings | None]):
         for tok in themes_mod.THEME_TOKENS:
             with Vertical(classes="set-row"):
                 yield Label(tok, classes="set-label")
-                with Horizontal(classes="ct-color-row"):
-                    yield Input(value=str(resolved.get(tok, "")), id=f"ct-{tok}",
-                                placeholder="#RRGGBB", classes="ct-hex")
-                    # hex stays as the escape hatch; the button is the door.
-                    yield Button("pick", id=f"ctp-{tok}", classes="ct-pick")
+                # The FIELD is the trigger: clicking it opens the picker
+                # (see on_click). The first version put a "pick" Button beside
+                # a 100%-width Input in a Horizontal — the button laid out
+                # zero-wide past the right edge and shipped invisible, which
+                # is this repo's dead-control class with a new costume.
+                yield Input(value=str(resolved.get(tok, "")), id=f"ct-{tok}",
+                            placeholder="#RRGGBB", classes="ct-hex")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
-        if not bid.startswith("ctp-"):
+    def on_click(self, event) -> None:
+        """A click on any creator hex field opens the picker for that token.
+
+        The field stays an Input so the value is still selectable/typable,
+        but the CLICK is the picker's door — Ryan: "it should activate when
+        i click any of those hex's". The picker's own hex box remains the
+        typing escape hatch.
+        """
+        w = getattr(event, "widget", None)
+        wid = getattr(w, "id", None) or ""
+        if not isinstance(w, Input) or not wid.startswith("ct-") or wid == "ct-name":
             return
         event.stop()
-        tok = bid[4:]
-        box = self.query_one(f"#ct-{tok}", Input)
+        tok = wid[3:]
+        box = w
         import themes as themes_mod
         try:
             resolved = self.app.current_theme.to_color_system().generate()

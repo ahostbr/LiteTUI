@@ -84,8 +84,14 @@ def test_hue_bar_marks_the_selection():
 
 
 # --- wiring ------------------------------------------------------------------
-def test_every_token_row_has_a_pick_button():
-    assert 'Button("pick", id=f"ctp-{tok}"' in SETTINGS_SRC
+def test_clicking_a_hex_field_is_the_pickers_door():
+    """v1 shipped a "pick" Button beside a 100%-width Input — laid out
+    zero-wide past the right edge, invisible: the dead-control class in a
+    new costume. Now the FIELD is the trigger and the name field is not."""
+    assert "def on_click" in SETTINGS_SRC
+    assert 'wid.startswith("ct-")' in SETTINGS_SRC
+    assert 'wid == "ct-name"' in SETTINGS_SRC          # name field excluded
+    assert 'Button("pick"' not in SETTINGS_SRC          # the corpse stays gone
 
 
 def test_picker_opens_with_the_fields_current_value():
