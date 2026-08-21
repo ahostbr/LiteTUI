@@ -2271,6 +2271,25 @@ class LiteTUI(App):
         # failure would be swallowed by per-plugin isolation, turning a
         # broken checkout into a silent half-boot.
         self.plugins = plugins_mod.PluginRegistry()
+        # The host's own prompt sections, registered BEFORE plugins so slot
+        # collisions land on the intruder, not the floor. Renders read self.*
+        # LIVE — a /reconnect or convo switch changes the next composition.
+        _ord = plugins_mod.PROMPT_ORDER
+        self.plugins.add_prompt_section(
+            "host", _ord["BASE"],
+            lambda: SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip(),
+            enabled=lambda: SYSTEM_PROMPT_FILE.exists(),
+        )
+        self.plugins.add_prompt_section(
+            "host", _ord["MEMORY"],
+            lambda: memory_prompt(self.convo_id, self.convo_dir),
+            enabled=lambda: self.convo_dir is not None,
+        )
+        self.plugins.add_prompt_section(
+            "host", _ord["TOOLS"],
+            lambda: TOOLS_PROMPT,
+            enabled=lambda: self.tools_enabled,
+        )
         self._plugin_manifests = plugins_mod.register_plugins(self, self.plugins)
         self._new_convo()
         self._load_system_prompt()
@@ -2675,8 +2694,6 @@ class LiteTUI(App):
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
         specs = self.plugins.tool_specs()
-        if self.skills:
-            specs.append(skills_mod.SKILL_TOOL_SPEC)
         # Only offered once the seat is actually registered. Advertising fleet
         # verbs to an agent with no return address produces confident sends
         # that go nowhere.
@@ -2690,8 +2707,6 @@ class LiteTUI(App):
         fn = self.plugins.dispatch_for(name)
         if fn is not None:
             return fn
-        if name == "skill":
-            return lambda args: skills_mod.load(self.skills, args.get("name", ""))
         if name == "harness":
             return lambda args: harness_mod.run(self.seat, args)
         return self._mcp_dispatch.get(name)
@@ -2700,21 +2715,11 @@ class LiteTUI(App):
         """systemprompt.md + the store block + the tools block, in that order.
 
         Single builder so the tools toggle cannot silently drop the store block
-        — rebuilding it in two places is how one of them goes stale.
+        — rebuilding it in two places is how one of them goes stale. The fold
+        itself lives in the registry (PROMPT_ORDER slots); host sections are
+        registered in __init__, the skills index by the skills plugin.
         """
-        base = ""
-        if SYSTEM_PROMPT_FILE.exists():
-            base = SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip()
-        if self.convo_dir is not None:
-            base = (base + memory_prompt(self.convo_id, self.convo_dir)).strip()
-        if self.tools_enabled:
-            base = (base + TOOLS_PROMPT).strip()
-            # Pointers only; bodies load through the `skill` tool. Gated on
-            # tools_enabled because without that tool the index would
-            # advertise something the model has no way to open.
-            if self.skills:
-                base = (base + skills_mod.index_block(self.skills)).strip()
-        return base
+        return self.plugins.compose_prompt()
 
     def _load_system_prompt(self) -> None:
         base = self._system_prompt_text()

@@ -48,6 +48,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.chrome",
     "plugins.ask_user_question",
     "plugins.studio",
+    "plugins.skills_plugin",
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists
@@ -195,6 +196,16 @@ class PluginRegistry:
 
     def sections_sorted(self) -> list[PromptSection]:
         return sorted(self.prompt_sections, key=lambda s: s.order)
+
+    def compose_prompt(self) -> str:
+        """The exact historical fold: each enabled section glued with
+        (base + text).strip(), in slot order. The glue is behavior — the
+        model reads this every turn — so it lives in ONE place."""
+        base = ""
+        for s in self.sections_sorted():
+            if s.enabled is None or s.enabled():
+                base = (base + s.render()).strip()
+        return base
 
     def unload(self, owner: str) -> None:
         """Sweep every table for one owner's rows — whole-plugin disable and
