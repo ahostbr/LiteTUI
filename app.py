@@ -2742,6 +2742,20 @@ class LiteTUI(App):
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         self._stop_requested = False
+        # 🔴 RE-READ THE WINDOW AT TURN START, NOT ONLY AT TURN END.
+        #
+        # The end-of-turn resync was wired into ONE of the loop's exits (the
+        # plain-answer branch). A turn that ends by being stopped, or by hitting
+        # the tool-iteration cap, skipped it — so a window read while the model
+        # was unloaded stayed at the model's CEILING for the rest of the
+        # session. The footer then shows "262,144 max" while the model is
+        # serving 120,064, and _maybe_autocompact refuses to divide by a
+        # ceiling, which means AUTO-COMPACT NEVER FIRES.
+        #
+        # Turn start has no such branches: every turn passes through here. It is
+        # also the right moment — LM Studio JIT-loads on the previous turn's
+        # first request, so by now the real window exists to be read.
+        self._resync_ctx_if_stale()
         for _iteration in range(self.settings.tool_iterations):
             if self._stop_requested:
                 break
