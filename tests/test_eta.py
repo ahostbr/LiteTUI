@@ -21,7 +21,8 @@ shows elapsed only.
 """
 from statistics import median
 
-from app import _fmt_dur, is_reliable_rate_sample, render_progress
+from app import is_reliable_rate_sample, render_progress
+from fmt import fmt_dur
 
 
 # --- render_progress: the ETA gate (when the ETA appears at all) -------------
@@ -55,7 +56,7 @@ def test_eta_present_when_both_present():
     assert "1.2s" in out and "…" in out, out
     # ETA part: 1000 tokens / 100 tokens-per-s = 10.0s.
     assert "est" in out, out
-    assert _fmt_dur(1000 / 100) in out, out
+    assert fmt_dur(1000 / 100) in out, out
 
 
 def test_eta_is_a_projection_of_prior_prompt_tokens():
@@ -63,8 +64,8 @@ def test_eta_is_a_projection_of_prior_prompt_tokens():
     previous turn's prompt_tokens), so a bigger estimate -> a bigger ETA."""
     small = render_progress(0.0, 1.0, prompt_tokens=500, learned_rate=100)
     big = render_progress(0.0, 1.0, prompt_tokens=5000, learned_rate=100)
-    assert _fmt_dur(5.0) in small, small
-    assert _fmt_dur(50.0) in big, big
+    assert fmt_dur(5.0) in small, small
+    assert fmt_dur(50.0) in big, big
 
 
 def test_backward_compatible_two_arg_call():
@@ -139,7 +140,7 @@ def test_gate_admits_a_real_reprocess_turn_and_eta_becomes_reasonable():
     out = render_progress(0.0, 1.5, prompt_tokens=100_000, learned_rate=learned_rate)
     assert "est" in out, out
     # 100k / 40k t/s = 2.5s — a projection, not minutes.
-    assert _fmt_dur(100_000 / learned_rate) in out, out
+    assert fmt_dur(100_000 / learned_rate) in out, out
 
 
 def test_median_uses_only_reliable_samples():

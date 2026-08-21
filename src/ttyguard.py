@@ -110,3 +110,22 @@ def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     )
     _repair_terminal()
     return proc
+
+
+#: The ONE cancellable child. Tools execute sequentially in the agent loop,
+#: so a single slot is the honest data structure — a registry keyed by call
+#: id would imply a concurrency the loop does not have. It lives in the
+#: envelope because child-process lifecycle is the envelope's charter: the
+#: bash tool writes the slot, the app's cancel button reads it.
+CANCELLABLE: dict = {"proc": None, "cancelled": False}
+
+
+def kill_tree(pid: int) -> None:
+    """Kill pid and its DESCENDANTS. shell=True means the direct child is
+    cmd.exe and the real work is its grandchild — proc.kill() would kill
+    cmd.exe and leave python running, detached and invisible. taskkill /T
+    walks the tree; /F because a cancel that asks nicely is a suggestion."""
+    try:
+        run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=15)
+    except Exception:
+        pass  # the process may already be gone — that is success, not failure

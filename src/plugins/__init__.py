@@ -41,7 +41,9 @@ PROMPT_ORDER = {
 # The sequence preserves _all_tools()'s historical append order (MCP last):
 # no test is KNOWN to be order-sensitive, but that is an unverified
 # assumption, so the ordering is kept until someone proves it free.
-PLUGIN_LOAD_ORDER: tuple[str, ...] = ()
+PLUGIN_LOAD_ORDER: tuple[str, ...] = (
+    "plugins.core_tools",
+)
 
 
 @dataclass(frozen=True)

@@ -1,12 +1,13 @@
 """COMMIT 1 (ELAPSED) — pure display logic, testable without a Textual app.
 
-`_fmt_dur`, `render_progress`, and `tool_display_parts` are all pure (no app,
+`fmt_dur`, `render_progress`, and `tool_display_parts` are all pure (no app,
 no model, no Textual console), so they are tested directly. ToolMessage's
 rendering (widget.content) needs a live app, so the display logic was extracted
 into tool_display_parts(tool, ...) which takes a lightweight object with the
 same state fields — see _FakeTool below.
 """
-from app import _fmt_dur, render_progress, tool_display_parts
+from app import render_progress, tool_display_parts
+from fmt import fmt_dur
 
 
 class _FakeTool:
@@ -25,21 +26,21 @@ def _text(parts) -> str:
     return "".join(p[0] for p in parts)
 
 
-# --- _fmt_dur ---------------------------------------------------------------
-def test_fmt_dur_short():
-    assert _fmt_dur(1.2) == "1.2s"
-    assert _fmt_dur(0) == "0.0s"
-    assert _fmt_dur(59.9) == "59.9s"
+# --- fmt_dur ---------------------------------------------------------------
+def testfmt_dur_short():
+    assert fmt_dur(1.2) == "1.2s"
+    assert fmt_dur(0) == "0.0s"
+    assert fmt_dur(59.9) == "59.9s"
 
 
-def test_fmt_dur_minutes():
-    out = _fmt_dur(65.0)
+def testfmt_dur_minutes():
+    out = fmt_dur(65.0)
     assert out.startswith("1m "), out
     assert "5.0s" in out, out
 
 
-def test_fmt_dur_negative_clamps():
-    assert _fmt_dur(-3) == "0.0s"
+def testfmt_dur_negative_clamps():
+    assert fmt_dur(-3) == "0.0s"
 
 
 # --- render_progress --------------------------------------------------------

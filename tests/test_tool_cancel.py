@@ -28,9 +28,15 @@ from types import SimpleNamespace
 import pytest
 
 import app as app_mod
+import ttyguard
+from plugins import core_tools
 from app import LiteTUI
 
-APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(encoding="utf-8")
+_SRC = Path(__file__).resolve().parent.parent / "src"
+# The subjects moved in the plugin split: tool_bash lives in the core-tools
+# plugin, kill_tree in the envelope. A gate reads the source that HOLDS its subject.
+CORE_TOOLS_SRC = (_SRC / "plugins" / "core_tools.py").read_text(encoding="utf-8")
+TTYGUARD_SRC = (_SRC / "ttyguard.py").read_text(encoding="utf-8")
 
 
 def _pids_with_marker(marker: str) -> list[int]:
@@ -46,18 +52,18 @@ def _pids_with_marker(marker: str) -> list[int]:
 
 @pytest.fixture(autouse=True)
 def _clean_slot():
-    app_mod._CANCELLABLE["proc"] = None
-    app_mod._CANCELLABLE["cancelled"] = False
+    ttyguard.CANCELLABLE["proc"] = None
+    ttyguard.CANCELLABLE["cancelled"] = False
     yield
-    app_mod._CANCELLABLE["proc"] = None
-    app_mod._CANCELLABLE["cancelled"] = False
+    ttyguard.CANCELLABLE["proc"] = None
+    ttyguard.CANCELLABLE["cancelled"] = False
 
 
 def _run_bash_in_thread(args):
     box = {}
 
     def target():
-        box["result"] = app_mod.tool_bash(args)
+        box["result"] = core_tools.tool_bash(args)
 
     th = threading.Thread(target=target, daemon=True)
     th.start()
@@ -82,15 +88,15 @@ def test_cancel_kills_the_whole_tree_and_the_turn_survives(tmp_path):
     th, box = _run_bash_in_thread(
         {"command": f'"{sys.executable}" "{script}"', "timeout": 240})
 
-    assert _wait(lambda: app_mod._CANCELLABLE["proc"] is not None), \
+    assert _wait(lambda: ttyguard.CANCELLABLE["proc"] is not None), \
         "tool_bash never populated the cancellable slot"
-    proc = app_mod._CANCELLABLE["proc"]
+    proc = ttyguard.CANCELLABLE["proc"]
     assert _wait(lambda: _pids_with_marker(marker)), \
         "grandchild never appeared in the process table"
 
     # The exact core of action_cancel_tool, minus the notify.
-    app_mod._CANCELLABLE["cancelled"] = True
-    app_mod._kill_tree(proc.pid)
+    ttyguard.CANCELLABLE["cancelled"] = True
+    ttyguard.kill_tree(proc.pid)
 
     th.join(timeout=30)
     assert not th.is_alive(), "tool_bash did not return after the kill"
@@ -115,7 +121,7 @@ def test_negative_arm_no_cancel_means_normal_completion(tmp_path):
     assert not th.is_alive()
     assert "done cleanly" in box["result"]
     assert "[cancelled" not in box["result"]
-    assert app_mod._CANCELLABLE["proc"] is None  # slot cleared on the way out
+    assert ttyguard.CANCELLABLE["proc"] is None  # slot cleared on the way out
 
 
 def test_timeout_now_kills_the_tree_too(tmp_path):
@@ -141,18 +147,18 @@ def test_action_with_nothing_running_is_an_honest_no_op():
     ns = SimpleNamespace(notify=lambda msg, timeout=0: notes.append(msg))
     LiteTUI.action_cancel_tool(ns)
     assert notes and "No cancellable tool" in notes[0]
-    assert app_mod._CANCELLABLE["cancelled"] is False   # nothing armed
+    assert ttyguard.CANCELLABLE["cancelled"] is False   # nothing armed
 
 
 # --- source gates ------------------------------------------------------------
 def test_bash_goes_through_popen_not_run():
     """run() blocks with the Popen trapped inside it — the handle is the
     feature. If bash drifts back to run(), cancel silently dies."""
-    body = APP_SRC.split("def tool_bash(", 1)[1].split("\ndef ", 1)[0]
+    body = CORE_TOOLS_SRC.split("def tool_bash(", 1)[1].split("\ndef ", 1)[0]
     assert "ttyguard.popen(" in body
     assert "ttyguard.run(" not in body
 
 
 def test_the_kill_is_a_tree_kill():
-    body = APP_SRC.split("def _kill_tree(", 1)[1].split("\ndef ", 1)[0]
+    body = TTYGUARD_SRC.split("def kill_tree(", 1)[1].split("\ndef ", 1)[0]
     assert "/T" in body and "/F" in body

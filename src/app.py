@@ -12,7 +12,6 @@ import time
 import urllib.request
 import uuid
 from datetime import date, datetime
-from html.parser import HTMLParser
 from pathlib import Path
 
 import harness as harness_mod
@@ -30,6 +29,7 @@ import studio_tool
 import ttyguard
 import mcp_client
 import sanitize
+from fmt import fmt_dur
 import scheduler as sched_mod
 import calendar_view as calview
 import schedule_builder as sb_mod
@@ -212,16 +212,10 @@ def memory_prompt(convo_id: str, folder: Path) -> str:
 # Limits mirror pi's defaults (2000 lines / 50KB).
 # ════════════════════════════════════════════════════════════════
 
-TOOL_MAX_LINES = 2000
-TOOL_MAX_BYTES = 50 * 1024  # 50KB
 # Fallback only. The live value is self.settings.tool_iterations, editable in
 # /settings; env LM_TOOL_ITERS still wins over both (see settings.ENV_OVERRIDES).
 # This constant remains so module-level users and tests keep a sane number.
 TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))
-WEB_FETCH_MAX_CHARS = 20_000
-WEB_FETCH_TIMEOUT_S = 20
-BASH_DEFAULT_TIMEOUT_S = 120
-
 TOOLS_PROMPT = """
 You have four tools: bash, read, write, web_fetch.
 - bash: run a shell command (ls, dir, grep, find, git, python, ...). Returns stdout+stderr, truncated to the last 2000 lines / 50KB. Non-zero exits are reported.
@@ -231,232 +225,6 @@ You have four tools: bash, read, write, web_fetch.
 Use tools whenever they help fulfil the user's request. Inspect tool output before answering. If a call fails, read the error and adapt.
 """
 
-
-def _truncate_tail(text: str, max_lines: int = TOOL_MAX_LINES, max_bytes: int = TOOL_MAX_BYTES) -> str:
-    lines = text.split("\n")
-    if len(lines) > max_lines:
-        text = "\n".join(lines[-max_lines:])
-    b = text.encode("utf-8", errors="replace")
-    if len(b) > max_bytes:
-        text = b[-max_bytes:].decode("utf-8", errors="replace")
-    return text
-
-
-def _truncate_head(text: str, max_lines: int = TOOL_MAX_LINES, max_bytes: int = TOOL_MAX_BYTES) -> tuple[str, bool]:
-    truncated = False
-    lines = text.split("\n")
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        truncated = True
-    text = "\n".join(lines)
-    b = text.encode("utf-8", errors="replace")
-    if len(b) > max_bytes:
-        text = b[:max_bytes].decode("utf-8", errors="replace")
-        truncated = True
-    return text, truncated
-
-
-def _resolve_path(raw: str) -> Path:
-    p = Path(raw).expanduser()
-    if not p.is_absolute():
-        p = Path.cwd() / p
-    return p
-
-
-def _is_binary(data: bytes) -> bool:
-    return b"\x00" in data[:8192]
-
-
-#: The ONE cancellable subprocess. Tools execute sequentially in the agent
-#: loop, so a single slot is the honest data structure — a registry keyed by
-#: call id would imply a concurrency the loop does not have.
-_CANCELLABLE: dict = {"proc": None, "cancelled": False}
-
-
-def _kill_tree(pid: int) -> None:
-    """Kill pid and its DESCENDANTS. shell=True means the direct child is
-    cmd.exe and the real work is its grandchild — proc.kill() would kill
-    cmd.exe and leave python running, detached and invisible. taskkill /T
-    walks the tree; /F because a cancel that asks nicely is a suggestion."""
-    try:
-        ttyguard.run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=15)
-    except Exception:
-        pass  # the process may already be gone — that is success, not failure
-
-
-def tool_bash(args: dict) -> str:
-    command = (args.get("command") or "").strip()
-    if not command:
-        return "[error] missing 'command'"
-    try:
-        timeout = int(args.get("timeout") or BASH_DEFAULT_TIMEOUT_S)
-    except (TypeError, ValueError):
-        timeout = BASH_DEFAULT_TIMEOUT_S
-    # Through the envelope, which owns errors="replace", CREATE_NO_WINDOW and
-    # the terminal repair. popen (not run) so the HANDLE survives: run() blocks
-    # with the Popen trapped inside it, which is why a runaway bash could not
-    # be cancelled — the process existed and nothing could reach it.
-    t0 = time.monotonic()
-    try:
-        proc = ttyguard.popen(
-            command,
-            shell=True,
-            stdin=subprocess.DEVNULL,
-            cwd=str(Path.cwd()),
-        )
-    except OSError as e:
-        return f"[error] {type(e).__name__}: {e}"
-    _CANCELLABLE["proc"], _CANCELLABLE["cancelled"] = proc, False
-    try:
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc.pid)
-        try:
-            out, err = proc.communicate(timeout=10)
-        except Exception:
-            out, err = "", ""
-        partial = _truncate_tail((out or "") + (err or ""))
-        return f"[timed out after {timeout}s]\n{partial}".strip()
-    finally:
-        _CANCELLABLE["proc"] = None
-    if _CANCELLABLE["cancelled"]:
-        # The kill closed the pipes, so communicate() returned with whatever
-        # the tree wrote before dying — the model sees the partial output and
-        # an honest verdict, and the TURN CARRIES ON. That is the difference
-        # between this and Esc, which stops the whole turn.
-        _CANCELLABLE["cancelled"] = False
-        partial = _truncate_tail((out or "") + (("\n[stderr]\n" + err) if err else ""))
-        note = f"[cancelled by user after {_fmt_dur(time.monotonic() - t0)}]"
-        return (note + (("\n" + partial) if partial.strip() else "")).strip()
-    out = out or ""
-    err = err or ""
-    if err:
-        out = (out + "\n[stderr]\n" + err) if out else "[stderr]\n" + err
-    out = _truncate_tail(out)
-    if proc.returncode != 0:
-        suffix = f"\n\n[command exited with code {proc.returncode}]"
-        out = (out + suffix) if out else suffix.strip()
-    return out or "(no output)"
-
-
-def tool_read(args: dict) -> str:
-    raw = args.get("path") or ""
-    if not raw:
-        return "[error] missing 'path'"
-    p = _resolve_path(raw)
-    if not p.exists():
-        return f"[error] file not found: {p}"
-    if p.is_dir():
-        return f"[error] {p} is a directory — use bash (ls/dir) to list it"
-    data = p.read_bytes()
-    if _is_binary(data):
-        return f"[binary file: {p.name}, {len(data)} bytes — use bash to inspect]"
-    text = data.decode("utf-8", errors="replace")
-    lines = text.split("\n")
-    total = len(lines)
-    try:
-        offset = max(1, int(args.get("offset") or 1))
-    except (TypeError, ValueError):
-        offset = 1
-    if offset > total:
-        return f"[offset {offset} is beyond end of file ({total} lines total)]"
-    start = offset - 1
-    end = total
-    if args.get("limit") is not None:
-        try:
-            end = min(start + max(1, int(args["limit"])), total)
-        except (TypeError, ValueError):
-            pass
-    chunk = "\n".join(lines[start:end])
-    chunk, truncated = _truncate_head(chunk)
-    note = ""
-    if truncated:
-        note = f"\n\n[truncated at {TOOL_MAX_LINES} lines / {TOOL_MAX_BYTES // 1024}KB. Use offset={end + 1} to continue.]"
-    elif end < total:
-        note = f"\n\n[{total - end} more lines in file. Use offset={end + 1} to continue.]"
-    return chunk + note
-
-
-def tool_write(args: dict) -> str:
-    raw = args.get("path") or ""
-    content = args.get("content")
-    if not raw:
-        return "[error] missing 'path'"
-    if content is None:
-        return "[error] missing 'content'"
-    p = _resolve_path(raw)
-    try:
-        if p.parent and not p.parent.exists():
-            p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    except Exception as e:
-        return f"[error] write failed: {type(e).__name__}: {e}"
-    return f"Wrote {len(content)} chars to {p}"
-
-
-class _HTMLTextExtractor(HTMLParser):
-    SKIP = {"script", "style", "noscript", "template", "head"}
-    BLOCK = {"p", "div", "li", "br", "h1", "h2", "h3", "h4", "h5", "tr", "section", "article", "pre", "table"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self._skip = 0
-
-    def handle_starttag(self, tag, attrs) -> None:
-        if tag in self.SKIP:
-            self._skip += 1
-        elif tag in self.BLOCK:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag) -> None:
-        if tag in self.SKIP and self._skip:
-            self._skip -= 1
-
-    def handle_data(self, data) -> None:
-        if not self._skip:
-            self.parts.append(data)
-
-
-def _html_to_text(html: str) -> str:
-    ex = _HTMLTextExtractor()
-    try:
-        ex.feed(html)
-    except Exception:
-        return re.sub(r"<[^>]+>", " ", html)
-    text = "".join(ex.parts)
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def tool_web_fetch(args: dict) -> str:
-    url = (args.get("url") or "").strip()
-    if not re.match(r"^https?://", url):
-        return "[error] 'url' must start with http:// or https://"
-    try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0 (compatible; LiteTUI)"}
-        )
-        with urllib.request.urlopen(req, timeout=WEB_FETCH_TIMEOUT_S) as r:
-            ctype = (r.headers.get("Content-Type") or "").lower()
-            data = r.read(512 * 1024)
-    except Exception as e:
-        return f"[error] fetch failed: {type(e).__name__}: {e}"
-    text = data.decode("utf-8", errors="replace")
-    if "html" in ctype or text.lstrip()[:1] == "<":
-        text = _html_to_text(text)
-    if len(text) > WEB_FETCH_MAX_CHARS:
-        text = text[:WEB_FETCH_MAX_CHARS] + f"\n\n[truncated at {WEB_FETCH_MAX_CHARS} chars]"
-    return text.strip() or "[empty response]"
-
-
-TOOL_DISPATCH: dict[str, object] = {
-    "bash": tool_bash,
-    "read": tool_read,
-    "write": tool_write,
-    "web_fetch": tool_web_fetch,
-}
 
 # The model CANNOT see an image through a tool result. A tool result is a
 # role:"tool" message whose content is a STRING; images are only visible as an
@@ -485,84 +253,6 @@ VIEW_IMAGE_TOOL_SPEC = {
         },
     },
 }
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "bash",
-            "description": (
-                "Execute a shell command in the current working directory "
-                "(bash on Unix, cmd.exe on Windows). Returns stdout and stderr, "
-                "truncated to the last 2000 lines or 50KB. Non-zero exit codes are reported. "
-                "Optionally provide a timeout in seconds (default 120)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to execute"},
-                    "timeout": {"type": "number", "description": "Timeout in seconds (default 120)"},
-                },
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read",
-            "description": (
-                "Read the contents of a text file (relative or absolute path). "
-                "Output is truncated to 2000 lines or 50KB (whichever is hit first). "
-                "Use offset/limit for large files and continue with offset when truncated."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Path to the file to read (relative or absolute)"},
-                    "offset": {"type": "number", "description": "Line number to start reading from (1-indexed)"},
-                    "limit": {"type": "number", "description": "Maximum number of lines to read"},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write",
-            "description": (
-                "Write content to a file, creating parent directories as needed. "
-                "Overwrites the file if it exists. Use for new files or full rewrites."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Path to the file to write (relative or absolute)"},
-                    "content": {"type": "string", "description": "Content to write to the file"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_fetch",
-            "description": (
-                "Fetch a URL over HTTP(S) and return its body as plain text "
-                "(HTML converted to text, capped at 20000 chars). Use for web pages, docs, and JSON APIs."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Absolute http(s) URL to fetch"},
-                },
-                "required": ["url"],
-            },
-        },
-    },
-]
 
 
 class ChatMessage(Static):
@@ -720,15 +410,6 @@ def _markdown_to_text(src: str, width: int) -> Text:
         return Text(src)
 
 
-def _fmt_dur(seconds: float) -> str:
-    """Human duration, pure. <60s -> 'X.Ys'; >=60s -> 'Mm SS.s'."""
-    s = max(0.0, float(seconds))
-    if s < 60:
-        return f"{s:.1f}s"
-    m = int(s // 60)
-    return f"{m}m {s - m * 60:04.1f}s"
-
-
 def midturn_action(enter_interrupts: bool, alt_chord: bool) -> str:
     """Pure: what a mid-turn submission does — "queue" or "interrupt".
 
@@ -752,11 +433,11 @@ def render_progress(t0: float, now: float, prompt_tokens=None, learned_rate=None
     ESTIMATE (the previous turn's count), so the ETA is a projection, not a
     measurement of this turn. Inputs are optional so the pre-ETA callers
     (tool_display_parts, the pre-token answer bubble) keep working unchanged."""
-    base = f"{_fmt_dur(now - t0)} …"
+    base = f"{fmt_dur(now - t0)} …"
     if (learned_rate is not None and learned_rate > 0
             and prompt_tokens is not None and prompt_tokens > 0):
         eta_s = prompt_tokens / learned_rate
-        return f"{base} · est ~{_fmt_dur(eta_s)}"
+        return f"{base} · est ~{fmt_dur(eta_s)}"
     return base
 
 
@@ -818,7 +499,7 @@ def tool_display_parts(tool, max_lines: int = 12) -> list:
     if tool._result is None:
         parts.append(("\n  \u23f1 " + render_progress(tool._t0, time.monotonic()), "#8b95a7"))
     else:
-        parts.append(("\n  ⏱ " + _fmt_dur(tool._took or 0.0), "#5c6470"))
+        parts.append(("\n  ⏱ " + fmt_dur(tool._took or 0.0), "#5c6470"))
     return parts
 
 
@@ -3029,7 +2710,7 @@ class LiteTUI(App):
 
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
-        specs = list(TOOLS)
+        specs = self.plugins.tool_specs()
         # Offered unless we KNOW the model cannot see (type "llm"). Unknown
         # stays offered: the tool reports the precondition itself, which is
         # more useful than the tool silently not existing.
@@ -3059,7 +2740,7 @@ class LiteTUI(App):
 
     def _dispatch_for(self, name: str):
         """Resolve a tool name across all three sources, static first."""
-        fn = TOOL_DISPATCH.get(name)
+        fn = self.plugins.dispatch_for(name)
         if fn is not None:
             return fn
         if name == "skill":
@@ -4182,7 +3863,7 @@ class LiteTUI(App):
             # with nothing to kill would be a control that does nothing.
             try:
                 self.query_one(CancelToolButton).set_class(
-                    _CANCELLABLE["proc"] is not None, "visible"
+                    ttyguard.CANCELLABLE["proc"] is not None, "visible"
                 )
             except Exception:
                 pass
@@ -4507,12 +4188,12 @@ class LiteTUI(App):
         """Kill the in-flight bash tree; the TURN carries on with an honest
         result the model can react to. Esc (action_stop_turn) stays what it
         is: stop the whole turn. Two different verbs, deliberately."""
-        proc = _CANCELLABLE["proc"]
+        proc = ttyguard.CANCELLABLE["proc"]
         if proc is None or proc.poll() is not None:
             self.notify("No cancellable tool is running", timeout=2)
             return
-        _CANCELLABLE["cancelled"] = True
-        _kill_tree(proc.pid)
+        ttyguard.CANCELLABLE["cancelled"] = True
+        ttyguard.kill_tree(proc.pid)
         self.notify("Tool cancelled — the model sees what it wrote so far", timeout=3)
 
     def action_stop_turn(self) -> None:
