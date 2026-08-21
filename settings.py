@@ -196,6 +196,10 @@ class Settings:
     #: themes (themes.py — matrix, lite-suite, ...) register alongside
     #: Textual's built-ins; an unknown name falls back to textual-dark.
     theme_name: str = "textual-dark"
+    #: Custom themes made in the /settings creator: {name: {token: "#RRGGBB"}}
+    #: with the 10 keys in themes.THEME_TOKENS. Registered at boot and on
+    #: every settings save; a corrupt entry is skipped, never fatal.
+    custom_themes: dict = field(default_factory=dict)
     show_thinking: bool = True
     autoscroll: bool = True
 
@@ -249,6 +253,10 @@ def _coerce(name: str, raw: Any, current: Any) -> Any:
             if isinstance(raw, list):
                 return [str(x) for x in raw]
             return [s for s in str(raw).split(",") if s]
+        if "dict" in t:
+            # str(raw) below would turn a loaded {} into the STRING '{}' -
+            # the same type-roundtrip class as the known skill_roots bug.
+            return raw if isinstance(raw, dict) else current
         if "int" in t:
             return int(str(raw).strip())
         if "float" in t:

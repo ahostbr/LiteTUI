@@ -1572,6 +1572,7 @@ class LiteTUI(App):
         # applies — a saved light name then falls into the except below.
         for name in themes_mod.LIGHT_BUILTINS:
             self.unregister_theme(name)
+        self._register_custom_themes()
         try:
             self.theme = self.settings.theme_name
         except Exception:
@@ -3768,6 +3769,18 @@ class LiteTUI(App):
         self._append({"role": "user", "content": item["content"]})
         self._stream()
 
+    def _register_custom_themes(self) -> None:
+        """Register every custom theme from settings. Idempotent — an existing
+        name is overwritten, which is what makes the creator an EDITOR too.
+        A corrupt entry is skipped with a note rather than killing the boot:
+        settings.json is hand-editable and a typo there must cost one theme,
+        not the app."""
+        for name, tokens in (getattr(self.settings, "custom_themes", None) or {}).items():
+            try:
+                self.register_theme(themes_mod.theme_from_tokens(name, tokens))
+            except Exception as e:
+                self.notify(f"custom theme {name!r} skipped: {e}", severity="warning")
+
     def watch_theme(self, theme_name: str) -> None:
         """Persist a theme change, wherever it came from (palette, settings).
 
@@ -4038,6 +4051,14 @@ class LiteTUI(App):
             return
         old = self.settings
         self.settings = new
+        # New/edited custom themes must exist in the registry BEFORE the
+        # theme_name below tries to apply one of them.
+        self._register_custom_themes()
+        if new.theme_name != self.theme:
+            try:
+                self.theme = new.theme_name
+            except Exception:
+                self._system(f"Theme {new.theme_name!r} not found — keeping {self.theme}")
         try:
             path = settings_mod.save(new)
         except OSError as e:

@@ -55,19 +55,16 @@ THINKING_CHOICES = [
     ("xhigh — most expensive", "xhigh"),
 ]
 
-def _theme_choices():
-    """Built-ins + the LiteSuite-ported set, one list, computed not typed —
-    a hand-maintained copy of either registry would drift the day a theme is
-    added."""
+def _theme_choices(custom: dict | None = None):
+    """Built-ins (lights stripped) + the LiteSuite ports + the shades + any
+    custom themes, computed at call time — a module-level constant missed
+    every theme created after import."""
     from textual.theme import BUILTIN_THEMES
     import themes as themes_mod
     names = [n for n in BUILTIN_THEMES if n not in themes_mod.LIGHT_BUILTINS] + [
         n for n in themes_mod.ALL_THEMES if n not in BUILTIN_THEMES
-    ]
+    ] + [n for n in (custom or {}) if n not in themes_mod.ALL_THEMES]
     return [(n, n) for n in names]
-
-
-THEME_CHOICES = _theme_choices()
 
 TOOL_CONTEXT_CHOICES = [
     ("off — raw output enters context (baseline)", "off"),
@@ -374,16 +371,29 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             )
 
                         # ── Interface ────────────────────────────────────────────────
+                with TabPane("Themes", id="tab-themes"):
+                    with VerticalScroll(classes="set-scroll"):
+                        yield from self._select_row(
+                            "theme_name", "Theme", _theme_choices(self._start.custom_themes),
+                            "Dark built-ins, the LiteSuite ports (matrix, lite-suite, "
+                            "amber-ledger...), the ten-gray SHADES, and your customs. "
+                            "ctrl+p still has a quick-select; either way the pick "
+                            "survives a restart.",
+                        )
+                        yield Static("CREATE / EDIT A CUSTOM THEME", classes="set-subhead")
+                        yield Static(
+                            "Fields are prefilled from the CURRENT theme, so start by "
+                            "picking the nearest neighbour, then nudge. Name + Ctrl+S "
+                            "creates it, selects it, and persists it. An existing "
+                            "custom name is OVERWRITTEN - the creator is the editor. "
+                            "Leave the name empty to save settings without creating.",
+                            classes="set-help",
+                        )
+                        yield from self._custom_theme_rows()
+
                 with TabPane("Interface", id="tab-interface"):
                     with VerticalScroll(classes="set-scroll"):
 
-                        yield from self._select_row(
-                            "theme_name", "Theme", THEME_CHOICES,
-                            "Textual built-ins plus the LiteSuite palette — matrix, "
-                            "lite-suite, oscura, cockpit, amber-ledger and friends. "
-                            "Also switchable from the command palette (ctrl+p); either "
-                            "way the choice now survives a restart.",
-                        )
                         yield from self._switch_row(
                             "show_thinking", "Show thinking blocks",
                             "Render the model's reasoning trace in the transcript.",
@@ -433,6 +443,22 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
     # ── Actions ──────────────────────────────────────────────────────────────
 
+    def _custom_theme_rows(self):
+        """Name + the 10 token fields, prefilled from the ACTIVE theme."""
+        import themes as themes_mod
+        try:
+            resolved = self.app.current_theme.to_color_system().generate()
+        except Exception:
+            resolved = {}
+        with Vertical(classes="set-row"):
+            yield Label("New theme name", classes="set-label")
+            yield Input(value="", id="ct-name", placeholder="my-theme")
+        for tok in themes_mod.THEME_TOKENS:
+            with Vertical(classes="set-row"):
+                yield Label(tok, classes="set-label")
+                yield Input(value=str(resolved.get(tok, "")), id=f"ct-{tok}",
+                            placeholder="#RRGGBB")
+
     def _collect(self) -> Settings:
         """Read every control into a new Settings, raising ValueError by name."""
         out = replace(self._start)
@@ -441,8 +467,8 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
         for f in fields(Settings):
             name = f.name
-            if name == "mcp_disabled_servers":
-                continue
+            if name in ("mcp_disabled_servers", "custom_themes"):
+                continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
                 continue  # env owns it; the control is disabled
             try:
@@ -512,6 +538,21 @@ class SettingsScreen(ModalScreen[Settings | None]):
             raise ValueError("compact_max_tokens: below 256 no summary can fit")
         if out.tool_context_threshold_chars < 0:
             raise ValueError("tool_context_threshold_chars: must be >= 0")
+
+        # The theme creator: a non-empty name mints (or overwrites) a custom
+        # theme from the ct-* fields and SELECTS it, so Ctrl+S gives instant
+        # feedback instead of a saved-but-invisible theme.
+        import themes as themes_mod
+        ct_name = self.query_one("#ct-name", Input).value.strip()
+        if ct_name:
+            tokens = {
+                tok: self.query_one(f"#ct-{tok}", Input).value.strip()
+                for tok in themes_mod.THEME_TOKENS
+            }
+            themes_mod.theme_from_tokens(ct_name, tokens)  # raises, naming the field
+            out.custom_themes = dict(out.custom_themes)
+            out.custom_themes[ct_name] = tokens
+            out.theme_name = ct_name
         return out
 
     def action_save(self) -> None:

@@ -156,8 +156,8 @@ def test_healthy_is_colorless_in_every_shade():
 
 # --- the strip ---------------------------------------------------------------
 def test_light_builtins_are_stripped_from_choices():
-    from settings_screen import THEME_CHOICES
-    names = [n for n, _ in THEME_CHOICES]
+    from settings_screen import _theme_choices
+    names = [n for n, _ in _theme_choices()]
     for light in themes_mod.LIGHT_BUILTINS:
         assert light not in names, f"{light} still offered"
     # negative arm: the strip must not have taken dark builtins with it
@@ -168,3 +168,60 @@ def test_all_themes_is_ports_plus_shades_no_overlap():
     assert not set(themes_mod.LITETUI_THEMES) & set(themes_mod.SHADE_THEMES)
     assert themes_mod.ALL_THEMES == {**themes_mod.LITETUI_THEMES,
                                      **themes_mod.SHADE_THEMES}
+
+
+# --- the custom theme creator ------------------------------------------------
+def test_theme_from_tokens_builds_a_dark_theme():
+    toks = {k: "#123456" for k in themes_mod.THEME_TOKENS}
+    t = themes_mod.theme_from_tokens("mine", toks)
+    assert t.dark and t.name == "mine" and t.primary == "#123456"
+
+
+def test_theme_from_tokens_names_the_bad_field():
+    """The error string is the UI: the settings screen shows it verbatim."""
+    toks = {k: "#123456" for k in themes_mod.THEME_TOKENS}
+    toks["warning"] = "orange"
+    try:
+        themes_mod.theme_from_tokens("mine", toks)
+        assert False, "accepted a word as a color"
+    except ValueError as e:
+        assert "warning" in str(e) and "orange" in str(e)
+
+
+def test_theme_from_tokens_rejects_short_hex_and_empty_name():
+    toks = {k: "#123456" for k in themes_mod.THEME_TOKENS}
+    toks["panel"] = "#123"
+    try:
+        themes_mod.theme_from_tokens("mine", toks)
+        assert False
+    except ValueError as e:
+        assert "panel" in str(e)
+    try:
+        themes_mod.theme_from_tokens("   ", {k: "#123456" for k in themes_mod.THEME_TOKENS})
+        assert False
+    except ValueError as e:
+        assert "name" in str(e)
+
+
+def test_choices_include_customs_without_duplicating_registry_names():
+    from settings_screen import _theme_choices
+    names = [n for n, _ in _theme_choices({"my-noir": {}, "matrix": {}})]
+    assert "my-noir" in names
+    assert names.count("matrix") == 1   # a custom shadowing a port lists once
+
+
+def test_register_custom_themes_skips_corrupt_entries_loudly():
+    """A typo in hand-edited settings.json costs ONE theme, not the boot —
+    and it is announced, never silent."""
+    reg, notes = [], []
+    ns = SimpleNamespace(
+        settings=SimpleNamespace(custom_themes={
+            "good": {k: "#101010" for k in themes_mod.THEME_TOKENS},
+            "bad": {"primary": "not-a-color"},
+        }),
+        register_theme=lambda t: reg.append(t.name),
+        notify=lambda msg, severity=None: notes.append(msg),
+    )
+    LiteTUI._register_custom_themes(ns)
+    assert reg == ["good"]
+    assert notes and "bad" in notes[0]

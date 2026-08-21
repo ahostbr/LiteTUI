@@ -12,7 +12,7 @@ by someone who cannot check it against anything else.
 
 from __future__ import annotations
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 #: Pre-1.0 on purpose. The harness is two days old (first commit
 #: 2026-08-18 23:42) and its interfaces are still moving weekly; a 1.0 would

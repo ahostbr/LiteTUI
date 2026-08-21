@@ -193,3 +193,35 @@ _shade("iron", bg="#0a0b0c", surface="#101214", panel="#16181b",
 
 #: Everything LiteTUI registers: the LiteSuite ports plus the native shades.
 ALL_THEMES: dict[str, Theme] = {**LITETUI_THEMES, **SHADE_THEMES}
+
+
+# ── custom themes (the /settings creator) ────────────────────────────────────
+
+#: The full token schema, one place. 6 accent/semantic + 4 surface/text.
+THEME_TOKENS = (
+    "primary", "secondary", "accent",
+    "success", "warning", "error",
+    "background", "surface", "panel", "foreground",
+)
+
+_HEX = frozenset("0123456789abcdefABCDEF")
+
+
+def theme_from_tokens(name: str, tokens: dict) -> Theme:
+    """Build a dark Theme from a {token: hex} dict, loudly.
+
+    Raises ValueError NAMING the offending field — the settings screen
+    surfaces that string verbatim, so "warning: not a hex color (got 'red')"
+    reaches the person who typed it. A silent skip here would be a control
+    that does nothing wearing a save button.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("custom theme: name is empty")
+    clean: dict = {}
+    for tok in THEME_TOKENS:
+        v = str(tokens.get(tok, "")).strip()
+        if not (len(v) == 7 and v[0] == "#" and all(c in _HEX for c in v[1:])):
+            raise ValueError(f"custom theme {name!r}: {tok} is not a #RRGGBB hex (got {v!r})")
+        clean[tok] = v
+    return Theme(name=name, dark=True, **clean)

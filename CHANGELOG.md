@@ -20,6 +20,27 @@ fails if this file's top released heading disagrees with it.
 
 _(nothing yet)_
 
+## [0.11.0] — 2026-08-21
+
+### Added
+- **A custom theme creator, in a new Themes settings tab.** Ten token fields
+  (6 accent/semantic + 4 surface/text — the full schema in
+  themes.THEME_TOKENS), prefilled from the CURRENT theme so you start from
+  the nearest neighbour and nudge. Name + Ctrl+S validates every hex
+  (naming the bad field in the error), creates the theme, SELECTS it, and
+  persists it to settings.json. An existing custom name is overwritten — the
+  creator is the editor. Corrupt hand-edits cost one theme at boot, loudly,
+  never the app.
+- **The theme picker moved to the Themes tab** (with the creator); the
+  command palette's ctrl+p quick-select stays.
+
+### Fixed
+- **Dict settings fields survive the round-trip.** settings._coerce's str()
+  fallback turned a loaded {} into the STRING "{}" — caught by the existing
+  round-trip contract test the moment custom_themes landed. Same
+  type-roundtrip class as the known skill_roots comma-string bug, which
+  remains open.
+
 ## [0.10.0] — 2026-08-21
 
 ### Added
