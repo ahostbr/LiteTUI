@@ -161,6 +161,14 @@ def test_the_chord_binding_exists_with_priority():
     assert "priority=True" in line, "Input would swallow the chord without priority"
 
 
+def test_the_measured_ctrl_j_alias_exists():
+    """MEASURED on the real terminal (keyprobe, 2026-08-21): Windows Terminal
+    ignores the kitty protocol, so ctrl+enter AND ctrl+shift+enter both arrive
+    as 'ctrl+j'. Without this alias the chord binding above is handled-and-
+    does-nothing on this box — the user presses the chord and nothing fires."""
+    assert '"ctrl+j", "submit_alt"' in APP_SRC
+
+
 def test_wake_after_compact_defers_to_a_real_pending_message():
     body = APP_SRC.split("def _wake_after_compact", 1)[1]
     body = body.split(chr(10) + "    @", 1)[0]

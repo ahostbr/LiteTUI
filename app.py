@@ -1393,6 +1393,14 @@ class LiteTUI(App):
         # terminal + kitty keyboard protocol (Textual's Windows driver enables
         # it); prove it on a real boot before trusting the chord end.
         Binding("ctrl+shift+enter", "submit_alt", "Send (swapped)", priority=True, show=False),
+        # MEASURED 2026-08-21 (keyprobe, this box, Windows Terminal): the
+        # terminal does not honour the kitty keyboard protocol, so BOTH
+        # ctrl+enter and ctrl+shift+enter arrive as 'ctrl+j' (legacy LF) and
+        # the binding above can never fire here. Physically pressing
+        # ctrl+shift+enter lands as ctrl+j — so this alias is what makes the
+        # chord real on this terminal. Cost: a bare ctrl+j also triggers it.
+        # Both names stay: a kitty-capable terminal delivers the real chord.
+        Binding("ctrl+j", "submit_alt", "Send (swapped)", priority=True, show=False),
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+o", "paste_image", "Paste Image"),
         # Ctrl+V: Input._on_paste already handles BRACKETED paste, but a
