@@ -26,6 +26,7 @@ from settings_screen import SettingsScreen
 import ask_user_question
 import chrome_tool
 import pccontrol_tool
+import studio_tool
 import ttyguard
 import mcp_client
 import sanitize
@@ -2900,6 +2901,11 @@ class LiteTUI(App):
         # Always available: it renders inside this very app and has
         # no external precondition (unlike the browser tools' SCRIPT check).
         specs.append(ask_user_question.ASK_USER_QUESTION_TOOL_SPEC)
+        # Local generation (LiteImage/LiteSound/LiteModeler). Offered
+        # unconditionally: availability is RUNTIME state (is the app open?),
+        # and the tool reports its own precondition in one honest sentence,
+        # which beats silently not existing when the app is closed.
+        specs.append(studio_tool.STUDIO_TOOL_SPEC)
         if self.skills:
             specs.append(skills_mod.SKILL_TOOL_SPEC)
         # Only offered once the seat is actually registered. Advertising fleet
@@ -2923,6 +2929,8 @@ class LiteTUI(App):
             return self._tool_view_image
         if name == "pccontrol":
             return pccontrol_tool.run
+        if name == "studio":
+            return studio_tool.run
         if name == "chrome":
             return chrome_tool.run
         if name == "ask_user_question":

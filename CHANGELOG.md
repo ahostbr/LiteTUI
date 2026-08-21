@@ -18,6 +18,34 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-08-21
+
+### Added
+
+- **The `studio` tool: local generation from the chat.** One tool, three
+  local apps — `image` (LiteImage REST, :7426), `sound` (LiteSound REST,
+  :7427, async job flow), `model` (LiteModeler via the `lst` CLI —
+  prompt-to-3D). No API keys, no cloud; the machine's own GPU does the work.
+  The spec description carries the working knowledge the model needs — the
+  async job_id/poll contract, that the apps must be RUNNING, and to tell the
+  human rather than retry blind. Offered unconditionally: availability is
+  runtime state, and the tool reports its own precondition in one honest
+  sentence.
+- End-user correctness by construction: image/sound address PORTS (env
+  overridable), so an installed app and a dev checkout are indistinguishable;
+  model delegates to litesuite-tools, the single owner of find-the-CLI
+  (companions: LiteSuite `1f8e16ee` — installed-copy probing +
+  Electron-as-node + 17 vendored handlers that a blanket gitignore had
+  silently untracked; LiteModeler `cade477` — the installer now ships the
+  CLI).
+
+### Fixed
+
+- The `lst` spawn initially bypassed the ttyguard envelope — caught by the
+  envelope sweep in test_ttyguard.py, the gate built for exactly that. Routed
+  through `ttyguard.run`.
+
+
 ## [0.17.0] — 2026-08-21
 
 ### Added
