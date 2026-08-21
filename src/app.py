@@ -56,6 +56,7 @@ MAX_IMAGE_DIM = 1536
 # store into src/.
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = ROOT / "prompts"
+MARK_SCRIPT = ROOT / "tools" / "pccontrol" / "marker_overlay.ps1"
 SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
 
 
@@ -4096,6 +4097,90 @@ class LiteTUI(App):
             note += ("\n  Applies on next /reconnect: " + ", ".join(deferred))
         self._system(note)
 
+    @staticmethod
+    def _mark_message(data: dict) -> str:
+        """The text half of a mark turn. Pure, so the shape is testable."""
+        return (
+            f"[mark] I marked the screen at ({data['x']},{data['y']}) — "
+            f"monitor {data['mon']}, monitor-local ({data['mon_x']},{data['mon_y']}). "
+            "The screenshot attached is that monitor, and the ring drawn on it is "
+            "my marker: respond to what I am pointing at."
+        )
+
+    def _start_mark(self) -> None:
+        """/mark — the human screen-marker channel.
+
+        Spawns the interactive marker overlay (draggable ring + send/cancel),
+        then polls for its handoff file. The overlay writes the JSON and a PNG
+        of the marked monitor WITH THE RING STILL IN THE SHOT — the ring is
+        the highlight; that is the whole feature.
+        """
+        if not MARK_SCRIPT.exists():
+            self._system(f"/mark: overlay script missing at {MARK_SCRIPT}")
+            return
+        handoff = Path(tempfile.mkdtemp(prefix="litetui_mark_")) / "mark.json"
+        try:
+            ttyguard.popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", str(MARK_SCRIPT),
+                 "-Interactive", "-HandoffFile", str(handoff),
+                 "-Color", "cyan", "-Label", "drag me"],
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as e:
+            self._system(f"/mark: could not launch the overlay: {e}")
+            return
+        self._system(
+            "Marker up — drag the ring onto the thing, then click send. "
+            "(x or Esc cancels; times out in 3 minutes.)"
+        )
+        self._mark_wait(handoff)
+
+    @work(exclusive=True, group="mark")
+    async def _mark_wait(self, handoff: Path) -> None:
+        """Poll for the overlay's handoff. Group "mark", NOT "chat" — waiting
+        for a human to drag a ring must never cancel a running turn, and a
+        turn must never cancel the wait."""
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.3)
+            if handoff.exists():
+                break
+        else:
+            self._system("/mark: timed out — overlay closed without sending.")
+            return
+        try:
+            # utf-8-sig: Windows PowerShell's Set-Content -Encoding UTF8
+            # writes a BOM, and json.loads chokes on it — caught in the live
+            # drill, not by inspection.
+            data = json.loads(handoff.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as e:
+            self._system(f"/mark: unreadable handoff: {e}")
+            return
+        if data.get("cancelled"):
+            self._system("/mark: cancelled.")
+            return
+        b64 = self._load_image_file(Path(data["png"]))
+        if not b64:
+            self._system(f"/mark: could not read the screenshot at {data.get('png')}")
+            return
+        text = self._mark_message(data)
+        content: list = [
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            {"type": "text", "text": text},
+        ]
+        # Same held-vs-idle contract as inbox mail: mid-turn it queues
+        # visibly and flushes as a real turn; idle it sends now.
+        if self._chat_running():
+            self._user_bubble(text, True, queued=True)
+            self._pending_input.append({"content": content, "text": text})
+            return
+        self._materialise_convo()
+        self._user_bubble(text, True)
+        self._append({"role": "user", "content": content})
+        self._stream()
+
     def _handle_command(self, cmd: str) -> None:
         parts = cmd.split(maxsplit=1)
         name = parts[0].lower()
@@ -4237,6 +4322,9 @@ class LiteTUI(App):
                 self._system(
                     f"Unknown level: {arg}\nValid: {', '.join(THINKING_LEVELS)}, unset"
                 )
+
+        elif name == "/mark":
+            self._start_mark()
 
         elif name == "/compact":
             self._compact(arg)
@@ -4389,6 +4477,8 @@ class LiteTUI(App):
                 "/think [level]   thinking level: "
                 + ", ".join(THINKING_LEVELS)
                 + ", unset\n"
+                "/mark            drag a marker onto the screen; send ships the "
+                "screenshot + coords here\n"
                 "/compact [hint]  summarise older messages, keep the last "
                 f"{self.settings.compact_keep_recent}\n"
                 "/convos          list saved conversations\n"

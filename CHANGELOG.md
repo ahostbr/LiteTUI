@@ -20,6 +20,22 @@ fails if this file's top released heading disagrees with it.
 
 _(nothing yet)_
 
+## [0.13.0] — 2026-08-21
+
+### Added
+- **/mark — a manual human screen-marker channel.** The marker overlay grew
+  an interactive mode: a draggable ring with send/cancel buttons riding
+  under it. Drag it onto the thing, click send — the overlay captures that
+  monitor WITH THE RING STILL IN THE SHOT (the ring is the highlight; only
+  the buttons hide), writes an atomic JSON handoff with both absolute and
+  monitor-local coordinates, and LiteTUI ships screenshot + coords to the
+  model as a user turn. Mid-turn it queues like inbox mail instead of
+  cancelling the turn; the wait runs in its own worker group for the same
+  reason. The agent-facing timed click-through marker is untouched.
+  Live-drilled end to end: the reported center matched the optically
+  measured ring position within one pixel, and the drill caught a real bug
+  inspection missed — PowerShell writes JSON with a BOM.
+
 ## [0.12.0] — 2026-08-21
 
 ### Added
