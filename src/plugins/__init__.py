@@ -47,6 +47,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.pccontrol",
     "plugins.chrome",
     "plugins.ask_user_question",
+    "plugins.studio",
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists

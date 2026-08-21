@@ -22,7 +22,6 @@ import config
 import settings as settings_mod
 from settings import Settings, sampling_kwargs
 from settings_screen import SettingsScreen
-import studio_tool
 import ttyguard
 import mcp_client
 import sanitize
@@ -2676,11 +2675,6 @@ class LiteTUI(App):
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
         specs = self.plugins.tool_specs()
-        # Local generation (LiteImage/LiteSound/LiteModeler). Offered
-        # unconditionally: availability is RUNTIME state (is the app open?),
-        # and the tool reports its own precondition in one honest sentence,
-        # which beats silently not existing when the app is closed.
-        specs.append(studio_tool.STUDIO_TOOL_SPEC)
         if self.skills:
             specs.append(skills_mod.SKILL_TOOL_SPEC)
         # Only offered once the seat is actually registered. Advertising fleet
@@ -2700,12 +2694,6 @@ class LiteTUI(App):
             return lambda args: skills_mod.load(self.skills, args.get("name", ""))
         if name == "harness":
             return lambda args: harness_mod.run(self.seat, args)
-        if name == "studio":
-            # The seat's identity rides in so generate actions can suspend
-            # the very model making the call — the GPU is a single pie, and
-            # the agent's own brain is the biggest slice (measured 2026-08-21:
-            # a 2.4 GB summarizer beside the 29 GB seat near-OOMed the box).
-            return lambda args: studio_tool.run(args, seat_model=self.model_id)
         return self._mcp_dispatch.get(name)
 
     def _system_prompt_text(self) -> str:
