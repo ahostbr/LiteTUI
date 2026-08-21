@@ -614,6 +614,11 @@ class ThinkingBlock(Vertical):
     def __init__(self) -> None:
         super().__init__(classes="thinking-block expanded")
         self._buffer = ""
+        # A ThinkingBlock is only ever constructed on the first
+        # reasoning token, so construction IS the trace's start:
+        # stamp it here rather than having the app reach in.
+        self._t0: float | None = time.monotonic()
+        self._marker = "\u25be"      # expand glyph, kept in sync by set_expanded
         self.text = Static("", id="thinking-text")
         self.scroll = VerticalScroll(self.text, classes="thinking-body")
 
@@ -631,6 +636,7 @@ class ThinkingBlock(Vertical):
         else:
             self.remove_class("expanded")
         marker = "\u25be" if value else "\u25b8"
+        self._marker = marker
         self.query_one(ThinkingHeader).content = f"{marker} Thinking"
 
     def append(self, token: str) -> None:
@@ -651,6 +657,30 @@ class ThinkingBlock(Vertical):
 
     def finalize(self) -> None:
         self.text.content = Text(self._buffer)
+
+    # -- header timer ------------------------------------------------------
+    #
+    # The block stamps its own t0 at construction (see __init__), the
+    # app feeds it one repaint tick (repaint_header, with the app's
+    # own tps value) and stops it (reset_header, inside
+    # _thinking_done). The strings are pure (thinking_header_text),
+    # so they are testable without a live app; the tps number is the
+    # app's single reactive, never a second one.
+
+    def repaint_header(self, tps: float | None) -> None:
+        """One repaint tick from the app's _elapsed_repaint loop. tps
+        arrives as an argument - the block never reaches for the app
+        itself, so this stays testable on a bare double."""
+        if self._t0 is None:
+            return
+        self.query_one(ThinkingHeader).content = thinking_header_text(
+            self._marker, self._t0, time.monotonic(), tps)
+
+    def reset_header(self) -> None:
+        """The trace stopped streaming: back to a plain header, no timer.
+        The app calls it once, inside _thinking_done (idempotent there)."""
+        self._t0 = None
+        self.query_one(ThinkingHeader).content = f"{self._marker} Thinking"
 
 
 def _markdown_to_text(src: str, width: int) -> Text:
@@ -709,6 +739,31 @@ def is_reliable_rate_sample(prompt_tokens, first_token_s, floor: float = 0.25) -
     means the sample is not usable."""
     return (prompt_tokens is not None and prompt_tokens > 0
             and first_token_s is not None and first_token_s >= floor)
+
+
+def tps_text(tps: float) -> str:
+    """Pure: the tok/s field, one format for every surface (the footer,
+    the thinking header). The caller decides whether to show it at all:
+    a None reactive means "no number yet" and renders as absence, never
+    a rendered 0.0, which would be a lie about a number that does not
+    exist."""
+    return f"{tps:.1f} tok/s"
+
+
+def thinking_header_text(marker: str, t0: float, now: float,
+                         tps: float | None) -> str:
+    """Pure: the thinking block header while the trace is streaming.
+    '<marker> Thinking · 12.3s ... · 24.1 tok/s' — the elapsed part is
+    render_progress (no ETA: a reasoning trace has no token count until
+    it ends, and a confidently wrong number is worse than none), the
+    tok/s part is tps_text (the footer's own format, one source). tps
+    None -> elapsed only; the field is never rendered as 0.0 tok/s.
+    `marker` is the expand glyph, so a collapsed block keeps its own
+    state in the same string."""
+    text = f"{marker} Thinking · {render_progress(t0, now)}"
+    if tps is not None:
+        text += f" · {tps_text(tps)}"
+    return text
 
 
 def tool_display_parts(tool, max_lines: int = 12) -> list:
@@ -1332,6 +1387,10 @@ class LiteTUI(App):
         self._eta_samples: list[float] = []
         self._eta_last_prompt_tokens: int | None = None
         self._eta_first_delta: float | None = None
+        # The thinking block currently streaming (its header timer): set
+        # at block creation, cleared by _thinking_done when the trace
+        # ends (first content token, first tool call, or turn end).
+        self._thinking_live: ThinkingBlock | None = None
         self._persist_error: str | None = None
         self._store_injected = False  # see STORE_HEADER; once per conversation
         self.client = AsyncOpenAI(
@@ -2155,7 +2214,7 @@ class LiteTUI(App):
         # local model on one GPU, and the number that matters is whether the
         # answer arrives faster than you read it.
         style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
-        t.append(f"{self.tps:.1f} tok/s", style)
+        t.append(tps_text(self.tps), style)
 
     def _append_tps(self, t: Text, sep: str) -> None:
         """Generation speed, last of all -- the label is `dock: right`, so the
@@ -2167,7 +2226,7 @@ class LiteTUI(App):
         # local model on one GPU, and the number that matters is whether the
         # answer arrives faster than you read it.
         style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
-        t.append(f"{self.tps:.1f} tok/s", style)
+        t.append(tps_text(self.tps), style)
 
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
@@ -2577,6 +2636,20 @@ class LiteTUI(App):
         if tool in self._inflight_tools:
             self._inflight_tools.remove(tool)
 
+    def _thinking_done(self) -> None:
+        """The trace stopped streaming: the first content token, the
+        first tool call, or the turn's end. Idempotent - every exit path
+        calls it, so it acts exactly once, and with _thinking_live back
+        to None the _elapsed_repaint gate is False: the header can no
+        longer count. That is the 'timer stops at the right moment'
+        control."""
+        t = self._thinking_live
+        if t is None:
+            return
+        self._thinking_live = None
+        t.finalize()
+        t.reset_header()
+
     async def _elapsed_repaint(self) -> None:
         # Repaint the in-flight bubble and any running tool calls ~4x/sec.
         # Self-retires after ~1s with nothing active, so it never outlives the
@@ -2585,7 +2658,11 @@ class LiteTUI(App):
         while True:
             await asyncio.sleep(0.25)
             now = time.monotonic()
-            active = self._elapsed_body is not None or self._inflight_tools
+            active = (
+                self._elapsed_body is not None
+                or self._inflight_tools
+                or self._thinking_live is not None
+            )
             if active:
                 if self._elapsed_body is not None:
                     # ETA: project this turn's prompt-processing time from the
@@ -2595,6 +2672,9 @@ class LiteTUI(App):
                     self._elapsed_body.content = render_progress(
                         self._elapsed_body_t0, now,
                         self._eta_estimate_tokens(), self._eta_learned_rate())
+                if self._thinking_live is not None:
+                    # The app owns the tps reactive; the block only renders it.
+                    self._thinking_live.repaint_header(self.tps)
                 for tool in self._inflight_tools:
                     tool._tick()
                 idle = 0.0
@@ -3134,6 +3214,7 @@ class LiteTUI(App):
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
                 self._elapsed_stop_body()
+                self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
@@ -3164,6 +3245,7 @@ class LiteTUI(App):
                         reasoning += token
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
+                            self._thinking_live = thinking
                             widget.mount(thinking, before=widget.body)
                             # Discrete event -> unconditional. See _scroll_down.
                             self._scroll_down()
@@ -3181,6 +3263,7 @@ class LiteTUI(App):
                         self._scroll_down(only_if_following=True)
                     if delta.content:
                         self._tps_tick()
+                        self._thinking_done()
                         self._elapsed_stop_body()
                         text_full += delta.content
                         widget.body.content = text_full + " \u258c"
@@ -3196,7 +3279,12 @@ class LiteTUI(App):
                         except Exception:
                             pass
                         break
-                    for tc in getattr(delta, "tool_calls", None) or []:
+                    tool_calls = getattr(delta, "tool_calls", None) or []
+                    if tool_calls:
+                        # A tool call is the trace's end too (the model
+                        # thinks, then decides), so the header timer stops here.
+                        self._thinking_done()
+                    for tc in tool_calls:
                         idx = tc.index
                         slot = tool_acc.setdefault(
                             idx, {"id": None, "name": "", "arguments": ""}
@@ -3220,15 +3308,17 @@ class LiteTUI(App):
                                     self._scroll_down()
             except Exception as e:
                 self._elapsed_stop_body()
+                self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
                 return
 
             self._elapsed_stop_body()
-            # Final render of this turn's bubble.
-            if thinking is not None:
-                thinking.finalize()
+            # Final render of this turn's bubble. _thinking_done
+            # finalizes the trace (idempotent if a content or tool token
+            # already ended it) and stops the header timer with the stream.
+            self._thinking_done()
             if text_full:
                 try:
                     widget.body.set_markdown(text_full)
