@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import statistics
 import time
 import urllib.request
 import uuid
@@ -680,11 +681,34 @@ def _fmt_dur(seconds: float) -> str:
     return f"{m}m {s - m * 60:04.1f}s"
 
 
-def render_progress(t0: float, now: float) -> str:
+def render_progress(t0: float, now: float, prompt_tokens=None, learned_rate=None) -> str:
     """Pure: the in-flight bubble text while no answer token has arrived yet.
-    Elapsed since t0, with a trailing '…' to signal still working.
-    ETA is added in a later commit, behind a confidence rule."""
-    return f"{_fmt_dur(now - t0)} …"
+    Elapsed since t0, always, with a trailing '…' to signal still working.
+    An ETA is appended ONLY when there is both a learned prompt-eval rate and a
+    prompt token count to apply it to; a None or zero rate (or a missing token
+    count) yields elapsed-only and never divides by zero. `prompt_tokens` is an
+    ESTIMATE (the previous turn's count), so the ETA is a projection, not a
+    measurement of this turn. Inputs are optional so the pre-ETA callers
+    (tool_display_parts, the pre-token answer bubble) keep working unchanged."""
+    base = f"{_fmt_dur(now - t0)} …"
+    if (learned_rate is not None and learned_rate > 0
+            and prompt_tokens is not None and prompt_tokens > 0):
+        eta_s = prompt_tokens / learned_rate
+        return f"{base} · est ~{_fmt_dur(eta_s)}"
+    return base
+
+
+def is_reliable_rate_sample(prompt_tokens, first_token_s, floor: float = 0.25) -> bool:
+    """Pure: the KV-cache gate. A rate sample is only trustworthy when the turn
+    demonstrably REPROCESSED the prompt, which surfaces as a first-token latency
+    at or above `floor` (default 0.25s). A cache-hit turn returns well under the
+    floor and its prompt_tokens/latency is a misleading rate (fixed overhead
+    dominates when few tokens are reprocessed), so admitting it into the median
+    would make a large post-compact turn predict minutes. Requires BOTH a positive
+    token count AND a first-token latency at the floor — either missing/zero
+    means the sample is not usable."""
+    return (prompt_tokens is not None and prompt_tokens > 0
+            and first_token_s is not None and first_token_s >= floor)
 
 
 def tool_display_parts(tool, max_lines: int = 12) -> list:
@@ -1299,6 +1323,15 @@ class LiteTUI(App):
         self._elapsed_body = None            # AnswerBody in its pre-token phase
         self._elapsed_body_t0: float = 0.0
         self._inflight_tools: list = []      # ToolMessages awaiting their result
+        # ETA: a rolling median of prompt-eval tokens/sec, learned ONLY from
+        # turns that demonstrably reprocessed the prompt (the KV-cache gate in
+        # is_reliable_rate_sample). _eta_last_prompt_tokens is the previous
+        # turn's count, used as the ESTIMATE this turn's ETA is projected from;
+        # _eta_first_delta is this turn's first-delta time, for first-token
+        # latency. All optional/None until a reliable turn has happened.
+        self._eta_samples: list[float] = []
+        self._eta_last_prompt_tokens: int | None = None
+        self._eta_first_delta: float | None = None
         self._persist_error: str | None = None
         self._store_injected = False  # see STORE_HEADER; once per conversation
         self.client = AsyncOpenAI(
@@ -2494,8 +2527,13 @@ class LiteTUI(App):
             active = self._elapsed_body is not None or self._inflight_tools
             if active:
                 if self._elapsed_body is not None:
+                    # ETA: project this turn's prompt-processing time from the
+                    # previous turn's token count and the learned median rate.
+                    # Before any reliable turn both are None and the pure fn
+                    # yields elapsed-only (the honest state).
                     self._elapsed_body.content = render_progress(
-                        self._elapsed_body_t0, now)
+                        self._elapsed_body_t0, now,
+                        self._eta_estimate_tokens(), self._eta_learned_rate())
                 for tool in self._inflight_tools:
                     tool._tick()
                 idle = 0.0
@@ -2503,6 +2541,54 @@ class LiteTUI(App):
                 idle += 0.25
                 if idle >= 1.0:
                     return
+
+    # -- ETA on prompt processing (commit 2) ---------------------------
+    #
+    # The KV-cache is the whole reason this exists: LM Studio reuses the
+    # cached prefix, so a cache-hit turn reprocesses almost nothing in a few
+    # ms while the first turn after a compaction reprocesses the whole context.
+    # A rate learned from a cache-hit turn is a misleadingly LOW prompt-eval
+    # speed (fixed overhead dominates when few tokens are reprocessed), and
+    # applying it to a 100k-token turn predicts minutes for a turn that takes
+    # seconds. So the rate is ONLY learned from turns whose first-token latency
+    # reaches a floor (is_reliable_rate_sample) -- turns that demonstrably
+    # reprocessed the prompt. A confidently wrong ETA is worse than an honest
+    # elapsed counter, so until such a turn exists the body shows elapsed only.
+
+    def _eta_record_first_delta(self) -> None:
+        """Stamp the first delta of the current turn. first_token_s is then
+        _eta_first_delta - _elapsed_body_t0 (the turn start). Idempotent: only
+        the first delta sets it, so later deltas don't move it."""
+        if self._eta_first_delta is None:
+            self._eta_first_delta = time.monotonic()
+
+    def _eta_learn(self, prompt_tokens) -> None:
+        """End of a turn: remember this turn's token count as the ESTIMATE for
+        the next turn's ETA, and if this turn is a reliable sample (first-token
+        latency at the floor), fold its rate into the median. A cache-hit turn
+        does not touch the median, so its misleadingly low rate never pollutes
+        the ETA."""
+        if prompt_tokens:
+            self._eta_last_prompt_tokens = int(prompt_tokens)
+        first = self._eta_first_delta
+        self._eta_first_delta = None
+        if first is not None and self._elapsed_body_t0 > 0.0:
+            first_token_s = first - self._elapsed_body_t0
+            if is_reliable_rate_sample(prompt_tokens, first_token_s):
+                self._eta_samples.append(prompt_tokens / first_token_s)
+
+    def _eta_learned_rate(self):
+        """The rolling median of reliable rate samples, or None if none yet.
+        A None rate makes render_progress elapsed-only, the honest state before
+        a single reliable turn has happened."""
+        if not self._eta_samples:
+            return None
+        return statistics.median(self._eta_samples)
+
+    def _eta_estimate_tokens(self):
+        """The token count the next turn's ETA is projected from: the most
+        recent real count. None until the first turn reports usage."""
+        return self._eta_last_prompt_tokens
 
     def _warn_reasoning_ignored(self) -> None:
         """The server sent a reasoning trace after we asked for none.
@@ -2977,9 +3063,15 @@ class LiteTUI(App):
                     if u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
                         self._tps_final(int(getattr(u, "completion_tokens", 0) or 0))
+                        # ETA: this is the end of the turn -- the usage chunk
+                        # carries prompt_tokens, so fold this turn into the
+                        # learned rate (gated) and remember its count as the
+                        # estimate for the next turn's ETA.
+                        self._eta_learn(getattr(u, "prompt_tokens", None))
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
+                    self._eta_record_first_delta()
                     # LM Studio streams the thinking trace as `reasoning_content`
                     # (some other OpenAI-compatible servers use `reasoning`).
                     token = getattr(delta, "reasoning_content", None) or getattr(
