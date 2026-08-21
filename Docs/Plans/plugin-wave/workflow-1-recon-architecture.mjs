@@ -70,7 +70,7 @@ const ARCHITECTS = [
   ['polymathic-johnson', 'frameworks are components plus patterns; design the white-box to black-box evolution'],
   ['polymathic-tesla', 'simulate the COMPLETE system mentally first — registry, lifecycle, failure modes — before proposing'],
   ['polymathic-gamma', 'refactor TO patterns from felt pain; apply the Rule of Three; remove any pattern a simpler thing beats'],
-  ['polymathic-shannon', 'find the invariant minimal contract; strip everything that is not signal'],
+  ['polymathic-shannon', 'find the invariant minimal contract; strip everything that is not signal. CRITICAL: your single StructuredOutput call IS the deliverable — fill every field with your real, complete design. A prior run returned literal placeholder text ("test", "a", "b"), which is a hard failure: never call StructuredOutput with trial or placeholder values, and never call it more than once'],
 ]
 
 phase('Architecture')
