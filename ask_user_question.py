@@ -400,7 +400,20 @@ class AskUserQuestionScreen(ModalScreen[None]):
                     # textual 8.0.2 removed widget.dataset: the id already
                     # carries the index (auq-box-<i> / auq-lab-<i>).
                     box = Static("☐", id=f"auq-box-{i}", classes="auq-checkbox")
-                    lab = Static(q.label, id=f"auq-lab-{i}", classes="auq-step-label")
+                    # 🔴 active must be true at COMPOSE, not just in on_mount:
+                    # _refresh_steps() runs in the async on_mount, and a caller
+                    # that checks the step bar the moment the screen is pushed
+                    # (compose done, on_mount not yet) saw the label WITHOUT the
+                    # active class — a window where the bar paints with no active
+                    # step. The body (auq-qbody) already sets it here; the label
+                    # now matches, so the invariant holds from first paint and
+                    # _refresh_steps() only maintains it on later jumps.
+                    lab = Static(
+                        q.label,
+                        id=f"auq-lab-{i}",
+                        classes="auq-step-label active" if i == self._active
+                        else "auq-step-label",
+                    )
                     yield box
                     yield lab
             yield Static(self._states[0].question, id="auq-question")
