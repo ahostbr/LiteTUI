@@ -5107,17 +5107,6 @@ class LiteTUI(App):
             entry.handler(self, name, arg)
             return
 
-        if name in ("/settings", "/config", "/set"):
-            self.push_screen(
-                SettingsScreen(
-                    self.settings,
-                    models=self.available_models,
-                    mcp_servers=self._mcp_server_names(),
-                ),
-                self._on_settings_saved,
-            )
-            return
-
         if name == "/cron":
             self._cron_command(arg)
 
