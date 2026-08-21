@@ -1340,10 +1340,13 @@ class LiteTUI(App):
             # after a /model switch, which reads as the new model being broken
             # rather than as our message shape being wrong.
             # Same approach as _inject_store_once: extend conversation[0].
+            # Replace a stale line from a previous process before appending a
+            # second one — a resumed conversation already carries one.
+            if self._sync_fleet_identity():
+                return
             self._append_to_system((
-                    f"You are registered in the LiteHarness fleet as "
-                    f"{self.seat.name} (id {self.seat.agent_id}, tier {self.seat.tier}). "
-                    "Other agents can message you and their mail arrives as a user turn "
+                    self._fleet_identity_sentence()
+                    + "Other agents can message you and their mail arrives as a user turn "
                     "prefixed [inbox from <id>]. Use the `harness` tool to answer: "
                     "action=discover to see who is online, action=send with `to` and "
                     "`body` to reply. Reply to the SENDER id from the [inbox from ...] "
@@ -1799,6 +1802,13 @@ class LiteTUI(App):
         # The restored system message already names THIS store (it was written
         # with this uuid), so it is not rebuilt — rebuilding would overwrite
         # whatever the agent or /system had changed it to.
+        #
+        # ⚠️ EXCEPT the fleet-identity sentence, which is machine-authored and
+        # PROCESS-scoped: the agent id is minted per process, so the restored
+        # copy names the seat that wrote it, not the one now serving. Replaying
+        # it verbatim tells the model to answer mail as an id nothing can
+        # deliver to. Rewrite that one sentence; leave the rest alone.
+        self._sync_fleet_identity()
         (self.convo_dir / MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
         log = self.query_one("#chat-log")
@@ -2177,6 +2187,48 @@ class LiteTUI(App):
         self._refresh_ctx_label()
 
     # ── Message display ──────────────────────────────────────────────────────────
+
+    #: Matches the fleet-identity sentence so it can be REPLACED rather than
+    #: duplicated. Anchored on both ends: a bare "id <uuid>" would also match
+    #: ids quoted inside the conversation.
+    _FLEET_LINE_RE = re.compile(
+        r"You are registered in the LiteHarness fleet as [^(]*\(id [0-9a-fA-F-]{36}, tier [a-z]+\)\. ",
+    )
+
+    def _fleet_identity_sentence(self) -> str:
+        return (
+            f"You are registered in the LiteHarness fleet as "
+            f"{self.seat.name} (id {self.seat.agent_id}, tier {self.seat.tier}). "
+        )
+
+    def _sync_fleet_identity(self) -> bool:
+        """Make the system prompt name THIS process's seat.
+
+        🔴 THE AGENT ID IS MINTED PER PROCESS, so the sentence is only true for
+        the process that wrote it. A resumed conversation replays the one the
+        PREVIOUS process wrote, and the model is then told to answer mail as an
+        id nothing can deliver to — reported from inside the app, with its live
+        seat and its prompt disagreeing.
+
+        Rewrites only that sentence. `_resume` deliberately does not rebuild the
+        system message (it would discard the agent's own /system edits) and that
+        rule still holds for every other word of it.
+
+        Returns True when it changed something.
+        """
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            return False
+        body = self.conversation[0].get("content") or ""
+        if not isinstance(body, str):
+            return False
+        want = self._fleet_identity_sentence()
+        if want in body:
+            return False
+        fixed, n = self._FLEET_LINE_RE.subn(want, body, count=1)
+        if not n:
+            return False   # no line yet; the registration path appends it
+        self.conversation[0]["content"] = fixed
+        return True
 
     def _append_to_system(self, text: str) -> None:
         """Extend the FIRST system message rather than adding another one.
