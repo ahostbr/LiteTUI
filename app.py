@@ -705,9 +705,9 @@ def tool_display_parts(tool, max_lines: int = 12) -> list:
         style = "bold #e5534b" if not tool._ok else "#7d8799"
         parts.append(("\n" + shown, style))
     if tool._result is None:
-        parts.append((render_progress(tool._t0, time.monotonic()), "#8b95a7"))
+        parts.append(("\n  \u23f1 " + render_progress(tool._t0, time.monotonic()), "#8b95a7"))
     else:
-        parts.append(("  ⏱ " + _fmt_dur(tool._took or 0.0), "#5c6470"))
+        parts.append(("\n  ⏱ " + _fmt_dur(tool._took or 0.0), "#5c6470"))
     return parts
 
 
