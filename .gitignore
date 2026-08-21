@@ -37,3 +37,6 @@ tools/chrome-bridge/shots/
 # settings.json is whatever this machine last saved in /settings — model
 # choice, context length, sampling. Defaults live in settings.py.
 settings.json
+
+# Agent worktrees (git metadata lives in .git/worktrees; the checkout is not source)
+.worktrees/
