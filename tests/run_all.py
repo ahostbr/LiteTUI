@@ -105,6 +105,14 @@ def main() -> int:
     # this covers the script-style files, which never import it.
     os.environ.setdefault("LITETUI_NO_HARNESS", "1")
 
+    # 🔴 A child's stdout is a PIPE, so on Windows it encodes as cp1252 — and
+    # every script-style test that prints the red-circle emoji in a label
+    # crashed with UnicodeEncodeError AFTER its checks had all passed, so the
+    # suite reported eight false failures. UTF-8 mode makes the child's pipes
+    # use UTF-8 regardless of the console code page. (The parent side decodes
+    # the same way — see the encoding= below.)
+    os.environ.setdefault("PYTHONUTF8", "1")
+
     pyt, scr = classify()
 
     print(f"pytest-style: {len(pyt)}   script-style: {len(scr)}\n")
@@ -126,6 +134,7 @@ def main() -> int:
             cwd=str(ROOT),
             capture_output=True,
             text=True,
+            encoding="utf-8",  # matches the child's PYTHONUTF8 above
             timeout=300,
         )
         ok = proc.returncode == 0
