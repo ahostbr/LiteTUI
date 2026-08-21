@@ -28,6 +28,7 @@ import ttyguard
 import mcp_client
 import sanitize
 import tool_context
+import themes as themes_mod
 import skills as skills_mod
 
 from textual import events
@@ -1561,6 +1562,15 @@ class LiteTUI(App):
         yield ContextFooter()
 
     def on_mount(self) -> None:
+        # LiteSuite's palette, available beside Textual's built-ins. Register
+        # BEFORE applying the saved choice, or a saved LiteSuite theme would
+        # not resolve on boot and fall back.
+        for t in themes_mod.LITETUI_THEMES.values():
+            self.register_theme(t)
+        try:
+            self.theme = self.settings.theme_name
+        except Exception:
+            self.theme = "textual-dark"  # unknown name in settings: fall back
         self.query_one("#message-input", Input).focus()
         self._connect()
         self._inbox_monitor()
@@ -3752,6 +3762,23 @@ class LiteTUI(App):
         self._materialise_convo()
         self._append({"role": "user", "content": item["content"]})
         self._stream()
+
+    def watch_theme(self, theme_name: str) -> None:
+        """Persist a theme change, wherever it came from (palette, settings).
+
+        Without this the palette's "Change theme" lasted exactly one session
+        — the pick worked, nothing recorded it, and boot reset to the default.
+        Guarded: at construction settings may not exist yet, and a no-op
+        write (same name) is skipped so booting never rewrites the file.
+        """
+        st = getattr(self, "settings", None)
+        if st is None or st.theme_name == theme_name:
+            return
+        st.theme_name = theme_name
+        try:
+            settings_mod.save(st)
+        except OSError:
+            pass  # a theme that lasts one session beats a crash on switch
 
     def on_worker_state_changed(self, event) -> None:
         """The single flush point for held input — fires on every chat-group

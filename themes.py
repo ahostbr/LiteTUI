@@ -1,0 +1,121 @@
+"""LiteTUI's own themes — the LiteSuite palette, ported.
+
+THE SOURCE OF TRUTH IS LITESUITE. Every preset here is a port of
+`LiteSuite/apps/web/src/litesuite/lib/themes.ts` (12 presets, including
+Matrix and Lite Suite), mapped token-for-token onto Textual's Theme fields so
+the desktop app and this TUI answer to one palette. Do not invent colors
+here — edit the LiteSuite file and re-port, or the two selectors drift.
+
+The mapping, chosen once and used for every preset:
+
+    LiteSuite token          Textual Theme field
+    accent               ->  primary        (the identity color)
+    accentBright         ->  secondary
+    void                 ->  background     (darkest surface)
+    panel                ->  surface
+    shelf                ->  panel          (Textual's "panel" is a level up)
+    bone                 ->  foreground     (brightest text)
+    ok / danger / warning->  success / error / warning
+    info                 ->  accent
+
+Textual derives the -darken/-lighten/-muted ladder from these, which is what
+LiteTUI's CSS ($primary-darken-3, $surface-darken-1, ...) consumes.
+
+Registered at app init; the active one is chosen from the command palette
+(ctrl+p) or /settings, and PERSISTED via settings.theme_name — before this,
+the app silently reset to textual-dark every boot because nothing stored the
+choice.
+"""
+
+from __future__ import annotations
+
+from textual.theme import Theme
+
+#: name -> Theme. Insertion order is display order in the settings dropdown.
+LITETUI_THEMES: dict[str, Theme] = {}
+
+
+def _port(
+    name: str,
+    *,
+    accent: str,
+    accent_bright: str,
+    void: str,
+    panel: str,
+    shelf: str,
+    bone: str,
+    ok: str,
+    danger: str,
+    warning: str,
+    info: str,
+) -> None:
+    LITETUI_THEMES[name] = Theme(
+        name=name,
+        primary=accent,
+        secondary=accent_bright,
+        background=void,
+        surface=panel,
+        panel=shelf,
+        foreground=bone,
+        success=ok,
+        error=danger,
+        warning=warning,
+        accent=info,
+        dark=True,
+    )
+
+
+# ── the LiteSuite presets, extracted verbatim from themes.ts ─────────────────
+_port("oscura-midnight", accent="#c9a24d", accent_bright="#dbb55e",
+      void="#0a0a0b", panel="#131314", shelf="#1b1b1d", bone="#e8e4dc",
+      ok="#4a8c5e", danger="#c0453a", warning="#f59e0b", info="#7ca8cf")
+
+_port("dusk", accent="#e07850", accent_bright="#f09070",
+      void="#0f0a0a", panel="#1a1214", shelf="#241a1d", bone="#f0e0d8",
+      ok="#5a9960", danger="#d04540", warning="#fbbf24", info="#8090c0")
+
+_port("lime", accent="#84cc16", accent_bright="#a3e635",
+      void="#080a08", panel="#101410", shelf="#181e18", bone="#e0ead8",
+      ok="#3ab060", danger="#f43f5e", warning="#facc15", info="#818cf8")
+
+_port("ocean", accent="#38bdf8", accent_bright="#60a8f0",
+      void="#0c1222", panel="#131c31", shelf="#1e293b", bone="#e2e8f0",
+      ok="#2dd4bf", danger="#f87171", warning="#fcd34d", info="#818cf8")
+
+_port("retro", accent="#fbbf24", accent_bright="#f0b860",
+      void="#18120b", panel="#231a0f", shelf="#2d2215", bone="#fef3c7",
+      ok="#84cc16", danger="#dc2626", warning="#e07850", info="#5eaaa8")
+
+_port("neo", accent="#e879f9", accent_bright="#d880d8",
+      void="#0d0d0d", panel="#151515", shelf="#1f1f1f", bone="#f0f0f0",
+      ok="#4ade80", danger="#fb7185", warning="#fcd34d", info="#22d3ee")
+
+_port("forest", accent="#22c55e", accent_bright="#4ade80",
+      void="#060a06", panel="#0e1610", shelf="#162018", bone="#e6f0e6",
+      ok="#34d399", danger="#ef4444", warning="#fbbf24", info="#38bdf8")
+
+# The one Ryan asked for by name. Phosphor on black; even info is full
+# green, because in the Matrix there is no other color.
+_port("matrix", accent="#00FF41", accent_bright="#55ff55",
+      void="#0D0208", panel="#0D0208", shelf="#003B00", bone="#00FF41",
+      ok="#00FF41", danger="#FF0000", warning="#FFD700", info="#00FF41")
+
+# The house theme: LiteSuite's gold-on-graphite identity.
+_port("lite-suite", accent="#c9a24d", accent_bright="#dbb55e",
+      void="#0a0a0b", panel="#131314", shelf="#1b1b1d", bone="#e8e4dc",
+      ok="#4a8c5e", danger="#c0453a", warning="#f59e0b", info="#7ca8cf")
+
+_port("abyss", accent="#d4a039", accent_bright="#e8b44d",
+      void="#080a0e", panel="#0e1118", shelf="#141822", bone="#dcd8d0",
+      ok="#8fd88f", danger="#dc4444", warning="#f59e0b", info="#6098cc")
+
+_port("cockpit", accent="#c9a24d", accent_bright="#dbb55e",
+      void="#08080b", panel="#13131a", shelf="#16161e", bone="#f2efea",
+      ok="#8fc49a", danger="#d87373", warning="#d9b365", info="#6fc3d4")
+
+# `ok` is DELIBERATELY not green (upstream comment, kept): the design's
+# premise is that a healthy fleet is colourless — a green success token would
+# put colour on the most common state and invert the whole rule.
+_port("amber-ledger", accent="#e8b33f", accent_bright="#f2c356",
+      void="#0d0b08", panel="#110e0a", shelf="#171208", bone="#efe6d6",
+      ok="#8b8065", danger="#c5453b", warning="#d9713c", info="#a99c84")

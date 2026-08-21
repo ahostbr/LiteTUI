@@ -20,6 +20,22 @@ fails if this file's top released heading disagrees with it.
 
 _(nothing yet)_
 
+## [0.9.0] — 2026-08-21
+
+### Added
+- **Themes: the LiteSuite palette, ported** (`themes.py`) — all 12 presets
+  from `LiteSuite/apps/web/src/litesuite/lib/themes.ts`, including **Matrix**
+  (phosphor on black) and **Lite Suite** (gold on graphite), registered
+  beside Textual's built-ins. The port is generated from the source file and
+  a cross-repo test re-extracts and compares every token, so a hand-edited
+  hex fails with the field named — "source of truth" as a gate, not a wish.
+  Amber Ledger's success color is deliberately NOT green, per its upstream
+  design rule, and a test guards the temptation.
+- **The theme choice persists.** Picked from the command palette (ctrl+p →
+  "Change theme") or the new /settings dropdown; either way it survives a
+  restart. Before this the palette's pick silently reset to textual-dark
+  every boot — a working control whose effect evaporated.
+
 
 ## [0.8.0] — 2026-08-21
 

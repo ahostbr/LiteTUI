@@ -55,6 +55,20 @@ THINKING_CHOICES = [
     ("xhigh — most expensive", "xhigh"),
 ]
 
+def _theme_choices():
+    """Built-ins + the LiteSuite-ported set, one list, computed not typed —
+    a hand-maintained copy of either registry would drift the day a theme is
+    added."""
+    from textual.theme import BUILTIN_THEMES
+    import themes as themes_mod
+    names = list(BUILTIN_THEMES) + [
+        n for n in themes_mod.LITETUI_THEMES if n not in BUILTIN_THEMES
+    ]
+    return [(n, n) for n in names]
+
+
+THEME_CHOICES = _theme_choices()
+
 TOOL_CONTEXT_CHOICES = [
     ("off — raw output enters context (baseline)", "off"),
     ("llm-tool-mask — pointer placeholder, no model call", "llm-tool-mask"),
@@ -363,6 +377,13 @@ class SettingsScreen(ModalScreen[Settings | None]):
                 with TabPane("Interface", id="tab-interface"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        yield from self._select_row(
+                            "theme_name", "Theme", THEME_CHOICES,
+                            "Textual built-ins plus the LiteSuite palette — matrix, "
+                            "lite-suite, oscura, cockpit, amber-ledger and friends. "
+                            "Also switchable from the command palette (ctrl+p); either "
+                            "way the choice now survives a restart.",
+                        )
                         yield from self._switch_row(
                             "show_thinking", "Show thinking blocks",
                             "Render the model's reasoning trace in the transcript.",

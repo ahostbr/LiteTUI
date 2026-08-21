@@ -190,6 +190,12 @@ class Settings:
     mcp_disabled_servers: list[str] = field(default_factory=list)
 
     # ── Interface ────────────────────────────────────────────────────────────
+    #: The active Textual theme, PERSISTED. Chosen from the command palette
+    #: (ctrl+p -> "Change theme") or /settings. Before this field the choice
+    #: silently reset to textual-dark every boot. The 12 LiteSuite-ported
+    #: themes (themes.py — matrix, lite-suite, ...) register alongside
+    #: Textual's built-ins; an unknown name falls back to textual-dark.
+    theme_name: str = "textual-dark"
     show_thinking: bool = True
     autoscroll: bool = True
 
