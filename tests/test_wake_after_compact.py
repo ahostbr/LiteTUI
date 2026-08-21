@@ -57,8 +57,45 @@ class _Resp:
         self.choices = [_Choice(content)]
 
 
+class _Delta:
+    def __init__(self, content=None):
+        self.content = content
+        self.reasoning_content = None
+        self.reasoning = None
+        self.tool_calls = None
+
+
+class _Chunk:
+    def __init__(self, content=None):
+        self.choices = [type("C", (), {"delta": _Delta(content)})()]
+        self.usage = None
+
+
+class _Stream:
+    """Async-iterable fake: _compact streams now (glass-box compaction), so
+    the fake must speak chunks. The old _Resp shape made the compact LOOK
+    broken when only the fake was out of date — the same lesson as the
+    docstring below, one protocol later."""
+
+    def __init__(self, text: str):
+        self._chunks = [_Chunk(text[:3]), _Chunk(text[3:])]
+
+    def __aiter__(self):
+        self._it = iter(self._chunks)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    async def close(self):
+        pass
+
+
 async def _ok_create(text: str, **kw):
-    """An AWAITABLE fake completions.create.
+    """An AWAITABLE fake completions.create returning a chunk STREAM.
 
     🔴 The first draft was `lambda **kw: _make_coro(text)` — a lambda that
     returned an async *function* rather than a coroutine. `_compact` does
@@ -67,7 +104,8 @@ async def _ok_create(text: str, **kw):
     touched the conversation. The failure looked like the compact was broken;
     it was the fake. A fake that is not awaitable is a fake that lies.
     """
-    return _Resp(text)
+    assert kw.get("stream") is True, "glass-box compaction always streams"
+    return _Stream(text)
 
 
 async def _boom_create(**kw):

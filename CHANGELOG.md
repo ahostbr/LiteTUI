@@ -18,6 +18,34 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-08-21
+
+### Added
+
+- **Glass-box compaction.** Every CLI treats compaction as a spinner and a
+  prayer; LiteTUI now renders the whole act, live, in the same grammar as a
+  normal turn — a `CompactionCard` marked with the warning hue, carrying:
+  the plan (N messages → summary, keeping K verbatim), the EXACT compaction
+  prompt in a collapsed fold, the model's thinking as a real ThinkingBlock,
+  every store write as a real ToolMessage (the most interesting part of a
+  compaction is the model deciding what is durable — previously invisible),
+  the summary STREAMING into a markdown body, and a ledger
+  (messages/chars before → after, persisted files). Autocompacts are
+  marked `· automatic`. Failures are written ON the card, not swallowed.
+- The compaction request itself now streams (`stream: True`) — the card's
+  progress is the stream, not a fabricated percentage.
+- `FoldBlock`: a generic collapsible for static payloads (ThinkingBlock's
+  shape minus the timer, collapsed by default).
+
+### Fixed
+
+- `ThinkingBlock.reset_header` no longer dies when a fast stream ends the
+  trace before the block's children compose (a pre-compose reset is a true
+  no-op — caught by the render pass, not the tests).
+- The compaction card is awaited onto the chat log before the stream is
+  consumed — the first chunk can arrive before compose() runs.
+
+
 ## [0.19.0] — 2026-08-21
 
 ### Added

@@ -690,7 +690,14 @@ class ThinkingBlock(Vertical):
         """The trace stopped streaming: back to a plain header, no timer.
         The app calls it once, inside _thinking_done (idempotent there)."""
         self._t0 = None
-        self.query_one(ThinkingHeader).content = f"{self._marker} Thinking"
+        try:
+            self.query_one(ThinkingHeader).content = f"{self._marker} Thinking"
+        except Exception:
+            # Not composed yet — a fast stream (compaction's tool-call chunk
+            # right behind the first reasoning token) can end the trace before
+            # the block's children exist. A pre-compose reset is a true no-op:
+            # compose() renders the header with exactly this text anyway.
+            pass
 
 
 def _markdown_to_text(src: str, width: int) -> Text:
@@ -850,6 +857,107 @@ class AnswerBody(Static):
         # count it was born with and looks broken after a pane resize.
         if self._markdown_source:
             self.content = _markdown_to_text(self._markdown_source, self._render_width())
+
+
+class _FoldHeader(Static):
+    """Clickable header for a FoldBlock."""
+
+    def __init__(self, label: str) -> None:
+        super().__init__(f"\u25b8 {label}", classes="thinking-header")
+        self.label = label
+
+    def on_click(self) -> None:
+        block = self.parent
+        if isinstance(block, FoldBlock):
+            block.set_expanded(not block.expanded)
+
+
+class FoldBlock(Vertical):
+    """A collapsible static payload — ThinkingBlock's shape minus the timer.
+
+    COLLAPSED by default, which is the difference in kind: a thinking trace
+    is watched as it streams, while this holds content whose default view is
+    the fold line itself (the compaction prompt: present for inspection,
+    not for re-reading on every compact). Reuses the thinking-block CSS so
+    the two fold identically.
+    """
+
+    def __init__(self, label: str, text: str) -> None:
+        super().__init__(classes="thinking-block")     # no 'expanded' class
+        self._label = label
+        self.header = _FoldHeader(label)
+        self.scroll = VerticalScroll(Static(Text(text)), classes="thinking-body")
+
+    def compose(self) -> ComposeResult:
+        yield self.header
+        yield self.scroll
+
+    @property
+    def expanded(self) -> bool:
+        return self.has_class("expanded")
+
+    def set_expanded(self, value: bool) -> None:
+        if value:
+            self.add_class("expanded")
+        else:
+            self.remove_class("expanded")
+        marker = "\u25be" if value else "\u25b8"
+        self.header.content = f"{marker} {self._label}"
+
+
+class CompactionCard(Vertical):
+    """The glass box. Every CLI treats compaction as a spinner and a prayer;
+    this renders the whole act in the grammar the user already reads — the
+    exact prompt (folded), the model's thinking, the summary STREAMING in,
+    every store write as a real tool card, and a ledger at the end. Nothing
+    about a compaction is secret; it was only ever undisplayed.
+    """
+
+    def __init__(self, plan: str, prompt_text: str, auto: bool = False) -> None:
+        super().__init__(classes="compaction-card")
+        self.auto = auto
+        title = Text.assemble(
+            ("\U0001F5DC Compaction", "bold"),
+            (" \u00b7 automatic", "dim") if auto else ("", ""),
+        )
+        self._title = Static(title, classes="compaction-title")
+        self._plan = Static(plan, classes="compaction-plan")
+        self.prompt_fold = FoldBlock("Compaction prompt", prompt_text)
+        self.body = AnswerBody("")
+        self.status = Static("", classes="compaction-status")
+        self.thinking: ThinkingBlock | None = None
+
+    def compose(self) -> ComposeResult:
+        yield self._title
+        yield self._plan
+        yield self.prompt_fold
+        yield self.body
+        yield self.status
+
+    def think(self, token: str) -> None:
+        if self.thinking is None:
+            self.thinking = ThinkingBlock()
+            self.mount(self.thinking, before=self.body)
+        self.thinking.append(token)
+
+    def thinking_done(self) -> None:
+        if self.thinking is not None:
+            self.thinking.finalize()
+            self.thinking.reset_header()
+
+    def add_tool(self, msg: "ToolMessage") -> None:
+        self.mount(msg, before=self.status)
+
+    def set_status(self, text: str) -> None:
+        self.status.content = Text(text)
+
+    def finish(self, ledger: str) -> None:
+        self.status.content = Text(ledger)
+        self.add_class("done")
+
+    def fail(self, reason: str) -> None:
+        self.status.content = Text(reason, style="bold red")
+        self.add_class("failed")
 
 
 class AssistantMessage(Vertical):
@@ -2151,6 +2259,27 @@ class LiteTUI(App):
 
     #set-buttons Button {
         margin-left: 2;
+    }
+
+    /* Compaction, marked as itself: the warning hue is the 'this is the
+       app doing maintenance' colour, distinct from any conversation card. */
+    .compaction-card {
+        margin: 1 2 0 2;
+        padding: 0 1;
+        border-left: thick $warning;
+    }
+
+    .compaction-title {
+        color: $warning;
+    }
+
+    .compaction-plan {
+        color: $text-muted;
+    }
+
+    .compaction-status {
+        color: $text-muted;
+        margin-top: 1;
     }
 
     /* The calendar. Wide and airy on purpose: calcure's month breathes, and
@@ -3898,6 +4027,7 @@ class LiteTUI(App):
             f"Auto-compacting - context at {pct}% of "
             f"{self.ctx_max:,} (threshold {self.settings.autocompact_at_percent}%)."
         )
+        self._compact_is_auto = True
         self._handle_command("/compact")
 
     def _system(self, text: str) -> None:
@@ -4999,6 +5129,10 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "") -> None:
+        # Read-and-clear FIRST: the early returns below must also consume
+        # the flag, or an aborted autocompact marks the next MANUAL one auto.
+        auto = getattr(self, "_compact_is_auto", False)
+        self._compact_is_auto = False
         system = (
             self.conversation[0]
             if self.conversation and self.conversation[0].get("role") == "system"
@@ -5017,7 +5151,18 @@ class LiteTUI(App):
 
         before_chars = self._msg_chars(self.conversation)
         before_count = len(self.conversation)
-        self._system(f"Compacting {len(head)} messages…")
+        card = CompactionCard(
+            plan=(f"{len(head)} messages \u2192 summary \u00b7 keeping the "
+                  f"last {len(tail)} verbatim \u00b7 {before_chars:,} chars before"),
+            prompt_text=COMPACT_PROMPT + (f"\n\n{extra}" if extra else ""),
+            auto=auto,
+        )
+        # AWAITED: mount() only schedules composition. The first stream
+        # chunk can arrive before the card's children exist, and mounting a
+        # thinking block `before=self.body` then dies with MountError —
+        # body has no parent yet. Awaiting makes the card whole first.
+        await self.query_one("#chat-log").mount(card)
+        self._scroll_down()
 
         ask = list(head) + [
             {"role": "user", "content": COMPACT_PROMPT + (f"\n\n{extra}" if extra else "")}
@@ -5034,23 +5179,19 @@ class LiteTUI(App):
         summary = ""
         writes: list[str] = []
         try:
-            for _ in range(self.settings.compact_max_tool_iters):
+            for round_no in range(1, self.settings.compact_max_tool_iters + 1):
                 kwargs: dict = {
                     "model": self.model_id or "local-model",
                     "messages": ask,
-                    "stream": False,
+                    # STREAMED, so the card can show the summary being born.
+                    # The old call was stream=False and the whole act was a
+                    # black box between "Compacting..." and the ledger.
+                    "stream": True,
                     "max_tokens": self.settings.compact_max_tokens,
-                    # 🔴 THE OLD MITIGATION WAS DEFEATED BY A MECHANISM THIS
-                    # FILE ALREADY DOCUMENTS ELSEWHERE. It forced "none" and cut
-                    # the budget to 2048 after a 12k budget was eaten by the
-                    # thinking trace. But see _warn_reasoning_ignored: a VIRTUAL
-                    # MODEL whose own level set lacks "none" DROPS the field with
-                    # a 200 and reasons at ITS default (xhigh) anyway. So forcing
-                    # "none" bought nothing and the smaller budget guaranteed the
-                    # failure -- reasoning consumed all 2048 and the summary was
-                    # never written. That is the observed
-                    #   "Compact failed - no summary produced".
-                    # Send a level the model actually accepts, and give it room.
+                    # See _warn_reasoning_ignored for why the level must be
+                    # one the model actually accepts: a virtual model whose
+                    # level set lacks "none" DROPS the field with a 200 and
+                    # reasons at ITS default anyway.
                     "extra_body": {
                         "reasoning_effort": (
                             "none"
@@ -5060,40 +5201,89 @@ class LiteTUI(App):
                     },
                 }
                 if self.tools_enabled:
+                    # Passed so STEP 1 of COMPACT_PROMPT can actually happen.
+                    # Without them the instruction to persist is theatre.
                     kwargs["tools"] = self._all_tools()
 
-                resp = await self.client.chat.completions.create(**kwargs)
-                msg = resp.choices[0].message
-                calls = list(getattr(msg, "tool_calls", None) or [])
-                if not calls:
-                    summary = (msg.content or "").strip()
+                stream = await self.client.chat.completions.create(**kwargs)
+                text_full = ""
+                tool_acc: dict = {}
+                tool_msgs: dict = {}
+                # Twin of the delta assembly in _stream, deliberately: the
+                # compaction card speaks the same grammar as a normal turn
+                # because it reuses the same chunk shapes and widgets.
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    token = getattr(delta, "reasoning_content", None) or getattr(
+                        delta, "reasoning", None
+                    )
+                    if token:
+                        card.think(token)
+                        self._scroll_down(only_if_following=True)
+                    if delta.content:
+                        card.thinking_done()
+                        text_full += delta.content
+                        card.body.content = Text(text_full + " \u258c")
+                        card.set_status(
+                            f"round {round_no} \u00b7 summary "
+                            f"{len(text_full):,} chars"
+                        )
+                        self._scroll_down(only_if_following=True)
+                    for tc in (getattr(delta, "tool_calls", None) or []):
+                        card.thinking_done()
+                        idx = tc.index
+                        slot = tool_acc.setdefault(
+                            idx, {"id": None, "name": "", "arguments": ""}
+                        )
+                        if tc.id:
+                            slot["id"] = tc.id
+                        fn = tc.function
+                        if fn is not None:
+                            if fn.name:
+                                slot["name"] += fn.name
+                                if idx not in tool_msgs:
+                                    msg = ToolMessage(fn.name)
+                                    tool_msgs[idx] = msg
+                                    card.add_tool(msg)
+                                    self._scroll_down()
+                            if fn.arguments:
+                                slot["arguments"] += fn.arguments
+                                if idx in tool_msgs:
+                                    tool_msgs[idx].set_args(slot["arguments"])
+
+                card.thinking_done()
+                if not tool_acc:
+                    summary = text_full.strip()
                     break
 
-                try:
-                    ask.append(msg.model_dump(exclude_none=True))
-                except Exception:
-                    ask.append(
+                # The model called tools (persisting durable state before the
+                # history is destroyed). Record its turn, run them VISIBLY,
+                # feed the results back, go round again.
+                ask.append({
+                    "role": "assistant",
+                    "content": text_full or None,
+                    "tool_calls": [
                         {
-                            "role": "assistant",
-                            "content": msg.content,
-                            "tool_calls": [
-                                {
-                                    "id": c.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": c.function.name,
-                                        "arguments": c.function.arguments,
-                                    },
-                                }
-                                for c in calls
-                            ],
+                            "id": slot["id"] or f"call_{i}",
+                            "type": "function",
+                            "function": {
+                                "name": slot["name"],
+                                "arguments": slot["arguments"],
+                            },
                         }
-                    )
-
-                for c in calls:
-                    fname = c.function.name
+                        for i, slot in sorted(tool_acc.items())
+                    ],
+                })
+                card.set_status(
+                    f"round {round_no} \u00b7 running {len(tool_acc)} tool call(s)"
+                )
+                for i, slot in sorted(tool_acc.items()):
+                    fname = slot["name"]
+                    ok = True
                     try:
-                        fargs = json.loads(c.function.arguments or "{}")
+                        fargs = json.loads(slot["arguments"] or "{}")
                         if not isinstance(fargs, dict):
                             raise ValueError("arguments must be a JSON object")
                         fn = self._dispatch_for(fname)
@@ -5106,20 +5296,24 @@ class LiteTUI(App):
                             writes.append(str(fargs.get("path", "?")))
                     except Exception as e:
                         result = f"[error] {type(e).__name__}: {e}"
-                    ask.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": c.id,
-                            "name": fname,
-                            "content": result,
-                        }
-                    )
+                        ok = False
+                    if i in tool_msgs:
+                        tool_msgs[i].set_result(str(result), ok)
+                    ask.append({
+                        "role": "tool",
+                        "tool_call_id": slot["id"] or f"call_{i}",
+                        "name": fname,
+                        "content": str(result),
+                    })
+                self._scroll_down(only_if_following=True)
         except Exception as e:
             self._autocompact_failed_at = self.ctx_used
+            card.fail(f"failed \u2014 conversation unchanged \u00b7 {type(e).__name__}: {e}")
             self._system(f"Compact failed — conversation unchanged.\n{type(e).__name__}: {e}")
             return
 
         if not summary:
+            card.fail("failed \u2014 no summary produced \u00b7 conversation unchanged")
             self._system(
                 "Compact failed — no summary produced "
                 f"(gave up after {self.settings.compact_max_tool_iters} tool rounds). "
@@ -5151,6 +5345,20 @@ class LiteTUI(App):
         self._autocompact_failed_at = None
         after_chars = self._msg_chars(self.conversation)
         pct = (100 - after_chars * 100 // before_chars) if before_chars else 0
+        try:
+            card.body.set_markdown(summary)
+        except Exception:
+            card.body.content = Text(summary)
+        # Signed properly: a toy conversation can GROW under compaction
+        # (summary + pair outweigh a tiny history), and "\u2212-189%" is the
+        # formatter lying twice at once.
+        delta = f"\u2212{pct}%" if pct >= 0 else f"+{-pct}%"
+        card.finish(
+            f"done \u00b7 {before_count} \u2192 {len(self.conversation)} messages "
+            f"\u00b7 {before_chars:,} \u2192 {after_chars:,} chars ({delta})"
+            + (f" \u00b7 persisted: {', '.join(Path(w).name for w in dict.fromkeys(writes))}"
+               if writes else "")
+        )
         if writes:
             store_note = "\n  persisted: " + ", ".join(
                 Path(w).name for w in dict.fromkeys(writes)
