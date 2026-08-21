@@ -24,9 +24,11 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 
+import seat_guard
 import ttyguard
 
 IMAGE_URL = os.environ.get("LITEIMAGE_API_URL", "http://127.0.0.1:7426").rstrip("/")
@@ -58,7 +60,15 @@ STUDIO_TOOL_SPEC = {
             "app=model (LiteModeler, prompt-to-3D): actions status | config | "
             "generate (prompt) | families — delegated to the `lst` CLI.\n"
             "image and sound need their app RUNNING (status says). If one is "
-            "not running, tell the human to open it — do not retry blind."
+            "not running, tell the human to open it — do not retry blind.\n"
+            "VRAM: on generate actions this tool SUSPENDS your own model in "
+            "LM Studio (the GPU is needed for the generation), runs the job "
+            "to completion, then reloads you at the same context config. You "
+            "will not notice the gap — but your FIRST reply afterwards "
+            "re-reads the whole conversation (KV cache is gone), so expect a "
+            "slow first token and say so if the human wonders. Sound "
+            "generation is therefore handled to completion INSIDE the call — "
+            "no polling needed when it returns."
         ),
         "parameters": {
             "type": "object",
@@ -174,6 +184,28 @@ def _sound(action: str, args: dict) -> str:
         return _not_running("LiteSound", SOUND_URL, e)
 
 
+_DONE_STATES = {"done", "completed", "complete", "succeeded", "failed",
+                "error", "cancelled", "canceled"}
+
+
+def _sound_wait(job_id: str, budget_s: float) -> dict:
+    """Poll a sound job to completion. Used under suspension: the model that
+    would normally poll is unloaded, so the TOOL owns the wait."""
+    deadline = time.time() + budget_s
+    last: dict = {"job_id": job_id, "state": "unknown"}
+    while time.time() < deadline:
+        try:
+            last = _http("GET", f"{SOUND_URL}/job/{job_id}")
+        except (urllib.error.URLError, OSError, TimeoutError):
+            pass    # transient during heavy generation; keep waiting
+        state = str(last.get("state", last.get("status", ""))).lower()
+        if state in _DONE_STATES or last.get("file") or last.get("path"):
+            return last
+        time.sleep(3)
+    last["_timeout"] = f"still running after {int(budget_s)}s"
+    return last
+
+
 # -- model ---------------------------------------------------------------
 
 def _model(action: str, args: dict) -> str:
@@ -203,9 +235,56 @@ def _model(action: str, args: dict) -> str:
 
 # -- entry ---------------------------------------------------------------
 
-def run(args: dict) -> str:
-    app = (args.get("app") or "").strip().lower()
-    action = (args.get("action") or "").strip().lower()
+#: Actions that light up the GPU. Everything else (status, job, gallery,
+#: models, config...) is a lookup and never touches the seat.
+_GPU_ACTIONS = {"generate"}
+
+
+def _generate_suspended(app: str, action: str, args: dict, seat_model: str) -> str:
+    """Suspend the agent's own model, generate, resume. The order of the
+    finally matters more than anything else in this file: whatever the
+    generation did — succeed, fail, raise — the seat comes back."""
+    rec = seat_guard.record(seat_model)
+    if rec is None:
+        # Seat not resident (already unloaded, or a non-LM-Studio backend):
+        # nothing to suspend, just generate.
+        return _dispatch(app, action, args)
+
+    ok, why = seat_guard.safe_to_suspend(rec)
+    if not ok:
+        return (f"[not suspending the seat] {why} — another request may be "
+                f"mid-stream on this model. Retry when it is idle.")
+
+    err = seat_guard.suspend(rec)
+    if err:
+        return f"[seat suspend failed] {err} — generation not started."
+
+    note = (f"\n[seat {rec['identifier']} was suspended for this generation "
+            f"and restored at ctx {rec.get('context')} — your first reply "
+            f"re-reads the conversation, expect a slow first token]")
+    try:
+        if app == "sound":
+            # Submit, then wait INSIDE the tool: the poller is unloaded.
+            out = _sound(action, args)
+            job_id = None
+            try:
+                job_id = json.loads(out.split("\n(async")[0]).get("job_id")
+            except ValueError:
+                pass
+            if job_id:
+                budget = float(args.get("duration") or 60) * 3 + 180
+                final = _sound_wait(str(job_id), budget)
+                out = _fmt(final)
+        else:
+            out = _dispatch(app, action, args)
+    finally:
+        resume_err = seat_guard.resume(rec)
+    if resume_err:
+        return out + f"\n\n[SEAT RESUME PROBLEM] {resume_err}"
+    return out + note
+
+
+def _dispatch(app: str, action: str, args: dict) -> str:
     if app == "image":
         return _image(action, args)
     if app == "sound":
@@ -213,3 +292,11 @@ def run(args: dict) -> str:
     if app == "model":
         return _model(action, args)
     return f"Error: unknown app {app!r} — image, sound, or model."
+
+
+def run(args: dict, seat_model: str | None = None) -> str:
+    app = (args.get("app") or "").strip().lower()
+    action = (args.get("action") or "").strip().lower()
+    if seat_model and app in ("image", "sound", "model") and action in _GPU_ACTIONS:
+        return _generate_suspended(app, action, args, seat_model)
+    return _dispatch(app, action, args)

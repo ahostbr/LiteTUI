@@ -31,11 +31,31 @@ def test_the_studio_tool_is_offered_to_the_model():
     assert "studio" in names, "the spec exists but never reaches the model"
 
 
-def test_the_dispatcher_resolves_studio():
+def test_the_dispatcher_resolves_studio_and_injects_the_seat():
+    """The dispatch is a closure, not the bare function: it must carry the
+    CALLING model's identity in, so generate actions can suspend the very
+    seat that ordered them. Identity-checking the function would miss a
+    closure that forgot the injection — call it and look."""
     a = m.LiteTUI()
     a._connect = lambda: None
-    assert a._dispatch_for("studio") is studio_tool.run, (
-        "offered but not dispatched — the model would call into a void"
+    a.model_id = "the-current-seat"
+    seen = {}
+
+    import studio_tool as st
+    real = st.run
+    try:
+        st.run = lambda args, seat_model=None: seen.update(
+            args=args, seat_model=seat_model) or "ok"
+        fn = a._dispatch_for("studio")
+        assert fn is not None, "offered but not dispatched"
+        out = fn({"app": "image", "action": "status"})
+    finally:
+        st.run = real
+
+    assert out == "ok"
+    assert seen["seat_model"] == "the-current-seat", (
+        "the dispatch must inject the CALLER's model id — without it, "
+        "generation runs beside a 29 GB resident and the box OOMs again"
     )
 
 

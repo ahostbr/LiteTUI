@@ -2930,7 +2930,11 @@ class LiteTUI(App):
         if name == "pccontrol":
             return pccontrol_tool.run
         if name == "studio":
-            return studio_tool.run
+            # The seat's identity rides in so generate actions can suspend
+            # the very model making the call — the GPU is a single pie, and
+            # the agent's own brain is the biggest slice (measured 2026-08-21:
+            # a 2.4 GB summarizer beside the 29 GB seat near-OOMed the box).
+            return lambda args: studio_tool.run(args, seat_model=self.model_id)
         if name == "chrome":
             return chrome_tool.run
         if name == "ask_user_question":

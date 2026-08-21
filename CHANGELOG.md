@@ -18,6 +18,36 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-08-21
+
+### Added
+
+- **The seat suspends itself for generation** (`src/seat_guard.py`). The
+  agent IS a ~29 GB resident in LM Studio, and the generation it orders
+  needs that VRAM — loading beside it near-OOMed the workstation once.
+  On `generate` actions the studio tool now: records the seat's live load
+  config from `lms ps --json` (identifier, context, parallel), refuses if
+  the model is not idle or has queued requests (parallel=4 means OTHER
+  seats may be mid-stream), unloads, runs the generation TO COMPLETION
+  (sound's async job is polled inside the call — the poller is the thing
+  that got unloaded), then reloads at the exact recorded config.
+- Safe because an LM Studio model is only busy DURING a completion: tool
+  execution happens between completions, while the turn waits. The
+  conversation lives in LiteTUI, not the model — what cannot survive is
+  the KV cache, so the first reply after a resume re-ingests the prompt
+  once. The spec says so, and the tool's result reminds the model to
+  expect (and explain) the slow first token.
+- Resume is the load-bearing arm: it runs in a `finally` whatever the
+  generation did, retries, verifies the loaded context MATCHES the record
+  (the JIT-default trap loads at the wrong window), never re-arms a TTL
+  the human didn't choose, and on persistent failure leaves
+  `suspended_seat.json` plus the exact `lms load` command in the
+  transcript — because the model that would normally read the error is
+  the thing that is missing.
+- Lookup actions (status, job, gallery, models, config) never touch the
+  seat. No seat injected, or seat not resident: generation runs plainly.
+
+
 ## [0.18.0] — 2026-08-21
 
 ### Added
