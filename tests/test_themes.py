@@ -110,3 +110,61 @@ def test_watch_theme_skips_a_no_op_write(monkeypatch):
 def test_watch_theme_before_settings_exist_is_inert():
     ns = SimpleNamespace(settings=None)
     LiteTUI.watch_theme(ns, "nord")  # must not raise
+
+
+# --- the SHADES family: "50 shades of gray", enforced not promised ----------
+def _spread(hexcolor):
+    """max(r,g,b) - min(r,g,b): 0 = pure gray, 255 = fully saturated."""
+    h = hexcolor.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return max(r, g, b) - min(r, g, b)
+
+
+def test_ten_shades_exist_and_are_dark():
+    assert len(themes_mod.SHADE_THEMES) == 10
+    assert all(t.dark for t in themes_mod.SHADE_THEMES.values())
+
+
+def test_every_shade_is_actually_gray():
+    """THE MEASURABLE VERSION OF THE BRIEF. Core colors (surfaces, text,
+    primary, secondary, success) must be near-monochrome — channel spread
+    under 16 of 255. This morning a hand-typed port fabricated saturated
+    colors nobody noticed by eye; this bound is what stops that happening
+    to the family whose entire identity is having none."""
+    for name, t in themes_mod.SHADE_THEMES.items():
+        for field in ("background", "surface", "panel", "foreground",
+                      "primary", "secondary", "success"):
+            spread = _spread(getattr(t, field))
+            assert spread <= 16, f"{name}.{field} spread={spread} — not gray"
+
+
+def test_shade_semantics_are_muted_not_neon():
+    """Ryan's complaint was orange and green everywhere. warning stays a
+    sand-gray (spread <= 48); error keeps just enough brick to be findable
+    (spread <= 96) — desaturated, never neon. A neon #FF0000 spreads 255."""
+    for name, t in themes_mod.SHADE_THEMES.items():
+        assert _spread(t.warning) <= 48, f"{name}.warning too colorful"
+        assert 16 <= _spread(t.error) <= 96, f"{name}.error: invisible or neon"
+
+
+def test_healthy_is_colorless_in_every_shade():
+    """The amber-ledger rule, generalized to the whole family: success is a
+    GRAY, so the most common state carries no color."""
+    for name, t in themes_mod.SHADE_THEMES.items():
+        assert _spread(t.success) <= 16, f"{name}.success has color"
+
+
+# --- the strip ---------------------------------------------------------------
+def test_light_builtins_are_stripped_from_choices():
+    from settings_screen import THEME_CHOICES
+    names = [n for n, _ in THEME_CHOICES]
+    for light in themes_mod.LIGHT_BUILTINS:
+        assert light not in names, f"{light} still offered"
+    # negative arm: the strip must not have taken dark builtins with it
+    assert "textual-dark" in names and "nord" in names
+
+
+def test_all_themes_is_ports_plus_shades_no_overlap():
+    assert not set(themes_mod.LITETUI_THEMES) & set(themes_mod.SHADE_THEMES)
+    assert themes_mod.ALL_THEMES == {**themes_mod.LITETUI_THEMES,
+                                     **themes_mod.SHADE_THEMES}

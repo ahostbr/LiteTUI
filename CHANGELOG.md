@@ -20,6 +20,24 @@ fails if this file's top released heading disagrees with it.
 
 _(nothing yet)_
 
+## [0.10.0] — 2026-08-21
+
+### Added
+- **The SHADES family — ten truly-gray dark themes** (obsidian, graphite,
+  onyx, charcoal, gunmetal, slate, smoke, ash, pewter, iron). "It should be
+  50 shades of gray" is enforced, not promised: a test bounds the channel
+  spread of every core color (surfaces, text, primary, success ≤ 16/255), so
+  a colorful value cannot sneak in — it caught two of the author's own on the
+  first run. Semantics follow amber-ledger's rule generalized: success is a
+  GRAY (healthy is colorless), warning a sand-gray, and only error keeps
+  enough desaturated brick to be findable. Nothing neon, no orange, no green.
+
+### Removed
+- **Light themes stripped from the picker** (textual-light, catppuccin-latte,
+  solarized-light, rose-pine-dawn, atom-one-light, and terminal-relative
+  textual-ansi) — unregistered at boot and excluded from settings choices,
+  with a guard so a saved light name falls back instead of crashing.
+
 ## [0.9.0] — 2026-08-21
 
 ### Added

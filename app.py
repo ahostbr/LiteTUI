@@ -1565,8 +1565,13 @@ class LiteTUI(App):
         # LiteSuite's palette, available beside Textual's built-ins. Register
         # BEFORE applying the saved choice, or a saved LiteSuite theme would
         # not resolve on boot and fall back.
-        for t in themes_mod.LITETUI_THEMES.values():
+        for t in themes_mod.ALL_THEMES.values():
             self.register_theme(t)
+        # Stripped by ruling (2026-08-21): no light themes in the picker.
+        # Unregistered AFTER our set registers, BEFORE the saved choice
+        # applies — a saved light name then falls into the except below.
+        for name in themes_mod.LIGHT_BUILTINS:
+            self.unregister_theme(name)
         try:
             self.theme = self.settings.theme_name
         except Exception:

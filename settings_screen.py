@@ -61,8 +61,8 @@ def _theme_choices():
     added."""
     from textual.theme import BUILTIN_THEMES
     import themes as themes_mod
-    names = list(BUILTIN_THEMES) + [
-        n for n in themes_mod.LITETUI_THEMES if n not in BUILTIN_THEMES
+    names = [n for n in BUILTIN_THEMES if n not in themes_mod.LIGHT_BUILTINS] + [
+        n for n in themes_mod.ALL_THEMES if n not in BUILTIN_THEMES
     ]
     return [(n, n) for n in names]
 

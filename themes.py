@@ -119,3 +119,77 @@ _port("cockpit", accent="#c9a24d", accent_bright="#dbb55e",
 _port("amber-ledger", accent="#e8b33f", accent_bright="#f2c356",
       void="#0d0b08", panel="#110e0a", shelf="#171208", bone="#efe6d6",
       ok="#8b8065", danger="#c5453b", warning="#d9713c", info="#a99c84")
+
+
+# ── stripped from the picker (Ryan, 2026-08-21: "strip all the light mode
+# ones out") — unregistered at app init and excluded from settings choices.
+# textual-ansi rides along: terminal-relative colors, neither dark nor ours.
+LIGHT_BUILTINS = (
+    "textual-light", "catppuccin-latte", "solarized-light",
+    "rose-pine-dawn", "atom-one-light", "textual-ansi",
+)
+
+# ── the SHADES family — "it should be 50 shades of gray lmfao" ───────────────
+#
+# LiteTUI-NATIVE, not ported: no upstream source, so the parity gate does not
+# cover them — the gate that does is test_themes' saturation bound, which
+# fails any shade whose core colors drift colorful. The design rule is
+# amber-ledger's, generalized: HEALTHY IS COLORLESS. success is a gray,
+# warning a pale sand-gray, and only error keeps enough desaturated brick to
+# be findable — nothing neon, no orange, no green.
+
+SHADE_THEMES: dict[str, Theme] = {}
+
+
+def _shade(
+    name: str,
+    *,
+    bg: str,
+    surface: str,
+    panel: str,
+    fg: str,
+    primary: str,
+    secondary: str,
+    error: str = "#9c5a52",     # desaturated brick — findable, never neon
+    warning: str = "#a89a80",   # pale sand-gray
+) -> None:
+    SHADE_THEMES[name] = Theme(
+        name=name,
+        primary=primary,
+        secondary=secondary,
+        background=bg,
+        surface=surface,
+        panel=panel,
+        foreground=fg,
+        success=secondary,      # healthy is colorless
+        warning=warning,
+        error=error,
+        accent=primary,
+        dark=True,
+    )
+
+
+# Ten temperatures of gray, darkest ladder to lightest accent.
+_shade("obsidian", bg="#050506", surface="#0b0b0d", panel="#111114",
+       fg="#c8c8ce", primary="#8e8e99", secondary="#5f5f68")
+_shade("graphite", bg="#0c0c0d", surface="#131315", panel="#1a1a1d",
+       fg="#d6d6da", primary="#b0b0b8", secondary="#6e6e76")
+_shade("onyx", bg="#0a0a09", surface="#121211", panel="#191917",
+       fg="#dcdad4", primary="#a6a29a", secondary="#6b6862")
+_shade("charcoal", bg="#101112", surface="#17181a", panel="#1f2023",
+       fg="#cfd2d6", primary="#9aa0a8", secondary="#5e646c")
+_shade("gunmetal", bg="#0b0d10", surface="#111419", panel="#171b21",
+       fg="#c2c9d2", primary="#8b939b", secondary="#565e66")
+_shade("slate", bg="#0e1013", surface="#151821", panel="#1c2028",
+       fg="#c8ccd6", primary="#9da3ac", secondary="#5e646e")
+_shade("smoke", bg="#111010", surface="#181716", panel="#201e1d",
+       fg="#d4d0cc", primary="#a8a099", secondary="#68625c")
+_shade("ash", bg="#0d0d0c", surface="#151514", panel="#1d1d1b",
+       fg="#d0cec8", primary="#bab6ac", secondary="#74716a")
+_shade("pewter", bg="#0f1011", surface="#161819", panel="#1e2022",
+       fg="#d8dbdd", primary="#c0c6ca", secondary="#78807e")
+_shade("iron", bg="#0a0b0c", surface="#101214", panel="#16181b",
+       fg="#c4c6c9", primary="#82868c", secondary="#4e5257")
+
+#: Everything LiteTUI registers: the LiteSuite ports plus the native shades.
+ALL_THEMES: dict[str, Theme] = {**LITETUI_THEMES, **SHADE_THEMES}
