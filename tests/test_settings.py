@@ -164,7 +164,8 @@ async def test_screen_mounts_and_reads_back_edits():
                      "autocompact_at_percent", "max_tokens_tools"):
             screen.query_one(f"#f-{name}", Input)
         for name in ("autocompact_enabled", "clear_screen_after_compact",
-                     "tools_enabled", "skills_enabled", "mcp_enabled"):
+                     "wake_after_compact", "tools_enabled", "skills_enabled",
+                     "mcp_enabled"):
             screen.query_one(f"#f-{name}", Switch)
         screen.query_one("#mcp-srv", Switch)
 
@@ -172,6 +173,7 @@ async def test_screen_mounts_and_reads_back_edits():
         screen.query_one("#f-autocompact_at_percent", Input).value = "70"
         screen.query_one("#f-temperature", Input).value = "0.85"
         screen.query_one("#f-clear_screen_after_compact", Switch).value = False
+        screen.query_one("#f-wake_after_compact", Switch).value = True
         screen.query_one("#mcp-srv", Switch).value = False
 
         screen.action_save()
@@ -183,6 +185,7 @@ async def test_screen_mounts_and_reads_back_edits():
     assert result.autocompact_at_percent == 70
     assert result.temperature == 0.85
     assert result.clear_screen_after_compact is False
+    assert result.wake_after_compact is True
     assert result.mcp_disabled_servers == ["srv"]
 
 

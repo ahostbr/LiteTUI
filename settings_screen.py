@@ -262,6 +262,13 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "have saved the session.",
                         )
                         yield from self._switch_row(
+                            "wake_after_compact", "Wake model after compacting",
+                            "Loop mode: after every successful compaction, send one "
+                            "user-style ping so an in-flight task resumes instead of "
+                            "the model sitting on the summary. If nothing is pending "
+                            "it says standing by and stops.",
+                        )
+                        yield from self._switch_row(
                             "clear_screen_after_compact", "Clear screen after compacting",
                             "After compacting, the log still shows messages that were just "
                             "REPLACED — the screen and the real context disagree. Clearing "

@@ -176,6 +176,17 @@ COMPACT_PROMPT = (
     "Do not describe what you wrote to the store; the summary stands on its own."
 )
 
+# The post-compaction ping. User role on purpose: it is the nudge that says
+# "keep going", and the standing-by exit is what keeps the model from
+# inventing a task to resume when there was none - a ping without an exit
+# would cost a full turn every time someone compacted just to free context.
+WAKE_AFTER_COMPACT = (
+    "(auto) Context was just compacted. If you were in the middle of a task, "
+    "resume it exactly where it left off - your handoff and memory hold what "
+    "remains. If nothing is pending, reply with one short line saying you "
+    "are standing by and stop."
+)
+
 def memory_prompt(convo_id: str, folder: Path) -> str:
     """The block appended to systemprompt.md so the agent can find its own store.
 
@@ -3093,6 +3104,25 @@ class LiteTUI(App):
             tail = tail[1:]
         return tail
 
+    def _wake_after_compact(self) -> None:
+        """The post-compaction ping: one user message that says "resume the
+        in-flight task, or say standing by", then a normal turn.
+
+        Runs as a plain callback, SCHEDULED by _compact - never called from
+        inside it. _stream is exclusive work in the same "chat" group as
+        _compact, and a direct call from inside the compact worker would
+        cancel the compaction that is still unwinding. The guard covers the
+        window between scheduling and firing, in which a real user turn may
+        have claimed the chat group first: that turn wins, and the ping is
+        dropped rather than queued behind it.
+        """
+        if self._chat_running():
+            return
+        self._materialise_convo()
+        self._user_bubble(WAKE_AFTER_COMPACT, False)
+        self._append({"role": "user", "content": WAKE_AFTER_COMPACT})
+        self._stream()
+
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "") -> None:
         system = (
@@ -3269,6 +3299,13 @@ class LiteTUI(App):
                 f"The full transcript is still on disk in this conversation's file."
             )
             self._clear_screen(note=summary_note)
+
+        if self.settings.wake_after_compact:
+            # SCHEDULED, never called: see _wake_after_compact for why a
+            # direct self._stream() here would cancel this very compact.
+            # Success path only - a failed compact produced no summary, and
+            # waking on "nothing changed" is a ping with no answer.
+            self.call_after_refresh(self._wake_after_compact)
 
     # ── Commands ─────────────────────────────────────────────────
 

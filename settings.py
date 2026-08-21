@@ -112,6 +112,19 @@ class Settings:
     #: has no room to produce the summary that would have saved the session.
     autocompact_at_percent: int = 80
 
+
+    #: After every SUCCESSFUL compaction, ping the model like a user message
+    #: so an in-flight task resumes instead of the model sitting on the
+    #: summary. This is loop mode: an auto-compact at 80% used to park a long
+    #: agent run silently, because nothing asks for anything once the context
+    #: has been replaced. The ping buys one cheap round-trip - resume the
+    #: task, or say standing by and stop.
+    #:
+    #: Ships OFF: it changes what /compact does for every user and costs a
+    #: model round-trip when there is nothing to resume. Turn it ON in
+    #: settings.json (or /settings) for long agentic sessions.
+    wake_after_compact: bool = False
+
     #: Clear the RENDERED transcript after a compaction.
     #:
     #: Not cosmetic. After compacting, the chat log still shows every message
