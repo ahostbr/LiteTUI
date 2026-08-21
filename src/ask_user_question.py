@@ -615,16 +615,7 @@ class AskUserQuestionScreen(ModalScreen[None]):
 
 # ── Tool entry point ───────────────────────────────────────────────
 
-_app: App | None = None
-
-
-def set_app(app: App) -> None:
-    """LiteTUI calls this once at startup so run() can find the running app."""
-    global _app
-    _app = app
-
-
-def run(args: dict) -> str:
+def run(args: dict, app: App | None) -> str:
     """Dispatch the `ask_user_question` tool. Never raises — every path returns text.
 
     Runs on a worker thread (app.py dispatches with `asyncio.to_thread`), so
@@ -636,11 +627,10 @@ def run(args: dict) -> str:
     except ValueError as e:
         return f"[error] ask_user_question: {e}"
 
-    app = _app
     if app is None:
         return (
             "[error] ask_user_question: no running LiteTUI app to render the "
-            "question widget (set_app was never called)"
+            "question widget"
         )
 
     done = threading.Event()

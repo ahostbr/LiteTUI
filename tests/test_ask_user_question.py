@@ -69,9 +69,9 @@ async def wait_for(pilot, pred, timeout=5.0):
         await pilot.pause()
 
 
-def call_in_thread():
+def call_in_thread(app):
     box = []
-    t = threading.Thread(target=lambda: box.append(aq.run(ARGS)), daemon=True)
+    t = threading.Thread(target=lambda: box.append(aq.run(ARGS, app)), daemon=True)
     t.start()
     return box, t
 
@@ -88,11 +88,11 @@ async def main():
     chk("string options accepted (local-model leniency)",
         lenient[0].options[0]["title"] == "plain string option")
     chk("missing label defaulted", lenient[0].label == "Question 1")
-    e1 = aq.run({"questions": []})
+    e1 = aq.run({"questions": []}, None)
     chk("empty list rejected with a message", e1.startswith("[error]") and "non-empty" in e1)
-    e2 = aq.run({"questions": [{"label": "x", "options": [{"title": "a"}]}]})
+    e2 = aq.run({"questions": [{"label": "x", "options": [{"title": "a"}]}]}, None)
     chk("missing question text rejected", "question" in e2)
-    e3 = aq.run({"questions": [{"label": "x", "question": "q", "options": "nope"}]})
+    e3 = aq.run({"questions": [{"label": "x", "question": "q", "options": "nope"}]}, None)
     chk("non-list options rejected", "options" in e3)
 
     print("\n=== serialization: submit / chat / cancel ===")
@@ -123,9 +123,9 @@ async def main():
     async with a.run_test(size=(120, 30)) as pilot:
         chk("spec registered by _all_tools",
             any(t["function"]["name"] == "ask_user_question" for t in a._all_tools()))
-        chk("dispatch resolves to aq.run", a._dispatch_for("ask_user_question") is aq.run)
+        chk("dispatch resolves ask_user_question", a._dispatch_for("ask_user_question") is not None)
 
-        box, t = call_in_thread()
+        box, t = call_in_thread(a)
         await wait_for(pilot, lambda: isinstance(a.screen, aq.AskUserQuestionScreen))
         scr = a.screen
         chk("AskUserQuestionScreen is on top while run() blocks", True)
@@ -194,7 +194,7 @@ async def main():
     print("\n=== SUBMIT commits everything ===")
     b = make_app()
     async with b.run_test(size=(120, 30)) as pilot:
-        box, t = call_in_thread()
+        box, t = call_in_thread(b)
         await wait_for(pilot, lambda: isinstance(b.screen, aq.AskUserQuestionScreen))
         await pilot.press("enter")
         await pilot.pause()
@@ -214,7 +214,7 @@ async def main():
     print("\n=== ESC cancels with no answers ===")
     c = make_app()
     async with c.run_test(size=(120, 30)) as pilot:
-        box, t = call_in_thread()
+        box, t = call_in_thread(c)
         await wait_for(pilot, lambda: isinstance(c.screen, aq.AskUserQuestionScreen))
         scr = c.screen
         await pilot.press("enter")

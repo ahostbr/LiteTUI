@@ -22,7 +22,6 @@ import config
 import settings as settings_mod
 from settings import Settings, sampling_kwargs
 from settings_screen import SettingsScreen
-import ask_user_question
 import studio_tool
 import ttyguard
 import mcp_client
@@ -2266,9 +2265,6 @@ class LiteTUI(App):
             model="",
         )
         self._seat_started = False
-        # The question widget must reach the RUNNING app instance to
-        # turn can ever call the tool.
-        ask_user_question.set_app(self)
         # The plugin substrate. Per INSTANCE, never module-level — the suite
         # builds many apps in one process, and a shared registry would leak
         # skills/mcp/seat state between them. Skills discovery and mcp.load()
@@ -2680,9 +2676,6 @@ class LiteTUI(App):
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
         specs = self.plugins.tool_specs()
-        # Always available: it renders inside this very app and has
-        # no external precondition (unlike the browser tools' SCRIPT check).
-        specs.append(ask_user_question.ASK_USER_QUESTION_TOOL_SPEC)
         # Local generation (LiteImage/LiteSound/LiteModeler). Offered
         # unconditionally: availability is RUNTIME state (is the app open?),
         # and the tool reports its own precondition in one honest sentence,
@@ -2713,8 +2706,6 @@ class LiteTUI(App):
             # the agent's own brain is the biggest slice (measured 2026-08-21:
             # a 2.4 GB summarizer beside the 29 GB seat near-OOMed the box).
             return lambda args: studio_tool.run(args, seat_model=self.model_id)
-        if name == "ask_user_question":
-            return ask_user_question.run
         return self._mcp_dispatch.get(name)
 
     def _system_prompt_text(self) -> str:

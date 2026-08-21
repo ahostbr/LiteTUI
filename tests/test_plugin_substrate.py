@@ -158,6 +158,29 @@ def test_loader_disabled_skips_and_unknown_id_is_inert():
     assert reg.status["floor"] == "active"
 
 
+def test_loader_isolates_import_failures_unless_module_is_critical():
+    # A module that cannot even IMPORT has no manifest to declare anything —
+    # isolation must still hold, keyed by the module name.
+    reg = PluginRegistry()
+    hits = []
+    order = (
+        "_fp_does_not_exist_anywhere",
+        _fake_module("_fp_survivor", PluginManifest("survivor", register=lambda c: hits.append("s"))),
+    )
+    register_plugins(None, reg, order=order)
+    assert hits == ["s"]
+    assert reg.status["_fp_does_not_exist_anywhere"].startswith("failed: ModuleNotFoundError")
+    # ...but a CRITICAL module's import failure is a broken checkout: raise.
+    import plugins as plugins_pkg
+    saved = plugins_pkg.CRITICAL_MODULES
+    plugins_pkg.CRITICAL_MODULES = frozenset({"_fp_missing_critical"})
+    try:
+        with pytest.raises(ModuleNotFoundError):
+            register_plugins(None, PluginRegistry(), order=("_fp_missing_critical",))
+    finally:
+        plugins_pkg.CRITICAL_MODULES = saved
+
+
 def test_activate_runs_in_order_and_isolates_noncritical_failures():
     reg = PluginRegistry()
     seen = []

@@ -46,7 +46,13 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.view_image",
     "plugins.pccontrol",
     "plugins.chrome",
+    "plugins.ask_user_question",
 )
+
+# Module-level criticality, for failures that happen BEFORE a manifest exists
+# (a syntax error, a missing dependency at import). The manifest's own
+# critical flag can only speak once the module has imported.
+CRITICAL_MODULES: frozenset[str] = frozenset({"plugins.core_tools"})
 
 
 @dataclass(frozen=True)
@@ -254,7 +260,16 @@ def register_plugins(
         order = PLUGIN_LOAD_ORDER
     manifests: list[PluginManifest] = []
     for mod_name in order:
-        manifest = import_module(mod_name).PLUGIN
+        try:
+            manifest = import_module(mod_name).PLUGIN
+        except Exception as e:  # noqa: BLE001
+            # No manifest yet, so the module NAME keys the failure and
+            # CRITICAL_MODULES speaks for the criticality the manifest
+            # could not declare.
+            if mod_name in CRITICAL_MODULES:
+                raise
+            registry.status[mod_name] = f"failed: {type(e).__name__}: {e}"
+            continue
         if not manifest.critical and manifest.id in disabled:
             registry.status[manifest.id] = "disabled"
             continue
