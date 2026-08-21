@@ -59,13 +59,17 @@ def _is_runtime(name: str) -> bool:
 
 def test_no_child_process_escapes_the_envelope():
     violations = []
-    for f in sorted((REPO / "src").glob("*.py")):
+    # rglob, not glob: src/plugins/ is runtime too. The flat glob was a live
+    # blind spot — a plugin one directory down would have escaped the envelope
+    # entirely, and this sweep is the envelope's only enforcement.
+    for f in sorted((REPO / "src").rglob("*.py")):
         if f.name in _WHITELIST or not _is_runtime(f.name):
             continue
+        rel = f.relative_to(REPO / "src")
         text = f.read_text(encoding="utf-8", errors="replace")
         for i, line in enumerate(text.splitlines(), 1):
             if _SPAWN.search(line):
-                violations.append(f"{f.name}:{i}: {line.strip()[:90]}")
+                violations.append(f"{rel}:{i}: {line.strip()[:90]}")
     assert not violations, (
         "raw subprocess call outside the ttyguard envelope:\n"
         + "\n".join(violations)
