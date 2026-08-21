@@ -18,6 +18,19 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-08-21
+
+### Fixed
+
+- **The day popup and job editor docked to the top-left** instead of
+  centering. The house centering rule is one CSS selector list, and the three
+  calendar screens were never added to it — CalendarScreen hid the defect by
+  being 96%×92%, where docked and centred look identical. New gate:
+  `test_modal_centering.py` asserts the POSITION of every modal box (equal
+  gaps both axes, in a live app), so the next screen that forgets to join the
+  selector fails a test instead of a screenshot.
+
+
 ## [0.15.0] — 2026-08-21
 
 ### Added

@@ -1835,7 +1835,8 @@ class LiteTUI(App):
         margin-left: 1;
     }
 
-    ConfirmStop, PickerScreen, HelpScreen, SettingsScreen {
+    ConfirmStop, PickerScreen, HelpScreen, SettingsScreen,
+    CalendarScreen, DayScreen, JobScreen {
         align: center middle;
     }
 
