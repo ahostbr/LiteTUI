@@ -2372,21 +2372,21 @@ class LiteTUI(App):
         if not getattr(self, "ctx_loaded", False) and self.model_id:
             self._fetch_ctx_window()
 
-    def _maybe_autocompact(self) -> None:
-        """Compact by itself once the window passes the configured percent.
+    def _autocompact_due(self) -> int | None:
+        """The window percent when a compaction is DUE, else None. A TEST — it
+        never starts one.
 
-        Checked after a turn settles, never mid-stream: compaction rewrites
-        self.conversation, and doing that while a response is still being
-        appended would race the very messages it is summarising.
-
-        Needs headroom by design. A threshold near 100 leaves no room for the
-        compaction request itself to produce a summary, which is the failure it
-        exists to prevent.
+        Split out so the agent loop can ASK between tool iterations without
+        acting. _stream and _compact are BOTH @work(exclusive=True,
+        group="chat"), so calling _maybe_autocompact from inside the loop
+        would cancel the loop that called it — mid-turn, possibly between an
+        assistant message carrying tool_calls and its results. The loop breaks
+        and schedules the compaction for after the worker exits instead.
         """
         if not self.settings.autocompact_enabled:
-            return
+            return None
         if not self.ctx_max or not self.ctx_used:
-            return  # window size unknown - never guess a threshold
+            return None  # window size unknown - never guess a threshold
         if not getattr(self, "ctx_loaded", False):
             # The model is not loaded, so ctx_max is its CEILING, not its
             # window. Dividing by it computes a threshold against a number the
@@ -2394,21 +2394,48 @@ class LiteTUI(App):
             # 8k window can never reach, so this would silently never fire and
             # the model would blow its real context instead. Refusing is the
             # same rule as the line above - never guess a threshold.
-            return
+            return None
+        if self.ctx_used == getattr(self, "_autocompact_failed_at", None):
+            # The last compaction FAILED and the window has not moved since.
+            # The inputs are identical, so the next attempt fails identically —
+            # and each attempt is a full request. This is the retry loop that
+            # was watched in the wild: "Compacting 126 messages / Compact
+            # failed / Compacting 126 messages", no backoff. Wait for a real
+            # change instead of asking the same question again.
+            return None
         pct = self.ctx_used * 100 // self.ctx_max
         if pct < self.settings.autocompact_at_percent:
+            return None
+        return pct
+
+    def _maybe_autocompact(self) -> None:
+        """Start a compaction if one is due. SCHEDULE this — never call it from
+        inside a chat-group worker. See _autocompact_due.
+
+        Needs headroom by design. A threshold near 100 leaves no room for the
+        compaction request itself to produce a summary, which is the failure it
+        exists to prevent.
+        """
+        pct = self._autocompact_due()
+        if pct is None:
             return
-        if getattr(self, "_autocompact_running", False):
+        if self._chat_running():
+            # A chat-group worker is live, and _compact is exclusive in that
+            # same group, so starting one here would CANCEL it.
+            #
+            # This replaces a bool that could not have worked: it was set, then
+            # cleared in a `finally` wrapped around the call that starts the
+            # compaction. _compact is @work, so that call SCHEDULES and returns
+            # immediately — the flag went false again microseconds later while
+            # the compaction was still in flight. It guarded the scheduling
+            # call, never the compaction. Ask the worker manager, which knows,
+            # rather than a flag that races the thing it guards.
             return
-        self._autocompact_running = True
         self._system(
             f"Auto-compacting - context at {pct}% of "
             f"{self.ctx_max:,} (threshold {self.settings.autocompact_at_percent}%)."
         )
-        try:
-            self._handle_command("/compact")
-        finally:
-            self._autocompact_running = False
+        self._handle_command("/compact")
 
     def _system(self, text: str) -> None:
         log = self.query_one("#chat-log")
@@ -3008,8 +3035,29 @@ class LiteTUI(App):
         # also the right moment — LM Studio JIT-loads on the previous turn's
         # first request, so by now the real window exists to be read.
         self._resync_ctx_if_stale()
+        compact_due = False
         for _iteration in range(self.settings.tool_iterations):
             if self._stop_requested:
+                break
+            if _iteration and self._autocompact_due() is not None:
+                # THE BUDGET IS SPENT INSIDE A TURN, SO IT MUST BE CHECKED
+                # INSIDE ONE. Both _maybe_autocompact calls below sit at
+                # `return` statements, so a turn that keeps calling tools
+                # never reaches either and the window sails past the
+                # threshold — watched live going 80 -> 84 -> 87%. With
+                # tool_iterations at 100 a single turn can eat the lot.
+                #
+                # We only TEST here. Starting the compaction from inside
+                # this worker would cancel this worker: _compact is
+                # exclusive in the same "chat" group as _stream. So break
+                # and schedule it for after we exit; wake_after_compact
+                # then resumes the task.
+                #
+                # `_iteration and` skips iteration 0 deliberately: nothing
+                # has been spent yet on this turn, and a turn STARTED by
+                # the post-compact wake must be allowed to do real work
+                # before it may compact again, or the two ping-pong.
+                compact_due = True
                 break
             widget = self._assistant_bubble()
             self._elapsed_start(widget.body)
@@ -3274,6 +3322,17 @@ class LiteTUI(App):
                 self._append({"role": "user", "content": content})
                 self._user_bubble(f"[view_image] {names}", True)
 
+        if compact_due:
+            pct = self._autocompact_due()
+            self._system(
+                f"[pausing at {pct}% of the window — compacting between tool"
+                " iterations, then resuming]"
+                if pct is not None
+                else "[pausing to compact between tool iterations]"
+            )
+            self.call_after_refresh(self._maybe_autocompact)
+            return
+
         self._system(
             f"[stopped \u2014 reached {self.settings.tool_iterations} tool iterations in one turn — raise it in /settings]"
         )
@@ -3443,6 +3502,7 @@ class LiteTUI(App):
                         }
                     )
         except Exception as e:
+            self._autocompact_failed_at = self.ctx_used
             self._system(f"Compact failed — conversation unchanged.\n{type(e).__name__}: {e}")
             return
 
@@ -3456,6 +3516,7 @@ class LiteTUI(App):
                 "Conversation unchanged."
                 + (f"\nStore writes that DID land: {', '.join(writes)}" if writes else "")
             )
+            self._autocompact_failed_at = self.ctx_used
             return
 
         pair = [
@@ -3472,6 +3533,9 @@ class LiteTUI(App):
         # as it stands on disk, which is the pre-compaction one.
         self._truncate(len(self.conversation) - len(tail), pair, "compact")
         self.conversation = rebuilt
+        # Succeeded: forget any earlier failure so a later window that
+        # happens to land on the same token count is not blocked by it.
+        self._autocompact_failed_at = None
         after_chars = self._msg_chars(self.conversation)
         pct = (100 - after_chars * 100 // before_chars) if before_chars else 0
         if writes:
