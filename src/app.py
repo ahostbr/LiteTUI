@@ -30,6 +30,8 @@ import mcp_client
 import sanitize
 import scheduler as sched_mod
 import calendar_view as calview
+import schedule_builder as sb_mod
+from ticker import NumberTicker
 import tool_context
 import themes as themes_mod
 from colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -42,7 +44,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button, Footer, Header, Input, OptionList, Static, Switch,
+    Button, Footer, Header, Input, OptionList, Select, Static, Switch,
 )
 from textual.widgets.option_list import Option
 from textual.worker import WorkerState
@@ -1492,11 +1494,34 @@ class JobScreen(ModalScreen):
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
+    #: Which param widgets each preset shows. Everything else hides —
+    #: including the raw cron field, which only Custom reveals.
+    _VIS_TIME = frozenset({"job-lbl-at", "job-hour", "job-lbl-colon", "job-minute"})
+    _VIS = {
+        "daily":         _VIS_TIME,
+        "weekdays":      _VIS_TIME,
+        "weekends":      _VIS_TIME,
+        "weekly":        _VIS_TIME | {"job-weekday"},
+        "monthly":       _VIS_TIME | {"job-lbl-day", "job-day"},
+        "yearly":        _VIS_TIME | {"job-month", "job-lbl-day", "job-day"},
+        "every_minutes": frozenset({"job-lbl-every", "job-n", "job-unit"}),
+        "every_hours":   frozenset({"job-lbl-every", "job-n", "job-unit"}),
+        "custom":        frozenset(),
+    }
+    _PARAM_IDS = tuple(sorted(set().union(*_VIS.values())))
+
     def __init__(self, job=None, prefill_schedule: str = ""):
         super().__init__()
         self._job = job
         self._prefill = prefill_schedule
         self._delete_armed = False
+        # Recognize the schedule into builder state. None routes to CUSTOM
+        # with the raw string shown — a recognizer that guessed would let
+        # the next save silently rewrite a schedule it never understood.
+        initial = job.schedule if job else prefill_schedule
+        recognized = sb_mod.recognize(initial)
+        self._preset = recognized[0] if recognized else "custom"
+        self._p = {**sb_mod.DEFAULTS, **(recognized[1] if recognized else {})}
 
     def compose(self) -> ComposeResult:
         j = self._job
@@ -1505,8 +1530,27 @@ class JobScreen(ModalScreen):
             yield Static("prompt — sent as a user message when it fires",
                          classes="job-cap")
             yield Input(value=j.prompt if j else "", id="job-prompt")
-            yield Static("schedule — min hour day month weekday · or @hourly "
-                         "@daily @weekly @monthly", classes="job-cap")
+            yield Static("when it runs", classes="job-cap")
+            yield Select(
+                [(label, pid) for pid, label in sb_mod.PRESETS],
+                value=self._preset, allow_blank=False, id="job-preset",
+            )
+            with Horizontal(id="job-params"):
+                yield Static("at", classes="job-param-label", id="job-lbl-at")
+                yield NumberTicker(self._p["hour"], 0, 23, id="job-hour")
+                yield Static(":", classes="job-param-label", id="job-lbl-colon")
+                yield NumberTicker(self._p["minute"], 0, 59, id="job-minute")
+                yield Select(list(sb_mod.WEEKDAYS), value=self._p["weekday"],
+                             allow_blank=False, id="job-weekday")
+                yield Static("day", classes="job-param-label", id="job-lbl-day")
+                yield NumberTicker(self._p["day"], 1, 31, id="job-day")
+                yield Select(list(sb_mod.MONTHS), value=self._p["month"],
+                             allow_blank=False, id="job-month")
+                yield Static("every", classes="job-param-label", id="job-lbl-every")
+                yield NumberTicker(self._p["n"], 1, 59, id="job-n")
+                yield Static("minutes", classes="job-param-label", id="job-unit")
+            yield Static("cron — min hour day month weekday · or @daily @hourly",
+                         classes="job-cap", id="job-cron-cap")
             yield Input(value=j.schedule if j else self._prefill, id="job-schedule")
             yield Static("label — short name for lists and cells", classes="job-cap")
             yield Input(value=j.label if j else "", id="job-label")
@@ -1524,8 +1568,77 @@ class JobScreen(ModalScreen):
                     yield Button("Delete", variant="error", id="job-delete")
 
     def on_mount(self) -> None:
+        self._sync_params()
         self._preview()
         self.query_one("#job-prompt", Input).focus()
+
+    # -- the builder: widgets in, cron string out -------------------------
+
+    def _sync_params(self) -> None:
+        """Show the param widgets this preset uses; hide the rest.
+
+        The raw cron field is a param of exactly one preset — Custom. In
+        every other mode it stays in the DOM (the save path reads it, the
+        builder writes it) but off the screen.
+        """
+        preset = self.query_one("#job-preset", Select).value
+        visible = self._VIS.get(preset, frozenset())
+        for wid in self._PARAM_IDS:
+            self.query_one(f"#{wid}").display = wid in visible
+        self.query_one("#job-params").display = bool(visible)
+        is_custom = preset == "custom"
+        self.query_one("#job-cron-cap").display = is_custom
+        self.query_one("#job-schedule").display = is_custom
+        if preset == "every_minutes":
+            self.query_one("#job-unit", Static).update("minutes")
+            self.query_one("#job-n", NumberTicker).set_bounds(1, 59)
+        elif preset == "every_hours":
+            self.query_one("#job-unit", Static).update("hours")
+            self.query_one("#job-n", NumberTicker).set_bounds(1, 23)
+
+    def _regen(self) -> None:
+        """Rebuild the cron string from the widgets — into the SAME input the
+        save path has always read, so downstream code cannot tell the builder
+        exists. Fires only on widget events, never on mount: opening a job
+        and saving it untouched keeps its exact string, aliases included.
+        """
+        preset = self.query_one("#job-preset", Select).value
+        if preset == "custom":
+            return
+        self.query_one("#job-schedule", Input).value = sb_mod.build(preset, {
+            "hour": self.query_one("#job-hour", NumberTicker).value,
+            "minute": self.query_one("#job-minute", NumberTicker).value,
+            "weekday": self.query_one("#job-weekday", Select).value,
+            "day": self.query_one("#job-day", NumberTicker).value,
+            "month": self.query_one("#job-month", Select).value,
+            "n": self.query_one("#job-n", NumberTicker).value,
+        })
+
+    @on(Select.Changed, "#job-preset")
+    def _preset_changed(self, event: Select.Changed) -> None:
+        # Textual's Select ECHOES its initial value as a Changed during
+        # mount. Guarding by TIMING (a ready flag) races message delivery;
+        # guarding by VALUE is deterministic: an event carrying the value we
+        # already hold is definitionally not a change. Without this, opening
+        # an untouched "@daily" job rewrote it to "0 0 * * *" on save.
+        changed = event.value != self._preset
+        self._preset = event.value
+        self._sync_params()
+        if changed:
+            self._regen()
+
+    @on(Select.Changed, "#job-weekday")
+    @on(Select.Changed, "#job-month")
+    def _param_select_changed(self, event: Select.Changed) -> None:
+        key = "weekday" if event.control.id == "job-weekday" else "month"
+        if event.value == self._p[key]:
+            return                      # the mount echo, or a no-op reselect
+        self._p[key] = event.value
+        self._regen()
+
+    @on(NumberTicker.Changed)
+    def _ticker_changed(self, _event) -> None:
+        self._regen()
 
     # -- live schedule feedback -------------------------------------------
 
@@ -2036,6 +2149,9 @@ class LiteTUI(App):
         padding: 1 2;
         background: $surface;
         border: thick $primary;
+        /* The builder made the form taller; on a short terminal the Save
+           button must scroll into reach rather than clip out of existence. */
+        overflow-y: auto;
     }
 
     #job-title {
@@ -2046,6 +2162,25 @@ class LiteTUI(App):
     .job-cap {
         color: $text-muted;
         margin-top: 1;
+    }
+
+    #job-preset {
+        width: 36;
+    }
+
+    #job-params {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #job-weekday, #job-month {
+        width: 18;
+    }
+
+    .job-param-label {
+        color: $text-muted;
+        margin: 1 1 0 1;
+        width: auto;
     }
 
     #job-switches {

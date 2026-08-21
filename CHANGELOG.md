@@ -18,6 +18,39 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-21
+
+### Added
+
+- **A human schedule builder in the job editor.** A pattern dropdown (every
+  day / weekdays / weekends / weekly / monthly / yearly / every N minutes /
+  every N hours) with number tickers and selects — `−`/`+` buttons, arrow
+  keys, direct typing, midnight wrap. The raw cron field became the **Custom**
+  preset: still there, prefilled with whatever the builder built, so the form
+  quietly teaches cron. The generated string and its live next-fire stay
+  visible on every change.
+- The builder is **presentation only**: it writes into the same input the
+  save path has always read. The store, the tick loop, `/cron add` and the
+  calendar are untouched.
+- `recognize()` is a **proven inverse** of `build()` — 205 pure tests sweep
+  every preset × edge params both ways — so opening an existing job populates
+  the widgets from its string, and anything the builder does not fully
+  understand (dow lists, dom+dow combinations, stepped minutes with fixed
+  hours) opens honestly as Custom rather than being guessed at. The
+  calendar's create-from-day prefill now opens as a legible "every year on
+  August 15 at 09:00".
+- `NumberTicker` (src/ticker.py): a reusable terminal spinner — typing and
+  ticking both first-class, display normalised on blur, never mid-keystroke.
+
+### Fixed
+
+- Textual's `Select` echoes its initial value as a `Changed` during mount;
+  treating the echo as a user action rewrote an untouched `@daily` to
+  `0 0 * * *` on save. Guarded by VALUE, not timing: an event carrying the
+  value already held is definitionally not a change. Untouched jobs now keep
+  their exact string, aliases included.
+
+
 ## [0.15.1] — 2026-08-21
 
 ### Fixed
