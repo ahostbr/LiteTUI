@@ -2327,7 +2327,6 @@ class LiteTUI(App):
             self.theme = "textual-dark"  # unknown name in settings: fall back
         self.query_one("#message-input", Input).focus()
         self._connect()
-        self._inbox_monitor()
         self._cron_monitor()
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
@@ -2693,23 +2692,11 @@ class LiteTUI(App):
 
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
-        specs = self.plugins.tool_specs()
-        # Only offered once the seat is actually registered. Advertising fleet
-        # verbs to an agent with no return address produces confident sends
-        # that go nowhere.
-        if self.seat.registered:
-            specs.append(harness_mod.HARNESS_TOOL_SPEC)
-        specs.extend(self.mcp.tool_specs())
-        return specs
+        return self.plugins.tool_specs()
 
     def _dispatch_for(self, name: str):
         """Resolve a tool name across all three sources, static first."""
-        fn = self.plugins.dispatch_for(name)
-        if fn is not None:
-            return fn
-        if name == "harness":
-            return lambda args: harness_mod.run(self.seat, args)
-        return self._mcp_dispatch.get(name)
+        return self.plugins.dispatch_for(name)
 
     def _system_prompt_text(self) -> str:
         """systemprompt.md + the store block + the tools block, in that order.
