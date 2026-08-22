@@ -102,7 +102,23 @@ bNNNN"; any flag the INI cannot express → hybrid fallback engages for models u
 - **Shipped:** `src/llm_backend.py` (766 lines: census, GGUF-header discovery, ini generator, supervisor, router client, SDK control plane, seat-guard port, request-override split) · Settings +14 fields · settings_screen Backend section · `plugins/model_switch.py` grew /backend /load /unload /modelcfg + `ModelConfigScreen` (Info/Load/Inference) + first-boot picker · seat_guard/studio_tool backend threading · `config.py` deleted (fully orphaned) · 10 new test files (60 new tests) · 3 E2E scripts, all proving against the REAL engines.
 - **Live-verified facts** (spike + E2E): ini booleans are `key = true/false` (router emits ±argv); `/models/load` success = STARTED, poll until `loaded`; router+worker = separate processes (tree-kill on shutdown, atexit); `--kv-unified` present in b9360, MTP absent (n/a static).
 - **Riders found and fixed:** (1) `kwargs.update(sampling_kwargs(...))` would have crashed the first time anyone set top_k/min_p/repeat_penalty — openai's create() has typed params, no **kwargs; now split native/extra_body. (2) Discovery listed LiteSuite's VOICE ggufs (kokoro/mimi) as chat models — 300s of router failing to serve a TTS codec; now filtered by the GGUF header's `general.architecture`, never by name.
-- **Open:** `enable_thinking` via `chat_template_kwargs` shipped census-gated but not yet live-exercised (added to MANUAL pass) · MANUAL checklist pending Ryan.
+- **Open:** `enable_thinking` live check still pending.
+
+## Walk Log (2026-08-22, Ryan + BurntRack driving the real app)
+
+- **7 of 9 MANUAL items checked** live. Speculative decoding: mechanism proven end-to-end
+  (config → ini → worker → drafting, acceptance measured 0.55) but SLOWS this box's pairings
+  (0.8B drafting 27B: 50.4 → 25.7/14.9 tok/s) — draft config stripped from settings; uplift
+  honest n/a. Attach dance: probe+attach+read proven, but found **D12**: a single-model
+  (non-router) llama-server — the real LiteSuite shape — has Ollama-shaped `/models`, so
+  attached listing/loaded-marking is wrong, and attach-state proved fragile across resume.
+- **Walk-found defects fixed same-night:** D3 apply-order 400 (`076a299`), D8 tombstoned
+  --draft-max hung the GPU (`79edd34`), D10 schema TextArea unfocusable + D1 flux-in-picker
+  (`530c95a`), pccontrol brace-escape (`ec1ab74`-family).
+- **Open defects (filed, small):** D2/D11 chat against an unloaded/loading model surfaces a
+  raw 400 — should wait or say "/load first"; D4 the "using X" banner names available[0]
+  while the pick logic may choose another; D12 above (needs a single-model-attach mode).
+- VRAM returned to baseline (1.5/32.6 GB) after the full walk.
 
 ## Golden-Path Scenarios
 

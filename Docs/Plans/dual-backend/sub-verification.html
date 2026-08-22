@@ -95,15 +95,15 @@ different base_urls observed in the transport log.</p>
 </ul>
 <h2>MANUAL checklist (Ryan's eyes — the plan is not done until these are checked)</h2>
 <ul>
-<li>[ ] MANUAL: First boot with both engines → picker appears ONCE; choice persists across restarts; Esc re-asks next boot.</li>
-<li>[ ] MANUAL: <code>/modelcfg</code> on Qwen3.8 27B side-by-side with the four LM Studio screenshots — every control present / greyed-with-reason / explicit n-a; values round-trip after restart.</li>
-<li>[ ] MANUAL: 27B load at ctx 120064, ngl 65, flash-attn, KV q8_0 → streams; footer shows the LOADED window (not 262144 ceiling); tok/s sane for a 5090.</li>
+<li>[x] MANUAL: First boot with both engines → picker appears ONCE; choice persists across restarts; Esc re-asks next boot.</li>
+<li>[x] MANUAL: <code>/modelcfg</code> on Qwen3.8 27B side-by-side with the four LM Studio screenshots — every control present / greyed-with-reason / explicit n-a; values round-trip after restart.</li>
+<li>[x] MANUAL: 27B load at ctx 120064, ngl 65, flash-attn, KV q8_0 → streams; footer shows the LOADED window (not 262144 ceiling); tok/s sane for a 5090.</li>
 <li>[ ] MANUAL: draft-model speculative decoding with the 0.8B as draft → visible tok/s uplift on the 27B.</li>
-<li>[ ] MANUAL: a vision GGUF + its mmproj → paste an image → the model describes it (view_image path).</li>
-<li>[ ] MANUAL: Structured Output with a small JSON schema → reply is valid JSON matching it.</li>
-<li>[ ] MANUAL: <code>/backend</code> flip mid-conversation → history visibly intact, header badge flips.</li>
+<li>[x] MANUAL: a vision GGUF + its mmproj → paste an image → the model describes it (view_image path).</li>
+<li>[x] MANUAL: Structured Output with a small JSON schema → reply is valid JSON matching it.</li>
+<li>[x] MANUAL: <code>/backend</code> flip mid-conversation → history visibly intact, header badge flips.</li>
 <li>[ ] MANUAL: While LiteSuite serves :8088 → LiteTUI attaches (says so), refuses load-settings edits with the Model-Hub pointer; stop LiteSuite → <code>/reconnect</code> → LiteTUI spawns its own and control returns.</li>
-<li>[ ] MANUAL: GPU memory in Task Manager returns to baseline after <code>/unload</code> of the 27B.</li>
+<li>[x] MANUAL: GPU memory in Task Manager returns to baseline after <code>/unload</code> of the 27B.</li>
 </ul>
 <h2>Task list</h2>
 <ul>

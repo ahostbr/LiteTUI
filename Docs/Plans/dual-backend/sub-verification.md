@@ -72,15 +72,15 @@ different base_urls observed in the transport log.
 
 ## MANUAL checklist (Ryan's eyes — the plan is not done until these are checked)
 
-- [ ] MANUAL: First boot with both engines → picker appears ONCE; choice persists across restarts; Esc re-asks next boot.
-- [ ] MANUAL: `/modelcfg` on Qwen3.8 27B side-by-side with the four LM Studio screenshots — every control present / greyed-with-reason / explicit n-a; values round-trip after restart.
-- [ ] MANUAL: 27B load at ctx 120064, ngl 65, flash-attn, KV q8_0 → streams; footer shows the LOADED window (not 262144 ceiling); tok/s sane for a 5090.
+- [x] MANUAL: First boot with both engines → picker appears ONCE; choice persists across restarts; Esc re-asks next boot.
+- [x] MANUAL: `/modelcfg` on Qwen3.8 27B side-by-side with the four LM Studio screenshots — every control present / greyed-with-reason / explicit n-a; values round-trip after restart.
+- [x] MANUAL: 27B load at ctx 120064, ngl 65, flash-attn, KV q8_0 → streams; footer shows the LOADED window (not 262144 ceiling); tok/s sane for a 5090.
 - [ ] MANUAL: draft-model speculative decoding with the 0.8B as draft → visible tok/s uplift on the 27B.
-- [ ] MANUAL: a vision GGUF + its mmproj → paste an image → the model describes it (view_image path).
-- [ ] MANUAL: Structured Output with a small JSON schema → reply is valid JSON matching it.
-- [ ] MANUAL: `/backend` flip mid-conversation → history visibly intact, header badge flips.
+- [x] MANUAL: a vision GGUF + its mmproj → paste an image → the model describes it (view_image path).
+- [x] MANUAL: Structured Output with a small JSON schema → reply is valid JSON matching it.
+- [x] MANUAL: `/backend` flip mid-conversation → history visibly intact, header badge flips.
 - [ ] MANUAL: While LiteSuite serves :8088 → LiteTUI attaches (says so), refuses load-settings edits with the Model-Hub pointer; stop LiteSuite → `/reconnect` → LiteTUI spawns its own and control returns.
-- [ ] MANUAL: GPU memory in Task Manager returns to baseline after `/unload` of the 27B.
+- [x] MANUAL: GPU memory in Task Manager returns to baseline after `/unload` of the 27B.
 
 ## Task list
 - [x] T1 — Write V1 negative-proof harness note + execute/revert it (recorded in commit message).

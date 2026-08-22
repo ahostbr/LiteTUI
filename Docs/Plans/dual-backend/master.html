@@ -199,7 +199,23 @@ bNNNN&quot;; any flag the INI cannot express → hybrid fallback engages for mod
 <li><strong>Shipped:</strong> <code>src/llm_backend.py</code> (766 lines: census, GGUF-header discovery, ini generator, supervisor, router client, SDK control plane, seat-guard port, request-override split) · Settings +14 fields · settings_screen Backend section · <code>plugins/model_switch.py</code> grew /backend /load /unload /modelcfg + <code>ModelConfigScreen</code> (Info/Load/Inference) + first-boot picker · seat_guard/studio_tool backend threading · <code>config.py</code> deleted (fully orphaned) · 10 new test files (60 new tests) · 3 E2E scripts, all proving against the REAL engines.</li>
 <li><strong>Live-verified facts</strong> (spike + E2E): ini booleans are <code>key = true/false</code> (router emits ±argv); <code>/models/load</code> success = STARTED, poll until <code>loaded</code>; router+worker = separate processes (tree-kill on shutdown, atexit); <code>--kv-unified</code> present in b9360, MTP absent (n/a static).</li>
 <li><strong>Riders found and fixed:</strong> (1) <code>kwargs.update(sampling_kwargs(...))</code> would have crashed the first time anyone set top_k/min_p/repeat_penalty — openai's create() has typed params, no **kwargs; now split native/extra_body. (2) Discovery listed LiteSuite's VOICE ggufs (kokoro/mimi) as chat models — 300s of router failing to serve a TTS codec; now filtered by the GGUF header's <code>general.architecture</code>, never by name.</li>
-<li><strong>Open:</strong> <code>enable_thinking</code> via <code>chat_template_kwargs</code> shipped census-gated but not yet live-exercised (added to MANUAL pass) · MANUAL checklist pending Ryan.</li>
+<li><strong>Open:</strong> <code>enable_thinking</code> live check still pending.</li>
+</ul>
+<h2>Walk Log (2026-08-22, Ryan + BurntRack driving the real app)</h2>
+<ul>
+<li><strong>7 of 9 MANUAL items checked</strong> live. Speculative decoding: mechanism proven end-to-end
+(config → ini → worker → drafting, acceptance measured 0.55) but SLOWS this box's pairings
+(0.8B drafting 27B: 50.4 → 25.7/14.9 tok/s) — draft config stripped from settings; uplift
+honest n/a. Attach dance: probe+attach+read proven, but found <strong>D12</strong>: a single-model
+(non-router) llama-server — the real LiteSuite shape — has Ollama-shaped <code>/models</code>, so
+attached listing/loaded-marking is wrong, and attach-state proved fragile across resume.</li>
+<li><strong>Walk-found defects fixed same-night:</strong> D3 apply-order 400 (<code>076a299</code>), D8 tombstoned
+--draft-max hung the GPU (<code>79edd34</code>), D10 schema TextArea unfocusable + D1 flux-in-picker
+(<code>530c95a</code>), pccontrol brace-escape (<code>ec1ab74</code>-family).</li>
+<li><strong>Open defects (filed, small):</strong> D2/D11 chat against an unloaded/loading model surfaces a
+raw 400 — should wait or say &quot;/load first&quot;; D4 the &quot;using X&quot; banner names available[0]
+while the pick logic may choose another; D12 above (needs a single-model-attach mode).</li>
+<li>VRAM returned to baseline (1.5/32.6 GB) after the full walk.</li>
 </ul>
 <h2>Golden-Path Scenarios</h2>
 <p><strong>GP1 — LiteSuite user, no LM Studio.</strong> Fresh boot; nothing on :1234; <code>llama-server.exe</code>
