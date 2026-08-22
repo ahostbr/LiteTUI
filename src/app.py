@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import harness as harness_mod
-from dataclasses import fields as fields_of
+from dataclasses import dataclass, fields as fields_of
 from functools import partial
 
 import settings as settings_mod
@@ -203,8 +203,31 @@ def memory_prompt(convo_id: str, folder: Path) -> str:
 TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))
 
 
+@dataclass(frozen=True)
+class Completion:
+    """One row the slash picker can offer: an app COMMAND, or a skill.
+
+    `sort` is precomputed and total, so refilter can order a MIXED list with a
+    single comparison — commands in palette order, then skills alphabetically.
+    Building it at construction is what lets two orderings that are not
+    comparable to each other live in one list.
+    """
+
+    name: str
+    description: str
+    kind: str            # "command" | "skill"
+    sort: tuple
+
+
 class SkillAutocomplete(Vertical):
-    """Skill names, rising from the message area as a slash name is typed.
+    """Slash names, rising from the message area as one is typed: the app's own
+    COMMANDS and the skills library, in one list.
+
+    The id and class name still say "skill" because the CSS and the tests bind
+    to them; the contents are both kinds. That name is not cosmetic history —
+    it is what the bug was. The widget did exactly what it was called, so
+    /settings /convos /model and ~20 others were invisible to the one
+    affordance built for finding them.
 
     Deliberately NOT a modal. A modal takes focus, which would stop the typing
     that is doing the filtering -- the whole interaction is "keep typing and
@@ -220,22 +243,29 @@ class SkillAutocomplete(Vertical):
     def compose(self) -> ComposeResult:
         yield self.options
 
-    def refilter(self, skills, fragment: str) -> bool:
+    def refilter(self, candidates, fragment: str) -> bool:
         """Narrow to `fragment`. Returns whether anything survived.
 
         A PREFIX match sorts above a mere substring one: typing "ls-a" should
         offer ls-arch before something that merely contains the letters, and
-        the first row is what Tab takes.
+        the first row is what Tab takes. Within equal prefix quality the
+        candidate's own `sort` decides, which is what puts COMMANDS ahead of
+        skills — they are the app's own surface and they always exist, while a
+        skills library may be empty.
         """
         want = (fragment or "").lower()
-        hits = [s for s in skills if want in s.name.lower()]
-        hits.sort(key=lambda s: (not s.name.lower().startswith(want), s.name.lower()))
+        hits = [c for c in candidates if want in c.name.lower()]
+        hits.sort(key=lambda c: (not c.name.lower().startswith(want), c.sort))
         self._matches = hits[:200]
 
         self.options.clear_options()
-        for s in self._matches:
-            desc = " ".join((s.description or "").split())
-            self.options.add_option(Option(f"{s.name}   {desc[:64]}"))
+        for c in self._matches:
+            desc = " ".join((c.description or "").split())
+            # Labelled, because the user has to be able to tell a command from
+            # a skill WITHOUT running it. Fixed-width so the column does not
+            # ripple as the list narrows.
+            tag = "[command]" if c.kind == "command" else "[skill]"
+            self.options.add_option(Option(f"{c.name:<26}{tag:<11}{desc[:40]}"))
         if self._matches:
             self.options.highlighted = 0
         self.display = bool(self._matches)
@@ -3774,10 +3804,58 @@ class LiteTUI(App):
         if ac is None:
             return
         text = value or ""
-        if not self.skills or not text.startswith("/") or " " in text:
+        # 🔴 The guard asks about the TRIGGER, never about the library. It used
+        # to read `not self.skills`, so an empty skills library switched off
+        # completion for every COMMAND as well — the app's own surface made
+        # unreachable by the absence of an optional add-on. refilter's own
+        # return already handles "nothing matched".
+        if not text.startswith("/") or " " in text:
             ac.dismiss_list()
             return
-        ac.refilter(self.skills, text[1:])
+        ac.refilter(self._completion_candidates(), text[1:])
+
+    def _completion_candidates(self) -> list[Completion]:
+        """Every slash name the picker can complete to, commands first.
+
+        Commands are folded to ONE row per CommandEntry on its primary token.
+        `plugins.commands` is keyed by every ALIAS — 41 keys over 27 entries
+        today — so reading it directly offers /model twice and /new three times.
+
+        Ordering reuses `plugins.palette_sort_key` rather than minting a second
+        table. A hand-authored copy of an order is the drift class the derived
+        palette already replaced, and it would silently misplace any command
+        nobody remembered to add.
+
+        A skill whose name a command already claims is DROPPED, because
+        `_handle_command` resolves a bare name to a skill ONLY when no command
+        matches. Offering it would advertise something Enter will never do.
+
+        Rebuilt per keystroke on purpose: /skills can refresh the library
+        mid-session (see the reload path), and a cached list would go stale
+        exactly when someone had just added the skill they are now typing.
+        """
+        out: list[Completion] = []
+        taken: set[str] = set()
+        # Keyed by `tokens`, which is unique per entry and hashable — the dict
+        # is what collapses the aliases.
+        for entry in {e.tokens: e for e in self.plugins.commands.values()}.values():
+            name = entry.tokens[0].lstrip("/")
+            if not name or name.lower() in taken:
+                continue
+            taken.add(name.lower())
+            out.append(Completion(
+                name, entry.help, "command",
+                (0,) + plugins_mod.palette_sort_key(entry.group, entry.order, name),
+            ))
+        for s in self.skills:
+            if s.name.lower() in taken:
+                continue
+            taken.add(s.name.lower())
+            out.append(Completion(
+                s.name, s.description or "", "skill", (1, 0, 0, s.name.lower()),
+            ))
+        out.sort(key=lambda c: c.sort)
+        return out
 
     def accept_skill_completion(self) -> None:
         """Take the highlighted name. Trailing space, because a skill can take
