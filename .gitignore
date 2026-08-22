@@ -44,6 +44,14 @@ settings.json
 # Live runtime state at the repo root — same class as settings.json's
 # carve-out. A `git add -A` must never commit a user's schedule.
 jobs.json
+
+# The skills index cache. Regenerated at boot and by `/skills refresh`, so it
+# is per-machine state, not source — but it lands INSIDE skills/, which holds
+# real tracked SKILL.md files, so the directory itself cannot be ignored. Named
+# explicitly for that reason. It showed up as untracked in a worker's worktree
+# minutes after it shipped, which is how the omission was found.
+skills/index.json
+
 # Stray editor/tool backups.
 *.bak*
 .llama/
