@@ -120,3 +120,60 @@ async def test_tool_cards_take_their_colour_from_the_theme() -> None:
     # it takes the colour as an argument rather than reaching for one.
     parts = m.tool_display_parts(tool)
     assert parts and m.TOOL_NAME_DEFAULT in parts[0][1]
+
+
+@pytest.mark.asyncio
+async def test_the_creator_SAVES_the_extra_rows() -> None:
+    """Rendering a row is not the same as reading it back.
+
+    The form loops THEME_FORM_TOKENS and the collector looped THEME_TOKENS, so
+    the three extra fields were drawn, accepted typing and opened the colour
+    picker -- and were dropped on save. The theme persisted without them and the
+    colours silently stayed default, which is indistinguishable from "the theme
+    doesn't work".
+
+    This asserts the round trip, not the presence of a widget: a test that only
+    queried #ct-thinking-text would have passed against the broken build.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input
+    from settings_screen import SettingsScreen
+    import settings as settings_mod
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            return []
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                SettingsScreen(settings_mod.Settings(), models=["m1"], mcp_servers=[]),
+                lambda r: None,
+            )
+
+    app = Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+
+        # Every rendered row must exist...
+        for tok in themes_mod.THEME_FORM_TOKENS:
+            screen.query_one(f"#ct-{tok}", Input)
+
+        screen.query_one("#ct-name", Input).value = "round-trip"
+        for tok in themes_mod.THEME_TOKENS:
+            screen.query_one(f"#ct-{tok}", Input).value = "#101010"
+        wanted = {
+            "thinking-text": "#00ff41",
+            "thinking-box": "#123456",
+            "tool-text": "#abcdef",
+        }
+        for tok, value in wanted.items():
+            screen.query_one(f"#ct-{tok}", Input).value = value
+
+        out = screen._collect()
+        saved = out.custom_themes["round-trip"]
+        for tok, value in wanted.items():
+            assert saved.get(tok) == value, (
+                f"{tok} was typed into the creator and did not survive the save "
+                f"(got {saved.get(tok)!r})"
+            )

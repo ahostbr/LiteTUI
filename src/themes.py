@@ -35,7 +35,7 @@ from textual.theme import Theme
 LITETUI_THEMES: dict[str, Theme] = {}
 
 
-def extra_defaults(*, warning: str, bone: str) -> dict:
+def extra_defaults(*, primary: str, bone: str) -> dict:
     """Defaults for the extra tokens, derived so every preset gets them free.
 
     Chosen to preserve what is on screen today: the thinking frame has always
@@ -45,7 +45,13 @@ def extra_defaults(*, warning: str, bone: str) -> dict:
     """
     return {
         "thinking-text": bone,
-        "thinking-box": warning,
+        # THE THEME'S IDENTITY, NOT A SEMANTIC SLOT. This defaulted to `warning`
+        # for one commit, which is why matrix -- green everywhere else -- drew a
+        # gold thinking frame and read as "the theme isn't switching". A thinking
+        # trace is not a warning; warning means danger and carries its own hue in
+        # every preset. Built-ins cannot be edited in the creator either, so a
+        # semantic default there is not merely odd, it is unreachable.
+        "thinking-box": primary,
         "tool-text": "#e8a33d",
     }
 
@@ -79,7 +85,7 @@ def _port(
         warning=warning,
         accent=info,
         dark=True,
-        variables=extra_defaults(warning=warning, bone=bone),
+        variables=extra_defaults(primary=accent, bone=bone),
     )
 
 
@@ -184,7 +190,7 @@ def _shade(
         error=error,
         accent=primary,
         dark=True,
-        variables=extra_defaults(warning=warning, bone=fg),
+        variables=extra_defaults(primary=primary, bone=fg),
     )
 
 
@@ -259,7 +265,7 @@ def theme_from_tokens(name: str, tokens: dict) -> Theme:
     # The extras are optional and validated leniently: a bad or absent value
     # falls back to the derived default rather than rejecting a theme whose
     # ten core colours are perfectly good.
-    fallback = extra_defaults(warning=clean["warning"], bone=clean["foreground"])
+    fallback = extra_defaults(primary=clean["primary"], bone=clean["foreground"])
     variables = {}
     for tok in THEME_EXTRA_TOKENS:
         v = str(tokens.get(tok, "")).strip()

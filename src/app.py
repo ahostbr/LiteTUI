@@ -4031,7 +4031,7 @@ class LiteTUI(App):
         variables = super().get_css_variables()
         try:
             defaults = themes_mod.extra_defaults(
-                warning=variables.get("warning") or "#a89a80",
+                primary=variables.get("primary") or "#a89a80",
                 bone=variables.get("foreground") or "#c8c8ce",
             )
         except Exception:

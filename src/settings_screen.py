@@ -650,9 +650,15 @@ class SettingsScreen(ModalScreen[Settings | None]):
         import themes as themes_mod
         ct_name = self.query_one("#ct-name", Input).value.strip()
         if ct_name:
+            # THE SAME LIST THE FORM RENDERS. _custom_theme_rows loops
+            # THEME_FORM_TOKENS; this looped THEME_TOKENS, so the three extra
+            # rows were drawn, accepted typing and opened the colour picker --
+            # and were never read back. The theme saved without them and the
+            # colours silently stayed default: a control that does nothing,
+            # which is this repo's most-repeated defect.
             tokens = {
                 tok: self.query_one(f"#ct-{tok}", Input).value.strip()
-                for tok in themes_mod.THEME_TOKENS
+                for tok in themes_mod.THEME_FORM_TOKENS
             }
             themes_mod.theme_from_tokens(ct_name, tokens)  # raises, naming the field
             out.custom_themes = dict(out.custom_themes)
