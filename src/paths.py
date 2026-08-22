@@ -11,6 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = ROOT / "prompts"
 SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
+#: The tools section of the system prompt. Lived as a string constant in
+#: app.py until 2026-08-22 -- authored prompt text belongs on disk beside the
+#: rest of it, where it can be read and edited without a source change.
+TOOLS_PROMPT_FILE = PROMPTS_DIR / "tools.md"
 
 # ── Conversation persistence ─────────────────────────────────────
 # .convos/<uuid>/

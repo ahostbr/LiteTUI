@@ -8,6 +8,7 @@ the index that rides the system prompt.
 import skills as skills_mod
 from picker import PickerScreen
 import paths
+import time
 from plugins import PROMPT_ORDER, PluginManifest
 
 
@@ -16,12 +17,41 @@ from plugins import PROMPT_ORDER, PluginManifest
 _REPORT_ROW = "\u2500report\u2500"
 
 
+def _cmd_refresh(app) -> None:
+    """Re-scan every library and rewrite the cache, reporting the delta.
+
+    This is the answer to the failure that prompted it: a skill folder written
+    while the app was running could only be picked up by restarting, because
+    discovery ran once at startup and nothing could ask again. The delta is the
+    report, not the word "refreshed" -- "+1 find-claude-skills" is what tells
+    you the thing you just wrote was actually seen.
+    """
+    if not app.settings.skills_enabled:
+        app._system("Skills are OFF in /settings — nothing to refresh.")
+        return
+    added, removed = app.refresh_skills()
+    where = skills_mod.cache_path(paths.ROOT)
+    lines = [f"{len(app.skills)} skill(s) after refresh — cache: {where}"]
+    if added:
+        lines.append("  + " + ", ".join(added))
+    if removed:
+        lines.append("  - " + ", ".join(removed))
+    if not added and not removed:
+        lines.append("  no change")
+    # A folder that produced nothing is the whole reason someone refreshes.
+    lines.extend(_skipped_lines(app, paths.ROOT / skills_mod.SKILLS_DIR_NAME))
+    app._system("\n".join(lines))
+
+
 def _cmd_skills(app, name: str, arg: str) -> None:
     # Discovery is silent by design: a directory with no SKILL.md is a
     # scratch folder, not an error. That makes a MISNAMED or MISPLACED
     # skill look exactly like one that was never written — so say what
     # was found, where it was looked for, and what the model can see.
     base = paths.ROOT / skills_mod.SKILLS_DIR_NAME
+    if arg.strip().lower() in ("refresh", "reload", "rescan"):
+        _cmd_refresh(app)
+        return
     if arg:
         body = skills_mod.load(app.skills, arg)
         # Show what the MODEL would receive, not a summary of it.
@@ -125,6 +155,13 @@ def _skills_report(app, base) -> str:
         f"{'y' if len(by_source) == 1 else 'ies'} — "
         f"{len(block):,} chars (~{len(block) // 4:,} tokens) in the system prompt"
     ]
+    cached_at = getattr(app, "skills_cached_at", 0.0)
+    if cached_at:
+        age = max(0, int(time.time() - cached_at))
+        unit = f"{age}s" if age < 90 else (f"{age // 60}m" if age < 5400 else f"{age // 3600}h")
+        lines.append(
+            f"  index is CACHED, written {unit} ago — /skills refresh to re-scan"
+        )
     lines.append("")
     lines.append(f"  [local] {base}" + ("" if base.is_dir() else "  (does not exist)"))
     for d in roots:
@@ -157,7 +194,8 @@ def _register(ctx) -> None:
     ctx.command(
         ("/skills", "/skill"), _cmd_skills,
         palette="Skills",
-        help="Extra abilities it can use, and where they came from.",
+        help="Extra abilities it can use, and where they came from. "
+             "`/skills refresh` re-scans after you add one.",
         group="tools",
         order=20,
     )

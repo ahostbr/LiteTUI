@@ -191,14 +191,6 @@ def memory_prompt(convo_id: str, folder: Path) -> str:
 # /settings; env LM_TOOL_ITERS still wins over both (see settings.ENV_OVERRIDES).
 # This constant remains so module-level users and tests keep a sane number.
 TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))
-TOOLS_PROMPT = """
-You have four tools: bash, read, write, web_fetch.
-- bash: run a shell command (ls, dir, grep, find, git, python, ...). Returns stdout+stderr, truncated to the last 2000 lines / 50KB. Non-zero exits are reported.
-- read: read a text file by path; use offset (1-indexed) / limit for large files; capped at 2000 lines / 50KB, continue with offset.
-- write: create or fully overwrite a file (parent dirs are created).
-- web_fetch: fetch an http(s) URL and get its content as plain text (max 20000 chars).
-Use tools whenever they help fulfil the user's request. Inspect tool output before answering. If a call fails, read the error and adapt.
-"""
 
 
 class ChatMessage(Static):
@@ -1548,11 +1540,7 @@ class LiteTUI(App):
         # prompt, which is what "off" has to mean for a context-costing feature.
         # `[]`, not `{}` — discover() returns a LIST, and load() iterates its
         # argument expecting Skill objects. A dict would yield keys.
-        self.skills = (
-            skills_mod.discover_all(paths.ROOT, self.settings.skill_roots)
-            if self.settings.skills_enabled
-            else []
-        )
+        self.skills, self.skills_cached_at = self._load_skills()
         self.mcp = mcp_client.MCPManager(paths.ROOT)
         if self.settings.mcp_enabled:
             self.mcp.load()
@@ -1599,8 +1587,20 @@ class LiteTUI(App):
         )
         self.plugins.add_prompt_section(
             "host", _ord["TOOLS"],
-            lambda: TOOLS_PROMPT,
-            enabled=lambda: self.tools_enabled,
+            # The newlines are LOAD-BEARING. compose_prompt glues sections
+            # with a bare `base + render()`, and the constant this replaced was
+            # "\nYou have four tools...\n" -- carrying its own separators. A
+            # plain .strip() of the file drops them and welds the memory block
+            # straight onto the first word of this one. Caught by
+            # test_prompt_compose's reference fold, which is exactly what that
+            # test exists to notice.
+            lambda: "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n",
+            # Gated on BOTH the toggle and the file. A missing file must not
+            # render as an empty section: the tools would still be OFFERED to
+            # the model with no instructions on how to use them, which is a
+            # worse state than not offering them, and a silent one. The boot
+            # check below is what makes the absence audible.
+            enabled=lambda: self.tools_enabled and paths.TOOLS_PROMPT_FILE.exists(),
         )
         # The substrate's own status readout — host-registered so it can
         # never be disabled away with a plugin.
@@ -1646,6 +1646,16 @@ class LiteTUI(App):
     def on_mount(self) -> None:
         self.query_one("#message-input", Input).focus()
         self._splash()
+        # An authored prompt file that has gone missing is invisible everywhere
+        # else: the section simply does not render, and the model is handed
+        # tools with no instructions. Say it once, at the only moment anyone is
+        # looking at a fresh screen.
+        for label, f in (
+            ("system prompt", paths.SYSTEM_PROMPT_FILE),
+            ("tools prompt", paths.TOOLS_PROMPT_FILE),
+        ):
+            if not f.exists():
+                self._system(f"[!] {label} missing: {f}\n    That section is absent from the model's context.")
         self._connect()
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
@@ -4158,6 +4168,42 @@ class LiteTUI(App):
         self._append({"role": "user", "content": item["content"]})
         _mark_delivered(item)
         self._stream()
+
+    def _load_skills(self):
+        """The skill index, from cache when there is one.
+
+        Discovery walks every configured library on every boot, which is why a
+        folder added while the app was running never appeared: the answer was
+        computed once at startup and nothing could ask again. The cache does not
+        change that -- it makes the recomputation an explicit, cheap act
+        (/skills refresh) instead of a restart.
+
+        Returns (skills, generated_at). generated_at is 0.0 for a fresh scan,
+        which is how /skills knows whether it is showing cached data and how old
+        it is: a cache nobody can date is a cache nobody can distrust.
+        """
+        if not self.settings.skills_enabled:
+            return [], 0.0
+        cached = skills_mod.read_cache(paths.ROOT)
+        if cached is not None:
+            return cached
+        found = skills_mod.discover_all(paths.ROOT, self.settings.skill_roots)
+        skills_mod.write_cache(paths.ROOT, found)
+        return found, 0.0
+
+    def refresh_skills(self) -> tuple[list[str], list[str]]:
+        """Re-scan every library and rewrite the cache. Returns (added, removed).
+
+        The delta is the point: "refreshed" tells you nothing, while "+1
+        find-claude-skills" tells you the thing you just wrote was picked up.
+        """
+        before = {s.name for s in self.skills}
+        found = skills_mod.discover_all(paths.ROOT, self.settings.skill_roots)
+        skills_mod.write_cache(paths.ROOT, found)
+        self.skills = found
+        self.skills_cached_at = 0.0
+        after = {s.name for s in found}
+        return sorted(after - before), sorted(before - after)
 
     def get_css_variables(self) -> dict:
         """Every theme resolves $thinking-text / $thinking-box / $tool-text.

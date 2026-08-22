@@ -16,6 +16,10 @@ import glob
 import os
 from pathlib import Path
 
+import json
+import tempfile
+import time
+
 SKILLS_DIR_NAME = "skills"
 MAX_SKILL_BYTES = 60_000
 #: How much of a description survives into the index. A skill that writes an
@@ -239,6 +243,77 @@ def discover(root: Path) -> list[Skill]:
     and it used to be structurally identical bodies kept in sync by hand.
     """
     return discover_dir(root / SKILLS_DIR_NAME, "local")
+
+
+#: The discovered index, cached beside the skills it describes.
+INDEX_CACHE_NAME = "index.json"
+
+
+def cache_path(root: Path) -> Path:
+    """Where the index cache lives: <root>/skills/index.json."""
+    return root / SKILLS_DIR_NAME / INDEX_CACHE_NAME
+
+
+def write_cache(root: Path, skills: list[Skill]) -> Path | None:
+    """Persist the index. Best-effort: a cache that cannot be written must
+    never stop the app from having skills -- discovery already succeeded."""
+    p = cache_path(root)
+    payload = {
+        "generated": time.time(),
+        "count": len(skills),
+        "skills": [
+            {
+                "name": s.name,
+                "description": s.description,
+                "path": str(s.path),
+                "source": s.source,
+            }
+            for s in skills
+        ],
+    }
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Write-then-rename: a torn cache is worse than no cache, because a
+        # half-written one still parses often enough to be believed.
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".idx-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+        os.replace(tmp, p)
+        return p
+    except OSError:
+        return None
+
+
+def read_cache(root: Path) -> tuple[list[Skill], float] | None:
+    """Load the cached index, or None when there is nothing usable.
+
+    An entry whose SKILL.md has since been deleted is DROPPED rather than
+    returned: load() would fail on it later with a file error, which reads as
+    a broken skill instead of a stale cache. The count difference is what
+    /skills reports, so a shrinking library is visible rather than silent.
+    """
+    p = cache_path(root)
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    rows = raw.get("skills")
+    if not isinstance(rows, list):
+        return None
+    out: list[Skill] = []
+    for r in rows:
+        try:
+            sp = Path(r["path"])
+        except (KeyError, TypeError):
+            continue
+        if not sp.is_file():
+            continue
+        out.append(Skill(str(r.get("name") or ""), str(r.get("description") or ""),
+                         sp, str(r.get("source") or "local")))
+    if not out:
+        return None
+    generated = raw.get("generated")
+    return out, float(generated) if isinstance(generated, (int, float)) else 0.0
 
 
 def index_block(skills: list[Skill]) -> str:

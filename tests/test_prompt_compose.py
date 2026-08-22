@@ -27,7 +27,12 @@ def _reference(a) -> str:
     if a.convo_dir is not None:
         base = (base + m.memory_prompt(a.convo_id, a.convo_dir)).strip()
     if a.tools_enabled:
-        base = (base + m.TOOLS_PROMPT).strip()
+        # Was m.TOOLS_PROMPT, a constant in app.py, until the prompt text moved
+        # to prompts/tools.md (2026-08-22). The reference still builds the fold
+        # INDEPENDENTLY of the app -- it just reads the same source of truth.
+        base = (
+            base + "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
+        ).strip()
         if a.skills:
             base = (base + skills_mod.index_block(a.skills)).strip()
     return base
