@@ -1083,6 +1083,15 @@ class LiteTUI(App):
     /* Compaction, marked as itself: the warning hue is the 'this is the
        app doing maintenance' colour, distinct from any conversation card. */
     .compaction-card {
+        /* height: auto is LOAD-BEARING. A Vertical defaults to height: 1fr, and
+           inside #chat-log (a VerticalScroll) that collapses the card to a
+           minimal box: only the FIRST child paints. The whole card -- plan,
+           folded prompt, thinking block, tool cards, the summary streaming in --
+           rendered into children with no room to exist, so compaction looked
+           like a yellow title bar and nothing else on EVERY run, while the
+           compaction itself worked perfectly. .assistant-msg, the bubble mounted
+           beside it in the same log, has carried height: auto all along. */
+        height: auto;
         margin: 1 2 0 2;
         padding: 0 1;
         border-left: thick $warning;
