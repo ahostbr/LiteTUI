@@ -890,7 +890,14 @@ class LiteTUI(App):
     }
 
     .thinking-header {
-        color: $thinking-box;
+        /* The LABEL is text, so it follows $thinking-text, not the frame.
+           It shipped following $thinking-box for one turn on the theory that
+           header+border are one "frame" identity -- but a row named
+           thinking-text that leaves the visible word "Thinking" untouched
+           reads as a control that does nothing, and that is the exact class
+           of defect this repo keeps re-finding. $thinking-box now means the
+           border, and only the border. */
+        color: $thinking-text;
         text-style: bold;
         padding: 0 1;
     }

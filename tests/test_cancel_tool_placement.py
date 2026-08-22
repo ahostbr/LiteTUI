@@ -55,6 +55,22 @@ def _restore_cancellable():
     ttyguard.CANCELLABLE.update(before)
 
 
+async def _await_control(a, pilot, tool, tries: int = 20):
+    """Wait for the control to appear, rather than assuming a frame count.
+
+    The announce-before-mount path defers via call_after_refresh, so the button
+    lands a refresh LATER. Asserting after a fixed two pauses passed alone and
+    failed inside the full suite, where the loop is busier -- a flaky test that
+    only fails under load is worse than no test, because it teaches people to
+    re-run instead of read.
+    """
+    for _ in range(tries):
+        if a._cancel_buttons.get(tool) is not None:
+            return a._cancel_buttons[tool]
+        await pilot.pause()
+    return None
+
+
 def _assert_adjacent(a, tool) -> None:
     btn = a._cancel_buttons.get(tool)
     assert btn is not None, "no cancel control was created for a running tool"
@@ -98,8 +114,9 @@ async def test_control_appears_when_announced_before_mounting() -> None:
         tool = m.ToolMessage("bash")
         a._tool_begin(tool)          # parent is None here
         log.mount(tool)
-        await pilot.pause()
-        await pilot.pause()          # the deferred retry lands
+        assert await _await_control(a, pilot, tool) is not None, (
+            "the deferred retry never mounted the control"
+        )
 
         _assert_adjacent(a, tool)
 
