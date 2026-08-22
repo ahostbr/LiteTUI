@@ -566,6 +566,12 @@ class CompactionCard(Vertical):
         if self.thinking is None:
             self.thinking = ThinkingBlock()
             self.mount(self.thinking, before=self.body)
+            # THE SECOND MOUNT SITE. _scroll_down's docstring says a new thinking
+            # block scrolls unconditionally, and the streaming path does exactly
+            # that -- but a block created through here never scrolled at all, so
+            # the fix was only ever wired at one of the two places that mount one.
+            # Deferred for the same reason as the streaming site: measure, then scroll.
+            self.app.call_after_refresh(self.app._scroll_down)
         self.thinking.append(token)
 
     def thinking_done(self) -> None:
@@ -3540,7 +3546,15 @@ class LiteTUI(App):
                             self._thinking_live = thinking
                             widget.mount(thinking, before=widget.body)
                             # Discrete event -> unconditional. See _scroll_down.
-                            self._scroll_down()
+                            # AFTER the refresh, not during it: mount() has not
+                            # been measured yet, so scrolling in this frame targets
+                            # the PRE-mount extent and parks the viewport just above
+                            # the block that appeared. The policy in _scroll_down was
+                            # already right; it was being asked at the wrong moment.
+                            # Identical reasoning to ThinkingBlock.append's own
+                            # call_after_refresh: "the scroll extent does not grow
+                            # until the new content has been re-measured".
+                            self.call_after_refresh(self._scroll_down)
                         if self.thinking_level == "off":
                             self._warn_reasoning_ignored()
                         # None when show_thinking is off. The trace still arrives and is
