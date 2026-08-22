@@ -35,6 +35,23 @@ from textual.theme import Theme
 LITETUI_THEMES: dict[str, Theme] = {}
 
 
+def extra_defaults(*, warning: str, bone: str) -> dict:
+    """Defaults for the extra tokens, derived so every preset gets them free.
+
+    Chosen to preserve what is on screen today: the thinking frame has always
+    been the warning colour, and tool cards have always been this amber -- it
+    was hardcoded in the render path rather than themed, which is exactly why
+    it never appeared in the creator.
+    """
+    return {
+        "thinking-text": bone,
+        "thinking-box": warning,
+        "tool-text": "#e8a33d",
+    }
+
+_HEX = frozenset("0123456789abcdefABCDEF")
+
+
 def _port(
     name: str,
     *,
@@ -62,6 +79,7 @@ def _port(
         warning=warning,
         accent=info,
         dark=True,
+        variables=extra_defaults(warning=warning, bone=bone),
     )
 
 
@@ -166,6 +184,7 @@ def _shade(
         error=error,
         accent=primary,
         dark=True,
+        variables=extra_defaults(warning=warning, bone=fg),
     )
 
 
@@ -204,7 +223,19 @@ THEME_TOKENS = (
     "background", "surface", "panel", "foreground",
 )
 
-_HEX = frozenset("0123456789abcdefABCDEF")
+#: Tokens that are NOT Textual Theme fields. Textual's Theme is a fixed
+#: dataclass, so these ride in its `variables` dict and reach the CSS as
+#: $thinking-text / $thinking-box / $tool-text.
+#:
+#: OPTIONAL BY CONSTRUCTION. Custom themes are persisted as {token: hex} and
+#: rebuilt at every startup, so making a new token REQUIRED would raise on
+#: every theme the user had already saved -- a new feature that breaks the
+#: existing ones. Missing means "derive it", never "reject the theme".
+THEME_EXTRA_TOKENS = ("thinking-text", "thinking-box", "tool-text")
+
+#: What the /settings creator renders a row for. The form loops this, so a
+#: token added here appears in the editor and the picker with no UI change.
+THEME_FORM_TOKENS = THEME_TOKENS + THEME_EXTRA_TOKENS
 
 
 def theme_from_tokens(name: str, tokens: dict) -> Theme:
@@ -224,4 +255,15 @@ def theme_from_tokens(name: str, tokens: dict) -> Theme:
         if not (len(v) == 7 and v[0] == "#" and all(c in _HEX for c in v[1:])):
             raise ValueError(f"custom theme {name!r}: {tok} is not a #RRGGBB hex (got {v!r})")
         clean[tok] = v
-    return Theme(name=name, dark=True, **clean)
+
+    # The extras are optional and validated leniently: a bad or absent value
+    # falls back to the derived default rather than rejecting a theme whose
+    # ten core colours are perfectly good.
+    fallback = extra_defaults(warning=clean["warning"], bone=clean["foreground"])
+    variables = {}
+    for tok in THEME_EXTRA_TOKENS:
+        v = str(tokens.get(tok, "")).strip()
+        ok = len(v) == 7 and v[0] == "#" and all(c in _HEX for c in v[1:])
+        variables[tok] = v if ok else fallback[tok]
+
+    return Theme(name=name, dark=True, variables=variables, **clean)

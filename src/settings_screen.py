@@ -497,7 +497,11 @@ class SettingsScreen(ModalScreen[Settings | None]):
         with Vertical(classes="set-row"):
             yield Label("New theme name", classes="set-label")
             yield Input(value="", id="ct-name", placeholder="my-theme")
-        for tok in themes_mod.THEME_TOKENS:
+        try:
+            extras = dict(self.app.current_theme.variables or {})
+        except Exception:
+            extras = {}
+        for tok in themes_mod.THEME_FORM_TOKENS:
             with Vertical(classes="set-row"):
                 yield Label(tok, classes="set-label")
                 # The FIELD is the trigger: clicking it opens the picker
@@ -505,7 +509,12 @@ class SettingsScreen(ModalScreen[Settings | None]):
                 # a 100%-width Input in a Horizontal — the button laid out
                 # zero-wide past the right edge and shipped invisible, which
                 # is this repo's dead-control class with a new costume.
-                yield Input(value=str(resolved.get(tok, "")), id=f"ct-{tok}",
+                # The extras are theme VARIABLES, not Textual Theme fields, so
+                # they are absent from the generated colour system -- prefill
+                # them from the theme's own variables instead of leaving the
+                # row blank, which would read as "unset" for a live colour.
+                yield Input(value=str(resolved.get(tok) or extras.get(tok, "")),
+                            id=f"ct-{tok}",
                             placeholder="#RRGGBB", classes="ct-hex")
 
     def on_click(self, event) -> None:
@@ -526,8 +535,9 @@ class SettingsScreen(ModalScreen[Settings | None]):
         import themes as themes_mod
         try:
             resolved = self.app.current_theme.to_color_system().generate()
-            presets = [(t, resolved[t]) for t in themes_mod.THEME_TOKENS
-                       if isinstance(resolved.get(t), str)]
+            merged = {**(self.app.current_theme.variables or {}), **resolved}
+            presets = [(t, merged[t]) for t in themes_mod.THEME_FORM_TOKENS
+                       if isinstance(merged.get(t), str)]
         except Exception:
             presets = []
 

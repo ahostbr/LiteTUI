@@ -447,14 +447,23 @@ LITETUI_SPLASH = (
 )
 
 
-def tool_display_parts(tool, max_lines: int = 12) -> list:
+#: The tool card's colours when no theme is reachable -- the values that were
+#: hardcoded in this function before `tool-text` became a theme token. Kept as
+#: the default so the pure function stays callable with no app and no theme.
+TOOL_NAME_DEFAULT = "#e8a33d"
+
+
+def tool_display_parts(tool, max_lines: int = 12, name_color: str | None = None) -> list:
     """Pure: the (text, style) parts for a ToolMessage's display from its state.
     Testable without a Textual app (no widget.content / console involved).
-    `tool` needs: tool_name, _args, _result, _ok, _t0, _took."""
+    `tool` needs: tool_name, _args, _result, _ok, _t0, _took.
+
+    `name_color` is the theme's $tool-text. Optional, and defaulted, so this
+    stays a pure function that a test can call with nothing but a stub tool."""
     arg_line = tool._args.replace("\n", " ")
     if len(arg_line) > 110:
         arg_line = arg_line[:107] + "..."
-    parts = [(f"\U0001F527 {tool.tool_name}", "bold #e8a33d")]
+    parts = [(f"\U0001F527 {tool.tool_name}", f"bold {name_color or TOOL_NAME_DEFAULT}")]
     if arg_line:
         parts.append(("  " + arg_line, "#8b95a7"))
     if tool._result is not None:
@@ -682,8 +691,22 @@ class ToolMessage(Static):
 
     # NOTE: must NOT be named `_render` — Textual's Widget._render() is an
     # internal method that must return a Visual; shadowing it breaks layout.
+    def _tool_name_color(self) -> str:
+        """The active theme's $tool-text, or the default when unthemed.
+
+        Best-effort on purpose: a ToolMessage is constructed in tests with no
+        app attached, and a colour lookup must never be the reason a tool card
+        fails to render."""
+        try:
+            v = self.app.current_theme.variables.get("tool-text")
+            return v or TOOL_NAME_DEFAULT
+        except Exception:
+            return TOOL_NAME_DEFAULT
+
     def _update_display(self) -> None:
-        self.content = Text.assemble(*tool_display_parts(self, self.MAX_DISPLAY_LINES))
+        self.content = Text.assemble(
+            *tool_display_parts(self, self.MAX_DISPLAY_LINES, self._tool_name_color())
+        )
 
 
 class ConfirmStop(ModalScreen[bool]):
@@ -863,11 +886,11 @@ class LiteTUI(App):
     .thinking-block {
         height: auto;
         margin-bottom: 1;
-        border: dashed $warning-darken-2;
+        border: dashed $thinking-box;
     }
 
     .thinking-header {
-        color: $warning;
+        color: $thinking-box;
         text-style: bold;
         padding: 0 1;
     }
@@ -882,7 +905,7 @@ class LiteTUI(App):
         max-height: 10;
         scrollbar-size: 1 1;
         padding: 0 1;
-        color: $text-muted;
+        color: $thinking-text;
     }
 
     .thinking-block.expanded .thinking-body {
@@ -3981,6 +4004,35 @@ class LiteTUI(App):
         self._materialise_convo()
         self._append({"role": "user", "content": item["content"]})
         self._stream()
+
+    def get_css_variables(self) -> dict:
+        """Every theme resolves $thinking-text / $thinking-box / $tool-text.
+
+        These are theme VARIABLES rather than Textual Theme fields, and the
+        themes we do not author carry none of them: textual-dark, dracula,
+        nord, catppuccin-mocha and friends stay registered, and textual-dark is
+        this app's hard fallback whenever a saved theme name will not resolve.
+
+        An undefined CSS variable in Textual does not quietly skip one
+        declaration -- it fails the stylesheet. So without this floor, adding a
+        themeable colour would have broken the app outright for anyone sitting
+        on a built-in theme, which is the single most likely place to be.
+
+        Derived from whatever the ACTIVE theme does provide, so a built-in gets
+        a thinking frame in its own warning colour rather than ours.
+        """
+        variables = super().get_css_variables()
+        try:
+            defaults = themes_mod.extra_defaults(
+                warning=variables.get("warning") or "#a89a80",
+                bone=variables.get("foreground") or "#c8c8ce",
+            )
+        except Exception:
+            return variables
+        for key, value in defaults.items():
+            if not variables.get(key):
+                variables[key] = value
+        return variables
 
     def _register_custom_themes(self) -> None:
         """Register every custom theme from settings. Idempotent — an existing
