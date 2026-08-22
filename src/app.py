@@ -2678,11 +2678,6 @@ class LiteTUI(App):
                 if want and want in self.available_models:
                     if self.settings.pin_default_model or not self.model_id:
                         self.model_id = want
-                elif want:
-                    self._system(
-                        f"Default model {want!r} is not being served — using "
-                        f"{self.available_models[0]!r}. (/settings to change it.)"
-                    )
                 if not self.model_id or self.model_id not in self.available_models:
                     # Prefer a LOADED model for the default pick. The native
                     # listing now includes every DOWNLOADED model (LM Studio
@@ -2693,6 +2688,17 @@ class LiteTUI(App):
                     ]
                     self.model_id = (
                         loaded[0] if loaded else self.available_models[0]
+                    )
+                if want and want not in self.available_models:
+                    # AFTER the pick, and reading its RESULT. This used to sit
+                    # above the pick and name available_models[0] — a second,
+                    # parallel copy of a decision the pick makes differently:
+                    # it prefers a LOADED model, and it leaves an already-valid
+                    # model_id alone. Either case made the line a lie about
+                    # which model is answering. One decision, one reader.
+                    self._system(
+                        f"Default model {want!r} is not being served — using "
+                        f"{self.model_id!r}. (/settings to change it.)"
                     )
                 self._update_header()
                 self._fetch_ctx_window()
