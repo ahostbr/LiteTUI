@@ -453,6 +453,26 @@ LITETUI_SPLASH = (
 TOOL_NAME_DEFAULT = "#e8a33d"
 
 
+def _mark_delivered(item: dict) -> None:
+    """A queued bubble stops saying "queued" once the model can see it.
+
+    The title was the only signal that a message was waiting, so leaving it
+    after delivery is the same lie pointing the other way.
+
+    Module-level, not a method: it touches only `item`, and as a method it
+    forced every test double of the flush path to grow an unrelated attribute
+    just to be called. A helper that constrains its callers' shape for no
+    reason is a tax on every future test.
+    """
+    bubble = item.get("bubble")
+    if bubble is None:
+        return
+    try:
+        bubble.border_title = "You"
+    except Exception:
+        pass
+
+
 def tool_display_parts(tool, max_lines: int = 12, name_color: str | None = None) -> list:
     """Pure: the (text, style) parts for a ToolMessage's display from its state.
     Testable without a Textual app (no widget.content / console involved).
@@ -2874,7 +2894,7 @@ class LiteTUI(App):
         log.mount(ChatMessage(Text(text), classes="system-msg"))
         self._scroll_down()
 
-    def _user_bubble(self, text: str, has_image: bool, queued: bool = False) -> None:
+    def _user_bubble(self, text: str, has_image: bool, queued: bool = False):
         log = self.query_one("#chat-log")
         parts: list[str] = []
         if has_image:
@@ -2887,6 +2907,7 @@ class LiteTUI(App):
         w.border_title = "You · queued" if queued else "You"
         log.mount(w)
         self._scroll_down()
+        return w
 
     def _assistant_bubble(self) -> AssistantMessage:
         log = self.query_one("#chat-log")
@@ -3590,8 +3611,10 @@ class LiteTUI(App):
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
-                self._user_bubble(text, has_image, queued=True)
-                self._pending_input.append({"content": content, "text": text})
+                bubble = self._user_bubble(text, has_image, queued=True)
+                self._pending_input.append(
+                    {"content": content, "text": text, "bubble": bubble}
+                )
                 self.notify("Queued — sends when this turn ends", timeout=3)
                 return
             # Interrupt: soft stop — the existing stop path keeps the partial
@@ -3929,6 +3952,12 @@ class LiteTUI(App):
             # results are appended (order matters -- every tool_call_id must be
             # answered before a non-tool turn appears) and before the next
             # request goes out.
+            # Queued input joins the conversation HERE, at the round
+            # boundary, so the model sees it on its very next request instead
+            # of after the whole loop unwinds. Same slot and same reason as the
+            # staged images below.
+            self._deliver_queued_input()
+
             if self._pending_tool_images:
                 staged = self._pending_tool_images
                 self._pending_tool_images = []
@@ -3991,6 +4020,42 @@ class LiteTUI(App):
             tail = tail[1:]
         return tail
 
+    def _deliver_queued_input(self) -> bool:
+        """Hand queued messages to the model at a ROUND boundary, mid-turn.
+
+        Ryan: "if i queue a message the agent has to fully stop to get it ... it
+        wont deliver between tool calls or agent thinking / output."
+
+        Exactly so, and the reason was structural: the ONLY flush point was
+        on_worker_state_changed, which fires when a chat-group worker ENDS --
+        and _stream is a single worker that runs the entire agent loop. With
+        tool_iterations at 100, a queued message could wait out a hundred rounds
+        while the user watched the agent work on without it. The message was not
+        lost, it was just unreachable until the turn died.
+
+        Called from the same slot the staged-image drain uses, and for the same
+        invariant, which that code already spells out: every tool_call_id must
+        be answered before a non-tool turn appears. Delivering here is safe;
+        delivering mid-round would break the pairing.
+
+        Interrupts do not come through here. That path sets _stop_requested and
+        returns out of the worker before this point, so it still ends the turn
+        and sends next -- queue and interrupt stay two different verbs.
+        """
+        if not self._pending_input or self._stop_requested:
+            return False
+        # ONE per boundary, FIFO -- never the whole queue. Consecutive role:user
+        # turns are a chat-template gamble and qwen's template 500s on some
+        # shapes, which is exactly why _flush_pending_input has always sent one
+        # per turn end (tests/test_message_queue.py names that case). Draining
+        # the lot here would have rebuilt that hazard at a new site, against the
+        # model this app is usually pointed at. The rest ride the next round,
+        # and rounds are plentiful.
+        item = self._pending_input.pop(0)
+        self._append({"role": "user", "content": item["content"]})
+        _mark_delivered(item)
+        return True
+
     def _flush_pending_input(self) -> None:
         """Send the oldest held message once the chat group is idle.
 
@@ -4010,6 +4075,7 @@ class LiteTUI(App):
         item = self._pending_input.pop(0)
         self._materialise_convo()
         self._append({"role": "user", "content": item["content"]})
+        _mark_delivered(item)
         self._stream()
 
     def get_css_variables(self) -> dict:
