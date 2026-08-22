@@ -1586,6 +1586,13 @@ class LiteTUI(App):
         self._convo_pending = False
         self._convo_loading = False  # suppress writes while replaying from disk
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
+        # Did the LAST turn end because the user killed it, or because it
+        # finished? Only the post-compaction wake ping cares: "resume the
+        # in-flight task" is the wrong thing to say about a task the user
+        # deliberately stopped. Distinct from _stop_requested, which is
+        # cleared at the START of the next turn and is about the turn in
+        # flight; this outlives the turn so the ping can read it.
+        self._turn_abandoned = False
         # Elapsed-time display while a turn is in flight (pre-token) and while
         # tool calls run. The repaint is a task on the worker's own event loop
         # (interleaves with the stream); the display string is render_progress.
@@ -3663,6 +3670,10 @@ class LiteTUI(App):
             self.workers.cancel_group(self, "chat")
             self._system("[force-stopped — no partial reply was recoverable]")
             self._stop_requested = False
+            # Marked HERE as well as at _stream's stop branch: a cancelled
+            # worker never reaches that branch, so without this the HARDER of
+            # the two stops would be the one the wake ping ignored.
+            self._turn_abandoned = True
             return
         self.push_screen(ConfirmStop(), self._on_stop_answer)
 
@@ -3879,6 +3890,10 @@ class LiteTUI(App):
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         self._stop_requested = False
+        # A turn is starting, so nothing is abandoned any more. Cleared HERE
+        # rather than where the ping reads it: a mark that only ever latched
+        # would kill loop mode for the rest of the session after one Esc.
+        self._turn_abandoned = False
         # 🔴 RE-READ THE WINDOW AT TURN START, NOT ONLY AT TURN END.
         #
         # The end-of-turn resync was wired into ONE of the loop's exits (the
@@ -4122,6 +4137,11 @@ class LiteTUI(App):
                     '[stopped by you — partial reply kept'
                     + (', pending tool calls discarded]' if tool_acc else ']')
                 )
+                # This exit is one of the ways a compaction gets STARTED (the
+                # scheduled _maybe_autocompact below). Record that the turn was
+                # KILLED rather than finished, so the post-compaction wake ping
+                # does not tell the model to resume what the user just stopped.
+                self._turn_abandoned = True
                 self.call_after_refresh(self._maybe_autocompact)
                 return
 
@@ -4443,6 +4463,14 @@ class LiteTUI(App):
         if self._pending_input:
             # A REAL user message is waiting — it is a better wake than the
             # synthetic ping, and the flush is about to deliver it.
+            return
+        if self._turn_abandoned:
+            # The last turn was KILLED by the user, not finished. "Resume the
+            # in-flight task" is the wrong thing to say about a task they
+            # deliberately stopped, and stopping is itself one of the ways a
+            # compaction gets scheduled (see _stream's stop branch). ABANDONED
+            # only — a turn that merely ENDED still wakes, which is the whole
+            # feature. Cleared at the next turn's start, never here.
             return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)
