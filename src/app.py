@@ -2329,6 +2329,17 @@ class LiteTUI(App):
                     meta = rec
                 elif kind == "snapshot":
                     msgs = list(rec.get("messages") or [])
+                elif kind == "rename":
+                    # APPEND-ONLY, like every other record here. The name is not
+                    # patched into the meta line -- rewriting a JSONL record in
+                    # place is how a torn write loses the whole transcript, and
+                    # the last rename simply wins on replay.
+                    new_name = rec.get("name")
+                    if isinstance(new_name, str):
+                        cleaned = new_name.strip()
+                        meta = {**meta, "name": cleaned} if cleaned else {
+                            k: v for k, v in meta.items() if k != "name"
+                        }
                 elif kind == "edit":
                     i = rec.get("index")
                     if isinstance(i, int) and 0 <= i < len(msgs) and isinstance(
@@ -2360,6 +2371,20 @@ class LiteTUI(App):
             if n >= div:
                 return f"{n / div:.1f}{unit}"
         return f"{n}B"
+
+    @classmethod
+    def _convo_label(cls, meta: dict, msgs: list[dict]) -> str:
+        """What a conversation is CALLED in any listing.
+
+        A name given with /rename wins over the derived first-user-message
+        preview -- that is the whole point of naming one. Both /convos and the
+        /resume picker call this, because they already render the same column
+        and their own comment says the two must not drift.
+        """
+        name = str((meta or {}).get("name") or "").strip()
+        if name:
+            return name
+        return cls._convo_title(msgs)
 
     @classmethod
     def _convo_title(cls, msgs: list[dict]) -> str:

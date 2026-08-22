@@ -67,7 +67,7 @@ def _cmd_convos(app, name: str, arg: str) -> None:
         total += p.stat().st_size
         lines.append(
             f" {mark} {i:>2}. {p.parent.name[:8]}  {stamp}  {turns:>3} msg{badge}  "
-            f"{app._fmt_size(p.stat().st_size):>7}  {app._convo_title(msgs)}"
+            f"{app._fmt_size(p.stat().st_size):>7}  {app._convo_label(meta, msgs)}"
         )
     extra = f"\n(+{len(rows) - 30} older)" if len(rows) > 30 else ""
     warn = (
@@ -83,6 +83,40 @@ def _cmd_convos(app, name: str, arg: str) -> None:
         + "\nUse /resume <number> to load one."
         + warn
     )
+
+
+#: Same cap the derived title uses, so a named row cannot blow the column
+#: apart when every other row is bounded.
+_NAME_MAX = 60
+
+
+def _cmd_rename(app, name: str, arg: str) -> None:
+    """Name the CURRENT conversation, so it can be found by what it was for."""
+    wanted = " ".join(arg.split())          # collapse newlines and runs of spaces
+    if not wanted:
+        current = ""
+        if app.convo_path is not None and app.convo_path.exists():
+            try:
+                meta, _msgs = app._read_convo(app.convo_path)
+                current = str(meta.get("name") or "")
+            except OSError:
+                current = ""
+        app._system(
+            f"This conversation is named {current!r}." if current
+            else "This conversation has no name. Give it one with /rename <name>."
+        )
+        return
+    if len(wanted) > _NAME_MAX:
+        wanted = wanted[:_NAME_MAX].rstrip() + "\u2026"
+    # A conversation staged but not yet on disk has nowhere to put the record.
+    # Materialising first means naming a fresh conversation works exactly like
+    # naming an old one, instead of silently doing nothing.
+    app._materialise_convo()
+    if app.convo_path is None:
+        app._system("No conversation to name yet.")
+        return
+    app._write_record({"type": "rename", "name": wanted})
+    app._system(f"Named this conversation {wanted!r}. It shows in /convos and /resume.")
 
 
 def _cmd_resume(app, name: str, arg: str) -> None:
@@ -125,7 +159,7 @@ def _cmd_resume(app, name: str, arg: str) -> None:
                     str(path),
                     f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
                     f"{app._fmt_size(path.stat().st_size):>7}  "
-                    f"{app._convo_title(msgs)}",
+                    f"{app._convo_label(meta, msgs)}",
                 )
             )
         app.push_screen(
@@ -164,6 +198,13 @@ def _register(ctx) -> None:
         order=20,
     )
     ctx.command(("/resume",), _cmd_resume)
+    ctx.command(
+        ("/rename",), _cmd_rename,
+        palette="Rename conversation",
+        help="Give this chat a name so you can find it later.",
+        group="convo",
+        order=40,
+    )
 
 
 PLUGIN = PluginManifest(id="convo", register=_register)
