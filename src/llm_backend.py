@@ -652,16 +652,20 @@ class LlamaCppBackend:
 
     def _apply_sync(self, key: str, cfg: dict) -> None:
         """Persist cfg for KEY, rewrite the ini, and bounce only that model.
-        The settings dict is the durable truth; the ini is derived output."""
+        The settings dict is the durable truth; the ini is derived output.
+
+        🔴 UNLOAD BEFORE THE REGEN, NEVER AFTER. _regen_ini restarts the
+        router, and a fresh router (no autoload) lists every model unloaded —
+        an unload sent after the restart is a 400 for a model the new process
+        never loaded, and it aborted the apply BEFORE the reload. Found by
+        Ryan's manual pass on the first apply-to-a-LOADED-model; the E2E's
+        apply had only ever run against a not-yet-loaded one."""
         self._refuse_if_attached("change load settings")
         self._settings.llama_load_settings[key] = dict(cfg)
-        was_loaded = False
         info = self._server_models().get(key)
-        if info is not None:
-            was_loaded = info.get("status", {}).get("value") == "loaded"
+        if info is not None and info.get("status", {}).get("value") == "loaded":
+            self._unload_sync(key)   # evict while THIS router still knows it
         self._regen_ini()
-        if was_loaded:
-            self._unload_sync(key)
         self._load_sync(key)
 
     def _regen_ini(self) -> None:

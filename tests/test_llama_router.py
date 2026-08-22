@@ -72,8 +72,14 @@ class RouterStub:
                     stub.models[key]["polls"] = 0
                     self._send({"success": True})
                 elif self.path == "/models/unload" and key in stub.models:
-                    stub.models[key]["state"] = "unloaded"
-                    self._send({"success": True})
+                    # The real router 400s an unload of a model it has not
+                    # loaded (proven live, 2026-08-21) — the stub must be as
+                    # strict or the apply-ordering regression can't reproduce.
+                    if stub.models[key]["state"] == "unloaded":
+                        self._send({"error": f"model {key!r} is not loaded"}, 400)
+                    else:
+                        stub.models[key]["state"] = "unloaded"
+                        self._send({"success": True})
                 else:
                     self._send({"error": f"unknown model {key!r}"}, 400)
 
@@ -216,6 +222,24 @@ def test_list_merges_server_and_disk(stub, tmp_path):
     assert rows["served-only"].loaded is True
     assert rows["disk-only"].loaded is False
     assert rows["disk-only"].source == "custom"
+
+
+def test_apply_on_a_loaded_model_survives_the_router_restart(stub, tmp_path, monkeypatch):
+    """Ryan's manual pass, first apply to a LOADED model: _regen_ini restarts
+    the router, the fresh process lists everything unloaded, and the old
+    unload-AFTER-regen order sent a 400 that aborted the apply before the
+    reload. The unload must happen while the OLD router still knows the
+    model."""
+    stub.add("m1", state="loaded", ctx=4096)
+    b = _backend(stub, tmp_path)
+
+    def _restart_evicts_everything():
+        for m in stub.models.values():
+            m["state"] = "unloaded"
+    monkeypatch.setattr(b, "_regen_ini", _restart_evicts_everything)
+
+    _run(b.apply_load_settings("m1", {"ctx": 8192}))   # must NOT raise
+    assert stub.models["m1"]["state"] == "loaded", "apply must end with the model reloaded"
 
 
 def test_seat_cycle_on_router(stub, tmp_path):
