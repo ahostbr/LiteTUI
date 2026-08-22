@@ -140,7 +140,7 @@ def test_rename_with_no_conversation_says_so(tmp_path: Path) -> None:
 
 
 def test_both_listings_go_through_the_label_helper() -> None:
-    """The drift gate: neither listing may render the derived title directly."""
+    """Drift gate: one shared picker renders the label; no direct title."""
     src = (Path(__file__).resolve().parent.parent / "src" / "plugins" / "convo.py").read_text(
         encoding="utf-8", errors="ignore"
     )
@@ -148,6 +148,10 @@ def test_both_listings_go_through_the_label_helper() -> None:
         "a listing still renders the derived preview directly — a named "
         "conversation would show in one surface and not the other"
     )
-    assert src.count("_convo_label(meta, msgs)") == 2, (
-        "expected exactly two listings (/convos and the /resume picker)"
+    assert src.count("_convo_label(meta, msgs)") == 1, (
+        "the shared picker is the single rendering site for the label; "
+        "a second listing means /convos and /resume have drifted apart"
+    )
+    assert "_open_convos_picker" in src, (
+        "expected a shared picker helper for /convos and /resume"
     )
