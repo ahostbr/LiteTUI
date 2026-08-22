@@ -1378,6 +1378,9 @@ class LiteTUI(App):
         self._elapsed_body_t0: float = 0.0
         self._inflight_tools: list = []      # ToolMessages awaiting their result
         self._cancel_buttons: dict = {}      # ToolMessage -> its CancelToolButton
+        # The last scroll position this app SET. Following is judged against it,
+        # never against max_scroll_y -- see _scroll_down.
+        self._follow_anchor: float | None = None
         #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
@@ -3067,6 +3070,40 @@ class LiteTUI(App):
             "least thinking this model actually supports."
         )
 
+    def _still_following(self, log) -> bool:
+        """Has the READER moved, or has the CONTENT moved?
+
+        _at_bottom could not tell these apart, and they want opposite answers:
+        a reader who scrolled up must be left alone, a reader whom the content
+        outran must be caught up. Both look identical in the geometry it asked
+        about -- scroll_y sitting below max_scroll_y.
+
+        What separates them is which number moved. Growing content raises
+        max_scroll_y and leaves scroll_y exactly where it was; only a human
+        moves scroll_y. So compare against the position we ourselves last
+        scrolled to, and content growth becomes invisible to the check.
+
+        Concretely, the case that kept coming back: .thinking-body is
+        `max-height: 10`, so a thinking block grows the log ~12 rows in a burst
+        and then never grows again. Against max_scroll_y that burst instantly
+        exceeded the 2-line slack and following was refused for the rest of the
+        turn, with nothing left to restore it. Against our own anchor the burst
+        does not register at all.
+
+        The slack survives for the reason it was introduced: scroll_y is a float
+        and lands fractionally. Unset anchor means nothing has been scrolled yet,
+        which is trivially still following.
+        """
+        anchor = self._follow_anchor
+        if anchor is None:
+            return True
+        try:
+            return log.scroll_y >= anchor - 2
+        except Exception:
+            # Geometry unavailable: fail OPEN, exactly as _at_bottom does. An
+            # over-eager scroll is a visual nit; a dead autoscroll is this bug.
+            return True
+
     def _scroll_down(self, *, only_if_following: bool = False) -> None:
         """Scroll the conversation log to the bottom.
 
@@ -3087,12 +3124,18 @@ class LiteTUI(App):
 
         A NEW THINKING BLOCK WAS THE ONE MISSING FROM THAT LIST, and it read as
         "the log only moves once the answer arrives". Mounting the assistant
-        bubble plus the block grows the log by more than _at_bottom's 2-line
-        slack in a single frame, so by the time the first reasoning token calls
-        in, the reader is judged to have scrolled up -- by the app's OWN newly
-        mounted content -- and following is refused for the whole turn. The
-        guard written to protect a reader who scrolled up was firing on content
-        nobody had scrolled away from.
+        bubble plus the block grows the log by more than 2 lines in a single
+        frame, so the reader was judged to have scrolled up -- by the app's OWN
+        newly mounted content -- and following was refused for the whole turn.
+        The guard written to protect a reader who scrolled up was firing on
+        content nobody had scrolled away from.
+
+        That is now handled where it belongs, in _still_following: the check no
+        longer asks "are we at the bottom" (which content growth falsifies) but
+        "has the reader moved away from where WE last scrolled" (which only a
+        human can do). Both fixes were needed -- deferring the mount-time scroll
+        until after measurement, AND anchoring the follow test -- and shipping
+        only the first one left the bug looking untouched.
         """
         # The setting gates the STREAM path only. `only_if_following` is what the
         # stream passes, so guarding on it keeps discrete events (new bubble,
@@ -3100,9 +3143,12 @@ class LiteTUI(App):
         if only_if_following and not self.settings.autoscroll:
             return
         log = self.query_one("#chat-log")
-        if only_if_following and not _at_bottom(log):
+        if only_if_following and not self._still_following(log):
             return
         log.scroll_end(animate=False)
+        # Remember where we put it. This is the whole fix: the next follow check
+        # compares against THIS, not against a bottom that keeps moving away.
+        self._follow_anchor = log.scroll_y
 
     # ── Image handling ───────────────────────────────────────────
 
