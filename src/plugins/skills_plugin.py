@@ -6,8 +6,14 @@ owns the two ways discovered skills reach the model: the loader tool and
 the index that rides the system prompt.
 """
 import skills as skills_mod
+from picker import PickerScreen
 import paths
 from plugins import PROMPT_ORDER, PluginManifest
+
+
+#: Picker row id for "show me the old text report". Not a skill name, and
+#: deliberately unmatchable as one.
+_REPORT_ROW = "\u2500report\u2500"
 
 
 def _cmd_skills(app, name: str, arg: str) -> None:
@@ -27,7 +33,80 @@ def _cmd_skills(app, name: str, arg: str) -> None:
             "`skill` tool is not offered to the model."
         )
         return
-    app._system(_skills_report(app, base))
+    if not app.skills:
+        # Nothing to pick. The report is the useful answer here: it says where
+        # it looked, which is the whole question when the list is empty.
+        app._system(_skills_report(app, base))
+        return
+
+    # A picker, not eighty lines of transcript. The full report stays one
+    # keystroke away as the picker's own first row, so nothing is lost --
+    # it is just no longer the default way to answer "what skills do I have".
+    skipped = _skipped_lines(app, base)
+    if skipped:
+        # A folder that produced no skill is the one thing a picker cannot
+        # show, because it has no row. Say it out loud, briefly.
+        app._system("\n".join(x for x in skipped if x.strip()))
+
+    rows = [(_REPORT_ROW, "Full report  —  roots, libraries, token cost, skipped folders")]
+    for s in sorted(app.skills, key=lambda s: s.name.lower()):
+        desc = (s.description or "(no description)").replace("\n", " ")
+        rows.append((s.name, f"{s.name}  [{s.source}]  —  {desc[:110]}"))
+
+    def _picked(choice: str | None) -> None:
+        if not choice:
+            return
+        if choice == _REPORT_ROW:
+            app._system(_skills_report(app, base))
+            return
+        body = skills_mod.load(app.skills, choice)
+        app._system(f"[skill {choice!r} — {len(body):,} chars as the model sees it]\n\n{body}")
+
+    app.push_screen(
+        PickerScreen(
+            f"Skills ({len(app.skills)})",
+            rows,
+            hint="↑↓ move · Enter or click to read one · Esc to cancel",
+        ),
+        _picked,
+    )
+
+
+def _skipped_lines(app, base) -> list[str]:
+    """Local folders that produced no skill, each with the REAL reason.
+
+    This used to report every one of them as "no SKILL.md inside" — inferred
+    from `name not in loaded` and never checked. A folder created after the app
+    booted has a SKILL.md and is simply not loaded yet, so the message named a
+    cause that was not merely unverified but false, and sent the reader off to
+    write a file that was already there.
+
+    Discovery happens once at startup, which is the actual answer in that case,
+    and it is the one thing the old message could never say.
+    """
+    if not base.is_dir():
+        return []
+    loaded = {s.path.parent.name for s in app.skills}
+    unloaded = [d for d in sorted(base.iterdir()) if d.is_dir() and d.name not in loaded]
+    if not unloaded:
+        return []
+
+    missing = [d for d in unloaded if not (d / "SKILL.md").is_file()]
+    present = [d for d in unloaded if (d / "SKILL.md").is_file()]
+
+    lines: list[str] = [""]
+    if present:
+        lines.append(
+            f"  {len(present)} local folder(s) have a SKILL.md but are NOT loaded — "
+            "skills are discovered at startup, so restart to pick them up:"
+        )
+        lines.extend(f"    {d.name}/" for d in present)
+    if missing:
+        if present:
+            lines.append("")
+        lines.append(f"  {len(missing)} local folder(s) skipped — no SKILL.md inside:")
+        lines.extend(f"    {d.name}/" for d in missing)
+    return lines
 
 
 def _skills_report(app, base) -> str:
@@ -63,17 +142,7 @@ def _skills_report(app, base) -> str:
         for s in group:
             lines.append(f"  {s.name}  —  {s.description or '(no description)'}")
 
-    # A folder without a SKILL.md is a scratch folder, not an error —
-    # but a MISNAMED one looks identical, so name what was passed over.
-    if base.is_dir():
-        loaded = {s.path.parent.name for s in app.skills}
-        skipped = [d.name for d in sorted(base.iterdir())
-                   if d.is_dir() and d.name not in loaded]
-        if skipped:
-            lines.append("")
-            lines.append(f"  {len(skipped)} local folder(s) skipped — no SKILL.md inside:")
-            for d in skipped:
-                lines.append(f"    {d}/")
+    lines.extend(_skipped_lines(app, base))
 
     lines.append("")
     lines.append(

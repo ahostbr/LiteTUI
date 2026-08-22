@@ -82,17 +82,28 @@ async def test_slash_skills_names_what_was_SKIPPED():
 
     a = _app_with(root)
     msgs: list[str] = []
+    pushed: list = []
     async with a.run_test() as pilot:
         await pilot.pause()
         a._system = lambda s: msgs.append(s)
+        a.push_screen = lambda screen, cb=None: pushed.append((screen, cb))
         a._handle_command("/skills")
         await pilot.pause()
 
-    out = msgs[-1]
-    assert "good-one" in out, "the loaded skill was not listed"
+    # THE POINT OF THIS TEST IS UNCHANGED: a folder that produced no skill must
+    # be REPORTED, not silently passed over. It is still said out loud, because
+    # a picker cannot show a folder that has no row.
+    out = "\n".join(msgs)
     assert "typo-folder" in out, "a SKIPPED folder was not reported — the bug"
     assert "another-mistake" in out
     assert "no SKILL.md" in out, "skipped folders were listed without saying why"
+
+    # The LISTING moved into a picker (2026-08-22) — /skills answered "what do
+    # I have" with ~80 lines of transcript. So the loaded skill is asserted on
+    # its new surface rather than dropped from the test.
+    assert pushed, "/skills no longer opens a picker"
+    ids = [row_id for row_id, _label in pushed[0][0]._rows]
+    assert "good-one" in ids, "the loaded skill was not listed in the picker"
 
 
 @pytest.mark.asyncio
@@ -125,12 +136,21 @@ async def test_an_empty_directory_says_what_it_expects():
 
     a = _app_with(root)
     msgs: list[str] = []
+    pushed: list = []
     async with a.run_test() as pilot:
         await pilot.pause()
         a._system = lambda s: msgs.append(s)
+        a.push_screen = lambda screen, cb=None: pushed.append((screen, cb))
         a._handle_command("/skills")
         await pilot.pause()
-    out = msgs[-1]
+        # The explanation now lives in the full report, which is the picker's
+        # first row rather than the default wall of text. Still one keystroke
+        # away, which is what this test has always been about: "0 skills" with
+        # no explanation sends you to read the source.
+        assert pushed, "/skills no longer opens a picker"
+        pushed[0][1](pushed[0][0]._rows[0][0])
+        await pilot.pause()
+    out = "\n".join(msgs)
     assert "SKILL.md" in out, "an empty directory did not say what it wants"
 
 

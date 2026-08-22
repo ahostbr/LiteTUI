@@ -265,7 +265,12 @@ def load(skills: list[Skill], name: str) -> str:
     model's next move after a miss is always "what else is there?", and making
     it guess again is the expensive path.
     """
-    want = (name or "").strip().lower()
+    # A leading slash is how every skill is WRITTEN and spoken -- /ls-mark,
+    # /library, /arch -- so it is what a user and a model both type. Without
+    # this, "/ls-mark" failed against a list that visibly contained "ls-mark",
+    # which reads as the skill being missing rather than the name being
+    # mispunctuated. The command surface and the tool surface both land here.
+    want = (name or "").strip().lower().lstrip("/")
     if not want:
         return "[error] skill: a name is required"
     for s in skills:
