@@ -228,7 +228,16 @@ def _at_bottom(widget, slack: int = 2) -> bool:
 
 
 class CancelToolButton(Static):
-    """Top-left header control: kill the in-flight bash TREE, keep the turn.
+    """Kill ONE running tool's bash TREE, keep the turn. Mounted beside that
+    tool's own elapsed timer.
+
+    It used to float on the header layer at the top-left, which said nothing
+    about WHICH tool it would kill -- the control and the thing it acts on were
+    at opposite ends of the screen. It is now mounted directly after the
+    ToolMessage it belongs to, next to the timer that is counting that call up.
+
+    One instance per in-flight tool, so it carries a CLASS, not an id: an id
+    must be unique and there can be several tools running at once.
 
     Hidden unless a cancellable subprocess is actually running — a control
     that is visible and does nothing is a lie, and this repo has shipped that
@@ -237,7 +246,7 @@ class CancelToolButton(Static):
     """
 
     def __init__(self) -> None:
-        super().__init__(" ✕ cancel tool ", id="cancel-tool")
+        super().__init__(" ✕ cancel tool ", classes="cancel-tool")
 
     def on_click(self) -> None:
         self.app.action_cancel_tool()
@@ -778,9 +787,11 @@ class LiteTUI(App):
         layers: base overlay;
     }
 
-    #cancel-tool {
-        layer: overlay;
-        offset: 4 0;
+    .cancel-tool {
+        /* In the flow, directly under its tool. .tool-msg is `margin: 0 2;
+           padding: 0 2;` and the elapsed line is indented two more, so 4
+           lands the control under the timer rather than under the margin. */
+        margin: 0 0 0 4;
         width: auto;
         height: 1;
         display: none;
@@ -788,11 +799,11 @@ class LiteTUI(App):
         color: $text;
     }
 
-    #cancel-tool:hover {
+    .cancel-tool:hover {
         background: $error 70%;
     }
 
-    #cancel-tool.visible {
+    .cancel-tool.visible {
         display: block;
     }
 
@@ -1357,6 +1368,7 @@ class LiteTUI(App):
         self._elapsed_body = None            # AnswerBody in its pre-token phase
         self._elapsed_body_t0: float = 0.0
         self._inflight_tools: list = []      # ToolMessages awaiting their result
+        self._cancel_buttons: dict = {}      # ToolMessage -> its CancelToolButton
         #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
@@ -1470,9 +1482,8 @@ class LiteTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        # Overlaid on the header row, beside the palette icon. A Header cannot
-        # take children, so this floats on its own layer at the same y.
-        yield CancelToolButton()
+        # No cancel control here any more: it is mounted next to the tool it
+        # kills, by _tool_begin. See CancelToolButton.
         yield VerticalScroll(id="chat-log")
         yield Static(
             "  Image attached — Ctrl+X to remove", id="image-indicator"
@@ -2894,6 +2905,18 @@ class LiteTUI(App):
     def _tool_begin(self, tool) -> None:
         if tool not in self._inflight_tools:
             self._inflight_tools.append(tool)
+            # Mount the cancel control immediately after THIS tool, so it sits
+            # against the timer counting this call up. Best-effort: a failure to
+            # mount a convenience control must never take down the tool call it
+            # was decorating.
+            try:
+                parent = tool.parent
+                if parent is not None:
+                    btn = CancelToolButton()
+                    self._cancel_buttons[tool] = btn
+                    parent.mount(btn, after=tool)
+            except Exception:
+                self._cancel_buttons.pop(tool, None)
         if self._elapsed_task is None or self._elapsed_task.done():
             try:
                 self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
@@ -2903,6 +2926,12 @@ class LiteTUI(App):
     def _tool_end(self, tool) -> None:
         if tool in self._inflight_tools:
             self._inflight_tools.remove(tool)
+        btn = self._cancel_buttons.pop(tool, None)
+        if btn is not None:
+            try:
+                btn.remove()
+            except Exception:
+                pass
 
     def _thinking_done(self) -> None:
         """The trace stopped streaming: the first content token, the
@@ -2935,9 +2964,9 @@ class LiteTUI(App):
             # a live subprocess is cancellable, and a button shown for a tool
             # with nothing to kill would be a control that does nothing.
             try:
-                self.query_one(CancelToolButton).set_class(
-                    ttyguard.CANCELLABLE["proc"] is not None, "visible"
-                )
+                live = ttyguard.CANCELLABLE["proc"] is not None
+                for btn in self.query(CancelToolButton):
+                    btn.set_class(live, "visible")
             except Exception:
                 pass
             if active:
