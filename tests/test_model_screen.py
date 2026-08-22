@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from textual.widgets import Input, Select, TextArea
+from textual.widgets import Input, Select
 
 import app as app_mod
 import llm_backend
@@ -116,7 +116,7 @@ async def test_invalid_schema_is_refused_with_dicts_untouched(monkeypatch):
     async with a.run_test() as pilot:
         a.push_screen(ModelConfigScreen("m"))
         await pilot.pause()
-        a.screen.query_one("#mc-json-schema", TextArea).text = "{not json"
+        a.screen.query_one("#mc-json-schema", Input).value = "{not json"
         a.screen.action_apply()
         await pilot.pause()
     assert a.settings.model_infer_overrides == {}, "a refused apply must change nothing"

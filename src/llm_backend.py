@@ -201,6 +201,7 @@ _MIN_BYTES = 10 * 1024 * 1024
 _NON_CHAT_ARCHS = frozenset({
     "clip", "whisper", "bert", "nomic-bert", "jina-bert-v2",
     "t5encoder", "wavtokenizer-dec", "kokoro", "mimi", "snac-dec", "csm",
+    "flux",   # image-diffusion gguf — showed up in /model on the live walk
 })
 
 

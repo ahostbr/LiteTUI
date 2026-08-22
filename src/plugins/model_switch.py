@@ -23,7 +23,7 @@ from textual.binding import Binding
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, Select, Static, TabbedContent, TabPane, TextArea
+from textual.widgets import Input, Label, Select, Static, TabbedContent, TabPane
 
 import llm_backend
 import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
@@ -350,9 +350,15 @@ class ModelConfigScreen(ModalScreen[None]):
                                 note="via chat_template_kwargs — model must support it",
                             )
                         yield Label("Structured Output (JSON schema)", classes="set-label")
-                        yield TextArea(
-                            infer_cfg.get("json_schema") or "",
+                        # An Input, not a TextArea: the TextArea would not take
+                        # focus from tab or click in the live walk (schema entry
+                        # was simply impossible), and a schema is one line of
+                        # JSON anyway. Revisit if multiline editing is ever real.
+                        yield Input(
+                            value=infer_cfg.get("json_schema") or "",
+                            placeholder="paste or type a JSON schema — empty = off",
                             id="mc-json-schema",
+                            classes="set-input",
                         )
                         yield Static(
                             "Empty = off. Invalid JSON is refused at apply.",
@@ -440,7 +446,7 @@ class ModelConfigScreen(ModalScreen[None]):
             load_cfg = self._collect_group("ld", _LOAD_FIELDS, self._load_cfg())
             infer_fields = _INFER_FIELDS + [("enable_thinking", "", "tri")]
             infer_cfg = self._collect_group("inf", infer_fields, self._infer_cfg())
-            schema_text = self.query_one("#mc-json-schema", TextArea).text.strip()
+            schema_text = str(self.query_one("#mc-json-schema", Input).value).strip()
             if schema_text:
                 json.loads(schema_text)   # refuse invalid JSON HERE, by name
                 infer_cfg["json_schema"] = schema_text

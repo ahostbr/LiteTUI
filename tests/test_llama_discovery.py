@@ -92,6 +92,7 @@ def test_non_chat_architectures_are_skipped_by_header_not_name(tmp_path):
     _gguf_with_arch(root / "vocoder.gguf",
                     "this model cannot be used as LLM, use it via --model-vocoder")
     _gguf_with_arch(root / "chatty.gguf", "qwen35")
+    _gguf_with_arch(root / "flux1-dev.gguf", "flux")   # the live-walk picker pollution
     rows = llm_backend.scan_models(_settings(root))
     assert [r.key for r in rows] == ["chatty"]
 
