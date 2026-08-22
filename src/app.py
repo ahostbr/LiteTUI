@@ -1863,7 +1863,12 @@ class LiteTUI(App):
             return ""
         p = self.convo_dir / name
         try:
-            text = p.read_text(encoding="utf-8").strip()
+            # errors="replace" ON PURPOSE: a store file that carries a stray
+            # non-UTF-8 byte (e.g. a cp1252 em dash, 0x97, written by an
+            # editor that never declared its encoding) must not be able to
+            # raise UnicodeDecodeError out of the worker and kill _compact.
+            # A bad byte degrades to U+FFFD instead of crashing the app.
+            text = p.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             return ""
         if len(text) > cap:
