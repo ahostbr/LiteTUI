@@ -57,6 +57,7 @@ import asyncio
 import threading
 from dataclasses import dataclass, field
 from typing import Any
+import tool_schemas
 
 from rich.text import Text
 from textual import events, on
@@ -71,72 +72,7 @@ MAX_OPTIONS = 10
 
 FOOTER_HINT = "Enter select · Tab/Arrows navigate · Esc cancel"
 
-ASK_USER_QUESTION_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "ask_user_question",
-        "description": (
-            "Ask Ryan one or more multiple-choice questions and get his answers "
-            "back through a checkbox widget. Pass a `questions` list; each "
-            "question needs a short `label` (its name in the step bar), the "
-            "`question` text, and `options` (a list of {title, description?}). "
-            "Options are MULTI-SELECT: any number of them can be correct — "
-            "include every plausible one. The widget adds a free-text "
-            "'Type something' note field to each question automatically. "
-            "Ryan can jump between questions and tick/untick options, then "
-            "either Submit (the full answer state returns) or press "
-            "'Chat about this' (whatever he has entered so far returns and he "
-            "wants to discuss first — Esc cancels with no answers). Use this "
-            "when the next step depends on a human decision: design choices, "
-            "ambiguous specs, anything where asking beats guessing."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "questions": {
-                    "type": "array",
-                    "description": f"1-{MAX_QUESTIONS} questions, in the order to present them.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "label": {
-                                "type": "string",
-                                "description": "Short name in the step bar (a few words max).",
-                            },
-                            "question": {
-                                "type": "string",
-                                "description": "The full question text.",
-                            },
-                            "options": {
-                                "type": "array",
-                                "description": (
-                                    f"The multiple-choice options (max {MAX_OPTIONS}). "
-                                    "Multi-select: any number can be correct."
-                                ),
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "title": {
-                                            "type": "string",
-                                            "description": "The option text (one line).",
-                                        },
-                                        "description": {
-                                            "type": "string",
-                                            "description": "Optional grey detail after the title.",
-                                        },
-                                    },
-                                    "required": ["title"],
-                                },
-                            },
-                        },
-                        "required": ["label", "question", "options"],
-                    },
-                },
-            },
-            "required": ["questions"],
-        },
-    },
-}
+ASK_USER_QUESTION_TOOL_SPEC = tool_schemas.load("ask_user_question")
 
 
 # ── State ──────────────────────────────────────────────────────────

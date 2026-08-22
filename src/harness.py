@@ -30,6 +30,7 @@ import ttyguard
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+import tool_schemas
 
 INBOX_ROOT = Path.home() / ".liteharness" / "inbox"
 NEW, CUR, DONE = INBOX_ROOT / "new", INBOX_ROOT / "cur", INBOX_ROOT / "done"
@@ -381,38 +382,7 @@ def format_message(msg: dict) -> str:
 # as shell commands AND still reports success, so a model that puts a code fence
 # in a message would silently execute it.
 
-HARNESS_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "harness",
-        "description": (
-            "Talk to the LiteHarness agent fleet. Actions: "
-            "whoami — your agent id, name, tier and whether registration succeeded; "
-            "discover — which agents are online right now; "
-            "send — message another agent (requires `to` and `body`); "
-            "check — poll your inbox immediately instead of waiting for the monitor."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["whoami", "discover", "send", "check"],
-                    "description": "Which fleet operation to perform",
-                },
-                "to": {
-                    "type": "string",
-                    "description": "Target agent id, from discover (send only)",
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Message text to deliver (send only)",
-                },
-            },
-            "required": ["action"],
-        },
-    },
-}
+HARNESS_TOOL_SPEC = tool_schemas.load("harness")
 
 
 def discover() -> str:

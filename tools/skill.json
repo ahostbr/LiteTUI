@@ -1,0 +1,19 @@
+{
+  "type": "function",
+  "function": {
+    "name": "skill",
+    "description": "Load the full instructions for a named skill. The system prompt lists only each skill's name and one-line description; call this to read the actual procedure before following it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Skill name from the Skills list"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  }
+}

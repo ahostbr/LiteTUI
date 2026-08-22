@@ -1,0 +1,23 @@
+{
+  "type": "function",
+  "function": {
+    "name": "bash",
+    "description": "Execute a shell command in the current working directory (bash on Unix, cmd.exe on Windows). ON WINDOWS, PREFER THE `powershell` TOOL — this one runs cmd.exe, where sleep, grep, sed and input redirection are all unavailable. Returns stdout and stderr, truncated to the last 2000 lines or 50KB. Non-zero exit codes are reported. Optionally provide a timeout in seconds (default 120).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute"
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Timeout in seconds (default 120)"
+        }
+      },
+      "required": [
+        "command"
+      ]
+    }
+  }
+}

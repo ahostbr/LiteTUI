@@ -1,0 +1,19 @@
+{
+  "type": "function",
+  "function": {
+    "name": "view_image",
+    "description": "Look at an image file on disk. Give an absolute path. The image is attached to the conversation and you will see it in the next message -- the result of this call is only a confirmation, not the picture.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Absolute path to a png/jpg/gif/webp/bmp file"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  }
+}

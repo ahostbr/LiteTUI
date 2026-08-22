@@ -1,0 +1,19 @@
+{
+  "type": "function",
+  "function": {
+    "name": "web_fetch",
+    "description": "Fetch a URL over HTTP(S) and return its body as plain text (HTML converted to text, capped at 20000 chars). Use for web pages, docs, and JSON APIs.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Absolute http(s) URL to fetch"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  }
+}

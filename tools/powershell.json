@@ -1,0 +1,23 @@
+{
+  "type": "function",
+  "function": {
+    "name": "powershell",
+    "description": "Run a PowerShell command in the current working directory (via {exe}). PREFER THIS OVER bash ON WINDOWS: bash falls through to cmd.exe here, which has no sleep, no grep, no sed, and breaks on input redirection. Native exit codes are preserved exactly; a failing cmdlet reports 1. Returns stdout and stderr, truncated to the last 2000 lines or 50KB. Optionally provide a timeout in seconds (default 120).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "PowerShell to execute"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Seconds before it is killed"
+        }
+      },
+      "required": [
+        "command"
+      ]
+    }
+  }
+}

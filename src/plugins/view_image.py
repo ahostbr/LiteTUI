@@ -9,28 +9,9 @@ door the paste path uses. Returning base64 here would burn a megabyte of
 context to show the model nothing.
 """
 from plugins import PluginManifest
+import tool_schemas
 
-VIEW_IMAGE_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "view_image",
-        "description": (
-            "Look at an image file on disk. Give an absolute path. The image is "
-            "attached to the conversation and you will see it in the next message "
-            "-- the result of this call is only a confirmation, not the picture."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Absolute path to a png/jpg/gif/webp/bmp file",
-                }
-            },
-            "required": ["path"],
-        },
-    },
-}
+VIEW_IMAGE_TOOL_SPEC = tool_schemas.load("view_image")
 
 
 def _register(ctx) -> None:

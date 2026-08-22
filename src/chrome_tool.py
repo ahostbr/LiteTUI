@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 import ttyguard
+import tool_schemas
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root; src/ is below it
 # Lives under tools/ since 2026-08-20. The gate below is
@@ -52,47 +53,7 @@ _RELAY_HINT = (
     "this same tool with action=\"start\", then retry.]"
 )
 
-CHROME_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "chrome",
-        "description": (
-            "Drive Ryan's real Chrome browser. Actions: start / stop / status "
-            "(the relay this tool talks through) - ping (is the extension "
-            "answering) - tabs (list open tabs) - nav (needs url, optional "
-            "new_tab) - text (page text, optional css selector) - click (css "
-            "selector, or x and y) - write_text (type into a field: needs text, "
-            "optional selector, clear, enter) - shot (screenshot to a file). "
-            "shot returns a PATH, not the picture — open it with the view_image "
-            "tool to actually see it. "
-            "A connection error when nothing is running is the normal idle state, "
-            "not a broken page — call action=start and retry. "
-            "write_text with no selector types into whatever is focused, so "
-            "click then write_text works on fields with no stable selector."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": list(ACTIONS)},
-                "url": {"type": "string", "description": "URL for nav"},
-                "new_tab": {"type": "boolean", "description": "nav: open in a new tab"},
-                "selector": {"type": "string", "description": "CSS selector for text/click"},
-                "x": {"type": "integer", "description": "click by coordinate instead of selector"},
-                "y": {"type": "integer", "description": "click by coordinate instead of selector"},
-                "text": {"type": "string", "description": "write_text: what to type"},
-                "clear": {
-                    "type": "boolean",
-                    "description": "write_text: replace the field (default true); false appends",
-                },
-                "enter": {
-                    "type": "boolean",
-                    "description": "write_text: press Enter afterwards (submits most forms)",
-                },
-            },
-            "required": ["action"],
-        },
-    },
-}
+CHROME_TOOL_SPEC = tool_schemas.load("chrome")
 
 
 # The previous wording opened "the relay is running but ..." — and this same

@@ -30,6 +30,7 @@ import urllib.request
 
 import seat_guard
 import ttyguard
+import tool_schemas
 
 IMAGE_URL = os.environ.get("LITEIMAGE_API_URL", "http://127.0.0.1:7426").rstrip("/")
 SOUND_URL = os.environ.get("LITESOUND_API_URL", "http://127.0.0.1:7427").rstrip("/")
@@ -41,53 +42,7 @@ QUICK_TIMEOUT = 10
 
 _SOUND_MODES = ("music", "song", "sfx", "ambient")
 
-STUDIO_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "studio",
-        "description": (
-            "Generate media with the LOCAL Lite studio apps — no API keys, no "
-            "cloud, runs on this machine's GPU.\n"
-            "app=image (LiteImage): actions status | generate (prompt, "
-            "width/height/steps optional) | models | cancel. Generation is "
-            "synchronous — the reply carries the saved file path.\n"
-            "app=sound (LiteSound): actions status | generate (mode = music|"
-            "song|sfx|ambient; prompt and/or lyrics; duration seconds) | "
-            "job (job_id) | jobs | cancel (job_id) | gallery | backends. "
-            "Generation is ASYNC: generate returns a job_id — poll with "
-            "action=job until it reports done, then the file path is in the "
-            "result. Do not spam polls; every few seconds is plenty.\n"
-            "app=model (LiteModeler, prompt-to-3D): actions status | config | "
-            "generate (prompt) | families — delegated to the `lst` CLI.\n"
-            "image and sound need their app RUNNING (status says). If one is "
-            "not running, tell the human to open it — do not retry blind.\n"
-            "VRAM: on generate actions this tool SUSPENDS your own model in "
-            "LM Studio (the GPU is needed for the generation), runs the job "
-            "to completion, then reloads you at the same context config. You "
-            "will not notice the gap — but your FIRST reply afterwards "
-            "re-reads the whole conversation (KV cache is gone), so expect a "
-            "slow first token and say so if the human wonders. Sound "
-            "generation is therefore handled to completion INSIDE the call — "
-            "no polling needed when it returns."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "app": {"type": "string", "enum": ["image", "sound", "model"]},
-                "action": {"type": "string"},
-                "prompt": {"type": "string"},
-                "mode": {"type": "string", "description": "sound: music|song|sfx|ambient"},
-                "lyrics": {"type": "string", "description": "sound: song lyrics"},
-                "duration": {"type": "number", "description": "sound: seconds"},
-                "job_id": {"type": "string", "description": "sound: job to poll/cancel"},
-                "width": {"type": "number"},
-                "height": {"type": "number"},
-                "steps": {"type": "number"},
-            },
-            "required": ["app", "action"],
-        },
-    },
-}
+STUDIO_TOOL_SPEC = tool_schemas.load("studio")
 
 
 def _http(method: str, url: str, body: dict | None = None, timeout: int = QUICK_TIMEOUT) -> dict:

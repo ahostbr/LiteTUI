@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 import ttyguard
+import tool_schemas
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root; src/ is below it
 # Lives under tools/ since 2026-08-20. The gate below is
@@ -47,44 +48,7 @@ ACTIONS = _POINT_ACTIONS + _TEXT_ACTIONS + _BARE_ACTIONS + (
     "keypress", "activate", "launch", "screenshot",
 )
 
-PCCONTROL_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "pccontrol",
-        "description": (
-            "Control the Windows desktop: mouse, keyboard, windows, screenshots. "
-            "Actions: click/doubleclick/rightclick (need x, y) - marker draws a "
-            "labelled ring WITHOUT clicking, use it to check your aim first - "
-            "type/paste/settext (need text) - keypress (key) - activate "
-            "(pid or window title) - launch (path) - windows - status - screenshot "
-            "(monitor). "
-            "TWO THINGS THAT WILL BITE YOU: (1) a FAILED activate does not stop a "
-            "later paste, it types into whatever window has focus, so check the "
-            "result of activate before doing anything else; (2) paste reports how "
-            "many characters it sent - read that number and do NOT press Enter "
-            "unless it matches what you meant to send. "
-            "Coordinates address windows; titles often cannot, because several "
-            "windows can share one process. Prefer screenshot then marker then "
-            "click over activate-by-title."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": list(ACTIONS)},
-                "x": {"type": "integer", "description": "X pixel (click/marker)"},
-                "y": {"type": "integer", "description": "Y pixel (click/marker)"},
-                "text": {"type": "string", "description": "Text for type/paste/settext"},
-                "key": {"type": "string", "description": "Key for keypress, e.g. Enter, ctrl+c"},
-                "target": {"type": "string", "description": "PID or window title for activate; path for launch"},
-                "monitor": {"type": "integer", "description": "Monitor index for --mon or screenshot"},
-                "label": {"type": "string", "description": "Text under a marker"},
-                "color": {"type": "string", "description": "Marker colour (name or #RRGGBB)"},
-                "ms": {"type": "integer", "description": "Marker lifetime in ms"},
-            },
-            "required": ["action"],
-        },
-    },
-}
+PCCONTROL_TOOL_SPEC = tool_schemas.load("pccontrol")
 
 
 def _int(value, field: str) -> tuple[int | None, str | None]:

@@ -19,6 +19,7 @@ from pathlib import Path
 import json
 import tempfile
 import time
+import tool_schemas
 
 SKILLS_DIR_NAME = "skills"
 MAX_SKILL_BYTES = 60_000
@@ -361,21 +362,4 @@ def load(skills: list[Skill], name: str) -> str:
     return f"[error] no skill named {name!r}. Available: {have}"
 
 
-SKILL_TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "skill",
-        "description": (
-            "Load the full instructions for a named skill. The system prompt lists "
-            "only each skill's name and one-line description; call this to read the "
-            "actual procedure before following it."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Skill name from the Skills list"}
-            },
-            "required": ["name"],
-        },
-    },
-}
+SKILL_TOOL_SPEC = tool_schemas.load("skill")

@@ -19,6 +19,7 @@ from pathlib import Path
 import ttyguard
 from fmt import fmt_dur
 from plugins import PluginManifest
+import tool_schemas
 
 TOOL_MAX_LINES = 2000
 TOOL_MAX_BYTES = 50 * 1024  # 50KB
@@ -314,114 +315,23 @@ def tool_web_fetch(args: dict) -> str:
 
 
 def powershell_spec() -> dict:
-    """Built at registration so the description names the interpreter that was
-    ACTUALLY found. Hardcoding "PowerShell 7" would be a fact with no code
-    reading it — the drift class that had the prompt claiming four tools."""
-    exe = powershell_exe() or "powershell"
-    return {
-        "type": "function",
-        "function": {
-            "name": "powershell",
-            "description": (
-                f"Run a PowerShell command in the current working directory (via {exe}). "
-                "PREFER THIS OVER bash ON WINDOWS: bash falls through to cmd.exe here, "
-                "which has no sleep, no grep, no sed, and breaks on input redirection. "
-                "Native exit codes are preserved exactly; a failing cmdlet reports 1. "
-                "Returns stdout and stderr, truncated to the last 2000 lines or 50KB. "
-                "Optionally provide a timeout in seconds (default 120)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "PowerShell to execute"},
-                    "timeout": {"type": "integer", "description": "Seconds before it is killed"},
-                },
-                "required": ["command"],
-            },
-        },
-    }
+    """THE ONE SCHEMA THAT IS STILL DERIVED, and the reason templating exists.
+
+    tools/powershell.json carries `{exe}`, filled here with the interpreter
+    ACTUALLY found on this box — pwsh or powershell. Freezing the resolved name
+    into the file would make it wrong on any machine with the other one, which
+    is the same drift moving schemas out of the source is meant to end. The
+    file stays editable; the machine-specific half stays computed."""
+    return tool_schemas.load("powershell", exe=powershell_exe() or "powershell")
 
 
-BASH_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "bash",
-        "description": (
-            "Execute a shell command in the current working directory "
-            "(bash on Unix, cmd.exe on Windows). ON WINDOWS, PREFER THE "
-            "`powershell` TOOL — this one runs cmd.exe, where sleep, grep, sed "
-            "and input redirection are all unavailable. Returns stdout and stderr, "
-            "truncated to the last 2000 lines or 50KB. Non-zero exit codes are reported. "
-            "Optionally provide a timeout in seconds (default 120)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "Shell command to execute"},
-                "timeout": {"type": "number", "description": "Timeout in seconds (default 120)"},
-            },
-            "required": ["command"],
-        },
-    },
-}
+BASH_SPEC = tool_schemas.load("bash")
 
-READ_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "read",
-        "description": (
-            "Read the contents of a text file (relative or absolute path). "
-            "Output is truncated to 2000 lines or 50KB (whichever is hit first). "
-            "Use offset/limit for large files and continue with offset when truncated."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file to read (relative or absolute)"},
-                "offset": {"type": "number", "description": "Line number to start reading from (1-indexed)"},
-                "limit": {"type": "number", "description": "Maximum number of lines to read"},
-            },
-            "required": ["path"],
-        },
-    },
-}
+READ_SPEC = tool_schemas.load("read")
 
-WRITE_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "write",
-        "description": (
-            "Write content to a file, creating parent directories as needed. "
-            "Overwrites the file if it exists. Use for new files or full rewrites."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file to write (relative or absolute)"},
-                "content": {"type": "string", "description": "Content to write to the file"},
-            },
-            "required": ["path", "content"],
-        },
-    },
-}
+WRITE_SPEC = tool_schemas.load("write")
 
-WEB_FETCH_SPEC = {
-    "type": "function",
-    "function": {
-        "name": "web_fetch",
-        "description": (
-            "Fetch a URL over HTTP(S) and return its body as plain text "
-            "(HTML converted to text, capped at 20000 chars). Use for web pages, docs, and JSON APIs."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "Absolute http(s) URL to fetch"},
-            },
-            "required": ["url"],
-        },
-    },
-}
+WEB_FETCH_SPEC = tool_schemas.load("web_fetch")
 
 
 def _register(ctx) -> None:
