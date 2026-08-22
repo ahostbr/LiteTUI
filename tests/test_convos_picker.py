@@ -99,3 +99,19 @@ async def test_convos_with_no_savings_stays_flat(tmp_path) -> None:
         assert a.screen is base, (
             "an empty store must not open an empty modal - say so instead"
         )
+
+
+@pytest.mark.asyncio
+async def test_broken_saves_badge_the_picker_title(tmp_path) -> None:
+    seed_convo()
+    a = make_app()
+    a._persist_error = "OSError: simulated disk failure"
+    async with a.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        a._handle_command("/convos")
+        await pilot.pause()
+        assert isinstance(a.screen, PickerScreen)
+        assert "SAVING IS BROKEN" in a.screen._title, (
+            "a broken save must be re-announced on the surface the "
+            "user is looking at - _note_persist_error never repeats"
+        )
