@@ -1,0 +1,15 @@
+{
+  "role": "router",
+  "max_instances": 2,
+  "models_autoload": false,
+  "model_alias": "llama-server",
+  "model_path": "none",
+  "default_generation_settings": {
+    "params": null,
+    "n_ctx": 0
+  },
+  "ui_settings": {},
+  "webui_settings": {},
+  "build_info": "b9360-6b4e4bd58",
+  "cors_proxy_enabled": false
+}

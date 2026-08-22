@@ -13,6 +13,33 @@ everything about them that is NOT the chat stream:
     discovered on the box. Model list/load/unload/switch are HTTP calls; the
     per-model Load-tab settings live in the ini.
 
+🔴 THE LLAMA BACKEND SPEAKS TWO DIALECTS, BECAUSE llama-server IS TWO SERVERS.
+Router mode is what we SPAWN. A ``llama-server -m <gguf>`` — SINGLE-MODEL mode
+— is what LiteSuite runs, and it is the default attach target
+(``settings.llama_attach_hosts`` → :8088), so the shape below is not an edge
+case: it is what an attached session actually meets. Measured on the installed
+binary (D12, 2026-08-22; fixtures in ``tests/fixtures/llama_single_model_*``,
+re-derivable with ``e2e/llama_shapes_e2e.py``):
+
+  * ``GET /models`` carries an OLLAMA-shaped ``models`` array beside ``data``.
+    The ``data`` entries hold ``id``/``meta`` and have NO ``status`` and NO
+    ``architecture`` — the two keys router parsing reads. A resident, serving
+    model therefore parses as *not loaded* unless the shape is known.
+  * ``id`` is the model ALIAS, which defaults to the GGUF's file name WITH the
+    ``.gguf`` suffix, so it never equals discovery's ``path.stem``.
+  * ``GET /props`` is the authority for a single-model server: ``model_alias``,
+    ``model_path``, ``modalities.{vision,audio}``,
+    ``default_generation_settings.n_ctx`` (the LIVE window, not the ceiling).
+  * ``POST /models/load`` and ``POST /models/unload`` are **404 File Not
+    Found**. The routes do not exist. Such a server serves exactly one model
+    for its whole life and ignores the request's ``model`` field entirely.
+
+The discriminator is the server's own answer: router ``/props`` says
+``"role": "router"`` and ``"model_path": "none"``; single-model ``/props`` has
+no ``role`` and a real ``model_path``. It is probed ONCE per connect
+(``_probe_shape``) and the whole class keys off it — a single-model server is
+always ``attached``, is never managed, and lists exactly one loaded row.
+
 Everything here was verified against the INSTALLED binary (cuda:b9360,
 2026-08-21 spike) rather than trusted from blog posts:
 
@@ -32,7 +59,13 @@ Everything here was verified against the INSTALLED binary (cuda:b9360,
 
 The no-load-on-connect law (app.py's _connect) extends here verbatim: the
 router is started with ``--no-models-autoload`` and NOTHING in this module
-loads weights except an explicit load()/apply_load_settings() call.
+loads weights except an explicit load()/apply_load_settings() call —
+``ensure_chat_ready`` included: it reads, waits, and refuses, but never loads.
+
+``ensure_chat_ready(key)`` is the one query a caller must ask before opening a
+chat stream (D2/D11). Without it the router's raw ``400 model is not loaded``
+reaches the message widget verbatim; with it the caller gets either a turn
+that can go out, or a BackendError already phrased for a human.
 
 This module never imports app (re-accretion gate) and spawns children only
 through ttyguard (envelope sweep rglobs src/**).
@@ -415,13 +448,27 @@ class _Owned:
     log_file: object
 
 
+#: Which of llama-server's two control planes is answering. See the module
+#: docstring: these are two different servers wearing one name, and the
+#: difference is in what is POSSIBLE, not just in how JSON is spelled.
+_SHAPE_ROUTER = "router"
+_SHAPE_SINGLE = "single"
+
+
 class LlamaCppBackend:
-    """Router-mode llama-server, attached or owned.
+    """llama-server: router-mode (ours) or single-model (someone else's).
 
     Ownership rule: a healthy server on an attach host belongs to whoever
     started it (LiteSuite's Model Hub, usually) — we USE it and refuse to
     manage its load settings. Only a server WE spawned gets managed, and only
     processes we spawned get killed.
+
+    SHAPE rule (D12): we only ever spawn ROUTER mode, so a single-model server
+    is by construction somebody else's process — it is always ``attached``,
+    wherever it is answering, including on our own configured port. Its whole
+    control plane differs (see the module docstring); ``_probe_shape`` decides
+    once per connect and ``_list_sync`` / ``_model_info_sync`` /
+    ``_refuse_if_attached`` / ``_chat_ready_sync`` each branch on it.
     """
 
     name = "llamacpp"
@@ -432,6 +479,7 @@ class LlamaCppBackend:
         self._attached_host: str | None = None
         self._owned: _Owned | None = None
         self._rows: list[ModelRow] = []
+        self._shape: str | None = None      # probed per connect, see _probe_shape
 
     # -- identity ---------------------------------------------------------
 
@@ -445,24 +493,107 @@ class LlamaCppBackend:
     def attached(self) -> bool:
         return self._attached_host is not None
 
+    @property
+    def single_model(self) -> bool:
+        """True when the server serves ONE permanently-resident model.
+
+        Reads the network on first use per connect, then answers from the
+        cache — the shape cannot change without the process being replaced,
+        and ``ensure_running`` clears the cache on every connect.
+        """
+        return self._probe_shape() == _SHAPE_SINGLE
+
+    def _probe_shape(self) -> str:
+        """Ask the server what it is. Router unless it says otherwise.
+
+        ``/props`` is the server's own answer: router mode reports
+        ``role="router"`` (with ``model_path: "none"``), single-model mode
+        reports no ``role`` and a real ``model_path``. The ``/models``
+        fallback is the router's per-model ``status`` object, which
+        single-model entries do not have — belt and braces, both measured on
+        b9360.
+
+        Unrecognised servers resolve to ROUTER, which is the pre-D12
+        behaviour: a guess must not quietly take management away from a
+        server that supports it.
+        """
+        if self._shape is not None:
+            return self._shape
+        props: dict = {}
+        try:
+            got = _http_json(f"{self.host()}/props", timeout=5)
+            if isinstance(got, dict):
+                props = got
+        except Exception:
+            pass
+        if props.get("role") == _SHAPE_ROUTER:
+            shape = _SHAPE_ROUTER
+        elif props.get("model_path") and props.get("model_path") != "none":
+            shape = _SHAPE_SINGLE
+        else:
+            shape = _SHAPE_SINGLE if self._entries_lack_status() else _SHAPE_ROUTER
+        self._shape = shape
+        return shape
+
+    def _entries_lack_status(self) -> bool:
+        """/models fallback for a build whose /props tells us nothing.
+
+        An EMPTY listing proves nothing (a router with an empty preset has no
+        entries either), so it is not evidence of single-model mode.
+        """
+        try:
+            data = _http_json(f"{self.host()}/models", timeout=5).get("data") or []
+        except Exception:
+            return False
+        return bool(data) and not any("status" in m for m in data)
+
+    def _props_sync(self) -> dict:
+        """A FRESH /props read. Cheap, local, and touches no weights — the
+        shape is cached, the values behind it deliberately are not."""
+        try:
+            got = _http_json(f"{self.host()}/props", timeout=5)
+        except Exception as e:
+            raise BackendError(
+                f"could not read {self.host()}/props — {e}") from e
+        return got if isinstance(got, dict) else {}
+
     # -- lifecycle --------------------------------------------------------
 
     async def ensure_running(self) -> str:
         return await asyncio.to_thread(self._ensure_running_sync)
 
     def _ensure_running_sync(self) -> str:
+        # A server can be replaced between connects, and a stale attach must
+        # never decide which host the shape probe reads. Both are cleared
+        # BEFORE anything is probed.
+        self._shape = None
+        self._attached_host = None
         if self._owned is not None and _healthy(self._host):
+            self._shape = _SHAPE_ROUTER      # we only ever spawn a router
             return "ok"
         if _healthy(self._host):
-            # Our port answers but we did not spawn it — a previous LiteTUI
-            # or the user by hand. Treat as attached: never kill what we
-            # cannot prove we own.
-            self._attached_host = None
+            # Our port answers but we did not spawn it — a previous LiteTUI,
+            # the user by hand, or LiteSuite.
+            #
+            # 🔴 A SINGLE-MODEL SERVER HERE IS DEFINITIVELY NOT OURS: we only
+            # ever spawn ROUTER mode. Attach to it, so the management
+            # refusals that key on `attached` actually fire. This line used
+            # to set None unconditionally while its own comment said "treat
+            # as attached" — the code and the comment disagreed, and the
+            # code won, which is the attach half of D12.
+            #
+            # A ROUTER on our own port is plausibly our own orphan (a crashed
+            # LiteTUI leaves one), so it stays manageable — attaching would
+            # lock the user out of loading anything until they killed it by
+            # hand.
+            if self._probe_shape() == _SHAPE_SINGLE:
+                self._attached_host = self._host
             return "ok"
         for cand in self._settings.llama_attach_hosts:
             cand = cand.rstrip("/")
             if _healthy(cand):
                 self._attached_host = cand
+                self._shape = None           # re-probe against the ATTACHED host
                 return f"attached {cand}"
         return self._spawn()
 
@@ -507,6 +638,7 @@ class LlamaCppBackend:
             if _healthy(self._host):
                 self._owned = _Owned(proc, log_path, log_file)
                 self._attached_host = None
+                self._shape = _SHAPE_ROUTER
                 # Whatever way the app exits, OUR server dies with it — an
                 # orphaned worker is a silent multi-GB VRAM leak. shutdown()
                 # is idempotent, so a normal exit path calling it too is fine.
@@ -560,6 +692,8 @@ class LlamaCppBackend:
         return await asyncio.to_thread(self._list_sync)
 
     def _list_sync(self) -> list[ModelRow]:
+        if self._probe_shape() == _SHAPE_SINGLE:
+            return self._single_rows()
         served = self._server_models()
         by_key = {r.key: r for r in scan_models(self._settings)}
         rows: list[ModelRow] = []
@@ -587,6 +721,51 @@ class LlamaCppBackend:
             raise BackendError(f"could not list models from {self.host()} — {e}") from e
         return {m["id"]: m for m in data.get("data", [])}
 
+    def _single_state(self) -> tuple[str, dict] | None:
+        """(the served id, /props) for a single-model server, or None.
+
+        The id comes from /models — it is what the server calls the model and
+        what a request's ``model`` field is echoed as — and everything else
+        from /props, which is the only place a single-model server states its
+        path, its modalities and its LIVE window.
+        """
+        props = self._props_sync()
+        try:
+            key = next(iter(self._server_models()), None)
+        except BackendError:
+            key = None
+        key = key or props.get("model_alias") or None
+        return (key, props) if key else None
+
+    def _single_rows(self) -> list[ModelRow]:
+        """Exactly one row, marked loaded. No disk scan.
+
+        A single-model server has no /models/load route at all (404,
+        measured), so it serves this one model for its whole life. Offering
+        the other GGUFs on the box would be offering a choice that cannot be
+        honoured: picking one would change nothing and the next reply would
+        still come from the resident model. The row is marked ``loaded``
+        because it IS — the weights went in at startup, and the absence of a
+        ``status`` object says nothing about residency in this dialect.
+        """
+        state = self._single_state()
+        if state is None:
+            return []
+        key, props = state
+        mods = props.get("modalities") or {}
+        modalities = ["text"]
+        if mods.get("vision"):
+            modalities.append("image")
+        if mods.get("audio"):
+            modalities.append("audio")
+        return [ModelRow(
+            key=key,
+            path=props.get("model_path") or None,
+            source="server",
+            loaded=True,
+            modalities=tuple(modalities),
+        )]
+
     async def model_info(self, key: str):
         return await asyncio.to_thread(self._model_info_sync, key)
 
@@ -595,6 +774,17 @@ class LlamaCppBackend:
         a NOT-loaded model must never report a window as if it were serving
         one. The worker argv echo is the source for the loaded window — it is
         what the worker was actually started with."""
+        if self._probe_shape() == _SHAPE_SINGLE:
+            # No argv echo in this dialect; /props states the live window
+            # directly (n_ctx = what the server was started with, NOT
+            # n_ctx_train, which is the ceiling).
+            rows = self._single_rows()
+            if not rows or rows[0].key != key:
+                return None
+            ctx = (self._props_sync().get("default_generation_settings")
+                   or {}).get("n_ctx")
+            mtype = "vlm" if "image" in rows[0].modalities else "llm"
+            return (int(ctx) if ctx else None), mtype, True
         info = self._server_models().get(key)
         if info is None:
             return None
@@ -606,6 +796,63 @@ class LlamaCppBackend:
         if loaded:
             return (int(ctx) if ctx else None), mtype, True
         return None, mtype, False
+
+    # -- readiness ---------------------------------------------------------
+
+    async def ensure_chat_ready(self, key: str | None) -> None:
+        await asyncio.to_thread(self._chat_ready_sync, key)
+
+    def _chat_ready_sync(self, key: str | None) -> None:
+        """Raise, in plain words, when KEY cannot serve a chat turn NOW.
+
+        D2/D11: the caller opens a stream and the router answers ``400 model
+        is not loaded``, which app.py renders verbatim into the message. Four
+        different situations arrive as that one error (measured on b9360, see
+        the module docstring), and they have different fixes:
+
+          unloaded, in the preset  → /load it
+          absent from the preset   → /model to something that is there
+          no model selected at all → /model
+          still LOADING            → nothing; it resolves by itself
+
+        The last one is WAITED OUT rather than refused. Telling someone to
+        /load a model that is loading is worse than saying nothing, and the
+        wait ends the moment the router flips to ``loaded``.
+
+        🔴 Nothing here starts a load. The no-load-on-connect law covers
+        readiness checks: a question about state must not change it.
+        """
+        if not key:
+            raise BackendError(
+                "no model is selected — /model to pick one before sending.")
+        if self._probe_shape() == _SHAPE_SINGLE:
+            # One resident model, and the request's `model` field is ignored
+            # outright (a chat naming a nonexistent model still answered 200).
+            # There is nothing to load and nothing to refuse.
+            return
+        info = self._server_models().get(key)
+        if info is None:
+            raise BackendError(
+                f"{key!r} is not on the server at {self.host()} — "
+                "/models to see what is, /model to switch."
+            )
+        deadline = time.monotonic() + LOAD_TIMEOUT_S
+        while True:
+            state = (info or {}).get("status", {}).get("value")
+            if state == "loaded":
+                return
+            if state != "loading":
+                raise BackendError(
+                    f"{key!r} is not loaded — /load {key} first, or /model to "
+                    "pick one that already is."
+                )
+            if time.monotonic() >= deadline:
+                raise BackendError(
+                    f"{key!r} was still loading after {LOAD_TIMEOUT_S}s — see "
+                    f"{paths.LLAMA_DIR / 'litetui-llama-server.log'}"
+                )
+            time.sleep(1.0)
+            info = self._server_models().get(key)
 
     # -- control ----------------------------------------------------------
 
@@ -619,11 +866,23 @@ class LlamaCppBackend:
         await asyncio.to_thread(self._load_sync, key)
 
     def _refuse_if_attached(self, verb: str) -> None:
-        if self.attached:
+        if not self.attached:
+            return
+        if self._probe_shape() == _SHAPE_SINGLE:
+            # Say WHY, and say it before the request goes out: /models/load
+            # is 404 here, and "load refused — File Not Found" would blame
+            # the model for a property of the server.
             raise BackendError(
-                f"cannot {verb}: LiteSuite owns the server at {self.host()} — "
-                "switch models in its Model Hub, or stop it and I'll run my own."
+                f"cannot {verb}: {self.host()} is serving one model and cannot "
+                "switch — it was started with a single -m <gguf>, so it has no "
+                "load or unload route at all. Change the model where that "
+                "server was started (LiteSuite's Model Hub), or stop it and "
+                "I'll run my own router."
             )
+        raise BackendError(
+            f"cannot {verb}: LiteSuite owns the server at {self.host()} — "
+            "switch models in its Model Hub, or stop it and I'll run my own."
+        )
 
     def _load_sync(self, key: str) -> None:
         self._refuse_if_attached("load a model")
@@ -855,6 +1114,34 @@ class LMStudioBackend:
                     return int(loaded_len), m.get("type"), True
                 return int(m.get("max_context_length") or 0) or None, m.get("type"), False
         return None
+
+    # -- readiness ---------------------------------------------------------
+
+    async def ensure_chat_ready(self, key: str | None) -> None:
+        await asyncio.to_thread(self._chat_ready_sync, key)
+
+    def _chat_ready_sync(self, key: str | None) -> None:
+        """The same question, and for LM Studio the answer is nearly always
+        yes — deliberately.
+
+        🔴 A COLD MODEL IS NOT AN ERROR HERE. LM Studio JIT-loads on the first
+        request; refusing one would break chats that work today, which is the
+        opposite of what D2/D11 asked for. The only thing this can rule out
+        is a model LM Studio has never downloaded — its native listing covers
+        every downloaded model, so absence from it is decisive.
+
+        The asymmetry with the llama.cpp side is the truth about the two
+        engines, not an oversight: our router will not JIT-load (it is
+        started ``--no-models-autoload``, by law), and LM Studio will.
+        """
+        if not key:
+            raise BackendError(
+                "no model is selected — /model to pick one before sending.")
+        if key not in {m.get("id") for m in self._native_models()}:
+            raise BackendError(
+                f"{key!r} is not downloaded in LM Studio at {self._host} — "
+                "/models to see what is, /model to switch."
+            )
 
     # -- control ----------------------------------------------------------
 

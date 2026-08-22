@@ -1,0 +1,14 @@
+{
+  "model_alias": "qwen3.5-0.8b-ablate-e2-opus46-postopus-runtime.Q4_K_M.gguf",
+  "model_path": "C:\\Users\\Ryan\\.lmstudio\\models\\amkkk\\Qwen3.5-0.8B-GGUF-uncensored-opus-distill\\qwen3.5-0.8b-ablate-e2-opus46-postopus-runtime.Q4_K_M.gguf",
+  "modalities": {
+    "vision": false,
+    "audio": false
+  },
+  "total_slots": 4,
+  "build_info": "b9360-6b4e4bd58",
+  "is_sleeping": false,
+  "default_generation_settings": {
+    "n_ctx": 4096
+  }
+}
