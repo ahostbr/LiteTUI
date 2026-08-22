@@ -9,6 +9,7 @@ pi's defaults (2000 lines / 50KB).
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -92,23 +93,63 @@ def _bash_completed_result(out: str, err: str, returncode: int) -> str:
     return out or "(no output)"
 
 
-def tool_bash(args: dict) -> str:
-    command = (args.get("command") or "").strip()
-    if not command:
-        return "[error] missing 'command'"
-    try:
-        timeout = int(args.get("timeout") or BASH_DEFAULT_TIMEOUT_S)
-    except (TypeError, ValueError):
-        timeout = BASH_DEFAULT_TIMEOUT_S
-    # Through the envelope, which owns errors="replace", CREATE_NO_WINDOW and
-    # the terminal repair. popen (not run) so the HANDLE survives: run() blocks
-    # with the Popen trapped inside it, which is why a runaway bash could not
-    # be cancelled — the process existed and nothing could reach it.
+#: PowerShell 7 first, Windows PowerShell 5.1 second. Resolved ONCE — a
+#: which-shell lookup per tool call is a filesystem hit on every command.
+_PS_EXE: str | None = None
+_PS_RESOLVED = False
+
+
+def powershell_exe() -> str | None:
+    """The best available PowerShell, or None when there is none."""
+    global _PS_EXE, _PS_RESOLVED
+    if not _PS_RESOLVED:
+        _PS_RESOLVED = True
+        for cand in ("pwsh", "powershell"):
+            found = shutil.which(cand)
+            if found:
+                _PS_EXE = found
+                break
+    return _PS_EXE
+
+
+#: EVERY CLAUSE HERE WAS MEASURED, not reasoned about. Plain `pwsh -Command`
+#: gets two things wrong that matter:
+#:
+#:  1. IT COLLAPSES NATIVE EXIT CODES TO 1. `cmd /c exit 3` and a python
+#:     sys.exit(4) both surface as 1, destroying every distinction a caller
+#:     reads from an exit code -- grep's 1-means-no-match vs 2-means-error is
+#:     the classic. $LASTEXITCODE holds the real number, so it is re-exited.
+#:  2. A FAILING CMDLET EXITS 0. It is a non-terminating error, not a failed
+#:     exit. $ErrorActionPreference='Stop' would fix it by changing how the
+#:     USER'S command behaves, which is too high a price; the $Error.Count
+#:     delta detects the same thing and changes nothing.
+#:
+#: `$?` is deliberately NOT used: it is reset by the very `if` that reads it,
+#: and it does not go False for a non-terminating error anyway. Both were
+#: tried and both failed the table.
+#:
+#: OutputRendering kills ANSI at the source rather than stripping it later.
+PS_WRAPPER = (
+    "$PSStyle.OutputRendering='PlainText'; $global:LASTEXITCODE=0; "
+    "$__e=$Error.Count; "
+    "& {{ {command} }}; "
+    "if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} "
+    "elseif ($Error.Count -gt $__e) {{ exit 1 }} else {{ exit 0 }}"
+)
+
+
+def _run_shell(argv, *, shell: bool, timeout: int) -> str:
+    """The shared body: spawn, stay cancellable, report honestly.
+
+    bash and powershell differ ONLY in what gets spawned. Two copies of the
+    truncation, cancellation and exit-code reporting would be two things to
+    keep in step, and this repo has been bitten by a second copy today already.
+    """
     t0 = time.monotonic()
     try:
         proc = ttyguard.popen(
-            command,
-            shell=True,
+            argv,
+            shell=shell,
             stdin=subprocess.DEVNULL,
             cwd=str(Path.cwd()),
         )
@@ -122,13 +163,42 @@ def tool_bash(args: dict) -> str:
     finally:
         ttyguard.CANCELLABLE["proc"] = None
     if ttyguard.CANCELLABLE["cancelled"]:
-        # The kill closed the pipes, so communicate() returned with whatever
-        # the tree wrote before dying — the model sees the partial output and
-        # an honest verdict, and the TURN CARRIES ON. That is the difference
-        # between this and Esc, which stops the whole turn.
         ttyguard.CANCELLABLE["cancelled"] = False
         return _bash_cancelled_result(out, err, t0)
     return _bash_completed_result(out, err, proc.returncode)
+
+
+def _timeout_arg(args: dict) -> int:
+    try:
+        return int(args.get("timeout") or BASH_DEFAULT_TIMEOUT_S)
+    except (TypeError, ValueError):
+        return BASH_DEFAULT_TIMEOUT_S
+
+
+def tool_powershell(args: dict) -> str:
+    command = (args.get("command") or "").strip()
+    if not command:
+        return "[error] missing 'command'"
+    exe = powershell_exe()
+    if exe is None:
+        return "[error] no PowerShell found on PATH (looked for pwsh, powershell)"
+    return _run_shell(
+        [exe, "-NoProfile", "-NonInteractive", "-Command",
+         PS_WRAPPER.format(command=command)],
+        shell=False,
+        timeout=_timeout_arg(args),
+    )
+
+
+def tool_bash(args: dict) -> str:
+    command = (args.get("command") or "").strip()
+    if not command:
+        return "[error] missing 'command'"
+    # Through the envelope, which owns errors="replace", CREATE_NO_WINDOW and
+    # the terminal repair. popen (not run) so the HANDLE survives: run() blocks
+    # with the Popen trapped inside it, which is why a runaway bash could not
+    # be cancelled — the process existed and nothing could reach it.
+    return _run_shell(command, shell=True, timeout=_timeout_arg(args))
 
 
 def tool_read(args: dict) -> str:
@@ -243,13 +313,44 @@ def tool_web_fetch(args: dict) -> str:
     return text.strip() or "[empty response]"
 
 
+def powershell_spec() -> dict:
+    """Built at registration so the description names the interpreter that was
+    ACTUALLY found. Hardcoding "PowerShell 7" would be a fact with no code
+    reading it — the drift class that had the prompt claiming four tools."""
+    exe = powershell_exe() or "powershell"
+    return {
+        "type": "function",
+        "function": {
+            "name": "powershell",
+            "description": (
+                f"Run a PowerShell command in the current working directory (via {exe}). "
+                "PREFER THIS OVER bash ON WINDOWS: bash falls through to cmd.exe here, "
+                "which has no sleep, no grep, no sed, and breaks on input redirection. "
+                "Native exit codes are preserved exactly; a failing cmdlet reports 1. "
+                "Returns stdout and stderr, truncated to the last 2000 lines or 50KB. "
+                "Optionally provide a timeout in seconds (default 120)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "PowerShell to execute"},
+                    "timeout": {"type": "integer", "description": "Seconds before it is killed"},
+                },
+                "required": ["command"],
+            },
+        },
+    }
+
+
 BASH_SPEC = {
     "type": "function",
     "function": {
         "name": "bash",
         "description": (
             "Execute a shell command in the current working directory "
-            "(bash on Unix, cmd.exe on Windows). Returns stdout and stderr, "
+            "(bash on Unix, cmd.exe on Windows). ON WINDOWS, PREFER THE "
+            "`powershell` TOOL — this one runs cmd.exe, where sleep, grep, sed "
+            "and input redirection are all unavailable. Returns stdout and stderr, "
             "truncated to the last 2000 lines or 50KB. Non-zero exit codes are reported. "
             "Optionally provide a timeout in seconds (default 120)."
         ),
@@ -324,6 +425,11 @@ WEB_FETCH_SPEC = {
 
 
 def _register(ctx) -> None:
+    # Windows first, and registered BEFORE bash so it leads the offered list.
+    # Only when a PowerShell actually exists: a tool that cannot run is worse
+    # than an absent one, because the model spends a call finding out.
+    if powershell_exe() is not None:
+        ctx.tool(powershell_spec(), tool_powershell)
     ctx.tool(BASH_SPEC, tool_bash)
     ctx.tool(READ_SPEC, tool_read)
     ctx.tool(WRITE_SPEC, tool_write)

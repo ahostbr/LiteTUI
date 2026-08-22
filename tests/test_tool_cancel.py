@@ -154,9 +154,19 @@ def test_action_with_nothing_running_is_an_honest_no_op():
 def test_bash_goes_through_popen_not_run():
     """run() blocks with the Popen trapped inside it — the handle is the
     feature. If bash drifts back to run(), cancel silently dies."""
-    body = CORE_TOOLS_SRC.split("def tool_bash(", 1)[1].split("\ndef ", 1)[0]
+    # The spawn moved into _run_shell (2026-08-22) when the powershell tool
+    # landed: two copies of the cancellation, truncation and exit-code
+    # reporting would be two things to keep in step. The claim is unchanged --
+    # it is asserted on the function that now owns the handle, and on BOTH
+    # shells reaching it, which is strictly more than this covered before.
+    body = CORE_TOOLS_SRC.split("def _run_shell(", 1)[1].split("\ndef ", 1)[0]
     assert "ttyguard.popen(" in body
     assert "ttyguard.run(" not in body
+    for fn in ("def tool_bash(", "def tool_powershell("):
+        shell_body = CORE_TOOLS_SRC.split(fn, 1)[1].split(chr(10) + "def ", 1)[0]
+        assert "_run_shell(" in shell_body, (
+            fn + " does not go through the cancellable spawn"
+        )
 
 
 def test_the_kill_is_a_tree_kill():
