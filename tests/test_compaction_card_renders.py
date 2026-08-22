@@ -96,3 +96,40 @@ async def test_streamed_children_have_room() -> None:
         assert card.thinking is not None and card.thinking.size.height > 0, (
             "the thinking block inside the compaction card has no drawable area"
         )
+
+
+@pytest.mark.asyncio
+async def test_compaction_card_shows_an_elapsed_clock() -> None:
+    """Ryan: "it just needs to display timer elapsed ... during compaction".
+
+    Compaction is the longest single operation the app performs and it was the
+    only long one with no clock on it. The card stamps t0 at construction --
+    construction IS the start -- and the shared elapsed loop ticks it, the same
+    way it drives tool timers and the thinking header.
+    """
+    a = make_app()
+    async with a.run_test(size=(120, 40)) as pilot:
+        card = m.CompactionCard(plan=PLAN, prompt_text="p", auto=False)
+        await a.query_one("#chat-log").mount(card)
+        await pilot.pause()
+
+        live = str(card._title.content)
+        assert "Compaction" in live
+        # The ellipsis is the "still running" signal, matching render_progress.
+        assert "…" in live, f"no live clock on the compaction title: {live!r}"
+
+        # The clock advances. Compared as a delta so no duration FORMAT is
+        # baked into the test -- only that time is being reported at all.
+        before = str(card._title.content)
+        card._t0 -= 5
+        card.tick()
+        await pilot.pause()
+        assert str(card._title.content) != before, "the elapsed clock is frozen while live"
+
+        # And it settles: a finished compaction reports how long it took rather
+        # than resetting or ticking forever.
+        card.finish("118 -> 1 (-99%)")
+        await pilot.pause()
+        settled = str(card._title.content)
+        assert card._took is not None
+        assert "…" not in settled, f"still counting after finish(): {settled!r}"

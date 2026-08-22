@@ -566,16 +566,31 @@ class CompactionCard(Vertical):
     def __init__(self, plan: str, prompt_text: str, auto: bool = False) -> None:
         super().__init__(classes="compaction-card")
         self.auto = auto
-        title = Text.assemble(
-            ("\U0001F5DC Compaction", "bold"),
-            (" \u00b7 automatic", "dim") if auto else ("", ""),
-        )
-        self._title = Static(title, classes="compaction-title")
+        # Construction IS the start of the compaction, so stamp t0 here rather
+        # than having the worker reach in -- same rule ThinkingBlock follows.
+        self._t0 = time.monotonic()
+        self._took: float | None = None
+        self._title = Static(self._title_text(), classes="compaction-title")
         self._plan = Static(plan, classes="compaction-plan")
         self.prompt_fold = FoldBlock("Compaction prompt", prompt_text)
         self.body = AnswerBody("")
         self.status = Static("", classes="compaction-status")
         self.thinking: ThinkingBlock | None = None
+
+    def _title_text(self) -> Text:
+        """Title with the elapsed clock. Frozen once _took is set, so the card
+        keeps reporting how long it actually took instead of resetting to zero."""
+        elapsed = self._took if self._took is not None else (time.monotonic() - self._t0)
+        stamp = fmt_dur(elapsed) if self._took is not None else f"{fmt_dur(elapsed)} \u2026"
+        return Text.assemble(
+            ("\U0001F5DC Compaction", "bold"),
+            (f" \u00b7 {stamp}", "dim"),
+            (" \u00b7 automatic", "dim") if self.auto else ("", ""),
+        )
+
+    def tick(self) -> None:
+        """One repaint from the app's shared elapsed loop; no-op once settled."""
+        self._title.content = self._title_text()
 
     def compose(self) -> ComposeResult:
         yield self._title
@@ -608,10 +623,14 @@ class CompactionCard(Vertical):
         self.status.content = Text(text)
 
     def finish(self, ledger: str) -> None:
+        self._took = time.monotonic() - self._t0
+        self.tick()
         self.status.content = Text(ledger)
         self.add_class("done")
 
     def fail(self, reason: str) -> None:
+        self._took = time.monotonic() - self._t0
+        self.tick()
         self.status.content = Text(reason, style="bold red")
         self.add_class("failed")
 
@@ -1381,6 +1400,7 @@ class LiteTUI(App):
         # The last scroll position this app SET. Following is judged against it,
         # never against max_scroll_y -- see _scroll_down.
         self._follow_anchor: float | None = None
+        self._compact_card = None            # the live CompactionCard, if any
         #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
@@ -2989,10 +3009,13 @@ class LiteTUI(App):
         while True:
             await asyncio.sleep(0.25)
             now = time.monotonic()
+            card = self._compact_card
+            card_live = card is not None and card._took is None
             active = (
                 self._elapsed_body is not None
                 or self._inflight_tools
                 or self._thinking_live is not None
+                or card_live
             )
             # The cancel button tracks the PROCESS, not the tool bubble: only
             # a live subprocess is cancellable, and a button shown for a tool
@@ -3017,6 +3040,8 @@ class LiteTUI(App):
                     self._thinking_live.repaint_header(self.tps)
                 for tool in self._inflight_tools:
                     tool._tick()
+                if card_live:
+                    card.tick()
                 idle = 0.0
             else:
                 idle += 0.25
@@ -4054,6 +4079,14 @@ class LiteTUI(App):
         # thinking block `before=self.body` then dies with MountError —
         # body has no parent yet. Awaiting makes the card whole first.
         await self.query_one("#chat-log").mount(card)
+        self._compact_card = card
+        # The shared elapsed loop retires after ~1s idle, and a compaction can
+        # begin with nothing else in flight -- without this the clock never ticks.
+        if self._elapsed_task is None or self._elapsed_task.done():
+            try:
+                self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
+            except RuntimeError:
+                self._elapsed_task = None
         self._scroll_down()
 
         ask = list(head) + [
