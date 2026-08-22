@@ -130,18 +130,29 @@ async def test_slash_skills_actually_gives_the_body_to_the_model():
 
     a = _app_with(root)
     msgs: list[str] = []
+    bubbles: list[str] = []
+    turns: list[int] = []
     async with a.run_test() as pilot:
         await pilot.pause()
         a._system = lambda s: msgs.append(s)
+        a._user_bubble = lambda t, h, queued=False: bubbles.append(t)
+        a._stream = lambda: turns.append(1)
         a._handle_command("/skills probe")
         await pilot.pause()
-    assert "UNIQUE-BODY-MARKER-42" in a.conversation[0]["content"], (
-        "the body never reached the model's system turn"
+    convo = "\n".join(str(m.get("content") or "") for m in a.conversation)
+    assert "UNIQUE-BODY-MARKER-42" in convo, (
+        "the body never reached the conversation the model will be sent"
     )
-    assert "UNIQUE-BODY-MARKER-42" not in "\n".join(msgs), (
-        "the body is still being dumped into the chat log"
+    assert turns == [1], "the body was delivered but no turn was started"
+    assert "UNIQUE-BODY-MARKER-42" not in "\n".join(msgs + bubbles), (
+        "the body is still being dumped onto the screen"
     )
-    assert any("probe" in m for m in msgs), "the user was not told the skill loaded"
+    # The user is told on the BUBBLE now, not by a system line — a system line
+    # beside the bubble would be the printing Ryan asked to remove, by another
+    # name.
+    assert any("probe" in b for b in bubbles), (
+        f"nothing on screen names the loaded skill; bubbles={bubbles!r}"
+    )
 
 
 @pytest.mark.asyncio

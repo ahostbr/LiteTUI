@@ -56,14 +56,14 @@ class _StubApp:
     def _system(self, text):
         self.said.append(text)
 
-    def _append_to_system(self, text: str) -> None:
-        current = self.conversation[0].get("content") or ""
-        if text in current:
-            return
-        self.conversation[0] = {
-            **self.conversation[0],
-            "content": (current.rstrip() + "\n\n" + text) if current else text,
-        }
+    def _append(self, msg: dict) -> None:
+        self.conversation.append(msg)
+
+    def _user_bubble(self, text, has_image, queued=False):
+        self.said.append(text)
+
+    def _stream(self) -> None:
+        self.turns = getattr(self, "turns", 0) + 1
 
     def push_screen(self, screen, callback=None):
         self.pushed.append((screen, callback))
@@ -148,7 +148,9 @@ def test_picking_a_skill_sends_its_body_to_the_model(tmp_path: Path, monkeypatch
     _screen, callback = app.pushed[0]
 
     callback("ls-mark")
-    assert "MARK BODY" in app.conversation[0]["content"], "the picker sent nothing"
+    convo = "\n".join(str(m.get("content") or "") for m in app.conversation)
+    assert "MARK BODY" in convo, "the picker sent nothing"
+    assert app.turns == 1, "the picker delivered without asking the model anything"
     assert not any("MARK BODY" in s for s in app.said), "the body still hits the log"
 
     callback(None)  # Esc must be inert, not an error

@@ -66,12 +66,21 @@ def _invoke(app, want: str) -> None:
     """
     body = skills_mod.load(app.skills, want)
     if body.startswith("[error]"):
-        # Never inject a failed lookup: it would sit in the system prompt for
-        # the rest of the session, telling the model a skill does not exist.
+        # Never inject a failed lookup — it would tell the model a skill does
+        # not exist, and it would burn a turn saying so.
         app._system(body)
         return
-    app._append_to_system(f"# Skill: {want}\n\n{body}")
-    app._system(f"[skill {want!r} loaded — {len(body):,} chars sent to the model]")
+    # THE BUBBLE AND THE MESSAGE CARRY DIFFERENT TEXT, DELIBERATELY. The screen
+    # gets one line (Ryan: "remove any printing to the screen effect"); the
+    # model gets the whole skill. They are separate arguments, so showing less
+    # than we send costs nothing.
+    app._user_bubble(f"Loaded skill: {want}", False)
+    app._append({"role": "user", "content": f"# Skill: {want}\n\n{body}"})
+    # AND THEN A TURN, WHICH IS THE HALF THAT WAS MISSING. Putting the body in
+    # the context is not the same as the model reading it: the model reads
+    # nothing until a request is made. Without this the app said "sent to the
+    # model" and then sat there — no GPU, no response, nothing.
+    app._stream()
 
 
 def _cmd_skills(app, name: str, arg: str) -> None:

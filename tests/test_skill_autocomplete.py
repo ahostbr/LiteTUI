@@ -180,7 +180,8 @@ async def test_a_completed_name_actually_runs_the_skill(tmp_path: Path) -> None:
     # Amended 2026-08-22: this asserted the body was SHOWN, which is the defect
     # Ryan reported — the command painted the skill and sent nothing. The real
     # contract is that it reaches the MODEL, so that is what is asserted now.
-    assert "body of ls-mark" in a.conversation[0]["content"], (
+    convo = "\n".join(str(m.get("content") or "") for m in a.conversation)
+    assert "body of ls-mark" in convo, (
         "the completed skill name did not deliver the body to the model"
     )
     assert "body of ls-mark" not in joined, "the body is still being dumped to the log"

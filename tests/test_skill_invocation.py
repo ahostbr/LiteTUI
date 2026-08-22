@@ -17,12 +17,18 @@ represent the difference between "shown" and "sent", so no assertion written
 against it could ever have failed on the missing send. The stub here carries
 both, which is the whole reason these tests can fail.
 
-DELIVERY GOES THROUGH `_append_to_system`, NOT `_append`. app.py:2968 documents
-why and it is not a style preference: qwen/qwen3.8-27b's chat template raises
-"System message must be at the beginning" and the request fails with a 500 when
-a second role:"system" turn appears mid-conversation. `_append_to_system`
-extends the FIRST system message instead, and is idempotent — which also gives
-re-invoking a skill the right behaviour for free.
+🔴 AND THE FIRST FIX WAS ALSO ONLY HALF. Delivery into the CONTEXT is not the
+same as the model READING it: a model reads its context only when a request is
+made. The first version put the body in the system turn, printed "sent to the
+model", and then sat there — Ryan: "no gpu use no response ... nothing". The
+banner had stopped lying about the destination and started lying about the
+event.
+
+So invocation follows the app's own established shape for injected work, the
+one _wake_after_compact already uses: `_user_bubble` + `_append` + `_stream`.
+The bubble and the message deliberately carry DIFFERENT text — they are
+separate arguments — so the screen gets one line naming the skill while the
+request carries the whole body.
 """
 
 from __future__ import annotations
@@ -51,30 +57,35 @@ class _Settings:
 
 
 class _StubApp:
-    """Carries BOTH surfaces, so 'shown' and 'sent' are distinguishable.
+    """Carries THREE surfaces, because the defect lived in the gap between
+    them: what is SHOWN, what is SENT, and whether a TURN was started.
 
-    _append_to_system mirrors app.py's real one closely enough to test the
-    caller: extend the first system turn, never add a second, idempotent.
+    A stub with only `_system` could not fail on a skill that was displayed and
+    never delivered. A stub with only `conversation` could not fail on a skill
+    that was delivered and never asked about — which is the second half of the
+    same bug and the one Ryan saw on screen.
     """
 
     def __init__(self, skills):
         self.skills = skills
         self.settings = _Settings()
         self.said: list[str] = []
+        self.bubbles: list[str] = []
         self.pushed: list = []
+        self.turns = 0
         self.conversation: list[dict] = [{"role": "system", "content": "BASE PROMPT"}]
 
     def _system(self, text):
         self.said.append(text)
 
-    def _append_to_system(self, text: str) -> None:
-        current = self.conversation[0].get("content") or ""
-        if text in current:
-            return
-        self.conversation[0] = {
-            **self.conversation[0],
-            "content": (current.rstrip() + "\n\n" + text) if current else text,
-        }
+    def _user_bubble(self, text, has_image, queued=False):
+        self.bubbles.append(text)
+
+    def _append(self, msg: dict) -> None:
+        self.conversation.append(msg)
+
+    def _stream(self) -> None:
+        self.turns += 1
 
     def push_screen(self, screen, callback=None):
         self.pushed.append((screen, callback))
@@ -82,7 +93,8 @@ class _StubApp:
     # -- what the assertions read -------------------------------------------
     @property
     def sent(self) -> str:
-        return self.conversation[0]["content"]
+        """Everything the MODEL will read on the next request."""
+        return "\n".join(str(m.get("content") or "") for m in self.conversation)
 
     @property
     def shown(self) -> str:
@@ -118,27 +130,41 @@ def test_invoking_from_the_picker_sends_it_too(tmp_path: Path) -> None:
     assert BODY in app.sent, "the picker path shows without sending"
 
 
-def test_delivery_extends_the_first_system_turn_and_adds_no_second(tmp_path: Path) -> None:
-    """A second role:system mid-conversation 500s qwen's template. This is the
-    portability constraint, not a preference."""
+def test_invoking_a_skill_STARTS_A_TURN(tmp_path: Path) -> None:
+    """THE half that was missing, and the one Ryan saw on screen: the body
+    reached the context and nothing happened — no GPU, no response, nothing.
+
+    A model reads its context only when a request is made. Delivery without a
+    turn is a banner saying "sent to the model" printed over silence, which is
+    the same lying-label defect as before wearing different words."""
     app = _StubApp([_skill(tmp_path, "ls-mark")])
 
     _cmd_skills(app, "skills", "ls-mark")
 
-    roles = [m["role"] for m in app.conversation]
-    assert roles.count("system") == 1, f"a second system turn appeared: {roles}"
-    assert app.conversation[0]["content"].startswith("BASE PROMPT"), (
-        "the base prompt was replaced rather than extended"
+    assert app.turns == 1, "the skill was loaded but no turn was started"
+
+
+def test_the_picker_path_also_starts_a_turn(tmp_path: Path) -> None:
+    """Two entry points, and last time only one of them got the fix."""
+    app = _StubApp([_skill(tmp_path, "ls-mark")])
+    _pick(app, "ls-mark")
+    assert app.turns == 1, "the picker loads without asking the model anything"
+
+
+def test_the_body_goes_in_the_message_and_the_bubble_stays_short(tmp_path: Path) -> None:
+    """The screen and the request carry DIFFERENT text, deliberately —
+    _user_bubble and _append take separate arguments, so showing less than we
+    send costs nothing."""
+    app = _StubApp([_skill(tmp_path, "ls-mark")])
+
+    _cmd_skills(app, "skills", "ls-mark")
+
+    assert app.conversation[-1]["role"] == "user"
+    assert BODY in app.conversation[-1]["content"], "the message carries no skill body"
+    assert app.bubbles and BODY not in app.bubbles[0], (
+        f"the whole body was rendered into the bubble: {app.bubbles!r}"
     )
-
-
-def test_invoking_the_same_skill_twice_does_not_duplicate_it(tmp_path: Path) -> None:
-    app = _StubApp([_skill(tmp_path, "ls-mark")])
-
-    _cmd_skills(app, "skills", "ls-mark")
-    _cmd_skills(app, "skills", "ls-mark")
-
-    assert app.sent.count(BODY) == 1, "re-invoking stacked a second copy"
+    assert "ls-mark" in app.bubbles[0], "the bubble does not name the skill"
 
 
 # ── what the SCREEN does, which is the other half of the complaint ───────────
@@ -149,9 +175,15 @@ def test_the_screen_gets_a_confirmation_not_the_whole_body(tmp_path: Path) -> No
 
     _cmd_skills(app, "skills", "ls-mark")
 
-    assert "ls-mark" in app.shown, "the user is not told which skill was loaded"
     assert BODY not in app.shown, (
         "the whole body is still being dumped into the chat log"
+    )
+    assert BODY not in "\n".join(app.bubbles), "the body is in the bubble instead"
+    # The user IS told — on the bubble, which is the surface a loaded skill now
+    # occupies. Ryan asked for the GUI and no printing; a system line beside
+    # the bubble would be the printing coming back by another name.
+    assert any("ls-mark" in b for b in app.bubbles), (
+        "nothing on screen names the skill that was loaded"
     )
 
 
@@ -175,7 +207,8 @@ def test_a_missing_skill_injects_nothing(tmp_path: Path) -> None:
 
     _cmd_skills(app, "skills", "does-not-exist")
 
-    assert app.sent == before, "a failed lookup contaminated the system prompt"
+    assert app.sent == before, "a failed lookup contaminated the conversation"
+    assert app.turns == 0, "a failed lookup burned a turn"
     assert "error" in app.shown.lower(), "the miss was not reported on screen"
 
 
@@ -188,6 +221,7 @@ def test_the_full_report_row_injects_nothing(tmp_path: Path) -> None:
     _pick(app, _REPORT_ROW)
 
     assert app.sent == before, "the roots/token-cost report was sent to the model"
+    assert app.turns == 0, "the report started a turn"
 
 
 def test_cancelling_the_picker_injects_nothing(tmp_path: Path) -> None:
@@ -197,6 +231,7 @@ def test_cancelling_the_picker_injects_nothing(tmp_path: Path) -> None:
     _pick(app, None)
 
     assert app.sent == before, "cancelling still delivered something"
+    assert app.turns == 0, "cancelling started a turn"
 
 
 def test_refresh_injects_nothing(tmp_path: Path) -> None:
@@ -207,4 +242,5 @@ def test_refresh_injects_nothing(tmp_path: Path) -> None:
 
     _cmd_skills(app, "skills", "refresh")
 
-    assert app.sent == before, "a refresh contaminated the system prompt"
+    assert app.sent == before, "a refresh contaminated the conversation"
+    assert app.turns == 0, "a refresh started a turn"
