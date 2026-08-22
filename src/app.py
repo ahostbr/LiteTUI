@@ -42,7 +42,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button, Footer, Header, Input, Static, )
+    Button, Footer, Header, Input, OptionList, Static, )
+from textual.widgets.option_list import Option
 from textual.worker import WorkerState
 from textual import work, on
 from openai import AsyncOpenAI
@@ -191,6 +192,90 @@ def memory_prompt(convo_id: str, folder: Path) -> str:
 # /settings; env LM_TOOL_ITERS still wins over both (see settings.ENV_OVERRIDES).
 # This constant remains so module-level users and tests keep a sane number.
 TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))
+
+
+class SkillAutocomplete(Vertical):
+    """Skill names, rising from the message area as a slash name is typed.
+
+    Deliberately NOT a modal. A modal takes focus, which would stop the typing
+    that is doing the filtering -- the whole interaction is "keep typing and
+    watch the list narrow", so the Input must never lose focus. That is also
+    why the keys are intercepted on the Input rather than bound here.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(id="skill-ac")
+        self.options = OptionList(id="skill-ac-list")
+        self._matches: list = []
+
+    def compose(self) -> ComposeResult:
+        yield self.options
+
+    def refilter(self, skills, fragment: str) -> bool:
+        """Narrow to `fragment`. Returns whether anything survived.
+
+        A PREFIX match sorts above a mere substring one: typing "ls-a" should
+        offer ls-arch before something that merely contains the letters, and
+        the first row is what Tab takes.
+        """
+        want = (fragment or "").lower()
+        hits = [s for s in skills if want in s.name.lower()]
+        hits.sort(key=lambda s: (not s.name.lower().startswith(want), s.name.lower()))
+        self._matches = hits[:200]
+
+        self.options.clear_options()
+        for s in self._matches:
+            desc = " ".join((s.description or "").split())
+            self.options.add_option(Option(f"{s.name}   {desc[:64]}"))
+        if self._matches:
+            self.options.highlighted = 0
+        self.display = bool(self._matches)
+        return bool(self._matches)
+
+    def move(self, delta: int) -> None:
+        if not self._matches:
+            return
+        cur = self.options.highlighted or 0
+        self.options.highlighted = max(0, min(len(self._matches) - 1, cur + delta))
+
+    def current(self) -> str | None:
+        """The name Tab would take, or None when nothing is showing."""
+        if not self._matches or not self.display:
+            return None
+        i = self.options.highlighted or 0
+        if not (0 <= i < len(self._matches)):
+            return None
+        return self._matches[i].name
+
+    def dismiss_list(self) -> None:
+        self.display = False
+        self._matches = []
+
+
+class PromptInput(Input):
+    """The message box. Steals a few keys ONLY while the picker is open.
+
+    Tab, up and down all belong to Input normally, so they are intercepted
+    here and released the moment the list is hidden -- a widget that keeps a
+    key it does not need is how tab-to-focus silently disappears.
+    """
+
+    def on_key(self, event) -> None:
+        ac = getattr(self.app, "_skill_ac", None)
+        if ac is None or not ac.display:
+            return
+        if event.key == "tab":
+            self.app.accept_skill_completion()
+        elif event.key == "down":
+            ac.move(1)
+        elif event.key == "up":
+            ac.move(-1)
+        elif event.key == "escape":
+            ac.dismiss_list()
+        else:
+            return
+        event.prevent_default()
+        event.stop()
 
 
 class ChatMessage(Static):
@@ -915,6 +1000,22 @@ class LiteTUI(App):
         display: block;
     }
 
+    #skill-ac {
+        display: none;
+        height: auto;
+        max-height: 12;
+        margin: 0 2;
+        border: round $primary;
+        background: $surface;
+    }
+
+    #skill-ac-list {
+        height: auto;
+        max-height: 10;
+        scrollbar-size: 1 1;
+        background: $surface;
+    }
+
     #chat-log {
         height: 1fr;
         padding: 1 1;
@@ -1626,7 +1727,11 @@ class LiteTUI(App):
         yield Static(
             "  Image attached — Ctrl+X to remove", id="image-indicator"
         )
-        yield Input(
+        # Above the input, so it grows UPWARD out of the message area rather
+        # than pushing the box down as it filters.
+        self._skill_ac = SkillAutocomplete()
+        yield self._skill_ac
+        yield PromptInput(
             placeholder="Message... (Ctrl+V paste | Ctrl+O image | /help)",
             id="message-input",
         )
@@ -3628,6 +3733,48 @@ class LiteTUI(App):
 
     # ── Chat logic ───────────────────────────────────────────────
 
+    @on(Input.Changed, "#message-input")
+    def _skill_ac_changed(self, event: Input.Changed) -> None:
+        self.sync_skill_autocomplete(event.value)
+
+    def sync_skill_autocomplete(self, value: str) -> None:
+        """Show the picker only while a bare slash NAME is being typed.
+
+        The trigger is deliberately narrow: `/` plus name characters and
+        nothing else. Once a space is typed the user is writing arguments, and
+        a list that keeps reopening under an argument is noise.
+        """
+        ac = getattr(self, "_skill_ac", None)
+        if ac is None:
+            return
+        text = value or ""
+        if not self.skills or not text.startswith("/") or " " in text:
+            ac.dismiss_list()
+            return
+        ac.refilter(self.skills, text[1:])
+
+    def accept_skill_completion(self) -> None:
+        """Take the highlighted name. Trailing space, because a skill can take
+        arguments and the next keystroke should be one."""
+        ac = getattr(self, "_skill_ac", None)
+        name = ac.current() if ac else None
+        if not name:
+            return
+        box = self.query_one("#message-input", Input)
+        box.value = f"/{name} "
+        box.cursor_position = len(box.value)
+        ac.dismiss_list()
+
+    @on(OptionList.OptionSelected, "#skill-ac-list")
+    def _skill_ac_selected(self, event) -> None:
+        """Click or Enter inside the list. The click has already moved the
+        highlight, so this is the same act Tab performs."""
+        ac = getattr(self, "_skill_ac", None)
+        if ac is not None and event.option_index is not None:
+            ac.options.highlighted = event.option_index
+        self.accept_skill_completion()
+        self.query_one("#message-input", Input).focus()
+
     @on(Input.Submitted, "#message-input")
     def handle_submit(self, event: Input.Submitted) -> None:
         value = event.value
@@ -4764,6 +4911,18 @@ class LiteTUI(App):
             entry.handler(self, name, arg)
             return
 
+        # A slash name that is not a command may be a SKILL. Ryan typed
+        # /ls-mark expecting exactly that and got "Unknown" printed beside a
+        # list containing ls-mark -- and an autocomplete that completes to a
+        # dead command would be a control that does nothing, which is this
+        # repo's most-repeated defect.
+        #
+        # EXACT matches only. A mistyped command must still report itself
+        # rather than quietly loading something that merely resembles it.
+        bare = name.lstrip("/").lower()
+        if any(s.name.lower() == bare for s in self.skills):
+            self._handle_command(f"/skills {bare}")
+            return
         self._system(f"Unknown: {name} — try /help")
 
     def action_clear_chat(self) -> None:
