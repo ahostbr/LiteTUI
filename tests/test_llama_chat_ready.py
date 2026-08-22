@@ -218,6 +218,23 @@ def _backend(host: str) -> LlamaCppBackend:
     return LlamaCppBackend(s)
 
 
+# ── provenance ───────────────────────────────────────────────────────────────
+
+def test_the_raw_errors_this_replaces_are_the_ones_we_measured():
+    """The plain-words mapping exists because THIS is what the server says.
+    Pinning the captured bodies keeps that link load-bearing: if the engine
+    stops saying it, this fails and the mapping gets revisited instead of
+    silently drifting into a translation of an error nobody sends any more."""
+    code, body = ROUTER_ERRORS["chat_unloaded"]
+    assert code == 400 and "model is not loaded" in str(body)
+    code, body = ROUTER_ERRORS["chat_unknown"]
+    assert code == 400 and "not found" in str(body)
+    code, body = ROUTER_ERRORS["chat_while_loading"]
+    assert code == 503, (
+        "a load in flight is a DIFFERENT status from the two 400s — that is "
+        "why it is waited out rather than refused")
+
+
 # ── the raw 400, in plain words ──────────────────────────────────────────────
 
 def test_an_unloaded_model_is_told_to_load_first(router):
