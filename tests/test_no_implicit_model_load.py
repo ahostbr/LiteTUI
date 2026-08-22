@@ -47,14 +47,30 @@ class _Recorder:
         return _P()
 
     @property
-    def load_calls(self) -> list[list[str]]:
-        return [c for c in self.calls if len(c) >= 2 and c[0] == "lms" and c[1] == "load"]
+    def load_calls(self) -> list:
+        argv_loads = [
+            c for c in self.calls
+            if len(c) >= 2 and c[0] == "lms" and c[1] == "load"
+        ]
+        return argv_loads + self.backend_loads
 
 
 @pytest.fixture
 def recorder(monkeypatch):
+    """Watches BOTH load channels: the legacy `lms load` argv through
+    ttyguard, and the dual-backend seam (backend.load). "nothing loads
+    unless the user asked" must hold whichever road a load takes."""
+    import llm_backend
+
     r = _Recorder()
+    r.backend_loads = []
     monkeypatch.setattr(app_mod.ttyguard, "run", r)
+
+    async def _load(self, key, *, ctx=None):
+        r.backend_loads.append((key, ctx))
+
+    monkeypatch.setattr(llm_backend.LMStudioBackend, "load", _load)
+    monkeypatch.setattr(llm_backend.LlamaCppBackend, "load", _load)
     return r
 
 
@@ -127,8 +143,7 @@ async def test_an_explicit_settings_change_IS_allowed_to_load(recorder):
             await pilot.pause()
             await asyncio.sleep(0.05)
     assert recorder.load_calls, "an explicit context-length change loaded nothing"
-    argv = recorder.load_calls[0]
-    assert "--context-length" in argv and "64000" in argv
+    assert recorder.load_calls[0] == ("qwen/qwen3.8-27b", 64000)
 
 
 @pytest.mark.asyncio

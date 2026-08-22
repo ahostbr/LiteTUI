@@ -10,7 +10,6 @@ import subprocess
 import tempfile
 import statistics
 import time
-import urllib.request
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,9 +18,10 @@ import harness as harness_mod
 from dataclasses import fields as fields_of
 from functools import partial
 
-import config
 import settings as settings_mod
-from settings import Settings, sampling_kwargs
+from settings import Settings
+
+import llm_backend
 import paths
 import ttyguard
 import mcp_client
@@ -1361,12 +1361,17 @@ class LiteTUI(App):
         self._thinking_live: ThinkingBlock | None = None
         self._persist_error: str | None = None
         self._store_injected = False  # see STORE_HEADER; once per conversation
+        # ONE seam for both engines (LM Studio / our llama-server). The chat
+        # client is rebuilt in _connect after ensure_running(), because the
+        # llama backend may ATTACH to a different host than it was configured
+        # with — building here alone would pin the pre-attach URL.
+        self.backend = llm_backend.make_backend(self.settings)
+        #: key -> ModelRow for the connected backend; the /model picker reads
+        #: source tags and load state from here.
+        self.model_rows: dict[str, llm_backend.ModelRow] = {}
         self.client = AsyncOpenAI(
-            # Settings first, then config's env/default. config.BASE_URL is
-            # computed at IMPORT time, so reading it here would pin the client to
-            # the environment and silently ignore a host set in /settings.
-            base_url=f"{self.settings.lm_host.rstrip('/')}/v1",
-            api_key="lm-studio",
+            base_url=self.backend.base_url(),
+            api_key="litetui",
         )
         # Discovered ONCE, before the first system prompt is built -- the skill
         # index rides in that prompt, so discovering later would ship a prompt
@@ -2293,7 +2298,10 @@ class LiteTUI(App):
         home = str(Path.home())
         if cwd.startswith(home):
             cwd = "~" + cwd[len(home):]
-        parts = [p for p in (self.model_id, mode, f"think:{think}", cwd) if p]
+        # Which ENGINE is serving is now a real question \u2014 two backends can
+        # hold two different models resident. Named, not inferred.
+        engine = "llama.cpp" if self.backend.name == "llamacpp" else "LM Studio"
+        parts = [p for p in (engine, self.model_id, mode, f"think:{think}", cwd) if p]
         self.sub_title = " \u00b7 ".join(parts)
         # The footer carries the thinking level too, and it only refreshed on a
         # context update -- so /think changed the header instantly and left the
@@ -2316,12 +2324,27 @@ class LiteTUI(App):
     @work(exclusive=True, group="init")
     async def _connect(self) -> None:
         try:
-            models = await self.client.models.list()
+            # The llama backend may spawn its own server here (never loading
+            # a model) or attach to LiteSuite's — either way, say which.
+            status = await self.backend.ensure_running()
+            if status != "ok":
+                self._system(f"llama.cpp: {status}")
+            # Rebuild the chat client ONLY when the base_url moved (attaching
+            # can move it): a client built earlier would stream at a server
+            # the control plane is no longer talking to. When it has NOT
+            # moved, the existing client object survives — anything attached
+            # to it (a test's stubbed create, a keep-alive pool) stays valid.
+            new_base = self.backend.base_url().rstrip("/")
+            if str(self.client.base_url).rstrip("/") != new_base:
+                self.client = AsyncOpenAI(base_url=new_base, api_key="litetui")
+            rows = await self.backend.list_models()
             SKIP = {"embed", "embedding"}
-            self.available_models = [
-                m.id for m in models.data
-                if not any(s in m.id.lower() for s in SKIP)
+            rows = [
+                r for r in rows
+                if not any(s in r.key.lower() for s in SKIP)
             ]
+            self.model_rows = {r.key: r for r in rows}
+            self.available_models = [r.key for r in rows]
             if self.available_models:
                 # A configured default wins when the server is serving it. `pin`
                 # re-applies it on EVERY connect; without pin it only fills an
@@ -2336,7 +2359,16 @@ class LiteTUI(App):
                         f"{self.available_models[0]!r}. (/settings to change it.)"
                     )
                 if not self.model_id or self.model_id not in self.available_models:
-                    self.model_id = self.available_models[0]
+                    # Prefer a LOADED model for the default pick. The native
+                    # listing now includes every DOWNLOADED model (LM Studio
+                    # parity), and defaulting to a cold one would point the
+                    # first turn at a model that must JIT-load — or fail.
+                    loaded = [
+                        r.key for r in self.model_rows.values() if r.loaded
+                    ]
+                    self.model_id = (
+                        loaded[0] if loaded else self.available_models[0]
+                    )
                 self._update_header()
                 self._fetch_ctx_window()
                 # 🔴 DO NOT auto-apply the context length here. This used to call
@@ -2358,14 +2390,19 @@ class LiteTUI(App):
                     self._system(f"Available models:\n{listing}\nUse /model <number> to switch")
             else:
                 self.sub_title = "No model loaded"
-                self._system("No chat model loaded in LM Studio")
+                self._system(
+                    "No chat model available from "
+                    f"{'LM Studio' if self.backend.name == 'lmstudio' else 'llama.cpp'}"
+                    f" at {self.backend.host()}"
+                )
         except Exception as e:
             self.sub_title = "Disconnected"
             # The one that rots silently: it kept naming localhost after the
             # client could be pointed elsewhere, so the error blamed the wrong host.
-            # Name the host we ACTUALLY tried. Reporting config.LM_HOST here is
-            # the error-message rot config.py's own docstring warns about.
-            self._system(f"Could not connect to {self.settings.lm_host} — {e}")
+            # Name the host we ACTUALLY tried — the backend knows it; with two
+            # engines, settings.lm_host would blame the wrong SERVER, not just
+            # the wrong hostname.
+            self._system(f"Could not connect to {self.backend.host()} — {e}")
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -2512,7 +2549,7 @@ class LiteTUI(App):
         # window a test waits in, so the explicit-change control went red.
         if not force:
             try:
-                info = await asyncio.to_thread(self._read_model_info, self.model_id)
+                info = await self.backend.model_info(self.model_id)
             except Exception:
                 info = None
             if info:
@@ -2520,76 +2557,36 @@ class LiteTUI(App):
                 if is_loaded and cur and cur >= want:
                     return
 
-        def _load() -> tuple[int, str]:
-            # Through ttyguard, never raw subprocess: `lms` is a child that can
-            # leave the terminal in a mouse-reporting mode, and the envelope is
-            # what repairs it. test_ttyguard enforces this and caught the raw
-            # call this method originally shipped with.
-            proc = ttyguard.run(
-                ["lms", "load", self.model_id, "--context-length", str(want), "--yes"],
-                timeout=300,
-            )
-            return proc.returncode, (proc.stderr or proc.stdout or "").strip()
-
         self._system(f"Loading {self.model_id} at {want:,} tokens…")
         try:
-            code, out = await asyncio.to_thread(_load)
-        except FileNotFoundError:
-            self._system(
-                "Context length is set in /settings but the `lms` CLI is not on PATH, "
-                "so it could NOT be applied — the model is running at whatever window "
-                "LM Studio loaded it with."
-            )
+            # The backend owns the HOW: LM Studio via the SDK (replacing the
+            # `lms load` shell-out), llama.cpp via its router.
+            await self.backend.load(self.model_id, ctx=want)
+        except llm_backend.BackendError as e:
+            # The backend's message already names its host/path — report the
+            # server's own words, never a generic failure.
+            self._system(str(e))
             return
         except Exception as e:
             self._system(f"Could not set context length: {type(e).__name__}: {e}")
             return
-
-        if code != 0:
-            # Report the server's own words. A generic failure here would send
-            # the reader to the wrong place.
-            self._system(f"`lms load` failed ({code}) — context length unchanged.\n{out[:400]}")
-            return
         # Re-read rather than assume: the request is what we asked for, the
-        # readout is what we got, and LM Studio may clamp to what fits in VRAM.
+        # readout is what we got, and the server may clamp to what fits in VRAM.
         self._fetch_ctx_window()
-
-    @staticmethod
-    def _read_model_info(mid: str):
-        """(window, type, loaded) for `mid`, or None. Blocking — use a thread.
-
-        🔴 `loaded` IS THE POINT OF THIS RETURN VALUE. This used to read
-        `loaded_context_length or max_context_length` and hand back one number,
-        so a model that was merely INSTALLED reported its ceiling as its
-        window: qwen/qwen3.8-27b came back 262,144 while LM Studio would
-        JIT-load it at the server default.
-
-        A ceiling is not a window. The footer displayed it, and
-        _maybe_autocompact divided by it — 80% of 262,144 is 209,715 tokens,
-        unreachable inside an 8k window, so the threshold could never fire.
-        """
-        req = urllib.request.Request(config.API_URL, headers={"User-Agent": "LiteTUI"})
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.load(r)
-        models = (
-            data if isinstance(data, list) else (data.get("models") or data.get("data"))
-        )
-        for m in models or []:
-            if m.get("id") == mid:
-                loaded_len = m.get("loaded_context_length")
-                if loaded_len:
-                    return int(loaded_len), m.get("type"), True
-                return int(m.get("max_context_length") or 0) or None, m.get("type"), False
-        return None
 
     @work(exclusive=True, group="ctx")
     async def _fetch_ctx_window(self) -> None:
-        """Ask LM Studio's native API for the active model's context window."""
+        """Ask the backend for the active model's (window, type, loaded).
+
+        The ceiling-vs-window contract (a model that is merely INSTALLED must
+        never report its ceiling as a serving window — the 262,144-vs-8k
+        footer lie) now lives in each backend's model_info; both preserve it.
+        """
         if not self.model_id:
             return
         mid = self.model_id
         try:
-            got = await asyncio.to_thread(self._read_model_info, mid)
+            got = await self.backend.model_info(mid)
         except Exception:
             got = None  # server hiccup — footer just shows "?" for the window size
         if got:
@@ -3475,21 +3472,29 @@ class LiteTUI(App):
                 ),
                 "stream_options": {"include_usage": True},
             }
-            # Optional LM Studio sampling flags. Only the ones actually SET are
-            # sent: an unset knob must leave the server's own default in charge,
-            # which sending an invented zero would not.
-            kwargs.update(sampling_kwargs(self.settings))
+            # Sampling: global /settings defaults with this model's Inference
+            # overrides layered on top (only values actually SET are sent —
+            # an unset knob must leave the server's own default in charge).
+            # Split native-vs-extra_body: the OpenAI client's create() has
+            # typed params and no **kwargs, so top_k/min_p/repeat_penalty as
+            # top-level keys are a TypeError, not a passthrough.
+            native, extra, response_format = llm_backend.split_request_kwargs(
+                self.backend.request_overrides(self.model_id)
+            )
+            kwargs.update(native)
+            if response_format is not None:
+                kwargs["response_format"] = response_format
             if self.tools_enabled:
                 kwargs["tools"] = self._all_tools()
-            # Sent via extra_body so the value lands in the JSON verbatim: the
-            # OpenAI client types reasoning_effort as a fixed Literal, and two
-            # of LM Studio's six ("none", "xhigh") are not in it.
+            # reasoning_effort rides extra_body so the value lands in the JSON
+            # verbatim: the client types it as a fixed Literal, and two of LM
+            # Studio's six ("none", "xhigh") are not in it.
             if self.thinking_level:
-                kwargs["extra_body"] = {
-                    "reasoning_effort": "none"
-                    if self.thinking_level == "off"
-                    else self.thinking_level
-                }
+                extra["reasoning_effort"] = (
+                    "none" if self.thinking_level == "off" else self.thinking_level
+                )
+            if extra:
+                kwargs["extra_body"] = extra
 
             self._tps_start()
             try:

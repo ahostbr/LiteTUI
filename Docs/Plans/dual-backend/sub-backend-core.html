@@ -1,0 +1,240 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Plan: Sub Backend Core</title><style>
+:root{--bg:#09090b;--card:#111113;--secondary:#18181b;--border:#27272a;--text:#fafafa;
+--textSec:#a1a1aa;--muted:#71717a;--primary:#facc15;--mono:ui-monospace,'Cascadia Code',monospace}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);
+font-family:ui-sans-serif,system-ui,'Segoe UI',sans-serif;line-height:1.55;font-size:14px}
+main{max-width:960px;margin:0 auto;padding:28px 24px 60px}
+h1{font-size:23px;margin:0 0 6px}h2{font-size:15px;margin:26px 0 8px;color:var(--primary);
+text-transform:uppercase;letter-spacing:.07em}h3{font-size:14px;margin:14px 0 6px}
+p,li,td{color:var(--textSec)}code{font-family:var(--mono);font-size:12px;background:var(--secondary);
+padding:1px 4px;border-radius:4px}pre{background:var(--secondary);border:1px solid var(--border);
+border-radius:6px;padding:10px;overflow-x:auto}pre code{background:none;padding:0}
+a{color:var(--primary)}blockquote{border-left:3px solid var(--primary);margin:12px 0;
+padding:4px 14px;background:var(--card);border-radius:0 8px 8px 0}
+table{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0}
+th,td{border:1px solid var(--border);padding:5px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;background:var(--secondary)}
+ul{padding-left:22px}hr{border:none;border-top:1px solid var(--border)}
+</style></head><body><main><h1>Sub-Plan WS1: Backend Core</h1>
+<ul>
+<li><strong>master:</strong> <a href="master.html">master.md</a> · <strong>phase:</strong> 1 · <strong>dependencies:</strong> none (after Phase-0 gate)</li>
+<li><strong>Deliverable:</strong> <code>src/llm_backend.py</code> (new core module, peer of <code>harness.py</code>) + new <code>Settings</code>
+fields + mocked test suite. No UI, no commands (WS2/WS3 consume this).</li>
+</ul>
+<h2>Hard rules in force</h2>
+<ul>
+<li>Subprocess ONLY via <code>ttyguard.run</code> / <code>ttyguard.popen</code> (<code>tests/test_ttyguard.py</code> rglobs <code>src/**</code> — a raw <code>subprocess</code> import fails the suite).</li>
+<li>This module NEVER imports <code>app</code> (re-accretion gate). It receives what it needs via constructor args.</li>
+<li>Path anchors via <code>paths.X</code> (<code>import paths</code>, module-import style — a from-import copies the binding).</li>
+<li><code>None</code> in Settings = &quot;not configured, omit&quot; (settings.py doctrine); meaningful zeros stay distinct.</li>
+</ul>
+<h2>New Settings fields (central dataclass, <code>src/settings.py</code> — every field MUST gain a reader; <code>test_no_dead_controls</code> enforces)</h2>
+<pre><code class="language-python"># ── Backend selection ────────────────────────────────────────────────
+#: &quot;lmstudio&quot; | &quot;llamacpp&quot;. Env LITETUI_BACKEND wins (add to _ENV_MAP).
+backend: str = &quot;lmstudio&quot;
+#: First-boot picker shown exactly once, and only when BOTH engines are detected.
+backend_chosen: bool = False
+
+# ── llama.cpp endpoint ───────────────────────────────────────────────
+#: OUR router instance. Env LITETUI_LLAMA_HOST. 7470 chosen from the 74xx
+#: ecosystem block (8xxx avoided — Ryan 2026-08-21); port map doc 00 shows 7470 free.
+llama_host: str = &quot;http://localhost:7470&quot;
+#: Probed IN ORDER before spawning; a healthy answer = attach, never spawn.
+#: Default is LiteSuite's single-model server.
+llama_attach_hosts: list[str] = field(default_factory=lambda: [&quot;http://localhost:8088&quot;])
+#: Discovery scan roots (all optional, all on by default where they exist).
+llama_scan_litesuite: bool = True     # ~/.litesuite/llm/models
+llama_scan_lmstudio: bool = True      # ~/.lmstudio/models + legacy ~/.cache/lm-studio/models
+llama_scan_hf_cache: bool = True      # $HF_HOME or ~/.cache/huggingface/hub → **/snapshots/**/*.gguf
+llama_models_dirs: list[str] = field(default_factory=list)   # extra custom roots
+#: --models-max. 2, not upstream's 4: two 20GB models already fill a 5090.
+llama_models_max: int = 2
+#: Per-model Load-tab overrides: {model_key: {&quot;ctx&quot;: 120064, &quot;ngl&quot;: 65, ...}}
+#: Key vocabulary = the mapping table in sub-model-screen.md, EXACTLY.
+llama_load_settings: dict[str, dict] = field(default_factory=dict)
+#: Per-model Inference-tab overrides, BOTH backends: {model_key: {&quot;temperature&quot;: 1.0, ...}}
+model_infer_overrides: dict[str, dict] = field(default_factory=dict)
+#: Named presets: {name: {&quot;load&quot;: {...}, &quot;inference&quot;: {...}}}
+llama_presets: dict[str, dict] = field(default_factory=dict)
+# ── LM Studio SDK ────────────────────────────────────────────────────
+#: lmstudio-python sync API timeout for model loads (default 60s is too short for 20GB).
+lms_load_timeout_s: int = 600
+</code></pre>
+<p><code>_ENV_MAP</code> additions: <code>&quot;backend&quot;: &quot;LITETUI_BACKEND&quot;</code>, <code>&quot;llama_host&quot;: &quot;LITETUI_LLAMA_HOST&quot;</code>.</p>
+<h2>Dependency</h2>
+<p><code>pyproject.toml</code>: add <code>lmstudio</code> (the official SDK, PyPI). Chat stays on the existing
+<code>openai</code> <code>AsyncOpenAI</code> client for BOTH backends — the SDK is control-plane only.</p>
+<h2>Module contract (<code>src/llm_backend.py</code>)</h2>
+<pre><code class="language-python">@dataclass(frozen=True)
+class ModelRow:
+    key: str            # stable id shown in /model and used as dict key everywhere
+    path: str | None    # absolute GGUF path (llamacpp) / None (lmstudio)
+    source: str         # &quot;litesuite&quot; | &quot;lmstudio-dir&quot; | &quot;hf-cache&quot; | &quot;custom&quot; | &quot;server&quot;
+    loaded: bool
+
+class Backend(Protocol):
+    name: str                                   # &quot;lmstudio&quot; | &quot;llamacpp&quot;
+    def base_url(self) -&gt; str: ...              # OpenAI-compat /v1 for AsyncOpenAI
+    def host(self) -&gt; str: ...                  # for error messages — never hardcode a host string
+    async def ensure_running(self) -&gt; str: ...  # &quot;ok&quot; | &quot;attached &lt;host&gt;&quot; | &quot;spawned pid &lt;n&gt;&quot; | raises BackendError
+    async def list_models(self) -&gt; list[ModelRow]: ...
+    async def model_info(self, key) -&gt; tuple[int | None, str | None, bool] | None: ...
+                                                # (window, type, loaded) — EXACT semantics of
+                                                # app._read_model_info: loaded_len when loaded,
+                                                # ceiling+False when merely installed (app.py:2570)
+    async def load(self, key, *, ctx: int | None = None) -&gt; None: ...
+    async def unload(self, key) -&gt; None: ...
+    async def apply_load_settings(self, key, cfg: dict) -&gt; None: ...   # full Load-tab dict
+    def request_overrides(self, key) -&gt; dict: ...   # extra_body / params for chat requests
+def make_backend(settings) -&gt; Backend: ...          # the one factory app.py calls
+</code></pre>
+<h2>Tasks</h2>
+<h3>[x] T1 — Flag census (build gate B1) — FIRST COMMIT</h3>
+<ul>
+<li>Run <code>ttyguard.run([str(LLAMA_EXE), &quot;--help&quot;], timeout=30)</code> against
+<code>~/.litesuite/llm/bin/llama-server.exe</code>; parse which of these exist: <code>--models-preset</code>,
+<code>--models-dir</code>, <code>--models-max</code>, <code>--no-models-autoload</code>, <code>--kv-unified</code>, <code>--flash-attn</code>,
+<code>--cache-type-k</code>, <code>--rope-freq-base</code>, <code>--mmproj</code>, <code>-md</code>, <code>--jinja</code>, <code>--chat-template-file</code>,
+<code>--context-shift</code>.</li>
+<li>Emit <code>SUPPORTED_FLAGS: frozenset[str]</code> + <code>INI_KEYS: dict[str, str]</code> constants; a control
+whose flag is absent renders &quot;n/a in installed build &lt;version from bin/.build-info&gt;&quot;.</li>
+<li><strong>Router mode absent entirely</strong> (old binary): <code>make_backend</code> raises
+<code>BackendError(&quot;llama-server bNNNN has no router mode — update the engine in LiteSuite's Model Hub&quot;)</code>.</li>
+<li>Test <code>tests/test_llama_flags.py</code>: parse a captured <code>--help</code> fixture; assert census output.</li>
+</ul>
+<h3>[x] T2 — Discovery scanner</h3>
+<ul>
+<li><code>scan_models(settings) -&gt; list[ModelRow]</code>. Roots: <code>Path.home()/&quot;.litesuite/llm/models&quot;</code>;
+<code>Path.home()/&quot;.lmstudio/models&quot;</code> and <code>Path.home()/&quot;.cache/lm-studio/models&quot;</code>;
+<code>os.environ.get(&quot;HF_HOME&quot;, Path.home()/&quot;.cache/huggingface&quot;)/&quot;hub&quot;</code> matching
+<code>models--*/snapshots/*/**/*.gguf</code>; each of <code>settings.llama_models_dirs</code>.</li>
+<li>Skip: files &lt; 10 MB, <code>*mmproj*</code> files (they are projectors, offered in the Load tab's
+mmproj picker instead), split shards beyond the first (<code>*-00002-of-*.gguf</code>).</li>
+<li><strong>Key derivation:</strong> file stem, lowercased; on stem collision from different content,
+suffix <code>~2</code>. <strong>Dedupe:</strong> same (stem, size) in two roots → ONE row, precedence
+litesuite &gt; lmstudio-dir &gt; hf-cache &gt; custom; keep all source paths on the row for the Info tab.</li>
+<li>Test <code>tests/test_llama_discovery.py</code>: tmp-dir tree with a dupe, a shard set, an mmproj,
+a sub-10MB stub → exact expected rows.</li>
+</ul>
+<h3>[x] T3 — Ini generator</h3>
+<ul>
+<li><code>write_preset_ini(rows, settings, path) -&gt; Path</code> under a new <code>paths.LLAMA_DIR = ROOT/&quot;.llama&quot;</code>
+(add to <code>paths.py</code>; gitignore it): <code>litetui-models.ini</code> + <code>litetui-llama-server.log</code>.</li>
+<li>One <code>[&lt;key&gt;]</code> section per row: <code>model = &lt;abs path&gt;</code> + every key present in that model's
+<code>settings.llama_load_settings[key]</code>, translated through <code>INI_KEYS</code>, inverted-flag handling
+for kv_offload/mmap (<code>--no-kv-offload</code> / <code>--no-mmap</code> written only when the toggle is OFF).</li>
+<li>Deterministic output (sorted sections, sorted keys) — the test diffs a golden file.</li>
+<li>Test <code>tests/test_llama_ini.py</code>: golden-file comparison; a cfg key with no supported flag
+raises <code>IniUnexpressible(key)</code> — NEVER silently dropped (hybrid fallback consumes this).</li>
+</ul>
+<h3>[x] T4 — Process supervisor (LlamaCppBackend.ensure_running)</h3>
+<ul>
+<li>Probe order: <code>settings.llama_host</code> <code>/health</code> (already ours, running) → each
+<code>llama_attach_hosts</code> <code>/health</code> (attach; remember attached host for base_url) → spawn.</li>
+<li>Spawn: <code>ttyguard.popen([exe, &quot;--models-preset&quot;, ini, &quot;--host&quot;, &quot;127.0.0.1&quot;, &quot;--port&quot;, port, &quot;--models-max&quot;, n, &quot;--no-models-autoload&quot;], stdout=logfile, stderr=logfile, detached)</code> —
+cwd = bin dir (DLLs), never inherits the TUI console. Readiness = <code>/health</code> 200 within
+120s, polled at 1s; on timeout read the log tail (last 5 lines) into the error.</li>
+<li><strong>Attached mode is read-mostly:</strong> against LiteSuite's single-model :8088 server,
+load/unload/apply are refused with &quot;LiteSuite owns this server — switch models in the
+Model Hub, or stop it and I'll run my own&quot; (its process serves ONE fixed model).</li>
+<li>Hybrid fallback: a model whose cfg raised <code>IniUnexpressible</code> gets
+<code>spawn_dedicated(key) -&gt; port</code> — single-model spawn with FULL argv (LiteSuite's
+<code>buildServerArgs</code> vocabulary, llama-manager.ts:807-847); backend routes that key's
+base_url to the dedicated port. Owner tracking so <code>/unload</code> kills it.</li>
+<li>Shutdown: <code>atexit</code> + app exit kill only processes WE spawned (never an attached server).</li>
+<li>Test <code>tests/test_llama_supervisor.py</code>: fake <code>/health</code> HTTP stub on an ephemeral port —
+attach beats spawn; spawn cmdline assembled correctly (popen monkeypatched); dead host +
+missing exe → <code>BackendError</code> naming the exe path.</li>
+</ul>
+<h3>[x] T5 — Router client (list/load/unload/info)</h3>
+<ul>
+<li><code>GET {host}/models</code> → rows (server truth) merged with T2 scan (disk truth): a model the
+server doesn't know yet is still offered (ini regenerates + <code>POST /models/load</code> reloads config).</li>
+<li><code>load</code>: <code>POST /models/load {&quot;model&quot;: key}</code>; <code>unload</code>: <code>POST /models/unload</code>; both surface
+the server's error body verbatim in-band (app._system), never swallowed.</li>
+<li><code>model_info(key)</code>: from <code>/models</code> status: loaded → (n_ctx from instance props, &quot;llm&quot;/&quot;vlm&quot;
+when mmproj configured, True); not loaded → (GGUF n_ctx_train ceiling if cheaply available
+from <code>/models</code> metadata else None, type, False). Semantics MUST match app.py:2570's
+ceiling-vs-window contract — the footer's &quot;max&quot; tag depends on it.</li>
+<li><code>apply_load_settings</code>: update <code>settings.llama_load_settings[key]</code> → rewrite ini →
+<code>POST /models/unload</code> + <code>/models/load</code> (reload picks up the new section). Never touches
+other loaded models.</li>
+<li>Test <code>tests/test_llama_router.py</code>: HTTP stub asserting exact request bodies + the
+unload/load sequence on apply.</li>
+</ul>
+<h3>[x] T6 — LMStudioBackend (SDK control plane)</h3>
+<ul>
+<li><code>import lmstudio as lms</code> lazily INSIDE methods (a missing dep must not kill boot —
+plugin-failure doctrine; surface &quot;pip install lmstudio&quot; in-band).</li>
+<li>Client: <code>lms.configure_default_client(host_without_scheme)</code> from <code>settings.lm_host</code>;
+<code>lms.set_sync_api_timeout(settings.lms_load_timeout_s)</code>. Every SDK call via
+<code>asyncio.to_thread</code> (sync API; the app is Textual-async).</li>
+<li><code>load(key, ctx=n)</code> → <code>lms.llm(key, config={&quot;contextLength&quot;: n})</code> (replaces the
+<code>lms load --context-length</code> shell-out VERBATIM in behavior: explicit act only).</li>
+<li><code>unload(key)</code> → handle from <code>lms.llm(key)</code> then <code>.unload()</code> — capability LiteTUI never had.</li>
+<li><code>list_models</code> / <code>model_info</code>: keep the existing native REST <code>GET {lm_host}/api/v0/models</code>
+logic (moved here from app.py, byte-for-byte semantics — it already encodes the
+loaded-vs-ceiling lesson).</li>
+<li><code>apply_load_settings</code>: SDK-mappable subset (contextLength, gpu offload, ttl); the rest
+raises <code>NotSupported(&quot;LM Studio manages this in its own UI&quot;)</code> which the screen renders
+as the greyed state.</li>
+<li>Test <code>tests/test_lms_backend.py</code>: <code>lmstudio</code> module monkeypatched; assert config dict,
+to_thread usage, absent-dep error path.</li>
+</ul>
+<h3>[x] T7 — Request overrides</h3>
+<ul>
+<li><code>request_overrides(key)</code>: merge global Settings sampling fields (existing: temperature,
+top_p, top_k, min_p, repeat_penalty, presence_penalty, frequency_penalty, seed, stop)
+with <code>model_infer_overrides[key]</code> (override wins, None = omit). llama extras ride
+<code>extra_body</code> (min_p, repeat_penalty, top_k are llama-server native fields);
+structured output → <code>response_format={&quot;type&quot;:&quot;json_schema&quot;,&quot;json_schema&quot;:{...}}</code>.</li>
+<li>Consumed by WS3 T4 (the <code>_stream</code> call site).</li>
+<li>Test <code>tests/test_request_overrides.py</code>: precedence matrix (global-only / override-only /
+both / explicit None).</li>
+</ul>
+<h3>[x] T8 — Error paths</h3>
+<ul>
+<li>Every network failure raises <code>BackendError(msg_naming(self.host()))</code> — the app.py:2364
+lesson (never blame a host we didn't try) is enforced IN the backend, tested per backend.</li>
+<li>SDK websocket death mid-session (LM Studio quit): next control call surfaces
+&quot;LM Studio is not running at &lt;host&gt;&quot; — not a stack trace.</li>
+</ul>
+<h3>[x] T9 — Seat-guard port (Sentinel finding, 2026-08-21)</h3>
+<ul>
+<li><code>src/seat_guard.py</code> (studio tool's suspend-between-completions) speaks raw lms verbs
+(<code>lms ps --json</code> / <code>unload</code> / <code>load</code> + ctx verify). Refactor it to take a <code>backend</code>
+parameter (the studio plugin passes <code>app.backend</code>); its breadcrumb file, retry loop,
+ctx-verify-after-resume, and safety-gate SHAPE stay exactly as written — only the verbs
+route through the protocol:
+<ul>
+<li><code>record(key)</code> → <code>backend.seat_snapshot(key) -&gt; dict | None</code> (identifier, context,
+parallel, status, queued) — new protocol method.</li>
+<li><code>suspend(rec)</code> → <code>backend.unload(key)</code>; <code>resume(rec)</code> → <code>backend.load(key, ctx=…)</code> +
+re-read snapshot; wrong-context detection unchanged (compare against ASKED).</li>
+</ul>
+</li>
+<li><strong>LMStudioBackend.seat_snapshot:</strong> keep ONE narrow read-only <code>lms ps --json</code> via
+ttyguard (it is the only source of <code>status</code>+<code>queued</code>, the do-not-kill-other-seats gate)
+UNLESS the SDK exposes equivalent status at build time — check first, prefer SDK.
+The &quot;delete <code>lms load</code>&quot; criterion is unchanged; <code>lms ps</code> read-only may survive.</li>
+<li><strong>LlamaCppBackend:</strong> router-owned → native support (<code>/models</code> status busy ⇒ refuse;
+unload/load = suspend/resume); dedicated spawn → stop/respawn via the supervisor;
+attached (:8088, LiteSuite's single-model server) → honest refusal:
+<code>&quot;suspend unsupported: LiteSuite owns this server&quot;</code> — the studio tool surfaces it and
+proceeds WITHOUT suspending only if the generation fits, per seat_guard's existing
+caller contract.</li>
+<li>Test <code>tests/test_seat_guard_backends.py</code>: suspend/resume cycle against the router stub;
+refusal string in attached mode; LMS path still satisfies the existing seat_guard tests.</li>
+</ul>
+<h2>Golden path (this WS alone, mocked)</h2>
+<p><code>make_backend(settings(backend=&quot;llamacpp&quot;))</code> → <code>ensure_running()</code> against stub = &quot;attached&quot; →
+<code>list_models()</code> merges stub+scan → <code>apply_load_settings(&quot;m&quot;, {&quot;ctx&quot;: 8192})</code> rewrites ini +
+replays unload/load → <code>request_overrides(&quot;m&quot;)</code> carries the override temp.</p>
+<h2>Validation Commands</h2>
+<ul>
+<li>[x] <code>python -m pytest tests/test_llama_flags.py tests/test_llama_discovery.py tests/test_llama_ini.py tests/test_llama_supervisor.py tests/test_llama_router.py tests/test_lms_backend.py tests/test_request_overrides.py -x -q</code> — exits 0. <em>Conditions: clean tree, no real llama-server running, ephemeral ports only.</em></li>
+<li>[x] <code>python tests/run_all.py</code> — whole suite still green (no regression), 3 consecutive runs.</li>
+<li>[] Negative proof: rename the stub's <code>/health</code> route → supervisor test FAILS (gate seen failing once, then restored).</li>
+<li>[x] <code>git grep -n &quot;subprocess&quot; src/llm_backend.py</code> → empty (ttyguard only).</li>
+</ul>
+</main></body></html>

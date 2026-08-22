@@ -67,10 +67,12 @@ async def _settle(pilot, predicate, seconds: float = 8.0):
 
 @pytest.mark.asyncio
 async def test_a_stale_ceiling_is_replaced_once_the_model_is_loaded(monkeypatch):
-    monkeypatch.setattr(
-        app_mod.LiteTUI, "_read_model_info", staticmethod(lambda mid: (LOADED, "llm", True))
-    )
     a = _app()
+
+    # The read moved behind the backend seam; the resync contract did not.
+    async def _info(mid):
+        return (LOADED, "llm", True)
+    a.backend.model_info = _info
     async with a.run_test() as pilot:
         a.ctx_max, a.ctx_loaded = CEILING, False  # the state on Ryan's screen
         a._resync_ctx_if_stale()
@@ -83,12 +85,12 @@ async def test_a_stale_ceiling_is_replaced_once_the_model_is_loaded(monkeypatch)
 async def test_a_known_good_window_is_not_re_read_every_turn(monkeypatch):
     """The re-read costs an HTTP round trip; it must be conditional."""
     calls = []
-    monkeypatch.setattr(
-        app_mod.LiteTUI,
-        "_read_model_info",
-        staticmethod(lambda mid: (calls.append(mid), (LOADED, "llm", True))[1]),
-    )
     a = _app()
+
+    async def _info(mid):
+        calls.append(mid)
+        return (LOADED, "llm", True)
+    a.backend.model_info = _info
     async with a.run_test() as pilot:
         a.ctx_max, a.ctx_loaded = LOADED, True
         a._resync_ctx_if_stale()

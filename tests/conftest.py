@@ -33,6 +33,14 @@ if str(SRC) not in sys.path:
 # caller already chose a value.
 os.environ.setdefault("LITETUI_NO_HARNESS", "1")
 
+# The suite must not meet the first-boot ENGINE PICKER either: this box has
+# both engines installed, so a fresh Settings() would push a modal over every
+# pilot test. An env-pinned backend is product logic for "nothing to ask"
+# (model_switch._activate checks source_of), and lmstudio is the historical
+# default every existing test was written against. Tests OF the picker
+# monkeypatch.delenv this.
+os.environ.setdefault("LITETUI_BACKEND", "lmstudio")
+
 # 🔴 THE SUITE MUST NOT WRITE THE LIVE settings.json EITHER.
 #
 # Measured 2026-08-20, with a backup and a restore: ONE test run reset Ryan's

@@ -44,45 +44,56 @@ LOADED, CEILING = 120064, 262144
 
 
 class _Recorder:
+    """Loads now go through the backend seam (backend.load(key, ctx=n)) —
+    the `lms load` argv this used to capture is the SDK's job since the
+    dual-backend split. What the contract cares about is unchanged: WHETHER
+    a load happened, and at what window."""
+
     def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def __call__(self, cmd, **kw):
-        self.calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)])
-
-        class _P:
-            returncode = 0
-            stdout = stderr = ""
-
-        return _P()
+        self.calls: list = []
 
     @property
-    def load_calls(self) -> list[list[str]]:
-        return [c for c in self.calls if len(c) >= 2 and c[0] == "lms" and c[1] == "load"]
+    def load_calls(self) -> list:
+        return self.calls
 
 
 @pytest.fixture
-def recorder(monkeypatch):
-    r = _Recorder()
-    monkeypatch.setattr(app_mod.ttyguard, "run", r)
-    return r
+def recorder():
+    return _Recorder()
 
 
-def _app(ctx=120000):
+def _app(ctx=120000, recorder=None, info=None):
     a = app_mod.LiteTUI()
     a.settings = Settings(default_model="qwen/qwen3.8-27b", default_context_length=ctx)
     a.model_id = "qwen/qwen3.8-27b"
     a._system = lambda *_a, **_k: None
     a._fetch_ctx_window = lambda: None
+    if recorder is not None:
+        async def _load(key, *, ctx=None):
+            recorder.calls.append((key, ctx))
+        a.backend.load = _load
+    if info is not None:
+        async def _model_info(mid):
+            return info
+        a.backend.model_info = _model_info
     return a
 
 
 # ── fault 2: a ceiling is not a window ────────────────────────────────────
+# The parsing moved into LMStudioBackend when the dual-backend seam landed;
+# the CONTRACT it protects did not move an inch.
+
+def _lms_info(monkeypatch, payload):
+    import llm_backend
+    monkeypatch.setattr(
+        llm_backend, "_http_json", lambda url, body=None, timeout=10: payload
+    )
+    return llm_backend.LMStudioBackend(Settings())._model_info_sync("m")
+
+
 def test_a_not_loaded_model_is_reported_as_not_loaded(monkeypatch):
     payload = {"data": [{"id": "m", "max_context_length": CEILING, "type": "llm"}]}
-    monkeypatch.setattr(app_mod.urllib.request, "urlopen",
-                        lambda *a, **k: _FakeResp(payload))
-    got = app_mod.LiteTUI._read_model_info("m")
+    got = _lms_info(monkeypatch, payload)
     assert got == (CEILING, "llm", False), got
     assert got[2] is False, "a ceiling must never be reported as a loaded window"
 
@@ -90,19 +101,7 @@ def test_a_not_loaded_model_is_reported_as_not_loaded(monkeypatch):
 def test_a_loaded_model_reports_its_loaded_window(monkeypatch):
     payload = {"data": [{"id": "m", "loaded_context_length": LOADED,
                          "max_context_length": CEILING, "type": "llm"}]}
-    monkeypatch.setattr(app_mod.urllib.request, "urlopen",
-                        lambda *a, **k: _FakeResp(payload))
-    assert app_mod.LiteTUI._read_model_info("m") == (LOADED, "llm", True)
-
-
-class _FakeResp:
-    def __init__(self, payload):
-        import json as _j
-        self._b = _j.dumps(payload).encode()
-
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
-    def read(self): return self._b
+    assert _lms_info(monkeypatch, payload) == (LOADED, "llm", True)
 
 
 # ── auto-compact must not divide by a ceiling ─────────────────────────────
@@ -157,9 +156,7 @@ async def test_an_already_satisfied_window_is_not_reloaded(recorder, monkeypatch
     """120,064 satisfies a request for 120,000. Reloading evicts 17GB to
     change nothing — and the OLD guard (readout == request) could never see
     this case, because LM Studio clamps."""
-    monkeypatch.setattr(app_mod.LiteTUI, "_read_model_info",
-                        staticmethod(lambda mid: (LOADED, "llm", True)))
-    a = _app(ctx=120000)
+    a = _app(ctx=120000, recorder=recorder, info=(LOADED, "llm", True))
     async with a.run_test() as pilot:
         a._apply_context_length()
         for _ in range(8):
@@ -172,17 +169,13 @@ async def test_an_already_satisfied_window_is_not_reloaded(recorder, monkeypatch
 async def test_a_not_loaded_model_IS_loaded_at_the_configured_window(recorder, monkeypatch):
     """The actual bug: nothing applied the setting, so LM Studio JIT-loaded at
     its own default."""
-    monkeypatch.setattr(app_mod.LiteTUI, "_read_model_info",
-                        staticmethod(lambda mid: (CEILING, "llm", False)))
-    a = _app(ctx=120000)
+    a = _app(ctx=120000, recorder=recorder, info=(CEILING, "llm", False))
     async with a.run_test() as pilot:
         a._apply_context_length()
         for _ in range(8):
             await pilot.pause()
             await asyncio.sleep(0.05)
-    assert len(recorder.load_calls) == 1, recorder.calls
-    argv = recorder.load_calls[0]
-    assert "--context-length" in argv and "120000" in argv, argv
+    assert recorder.load_calls == [("qwen/qwen3.8-27b", 120000)], recorder.calls
 
 
 @pytest.mark.asyncio
@@ -193,16 +186,13 @@ async def test_force_lowers_a_window_that_already_exceeds_the_request(recorder, 
     lowering the window to free VRAM is a legitimate thing to ask for, and a
     >= guard would silently ignore it.
     """
-    monkeypatch.setattr(app_mod.LiteTUI, "_read_model_info",
-                        staticmethod(lambda mid: (LOADED, "llm", True)))
-    a = _app(ctx=32000)
+    a = _app(ctx=32000, recorder=recorder, info=(LOADED, "llm", True))
     async with a.run_test() as pilot:
         a._apply_context_length(force=True)
         for _ in range(8):
             await pilot.pause()
             await asyncio.sleep(0.05)
-    assert len(recorder.load_calls) == 1, recorder.calls
-    assert "32000" in recorder.load_calls[0]
+    assert recorder.load_calls == [("qwen/qwen3.8-27b", 32000)], recorder.calls
 
 
 # ── fault 1: the switch applies it ────────────────────────────────────────

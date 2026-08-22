@@ -7,6 +7,9 @@ dependencies = [
     "textual>=0.89.0",
     "openai>=1.0.0",
     "Pillow>=10.0.0",
+    # LM Studio control plane (load/unload/ttl) — chat stays on openai's
+    # OpenAI-compat client for BOTH backends; the SDK is control-only.
+    "lmstudio>=1.5.0",
 ]
 
 [project.scripts]

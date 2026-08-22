@@ -159,12 +159,16 @@ def test_resume_failure_retries_then_hands_the_human_the_command(monkeypatch):
 # --------------------------------------------------------------------------
 
 def _wire(monkeypatch, log, rec=None, resume_err=None):
+    # studio_tool passes the app's backend through since the dual-backend
+    # seam; the fakes accept and ignore it — routing is llm_backend's tested
+    # concern, ORDER is this file's.
     rec = rec or _rec()
-    monkeypatch.setattr(seat_guard, "record", lambda _id: rec and dict(rec))
+    monkeypatch.setattr(seat_guard, "record",
+                        lambda _id, _b=None: rec and dict(rec))
     monkeypatch.setattr(seat_guard, "suspend",
-                        lambda r: log.append("suspend") or None)
+                        lambda r, _b=None: log.append("suspend") or None)
     monkeypatch.setattr(seat_guard, "resume",
-                        lambda r: log.append("resume") or resume_err)
+                        lambda r, _b=None: log.append("resume") or resume_err)
 
 
 def test_image_generate_suspends_generates_resumes_in_order(monkeypatch):
@@ -222,8 +226,8 @@ def test_no_seat_injected_means_no_suspension(monkeypatch):
 
 def test_an_unloaded_seat_generates_without_ceremony(monkeypatch):
     log = []
-    monkeypatch.setattr(seat_guard, "record", lambda _id: None)
-    monkeypatch.setattr(seat_guard, "suspend", lambda r: log.append("suspend"))
+    monkeypatch.setattr(seat_guard, "record", lambda _id, _b=None: None)
+    monkeypatch.setattr(seat_guard, "suspend", lambda r, _b=None: log.append("suspend"))
     monkeypatch.setattr(studio_tool, "_http", lambda *a, **k: {"imagePath": "x"})
     out = studio_tool.run({"app": "image", "action": "generate",
                            "prompt": "x"}, seat_model="seat-x")
@@ -232,7 +236,7 @@ def test_an_unloaded_seat_generates_without_ceremony(monkeypatch):
 
 def test_a_busy_model_refuses_the_generation_not_the_seat(monkeypatch):
     monkeypatch.setattr(seat_guard, "record",
-                        lambda _id: {**_rec(), "status": "generating"})
+                        lambda _id, _b=None: {**_rec(), "status": "generating"})
     out = studio_tool.run({"app": "image", "action": "generate",
                            "prompt": "x"}, seat_model="seat-x")
     assert "not suspending" in out and "mid-stream" in out

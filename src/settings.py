@@ -63,6 +63,46 @@ class Settings:
     #: Re-apply default_model on every connect, not just the first.
     pin_default_model: bool = False
 
+    # ── Backend (which engine serves the chat) ───────────────────────────────
+    #: "lmstudio" (LM Studio desktop at lm_host) or "llamacpp" (our own
+    #: llama-server in router mode — the engine LiteSuite's Model Hub
+    #: installs). The default preserves existing behavior exactly.
+    backend: str = "lmstudio"
+    #: The first-boot picker ran (it shows once, and only when BOTH engines
+    #: are detected). Esc leaves this False so the question returns.
+    backend_chosen: bool = False
+    #: OUR router instance. 7470 sits in the ecosystem's 74xx block — the
+    #: 8xxx range is crowded on dev machines (Ryan, 2026-08-21).
+    llama_host: str = "http://localhost:7470"
+    #: Probed IN ORDER before spawning; a healthy answer means attach, never
+    #: spawn. Default is LiteSuite's own single-model server. An attached
+    #: server belongs to whoever started it: we chat through it and refuse to
+    #: manage its models.
+    llama_attach_hosts: list[str] = field(
+        default_factory=lambda: ["http://localhost:8088"]
+    )
+    #: Discovery scan roots. Every GGUF on the box is one picker, not four.
+    llama_scan_litesuite: bool = True   # ~/.litesuite/llm/models
+    llama_scan_lmstudio: bool = True    # ~/.lmstudio/models (+ legacy cache dir)
+    llama_scan_hf_cache: bool = True    # $HF_HOME or ~/.cache/huggingface/hub
+    llama_models_dirs: list[str] = field(default_factory=list)
+    #: --models-max for OUR router. 2, not upstream's 4: two large models
+    #: already fill this class of GPU, and the OOM of 2026-08-21 is why
+    #: memory ceilings are set here rather than discovered by crashing.
+    llama_models_max: int = 2
+    #: Per-model Load-tab overrides {model_key: {"ctx": …, "ngl": …, ...}} —
+    #: key vocabulary is llm_backend.FLAG_FOR, edited via /modelcfg.
+    llama_load_settings: dict = field(default_factory=dict)
+    #: Per-model Inference-tab overrides, BOTH backends {model_key: {...}}.
+    #: Unset field = inherit the global sampling settings below.
+    model_infer_overrides: dict = field(default_factory=dict)
+    #: Named presets {name: {"load": {...}, "inference": {...}}} — saved and
+    #: applied from /modelcfg.
+    llama_presets: dict = field(default_factory=dict)
+    #: lmstudio SDK sync-API timeout. Its default (60s) is shorter than a
+    #: large model's load; a timeout mid-load reads as a failure that isn't.
+    lms_load_timeout_s: int = 600
+
     # ── Generation ───────────────────────────────────────────────────────────
     #: Response budget WITH tools enabled. The agent loop needs headroom for
     #: tool calls plus prose; 16384 was the hardcoded value.
@@ -223,6 +263,8 @@ class Settings:
 #: Both pre-existing knobs are preserved by name so nothing that worked breaks.
 ENV_OVERRIDES: dict[str, str] = {
     "lm_host": "LITETUI_LM_HOST",
+    "backend": "LITETUI_BACKEND",
+    "llama_host": "LITETUI_LLAMA_HOST",
     "tool_iterations": "LM_TOOL_ITERS",
     "default_model": "LITETUI_MODEL",
     "max_tokens_tools": "LITETUI_MAX_TOKENS",

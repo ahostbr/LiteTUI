@@ -105,6 +105,12 @@ def main() -> int:
     # this covers the script-style files, which never import it.
     os.environ.setdefault("LITETUI_NO_HARNESS", "1")
 
+    # Same shape, newer hazard: this box has BOTH engines installed, so a
+    # fresh Settings() would push the first-boot ENGINE PICKER modal over
+    # every script-style test's input. An env-pinned backend is the product's
+    # own "nothing to ask" path (conftest covers the pytest half).
+    os.environ.setdefault("LITETUI_BACKEND", "lmstudio")
+
     # 🔴 A child's stdout is a PIPE, so on Windows it encodes as cp1252 — and
     # every script-style test that prints the red-circle emoji in a label
     # crashed with UnicodeEncodeError AFTER its checks had all passed, so the

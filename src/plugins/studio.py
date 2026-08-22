@@ -17,7 +17,12 @@ def _register(ctx) -> None:
     # time, so a /model switch is honored mid-session.
     ctx.tool(
         studio_tool.STUDIO_TOOL_SPEC,
-        lambda args: studio_tool.run(args, seat_model=app.model_id),
+        # backend rides in too: the suspend/resume verbs must go to the
+        # ENGINE serving the seat — lms verbs against a llama-served model
+        # manage nothing. Read at call time, same as model_id.
+        lambda args: studio_tool.run(
+            args, seat_model=app.model_id, backend=app.backend
+        ),
     )
 
 

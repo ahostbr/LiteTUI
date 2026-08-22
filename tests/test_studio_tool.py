@@ -44,8 +44,8 @@ def test_the_dispatcher_resolves_studio_and_injects_the_seat():
     import studio_tool as st
     real = st.run
     try:
-        st.run = lambda args, seat_model=None: seen.update(
-            args=args, seat_model=seat_model) or "ok"
+        st.run = lambda args, seat_model=None, backend=None: seen.update(
+            args=args, seat_model=seat_model, backend=backend) or "ok"
         fn = a._dispatch_for("studio")
         assert fn is not None, "offered but not dispatched"
         out = fn({"app": "image", "action": "status"})
@@ -56,6 +56,10 @@ def test_the_dispatcher_resolves_studio_and_injects_the_seat():
     assert seen["seat_model"] == "the-current-seat", (
         "the dispatch must inject the CALLER's model id — without it, "
         "generation runs beside a 29 GB resident and the box OOMs again"
+    )
+    assert seen["backend"] is a.backend, (
+        "the dispatch must inject the app's backend — suspend verbs sent to "
+        "the wrong engine manage nothing (Sentinel's finding, 2026-08-21)"
     )
 
 

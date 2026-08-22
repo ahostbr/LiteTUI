@@ -201,6 +201,55 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             placeholder="http://localhost:1234",
                         )
 
+                        # ── Backend (engine selection) ───────────────────────
+                        yield from self._select_row(
+                            "backend", "Engine",
+                            [("LM Studio desktop", "lmstudio"),
+                             ("llama.cpp (our own llama-server)", "llamacpp")],
+                            "Which engine serves the chat. /backend switches "
+                            "live; this is the boot default.",
+                        )
+                        yield from self._text_row(
+                            "llama_host", "llama.cpp host (ours)",
+                            "Where LiteTUI's own router llama-server listens.",
+                            placeholder="http://localhost:7470",
+                        )
+                        yield from self._text_row(
+                            "llama_attach_hosts", "Attach to (before spawning)",
+                            "Comma-separated. A healthy server here is USED, "
+                            "never spawned over — LiteSuite's is :8088.",
+                            placeholder="http://localhost:8088",
+                        )
+                        yield from self._switch_row(
+                            "llama_scan_litesuite", "Scan LiteSuite models",
+                            "~/.litesuite/llm/models — the Model Hub's downloads.",
+                        )
+                        yield from self._switch_row(
+                            "llama_scan_lmstudio", "Scan LM Studio models",
+                            "~/.lmstudio/models — served by OUR engine too.",
+                        )
+                        yield from self._switch_row(
+                            "llama_scan_hf_cache", "Scan HuggingFace cache",
+                            "$HF_HOME/hub — GGUFs pulled by other tools.",
+                        )
+                        yield from self._text_row(
+                            "llama_models_dirs", "Extra model folders",
+                            "Comma-separated absolute paths, scanned recursively.",
+                            placeholder="D:/models, E:/gguf",
+                        )
+                        yield from self._text_row(
+                            "llama_models_max", "Max resident models",
+                            "Models loaded at once on our router. Two large "
+                            "models already fill a big GPU — raise deliberately.",
+                            placeholder="2",
+                        )
+                        yield from self._text_row(
+                            "lms_load_timeout_s", "LM Studio load timeout (s)",
+                            "SDK control-plane ceiling; a 20 GB load outlives "
+                            "the SDK's 60s default.",
+                            placeholder="600",
+                        )
+
                         # ── Generation ───────────────────────────────────────────────
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
@@ -500,7 +549,14 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
         for f in fields(Settings):
             name = f.name
-            if name in ("mcp_disabled_servers", "custom_themes", "plugins_disabled"):
+            if name in (
+                "mcp_disabled_servers", "custom_themes", "plugins_disabled",
+                # Per-model dicts, edited through /modelcfg — a flat text box
+                # for a nested dict would be a control that corrupts on save.
+                "llama_load_settings", "model_infer_overrides", "llama_presets",
+                # Set by the first-boot picker, not by a visible control.
+                "backend_chosen",
+            ):
                 continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
                 continue  # env owns it; the control is disabled
@@ -529,7 +585,9 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
             raw = str(widget.value)
             try:
-                if name == "stop":
+                if "list[str]" in t:
+                    # stop, llama_attach_hosts, llama_models_dirs — comma-
+                    # separated in one Input, the _text_row join reversed.
                     setattr(out, name, [s.strip() for s in raw.split(",") if s.strip()])
                 elif "None" in t and "int" in t:
                     setattr(out, name, _num_or_none(raw, int))
@@ -571,6 +629,10 @@ class SettingsScreen(ModalScreen[Settings | None]):
             raise ValueError("compact_max_tokens: below 256 no summary can fit")
         if out.tool_context_threshold_chars < 0:
             raise ValueError("tool_context_threshold_chars: must be >= 0")
+        if out.llama_models_max < 0:
+            raise ValueError("llama_models_max: 0 means unlimited; below that is nothing")
+        if out.lms_load_timeout_s < 30:
+            raise ValueError("lms_load_timeout_s: under 30s no large model can load")
 
         # The theme creator: a non-empty name mints (or overwrites) a custom
         # theme from the ct-* fields and SELECTS it, so Ctrl+S gives instant

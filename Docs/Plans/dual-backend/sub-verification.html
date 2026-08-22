@@ -1,0 +1,125 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Plan: Sub Verification</title><style>
+:root{--bg:#09090b;--card:#111113;--secondary:#18181b;--border:#27272a;--text:#fafafa;
+--textSec:#a1a1aa;--muted:#71717a;--primary:#facc15;--mono:ui-monospace,'Cascadia Code',monospace}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);
+font-family:ui-sans-serif,system-ui,'Segoe UI',sans-serif;line-height:1.55;font-size:14px}
+main{max-width:960px;margin:0 auto;padding:28px 24px 60px}
+h1{font-size:23px;margin:0 0 6px}h2{font-size:15px;margin:26px 0 8px;color:var(--primary);
+text-transform:uppercase;letter-spacing:.07em}h3{font-size:14px;margin:14px 0 6px}
+p,li,td{color:var(--textSec)}code{font-family:var(--mono);font-size:12px;background:var(--secondary);
+padding:1px 4px;border-radius:4px}pre{background:var(--secondary);border:1px solid var(--border);
+border-radius:6px;padding:10px;overflow-x:auto}pre code{background:none;padding:0}
+a{color:var(--primary)}blockquote{border-left:3px solid var(--primary);margin:12px 0;
+padding:4px 14px;background:var(--card);border-radius:0 8px 8px 0}
+table{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0}
+th,td{border:1px solid var(--border);padding:5px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;background:var(--secondary)}
+ul{padding-left:22px}hr{border:none;border-top:1px solid var(--border)}
+</style></head><body><main><h1>Sub-Plan WS4: Verification — Instruments, Conditions, Negative Proofs</h1>
+<ul>
+<li><strong>master:</strong> <a href="master.html">master.md</a> · <strong>phase:</strong> 3 (final gate) · <strong>dependencies:</strong> WS1+WS2+WS3</li>
+<li><strong>v9 rule:</strong> every criterion names a COMMAND that exits non-zero when violated, states its
+measurement conditions, and has been SEEN to fail once. &quot;My eyes&quot; items are explicit
+<code>MANUAL:</code> rows with exactly what Ryan must observe.</li>
+</ul>
+<h2>Memory-safety doctrine (Ryan: &quot;don't OOM the system&quot;)</h2>
+<ul>
+<li>ALL automated verification uses the smallest GGUF on the box (≤1.5 GB, ~0.8B class).
+20GB+ models appear ONLY in the MANUAL pass, one at a time, after <code>/unload</code> of the prior.</li>
+<li><code>--models-max 2</code> default; E2E asserts the flag is on the spawned cmdline.</li>
+<li>Boot-loads-nothing is itself a criterion (the 2026 OOM lesson: concurrent test boots
+each loading a model).</li>
+</ul>
+<h2>Instruments</h2>
+<h3>[x] V1 — Mocked suite (runs everywhere, every commit)</h3>
+<ul>
+<li><code>python tests/run_all.py</code> → exit 0.</li>
+<li><strong>Conditions:</strong> clean tree · no llama-server or LM Studio required · all stubs on
+ephemeral ports (bind :0, read back) · <strong>three consecutive runs</strong> all green — one
+favorable run is not a result (the flaky-suite lesson).</li>
+<li><strong>Negative proof (executed once, then reverted):</strong> break the router stub's <code>/models/load</code>
+route → <code>test_llama_router.py</code> FAILS. Gate seen failing = gate known live.</li>
+</ul>
+<h3>[x] V2 — Real E2E (this box) — <code>e2e/llama_e2e.py</code></h3>
+<p>Bail=1 (first failure aborts), artifacts under <code>e2e/artifacts/dual-backend/</code>. Steps, each a
+hard assert:</p>
+<ol>
+<li><code>~/.litesuite/llm/bin/llama-server.exe</code> exists — else <strong>exit 2</strong> printing
+&quot;llama-server not installed — run LiteSuite's Model Hub wizard.&quot; (loud, never a skip).</li>
+<li>Pick smallest <code>*.gguf</code> ≤1.5 GB across the discovery roots — else exit 2 naming the roots scanned.</li>
+<li>Spawn router via the REAL supervisor (ttyguard path, detached, log file) on an
+ephemeral port with a generated ini → <code>/health</code> 200 within 120 s.</li>
+<li><code>GET /models</code> lists the model; <strong>cmdline contains <code>--no-models-autoload</code> and
+<code>--models-max</code></strong> (boot-loads-nothing, OOM guard).</li>
+<li><code>POST /models/load</code> → status flips loaded; <code>model_info</code> returns (window&gt;0, _, True).</li>
+<li>Stream a completion through the SAME AsyncOpenAI code path the app uses (&quot;Say
+EXACTLY: LITETUI-E2E-OK&quot;) → assert marker in the joined stream (outcome, not 200 —
+transport-vs-outcome rule).</li>
+<li>Apply <code>{&quot;ctx&quot;: 4096}</code> via <code>apply_load_settings</code> → re-read <code>model_info</code> window ≤ 4096+64
+(llama clamps; compare against ASKED, the app.py:2507 lesson).</li>
+<li><code>POST /models/unload</code> → status flips unloaded (VRAM freed by server's own accounting).
+8b. Seat-guard cycle (Sentinel finding): re-load the model, then drive
+<code>seat_guard.suspend</code>/<code>resume</code> THROUGH the backend — suspended = not listed loaded,
+resumed = loaded at the recorded ctx (asked-vs-got compare), breadcrumb file created
+then cleared. On a simulated attached backend: the honest-refusal string, no unload sent.</li>
+<li>Kill spawned pid; assert process gone; log file non-empty (the instrument that writes
+the log demonstrably ran — instrument-trust audit).</li>
+</ol>
+<ul>
+<li><strong>Conditions:</strong> this box, GPU idle-ish (no other model resident), run serially, never in
+the mocked suite's process.</li>
+<li><strong>Negative proof:</strong> run once with the models dir masked (<code>LITETUI_E2E_MODELS_DIR</code> pointed
+at an empty tmp) → exits 2 with the roots message. Recorded in the run log.</li>
+</ul>
+<h3>[x] V3 — LM Studio backend E2E — <code>e2e/lms_e2e.py</code></h3>
+<ol>
+<li>LM Studio reachable at :1234 — else exit 2 &quot;start LM Studio&quot; (loud).</li>
+<li>SDK loads the 0.8B with <code>contextLength=4096</code> → native <code>/api/v0/models</code> shows
+<code>loaded_context_length≈4096</code> (SDK path replaces <code>lms load</code> — proven by outcome).</li>
+<li>Same marker-completion stream through the app's client path.</li>
+<li>SDK <code>.unload()</code> → <code>/api/v0/models</code> shows not loaded.</li>
+</ol>
+<ul>
+<li><strong>Conditions:</strong> LM Studio desktop running, small model downloaded in it.</li>
+</ul>
+<h3>[x] V4 — Cross-backend integration — <code>e2e/backend_switch_e2e.py</code></h3>
+<p>Scripted app-level run (Textual pilot): boot llamacpp → 2-turn convo → <code>/backend lmstudio</code>
+→ 1 more turn → assert one continuous conversation list (4 messages + system), two
+different base_urls observed in the transport log.</p>
+<h3>[x] V5 — Static gates (already in the suite, must stay green)</h3>
+<ul>
+<li><code>tests/test_ttyguard.py</code> (rglob src/**) — no raw subprocess anywhere new.</li>
+<li><code>tests/test_plugin_dogfood.py</code> — re-accretion + plugin counts.</li>
+<li><code>tests/test_no_dead_controls</code>-family — every new Settings field has a reader.</li>
+<li><code>git grep -n &quot;localhost:1234\|localhost:7470\|localhost:8088&quot; src/ | grep -v &quot;settings.py\|config.py\|llm_backend.py&quot;</code> → empty — hosts live in exactly the owned homes (the config.py docstring's rot lesson, now three hosts wide).</li>
+</ul>
+<h2>MANUAL checklist (Ryan's eyes — the plan is not done until these are checked)</h2>
+<ul>
+<li>[ ] MANUAL: First boot with both engines → picker appears ONCE; choice persists across restarts; Esc re-asks next boot.</li>
+<li>[ ] MANUAL: <code>/modelcfg</code> on Qwen3.8 27B side-by-side with the four LM Studio screenshots — every control present / greyed-with-reason / explicit n-a; values round-trip after restart.</li>
+<li>[ ] MANUAL: 27B load at ctx 120064, ngl 65, flash-attn, KV q8_0 → streams; footer shows the LOADED window (not 262144 ceiling); tok/s sane for a 5090.</li>
+<li>[ ] MANUAL: draft-model speculative decoding with the 0.8B as draft → visible tok/s uplift on the 27B.</li>
+<li>[ ] MANUAL: a vision GGUF + its mmproj → paste an image → the model describes it (view_image path).</li>
+<li>[ ] MANUAL: Structured Output with a small JSON schema → reply is valid JSON matching it.</li>
+<li>[ ] MANUAL: <code>/backend</code> flip mid-conversation → history visibly intact, header badge flips.</li>
+<li>[ ] MANUAL: While LiteSuite serves :8088 → LiteTUI attaches (says so), refuses load-settings edits with the Model-Hub pointer; stop LiteSuite → <code>/reconnect</code> → LiteTUI spawns its own and control returns.</li>
+<li>[ ] MANUAL: GPU memory in Task Manager returns to baseline after <code>/unload</code> of the 27B.</li>
+</ul>
+<h2>Task list</h2>
+<ul>
+<li>[x] T1 — Write V1 negative-proof harness note + execute/revert it (recorded in commit message).</li>
+<li>[x] T2 — <code>e2e/llama_e2e.py</code> (V2) + its masked-dir negative proof.</li>
+<li>[x] T3 — <code>e2e/lms_e2e.py</code> (V3).</li>
+<li>[x] T4 — <code>e2e/backend_switch_e2e.py</code> (V4).</li>
+<li>[x] T5 — Run the full ladder V1→V5 in order, three consecutive V1 runs, record outputs under <code>e2e/artifacts/dual-backend/</code>.</li>
+<li>[] T6 — Walk the MANUAL checklist with Ryan; every unchecked box is an open defect, not a note.</li>
+</ul>
+<h2>Validation Commands (the gate itself)</h2>
+<ul>
+<li>[x] <code>python tests/run_all.py &amp;&amp; python tests/run_all.py &amp;&amp; python tests/run_all.py</code> — exit 0 ×3.</li>
+<li>[x] <code>python e2e/llama_e2e.py</code> — exit 0; then with <code>LITETUI_E2E_MODELS_DIR=&lt;empty&gt;</code> — exit 2 (negative proof live).</li>
+<li>[x] <code>python e2e/lms_e2e.py</code> — exit 0 (LM Studio running).</li>
+<li>[x] <code>python e2e/backend_switch_e2e.py</code> — exit 0.</li>
+<li>[] MANUAL checklist above — all boxes.</li>
+</ul>
+</main></body></html>

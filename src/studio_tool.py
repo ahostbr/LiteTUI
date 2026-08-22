@@ -240,14 +240,22 @@ def _model(action: str, args: dict) -> str:
 _GPU_ACTIONS = {"generate"}
 
 
-def _generate_suspended(app: str, action: str, args: dict, seat_model: str) -> str:
+def _generate_suspended(app: str, action: str, args: dict, seat_model: str,
+                        backend=None) -> str:
     """Suspend the agent's own model, generate, resume. The order of the
     finally matters more than anything else in this file: whatever the
-    generation did — succeed, fail, raise — the seat comes back."""
-    rec = seat_guard.record(seat_model)
+    generation did — succeed, fail, raise — the seat comes back.
+
+    The backend handle routes the verbs to the ENGINE that owns the seat —
+    lms verbs against a llama-served model manage nothing (Sentinel's
+    integration finding, 2026-08-21). An attached llama server refuses the
+    suspend by name; the refusal is surfaced and generation proceeds
+    unsuspended, which is exactly the pre-seat-guard behavior for a seat we
+    cannot manage."""
+    rec = seat_guard.record(seat_model, backend)
     if rec is None:
-        # Seat not resident (already unloaded, or a non-LM-Studio backend):
-        # nothing to suspend, just generate.
+        # Seat not resident (already unloaded, or unmanageable on this
+        # backend): nothing to suspend, just generate.
         return _dispatch(app, action, args)
 
     ok, why = seat_guard.safe_to_suspend(rec)
@@ -255,7 +263,7 @@ def _generate_suspended(app: str, action: str, args: dict, seat_model: str) -> s
         return (f"[not suspending the seat] {why} — another request may be "
                 f"mid-stream on this model. Retry when it is idle.")
 
-    err = seat_guard.suspend(rec)
+    err = seat_guard.suspend(rec, backend)
     if err:
         return f"[seat suspend failed] {err} — generation not started."
 
@@ -278,7 +286,7 @@ def _generate_suspended(app: str, action: str, args: dict, seat_model: str) -> s
         else:
             out = _dispatch(app, action, args)
     finally:
-        resume_err = seat_guard.resume(rec)
+        resume_err = seat_guard.resume(rec, backend)
     if resume_err:
         return out + f"\n\n[SEAT RESUME PROBLEM] {resume_err}"
     return out + note
@@ -294,9 +302,9 @@ def _dispatch(app: str, action: str, args: dict) -> str:
     return f"Error: unknown app {app!r} — image, sound, or model."
 
 
-def run(args: dict, seat_model: str | None = None) -> str:
+def run(args: dict, seat_model: str | None = None, backend=None) -> str:
     app = (args.get("app") or "").strip().lower()
     action = (args.get("action") or "").strip().lower()
     if seat_model and app in ("image", "sound", "model") and action in _GPU_ACTIONS:
-        return _generate_suspended(app, action, args, seat_model)
+        return _generate_suspended(app, action, args, seat_model, backend)
     return _dispatch(app, action, args)

@@ -62,8 +62,15 @@ def _ps() -> list[dict]:
     return rows if isinstance(rows, list) else []
 
 
-def record(model_id: str) -> dict | None:
-    """The seat's live load config, or None when it is not loaded at all."""
+def record(model_id: str, backend=None) -> dict | None:
+    """The seat's live load config, or None when it is not loaded at all.
+
+    With a backend handle the snapshot comes from THAT engine — the llama
+    router's /models, or LM Studio's `lms ps`. The legacy no-backend path
+    stays: the shipped call sites all pass one now, but the module must keep
+    working standalone (its tests, and any older caller)."""
+    if backend is not None:
+        return backend.seat_snapshot(model_id)
     for row in _ps():
         if row.get("identifier") == model_id:
             return {
@@ -99,8 +106,20 @@ def reload_command(rec: dict) -> list[str]:
     return cmd
 
 
-def suspend(rec: dict) -> str | None:
-    """Unload the seat. None on success, else an error sentence."""
+def suspend(rec: dict, backend=None) -> str | None:
+    """Unload the seat. None on success, else an error sentence.
+
+    An attached llama server refuses here by NAME (LiteSuite owns it) —
+    the caller surfaces the refusal and generates without suspending only
+    if it dares; that decision is not this module's."""
+    if backend is not None:
+        err = backend.seat_suspend(rec)
+        if err:
+            return err
+        if backend.seat_snapshot(rec["identifier"]) is not None:
+            return "unload reported success but the model is still loaded"
+        _write_breadcrumb(rec, backend)
+        return None
     lms = _lms()
     if not lms:
         return "lms CLI not found — cannot manage the seat"
@@ -110,17 +129,30 @@ def suspend(rec: dict) -> str | None:
         return f"unload failed: {e.__class__.__name__}"
     if record(rec["identifier"]) is not None:
         return "unload reported success but the model is still loaded"
+    _write_breadcrumb(rec, None)
+    return None
+
+
+def _write_breadcrumb(rec: dict, backend) -> None:
+    """The recovery note a human finds when a resume failed and the agent's
+    own brain is missing. The reload instruction must match the ENGINE the
+    seat lives on — an `lms load` line for a llama-served seat restores
+    nothing."""
+    if backend is not None and getattr(backend, "name", "") == "llamacpp":
+        reload_hint = (f"/load {rec['identifier']} in LiteTUI "
+                       f"(or POST /models/load to {backend.host()})")
+    else:
+        reload_hint = " ".join(reload_command(rec))
     BREADCRUMB.write_text(json.dumps({
         "recorded": rec,
-        "reload": " ".join(reload_command(rec)),
+        "reload": reload_hint,
         "note": "seat suspended for a studio generation; resume should have "
                 "cleared this file — if it is still here, run the reload "
                 "command above.",
     }, indent=2), encoding="utf-8")
-    return None
 
 
-def resume(rec: dict) -> str | None:
+def resume(rec: dict, backend=None) -> str | None:
     """Reload the seat exactly as recorded. None on success.
 
     Retries, then leaves the breadcrumb in place: a failed resume means the
@@ -128,6 +160,24 @@ def resume(rec: dict) -> str | None:
     the human, because the model that would normally read it is the thing
     that is gone.
     """
+    if backend is not None:
+        last = ""
+        for attempt in range(1, RESUME_RETRIES + 1):
+            last = backend.seat_resume(rec) or ""
+            if not last:
+                BREADCRUMB.unlink(missing_ok=True)
+                return None
+            if "instead of" in last:
+                # Loaded, but at the WRONG context — say so; a silently
+                # shrunken window fails much later. Not retryable.
+                BREADCRUMB.unlink(missing_ok=True)
+                return last + " — check the model's load settings"
+            time.sleep(2 * attempt)
+        return (
+            f"SEAT RESUME FAILED after {RESUME_RETRIES} attempts ({last}). "
+            f"The agent's model is NOT loaded. Restore it with /load "
+            f"{rec['identifier']} (also recorded in {BREADCRUMB})"
+        )
     lms = _lms()
     if not lms:
         return "lms CLI not found"

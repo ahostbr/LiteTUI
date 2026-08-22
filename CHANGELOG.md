@@ -18,6 +18,40 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+### Added
+
+- **Dual-backend model control.** Two engines behind one seam
+  (`src/llm_backend.py`): LM Studio desktop (control plane moved from the
+  `lms load` shell-out to the official `lmstudio` SDK — load with context
+  length, and for the first time UNLOAD) and **our own `llama-server` in
+  router mode** — one process, a generated `--models-preset` ini covering
+  every chat GGUF on the box (LiteSuite's install, LM Studio's dirs, the HF
+  cache, custom roots; deduplicated; voice/embedding ggufs filtered by the
+  file's own `general.architecture` header, never by name). Attaches to
+  LiteSuite's server on :8088 when healthy, else spawns its own on :7470
+  (detached, console-safe, log file, killed with the app). Boot loads
+  NOTHING on either engine; `--models-max 2` guards VRAM.
+- **`/backend`** (switch engines mid-conversation — history survives),
+  **`/load`**, **`/unload`**, and **`/modelcfg`** — a per-model
+  Info/Load/Inference screen with LM Studio panel parity: ctx, GPU offload,
+  threads, batches, parallel slots, flash-attn, KV quantization, mlock/mmap,
+  RoPE, seed, draft-model speculative decoding, vision mmproj, chat
+  template, per-model sampling overrides layered over the global /settings,
+  structured output (JSON schema), and named presets. Controls an engine
+  cannot drive render greyed with the reason — never silently absent, never
+  fake. A one-time engine picker runs at first boot when both engines are
+  detected.
+- The studio tool's seat suspend/resume now routes through the active
+  backend (llama router natively; an attached server refuses honestly), so
+  GPU generations free the right VRAM on either engine.
+
+### Fixed
+
+- Setting top_k, min_p, or repeat_penalty in /settings would have crashed
+  every request: the OpenAI client's `create()` has typed params and no
+  `**kwargs`, and the sampling dict was passed at the top level. Non-native
+  sampling fields now ride `extra_body`.
+
 ## [0.21.0] — 2026-08-21
 
 ### Changed

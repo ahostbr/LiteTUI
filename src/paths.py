@@ -21,3 +21,11 @@ SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
 #     memories/     the actual notes: i-learned-this.md, uncapped
 CONVO_DIR = ROOT / ".convos"
 MEMORIES_DIR = "memories"
+
+# ── llama.cpp backend working files ──────────────────────────────────
+# .llama/
+#     litetui-models.ini        generated router preset — derived output,
+#                               regenerated from settings; never hand-edited
+#     litetui-llama-server.log  the spawned server's whole console — a child
+#                               of a TUI must NEVER inherit the terminal
+LLAMA_DIR = ROOT / ".llama"

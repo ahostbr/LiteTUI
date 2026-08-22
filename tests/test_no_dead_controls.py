@@ -29,11 +29,13 @@ from settings import Settings
 ROOT = Path(__file__).resolve().parent.parent  # repo root: tests/ is one level down
 APP = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
 # Readers may live in plugin modules since the plugin split — the gate's
-# claim is about the RUNTIME, so its scope is app.py plus every plugin.
+# claim is about the RUNTIME, so its scope is app.py plus every plugin,
+# plus the backend core module: the dual-backend seam reads its settings
+# there (constructor-injected), exactly as app.py reads its own.
 RUNTIME = APP + "".join(
     p.read_text(encoding="utf-8")
     for p in sorted((ROOT / "src" / "plugins").rglob("*.py"))
-)
+) + (ROOT / "src" / "llm_backend.py").read_text(encoding="utf-8")
 
 #: Fields consumed through a helper rather than by name. Each entry names the
 #: helper, so a reader can check the claim instead of trusting the list.
@@ -57,6 +59,9 @@ INDIRECT: dict[str, str] = {
 _ALIASES = sorted(
     set(re.findall(r"\b([A-Za-z_]\w*)\s*=\s*(?:self|app)\.settings\b", RUNTIME))
     | {"self.settings", "app.settings"}
+    # llm_backend receives settings by constructor/parameter injection —
+    # its reads are `self._settings.X` and bare-param `settings.X`.
+    | {"self._settings", "settings"}
 )
 
 
@@ -87,7 +92,9 @@ def test_the_indirect_helper_is_actually_called():
     Without this, adding a name to INDIRECT would be a way to silence the test
     above — the allowlist would become the loophole rather than the exception.
     """
-    assert "sampling_kwargs(" in APP, "sampling_kwargs is allowlisted but never called"
+    # The call moved from app.py into llm_backend's override merge when the
+    # dual-backend seam landed — RUNTIME is the honest scope, same as _reads.
+    assert "sampling_kwargs(" in RUNTIME, "sampling_kwargs is allowlisted but never called"
 
 
 def test_indirect_fields_really_are_in_the_helper():

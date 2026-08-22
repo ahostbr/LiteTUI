@@ -1,0 +1,398 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Plan: Sub Model Screen</title><style>
+:root{--bg:#09090b;--card:#111113;--secondary:#18181b;--border:#27272a;--text:#fafafa;
+--textSec:#a1a1aa;--muted:#71717a;--primary:#facc15;--mono:ui-monospace,'Cascadia Code',monospace}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);
+font-family:ui-sans-serif,system-ui,'Segoe UI',sans-serif;line-height:1.55;font-size:14px}
+main{max-width:960px;margin:0 auto;padding:28px 24px 60px}
+h1{font-size:23px;margin:0 0 6px}h2{font-size:15px;margin:26px 0 8px;color:var(--primary);
+text-transform:uppercase;letter-spacing:.07em}h3{font-size:14px;margin:14px 0 6px}
+p,li,td{color:var(--textSec)}code{font-family:var(--mono);font-size:12px;background:var(--secondary);
+padding:1px 4px;border-radius:4px}pre{background:var(--secondary);border:1px solid var(--border);
+border-radius:6px;padding:10px;overflow-x:auto}pre code{background:none;padding:0}
+a{color:var(--primary)}blockquote{border-left:3px solid var(--primary);margin:12px 0;
+padding:4px 14px;background:var(--card);border-radius:0 8px 8px 0}
+table{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0}
+th,td{border:1px solid var(--border);padding:5px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;background:var(--secondary)}
+ul{padding-left:22px}hr{border:none;border-top:1px solid var(--border)}
+</style></head><body><main><h1>Sub-Plan WS2: Model Screen (Info / Load / Inference)</h1>
+<ul>
+<li><strong>master:</strong> <a href="master.html">master.md</a> · <strong>phase:</strong> 2 (parallel with WS3) · <strong>dependencies:</strong> WS1</li>
+<li><strong>Deliverable:</strong> <code>ModelConfigScreen</code> — a tabbed, per-model screen mirroring LM Studio's
+panel, driving BOTH backends. Lives INSIDE <code>src/plugins/model_switch.py</code> (ruling 6:
+screens move with their owning plugin; HelpScreen/PickerScreen precedent). Opened by WS3's
+<code>/modelcfg</code> command and from the <code>/model</code> picker footer hint.</li>
+</ul>
+<h2>Layering rule (Ryan-confirmed)</h2>
+<p>The existing global inference section in <code>/settings</code> (temperature, top_p, top_k, min_p,
+repeat/presence/frequency penalty, seed, stop, max_tokens_*, thinking_level) stays THE
+global default. This screen's Inference tab stores <strong>per-model overrides</strong> in
+<code>settings.model_infer_overrides[key]</code> — an unset field means &quot;inherit global&quot; and renders
+the inherited value dimmed with an <code>(inherited)</code> tag. No duplicate settings system.</p>
+<h2>Visual/structure spec (transcribed from the four LM Studio screenshots — builders never need the images)</h2>
+<p>Three tabs (Textual <code>TabbedContent</code>): <strong>Info · Load · Inference</strong>. Title row: model key +
+backend badge. Bottom bar: <code>[Apply]</code> <code>[Save Preset…]</code> <code>[Presets ▾]</code> <code>[Close]</code>. Apply on the
+Load tab = <code>backend.apply_load_settings(key, cfg)</code> (llama: ini rewrite + reload; a loaded
+model shows &quot;will reload — evicts resident weights&quot; in the warning hue). Fields follow the
+existing SettingsScreen widget idiom (Input + Switch + Select; reuse its CSS classes —
+<code>settings_ui</code> plugin is the style reference).</p>
+<h3>Info tab</h3>
+<table>
+<thead>
+<tr>
+<th>Row</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Key, file name, size, quant (from name), arch</td>
+<td><code>ModelRow</code> + GGUF filename parse</td>
+</tr>
+<tr>
+<td>Source path(s) — all locations found, precedence-marked</td>
+<td><code>ModelRow.path</code> + dedupe extras (WS1 T2)</td>
+</tr>
+<tr>
+<td>Context ceiling (n_ctx_train) / currently loaded window</td>
+<td><code>backend.model_info</code> triple</td>
+</tr>
+<tr>
+<td>Loaded state + resident location (ours :7470 / attached :8088 / LM Studio)</td>
+<td>backend</td>
+</tr>
+</tbody>
+</table>
+<h3>Load tab — full LM Studio vocabulary → llama-server mapping (THE table; dict keys are canon)</h3>
+<table>
+<thead>
+<tr>
+<th>LM Studio control (screenshot)</th>
+<th>dict key</th>
+<th>llama-server flag / ini key</th>
+<th>Widget</th>
+<th>n/a rules</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Context Length (120064, &quot;supports up to 262144&quot;)</td>
+<td><code>ctx</code></td>
+<td><code>-c</code> / <code>ctx-size</code></td>
+<td>Input+slider hint, ceiling shown</td>
+<td>both backends (LMS: SDK contextLength)</td>
+</tr>
+<tr>
+<td>GPU Offload (65 layers)</td>
+<td><code>ngl</code></td>
+<td><code>-ngl</code> / <code>n-gpu-layers</code></td>
+<td>Input, max = layer count if known</td>
+<td>LMS: SDK gpu config</td>
+</tr>
+<tr>
+<td>CPU Thread Pool Size (12)</td>
+<td><code>threads</code></td>
+<td><code>-t</code> / <code>threads</code></td>
+<td>Input</td>
+<td>LMS: greyed &quot;LM Studio manages&quot;</td>
+</tr>
+<tr>
+<td>Evaluation Batch Size (2048)</td>
+<td><code>batch</code></td>
+<td><code>-b</code> / <code>batch-size</code></td>
+<td>Input</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Physical Batch Size (512)</td>
+<td><code>ubatch</code></td>
+<td><code>-ub</code> / <code>ubatch-size</code></td>
+<td>Input</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Max Concurrent Predictions (4)</td>
+<td><code>parallel</code></td>
+<td><code>-np</code> / <code>parallel</code></td>
+<td>Input</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Unified KV Cache (exp.)</td>
+<td><code>kv_unified</code></td>
+<td><code>--kv-unified</code></td>
+<td>Switch</td>
+<td>greyed unless flag in T1 census</td>
+</tr>
+<tr>
+<td>Context Checkpoints (32)</td>
+<td>—</td>
+<td>none</td>
+<td>Static &quot;n/a on llama.cpp&quot;</td>
+<td>LMS-only concept</td>
+</tr>
+<tr>
+<td>Reasoning Budget Message</td>
+<td>—</td>
+<td>none</td>
+<td>Static &quot;n/a v1&quot;</td>
+<td>LMS-only</td>
+</tr>
+<tr>
+<td>RoPE Frequency Base / Scale (Auto)</td>
+<td><code>rope_base</code> / <code>rope_scale</code></td>
+<td><code>--rope-freq-base/scale</code></td>
+<td>Input, empty=Auto(omit)</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Offload KV Cache to GPU (on)</td>
+<td><code>kv_offload</code></td>
+<td>write <code>--no-kv-offload</code> when OFF</td>
+<td>Switch</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Keep Model in Memory (on)</td>
+<td><code>mlock</code></td>
+<td><code>--mlock</code></td>
+<td>Switch</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Try mmap() (on)</td>
+<td><code>mmap</code></td>
+<td>write <code>--no-mmap</code> when OFF</td>
+<td>Switch</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Seed (Random)</td>
+<td><code>seed</code></td>
+<td><code>--seed</code> (omit = random)</td>
+<td>Input, empty=random</td>
+<td>both</td>
+</tr>
+<tr>
+<td>Speculative Decoding (MTP dropdown)</td>
+<td><code>draft_model</code></td>
+<td><code>-md &lt;path&gt;</code> (draft-file mode)</td>
+<td>Select from discovered small GGUFs + &quot;off&quot;</td>
+<td>MTP itself: greyed unless census finds it</td>
+</tr>
+<tr>
+<td>— Max draft tokens (2)</td>
+<td><code>draft_max</code></td>
+<td><code>--draft-max</code></td>
+<td>Input</td>
+<td>with draft_model</td>
+</tr>
+<tr>
+<td>— Min draft tokens (0)</td>
+<td><code>draft_min</code></td>
+<td><code>--draft-min</code></td>
+<td>Input</td>
+<td>with draft_model</td>
+</tr>
+<tr>
+<td>— Draft probability (0.75)</td>
+<td><code>draft_p_min</code></td>
+<td><code>--draft-p-min</code></td>
+<td>Input</td>
+<td>with draft_model</td>
+</tr>
+<tr>
+<td>Chat Template</td>
+<td><code>chat_template_file</code></td>
+<td><code>--chat-template-file</code> + <code>--jinja</code></td>
+<td>Input (path), empty=model default</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Flash Attention (on)</td>
+<td><code>flash_attn</code></td>
+<td><code>--flash-attn</code> on/off/auto</td>
+<td>Select</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>K Cache Quantization Type (F16)</td>
+<td><code>cache_k</code></td>
+<td><code>--cache-type-k</code></td>
+<td>Select: f16 q8_0 q5_1 q5_0 q4_1 q4_0</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>V Cache Quantization Type (F16)</td>
+<td><code>cache_v</code></td>
+<td><code>--cache-type-v</code></td>
+<td>Select: same</td>
+<td>LMS greyed</td>
+</tr>
+<tr>
+<td>Vision projector (LiteTUI addition)</td>
+<td><code>mmproj</code></td>
+<td><code>--mmproj &lt;path&gt;</code></td>
+<td>Select from discovered <code>*mmproj*</code> files</td>
+<td>enables image turns via existing view_image path</td>
+</tr>
+</tbody>
+</table>
+<p>Greyed = visible, value shown when known, not editable, one-line reason — a control that
+exists but explains itself beats a control that silently vanishes (the tool-gate doctrine,
+same house style).</p>
+<h3>Inference tab — per-model overrides (BOTH backends; unset = inherit global)</h3>
+<table>
+<thead>
+<tr>
+<th>LM Studio control</th>
+<th>override key</th>
+<th>Wire (llama)</th>
+<th>Wire (LM Studio)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Preset select / Save Preset As…</td>
+<td>—</td>
+<td><code>settings.llama_presets</code> (shared store, both backends)</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Reasoning Effort (Extra High)</td>
+<td><code>thinking_level</code></td>
+<td>existing reasoning_effort request field</td>
+<td>same (existing path)</td>
+</tr>
+<tr>
+<td>Enable Thinking (on)</td>
+<td><code>enable_thinking</code></td>
+<td><code>chat_template_kwargs:{&quot;enable_thinking&quot;:…}</code> via extra_body — census-gated</td>
+<td>n/a (LMS UI owns it)</td>
+</tr>
+<tr>
+<td>Preserve Thinking (on)</td>
+<td><code>preserve_thinking</code></td>
+<td>LiteTUI-side: keep reasoning content of PRIOR assistant turns in history instead of last-only (WS3 T6 wires; default = today's behavior)</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Reasoning Budget</td>
+<td>—</td>
+<td>n/a v1 (Static)</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td>Temperature (1)</td>
+<td><code>temperature</code></td>
+<td>request field</td>
+<td>request field</td>
+</tr>
+<tr>
+<td>Limit Response Length</td>
+<td><code>max_tokens</code></td>
+<td>request field (else global max_tokens_*)</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Context Overflow (Truncate Middle)</td>
+<td>—</td>
+<td>Static: &quot;LiteTUI autocompacts instead (/settings)&quot; — our mechanism is strictly richer</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Stop Strings</td>
+<td><code>stop</code></td>
+<td>request field</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Top K Sampling (20)</td>
+<td><code>top_k</code></td>
+<td>extra_body top_k</td>
+<td>top_k</td>
+</tr>
+<tr>
+<td>Repeat Penalty (off)</td>
+<td><code>repeat_penalty</code></td>
+<td>extra_body repeat_penalty</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Presence Penalty (off)</td>
+<td><code>presence_penalty</code></td>
+<td>request field</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Top P Sampling (0.95)</td>
+<td><code>top_p</code></td>
+<td>request field</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Min P Sampling (off)</td>
+<td><code>min_p</code></td>
+<td>extra_body min_p</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Structured Output (off)</td>
+<td><code>json_schema</code> (str)</td>
+<td>response_format json_schema</td>
+<td>response_format</td>
+</tr>
+</tbody>
+</table>
+<h2>Tasks</h2>
+<h3>[] T1 — Screen skeleton + Info tab</h3>
+<ul>
+<li><code>ModelConfigScreen(Screen[None])</code> in <code>plugins/model_switch.py</code>; constructor
+<code>(app, key: str)</code>; reads via <code>app.backend</code> + <code>app.settings</code> only (no new app fields).
+BINDINGS: escape=close. Reuse SettingsScreen CSS classes; no new stylesheet.</li>
+<li>Test <code>tests/test_model_screen.py::test_info_tab</code>: pilot-run app (existing harness
+pattern), open screen for a fake row, assert source paths + ceiling rendered.</li>
+</ul>
+<h3>[] T2 — Load tab</h3>
+<ul>
+<li>Build rows from THE table above; value = <code>settings.llama_load_settings[key]</code> merged over
+defaults; greying driven by <code>backend.name</code> + <code>SUPPORTED_FLAGS</code> census (WS1 T1).</li>
+<li>Apply → <code>app.run_worker(backend.apply_load_settings(...))</code>, in-band progress line,
+refetch ctx window after (existing <code>_fetch_ctx_window</code> semantics via WS3 seam).</li>
+<li>Tests: dict round-trip (set 3 fields → Apply → settings dict holds exactly those; unset
+field ABSENT, not zero); greyed-on-lmstudio matrix; census-gated kv_unified.</li>
+</ul>
+<h3>[] T3 — Inference tab</h3>
+<ul>
+<li>Rows from the override table; <code>(inherited)</code> dimming for unset; explicit &quot;clear override&quot;
+affordance per field (sets back to absent).</li>
+<li>Tests: inherit-vs-override rendering; a cleared override leaves no key behind.</li>
+</ul>
+<h3>[] T4 — Presets</h3>
+<ul>
+<li><code>[Save Preset…]</code> → name input modal → snapshot current Load+Inference dicts into
+<code>settings.llama_presets[name]</code>. <code>[Presets ▾]</code> → PickerScreen (core widget) of names →
+apply = deep-merge preset into this model's two dicts + refresh tabs (Load changes take
+effect on next Apply — stated in-line, no silent reload).</li>
+<li>Tests: save → apply to a second model → dicts equal; overwrite prompt on existing name.</li>
+</ul>
+<h3>[] T5 — Structured output editor</h3>
+<ul>
+<li><code>json_schema</code> field opens a multiline editor modal (existing TextArea idiom); on save,
+<code>json.loads</code> validation — invalid JSON refuses with the parse error in-band.</li>
+<li>Test: invalid schema never lands in settings.</li>
+</ul>
+<h2>Golden path (this WS)</h2>
+<p>Open <code>/modelcfg</code> on the 0.8B (llamacpp) → Load: ctx 8192, ngl 99, cache_k q8_0 → Apply →
+<code>llama_load_settings[&quot;&lt;key&gt;&quot;] == {&quot;ctx&quot;: 8192, &quot;ngl&quot;: 99, &quot;cache_k&quot;: &quot;q8_0&quot;}</code> and the ini
+section shows exactly those three lines → Inference: temperature 0.4 → next request's
+payload carries 0.4 while another model still inherits the global. Save preset &quot;tiny-fast&quot;;
+apply it to a second model; both dicts match.</p>
+<h2>Validation Commands</h2>
+<ul>
+<li>[] <code>python -m pytest tests/test_model_screen.py -x -q</code> — exits 0. <em>Conditions: mocked backend, no network.</em></li>
+<li>[] <code>python tests/run_all.py</code> — green, 3 consecutive runs.</li>
+<li>[] Negative proof: feed the Load tab an unknown dict key via settings.json by hand → screen renders it under &quot;unknown keys (kept verbatim)&quot; and Apply preserves it — forward-compat proven, silent data loss impossible.</li>
+<li>[] MANUAL (Ryan): side-by-side with the four screenshots — every LM Studio control present, live, greyed-with-reason, or explicit &quot;n/a&quot; static. No control silently missing.</li>
+</ul>
+</main></body></html>
