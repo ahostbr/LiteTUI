@@ -163,6 +163,15 @@ COMPACT_KEEP_RECENT = 4
 # How many tool round-trips /compact may take while persisting to the store.
 COMPACT_MAX_TOOL_ITERS = 8
 
+# How long a COMPACTION waits for a model that is still loading before giving
+# up. The backend's own ceiling is llm_backend.LOAD_TIMEOUT_S = 300s, which is
+# right for a turn someone is watching and wrong here: a compaction holds the
+# exclusive chat group, so the user's next message queues behind it for as long
+# as it waits. A real model load takes far longer than this bound, so the short
+# value is deliberate — "not now, try again after the next turn", not a race we
+# are hoping to win. The turn path keeps the full 300s on purpose.
+COMPACT_READY_TIMEOUT_S = 10
+
 # Loaded from prompts/compact.md — edit the FILE; it is read at import.
 COMPACT_PROMPT = load_prompt("compact")
 
@@ -3885,6 +3894,89 @@ class LiteTUI(App):
         self._append({"role": "user", "content": content})
         self._stream()
 
+    async def _ensure_chat_ready(self, *, timeout: float | None = None) -> None:
+        """Ask, in plain words, whether model_id can serve a turn RIGHT NOW.
+
+        D2/D11: the router answers `400 model is not loaded` for four different
+        situations — unloaded but in the preset, absent from the preset, no
+        model named at all, and still loading — and app.py rendered whichever
+        one it got verbatim into the message. The backend seam tells them
+        apart, and WAITS OUT a load already in flight rather than telling
+        someone to /load a model that is loading.
+
+        🔴 A PRE-FLIGHT QUERY, NOT A 400 HANDLER. It runs BEFORE create() and
+        inspects no status code anywhere, which is why it cannot swallow the
+        unload-400 that D3 depends on surfacing (llm_backend `_apply_sync`,
+        guarded by test_the_unload_400_is_still_not_swallowed). Do not
+        "simplify" this into an except clause around create() — that is the
+        exact shape that guard was planted to catch.
+
+        `timeout` bounds the wait for callers that are not a user's turn. See
+        COMPACT_READY_TIMEOUT_S. Cancelling the wait does NOT kill the seam's
+        worker thread — Python cannot — so it keeps polling to its own ceiling
+        and its result is discarded. Harmless: the seam is read-only by law
+        (a question about state must not change it) and starts no load.
+
+        A backend without the method carries on. app.py takes whatever
+        `make_backend` returns, and plugins and test doubles predate the seam;
+        a missing capability must mean "no opinion", never AttributeError
+        mid-turn.
+        """
+        ask = getattr(self.backend, "ensure_chat_ready", None)
+        if ask is None:
+            return
+        if not self.model_id:
+            # 🔴 NOTHING TO ASK ABOUT, AND A WORKING PATH TO PROTECT. With no
+            # selection both _stream and _compact send the sentinel
+            # `self.model_id or "local-model"` and let the server resolve it —
+            # which is how a single-model LM Studio serves a user who never
+            # picked anything. The seam answers "no model is selected" here,
+            # correctly for a caller with no fallback and wrongly for this one:
+            # obeying it would refuse turns that work today.
+            #
+            # This cost 12 existing tests to notice. Asking about a model the
+            # request is not going to name is a question about the wrong thing.
+            return
+
+        async def _probe() -> None:
+            try:
+                await ask(self.model_id)
+            except llm_backend.BackendError:
+                # A DEFINITIVE no, in words written for a human. Refuse.
+                raise
+            except Exception:
+                # 🔴 THE PROBE FAILED, NOT THE MODEL — carry on and let the
+                # real request produce its own error.
+                #
+                # A DIAGNOSTIC MUST NOT BECOME A GATE. This is additive: it
+                # exists to turn ONE confusing 400 into plain words. If it
+                # cannot answer — server unreachable, a listing shape a newer
+                # build changed, any bug in the probe itself — then we have no
+                # information, and blocking a turn on no information converts a
+                # working setup into a broken one and hides the real error
+                # behind a new failure mode of our own making.
+                #
+                # Caught in the wild by 12 existing tests (compaction UI, wake
+                # after compact) that stub the CLIENT and leave a real backend
+                # with nothing listening: every one of them stopped compacting.
+                # They were right, and this is why the blanket catch is correct
+                # rather than convenient.
+                return
+
+        if timeout is None:
+            await _probe()
+            return
+        try:
+            await asyncio.wait_for(_probe(), timeout)
+        except asyncio.TimeoutError:
+            # Only reachable from wait_for: _probe swallows everything except
+            # a BackendError, so a TimeoutError here is OUR bound expiring and
+            # never a socket timeout inside the probe.
+            raise llm_backend.BackendError(
+                f"{self.model_id!r} is still loading — skipped rather than "
+                f"holding the app for it. It will be retried."
+            ) from None
+
     @work(exclusive=True, group="chat")
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
@@ -3978,6 +4070,12 @@ class LiteTUI(App):
 
             self._tps_start()
             try:
+                # ASK BEFORE OPENING THE STREAM. Inside this try on purpose:
+                # the plain words then land in the same widget that used to
+                # show the raw 400, with no second error path to keep in step.
+                # No timeout here — the user is watching and asked for this
+                # turn, so a model that is loading is worth waiting out.
+                await self._ensure_chat_ready()
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
                 self._elapsed_stop_body()
@@ -4537,6 +4635,15 @@ class LiteTUI(App):
         summary = ""
         writes: list[str] = []
         try:
+            # ONCE, before the first round — the answer cannot change midway
+            # through a compaction, and asking per round would multiply the
+            # bound below by compact_max_tool_iters. Bounded because this is
+            # maintenance, not a turn: see COMPACT_READY_TIMEOUT_S. Said on
+            # the card first, so a wait that does happen is explained rather
+            # than looking like a hang — the card exists to stop compaction
+            # being a spinner and a prayer.
+            card.set_status(f"checking {self.model_id} is ready")
+            await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
             for round_no in range(1, self.settings.compact_max_tool_iters + 1):
                 kwargs: dict = {
                     "model": self.model_id or "local-model",
