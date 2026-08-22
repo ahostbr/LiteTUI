@@ -48,3 +48,9 @@ jobs.json
 *.bak*
 .llama/
 e2e/artifacts/
+# Prior-session agent scratch and session-private tooling — untracked by
+# adjudication (Sentinel-delegated, 2026-08-21): not LiteTUI deliverables,
+# bytes preserved on disk, never staged. Explicit paths, never add -A.
+artifacts/
+temp-working-dir/
+tools/screenshot.py
