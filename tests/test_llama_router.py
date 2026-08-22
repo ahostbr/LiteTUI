@@ -242,6 +242,25 @@ def test_apply_on_a_loaded_model_survives_the_router_restart(stub, tmp_path, mon
     assert stub.models["m1"]["state"] == "loaded", "apply must end with the model reloaded"
 
 
+def test_load_fails_fast_when_the_worker_dies_at_argv(stub, tmp_path, monkeypatch):
+    """A worker that dies parsing its arguments leaves the ROUTER reporting
+    "loading" forever — measured live as an idle GPU and a 300s wait. Our own
+    log has the truth; the poll must read it and fail NAMING the argument."""
+    stub.add("m1")
+    stub.loading_polls = 10**9   # the router never flips to loaded
+    log_dir = tmp_path / ".llama"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "litetui-llama-server.log").write_text(
+        '[60984] error while handling argument "--draft-max": the argument '
+        "has been removed. use --spec-draft-n-max\n",
+        encoding="utf-8",
+    )
+    b = _backend(stub, tmp_path)
+    with pytest.raises(BackendError) as exc:
+        _run(b.load("m1"))
+    assert "--draft-max" in str(exc.value), "the error must name the bad argument"
+
+
 def test_seat_cycle_on_router(stub, tmp_path):
     stub.add("seat", state="loaded", ctx=4096)
     b = _backend(stub, tmp_path)

@@ -43,6 +43,26 @@ def test_census_detector_can_fail():
     assert "models-preset" not in tiny
 
 
+def test_tombstoned_flags_are_not_counted():
+    """A LISTED flag is not a LIVE flag: b9360 prints removed arguments as
+    help stubs, and counting one put --draft-max in a generated ini — the
+    worker died at argv parse and the router said "loading" forever."""
+    help_text = (
+        "--spec-draft-n-max N     number of tokens to draft (default: 3)\n"
+        "--draft, --draft-n, --draft-max N       the argument has been removed. use --spec-draft-n-max or\n"
+        "                                        --spec-ngram-mod-n-max\n"
+    )
+    flags = llm_backend.parse_supported_flags(help_text)
+    assert "spec-draft-n-max" in flags
+    assert "draft-max" not in flags, "a tombstone was counted as a live flag"
+
+
+def test_real_fixture_tombstones_draft_max():
+    flags = _census()
+    assert "draft-max" not in flags
+    assert "spec-draft-n-max" in flags
+
+
 def test_installed_flags_handles_missing_exe(monkeypatch):
     """No engine installed → empty census, no exception, no subprocess."""
     monkeypatch.setattr(llm_backend, "LLAMA_EXE", Path("Z:/nope/llama-server.exe"))

@@ -95,10 +95,14 @@ VALUE_FLAGS: dict[str, str] = {
     "cache_k": "cache-type-k",
     "cache_v": "cache-type-v",
     "flash_attn": "flash-attn",          # on | off | auto (a VALUE, not a toggle)
-    "draft_model": "model-draft",
-    "draft_min": "draft-min",
-    "draft_max": "draft-max",
-    "draft_p_min": "draft-p-min",
+    # Canonical spec-decoding names. b9360 TOMBSTONED --draft-max/--draft-min
+    # ("the argument has been removed") while keeping them LISTED in --help —
+    # the census now skips tombstone lines, and we write only canonical names
+    # so an alias's future removal cannot break a stored config.
+    "draft_model": "spec-draft-model",
+    "draft_min": "spec-draft-n-min",
+    "draft_max": "spec-draft-n-max",
+    "draft_p_min": "spec-draft-p-min",
     "mmproj": "mmproj",
     "chat_template_file": "chat-template-file",
 }
@@ -132,10 +136,21 @@ def parse_supported_flags(help_text: str) -> frozenset[str]:
     The census is the B1 gate: every control the Model screen offers is
     backed by a flag PROVEN present, and a missing one renders as
     "n/a in installed build" instead of a knob that silently does nothing.
+
+    🔴 A LISTED FLAG IS NOT A LIVE FLAG. b9360's help still prints removed
+    arguments as stubs ("--draft-max N   the argument has been removed…"),
+    and counting one cost a real hang: the ini carried --draft-max, the
+    worker died at argv parse, and the router reported "loading" forever.
+    A line that says the argument was removed contributes NOTHING.
     """
     import re
 
-    return frozenset(re.findall(r"--([a-z][a-z0-9-]*)", help_text))
+    flags: set[str] = set()
+    for line in help_text.splitlines():
+        if "has been removed" in line:
+            continue
+        flags.update(re.findall(r"--([a-z][a-z0-9-]*)", line))
+    return frozenset(flags)
 
 
 @lru_cache(maxsize=1)
@@ -634,6 +649,15 @@ class LlamaCppBackend:
                     f"load {key!r} ended in state {state!r} — see "
                     f"{paths.LLAMA_DIR / 'litetui-llama-server.log'}"
                 )
+            # A worker that dies at argv parse leaves the ROUTER saying
+            # "loading" forever (measured: an idle GPU and a 300s wait).
+            # Our own log has the truth the router won't tell — read it.
+            argv_err = _worker_argv_error()
+            if argv_err:
+                raise BackendError(
+                    f"load {key!r}: the worker died parsing its arguments — "
+                    f"{argv_err}"
+                )
             time.sleep(1.0)
         raise BackendError(f"load {key!r} did not finish within {LOAD_TIMEOUT_S}s")
 
@@ -1000,6 +1024,22 @@ def _body(e: "urllib.error.HTTPError") -> str:
         return e.read().decode("utf-8", "replace")[:300]
     except OSError:
         return str(e)
+
+
+def _worker_argv_error(lines: int = 40) -> str | None:
+    """The last argv-parse failure in OUR server log's tail, or None.
+
+    Only the tail: an old error must not fail a NEW load that is genuinely
+    in flight — the log is append-mode across spawns."""
+    path = paths.LLAMA_DIR / "litetui-llama-server.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(text.strip().splitlines()[-lines:]):
+        if "error while handling argument" in line:
+            return line.split("]", 1)[-1].strip()
+    return None
 
 
 def _log_tail(path: Path, lines: int = 5) -> str:
