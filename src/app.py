@@ -425,6 +425,19 @@ def thinking_header_text(marker: str, t0: float, now: float,
     return text
 
 
+# The launch wordmark. Module-level so a test can assert on it without a running
+# app, and so the art is not buried inside a method body.
+LITETUI_SPLASH = (
+    "\n"
+    "  \u2588\u2588     \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588  \u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588\n"
+    "  \u2588\u2588       \u2588\u2588     \u2588\u2588   \u2588\u2588       \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \n"
+    "  \u2588\u2588       \u2588\u2588     \u2588\u2588   \u2588\u2588\u2588\u2588\u2588    \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \n"
+    "  \u2588\u2588       \u2588\u2588     \u2588\u2588   \u2588\u2588       \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \n"
+    "  \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588   \u2588\u2588   \u2588\u2588\u2588\u2588\u2588\u2588   \u2588\u2588   \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588\n"
+    "      local-first chat \u00b7 LM Studio + llama.cpp \u00b7 /help\n"
+)
+
+
 def tool_display_parts(tool, max_lines: int = 12) -> list:
     """Pure: the (text, style) parts for a ToolMessage's display from its state.
     Testable without a Textual app (no widget.content / console involved).
@@ -1470,8 +1483,20 @@ class LiteTUI(App):
         )
         yield ContextFooter()
 
+    def _splash(self) -> None:
+        """The launch wordmark. First thing drawn, before the backend answers.
+
+        Deliberately six lines and no colour codes: it is seen on EVERY launch,
+        so it has to earn its height once and then get out of the way. Box-drawing
+        glyphs only -- no square brackets anywhere in the art, because Textual
+        parses markup out of a raw str content and a stray "[" would be eaten as
+        a tag rather than drawn.
+        """
+        self._system(LITETUI_SPLASH)
+
     def on_mount(self) -> None:
         self.query_one("#message-input", Input).focus()
+        self._splash()
         self._connect()
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
@@ -2393,12 +2418,13 @@ class LiteTUI(App):
                 self._system(f"Connected — model: {self.model_id}")
                 if self.tools_enabled:
                     self._system(f"agent loop: up to {self.settings.tool_iterations} tool iterations per turn (/settings)")
+                # The full model listing used to print HERE, on every launch.
+                # It is a catalogue, not a greeting: it pushed the splash and the
+                # first prompt off-screen to answer a question nobody asked at
+                # boot. `/models` renders the same list on demand (plugins/
+                # model_switch.py), so nothing is lost by staying quiet.
                 if len(self.available_models) > 1:
-                    listing = "\n".join(
-                        f"  {'> ' if m == self.model_id else '  '}{i+1}. {m}"
-                        for i, m in enumerate(self.available_models)
-                    )
-                    self._system(f"Available models:\n{listing}\nUse /model <number> to switch")
+                    self._system(f"{len(self.available_models)} models available — /models to list, /model <n> to switch")
             else:
                 self.sub_title = "No model loaded"
                 self._system(
