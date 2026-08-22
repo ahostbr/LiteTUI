@@ -48,9 +48,22 @@ class _StubApp:
         self.settings = _Settings()
         self.said: list[str] = []
         self.pushed: list = []
+        # Carried so "shown" and "sent" are distinguishable. Without it this
+        # stub could not fail on a skill that was displayed and never
+        # delivered, which is exactly what happened.
+        self.conversation: list[dict] = [{"role": "system", "content": "BASE"}]
 
     def _system(self, text):
         self.said.append(text)
+
+    def _append_to_system(self, text: str) -> None:
+        current = self.conversation[0].get("content") or ""
+        if text in current:
+            return
+        self.conversation[0] = {
+            **self.conversation[0],
+            "content": (current.rstrip() + "\n\n" + text) if current else text,
+        }
 
     def push_screen(self, screen, callback=None):
         self.pushed.append((screen, callback))
@@ -122,7 +135,12 @@ def test_skills_opens_a_picker_instead_of_dumping(tmp_path: Path, monkeypatch) -
     assert ids[1:] == sorted(ids[1:]), "skills are not in a predictable order"
 
 
-def test_picking_a_skill_shows_its_body(tmp_path: Path, monkeypatch) -> None:
+def test_picking_a_skill_sends_its_body_to_the_model(tmp_path: Path, monkeypatch) -> None:
+    """AMENDED 2026-08-22. Was `test_picking_a_skill_shows_its_body` and
+    asserted exactly that — the body in app.said, the SCREEN. It passed
+    throughout the period the picker sent nothing to the model, because
+    _StubApp had no conversation for it to fail against. A stub that cannot
+    represent the missing behaviour cannot catch its absence."""
     import paths
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     app = _StubApp([_skill(tmp_path, "ls-mark", "MARK BODY")])
@@ -130,7 +148,8 @@ def test_picking_a_skill_shows_its_body(tmp_path: Path, monkeypatch) -> None:
     _screen, callback = app.pushed[0]
 
     callback("ls-mark")
-    assert any("MARK BODY" in s for s in app.said)
+    assert "MARK BODY" in app.conversation[0]["content"], "the picker sent nothing"
+    assert not any("MARK BODY" in s for s in app.said), "the body still hits the log"
 
     callback(None)  # Esc must be inert, not an error
     assert not any("[error]" in s for s in app.said)

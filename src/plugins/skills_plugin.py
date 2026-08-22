@@ -43,6 +43,37 @@ def _cmd_refresh(app) -> None:
     app._system("\n".join(lines))
 
 
+def _invoke(app, want: str) -> None:
+    """Load a skill and GIVE IT TO THE MODEL. The whole point of the command.
+
+    Ryan, 2026-08-22: "invoking a skill just prints it to the screen... its not
+    getting sent to the agent correctly." There was no send to break — this
+    command was written as a viewer (its comment said "Show what the MODEL would
+    receive") and `app._system` only mounts a widget into the chat log. The old
+    banner said "N chars as the model sees it" about a delivery that never
+    happened, so the falsehood was printed to the user on every invocation.
+
+    Delivery goes through _append_to_system, NOT _append, and that is a
+    portability constraint rather than a preference: qwen/qwen3.8-27b's chat
+    template raises "System message must be at the beginning" and 500s when a
+    second role:"system" turn appears mid-conversation (app.py:2968). Extending
+    the first system turn is also idempotent, which gives re-invoking the same
+    skill the right behaviour for nothing.
+
+    Nothing of the body reaches the screen. The log gets one line saying what
+    was loaded; the skill itself is for the model to read, and dumping it into
+    the transcript was the visible half of this defect.
+    """
+    body = skills_mod.load(app.skills, want)
+    if body.startswith("[error]"):
+        # Never inject a failed lookup: it would sit in the system prompt for
+        # the rest of the session, telling the model a skill does not exist.
+        app._system(body)
+        return
+    app._append_to_system(f"# Skill: {want}\n\n{body}")
+    app._system(f"[skill {want!r} loaded — {len(body):,} chars sent to the model]")
+
+
 def _cmd_skills(app, name: str, arg: str) -> None:
     # Discovery is silent by design: a directory with no SKILL.md is a
     # scratch folder, not an error. That makes a MISNAMED or MISPLACED
@@ -53,9 +84,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         _cmd_refresh(app)
         return
     if arg:
-        body = skills_mod.load(app.skills, arg)
-        # Show what the MODEL would receive, not a summary of it.
-        app._system(f"[skill {arg!r} — {len(body):,} chars as the model sees it]\n\n{body}")
+        _invoke(app, arg)
         return
     if not app.settings.skills_enabled:
         app._system(
@@ -89,8 +118,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         if choice == _REPORT_ROW:
             app._system(_skills_report(app, base))
             return
-        body = skills_mod.load(app.skills, choice)
-        app._system(f"[skill {choice!r} — {len(body):,} chars as the model sees it]\n\n{body}")
+        _invoke(app, choice)
 
     app.push_screen(
         PickerScreen(

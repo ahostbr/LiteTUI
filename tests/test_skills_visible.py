@@ -107,10 +107,20 @@ async def test_slash_skills_names_what_was_SKIPPED():
 
 
 @pytest.mark.asyncio
-async def test_slash_skills_shows_what_the_MODEL_would_get():
-    """/skills <name> must print the body, not a summary of it.
+async def test_slash_skills_actually_gives_the_body_to_the_model():
+    """/skills <name> must SEND the body, not print it.
 
-    A preview that paraphrases cannot answer "why did the model do that?".
+    AMENDED 2026-08-22, and the old name is the evidence: this was
+    `test_slash_skills_shows_what_the_MODEL_would_get`, and it asserted the body
+    appeared in the CHAT LOG while calling that "what the model would get".
+    Those are two different places and the command only ever did the first.
+    Ryan: "invoking a skill just prints it to the screen... its not getting sent
+    to the agent correctly."
+
+    The test passed for as long as the bug existed BECAUSE its expectation was
+    read off the implementation instead of the contract. Left here, renamed,
+    rather than deleted — a test that once encoded a defect is worth keeping as
+    a reminder that green meant nothing here.
     """
     root = Path(tempfile.mkdtemp(prefix="skills-root2-"))
     _make_skill(root / "skills", "probe", "probe", "d")
@@ -125,7 +135,13 @@ async def test_slash_skills_shows_what_the_MODEL_would_get():
         a._system = lambda s: msgs.append(s)
         a._handle_command("/skills probe")
         await pilot.pause()
-    assert "UNIQUE-BODY-MARKER-42" in msgs[-1]
+    assert "UNIQUE-BODY-MARKER-42" in a.conversation[0]["content"], (
+        "the body never reached the model's system turn"
+    )
+    assert "UNIQUE-BODY-MARKER-42" not in "\n".join(msgs), (
+        "the body is still being dumped into the chat log"
+    )
+    assert any("probe" in m for m in msgs), "the user was not told the skill loaded"
 
 
 @pytest.mark.asyncio

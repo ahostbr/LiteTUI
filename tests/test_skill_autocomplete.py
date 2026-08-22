@@ -177,7 +177,13 @@ async def test_a_completed_name_actually_runs_the_skill(tmp_path: Path) -> None:
 
     joined = "\n".join(said)
     assert "Unknown" not in joined, f"a completed skill name is still a dead command: {joined!r}"
-    assert "body of ls-mark" in joined, "the skill body was not shown"
+    # Amended 2026-08-22: this asserted the body was SHOWN, which is the defect
+    # Ryan reported — the command painted the skill and sent nothing. The real
+    # contract is that it reaches the MODEL, so that is what is asserted now.
+    assert "body of ls-mark" in a.conversation[0]["content"], (
+        "the completed skill name did not deliver the body to the model"
+    )
+    assert "body of ls-mark" not in joined, "the body is still being dumped to the log"
 
 
 @pytest.mark.asyncio
