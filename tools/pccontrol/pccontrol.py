@@ -113,9 +113,11 @@ def marker(x: int, y: int, mon: Optional[int] = None, ms: int = 2500, label: str
 
 
 def type_text(text: str) -> str:
-    escaped = text
-    for char in ['+', '^', '%', '~', '(', ')', '{', '}', '[', ']']:
-        escaped = escaped.replace(char, '{' + char + '}')
+    # Single pass, char by char: the old sequential replace() corrupted
+    # nested braces (escaping '{' to '{{}' and then re-escaping the '}'
+    # INSIDE it), so any JSON was un-typeable.
+    specials = set('+^%~(){}[]')
+    escaped = "".join('{' + c + '}' if c in specials else c for c in text)
     escaped = escaped.replace('"', '`"')
     ps = f'''
 Add-Type -AssemblyName System.Windows.Forms
