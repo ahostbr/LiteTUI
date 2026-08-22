@@ -21,6 +21,7 @@ lands on the GPU, both servers tree-killed in finally.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 import subprocess
@@ -72,6 +73,20 @@ def _call(url: str, body: dict | None = None, timeout: float = 30.0):
         return e.code, e.read().decode("utf-8", "replace")[:1500]
     except Exception as e:  # noqa: BLE001
         return None, repr(e)
+
+
+def _backend_pointed_at(host: str):
+    """A real LlamaCppBackend aimed at `host` and nothing else: no attach
+    candidates and no disk scan, so what it reports came from the server."""
+    from settings import Settings
+    s = Settings()
+    s.llama_host = host
+    s.llama_attach_hosts = []
+    s.llama_scan_litesuite = False
+    s.llama_scan_lmstudio = False
+    s.llama_scan_hf_cache = False
+    s.llama_models_dirs = []
+    return llm_backend.LlamaCppBackend(s)
 
 
 def _smallest_gguf() -> Path | None:
@@ -178,6 +193,42 @@ def main() -> int:
                     "refusal in llm_backend claims the route does not exist")
         step("/models/load and /models/unload are 404: the routes do not exist")
 
+        # The stub proves the parser; THIS proves the backend, against the
+        # actual process. A fixture can only ever be as right as the day it
+        # was captured.
+        b = _backend_pointed_at(host)
+        asyncio.run(b.ensure_running())
+        if not b.single_model:
+            die("LlamaCppBackend did not recognise a single-model server")
+        if not b.attached:
+            die("a single-model server on our own port must read as attached")
+        rows = asyncio.run(b.list_models())
+        if len(rows) != 1:
+            die(f"expected one row from a single-model server, got "
+                f"{[r.key for r in rows]}")
+        if not rows[0].loaded:
+            die("the resident, serving model listed as NOT loaded — D12 itself")
+        if Path(rows[0].path or "") != gguf:
+            die(f"row path {rows[0].path!r} is not the served gguf")
+        step("backend: one loaded row, path from /props, attached")
+
+        info = asyncio.run(b.model_info(rows[0].key))
+        if info != (4096, "llm", True):
+            die(f"model_info returned {info!r}, want (4096,'llm',True)")
+        step("backend: model_info reports the LIVE window, not the ceiling")
+
+        try:
+            asyncio.run(b.load(rows[0].key))
+        except llm_backend.BackendError as e:
+            if "one model" not in str(e) or host not in str(e):
+                die(f"refusal does not name the situation: {e}")
+            step("backend: load refused in words, before any 404 request")
+        else:
+            die("load against a single-model server was not refused")
+
+        asyncio.run(b.ensure_chat_ready(rows[0].key))
+        step("backend: ensure_chat_ready passes — one resident model, always ready")
+
         captured["single_models"] = models
         captured["single_props"] = props
     finally:
@@ -244,6 +295,49 @@ def main() -> int:
             die(f"chat during a load gave {code} — expected 503 'Loading model' "
                 "(or 200 if the load beat the request)")
         step(f"chat during a load → {code} (a DIFFERENT status from the 400)")
+
+        # And the backend against the live ROUTER: the same call must give
+        # words instead of the 400 above, and must NOT treat this server as
+        # single-model. A one-sided proof would pass just as well if we
+        # called every server single-model.
+        b = _backend_pointed_at(host)
+        asyncio.run(b.ensure_running())
+        if b.single_model:
+            die("a ROUTER was misread as single-model — the discriminator is "
+                "inverted and every management refusal would misfire")
+        step("backend: the router is NOT read as single-model")
+
+        _call(f"{host}/models/unload", {"model": "tiny"}, timeout=60)
+        try:
+            asyncio.run(b.ensure_chat_ready("tiny"))
+        except llm_backend.BackendError as e:
+            if "/load" not in str(e) or "400" in str(e):
+                die(f"unloaded-model message is not plain words: {e}")
+            step("backend: unloaded model → '/load first', not a raw 400")
+        else:
+            die("ensure_chat_ready passed a model the router has not loaded")
+
+        try:
+            asyncio.run(b.ensure_chat_ready("no-such-model"))
+        except llm_backend.BackendError as e:
+            if "not on the server" not in str(e):
+                die(f"absent-model message conflates absent with cold: {e}")
+            step("backend: absent model is a different message from cold")
+        else:
+            die("ensure_chat_ready passed a model the router does not have")
+
+        # A load in flight must be WAITED OUT, not refused.
+        _call(f"{host}/models/load", {"model": "tiny"})
+        t0 = time.monotonic()
+        asyncio.run(b.ensure_chat_ready("tiny"))
+        step(f"backend: waited out a load in flight ({time.monotonic() - t0:.1f}s)")
+
+        code, _ = _call(f"{host}/v1/chat/completions", {
+            "model": "tiny", "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 4}, timeout=120)
+        if code != 200:
+            die(f"the turn ensure_chat_ready cleared still failed with {code}")
+        step("backend: the cleared turn actually streams (200)")
 
         captured["router_props"] = props
         captured["router_errors"] = errors
