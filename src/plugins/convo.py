@@ -54,36 +54,53 @@ def _cmd_compact(app, name: str, arg: str) -> None:
     app._compact(arg)
 
 
-def _cmd_convos(app, name: str, arg: str) -> None:
+def _open_convos_picker(app) -> None:
+    """The conversation picker modal, shared by /convos and /resume so
+    the two commands show one UI instead of one modal and one wall of
+    chat text. Selecting a row opens it; Esc closes it."""
     rows = app._list_convos()
     if not rows:
-        app._system(f"No saved conversations yet.\nThey land in {paths.CONVO_DIR}")
+        app._system("Nothing to resume.")
         return
-    lines = []
-    total = 0
-    for i, (p, meta, msgs) in enumerate(rows[:30], 1):
-        mark = ">" if p == app.convo_path else " "
-        stamp, turns, badge = _convo_meta_bits(p, msgs)
-        total += p.stat().st_size
-        lines.append(
-            f" {mark} {i:>2}. {p.parent.name[:8]}  {stamp}  {turns:>3} msg{badge}  "
-            f"{app._fmt_size(p.stat().st_size):>7}  {app._convo_label(meta, msgs)}"
+    # Same picker as /model, so the two interactions cannot drift.
+    items = []
+    for path, meta, msgs in rows[:40]:
+        stamp, turns, badge = _convo_meta_bits(path, msgs)
+        # The conversation's own uuid — on disk all along, never shown.
+        cid = path.parent.name[:8]
+        # The owning seat, only for conversations written since v3
+        # meta. Older ones show blanks rather than a fabricated name.
+        who = str(meta.get("agent_name") or "")[:10]
+        aid = str(meta.get("agent_id") or "")[:8]
+        owner = f"{who} {aid}".strip() or "—"
+        items.append(
+            (
+                str(path),
+                f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
+                f"{app._fmt_size(path.stat().st_size):>7}  "
+                f"{app._convo_label(meta, msgs)}",
+            )
         )
-    extra = f"\n(+{len(rows) - 30} older)" if len(rows) > 30 else ""
-    warn = (
-        f"\n\n[!] saving is BROKEN this session: {app._persist_error}"
-        if app._persist_error
-        else ""
-    )
-    app._system(
-        "Saved conversations (newest first):\n"
-        + "\n".join(lines)
-        + extra
-        + f"\n{app._fmt_size(total)} of transcript across {len(rows)} conversation(s)"
-        + "\nUse /resume <number> to load one."
-        + warn
+    title = "Resume a conversation"
+    if app._persist_error:
+        # _note_persist_error announces the FIRST save failure and is
+        # never heard from again; this badge is the on-demand
+        # re-statement, on the exact surface the user is looking at.
+        title += "  [!] SAVING IS BROKEN"
+    app.push_screen(
+        PickerScreen(
+            title,
+            items,
+            current=str(app.convo_path) if app.convo_path else None,
+        ),
+        app._on_convo_picked,
     )
 
+
+def _cmd_convos(app, name: str, arg: str) -> None:
+    # The picker UI, same as /resume with no argument - the old behaviour
+    # printed the rows into the chat, which is what the modal already is.
+    _open_convos_picker(app)
 
 #: Same cap the derived title uses, so a named row cannot blow the column
 #: apart when every other row is bounded.
@@ -143,33 +160,7 @@ def _cmd_resume(app, name: str, arg: str) -> None:
         )
         return
     if target is None:
-        # Same picker as /model, so the two interactions cannot drift.
-        items = []
-        for path, meta, msgs in rows[:40]:
-            stamp, turns, badge = _convo_meta_bits(path, msgs)
-            # The conversation's own uuid — on disk all along, never shown.
-            cid = path.parent.name[:8]
-            # The owning seat, only for conversations written since v3
-            # meta. Older ones show blanks rather than a fabricated name.
-            who = str(meta.get("agent_name") or "")[:10]
-            aid = str(meta.get("agent_id") or "")[:8]
-            owner = f"{who} {aid}".strip() or "—"
-            items.append(
-                (
-                    str(path),
-                    f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
-                    f"{app._fmt_size(path.stat().st_size):>7}  "
-                    f"{app._convo_label(meta, msgs)}",
-                )
-            )
-        app.push_screen(
-            PickerScreen(
-                "Resume a conversation",
-                items,
-                current=str(app.convo_path) if app.convo_path else None,
-            ),
-            app._on_convo_picked,
-        )
+        _open_convos_picker(app)
         return
     app._resume(target[0])
 
