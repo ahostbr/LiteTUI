@@ -50,9 +50,20 @@ def _run(coro):
 
 
 def _table(app):
-    """The provider's table, built the way the palette builds it."""
+    """The provider's table, with the group prefix stripped off the title.
+
+    Rows render as "Backend  >  Switch model" since the palette was grouped
+    (2026-08-22) -- Textual has no section headers, so the group name leads the
+    title. Every assertion in this file is about the ROW: that it exists, and
+    that running it reaches the right handler. Matching the decorated label
+    instead would make each of them a test of the prefix, which is already
+    covered by tests/test_palette_groups.py.
+    """
     provider = m.LiteTUICommands(app.screen)
-    return provider._commands()
+    return [
+        (title.split("›")[-1].strip(), help_text, run)
+        for title, help_text, run in provider._commands()
+    ]
 
 
 # --------------------------------------------------------------------------

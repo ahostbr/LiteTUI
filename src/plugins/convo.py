@@ -144,18 +144,24 @@ def _register(ctx) -> None:
     ctx.command(
         ("/new", "/clear", "/reset"), _cmd_new,
         palette="New conversation",
-        help="Fresh transcript on disk (/new)",
+        help="Start fresh. This chat is saved first.",
+        group="convo",
+        order=10,
     )
     ctx.command(("/system",), _cmd_system)
     ctx.command(
         ("/compact",), _cmd_compact,
         palette="Compact conversation",
-        help="Summarise older turns, keep the recent (/compact)",
+        help="Makes room to keep going by summarising older messages. Nothing is deleted.",
+        group="convo",
+        order=30,
     )
     ctx.command(
         ("/convos", "/conversations", "/list"), _cmd_convos,
         palette="Conversations",
-        help="List saved conversations (/convos)",
+        help="Reopen an earlier chat.",
+        group="convo",
+        order=20,
     )
     ctx.command(("/resume",), _cmd_resume)
 

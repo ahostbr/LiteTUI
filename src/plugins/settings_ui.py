@@ -24,7 +24,9 @@ def _register(ctx) -> None:
     ctx.command(
         ("/settings", "/config", "/set"), _cmd_settings,
         palette="Settings",
-        help="Every knob, scrollable (/settings)",
+        help="Every knob, in one scrollable place.",
+        group="app",
+        order=10,
     )
 
 

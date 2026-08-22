@@ -49,23 +49,76 @@ def _cmd_quit(app, name: str, arg: str) -> None:
     app.exit()
 
 
+# Four rows Textual used to own. They are ours now so they can carry a group,
+# a description and a slash command like everything else in the palette.
+def _cmd_tools(app, name: str, arg: str) -> None:
+    app.action_toggle_tools()
+
+
+def _cmd_keys(app, name: str, arg: str) -> None:
+    app.action_show_help_panel()
+
+
+def _cmd_maximize(app, name: str, arg: str) -> None:
+    app.screen.action_maximize()
+
+
+def _cmd_screenshot(app, name: str, arg: str) -> None:
+    app.action_screenshot()
+
+
 def _register(ctx) -> None:
     app = ctx.app
     ctx.command(
         ("/clear-screen", "/clearscreen", "/cls"), _cmd_clear_screen,
         palette="Clear screen",
-        help="Display only — the conversation is untouched (/clear-screen)",
+        help="Tidies the view. Your conversation is kept.",
+        group="screen",
+        order=10,
     )
     ctx.command(
         ("/think", "/thinking"), _cmd_think,
         palette="Thinking level",
-        help="Show the levels and the current one (/think)",
+        help="How hard it thinks before answering. More thinking, better answers, slower replies.",
+        group="backend",
+        order=70,
     )
-    ctx.command(("/quit", "/exit"), _cmd_quit)
-    ctx.palette_row(
-        "Toggle agent tools",
-        "bash, read, write and friends on/off (Ctrl+T)",
-        app.action_toggle_tools,
+    ctx.command(
+        ("/quit", "/exit"), _cmd_quit,
+        palette="Quit",
+        help="Close the app.",
+        group="app",
+        order=90,          # last row of the last group, away from anything frequent
+    )
+    # Was a palette_row, which is the escape hatch for things that have no
+    # command. It has one now, so it goes through the front door.
+    ctx.command(
+        ("/tools",), _cmd_tools,
+        palette="Toggle agent tools",
+        help="Let it read files, run commands and edit things. Ctrl+T.",
+        group="tools",
+        order=10,
+    )
+    ctx.command(
+        ("/keys",), _cmd_keys,
+        palette="Keys",
+        help="Which keys do what right now.",
+        group="app",
+        order=30,
+    )
+    ctx.command(
+        ("/screenshot",), _cmd_screenshot,
+        palette="Screenshot",
+        help="Save a picture of the app to disk.",
+        group="screen",
+        order=30,
+    )
+    ctx.command(
+        ("/maximize",), _cmd_maximize,
+        palette="Maximize",
+        help="Make the focused panel fill the window.",
+        group="screen",
+        order=40,
     )
 
 

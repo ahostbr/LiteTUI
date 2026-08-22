@@ -35,7 +35,13 @@ def test_real_capabilities_ship_as_plugins():
     assert len(tool_owners) >= 5, f"tools come from only {tool_owners}"
     assert len(cmd_owners) >= 6, f"commands come from only {cmd_owners}"
     assert section_owners, "no plugin owns a prompt section"
-    assert len(row_owners) >= 1 and len(a.plugins.palette_rows) >= 2
+    # palette_row is the ESCAPE HATCH for a capability with no command of its
+    # own, so a shrinking count is an improvement, not a regression: on
+    # 2026-08-22 "New scheduled job" and "Toggle agent tools" both graduated to
+    # real commands (/job, /tools) and stopped needing it. What this line is
+    # actually guarding is that a PLUGIN still owns the hatch rather than the
+    # host -- the floor was never the point.
+    assert len(row_owners) >= 1 and len(a.plugins.palette_rows) >= 1
     assert a.plugins.dynamic, "the MCP dynamic provider vanished"
     assert len(PLUGIN_LOAD_ORDER) >= 15
 

@@ -94,6 +94,39 @@ class DynamicTools:
     dispatch_fn: Callable[[str], Callable | None]
 
 
+#: Palette groups, in display order (Ryan, 2026-08-22).
+#: Named for what the user is doing, not for the subsystem that owns it.
+#: `app` is last so Quit sits at the very bottom, away from anything frequent.
+PALETTE_GROUPS: tuple[str, ...] = (
+    "convo", "backend", "tools", "automation", "screen", "app",
+)
+
+#: Display headings for those groups.
+PALETTE_GROUP_LABELS: dict[str, str] = {
+    "convo": "Convo",
+    "backend": "Backend",
+    "tools": "Tools",
+    "automation": "Automation",
+    "screen": "Screen",
+    "app": "App",
+}
+
+
+def palette_sort_key(group: str, order: int, title: str) -> tuple:
+    """Sort key for one palette row.
+
+    An unknown group sorts to the END rather than raising: a third-party
+    plugin inventing its own group should land at the bottom of the list, not
+    take down the palette. Ties break on title so the order is total and the
+    list can never shuffle between runs.
+    """
+    try:
+        rank = PALETTE_GROUPS.index(group)
+    except ValueError:
+        rank = len(PALETTE_GROUPS)
+    return (rank, order, title.lower())
+
+
 @dataclass(frozen=True)
 class CommandEntry:
     owner: str
@@ -101,6 +134,12 @@ class CommandEntry:
     handler: Callable[[Any, str, str], None]   # handler(app, name, arg)
     palette: str | None = None
     help: str = ""
+    # Where this sits in the palette. Declared HERE, at the point of
+    # registration, rather than in a table in the provider -- a hand-authored
+    # second table is the drift class the derived palette already replaced,
+    # and it would silently drop any command nobody remembered to add.
+    group: str = "app"
+    order: int = 500
 
 
 @dataclass(frozen=True)
@@ -109,6 +148,14 @@ class PaletteRow:
     title: str
     help: str
     run: Callable[[], Any]
+    group: str = "app"
+    order: int = 500
+    # What to show as the trailing command tag. A command-backed row derives
+    # this from the dispatcher and can never disagree with it; a row like
+    # "Scheduled jobs" runs a SUBcommand ("/cron list") that no single token
+    # names, so it states its own. Declared here at registration for the same
+    # reason group and order are -- never in a table somewhere else.
+    tag: str = ""
 
 
 @dataclass(frozen=True)
@@ -148,7 +195,8 @@ class PluginRegistry:
     def add_dynamic(self, owner: str, specs_fn, dispatch_fn) -> None:
         self.dynamic.append(DynamicTools(owner, specs_fn, dispatch_fn))
 
-    def add_command(self, owner: str, tokens, handler, palette=None, help="") -> None:
+    def add_command(self, owner: str, tokens, handler, palette=None, help="",
+                    group="app", order=500) -> None:
         toks = tuple(t.lower() for t in tokens)
         for t in toks:
             prior = self.commands.get(t)
@@ -158,12 +206,13 @@ class PluginRegistry:
                     "a shadowed command was impossible in the if/elif era; "
                     "the registry must not make it possible now"
                 )
-        entry = CommandEntry(owner, toks, handler, palette, help)
+        entry = CommandEntry(owner, toks, handler, palette, help, group, order)
         for t in toks:
             self.commands[t] = entry
 
-    def add_palette_row(self, owner: str, title: str, help: str, run) -> None:
-        self.palette_rows.append(PaletteRow(owner, title, help, run))
+    def add_palette_row(self, owner: str, title: str, help: str, run,
+                        group="app", order=500, tag="") -> None:
+        self.palette_rows.append(PaletteRow(owner, title, help, run, group, order, tag))
 
     def add_prompt_section(self, owner: str, order: int, render, enabled=None) -> None:
         for s in self.prompt_sections:
@@ -236,11 +285,13 @@ class PluginContext:
     def dynamic_tools(self, specs_fn, dispatch_fn) -> None:
         self._reg.add_dynamic(self._owner, specs_fn, dispatch_fn)
 
-    def command(self, tokens, handler, palette=None, help="") -> None:
-        self._reg.add_command(self._owner, tokens, handler, palette, help)
+    def command(self, tokens, handler, palette=None, help="",
+                group="app", order=500) -> None:
+        self._reg.add_command(self._owner, tokens, handler, palette, help, group, order)
 
-    def palette_row(self, title: str, help: str, run) -> None:
-        self._reg.add_palette_row(self._owner, title, help, run)
+    def palette_row(self, title: str, help: str, run, group="app", order=500,
+                    tag="") -> None:
+        self._reg.add_palette_row(self._owner, title, help, run, group, order, tag)
 
     def prompt_section(self, order: int, render, enabled=None) -> None:
         self._reg.add_prompt_section(self._owner, order, render, enabled)

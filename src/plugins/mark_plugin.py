@@ -14,7 +14,9 @@ def _register(ctx) -> None:
     ctx.command(
         ("/mark",), _cmd_mark,
         palette="Mark the screen",
-        help="Draggable ring; send returns screenshot + coords (/mark)",
+        help="Drag a ring over anything on screen and send it, so it can see what you mean.",
+        group="screen",
+        order=20,
     )
 
 

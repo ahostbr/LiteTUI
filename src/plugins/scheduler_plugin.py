@@ -32,17 +32,26 @@ def _register(ctx) -> None:
     ctx.command(
         ("/calendar", "/cal"), _cmd_calendar,
         palette="Calendar",
-        help="The month, every scheduled job on it (/calendar)",
+        help="A month view of everything scheduled.",
+        group="automation",
+        order=30,
     )
-    ctx.palette_row(
-        "New scheduled job",
-        "Create a cron job in the builder form",
-        lambda: _palette_new_job(app),
+    # Ryan's call: the rows that had no command get one. This was the last
+    # palette_row left standing without a way to reach it from the keyboard.
+    ctx.command(
+        ("/job",), lambda a, name, arg: _palette_new_job(a),
+        palette="New scheduled job",
+        help="Set something up to run on a timer.",
+        group="automation",
+        order=20,
     )
     ctx.palette_row(
         "Scheduled jobs",
-        "List cron jobs and their next fires (/cron list)",
+        "Things set to run on a timer, and when they fire next.",
         lambda: app._handle_command("/cron list"),
+        group="automation",
+        order=10,
+        tag="/cron list",
     )
 
 

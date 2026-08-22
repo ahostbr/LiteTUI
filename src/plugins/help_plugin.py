@@ -82,7 +82,9 @@ def _register(ctx) -> None:
     ctx.command(
         ("/help", "/?"), _cmd_help,
         palette="Help",
-        help="Commands and keys (/help)",
+        help="Commands and keyboard shortcuts.",
+        group="app",
+        order=20,
     )
 
 

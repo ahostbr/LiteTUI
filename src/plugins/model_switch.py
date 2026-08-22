@@ -575,32 +575,44 @@ def _register(ctx) -> None:
     ctx.command(
         ("/model", "/models"), _cmd_model,
         palette="Switch model",
-        help="Pick from the connected server's models (/model)",
+        help="Pick a different model to answer with.",
+        group="backend",
+        order=10,
     )
     ctx.command(
         ("/reconnect",), _cmd_reconnect,
         palette="Reconnect",
-        help="Reconnect to the model server (/reconnect)",
+        help="Lost the model server? Try again.",
+        group="backend",
+        order=60,
     )
     ctx.command(
         ("/backend",), _cmd_backend,
         palette="Switch backend",
-        help="lmstudio or llamacpp — which engine serves the chat (/backend)",
+        help="Which program actually runs the model — LM Studio or llama.cpp.",
+        group="backend",
+        order=50,
     )
     ctx.command(
         ("/load",), _cmd_load,
         palette="Load model",
-        help="Explicitly load a model into the engine (/load [name])",
+        help="Put a model into memory so it is ready to answer.",
+        group="backend",
+        order=30,
     )
     ctx.command(
         ("/unload",), _cmd_unload,
         palette="Unload model",
-        help="Unload a model and free its VRAM (/unload [name])",
+        help="Free the graphics memory a model is holding.",
+        group="backend",
+        order=40,
     )
     ctx.command(
         ("/modelcfg",), _cmd_modelcfg,
         palette="Model config",
-        help="Per-model Load/Inference panel — LM Studio parity (/modelcfg [name])",
+        help="Tune how a model loads and how it answers.",
+        group="backend",
+        order=20,
     )
 
 

@@ -816,10 +816,45 @@ class LiteTUICommands(Provider):
             if entry.palette is None or id(entry) in seen:
                 continue
             seen.add(id(entry))
-            rows.append((entry.palette, entry.help, cmd(entry.tokens[0])))
+            rows.append((
+                plugins_mod.palette_sort_key(entry.group, entry.order, entry.palette),
+                entry.group,
+                entry.palette,
+                # The slash command is DERIVED, never written into the help
+                # string. It used to be typed inline as "(/compact)", which put
+                # a machine token in the middle of a sentence a newcomer was
+                # trying to read -- and gave the text a second chance to drift
+                # from the command it names.
+                self._describe(entry.help, entry.tokens[0]),
+                cmd(entry.tokens[0]),
+            ))
         for r in app.plugins.palette_rows:
-            rows.append((r.title, r.help, r.run))
-        return rows
+            rows.append((
+                plugins_mod.palette_sort_key(r.group, r.order, r.title),
+                r.group,
+                r.title,
+                self._describe(r.help, r.tag or None),
+                r.run,
+            ))
+        rows.sort(key=lambda row: row[0])
+
+        # The group name leads the title. Textual's palette has no section
+        # headers, so this is what makes the grouping visible -- and it makes
+        # search BETTER rather than worse: typing "backend" now surfaces the
+        # whole family together instead of one row that happens to say it.
+        labels = plugins_mod.PALETTE_GROUP_LABELS
+        return [
+            (f"{labels.get(group, group.title())}  \u203a  {title}", help_text, run)
+            for _key, group, title, help_text, run in rows
+        ]
+
+    @staticmethod
+    def _describe(help_text: str, token: str | None) -> str:
+        """Plain sentence first, the slash command as a trailing tag."""
+        text = (help_text or "").strip()
+        if not token:
+            return text
+        return f"{text}   {token}" if text else token
 
     async def discover(self) -> Hits:
         """The list shown before any query is typed — full feature roll."""
@@ -842,6 +877,25 @@ class LiteTUI(App):
 
     # The stock providers (theme, keys, quit...) plus ours.
     COMMANDS = App.COMMANDS | {LiteTUICommands}
+
+    def get_system_commands(self, screen):
+        """Keep Textual's Theme picker. Everything else is ours, and grouped.
+
+        The stock provider also offers Keys, Maximize, Screenshot, Quit and
+        Bell. All of those now exist as real commands in our own palette, with
+        a group, a plain-English description and a slash command -- yielding
+        them here as well would show each of them twice, in two different
+        vocabularies, which is worse than the ungrouped list this replaces.
+
+        Theme is the exception and is deliberately kept: it opens Textual's own
+        picker, we do not reimplement it, and /settings promises in writing
+        that "ctrl+p still has a quick-select". Dropping the stock provider
+        wholesale would have quietly broken that promise -- the reason this is
+        a filter rather than a deletion.
+        """
+        for command in super().get_system_commands(screen):
+            if command.title == "Theme":
+                yield command
 
     CSS = """
     Screen {
@@ -1553,7 +1607,9 @@ class LiteTUI(App):
         self.plugins.add_command(
             "host", ("/plugins",), plugins_mod.status_command,
             palette="Plugins",
-            help="Every plugin and its status: active, disabled, failed (/plugins)",
+            help="Add-ons that extend the app, and whether each one is working.",
+            group="tools",
+            order=30,
         )
         self._plugin_manifests = plugins_mod.register_plugins(
             self, self.plugins,

@@ -88,7 +88,9 @@ def _register(ctx) -> None:
     ctx.command(
         ("/skills", "/skill"), _cmd_skills,
         palette="Skills",
-        help="List discovered skills and their sources (/skills)",
+        help="Extra abilities it can use, and where they came from.",
+        group="tools",
+        order=20,
     )
     ctx.tool(
         skills_mod.SKILL_TOOL_SPEC,
