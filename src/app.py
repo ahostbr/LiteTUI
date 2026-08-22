@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import harness as harness_mod
-from dataclasses import fields as fields_of
+from dataclasses import dataclass, fields as fields_of
 from functools import partial
 
 import settings as settings_mod
@@ -163,6 +163,15 @@ COMPACT_KEEP_RECENT = 4
 # How many tool round-trips /compact may take while persisting to the store.
 COMPACT_MAX_TOOL_ITERS = 8
 
+# How long a COMPACTION waits for a model that is still loading before giving
+# up. The backend's own ceiling is llm_backend.LOAD_TIMEOUT_S = 300s, which is
+# right for a turn someone is watching and wrong here: a compaction holds the
+# exclusive chat group, so the user's next message queues behind it for as long
+# as it waits. A real model load takes far longer than this bound, so the short
+# value is deliberate — "not now, try again after the next turn", not a race we
+# are hoping to win. The turn path keeps the full 300s on purpose.
+COMPACT_READY_TIMEOUT_S = 10
+
 # Loaded from prompts/compact.md — edit the FILE; it is read at import.
 COMPACT_PROMPT = load_prompt("compact")
 
@@ -194,8 +203,31 @@ def memory_prompt(convo_id: str, folder: Path) -> str:
 TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))
 
 
+@dataclass(frozen=True)
+class Completion:
+    """One row the slash picker can offer: an app COMMAND, or a skill.
+
+    `sort` is precomputed and total, so refilter can order a MIXED list with a
+    single comparison — commands in palette order, then skills alphabetically.
+    Building it at construction is what lets two orderings that are not
+    comparable to each other live in one list.
+    """
+
+    name: str
+    description: str
+    kind: str            # "command" | "skill"
+    sort: tuple
+
+
 class SkillAutocomplete(Vertical):
-    """Skill names, rising from the message area as a slash name is typed.
+    """Slash names, rising from the message area as one is typed: the app's own
+    COMMANDS and the skills library, in one list.
+
+    The id and class name still say "skill" because the CSS and the tests bind
+    to them; the contents are both kinds. That name is not cosmetic history —
+    it is what the bug was. The widget did exactly what it was called, so
+    /settings /convos /model and ~20 others were invisible to the one
+    affordance built for finding them.
 
     Deliberately NOT a modal. A modal takes focus, which would stop the typing
     that is doing the filtering -- the whole interaction is "keep typing and
@@ -211,22 +243,29 @@ class SkillAutocomplete(Vertical):
     def compose(self) -> ComposeResult:
         yield self.options
 
-    def refilter(self, skills, fragment: str) -> bool:
+    def refilter(self, candidates, fragment: str) -> bool:
         """Narrow to `fragment`. Returns whether anything survived.
 
         A PREFIX match sorts above a mere substring one: typing "ls-a" should
         offer ls-arch before something that merely contains the letters, and
-        the first row is what Tab takes.
+        the first row is what Tab takes. Within equal prefix quality the
+        candidate's own `sort` decides, which is what puts COMMANDS ahead of
+        skills — they are the app's own surface and they always exist, while a
+        skills library may be empty.
         """
         want = (fragment or "").lower()
-        hits = [s for s in skills if want in s.name.lower()]
-        hits.sort(key=lambda s: (not s.name.lower().startswith(want), s.name.lower()))
+        hits = [c for c in candidates if want in c.name.lower()]
+        hits.sort(key=lambda c: (not c.name.lower().startswith(want), c.sort))
         self._matches = hits[:200]
 
         self.options.clear_options()
-        for s in self._matches:
-            desc = " ".join((s.description or "").split())
-            self.options.add_option(Option(f"{s.name}   {desc[:64]}"))
+        for c in self._matches:
+            desc = " ".join((c.description or "").split())
+            # Labelled, because the user has to be able to tell a command from
+            # a skill WITHOUT running it. Fixed-width so the column does not
+            # ripple as the list narrows.
+            tag = "[command]" if c.kind == "command" else "[skill]"
+            self.options.add_option(Option(f"{c.name:<26}{tag:<11}{desc[:40]}"))
         if self._matches:
             self.options.highlighted = 0
         self.display = bool(self._matches)
@@ -1586,6 +1625,13 @@ class LiteTUI(App):
         self._convo_pending = False
         self._convo_loading = False  # suppress writes while replaying from disk
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
+        # Did the LAST turn end because the user killed it, or because it
+        # finished? Only the post-compaction wake ping cares: "resume the
+        # in-flight task" is the wrong thing to say about a task the user
+        # deliberately stopped. Distinct from _stop_requested, which is
+        # cleared at the START of the next turn and is about the turn in
+        # flight; this outlives the turn so the ping can read it.
+        self._turn_abandoned = False
         # Elapsed-time display while a turn is in flight (pre-token) and while
         # tool calls run. The repaint is a task on the worker's own event loop
         # (interleaves with the stream); the display string is render_progress.
@@ -2678,11 +2724,6 @@ class LiteTUI(App):
                 if want and want in self.available_models:
                     if self.settings.pin_default_model or not self.model_id:
                         self.model_id = want
-                elif want:
-                    self._system(
-                        f"Default model {want!r} is not being served — using "
-                        f"{self.available_models[0]!r}. (/settings to change it.)"
-                    )
                 if not self.model_id or self.model_id not in self.available_models:
                     # Prefer a LOADED model for the default pick. The native
                     # listing now includes every DOWNLOADED model (LM Studio
@@ -2693,6 +2734,17 @@ class LiteTUI(App):
                     ]
                     self.model_id = (
                         loaded[0] if loaded else self.available_models[0]
+                    )
+                if want and want not in self.available_models:
+                    # AFTER the pick, and reading its RESULT. This used to sit
+                    # above the pick and name available_models[0] — a second,
+                    # parallel copy of a decision the pick makes differently:
+                    # it prefers a LOADED model, and it leaves an already-valid
+                    # model_id alone. Either case made the line a lie about
+                    # which model is answering. One decision, one reader.
+                    self._system(
+                        f"Default model {want!r} is not being served — using "
+                        f"{self.model_id!r}. (/settings to change it.)"
                     )
                 self._update_header()
                 self._fetch_ctx_window()
@@ -3657,6 +3709,10 @@ class LiteTUI(App):
             self.workers.cancel_group(self, "chat")
             self._system("[force-stopped — no partial reply was recoverable]")
             self._stop_requested = False
+            # Marked HERE as well as at _stream's stop branch: a cancelled
+            # worker never reaches that branch, so without this the HARDER of
+            # the two stops would be the one the wake ping ignored.
+            self._turn_abandoned = True
             return
         self.push_screen(ConfirmStop(), self._on_stop_answer)
 
@@ -3748,10 +3804,58 @@ class LiteTUI(App):
         if ac is None:
             return
         text = value or ""
-        if not self.skills or not text.startswith("/") or " " in text:
+        # 🔴 The guard asks about the TRIGGER, never about the library. It used
+        # to read `not self.skills`, so an empty skills library switched off
+        # completion for every COMMAND as well — the app's own surface made
+        # unreachable by the absence of an optional add-on. refilter's own
+        # return already handles "nothing matched".
+        if not text.startswith("/") or " " in text:
             ac.dismiss_list()
             return
-        ac.refilter(self.skills, text[1:])
+        ac.refilter(self._completion_candidates(), text[1:])
+
+    def _completion_candidates(self) -> list[Completion]:
+        """Every slash name the picker can complete to, commands first.
+
+        Commands are folded to ONE row per CommandEntry on its primary token.
+        `plugins.commands` is keyed by every ALIAS — 41 keys over 27 entries
+        today — so reading it directly offers /model twice and /new three times.
+
+        Ordering reuses `plugins.palette_sort_key` rather than minting a second
+        table. A hand-authored copy of an order is the drift class the derived
+        palette already replaced, and it would silently misplace any command
+        nobody remembered to add.
+
+        A skill whose name a command already claims is DROPPED, because
+        `_handle_command` resolves a bare name to a skill ONLY when no command
+        matches. Offering it would advertise something Enter will never do.
+
+        Rebuilt per keystroke on purpose: /skills can refresh the library
+        mid-session (see the reload path), and a cached list would go stale
+        exactly when someone had just added the skill they are now typing.
+        """
+        out: list[Completion] = []
+        taken: set[str] = set()
+        # Keyed by `tokens`, which is unique per entry and hashable — the dict
+        # is what collapses the aliases.
+        for entry in {e.tokens: e for e in self.plugins.commands.values()}.values():
+            name = entry.tokens[0].lstrip("/")
+            if not name or name.lower() in taken:
+                continue
+            taken.add(name.lower())
+            out.append(Completion(
+                name, entry.help, "command",
+                (0,) + plugins_mod.palette_sort_key(entry.group, entry.order, name),
+            ))
+        for s in self.skills:
+            if s.name.lower() in taken:
+                continue
+            taken.add(s.name.lower())
+            out.append(Completion(
+                s.name, s.description or "", "skill", (1, 0, 0, s.name.lower()),
+            ))
+        out.sort(key=lambda c: c.sort)
+        return out
 
     def accept_skill_completion(self) -> None:
         """Take the highlighted name. Trailing space, because a skill can take
@@ -3868,11 +3972,98 @@ class LiteTUI(App):
         self._append({"role": "user", "content": content})
         self._stream()
 
+    async def _ensure_chat_ready(self, *, timeout: float | None = None) -> None:
+        """Ask, in plain words, whether model_id can serve a turn RIGHT NOW.
+
+        D2/D11: the router answers `400 model is not loaded` for four different
+        situations — unloaded but in the preset, absent from the preset, no
+        model named at all, and still loading — and app.py rendered whichever
+        one it got verbatim into the message. The backend seam tells them
+        apart, and WAITS OUT a load already in flight rather than telling
+        someone to /load a model that is loading.
+
+        🔴 A PRE-FLIGHT QUERY, NOT A 400 HANDLER. It runs BEFORE create() and
+        inspects no status code anywhere, which is why it cannot swallow the
+        unload-400 that D3 depends on surfacing (llm_backend `_apply_sync`,
+        guarded by test_the_unload_400_is_still_not_swallowed). Do not
+        "simplify" this into an except clause around create() — that is the
+        exact shape that guard was planted to catch.
+
+        `timeout` bounds the wait for callers that are not a user's turn. See
+        COMPACT_READY_TIMEOUT_S. Cancelling the wait does NOT kill the seam's
+        worker thread — Python cannot — so it keeps polling to its own ceiling
+        and its result is discarded. Harmless: the seam is read-only by law
+        (a question about state must not change it) and starts no load.
+
+        A backend without the method carries on. app.py takes whatever
+        `make_backend` returns, and plugins and test doubles predate the seam;
+        a missing capability must mean "no opinion", never AttributeError
+        mid-turn.
+        """
+        ask = getattr(self.backend, "ensure_chat_ready", None)
+        if ask is None:
+            return
+        if not self.model_id:
+            # 🔴 NOTHING TO ASK ABOUT, AND A WORKING PATH TO PROTECT. With no
+            # selection both _stream and _compact send the sentinel
+            # `self.model_id or "local-model"` and let the server resolve it —
+            # which is how a single-model LM Studio serves a user who never
+            # picked anything. The seam answers "no model is selected" here,
+            # correctly for a caller with no fallback and wrongly for this one:
+            # obeying it would refuse turns that work today.
+            #
+            # This cost 12 existing tests to notice. Asking about a model the
+            # request is not going to name is a question about the wrong thing.
+            return
+
+        async def _probe() -> None:
+            try:
+                await ask(self.model_id)
+            except llm_backend.BackendError:
+                # A DEFINITIVE no, in words written for a human. Refuse.
+                raise
+            except Exception:
+                # 🔴 THE PROBE FAILED, NOT THE MODEL — carry on and let the
+                # real request produce its own error.
+                #
+                # A DIAGNOSTIC MUST NOT BECOME A GATE. This is additive: it
+                # exists to turn ONE confusing 400 into plain words. If it
+                # cannot answer — server unreachable, a listing shape a newer
+                # build changed, any bug in the probe itself — then we have no
+                # information, and blocking a turn on no information converts a
+                # working setup into a broken one and hides the real error
+                # behind a new failure mode of our own making.
+                #
+                # Caught in the wild by 12 existing tests (compaction UI, wake
+                # after compact) that stub the CLIENT and leave a real backend
+                # with nothing listening: every one of them stopped compacting.
+                # They were right, and this is why the blanket catch is correct
+                # rather than convenient.
+                return
+
+        if timeout is None:
+            await _probe()
+            return
+        try:
+            await asyncio.wait_for(_probe(), timeout)
+        except asyncio.TimeoutError:
+            # Only reachable from wait_for: _probe swallows everything except
+            # a BackendError, so a TimeoutError here is OUR bound expiring and
+            # never a socket timeout inside the probe.
+            raise llm_backend.BackendError(
+                f"{self.model_id!r} is still loading — skipped rather than "
+                f"holding the app for it. It will be retried."
+            ) from None
+
     @work(exclusive=True, group="chat")
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         self._stop_requested = False
+        # A turn is starting, so nothing is abandoned any more. Cleared HERE
+        # rather than where the ping reads it: a mark that only ever latched
+        # would kill loop mode for the rest of the session after one Esc.
+        self._turn_abandoned = False
         # 🔴 RE-READ THE WINDOW AT TURN START, NOT ONLY AT TURN END.
         #
         # The end-of-turn resync was wired into ONE of the loop's exits (the
@@ -3957,6 +4148,12 @@ class LiteTUI(App):
 
             self._tps_start()
             try:
+                # ASK BEFORE OPENING THE STREAM. Inside this try on purpose:
+                # the plain words then land in the same widget that used to
+                # show the raw 400, with no second error path to keep in step.
+                # No timeout here — the user is watching and asked for this
+                # turn, so a model that is loading is worth waiting out.
+                await self._ensure_chat_ready()
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
                 self._elapsed_stop_body()
@@ -4116,6 +4313,11 @@ class LiteTUI(App):
                     '[stopped by you — partial reply kept'
                     + (', pending tool calls discarded]' if tool_acc else ']')
                 )
+                # This exit is one of the ways a compaction gets STARTED (the
+                # scheduled _maybe_autocompact below). Record that the turn was
+                # KILLED rather than finished, so the post-compaction wake ping
+                # does not tell the model to resume what the user just stopped.
+                self._turn_abandoned = True
                 self.call_after_refresh(self._maybe_autocompact)
                 return
 
@@ -4438,6 +4640,14 @@ class LiteTUI(App):
             # A REAL user message is waiting — it is a better wake than the
             # synthetic ping, and the flush is about to deliver it.
             return
+        if self._turn_abandoned:
+            # The last turn was KILLED by the user, not finished. "Resume the
+            # in-flight task" is the wrong thing to say about a task they
+            # deliberately stopped, and stopping is itself one of the ways a
+            # compaction gets scheduled (see _stream's stop branch). ABANDONED
+            # only — a turn that merely ENDED still wakes, which is the whole
+            # feature. Cleared at the next turn's start, never here.
+            return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)
         self._append({"role": "user", "content": WAKE_AFTER_COMPACT})
@@ -4503,6 +4713,15 @@ class LiteTUI(App):
         summary = ""
         writes: list[str] = []
         try:
+            # ONCE, before the first round — the answer cannot change midway
+            # through a compaction, and asking per round would multiply the
+            # bound below by compact_max_tool_iters. Bounded because this is
+            # maintenance, not a turn: see COMPACT_READY_TIMEOUT_S. Said on
+            # the card first, so a wait that does happen is explained rather
+            # than looking like a hang — the card exists to stop compaction
+            # being a spinner and a prayer.
+            card.set_status(f"checking {self.model_id} is ready")
+            await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
             for round_no in range(1, self.settings.compact_max_tool_iters + 1):
                 kwargs: dict = {
                     "model": self.model_id or "local-model",
