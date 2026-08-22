@@ -1,23 +1,26 @@
-"""The cancel control is attached to the tool it kills, not to the header.
+"""The cancel control is attached to the tool it kills, and it actually appears.
 
 Ryan: "the cancel tool button is docked to the top left ... needs to be in next
-to the tool timer."
+to the tool timer." Then, after the first attempt: "still not seeing the cancel
+button besides timer."
 
-This is a LAYOUT claim, and layout is exactly what a green unit suite does not
-check -- 784 tests passed with the control pinned to the opposite corner of the
-screen from the thing it acts on. So assert the two facts that carry the intent:
+The first version of this file asserted PLACEMENT and stopped there. It passed
+while the control was never created at all, because it mounted the ToolMessage
+and THEN called _tool_begin -- the reverse of what _stream did. With the real
+order, tool.parent was None, the mount was skipped by a `if parent is not None`
+guard, and a green test certified a button nobody could see.
 
-  1. It is NOT a fixture of the app chrome. Nothing is mounted at startup.
-  2. When a tool starts it appears as the IMMEDIATE next sibling of that tool,
-     which is where the elapsed timer is being drawn, and it leaves with it.
-
-Both would fail against the previous version: the control was yielded from
-compose() (so claim 1 fails at startup) and lived on the overlay layer with a
-fixed offset, never parented to any tool (so claim 2 can never hold).
+Two lessons are encoded below, deliberately:
+  - Assert the OBSERVABLE property. "Correctly placed" is not what a user checks;
+    "visible while a tool runs" is. A control that is mounted and never displayed
+    is indistinguishable from an absent one.
+  - Assert it under BOTH mount orders. The bug lived entirely in the caller's
+    ordering, so an order-specific test can only ever catch half of it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -25,6 +28,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
+import ttyguard
 
 
 def make_app():
@@ -37,42 +41,101 @@ def make_app():
     return a
 
 
+class _FakeProc:
+    """Stands in for a live cancellable subprocess."""
+
+    def poll(self):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _restore_cancellable():
+    before = dict(ttyguard.CANCELLABLE)
+    yield
+    ttyguard.CANCELLABLE.update(before)
+
+
+def _assert_adjacent(a, tool) -> None:
+    btn = a._cancel_buttons.get(tool)
+    assert btn is not None, "no cancel control was created for a running tool"
+    assert btn.parent is tool.parent, "the control is not parented to the tool's container"
+    siblings = list(tool.parent.children)
+    assert siblings.index(btn) == siblings.index(tool) + 1, (
+        "the cancel control is not the immediate next sibling of its tool"
+    )
+
+
 @pytest.mark.asyncio
-async def test_cancel_control_rides_its_tool() -> None:
+async def test_control_appears_beside_a_running_tool() -> None:
+    """The order _stream uses: mount, then announce."""
     a = make_app()
     async with a.run_test(size=(120, 30)) as pilot:
-        # 1. Not part of the chrome.
-        assert not list(a.query(m.CancelToolButton)), (
-            "a cancel control exists before any tool is running -- it is back on "
-            "the header, and it cannot say which tool it would kill"
-        )
+        assert not list(a.query(m.CancelToolButton)), "it is back on the header chrome"
 
         log = a.query_one("#chat-log")
         tool = m.ToolMessage("bash")
         log.mount(tool)
-        await pilot.pause()
-
         a._tool_begin(tool)
         await pilot.pause()
 
-        buttons = list(a.query(m.CancelToolButton))
-        assert len(buttons) == 1, f"expected exactly one cancel control, got {len(buttons)}"
-        btn = buttons[0]
+        _assert_adjacent(a, tool)
 
-        # 2. Immediately after its own tool, in the same parent. "Next to the
-        #    tool timer" is precisely this adjacency -- the timer is the last
-        #    line ToolMessage paints while the call is still running.
-        siblings = list(tool.parent.children)
-        assert btn.parent is tool.parent, "the control is not parented to the tool's container"
-        assert siblings.index(btn) == siblings.index(tool) + 1, (
-            "the cancel control is not the immediate next sibling of its tool"
-        )
-
-        # It dies with the call: a control for a finished tool has nothing to kill.
         a._tool_end(tool)
         await pilot.pause()
-        assert not list(a.query(m.CancelToolButton)), (
-            "the cancel control outlived the tool it belonged to"
+        assert not list(a.query(m.CancelToolButton)), "it outlived the tool it belonged to"
+
+
+@pytest.mark.asyncio
+async def test_control_appears_when_announced_before_mounting() -> None:
+    """The order that shipped broken: announce, THEN mount.
+
+    tool.parent is None at _tool_begin time. That must defer, not skip -- the
+    silently-skipped case was the one that always happened in the real app.
+    """
+    a = make_app()
+    async with a.run_test(size=(120, 30)) as pilot:
+        log = a.query_one("#chat-log")
+        tool = m.ToolMessage("bash")
+        a._tool_begin(tool)          # parent is None here
+        log.mount(tool)
+        await pilot.pause()
+        await pilot.pause()          # the deferred retry lands
+
+        _assert_adjacent(a, tool)
+
+
+@pytest.mark.asyncio
+async def test_control_becomes_visible_while_a_subprocess_is_live() -> None:
+    """The property a user can actually check.
+
+    Placement is worthless if `display: none` never lifts. Visibility is driven
+    by the shared elapsed-repaint tick, and tracks the PROCESS, so a control is
+    only offered when there is genuinely something to kill.
+    """
+    a = make_app()
+    async with a.run_test(size=(120, 30)) as pilot:
+        log = a.query_one("#chat-log")
+        tool = m.ToolMessage("bash")
+        log.mount(tool)
+        a._tool_begin(tool)
+        await pilot.pause()
+        btn = a._cancel_buttons[tool]
+
+        # Nothing cancellable yet: offering the control would be a lie.
+        ttyguard.CANCELLABLE["proc"] = None
+        await asyncio.sleep(0.4)
+        await pilot.pause()
+        assert not btn.has_class("visible"), (
+            "a cancel control is on screen with no subprocess to cancel"
+        )
+
+        # A live subprocess: now it must show.
+        ttyguard.CANCELLABLE["proc"] = _FakeProc()
+        await asyncio.sleep(0.4)
+        await pilot.pause()
+        assert btn.has_class("visible"), (
+            "a subprocess is live and cancellable, but the control never appeared -- "
+            "this is exactly what the user reported while the placement test was green"
         )
 
 
@@ -81,7 +144,7 @@ async def test_one_control_per_running_tool() -> None:
     """Several tools can run at once, which is why the control carries a CLASS.
 
     An id must be unique in Textual, so the old id="cancel-tool" could not have
-    survived a second concurrent tool -- and query_one() would have raised on it.
+    survived a second concurrent tool.
     """
     a = make_app()
     async with a.run_test(size=(120, 30)) as pilot:
@@ -89,18 +152,12 @@ async def test_one_control_per_running_tool() -> None:
         tools = [m.ToolMessage("bash"), m.ToolMessage("read_file")]
         for t in tools:
             log.mount(t)
-        await pilot.pause()
-        for t in tools:
             a._tool_begin(t)
         await pilot.pause()
 
         assert len(list(a.query(m.CancelToolButton))) == 2
-
-        # Each one still sits against its own tool, not bunched at the end.
-        siblings = list(log.children)
         for t in tools:
-            btn = a._cancel_buttons[t]
-            assert siblings.index(btn) == siblings.index(t) + 1
+            _assert_adjacent(a, t)
 
         for t in tools:
             a._tool_end(t)

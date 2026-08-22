@@ -2918,22 +2918,44 @@ class LiteTUI(App):
         if tool not in self._inflight_tools:
             self._inflight_tools.append(tool)
             # Mount the cancel control immediately after THIS tool, so it sits
-            # against the timer counting this call up. Best-effort: a failure to
-            # mount a convenience control must never take down the tool call it
-            # was decorating.
-            try:
-                parent = tool.parent
-                if parent is not None:
-                    btn = CancelToolButton()
-                    self._cancel_buttons[tool] = btn
-                    parent.mount(btn, after=tool)
-            except Exception:
-                self._cancel_buttons.pop(tool, None)
+            # against the timer counting this call up.
+            #
+            # `tool.parent is None` is NOT an error case to swallow -- it is the
+            # normal case when the caller announces the tool before mounting it,
+            # which is exactly what _stream used to do. Skipping quietly meant
+            # the control was never created at all: correctly placed by every
+            # test, and invisible in the app. Defer instead, and the mount order
+            # of the caller stops mattering.
+            self._attach_cancel_button(tool)
         if self._elapsed_task is None or self._elapsed_task.done():
             try:
                 self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
             except RuntimeError:
                 self._elapsed_task = None
+
+    def _attach_cancel_button(self, tool, _retry: bool = False) -> None:
+        """Put a cancel control directly after `tool`, whenever that becomes possible.
+
+        Best-effort by design: failing to decorate a tool call must never take
+        down the tool call. But "best-effort" previously covered an unmounted
+        tool too, and that is a bug wearing a guard's clothes -- the one
+        condition it silently tolerated was the one that always happened.
+        """
+        if tool not in self._inflight_tools or tool in self._cancel_buttons:
+            return  # finished, or already decorated
+        parent = tool.parent
+        if parent is None:
+            if not _retry:
+                # Not mounted YET. Come back after the next refresh, by which
+                # time the caller's own mount has landed.
+                self.call_after_refresh(self._attach_cancel_button, tool, True)
+            return
+        try:
+            btn = CancelToolButton()
+            self._cancel_buttons[tool] = btn
+            parent.mount(btn, after=tool)
+        except Exception:
+            self._cancel_buttons.pop(tool, None)
 
     def _tool_end(self, tool) -> None:
         if tool in self._inflight_tools:
@@ -3714,8 +3736,12 @@ class LiteTUI(App):
                                 if idx not in tool_msgs:
                                     msg = ToolMessage(fn.name)
                                     tool_msgs[idx] = msg
-                                    self._tool_begin(msg)
+                                    # Mount FIRST. _tool_begin attaches the
+                                    # cancel control beside this widget, which
+                                    # it cannot do while the widget has no
+                                    # parent. The old order skipped it silently.
                                     self.query_one("#chat-log").mount(msg)
+                                    self._tool_begin(msg)
                                 self._scroll_down()
                             if fn.arguments:
                                 slot["arguments"] += fn.arguments
