@@ -198,3 +198,27 @@ async def test_a_genuine_typo_still_reports_itself(tmp_path: Path) -> None:
         a._handle_command("/ls-mar")
         await pilot.pause()
     assert "Unknown" in "\n".join(said), "a typo silently loaded a skill"
+
+
+@pytest.mark.asyncio
+async def test_a_completed_skill_carries_the_argument_typed_after_it(tmp_path: Path) -> None:
+    """The end-to-end path Ryan actually used: type /name, Tab, then a url.
+
+    The autocomplete completes to "/name " WITH A TRAILING SPACE, and the
+    command->skill fallback rebuilt the command as "/skills <name>" without the
+    remainder. So the affordance invited an argument and the dispatcher threw it
+    away — invoking the skill and handing over the link in one line was
+    impossible. This drives the REAL _handle_command, which is where the drop
+    happened; the plugin-level tests cannot see that rebuild."""
+    a = make_app(tmp_path)
+    async with a.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        a._stream = lambda: None
+        a._handle_command("/ls-mark https://youtu.be/6NukGtwJb7Y")
+        await pilot.pause()
+
+    convo = "\n".join(str(m.get("content") or "") for m in a.conversation)
+    assert "body of ls-mark" in convo, "the skill body was lost once an arg followed"
+    assert "https://youtu.be/6NukGtwJb7Y" in convo, (
+        "the argument was dropped by the command->skill fallback"
+    )

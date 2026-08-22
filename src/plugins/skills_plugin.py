@@ -43,7 +43,7 @@ def _cmd_refresh(app) -> None:
     app._system("\n".join(lines))
 
 
-def _invoke(app, want: str) -> None:
+def _invoke(app, want: str, extra: str = "") -> None:
     """Load a skill and GIVE IT TO THE MODEL. The whole point of the command.
 
     Ryan, 2026-08-22: "invoking a skill just prints it to the screen... its not
@@ -74,8 +74,18 @@ def _invoke(app, want: str) -> None:
     # gets one line (Ryan: "remove any printing to the screen effect"); the
     # model gets the whole skill. They are separate arguments, so showing less
     # than we send costs nothing.
-    app._user_bubble(f"Loaded skill: {want}", False)
-    app._append({"role": "user", "content": f"# Skill: {want}\n\n{body}"})
+    # PROCEDURE FIRST, THEN THE TASK IT APPLIES TO. Reversed, the model reads
+    # an instruction it has no method for yet.
+    content = f"# Skill: {want}\n\n{body}"
+    if extra:
+        content += f"\n\n---\n\n{extra}"
+    # The bubble carries the user's OWN WORDS when they typed any — that text is
+    # their turn and must not vanish from the transcript just because a skill
+    # rode along with it.
+    app._user_bubble(
+        f"Loaded skill: {want}" + (f"\n\n{extra}" if extra else ""), False
+    )
+    app._append({"role": "user", "content": content})
     # AND THEN A TURN, WHICH IS THE HALF THAT WAS MISSING. Putting the body in
     # the context is not the same as the model reading it: the model reads
     # nothing until a request is made. Without this the app said "sent to the
@@ -93,7 +103,13 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         _cmd_refresh(app)
         return
     if arg:
-        _invoke(app, arg)
+        # NAME, then whatever the user typed after it. The autocomplete
+        # completes to "/name " WITH A TRAILING SPACE — an explicit invitation
+        # to type an argument — and the argument used to be dropped. An
+        # affordance that invites input it discards is worse than one that
+        # never offered it.
+        want, _, rest = arg.strip().partition(" ")
+        _invoke(app, want, rest.strip())
         return
     if not app.settings.skills_enabled:
         app._system(

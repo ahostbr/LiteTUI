@@ -5140,7 +5140,12 @@ class LiteTUI(App):
         # rather than quietly loading something that merely resembles it.
         bare = name.lstrip("/").lower()
         if any(s.name.lower() == bare for s in self.skills):
-            self._handle_command(f"/skills {bare}")
+            # ARG RIDES ALONG. This rebuilt the command WITHOUT it, so
+            # `/ls-youtube-transcript <url>` loaded the skill and threw the url
+            # away — Ryan: "i couldnt send him the link and invoke it at once".
+            # The autocomplete completes to "/name " with a trailing space,
+            # which invites exactly the argument this line was discarding.
+            self._handle_command(f"/skills {bare} {arg}".rstrip())
             return
         self._system(f"Unknown: {name} — try /help")
 

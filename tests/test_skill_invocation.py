@@ -244,3 +244,71 @@ def test_refresh_injects_nothing(tmp_path: Path) -> None:
 
     assert app.sent == before, "a refresh contaminated the conversation"
     assert app.turns == 0, "a refresh started a turn"
+
+
+# ── invoking WITH a request in the same line ────────────────────────────────
+#
+# Ryan: "it worked sent him the skill now but it lost the text i typed after it
+# ... meaning i couldnt send him the link and invoke it at once".
+#
+# The autocomplete completes to `/name ` WITH A TRAILING SPACE, which is an
+# explicit invitation to type an argument — and the argument was then dropped on
+# the floor. An affordance that invites input it discards is worse than one that
+# does not offer it at all.
+def test_text_typed_after_the_skill_name_reaches_the_model(tmp_path: Path) -> None:
+    app = _StubApp([_skill(tmp_path, "ls-youtube-transcript")])
+
+    _cmd_skills(app, "skills", "ls-youtube-transcript https://youtu.be/6NukGtwJb7Y")
+
+    sent = app.conversation[-1]["content"]
+    assert BODY in sent, "the skill body did not survive having an argument"
+    assert "https://youtu.be/6NukGtwJb7Y" in sent, (
+        "the text typed after the skill name was dropped — the user cannot "
+        "hand over the link and invoke the skill in one go"
+    )
+
+
+def test_the_argument_is_not_swallowed_into_the_skill_name(tmp_path: Path) -> None:
+    """The negative control that matters: the lookup must still find the skill
+    when a trailing argument is present. A naive fix that passes the whole
+    remainder as the name turns every argument into a failed lookup."""
+    app = _StubApp([_skill(tmp_path, "ls-mark")])
+
+    _cmd_skills(app, "skills", "ls-mark  do the thing")
+
+    assert app.turns == 1, "the skill was not found once an argument followed it"
+    assert BODY in app.conversation[-1]["content"]
+
+
+def test_the_bubble_shows_what_the_user_actually_typed(tmp_path: Path) -> None:
+    """Their words are their turn. Showing only 'Loaded skill: x' would make
+    the request they typed vanish from the transcript."""
+    app = _StubApp([_skill(tmp_path, "ls-mark")])
+
+    _cmd_skills(app, "skills", "ls-mark summarise this for me")
+
+    joined = "\n".join(app.bubbles)
+    assert "summarise this for me" in joined, (
+        f"the user's own words are not on screen: {app.bubbles!r}"
+    )
+    assert BODY not in joined, "the body leaked into the bubble again"
+
+
+def test_the_skill_comes_before_the_request_in_the_message(tmp_path: Path) -> None:
+    """Procedure first, then the task it applies to. Reversed, the model reads
+    an instruction it has no method for yet."""
+    app = _StubApp([_skill(tmp_path, "ls-mark")])
+
+    _cmd_skills(app, "skills", "ls-mark THE-REQUEST")
+
+    sent = app.conversation[-1]["content"]
+    assert sent.index(BODY) < sent.index("THE-REQUEST"), (
+        "the request precedes the procedure"
+    )
+
+
+def test_no_argument_still_works(tmp_path: Path) -> None:
+    """The plain case must not regress."""
+    app = _StubApp([_skill(tmp_path, "ls-mark")])
+    _cmd_skills(app, "skills", "ls-mark")
+    assert BODY in app.conversation[-1]["content"] and app.turns == 1
