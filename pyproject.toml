@@ -37,6 +37,15 @@ litetui = "app:main"
 # interpreter happened to hold. Ruff and mypy were absent from BOTH.
 dev = [
     "pytest>=8.0",
+    # 🔴 LOAD-BEARING, AND IT WAS INVISIBLE. 126 `@pytest.mark.asyncio`
+    # decorations across 26 test files need this plugin, and it was declared
+    # NOWHERE — it simply happened to be installed in the developer's global
+    # interpreter (1.3.0). That is the whole of finding 3 in one package: the
+    # 976-passing baseline was a property of one machine's system Python, and
+    # the same suite in the locked environment failed 4 of the first 5 tests
+    # it reached. An undeclared test dependency does not fail loudly; it makes
+    # the gate's colour depend on which interpreter happens to run it.
+    "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "mypy>=1.11",
 ]
