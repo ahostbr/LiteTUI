@@ -65,7 +65,7 @@ def test_running_a_booting_test_does_not_grow_the_real_store(script):
     is constructed, or applied to a re-imported copy of the module, satisfies
     the regex and still writes to the real directory.
     """
-    import app as app_mod
+    from litetui import app as app_mod
 
     # Read the REAL path from a fresh subprocess-free import, not from whatever
     # a sibling test may already have redirected in this process.

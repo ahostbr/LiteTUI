@@ -11,8 +11,8 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import paths
+from litetui import app as m
+from litetui import paths
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-input-"))
 
@@ -38,7 +38,7 @@ async def main():
     print("=== branding ===")
     chk("TITLE is LiteTUI", m.LiteTUI.TITLE == "LiteTUI")
     chk("old class name is gone", not hasattr(m, "LMStudioChat"))
-    src = open(Path(__file__).resolve().parent.parent / "src" / "app.py", encoding="utf-8").read()
+    src = open(Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py", encoding="utf-8").read()
     chk("no 'LM Studio Chat' string left in source", "LM Studio Chat" not in src)
 
     print("\n=== Ctrl+V pastes clipboard TEXT into the input ===")

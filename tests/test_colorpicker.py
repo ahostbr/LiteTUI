@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from colorpicker import (
+from litetui.colorpicker import (
     GRID_H,
     GRID_W,
     HUE_W,
@@ -23,7 +23,7 @@ from colorpicker import (
     sv_to_cell,
 )
 
-SETTINGS_SRC = (Path(__file__).resolve().parent.parent / "src" / "settings_screen.py"
+SETTINGS_SRC = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "settings_screen.py"
                 ).read_text(encoding="utf-8")
 
 

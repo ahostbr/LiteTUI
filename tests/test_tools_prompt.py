@@ -24,8 +24,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import paths
+from litetui import app as m
+from litetui import paths
 
 
 def _prompt() -> str:

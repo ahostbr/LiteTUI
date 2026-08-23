@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import llm_backend
+from litetui import llm_backend
 
 FIXTURE = Path(__file__).parent / "fixtures" / "llama_server_help_b9360.txt"
 

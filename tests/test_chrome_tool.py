@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import chrome_tool
+from litetui import chrome_tool
 
 
 def test_every_path_constant_points_at_something_real():

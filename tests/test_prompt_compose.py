@@ -14,9 +14,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import app as m  # noqa: E402
-import paths  # noqa: E402
-import skills as skills_mod  # noqa: E402
+from litetui import app as m  # noqa: E402
+from litetui import paths  # noqa: E402
+from litetui import skills as skills_mod  # noqa: E402
 
 
 def _reference(a) -> str:

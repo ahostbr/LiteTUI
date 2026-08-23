@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import settings as settings_mod  # noqa: E402
-from settings import Settings  # noqa: E402
+from litetui import settings as settings_mod  # noqa: E402
+from litetui.settings import Settings  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIVE_SETTINGS = REPO_ROOT / settings_mod.SETTINGS_FILENAME
@@ -62,7 +62,7 @@ def test_CONTROL_the_live_path_is_the_one_we_think_it_is():
     that is not the real settings file, and pass while guarding nothing."""
     assert LIVE_SETTINGS.name == "settings.json"
     assert LIVE_SETTINGS.parent == REPO_ROOT
-    assert (REPO_ROOT / "src" / "app.py").is_file(), "REPO_ROOT is not the repo root"
+    assert (REPO_ROOT / "src" / "litetui" / "app.py").is_file(), "REPO_ROOT is not the repo root"
 
 
 def test_CONTROL_the_guard_would_have_caught_the_original():

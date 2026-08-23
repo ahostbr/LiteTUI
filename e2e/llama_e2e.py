@@ -27,9 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import llm_backend
-import paths
-from settings import Settings
+from litetui import llm_backend
+from litetui import paths
+from litetui.settings import Settings
 
 ART = Path(__file__).resolve().parent / "artifacts" / "dual-backend"
 ART.mkdir(parents=True, exist_ok=True)
@@ -137,7 +137,7 @@ def main() -> None:
         step(f"streamed completion carries the marker ({len(text)} chars)")
 
         # ── 7: seat-guard cycle on the REAL router (Sentinel's finding) ───
-        import seat_guard
+        from litetui import seat_guard
         rec = seat_guard.record(model.key, backend)
         if rec is None:
             fail(1, "seat_snapshot of a loaded model returned None")

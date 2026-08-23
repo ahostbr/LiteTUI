@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pytest
 
-import mcp_client
-from mcp_client import MCPError, MCPServer
+from litetui import mcp_client
+from litetui.mcp_client import MCPError, MCPServer
 
 # Generous next to the 0.1s timeouts under test: the assertion is "bounded at
 # all", not "bounded to the millisecond". A machine under load must not turn a

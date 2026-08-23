@@ -20,9 +20,9 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import paths
-import ask_user_question as aq
+from litetui import app as m
+from litetui import paths
+from litetui import ask_user_question as aq
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-auq-"))
 ok = []

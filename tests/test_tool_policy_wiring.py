@@ -3,11 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as app_mod
-import scheduler
-from settings import Settings
-from tool_approval import ToolApprovalScreen
-from tool_policy import (
+from litetui import app as app_mod
+from litetui import scheduler
+from litetui.settings import Settings
+from litetui.tool_approval import ToolApprovalScreen
+from litetui.tool_policy import (
     INTERACTIVE,
     NETWORK_READ_POLICY,
     READ_POLICY,

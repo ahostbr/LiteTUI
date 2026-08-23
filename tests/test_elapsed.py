@@ -6,8 +6,8 @@ rendering (widget.content) needs a live app, so the display logic was extracted
 into tool_display_parts(tool, ...) which takes a lightweight object with the
 same state fields — see _FakeTool below.
 """
-from app import render_progress, tool_display_parts
-from fmt import fmt_dur
+from litetui.app import render_progress, tool_display_parts
+from litetui.fmt import fmt_dur
 
 
 class _FakeTool:
@@ -100,7 +100,7 @@ def test_set_result_settles_took():
     lands, then >= the elapsed time (here: the 2s we pretend the call ran).
     """
     import time
-    from app import ToolMessage
+    from litetui.app import ToolMessage
 
     class _TM:
         set_result = ToolMessage.set_result  # the real method, bound at call time

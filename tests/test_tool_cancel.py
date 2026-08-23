@@ -27,12 +27,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as app_mod
-import ttyguard
-from plugins import core_tools
-from app import LiteTUI
+from litetui import app as app_mod
+from litetui import ttyguard
+from litetui.plugins import core_tools
+from litetui.app import LiteTUI
 
-_SRC = Path(__file__).resolve().parent.parent / "src"
+_SRC = Path(__file__).resolve().parent.parent / "src" / "litetui"
 # The subjects moved in the plugin split: tool_bash lives in the core-tools
 # plugin, kill_tree in the envelope. A gate reads the source that HOLDS its subject.
 CORE_TOOLS_SRC = (_SRC / "plugins" / "core_tools.py").read_text(encoding="utf-8")

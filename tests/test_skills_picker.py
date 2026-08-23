@@ -24,9 +24,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import skills as skills_mod
-from picker import PickerScreen
-from plugins.skills_plugin import _cmd_skills, _skipped_lines, _REPORT_ROW
+from litetui import skills as skills_mod
+from litetui.picker import PickerScreen
+from litetui.plugins.skills_plugin import _cmd_skills, _skipped_lines, _REPORT_ROW
 
 
 def _skill(tmp_path: Path, name: str, body: str = "the body") -> skills_mod.Skill:
@@ -119,7 +119,7 @@ def test_a_loaded_folder_is_not_reported_at_all(tmp_path: Path) -> None:
 
 # ── 3. the picker ────────────────────────────────────────────────────────────
 def test_skills_opens_a_picker_instead_of_dumping(tmp_path: Path, monkeypatch) -> None:
-    import paths
+    from litetui import paths
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     skills = [_skill(tmp_path, "ls-mark"), _skill(tmp_path, "ls-arch")]
     app = _StubApp(skills)
@@ -141,7 +141,7 @@ def test_picking_a_skill_sends_its_body_to_the_model(tmp_path: Path, monkeypatch
     throughout the period the picker sent nothing to the model, because
     _StubApp had no conversation for it to fail against. A stub that cannot
     represent the missing behaviour cannot catch its absence."""
-    import paths
+    from litetui import paths
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     app = _StubApp([_skill(tmp_path, "ls-mark", "MARK BODY")])
     _cmd_skills(app, "/skills", "")
@@ -159,7 +159,7 @@ def test_picking_a_skill_sends_its_body_to_the_model(tmp_path: Path, monkeypatch
 
 def test_an_empty_library_still_explains_where_it_looked(tmp_path: Path, monkeypatch) -> None:
     """With nothing to pick, the report IS the useful answer."""
-    import paths
+    from litetui import paths
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     app = _StubApp([])
     _cmd_skills(app, "/skills", "")

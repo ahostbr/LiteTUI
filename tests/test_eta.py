@@ -21,8 +21,8 @@ shows elapsed only.
 """
 from statistics import median
 
-from app import is_reliable_rate_sample, render_progress
-from fmt import fmt_dur
+from litetui.app import is_reliable_rate_sample, render_progress
+from litetui.fmt import fmt_dur
 
 
 # --- render_progress: the ETA gate (when the ETA appears at all) -------------

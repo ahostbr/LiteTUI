@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import app as m  # noqa: E402
-from plugins import PLUGIN_LOAD_ORDER  # noqa: E402
+from litetui import app as m  # noqa: E402
+from litetui.plugins import PLUGIN_LOAD_ORDER  # noqa: E402
 
 APP_SRC = Path(m.__file__).read_text(encoding="utf-8")
 
@@ -50,14 +50,22 @@ def test_app_never_imports_a_plugin_module():
     """The re-accretion guard. app.py owns the substrate import and nothing
     below it; the day a submodule import appears, the monolith is growing
     back and this fails before it merges."""
-    assert re.search(r"^\s*(?:from|import)\s+plugins\.", APP_SRC, re.M) is None, (
+    # Covers BOTH namespaces. After the package move the submodule form is
+    # `from litetui.plugins.x import ...`, and a guard that still only knew the
+    # bare `plugins.` spelling would have gone quietly permissive -- passing
+    # forever while the thing it forbids became sayable again. A guard that
+    # cannot see the current spelling of the violation is not a guard.
+    assert re.search(r"^\s*(?:from|import)\s+(?:litetui\.)?plugins\.", APP_SRC, re.M) is None, (
         "app.py imports a plugin submodule"
     )
-    assert "from plugins import" not in APP_SRC, (
+    assert "from litetui.plugins import" not in APP_SRC, (
         "app.py from-imports the substrate — module import only, one binding"
     )
     # positive control: the substrate import itself IS present.
-    assert re.search(r"^import plugins as plugins_mod$", APP_SRC, re.M)
+    assert re.search(r"^from litetui import plugins as plugins_mod$", APP_SRC, re.M), (
+        "the substrate import must still be PRESENT -- without this positive control "
+        "the two bans above pass trivially on a file that imports nothing at all"
+    )
 
 
 def test_the_reaccretion_guard_can_fail():

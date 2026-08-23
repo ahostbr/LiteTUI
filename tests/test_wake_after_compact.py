@@ -32,9 +32,9 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
-from settings import Settings
+from litetui import app as app_mod
+from litetui import paths
+from litetui.settings import Settings
 
 # Hermetic convo store, the same way test_context_length.py does it.
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-wake-"))
@@ -271,7 +271,7 @@ def test_shipped_default_is_off():
 async def test_settings_screen_has_the_wake_switch():
     from textual.app import App, ComposeResult
     from textual.widgets import Switch
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     class Host(App):
         def compose(self) -> ComposeResult:

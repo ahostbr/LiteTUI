@@ -37,8 +37,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import skills as skills_mod
+from litetui import app as m
+from litetui import skills as skills_mod
 
 
 async def _settle(pilot, cond, ceiling: float = 3.0) -> bool:

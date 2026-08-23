@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import llm_backend
-from settings import Settings
+from litetui import llm_backend
+from litetui.settings import Settings
 
 
 def _settings(*dirs: Path) -> Settings:

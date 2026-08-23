@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-import llm_backend
-import paths
-from llm_backend import BackendError, LlamaCppBackend
-from settings import Settings
+from litetui import llm_backend
+from litetui import paths
+from litetui.llm_backend import BackendError, LlamaCppBackend
+from litetui.settings import Settings
 
 
 class RouterStub:

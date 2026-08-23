@@ -13,7 +13,7 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as app_mod
+from litetui import app as app_mod
 
 ok = []
 
@@ -43,7 +43,7 @@ class FakeApp:
         # The footer reads per-field toggles now. Default them ALL ON so every
         # assertion below keeps testing the field it was written for rather than
         # accidentally passing because the field is switched off.
-        from settings import Settings
+        from litetui.settings import Settings
 
         self.settings = settings if settings is not None else Settings()
         self.seat = seat

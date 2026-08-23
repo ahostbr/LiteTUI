@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import schedule_builder as sb
-import scheduler as sched_mod
+from litetui import schedule_builder as sb
+from litetui import scheduler as sched_mod
 
 
 # --------------------------------------------------------------------------

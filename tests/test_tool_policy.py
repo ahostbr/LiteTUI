@@ -1,10 +1,10 @@
 """Tool authority is metadata plus a host decision, never model discretion."""
 from pathlib import Path
 
-import app
-import scheduler
-from settings import Settings
-from tool_policy import (
+from litetui import app
+from litetui import scheduler
+from litetui.settings import Settings
+from litetui.tool_policy import (
     ALLOW,
     CONFIRM,
     DENY,

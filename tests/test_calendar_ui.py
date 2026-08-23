@@ -24,12 +24,12 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
+from litetui import app as m
 from textual.widgets import OptionList
-from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen, _apply_job_edit
-import paths
-import calendar_view as cv
-import scheduler as sched_mod
+from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen, _apply_job_edit
+from litetui import paths
+from litetui import calendar_view as cv
+from litetui import scheduler as sched_mod
 
 
 @pytest.fixture(autouse=True)

@@ -16,9 +16,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import calendar_view as cv
-import scheduler as sched_mod
-from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
+from litetui import calendar_view as cv
+from litetui import scheduler as sched_mod
+from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
 
 
 def job(prompt="p", schedule="@daily", **kw):
@@ -230,7 +230,7 @@ def _run(coro):
 
 def test_slash_calendar_opens_the_screen():
     """A screen class nobody can reach is not a feature."""
-    import app as m
+    from litetui import app as m
 
     async def body():
         a = m.LiteTUI()
@@ -252,7 +252,7 @@ def test_slash_calendar_opens_the_screen():
 
 def _paint_at(width, height, jobs):
     """Open the calendar at a given console size and return what it drew."""
-    import app as m
+    from litetui import app as m
 
     async def body():
         a = m.LiteTUI()
@@ -299,7 +299,7 @@ def test_a_very_narrow_terminal_still_paints():
 
 
 def test_paging_months_changes_what_is_drawn_and_returns():
-    import app as m
+    from litetui import app as m
 
     async def body():
         a = m.LiteTUI()
@@ -328,7 +328,7 @@ def test_paging_months_changes_what_is_drawn_and_returns():
 def test_the_calendar_opens_with_no_jobs_at_all():
     """The empty state is the FIRST state every user sees. A view that only
     renders once data exists is broken for everyone on day one."""
-    import app as m
+    from litetui import app as m
 
     async def body():
         a = m.LiteTUI()
@@ -346,7 +346,7 @@ def test_the_calendar_opens_with_no_jobs_at_all():
 
 
 def test_a_broken_job_does_not_stop_the_calendar_from_painting():
-    import app as m
+    from litetui import app as m
 
     async def body():
         a = m.LiteTUI()

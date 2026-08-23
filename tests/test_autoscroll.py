@@ -33,8 +33,8 @@ import pytest
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as app_mod  # noqa: E402
-import settings as settings_mod  # noqa: E402
+from litetui import app as app_mod  # noqa: E402
+from litetui import settings as settings_mod  # noqa: E402
 
 
 class FakeScroll:

@@ -8,10 +8,10 @@ feature — it is the highlight.
 from pathlib import Path
 from types import SimpleNamespace
 
-from app import LiteTUI
+from litetui.app import LiteTUI
 
 REPO = Path(__file__).resolve().parent.parent
-APP_SRC = (REPO / "src" / "app.py").read_text(encoding="utf-8")
+APP_SRC = (REPO / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
 PS1 = (REPO / "tools" / "pccontrol" / "marker_overlay.ps1").read_text(encoding="utf-8")
 
 DATA = {"x": 2408, "y": 1311, "mon": 0, "mon_x": 2408, "mon_y": 1311,
@@ -56,7 +56,7 @@ def test_overlay_handoff_is_atomic():
 # --- wiring ------------------------------------------------------------------
 def test_mark_route_exists_and_waits_outside_the_chat_group():
     # The route lives in the registry since the plugin split.
-    import app as m
+    from litetui import app as m
     assert "/mark" in m.LiteTUI().plugins.commands, "/mark is not registered"
     body = APP_SRC.split("async def _mark_wait", 1)[0]
     assert '@work(exclusive=True, group="mark")' in APP_SRC.split(

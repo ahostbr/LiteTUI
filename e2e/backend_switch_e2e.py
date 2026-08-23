@@ -26,13 +26,13 @@ os.environ["LITETUI_BACKEND"] = "llamacpp"
 os.environ["LITETUI_LLAMA_HOST"] = "http://localhost:7472"
 os.environ["LITETUI_NO_HARNESS"] = "1"
 
-import llm_backend
-import paths
+from litetui import llm_backend
+from litetui import paths
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-switch-e2e-"))
 
-import app as app_mod
-from plugins.model_switch import _switch_backend
+from litetui import app as app_mod
+from litetui.plugins.model_switch import _switch_backend
 
 ART = Path(__file__).resolve().parent / "artifacts" / "dual-backend"
 ART.mkdir(parents=True, exist_ok=True)

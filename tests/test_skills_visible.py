@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
-import skills as skills_mod
+from litetui import app as app_mod
+from litetui import paths
+from litetui import skills as skills_mod
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-skills-"))
 
@@ -59,7 +59,7 @@ def test_disabled_skills_yield_a_list_not_a_dict():
     Latent rather than live — load() is only reachable when self.skills is
     truthy — but the two branches must agree on type or the bug waits.
     """
-    from settings import Settings
+    from litetui.settings import Settings
 
     a = app_mod.LiteTUI()
     a.settings = Settings(skills_enabled=False)
@@ -188,7 +188,7 @@ async def test_disabled_says_so_rather_than_reporting_zero():
     Reporting the first when the second is true sends you hunting for a missing
     file that is not missing.
     """
-    from settings import Settings
+    from litetui.settings import Settings
 
     root = Path(tempfile.mkdtemp(prefix="skills-root4-"))
     _make_skill(root / "skills", "present", "present", "d")

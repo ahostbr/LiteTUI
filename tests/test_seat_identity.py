@@ -47,7 +47,7 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import harness as harness_mod
+from litetui import harness as harness_mod
 
 ok = []
 
@@ -148,7 +148,7 @@ finally:
 
 
 print("\n=== the seat id follows the conversation (Ryan, 2026-08-21) ===")
-app_src = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(encoding="utf-8")
+app_src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
 chk("the seat id is DERIVED from the conversation, so a resume keeps it",
     "_sync_seat_identity" in app_src and "agent_id_for_convo" in app_src)
 chk("...and it is synced from BOTH places convo_id changes, not just one",

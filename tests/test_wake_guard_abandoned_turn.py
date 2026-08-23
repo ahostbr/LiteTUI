@@ -44,9 +44,9 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
-from settings import Settings
+from litetui import app as app_mod
+from litetui import paths
+from litetui.settings import Settings
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-wakeguard-"))
 

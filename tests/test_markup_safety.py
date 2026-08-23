@@ -32,7 +32,7 @@ from textual.content import Content
 from textual.markup import MarkupError
 
 CUR = chr(0x258C)  # the streaming cursor glyph
-APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(encoding="utf-8")
+APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
 
 
 # --- the hazard is real in the installed toolkit ----------------------------

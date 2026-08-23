@@ -32,8 +32,8 @@ import sys
 # e2e/ is one level below the repo root, same as tests/ was.
 sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "src"))
 
-import paths  # noqa: E402
-from app import LiteTUI, AssistantMessage, ThinkingBlock, ThinkingHeader  # noqa: E402
+from litetui import paths  # noqa: E402
+from litetui.app import LiteTUI, AssistantMessage, ThinkingBlock, ThinkingHeader  # noqa: E402
 
 # Booting LiteTUI creates a real .convos/<uuid>/ before anything is typed, so a
 # test that instantiates it leaves an empty conversation in the user's list.

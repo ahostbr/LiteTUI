@@ -33,9 +33,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as app_mod
-from plugins import PluginContext
-from settings import Settings
+from litetui import app as app_mod
+from litetui.plugins import PluginContext
+from litetui.settings import Settings
 
 
 # ── the same stream doubles the compaction tests use ────────────────────────

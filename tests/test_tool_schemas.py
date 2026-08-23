@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import tool_schemas
+from litetui import tool_schemas
 
 
 def _registered() -> dict[str, dict]:
@@ -39,15 +39,15 @@ def _registered() -> dict[str, dict]:
     Deliberately NOT the app's live registry: gates (skills off, no PowerShell
     on PATH) mean the OFFERED set is a subset of the DEFINED set, and a gated
     tool still needs its schema on disk."""
-    import app  # noqa: F401 — imports every plugin module as a side effect
-    from ask_user_question import ASK_USER_QUESTION_TOOL_SPEC
-    from chrome_tool import CHROME_TOOL_SPEC
-    from harness import HARNESS_TOOL_SPEC
-    from pccontrol_tool import PCCONTROL_TOOL_SPEC
-    from plugins import core_tools as ct
-    from plugins.view_image import VIEW_IMAGE_TOOL_SPEC
-    from skills import SKILL_TOOL_SPEC
-    from studio_tool import STUDIO_TOOL_SPEC
+    from litetui import app  # noqa: F401 — imports every plugin module as a side effect
+    from litetui.ask_user_question import ASK_USER_QUESTION_TOOL_SPEC
+    from litetui.chrome_tool import CHROME_TOOL_SPEC
+    from litetui.harness import HARNESS_TOOL_SPEC
+    from litetui.pccontrol_tool import PCCONTROL_TOOL_SPEC
+    from litetui.plugins import core_tools as ct
+    from litetui.plugins.view_image import VIEW_IMAGE_TOOL_SPEC
+    from litetui.skills import SKILL_TOOL_SPEC
+    from litetui.studio_tool import STUDIO_TOOL_SPEC
 
     specs = [
         ASK_USER_QUESTION_TOOL_SPEC, CHROME_TOOL_SPEC, HARNESS_TOOL_SPEC,
@@ -79,7 +79,7 @@ def test_no_tool_schema_is_still_an_inline_dict_literal() -> None:
     """The extraction, gated. A future edit that re-inlines one would keep both
     set tests green, because the constant would still exist and still match its
     file — right up until the two drift apart."""
-    src = Path(__file__).resolve().parent.parent / "src"
+    src = Path(__file__).resolve().parent.parent / "src" / "litetui"
     offenders = []
     for py in list(src.glob("*.py")) + list((src / "plugins").glob("*.py")):
         text = py.read_text(encoding="utf-8")
@@ -122,7 +122,7 @@ def test_the_powershell_schema_is_templated_on_disk() -> None:
 
 
 def test_the_loaded_powershell_spec_names_the_real_interpreter() -> None:
-    from plugins import core_tools as ct
+    from litetui.plugins import core_tools as ct
     exe = ct.powershell_exe()
     if exe is None:
         pytest.skip("no PowerShell on PATH")

@@ -13,9 +13,9 @@ import types
 
 import pytest
 
-import llm_backend
-from llm_backend import BackendError, LMStudioBackend
-from settings import Settings
+from litetui import llm_backend
+from litetui.llm_backend import BackendError, LMStudioBackend
+from litetui.settings import Settings
 
 
 class FakeHandle:

@@ -13,7 +13,7 @@ never repaint the header again — asserted twice, for idempotency.
 """
 import time
 
-from app import (
+from litetui.app import (
     LiteTUI,
     ThinkingBlock,
     render_progress,
