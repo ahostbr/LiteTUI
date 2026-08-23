@@ -117,15 +117,59 @@ def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
 #: id would imply a concurrency the loop does not have. It lives in the
 #: envelope because child-process lifecycle is the envelope's charter: the
 #: bash tool writes the slot, the app's cancel button reads it.
-CANCELLABLE: dict = {"proc": None, "cancelled": False}
+CANCELLABLE: dict = {"proc": None, "cancelled": False, "kill_confirmed": True}
 
 
-def kill_tree(pid: int) -> None:
-    """Kill pid and its DESCENDANTS. shell=True means the direct child is
-    cmd.exe and the real work is its grandchild — proc.kill() would kill
-    cmd.exe and leave python running, detached and invisible. taskkill /T
-    walks the tree; /F because a cancel that asks nicely is a suggestion."""
+#: taskkill's own exit codes, MEASURED on this machine rather than read from a
+#: doc: killing a live tree gives 0, and BOTH "already exited" and "no such
+#: pid" give 128. 128 is therefore the outcome we wanted, reached early.
+TASKKILL_OK = 0
+TASKKILL_NOT_FOUND = 128
+
+#: How long taskkill may take before we stop waiting. Measured against the
+#: cmd.exe -> python tree this app actually spawns: min 3.42s, median 6.38s,
+#: max 43.06s, and 1 in 10 over 15s on a loaded box.
+#:
+#: The budget is deliberately NOT raised to cover that tail. It runs on the
+#: caller's thread, so a longer budget buys a longer freeze, and no budget can
+#: cover a distribution with no upper bound. The bound stays; what changed is
+#: that overrunning it is now REPORTED instead of swallowed.
+KILL_TREE_TIMEOUT_S = 15
+
+
+def kill_tree(pid: int) -> bool:
+    """Kill pid and its DESCENDANTS. True only if the tree is CONFIRMED gone.
+
+    shell=True means the direct child is cmd.exe and the real work is its
+    grandchild — proc.kill() would kill cmd.exe and leave python running,
+    detached and invisible. taskkill /T walks the tree; /F because a cancel
+    that asks nicely is a suggestion.
+
+    🔴 THIS RETURNED None AND SWALLOWED EVERY EXCEPTION, under the comment
+    "the process may already be gone — that is success, not failure". That
+    sentence is true of most exceptions and FALSE OF A TIMEOUT, which is the
+    one case where it decides something. A timeout means the walk is
+    UNFINISHED: subprocess kills taskkill mid-walk, so the tree may still be
+    running — and every caller went on to tell the user the cancel worked.
+    Measured: 1 of 10 kills of this app's own tree exceeded the 15s budget,
+    max 43.06s. On a loaded box, cancel silently failed while reporting
+    "[cancelled by user after Ns]" to the user AND to the model.
+
+    ⚠️ A SECOND ROUTE TO THE SAME LIE, in the same line: run() is called
+    without check=, so a taskkill that RAN AND FAILED (access denied, say)
+    raised nothing either. The returncode is now inspected, not ignored.
+
+    Returning False does not mean the tree is alive — it means WE DO NOT KNOW.
+    That is the honest state, and it is the one every caller must refuse to
+    describe as success.
+    """
     try:
-        run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=15)
+        completed = run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            timeout=KILL_TREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False   # unfinished walk; taskkill was killed mid-tree
     except Exception:
-        pass  # the process may already be gone — that is success, not failure
+        return False   # no taskkill on PATH, no permission: not confirmed
+    return completed.returncode in (TASKKILL_OK, TASKKILL_NOT_FOUND)

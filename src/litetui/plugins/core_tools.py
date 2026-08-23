@@ -66,19 +66,36 @@ def _is_binary(data: bytes) -> bool:
 
 def _bash_timeout_result(proc: subprocess.Popen, timeout: int) -> str:
     """Format the result when the command outran its timeout budget."""
-    ttyguard.kill_tree(proc.pid)
+    killed = ttyguard.kill_tree(proc.pid)
     try:
         out, err = proc.communicate(timeout=10)
     except Exception:
         out, err = "", ""
     partial = _truncate_tail((out or "") + (err or ""))
-    return f"[timed out after {timeout}s]\n{partial}".strip()
+    head = f"[timed out after {timeout}s]"
+    if not killed:
+        # The model reads this. Telling it the command was stopped when the
+        # tree may still be running is the same lie the spec was written to
+        # eliminate, one layer down.
+        head += (
+            " — the process could NOT be confirmed killed and may still be"
+            " running; do not assume it stopped"
+        )
+    return f"{head}\n{partial}".strip()
 
 
 def _bash_cancelled_result(out: str, err: str, t0: float) -> str:
     """Format the result when the user cancelled a still-running command."""
     partial = _truncate_tail((out or "") + (("\n[stderr]\n" + err) if err else ""))
     note = f"[cancelled by user after {fmt_dur(time.monotonic() - t0)}]"
+    if not ttyguard.CANCELLABLE.get("kill_confirmed", True):
+        # Same honesty as the timeout arm. A model told the command was
+        # cancelled will reason as though it stopped; if we could not confirm
+        # the kill, it has to know that.
+        note += (
+            " — but the kill could NOT be confirmed; the process may still be"
+            " running"
+        )
     return (note + (("\n" + partial) if partial.strip() else "")).strip()
 
 
@@ -158,6 +175,9 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
     except OSError as e:
         return f"[error] {type(e).__name__}: {e}"
     ttyguard.CANCELLABLE["proc"], ttyguard.CANCELLABLE["cancelled"] = proc, False
+    # Reset beside "cancelled": a False left over from a PREVIOUS command
+    # would attach its warning to this one's result.
+    ttyguard.CANCELLABLE["kill_confirmed"] = True
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
