@@ -2351,9 +2351,17 @@ class LiteTUI(App):
         dispatched to the id last seen was never delivered — `send` exits 0
         either way, so the misdelivery is silent.
 
-        The seat is NOT re-registered here. heartbeat() sends the same argv as
-        register(), so the next tick registers the new id by itself; doing it
-        here would mean a second blocking subprocess for no gain.
+        🔴 THIS DOCSTRING USED TO CLAIM the seat is not re-registered here
+        because "heartbeat() sends the same argv as register(), so the next tick
+        registers the new id by itself". THAT SENTENCE WAS FALSE, and it sat
+        three lines above the `registered = False` that defeated it:
+        `heartbeat()` returns immediately unless `registered`. Nothing re-armed
+        the seat, so after /new or /resume this app was invisible to `discover`,
+        its id named no registry row, and the footer read "unregistered".
+        Probed 2026-08-23: registered False, heartbeat False, transport 0 calls.
+
+        `Seat.rebind()` is now the single transition, and it reports its own
+        failure rather than leaving a seat that quietly stopped existing.
         """
         seat = getattr(self, "seat", None)
         if seat is None or not self.convo_id:
@@ -2361,17 +2369,21 @@ class LiteTUI(App):
         want = harness_mod.agent_id_for_convo(self.convo_id)
         if want == seat.agent_id:
             return
-        if seat.registered:
-            # Switching conversations mid-session. The stale row must be
-            # retired EXPLICITLY: it carries this process's pid, so every
-            # liveness check that distinguishes ghost from live would read it
-            # as alive and keep offering it as a delivery target.
-            try:
-                seat.deregister()
-            except Exception:
-                pass  # a roster that keeps a stale row beats a resume that dies
-        seat.agent_id = want
-        seat.registered = False
+
+        # Whether a presence was actually held decides whether a False return
+        # is news: at boot there is nothing to rebind yet (startup owns the
+        # first registration, once the model id is known), and reporting that
+        # as a failure would train the reader to ignore this line.
+        was_registered = getattr(seat, "registered", False)
+        try:
+            ok = seat.rebind(want)
+        except Exception as e:                     # never fatal — the app runs unharnessed
+            seat.agent_id, ok = want, False
+            seat.error = f"{type(e).__name__}: {e}"
+        if was_registered and not ok:
+            # Loud, once. An unregistered seat that says nothing is precisely
+            # the state that hid this defect for its whole life.
+            self._system(f"harness seat could not rebind ({seat.error or 'unknown'})")
 
     def _materialise_convo(self) -> None:
         """Create the staged conversation on disk. Idempotent.

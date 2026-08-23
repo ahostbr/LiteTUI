@@ -10,6 +10,7 @@ a task dispatched to the previous id was never seen by the seat.
 """
 import uuid
 
+import harness as harness_mod
 from harness import agent_id_for_convo, new_agent_id
 
 CONVO = "5f8e1a90-2c3b-4d7e-9a10-0badc0ffee11"
@@ -68,17 +69,44 @@ sync = LiteTUI._sync_seat_identity
 
 
 class FakeSeat:
-    def __init__(self, agent_id, registered=False):
+    """The REAL transition over a fake transport.
+
+    🔴 `rebind` IS BOUND FROM THE REAL Seat ON PURPOSE. A hand-written
+    stand-in lets this file agree with a broken seam, and that is not
+    hypothetical — the switching test below used to assert `registered is
+    False` and cite "the next heartbeat re-registers it", a heartbeat that
+    could never fire. The fake defended the defect for the life of the bug.
+    Only the two subprocess calls are faked; the logic under test is shipped
+    code.
+    """
+
+    rebind = harness_mod.Seat.rebind
+
+    def __init__(self, agent_id, registered=False, register_ok=True):
         self.agent_id = agent_id
         self.registered = registered
+        self.register_ok = register_ok
+        self.error = None
         self.deregistered = 0
+        self.registrations = 0
 
     def deregister(self):
         self.deregistered += 1
 
+    def register(self):
+        self.registrations += 1
+        self.registered = self.register_ok
+        if not self.registered:
+            self.error = "refused"
+        return self.registered
+
 
 def app_with(seat, convo_id):
-    return SimpleNamespace(seat=seat, convo_id=convo_id)
+    """`_system` is captured, not discarded: the seam reports a failed rebind
+    through it, and a fake that swallowed the report could not tell a loud
+    failure from the silent one this whole change exists to remove."""
+    said: list[str] = []
+    return SimpleNamespace(seat=seat, convo_id=convo_id, _system=said.append, said=said)
 
 
 def test_startup_adopts_the_derived_id_without_deregistering():
@@ -99,7 +127,16 @@ def test_switching_conversation_retires_the_stale_row():
     sync(app_with(seat, other))
     assert seat.deregistered == 1
     assert seat.agent_id == agent_id_for_convo(other)
-    assert seat.registered is False   # the next heartbeat re-registers it
+
+    # 🔴 THIS ASSERTION USED TO READ `is False`, with the inline comment "the
+    # next heartbeat re-registers it". Both were wrong, and together they made
+    # this test the DEFENDER of the defect: heartbeat() returns immediately
+    # unless `registered`, so the seat stayed dark after every /new and
+    # /resume, and any correct fix would have failed here and looked like the
+    # regression. Retiring the old row is only half a transition — the seat has
+    # to come back under the new id, in the same breath.
+    assert seat.registered is True
+    assert seat.registrations == 1, "the new id was never announced"
 
 
 def test_resuming_the_same_conversation_is_a_no_op():
@@ -114,11 +151,20 @@ def test_resuming_the_same_conversation_is_a_no_op():
 
 
 def test_a_failing_deregister_never_blocks_the_resume():
-    """A roster that keeps a stale row beats a resume that dies."""
+    """A roster that keeps a stale row beats a resume that dies.
+
+    Strengthened with the rebind: surviving is no longer enough. If a failed
+    retirement aborted the transition it would trade a ghost row for a seat
+    that never comes back — the strictly worse failure — so the seat must
+    still end up armed under the new id.
+    """
     seat = FakeSeat(agent_id_for_convo(CONVO), registered=True)
     seat.deregister = lambda: (_ for _ in ()).throw(OSError("liteharness gone"))
-    sync(app_with(seat, CONVO[:-1] + "3"))
+    app = app_with(seat, CONVO[:-1] + "3")
+    sync(app)
     assert seat.agent_id == agent_id_for_convo(CONVO[:-1] + "3")
+    assert seat.registered is True, "a failed retirement must not leave the seat dark"
+    assert app.said == [], "nothing failed for the user — do not report one"
 
 
 def test_no_convo_id_yet_leaves_the_seat_alone():
