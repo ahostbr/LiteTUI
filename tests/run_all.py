@@ -33,9 +33,19 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 
-#: Runs against a live model / long-running services. Excluded by default so a
-#: red here is never mistaken for a code failure; pass --all to include them.
-SLOW: set[str] = set()
+# There is deliberately no SLOW set here any more.
+#
+# This file used to declare `SLOW: set[str] = set()` above a comment promising
+# "excluded by default; pass --all to include them". The set was never read and
+# `--all` was never parsed — the only flag this runner has ever handled is -v.
+# So the quarantine existed on paper, a live LM Studio smoke test ran in the
+# default suite regardless, and anyone auditing the runner saw a facility and
+# stopped looking. A declared-but-inert mechanism is worse than an absent one
+# for exactly that reason: absence looks unfinished, decoration looks done.
+#
+# Live-service tests now live under e2e/, gated twice and for real: they are
+# outside pytest's `testpaths`, and e2e/conftest.py skips them unless
+# LITETUI_E2E=1. Both gates were verified with a control proving they can open.
 
 
 def _exits(tree: ast.AST) -> bool:
@@ -126,12 +136,38 @@ def main() -> int:
     failures: list[str] = []
 
     if pyt:
+        # Files are named EXPLICITLY on the command line, which bypasses
+        # conftest's collect_ignore — that filter only applies to collection by
+        # directory. So the AST partition above is not a tidiness measure, it is
+        # the only thing standing between this run and a global zero: one
+        # script-style file in `pyt` runs its module body during collection, its
+        # sys.exit() fires inside the collector, and pytest reports INTERNALERROR
+        # and "no tests ran" for ALL 82 files. Reproduced here, with a control:
+        #   pytest tests/test_version.py       -> 9 passed,  exit 0
+        #   pytest tests/test_harness_tool.py  -> INTERNALERROR> SystemExit: 0
+        #                                         "no tests ran", exit 3
+        # Note what that traceback reads like: SystemExit: **0**, and a summary
+        # line saying no tests ran. Both look benign. The exit code is the only
+        # honest signal, which is why it is interpreted by name below rather
+        # than compared to zero in passing.
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", *[str(p) for p in pyt]],
             cwd=str(ROOT),
         )
+        # pytest's documented exit codes. NO_TESTS (5) and INTERNAL (3) are
+        # spelled out because both are ways of measuring NOTHING while looking
+        # unremarkable, and a future edit that treats "nothing collected" as
+        # nothing-to-do would turn this whole class of failure back into a pass.
+        reason = {
+            1: "tests failed",
+            2: "run was interrupted",
+            3: "INTERNAL ERROR — a script-style file was collected by pytest; "
+               "the AST partition in classify() is what prevents this",
+            4: "pytest usage error",
+            5: "NO TESTS COLLECTED — treated as a failure, never as nothing-to-do",
+        }.get(proc.returncode)
         if proc.returncode != 0:
-            failures.append(f"pytest suite (exit {proc.returncode})")
+            failures.append(f"pytest suite (exit {proc.returncode}: {reason or 'unknown'})")
 
     print()
     for f in scr:
