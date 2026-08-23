@@ -32,12 +32,14 @@ from __future__ import annotations
 
 import ast
 import subprocess
+import sys
+import time
 import types
 from pathlib import Path
 
 import pytest
 
-from litetui import ttyguard
+from litetui import jobkill, ttyguard
 from litetui.plugins import core_tools
 
 
@@ -112,7 +114,7 @@ class _Proc:
 def test_the_TIMEOUT_result_warns_the_MODEL_when_the_kill_was_not_confirmed(monkeypatch):
     """The model reads this string. Told the command was stopped, it reasons
     as though it stopped - and may re-run something that is still running."""
-    monkeypatch.setattr(ttyguard, "kill_tree", lambda pid: False)
+    monkeypatch.setattr(ttyguard, "kill_tree", lambda pid, proc=None: False)
     out = core_tools._bash_timeout_result(_Proc(), 30)
     assert "[timed out after 30s]" in out
     assert "could NOT be confirmed" in out, out
@@ -121,7 +123,7 @@ def test_the_TIMEOUT_result_warns_the_MODEL_when_the_kill_was_not_confirmed(monk
 def test_CONTROL_the_timeout_result_does_NOT_warn_when_the_kill_worked(monkeypatch):
     """Without this arm, a version that always warns would pass the test above
     and cry wolf on every clean timeout."""
-    monkeypatch.setattr(ttyguard, "kill_tree", lambda pid: True)
+    monkeypatch.setattr(ttyguard, "kill_tree", lambda pid, proc=None: True)
     out = core_tools._bash_timeout_result(_Proc(), 30)
     assert "[timed out after 30s]" in out
     assert "could NOT be confirmed" not in out
@@ -210,3 +212,132 @@ def test_kill_tree_returns_a_value_at_all():
     )
     returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return) and n.value is not None]
     assert returns, "kill_tree still returns nothing"
+
+
+# ── the job-object fast path (Ryan's ruling: option (c) + fallback) ──────
+
+def test_the_DEFAULT_spawn_gets_NO_job_which_protects_the_long_lived_callers():
+    """🔴 THE REGRESSION GUARD, and it matters more than the fast path.
+
+    ttyguard.popen is ONE implementation with FOUR consumers. Only
+    core_tools wants a KILL_ON_JOB_CLOSE job; mcp_client (the MCP stdio
+    server), llm_backend (the LM Studio router) and the mark overlay must
+    OUTLIVE a tool call. A job takes its members with it whenever the last
+    handle closes -- including on ordinary garbage collection -- so turning
+    this on by default would kill those subsystems at unpredictable moments
+    and would look like anything except a cancel bug.
+
+    Default OFF is the whole safety property. Assert it directly.
+    """
+    proc = ttyguard.popen(f'"{sys.executable}" -c "pass"', shell=True,
+                          stdin=subprocess.DEVNULL)
+    try:
+        assert getattr(proc, "_litetui_job", None) is None, (
+            "a default spawn was put in a kill-on-close job — the MCP server "
+            "and the model router would die when the handle closes"
+        )
+    finally:
+        proc.wait(timeout=30)
+
+
+def test_only_the_TOOL_opts_in():
+    """Structural. The three long-lived callers must not acquire the keyword
+    by copy-paste later; this fails loudly if one does."""
+    root = Path(ttyguard.__file__).parent
+    optins = []
+    for py in root.rglob("*.py"):
+        src = py.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if (isinstance(node, ast.Call)
+                    and any(k.arg == "kill_on_close" for k in node.keywords)):
+                optins.append(py.name)
+    assert optins == ["core_tools.py"], (
+        f"kill_on_close is passed from {optins}; only the cancellable tool may"
+    )
+
+
+def test_a_real_tree_dies_by_HANDLE_CLOSE_and_the_grandchild_goes_with_it():
+    """END TO END, with a real cmd.exe -> python tree.
+
+    shell=True means the direct child is cmd.exe and the work is its
+    grandchild -- the exact case taskkill /T existed for and the exact case
+    that timed out. The grandchild announces its pid so we assert on the
+    process that actually matters, not on cmd.exe.
+    """
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="jobkill-test-"))
+    pidfile = tmp / "gc.pid"
+    script = tmp / "probe.py"
+    script.write_text(
+        "import os,time,pathlib\n"
+        f"pathlib.Path(r'{pidfile}').write_text(str(os.getpid()))\n"
+        "time.sleep(300)\n"
+    )
+    proc = ttyguard.popen(f'"{sys.executable}" "{script}"', shell=True,
+                          stdin=subprocess.DEVNULL, kill_on_close=True)
+    try:
+        assert getattr(proc, "_litetui_job", None) is not None, "no job attached"
+        deadline = time.monotonic() + 30
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pidfile.exists(), "the grandchild never started"
+        gc_pid = int(pidfile.read_text())
+        assert jobkill.alive(gc_pid), "the grandchild was not running"
+
+        t0 = time.monotonic()
+        assert ttyguard.kill_tree(proc.pid, proc) is True
+        elapsed = time.monotonic() - t0
+
+        assert not jobkill.alive(gc_pid), (
+            "THE GRANDCHILD SURVIVED — this is the runaway the whole change "
+            "exists to prevent"
+        )
+        # Not a performance assertion dressed as a correctness one: the point
+        # is that the JOB path ran, not the 15s taskkill walk. Anything under
+        # a second cannot have been the walk (measured min 3,420ms).
+        assert elapsed < 2.0, (
+            f"took {elapsed:.2f}s — that is the taskkill walk, so the job "
+            "path did not run"
+        )
+    finally:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def test_the_taskkill_fallback_still_runs_when_there_is_no_job(monkeypatch):
+    """A proc with no job must still go through taskkill. Without this, the
+    three default-spawn callers would lose their kill path entirely."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        class R:
+            returncode = ttyguard.TASKKILL_OK
+        return R()
+
+    monkeypatch.setattr(ttyguard, "run", fake_run)
+    assert ttyguard.kill_tree(4321) is True
+    assert calls and calls[0][0] == "taskkill", "the fallback did not run"
+
+
+def test_a_job_that_fails_to_confirm_FALLS_BACK_rather_than_claiming_success(monkeypatch):
+    """The fast path must not become a new way to lie. If the job closes but
+    the tree is somehow still alive, we walk — we do not report success."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        class R:
+            returncode = ttyguard.TASKKILL_OK
+        return R()
+
+    monkeypatch.setattr(ttyguard, "run", fake_run)
+    monkeypatch.setattr(jobkill, "close", lambda job: True)
+    monkeypatch.setattr(jobkill, "alive", lambda pid: True)   # never dies
+    monkeypatch.setattr(ttyguard, "JOB_KILL_CONFIRM_S", 0.05)
+
+    holder = types.SimpleNamespace(_litetui_job=1234)
+    assert ttyguard.kill_tree(4321, holder) is True
+    assert calls, "the job path claimed success without confirming the kill"

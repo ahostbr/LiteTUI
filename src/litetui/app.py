@@ -3850,10 +3850,10 @@ class LiteTUI(App):
         # tree dies.
         ttyguard.CANCELLABLE["cancelled"] = True
         self.notify("Cancelling…", timeout=2)
-        self._cancel_tool_tree(proc.pid)
+        self._cancel_tool_tree(proc.pid, proc)
 
     @work(thread=True, group="cancel")
-    def _cancel_tool_tree(self, pid: int) -> None:
+    def _cancel_tool_tree(self, pid: int, proc=None) -> None:
         """taskkill, OFF THE UI THREAD, then say what actually happened.
 
         🔴 THIS USED TO RUN INLINE IN action_cancel_tool. kill_tree blocks for
@@ -3872,7 +3872,7 @@ class LiteTUI(App):
         tool-authority gate looks for — a true reading with a misleading shape.
         Textual has a thread worker; this is what it is for.
         """
-        killed = ttyguard.kill_tree(pid)
+        killed = ttyguard.kill_tree(pid, proc)
         # Handed to the result formatter through the envelope, so the MODEL is
         # told the same thing the user is. Two audiences, one truth.
         #

@@ -66,7 +66,7 @@ def _is_binary(data: bytes) -> bool:
 
 def _bash_timeout_result(proc: subprocess.Popen, timeout: int) -> str:
     """Format the result when the command outran its timeout budget."""
-    killed = ttyguard.kill_tree(proc.pid)
+    killed = ttyguard.kill_tree(proc.pid, proc)
     try:
         out, err = proc.communicate(timeout=10)
     except Exception:
@@ -171,6 +171,9 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
             shell=shell,
             stdin=subprocess.DEVNULL,
             cwd=str(Path.cwd()),
+            # The ONLY caller that opts in. See ttyguard.popen's docstring for
+            # why the other three must not.
+            kill_on_close=True,
         )
     except OSError as e:
         return f"[error] {type(e).__name__}: {e}"
