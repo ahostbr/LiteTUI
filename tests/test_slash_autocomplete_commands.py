@@ -31,6 +31,7 @@ THE ORDERING IS THE BEHAVIOUR, because Tab takes the first row:
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,33 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import app as m
 import skills as skills_mod
+
+
+async def _settle(pilot, cond, ceiling: float = 3.0) -> bool:
+    """Pump the event loop until cond() holds, or the ceiling passes.
+
+    ONE `await pilot.pause()` yields ONE frame. Assigning `box.value` posts
+    Input.Changed -> handler -> sync_skill_autocomplete -> display flip, and on
+    a loaded box that chain can need more than one frame. Caught 2026-08-22:
+    the full suite failed this file's last test once and passed it on an
+    IDENTICAL tree minutes later (980+1, then 981) — the signature of a race,
+    not of a wrong assertion.
+
+    Note the test above is structurally immune because it calls
+    sync_skill_autocomplete DIRECTLY; only the message-driven path can lose.
+
+    Polling rather than a longer pause, for the same reason _wait in
+    test_tool_cancel.py polls: a bigger fixed sleep is the same defect, slower,
+    and it is paid on EVERY run instead of only on a slow one. This ceiling is
+    reached only when the thing genuinely never happens.
+    """
+    deadline = time.monotonic() + ceiling
+    while True:
+        if cond():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await pilot.pause()
 
 
 def _skills(tmp_path: Path, *names) -> list:
@@ -142,14 +170,16 @@ async def test_skills_are_still_offered_and_still_complete(tmp_path: Path):
         box = a.query_one("#message-input", m.Input)
         box.focus()
         box.value = "/ls-m"
-        await pilot.pause()
 
-        assert a._skill_ac.display, "the picker did not open on a skill name"
+        assert await _settle(pilot, lambda: a._skill_ac.display), (
+            "the picker did not open on a skill name"
+        )
         assert _rows(a) == [("ls-mark", "skill")], f"unexpected rows: {_rows(a)}"
 
         await pilot.press("tab")
-        await pilot.pause()
-        assert box.value == "/ls-mark ", f"tab did not complete: {box.value!r}"
+        assert await _settle(pilot, lambda: box.value == "/ls-mark "), (
+            f"tab did not complete: {box.value!r}"
+        )
 
 
 # ── 5. one row per command, not one per ALIAS ────────────────────────────
