@@ -1,6 +1,19 @@
+[build-system]
+# Without this table there is no build backend, so `uv` cannot install the
+# project and SKIPS the declared console entry point with a warning — which is
+# why `uv run lmstudio-chat` could not import `app`. The entry point was never
+# broken; nothing had ever built it.
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "lmstudio-chat"
-version = "0.1.0"
+name = "litetui"
+# 🔴 DERIVED, NEVER TYPED. This literal used to read "0.1.0" while
+# src/version.py read "0.21.0" and CHANGELOG.md read "0.21.0" — two of three
+# agreed and the packaging metadata was the outlier, so anything reading the
+# installed distribution got a version that was 20 minor releases stale.
+# src/version.py is the single source; see [tool.setuptools.dynamic] below.
+dynamic = ["version"]
 description = "TUI chat client for LM Studio with image support"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,10 +26,73 @@ dependencies = [
 ]
 
 [project.scripts]
-lmstudio-chat = "app:main"
+# `app:main` is real — src/app.py:5265. It resolves once the package actually
+# builds, which is what [build-system] above now provides.
+litetui = "app:main"
+
+[dependency-groups]
+# The tooling the gates need, declared rather than assumed present. The project
+# .venv could not run pytest at all because it was never listed here, so the
+# only environment able to run the suite was whatever the developer's global
+# interpreter happened to hold. Ruff and mypy were absent from BOTH.
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.setuptools]
+# INTERIM LAYOUT, DELIBERATE. The reviewed target is a real package at
+# src/litetui/, and that move is deferred rather than forgotten: tests import
+# these modules top-level (`import app` ×50, `import paths` ×37), and at the
+# time of writing another worktree held uncommitted edits to app.py,
+# harness.py and mcp_client.py — renaming those out from under it would have
+# left its changes with no destination. Mapping the src root gets the build
+# backend and the entry point working today without moving one file.
+package-dir = { "" = "src" }
+py-modules = [
+    "app",
+    "ask_user_question",
+    "calendar_view",
+    "chrome_tool",
+    "colorpicker",
+    "fmt",
+    "harness",
+    "llm_backend",
+    "mcp_client",
+    "paths",
+    "pccontrol_tool",
+    "picker",
+    "sanitize",
+    "schedule_builder",
+    "scheduler",
+    "seat_guard",
+    "settings",
+    "settings_screen",
+    "skills",
+    "studio_tool",
+    "themes",
+    "ticker",
+    "tool_context",
+    "tool_schemas",
+    "ttyguard",
+    "version",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "version.__version__" }
 
 [tool.pytest.ini_options]
 # Collection is SCOPED, not left to discovery defaults: without this, any
 # stray *_test.py at the repo root (a scratch file, a tool's leftovers)
 # aborts collection for the entire run before one real test executes.
+#
+# e2e/ is deliberately NOT here. That is the first of two independent gates on
+# live-service tests: they are not collected by the default command at all.
+# The second is the marker below plus the env gate in e2e/conftest.py, so
+# neither a stray `pytest e2e/` nor a copied marker can start a model by
+# accident.
 testpaths = ["tests"]
+markers = [
+    "live: requires a running model service (LM Studio / llama.cpp). Never collected by the default command; also needs LITETUI_E2E=1.",
+]
