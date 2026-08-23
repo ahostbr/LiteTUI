@@ -227,6 +227,12 @@ def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path):
             a._dispatch_for = lambda name: (
                 (lambda args: written.update(args) or "ok") if name == "write" else None
             )
+            # Tool policy now requires a real host decision before compaction
+            # may write durable memory. This test is about the visible tool
+            # card/ledger path, so approve that independent boundary once.
+            async def approve(_screen):
+                return True
+            a.push_screen_wait = approve
             a._compact()
             await _settle(a, pilot, ticks=12)
 

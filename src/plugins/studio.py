@@ -6,6 +6,7 @@ beats silently not existing when the app is closed.
 """
 import studio_tool
 from plugins import PluginManifest
+from tool_policy import STUDIO_POLICY
 
 
 def _register(ctx) -> None:
@@ -23,6 +24,7 @@ def _register(ctx) -> None:
         lambda args: studio_tool.run(
             args, seat_model=app.model_id, backend=app.backend
         ),
+        policy=STUDIO_POLICY,
     )
 
 

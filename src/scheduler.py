@@ -36,6 +36,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from tool_policy import SCHEDULED
 
 #: How often the app polls. Cron resolves to the minute, so anything under 60s
 #: is enough; 20s keeps a job's fire within a third of a minute of its slot
@@ -233,6 +234,10 @@ class Job:
     run_count: int = 0
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     label: str = ""
+    #: Unattended work defaults to the narrow host profile. This is stored per
+    #: job so an explicit human override is durable rather than ambient app
+    #: state that silently changes every automation at once.
+    tool_profile: str = SCHEDULED
 
     def cron(self) -> Cron:
         return Cron.parse(self.schedule)

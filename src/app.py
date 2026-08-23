@@ -29,8 +29,10 @@ import sanitize
 from fmt import fmt_dur
 import scheduler as sched_mod
 import tool_context
+import tool_policy
 import themes as themes_mod
 from colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
+from tool_approval import ToolApprovalScreen
 import skills as skills_mod
 import plugins as plugins_mod
 
@@ -1655,6 +1657,10 @@ class LiteTUI(App):
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
         self._pending_input: list = []
+        #: Host authority for the turn currently consuming tools. Human turns
+        #: start from settings; cron/inbox turns explicitly replace it with a
+        #: narrower profile. The model never writes this field.
+        self._active_tool_profile = self.settings.tool_policy_profile
         #: Cron jobs, loaded once at construction. A scheduled prompt is an
         #: INPUT nobody typed, so it rides the same held/flushed path as inbox
         #: mail rather than growing a second delivery route.
@@ -1895,6 +1901,7 @@ class LiteTUI(App):
         arrives mid-turn is exactly the mail worth not losing.
         """
         text = harness_mod.format_message(msg)
+        profile = tool_policy.SCHEDULED
         if self._chat_running():
             # HELD, not appended. An appended-mid-turn message lands between
             # an assistant message and its tool results where nothing announces
@@ -1906,10 +1913,13 @@ class LiteTUI(App):
             # user turn the model cannot miss. Inbox mail always QUEUES —
             # another agent's mail must never cancel work in flight.
             self._user_bubble(text, False, queued=True)
-            self._pending_input.append({"content": text, "text": text})
+            self._pending_input.append(
+                {"content": text, "text": text, "tool_profile": profile}
+            )
             return
         self._user_bubble(text, False)
         self._append({"role": "user", "content": text})
+        self._active_tool_profile = profile
         self._stream()
 
     @work(exclusive=True, group="cron")
@@ -1949,6 +1959,7 @@ class LiteTUI(App):
 
         label = job.label or job.id
         text = job.prompt
+        profile = getattr(job, "tool_profile", tool_policy.SCHEDULED)
         banner = f"[cron {label} \u00b7 {job.schedule}]\n{text}"
 
         if job.new_conversation and not self._chat_running():
@@ -1959,10 +1970,13 @@ class LiteTUI(App):
             # urgent kind of input there is -- nobody is waiting on it, so it
             # has no business cancelling something a human asked for.
             self._user_bubble(banner, False, queued=True)
-            self._pending_input.append({"content": text, "text": banner})
+            self._pending_input.append(
+                {"content": text, "text": banner, "tool_profile": profile}
+            )
             return
         self._user_bubble(banner, False)
         self._append({"role": "user", "content": text})
+        self._active_tool_profile = profile
         self._stream()
 
     def _cron_command(self, arg: str) -> None:
@@ -2195,6 +2209,38 @@ class LiteTUI(App):
     def _dispatch_for(self, name: str):
         """Resolve a tool name across all three sources, static first."""
         return self.plugins.dispatch_for(name)
+
+    async def _execute_tool(self, name: str, args: dict) -> tuple[str, bool]:
+        """The one host authorization door before any tool side effect.
+
+        Metadata lives in the registry; the active turn profile lives in the
+        host. A denial returns an ordinary tool result so the model can adapt
+        without an exception tearing the tool-call pairing apart.
+        """
+        fn = self._dispatch_for(name)
+        if fn is None:
+            return f"[error] unknown tool: {name}", False
+        policy = self.plugins.policy_for(name)
+        if policy is None:
+            return f"[policy denied] {name}: no capability metadata", False
+        decision = tool_policy.evaluate(
+            getattr(self, "_active_tool_profile", tool_policy.INTERACTIVE),
+            policy,
+            args,
+            paths.ROOT,
+        )
+        if decision.action == tool_policy.DENY:
+            return f"[policy denied] {name}: {decision.reason}", False
+        if decision.action == tool_policy.CONFIRM:
+            approved = await self.push_screen_wait(
+                ToolApprovalScreen(name, args, decision)
+            )
+            if not approved:
+                return f"[policy denied by user] {name}", False
+        try:
+            return str(await asyncio.to_thread(fn, args)), True
+        except Exception as e:
+            return f"[error] {type(e).__name__}: {e}", False
 
     def _system_prompt_text(self) -> str:
         """systemprompt.md + the store block + the tools block, in that order.
@@ -4054,12 +4100,14 @@ class LiteTUI(App):
             content = text
 
         self.pending_image = None
+        profile = self.settings.tool_policy_profile
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
                 bubble = self._user_bubble(text, has_image, queued=True)
                 self._pending_input.append(
-                    {"content": content, "text": text, "bubble": bubble}
+                    {"content": content, "text": text, "bubble": bubble,
+                     "tool_profile": profile}
                 )
                 self.notify("Queued — sends when this turn ends", timeout=3)
                 return
@@ -4068,12 +4116,15 @@ class LiteTUI(App):
             # the tool_call_id pairing. The message goes to the FRONT so the
             # flush sends it before anything queued behind it.
             self._user_bubble(text, has_image)
-            self._pending_input.insert(0, {"content": content, "text": text})
+            self._pending_input.insert(
+                0, {"content": content, "text": text, "tool_profile": profile}
+            )
             self._stop_requested = True
             self.notify("Interrupting — your message sends next", timeout=3)
             return
         self._user_bubble(text, has_image)
         self._append({"role": "user", "content": content})
+        self._active_tool_profile = profile
         self._stream()
 
     async def _ensure_chat_ready(self, *, timeout: float | None = None) -> None:
@@ -4454,16 +4505,7 @@ class LiteTUI(App):
                 except Exception as e:
                     result, ok = f"[error] invalid tool arguments: {e}", False
                 else:
-                    fn = self._dispatch_for(name)
-                    if fn is None:
-                        result, ok = f"[error] unknown tool: {name}", False
-                    else:
-                        try:
-                            # Run blocking tools (shell, disk, network) off-loop.
-                            result = await asyncio.to_thread(fn, args)
-                            ok = True
-                        except Exception as e:
-                            result, ok = f"[error] {type(e).__name__}: {e}", False
+                    result, ok = await self._execute_tool(name, args)
                 # ── one hygiene point for every tool result ──────────
                 # bash, read, web_fetch, harness, skill and every MCP tool
                 # pass through here and nowhere else, so this is where they
@@ -4605,6 +4647,11 @@ class LiteTUI(App):
         # model this app is usually pointed at. The rest ride the next round,
         # and rounds are plentiful.
         item = self._pending_input.pop(0)
+        self._active_tool_profile = item.get(
+            "tool_profile",
+            getattr(getattr(self, "settings", None), "tool_policy_profile",
+                    tool_policy.INTERACTIVE),
+        )
         self._append({"role": "user", "content": item["content"]})
         _mark_delivered(item)
         return True
@@ -4626,6 +4673,11 @@ class LiteTUI(App):
             self.set_timer(0.7, self._flush_pending_input)
             return
         item = self._pending_input.pop(0)
+        self._active_tool_profile = item.get(
+            "tool_profile",
+            getattr(getattr(self, "settings", None), "tool_policy_profile",
+                    tool_policy.INTERACTIVE),
+        )
         self._materialise_convo()
         self._append({"role": "user", "content": item["content"]})
         _mark_delivered(item)
@@ -4942,13 +4994,8 @@ class LiteTUI(App):
                         fargs = json.loads(slot["arguments"] or "{}")
                         if not isinstance(fargs, dict):
                             raise ValueError("arguments must be a JSON object")
-                        fn = self._dispatch_for(fname)
-                        result = (
-                            await asyncio.to_thread(fn, fargs)
-                            if fn
-                            else f"[error] unknown tool: {fname}"
-                        )
-                        if fn is not None and fname == "write":
+                        result, ok = await self._execute_tool(fname, fargs)
+                        if ok and fname == "write":
                             writes.append(str(fargs.get("path", "?")))
                     except Exception as e:
                         result = f"[error] {type(e).__name__}: {e}"

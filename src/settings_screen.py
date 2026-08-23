@@ -46,6 +46,7 @@ from textual.widgets import (
 import settings as settings_mod
 from colorpicker import ColorPickerScreen
 from settings import Settings
+from tool_policy import INTERACTIVE, PROFILE_NAMES, SCHEDULED
 
 THINKING_CHOICES = [
     ("off — no reasoning (may be ignored, see docs)", "off"),
@@ -71,6 +72,11 @@ TOOL_CONTEXT_CHOICES = [
     ("off — raw output enters context (baseline)", "off"),
     ("llm-tool-mask — pointer placeholder, no model call", "llm-tool-mask"),
     ("llm-tool-summ — side-call summary toward the task", "llm-tool-summ"),
+]
+
+TOOL_PROFILE_CHOICES = [
+    ("interactive — inspect freely, confirm sensitive actions", INTERACTIVE),
+    ("scheduled — read-only tools only", SCHEDULED),
 ]
 
 
@@ -306,6 +312,13 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "tool_iterations", "Tool iterations per turn",
                             "The cap behind '[stopped — reached N tool iterations in one "
                             "turn]'. Raise it for long agent runs.",
+                        )
+                        yield from self._select_row(
+                            "tool_policy_profile", "Conversation tool authority",
+                            TOOL_PROFILE_CHOICES,
+                            "Host-enforced. Interactive turns ask before writes, process "
+                            "execution, desktop control, or other sensitive effects. "
+                            "Scheduled is read-only and never opens an unattended prompt.",
                         )
                         yield from self._select_row(
                             "tool_context_mode", "Tool output context", TOOL_CONTEXT_CHOICES,
@@ -635,6 +648,10 @@ class SettingsScreen(ModalScreen[Settings | None]):
             raise ValueError("autocompact_at_percent: must be between 1 and 99")
         if out.tool_iterations < 1:
             raise ValueError("tool_iterations: must be at least 1")
+        if out.tool_policy_profile not in PROFILE_NAMES:
+            raise ValueError(
+                f"tool_policy_profile: must be one of {', '.join(PROFILE_NAMES)}"
+            )
         if out.compact_max_tokens < 256:
             raise ValueError("compact_max_tokens: below 256 no summary can fit")
         if out.tool_context_threshold_chars < 0:

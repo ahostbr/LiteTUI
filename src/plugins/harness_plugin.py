@@ -6,6 +6,7 @@ surface and WHEN the inbox subsystem starts.
 """
 import harness as harness_mod
 from plugins import PluginManifest
+from tool_policy import HARNESS_POLICY
 
 
 def _register(ctx) -> None:
@@ -17,6 +18,7 @@ def _register(ctx) -> None:
         harness_mod.HARNESS_TOOL_SPEC,
         lambda args: harness_mod.run(app.seat, args),
         gate=lambda: app.seat.registered,
+        policy=HARNESS_POLICY,
     )
 
 

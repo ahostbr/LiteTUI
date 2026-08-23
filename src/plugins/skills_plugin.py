@@ -10,6 +10,7 @@ from picker import PickerScreen
 import paths
 import time
 from plugins import PROMPT_ORDER, PluginManifest
+from tool_policy import READ_POLICY
 
 
 #: Picker row id for "show me the old text report". Not a skill name, and
@@ -256,6 +257,7 @@ def _register(ctx) -> None:
         skills_mod.SKILL_TOOL_SPEC,
         lambda args: skills_mod.load(app.skills, args.get("name", "")),
         gate=lambda: bool(app.skills),
+        policy=READ_POLICY,
     )
     # Pointers only; bodies load through the `skill` tool. Gated on
     # tools_enabled because without that tool the index would advertise

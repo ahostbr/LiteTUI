@@ -27,6 +27,7 @@ import schedule_builder as sb_mod
 from ticker import NumberTicker
 from rich.text import Text
 import paths
+from tool_policy import INTERACTIVE, SCHEDULED
 
 
 def _theme_palette(app) -> dict:
@@ -620,6 +621,17 @@ class JobScreen(ModalScreen):
                 yield Switch(value=j.new_conversation if j else False,
                              id="job-newconvo")
                 yield Static("fresh conversation", classes="job-switchcap")
+            yield Static("tool authority — scheduled is read-only by default",
+                         classes="job-cap")
+            yield Select(
+                [
+                    ("scheduled — read-only tools only", SCHEDULED),
+                    ("interactive — ask before sensitive tools", INTERACTIVE),
+                ],
+                value=j.tool_profile if j else SCHEDULED,
+                allow_blank=False,
+                id="job-tool-profile",
+            )
             yield Static(id="job-status")
             with Horizontal(id="job-buttons"):
                 yield Button("Save", variant="primary", id="job-save")
@@ -748,6 +760,7 @@ class JobScreen(ModalScreen):
             "label": self.query_one("#job-label", Input).value.strip(),
             "enabled": self.query_one("#job-enabled", Switch).value,
             "new_conversation": self.query_one("#job-newconvo", Switch).value,
+            "tool_profile": self.query_one("#job-tool-profile", Select).value,
         }))
 
     @on(Button.Pressed, "#job-save")

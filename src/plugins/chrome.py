@@ -4,6 +4,7 @@ Implementation stays in src/chrome_tool.py; this module registers it.
 """
 import chrome_tool
 from plugins import PluginManifest
+from tool_policy import CHROME_POLICY
 
 
 def _register(ctx) -> None:
@@ -11,6 +12,7 @@ def _register(ctx) -> None:
         chrome_tool.CHROME_TOOL_SPEC,
         chrome_tool.run,
         gate=lambda: chrome_tool.SCRIPT.exists(),
+        policy=CHROME_POLICY,
     )
 
 
