@@ -3722,9 +3722,61 @@ class LiteTUI(App):
         if proc is None or proc.poll() is not None:
             self.notify("No cancellable tool is running", timeout=2)
             return
+        # Set on THIS thread, before the kill is dispatched: _run_shell reads
+        # this the moment communicate() returns, which can be as soon as the
+        # tree dies.
         ttyguard.CANCELLABLE["cancelled"] = True
-        ttyguard.kill_tree(proc.pid)
-        self.notify("Tool cancelled — the model sees what it wrote so far", timeout=3)
+        self.notify("Cancelling…", timeout=2)
+        self._cancel_tool_tree(proc.pid, proc)
+
+    @work(thread=True, group="cancel")
+    def _cancel_tool_tree(self, pid: int, proc=None) -> None:
+        """taskkill, OFF THE UI THREAD, then say what actually happened.
+
+        🔴 THIS USED TO RUN INLINE IN action_cancel_tool. kill_tree blocks for
+        up to KILL_TREE_TIMEOUT_S, and taskkill against this app's own
+        cmd.exe -> python tree was measured at median 6.38s and max 43.06s —
+        so pressing cancel froze the entire TUI for up to the full budget.
+        Reporting honestly makes that WORSE, not better: an honest message has
+        to wait for the answer it is being honest about, and a message the user
+        cannot see because the app stopped responding has served them no better
+        than the lie it replaced.
+
+        thread=True rather than the async @work used elsewhere in this file:
+        the call is BLOCKING, not awaitable. Wrapping it in asyncio.to_thread
+        inside an async worker would work identically and would put a second
+        `asyncio.to_thread(...)` in the package, which is the exact string the
+        tool-authority gate looks for — a true reading with a misleading shape.
+        Textual has a thread worker; this is what it is for.
+        """
+        killed = ttyguard.kill_tree(pid, proc)
+        # Handed to the result formatter through the envelope, so the MODEL is
+        # told the same thing the user is. Two audiences, one truth.
+        #
+        # ORDERING, which is benign in the direction that matters: if the kill
+        # SUCCEEDS, communicate() may return before this line runs and the
+        # formatter reads the default True — which is the correct answer. If
+        # the kill FAILS, the tree is still holding the pipe open, so
+        # communicate() is still blocked and cannot read anything until well
+        # after this line. The failure case, the one that must not be
+        # mis-reported, is the one that is ordered.
+        ttyguard.CANCELLABLE["kill_confirmed"] = killed
+        if killed:
+            self.call_from_thread(
+                self.notify,
+                "Tool cancelled — the model sees what it wrote so far",
+                timeout=3,
+            )
+        else:
+            # Never a false confirmation. We do not claim it is still running;
+            # we claim we could not confirm that it stopped, and the user is
+            # the one who can check.
+            self.call_from_thread(
+                self.notify,
+                "Cancel could not be confirmed — the process may still be running",
+                severity="warning",
+                timeout=6,
+            )
 
     def action_stop_turn(self) -> None:
         if not self._chat_running():

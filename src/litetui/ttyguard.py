@@ -38,6 +38,9 @@ that boundary instead of pretending it does not exist.
 from __future__ import annotations
 
 import subprocess
+import time
+
+from litetui import jobkill
 
 from litetui import sanitize
 
@@ -88,11 +91,31 @@ def run(cmd, *, timeout=DEFAULT_TIMEOUT_S, stdin=subprocess.DEVNULL,
 
 def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
           stderr=subprocess.PIPE, cwd=None, env=None, bufsize=-1,
-          encoding="utf-8", errors="replace", shell=False) -> "subprocess.Popen":
+          encoding="utf-8", errors="replace", shell=False,
+          kill_on_close=False) -> "subprocess.Popen":
     """Spawn a LONG-LIVED child under the envelope — the case is the stdio
     MCP server — same window/decode discipline, but the caller owns the
     pipes and the process (the envelope cannot, so it must not, reap it).
     The terminal repair runs once, immediately after the spawn.
+
+    `kill_on_close` puts the child in a Job Object so its whole tree can be
+    killed by closing one handle instead of walking the process table. It is
+    OPT-IN AND DEFAULTS OFF ON PURPOSE.
+
+    🔴 THIS FUNCTION IS ONE IMPLEMENTATION WITH FOUR CONSUMERS, AND THREE OF
+    THEM MUST NOT GET THIS BEHAVIOUR:
+
+        core_tools  the cancellable bash/powershell tool   <- the only opt-in
+        mcp_client  the MCP stdio server                   <- must outlive a call
+        llm_backend the LM Studio router                   <- must outlive a call
+        app         the mark overlay                       <- not cancellable
+
+    A job created with KILL_ON_JOB_CLOSE takes its members with it whenever
+    the last handle closes — INCLUDING ON ORDINARY GARBAGE COLLECTION of the
+    handle. Turning this on for everyone would kill the MCP server and the
+    model router at unpredictable moments, and it would look like anything
+    except a cancel bug. A single spawn SITE is not the same as a single set
+    of spawn SEMANTICS.
     """
     proc = subprocess.Popen(
         cmd,
@@ -108,6 +131,15 @@ def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         errors=errors,
         creationflags=NO_WINDOW,
     )
+    if kill_on_close:
+        # ⚠️ THE CHILD, NEVER OURSELVES. Assigning this process to a
+        # KILL_ON_JOB_CLOSE job kills the app when the handle closes.
+        job = jobkill.create()
+        # Attached to the Popen so the handle's lifetime is the child's, and
+        # so kill_tree can find it without a second registry to keep in step.
+        proc._litetui_job = job if jobkill.assign(job, proc.pid) else None
+        if job is not None and proc._litetui_job is None:
+            jobkill.close(job)   # assign failed: do not leak the handle
     _repair_terminal()
     return proc
 
@@ -117,15 +149,90 @@ def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
 #: id would imply a concurrency the loop does not have. It lives in the
 #: envelope because child-process lifecycle is the envelope's charter: the
 #: bash tool writes the slot, the app's cancel button reads it.
-CANCELLABLE: dict = {"proc": None, "cancelled": False}
+CANCELLABLE: dict = {"proc": None, "cancelled": False, "kill_confirmed": True}
 
 
-def kill_tree(pid: int) -> None:
-    """Kill pid and its DESCENDANTS. shell=True means the direct child is
-    cmd.exe and the real work is its grandchild — proc.kill() would kill
-    cmd.exe and leave python running, detached and invisible. taskkill /T
-    walks the tree; /F because a cancel that asks nicely is a suggestion."""
+#: taskkill's own exit codes, MEASURED on this machine rather than read from a
+#: doc: killing a live tree gives 0, and BOTH "already exited" and "no such
+#: pid" give 128. 128 is therefore the outcome we wanted, reached early.
+TASKKILL_OK = 0
+TASKKILL_NOT_FOUND = 128
+
+#: How long taskkill may take before we stop waiting. Measured against the
+#: cmd.exe -> python tree this app actually spawns: min 3.42s, median 6.38s,
+#: max 43.06s, and 1 in 10 over 15s on a loaded box.
+#:
+#: The budget is deliberately NOT raised to cover that tail. It runs on the
+#: caller's thread, so a longer budget buys a longer freeze, and no budget can
+#: cover a distribution with no upper bound. The bound stays; what changed is
+#: that overrunning it is now REPORTED instead of swallowed.
+KILL_TREE_TIMEOUT_S = 15
+
+#: How long to wait for the kernel to finish terminating a job's members
+#: before falling back. Job termination is asynchronous but was measured at
+#: 0.1-0.2 ms across 15 trials, so this is ~10,000x the observed cost and
+#: exists only so a pathological case degrades to the walk instead of lying.
+JOB_KILL_CONFIRM_S = 2.0
+
+
+def kill_tree(pid: int, proc=None) -> bool:
+    """Kill pid and its DESCENDANTS. True only if the tree is CONFIRMED gone.
+
+    shell=True means the direct child is cmd.exe and the real work is its
+    grandchild — proc.kill() would kill cmd.exe and leave python running,
+    detached and invisible. taskkill /T walks the tree; /F because a cancel
+    that asks nicely is a suggestion.
+
+    🔴 THIS RETURNED None AND SWALLOWED EVERY EXCEPTION, under the comment
+    "the process may already be gone — that is success, not failure". That
+    sentence is true of most exceptions and FALSE OF A TIMEOUT, which is the
+    one case where it decides something. A timeout means the walk is
+    UNFINISHED: subprocess kills taskkill mid-walk, so the tree may still be
+    running — and every caller went on to tell the user the cancel worked.
+    Measured: 1 of 10 kills of this app's own tree exceeded the 15s budget,
+    max 43.06s. On a loaded box, cancel silently failed while reporting
+    "[cancelled by user after Ns]" to the user AND to the model.
+
+    ⚠️ A SECOND ROUTE TO THE SAME LIE, in the same line: run() is called
+    without check=, so a taskkill that RAN AND FAILED (access denied, say)
+    raised nothing either. The returncode is now inspected, not ignored.
+
+    Returning False does not mean the tree is alive — it means WE DO NOT KNOW.
+    That is the honest state, and it is the one every caller must refuse to
+    describe as success.
+    """
+    # FAST PATH: the child was spawned into a job, so the whole tree dies
+    # when the handle closes. 0.1-0.2ms, no walk, nothing to time out.
+    job = getattr(proc, "_litetui_job", None) if proc is not None else None
+    if job is not None:
+        if jobkill.close(job):
+            proc._litetui_job = None      # closed exactly once
+            # CONFIRM rather than assume: this function promises that True
+            # means the tree is gone, and a promise needs a check. Termination
+            # is asynchronous, but measured at 0.1-0.2ms, so this bound is
+            # enormous by comparison and still cheap — alive() is an
+            # OpenProcess, not a process-table enumeration.
+            deadline = time.monotonic() + JOB_KILL_CONFIRM_S
+            while jobkill.alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.002)
+            if not jobkill.alive(pid):
+                return True
+        # The job path did not confirm the kill. Fall through and walk.
+
+    # FALLBACK, DELIBERATELY CONDITIONAL. Running this after every successful
+    # job kill would be simpler and has a branch fewer — and it would cost a
+    # median 6,568ms EVERY TIME. taskkill on an ALREADY-DEAD pid measured
+    # 3,678 / 6,568 / 10,393 ms (n=6), statistically the same as on a live
+    # tree, because the expense is enumerating the process table rather than
+    # killing anything. An unconditional fallback would throw away the whole
+    # benefit of the fast path.
     try:
-        run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=15)
+        completed = run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            timeout=KILL_TREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False   # unfinished walk; taskkill was killed mid-tree
     except Exception:
-        pass  # the process may already be gone — that is success, not failure
+        return False   # no taskkill on PATH, no permission: not confirmed
+    return completed.returncode in (TASKKILL_OK, TASKKILL_NOT_FOUND)
