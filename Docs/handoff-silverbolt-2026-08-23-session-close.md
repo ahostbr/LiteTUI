@@ -31,8 +31,15 @@ LiteSuite       [develop] 1464f6a  IN SYNC
 liteharness-oss [main]    ecf38b4  IN SYNC
 ```
 
-Ryan pushed. **Do not carry forward any "N unpushed" figure from earlier in this session or
-from Sentinel's compaction bank — every one of them is stale.** Re-derive with the loop in §6.
+**SENTINEL pushed, on Ryan's instruction** (*"push all that have a remote others keep local"*).
+I first reported this as *"Ryan has pushed"* — the state was right, the attribution was wrong, and
+Sentinel corrected it. **Do not carry forward any "N unpushed" figure from earlier in this session
+or from Sentinel's compaction bank — every one of them is stale.** Re-derive with the loop in §6.
+
+Also pushed and not in the table above: **LiteModeler** `cade477`, **LiteSound** `e25d118`.
+**NOT pushed, deliberately:** the vendored `LiteSuite/resources/liteharness-plugin` — local
+`8bb8fa7` vs server `4508824`, so pushing it publishes a **version ROLLBACK** — and the four
+repos with no remote, kept local by instruction.
 
 ## 1. In flight
 
@@ -75,7 +82,7 @@ Nothing. Every dispatch accepted and closed.
 | I bundled LiteTUI **without** asking | Same rule, other side: writing a new file into a backup directory can damage nothing, and the window it closed was total loss of the fleet's night |
 | No retry in `kill_tree` | Sentinel's ruling. The deciding number — *given a first taskkill that blew 15s, how often does a second succeed?* — **has never been measured** |
 | Probes kept in scratchpad, not the tree | Throwaway instruments, and **three of them were wrong** (§5). Sentinel has them with the `argtypes` bug fixed |
-| **Tonight's five memory files are in the `C--Projects-LiteImage` scope** | ⚠️ **NOT a decision — an unresolved defect.** They are fleet-wide harness lessons filed where only a LiteImage session loads them. That is the same scope failure that hid three rules for six weeks. **Sentinel owes a ruling; until then they are effectively invisible to other projects** |
+| Three fleet-content memories LEFT in the LiteImage scope | ✅ **The scope defect is RESOLVED for mine.** Sentinel ruled *"fleet-wide lessons go in `C--Projects`; the test is WHO NEEDS TO LOAD IT, not where you were sitting"*, and I moved **nine** files with their index lines (0 orphans both directions). `project_green_that_cannot_run`, `project_liteharness_cli_silent_flag_drop` and `project_restored_fixture_makes_no_diff` are fleet-content too but **are not mine to move** — 8 of the moved files link to them and those links now cross scopes. Flagged to Sentinel with the counts |
 
 ## 4. Caveats riding the green lines
 
