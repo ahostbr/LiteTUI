@@ -57,7 +57,7 @@ import asyncio
 import threading
 from dataclasses import dataclass, field
 from typing import Any
-import tool_schemas
+from litetui import tool_schemas
 
 from rich.text import Text
 from textual import events, on

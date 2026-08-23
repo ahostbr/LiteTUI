@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import paths
-from picker import PickerScreen
+from litetui import app as m
+from litetui import paths
+from litetui.picker import PickerScreen
 from textual.widgets import OptionList
 
 

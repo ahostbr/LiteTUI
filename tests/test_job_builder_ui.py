@@ -17,13 +17,13 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
+from litetui import app as m
 from textual.widgets import Select
-from plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
-import paths
-import schedule_builder as sb
-import scheduler as sched_mod
-from ticker import NumberTicker
+from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
+from litetui import paths
+from litetui import schedule_builder as sb
+from litetui import scheduler as sched_mod
+from litetui.ticker import NumberTicker
 
 
 @pytest.fixture(autouse=True)

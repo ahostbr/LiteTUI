@@ -2,9 +2,9 @@
 
 Implementation stays in src/chrome_tool.py; this module registers it.
 """
-import chrome_tool
-from plugins import PluginManifest
-from tool_policy import CHROME_POLICY
+from litetui import chrome_tool
+from litetui.plugins import PluginManifest
+from litetui.tool_policy import CHROME_POLICY
 
 
 def _register(ctx) -> None:

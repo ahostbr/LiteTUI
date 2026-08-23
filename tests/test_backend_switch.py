@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import llm_backend
-import paths
-from plugins.model_switch import _switch_backend
-from settings import Settings
+from litetui import app as app_mod
+from litetui import llm_backend
+from litetui import paths
+from litetui.plugins.model_switch import _switch_backend
+from litetui.settings import Settings
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-backendswitch-"))
 

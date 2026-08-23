@@ -24,9 +24,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
+from litetui import app as m
 
-APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(
+APP_SRC = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(
     encoding="utf-8", errors="ignore"
 )
 

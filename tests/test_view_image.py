@@ -23,8 +23,8 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as app_mod
-from plugins.view_image import VIEW_IMAGE_TOOL_SPEC
+from litetui import app as app_mod
+from litetui.plugins.view_image import VIEW_IMAGE_TOOL_SPEC
 
 ok = []
 
@@ -62,8 +62,8 @@ class FakeApp:
         # The offer gate lives in the view_image PLUGIN since the split —
         # register it against THIS fake so the gate closes over the fake's
         # model_type, exactly as the real loader does against the real app.
-        from plugins import PluginContext, PluginRegistry
-        import plugins.view_image as _vi
+        from litetui.plugins import PluginContext, PluginRegistry
+        from litetui.plugins import view_image as _vi
         self.plugins = PluginRegistry()
         _vi.PLUGIN.register(PluginContext(self, self.plugins, "view-image"))
 

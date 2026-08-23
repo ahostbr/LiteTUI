@@ -23,19 +23,19 @@ import re
 from dataclasses import fields
 from pathlib import Path
 
-import settings as settings_mod
-from settings import Settings
+from litetui import settings as settings_mod
+from litetui.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root: tests/ is one level down
-APP = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+APP = (ROOT / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
 # Readers may live in plugin modules since the plugin split — the gate's
 # claim is about the RUNTIME, so its scope is app.py plus every plugin,
 # plus the backend core module: the dual-backend seam reads its settings
 # there (constructor-injected), exactly as app.py reads its own.
 RUNTIME = APP + "".join(
     p.read_text(encoding="utf-8")
-    for p in sorted((ROOT / "src" / "plugins").rglob("*.py"))
-) + (ROOT / "src" / "llm_backend.py").read_text(encoding="utf-8")
+    for p in sorted((ROOT / "src" / "litetui" / "plugins").rglob("*.py"))
+) + (ROOT / "src" / "litetui" / "llm_backend.py").read_text(encoding="utf-8")
 
 #: Fields consumed through a helper rather than by name. Each entry names the
 #: helper, so a reader can check the claim instead of trusting the list.
@@ -124,7 +124,7 @@ def test_no_setting_is_read_only_by_the_settings_screen():
     The screen renders every field by construction, so it can never be the
     evidence that a field does something.
     """
-    screen = (ROOT / "src" / "settings_screen.py").read_text(encoding="utf-8")
+    screen = (ROOT / "src" / "litetui" / "settings_screen.py").read_text(encoding="utf-8")
     assert "f-{name}" in screen or "f-" in screen  # sanity: the screen builds ids
     for f in fields(Settings):
         if f.name in INDIRECT:

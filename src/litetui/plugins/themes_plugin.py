@@ -5,8 +5,8 @@ Moved verbatim from on_mount. Runs inside the same synchronous on_mount pass
 _register_custom_themes method stays app-owned — the settings-save path
 calls it too, and one owner per fact includes methods.
 """
-import themes as themes_mod
-from plugins import PluginManifest
+from litetui import themes as themes_mod
+from litetui.plugins import PluginManifest
 
 
 def _activate(app) -> None:

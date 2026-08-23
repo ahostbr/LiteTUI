@@ -22,10 +22,10 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
-import chrome_tool
-import pccontrol_tool
+from litetui import app as app_mod
+from litetui import paths
+from litetui import chrome_tool
+from litetui import pccontrol_tool
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-tools-"))
 

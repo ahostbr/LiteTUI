@@ -4,9 +4,9 @@ Seat CONSTRUCTION stays host-owned in __init__ (a core ordering guarantee —
 monitors must never race the seat's existence); this plugin owns the tool
 surface and WHEN the inbox subsystem starts.
 """
-import harness as harness_mod
-from plugins import PluginManifest
-from tool_policy import HARNESS_POLICY
+from litetui import harness as harness_mod
+from litetui.plugins import PluginManifest
+from litetui.tool_policy import HARNESS_POLICY
 
 
 def _register(ctx) -> None:

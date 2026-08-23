@@ -28,9 +28,9 @@ import time
 import urllib.error
 import urllib.request
 
-import seat_guard
-import ttyguard
-import tool_schemas
+from litetui import seat_guard
+from litetui import ttyguard
+from litetui import tool_schemas
 
 IMAGE_URL = os.environ.get("LITEIMAGE_API_URL", "http://127.0.0.1:7426").rstrip("/")
 SOUND_URL = os.environ.get("LITESOUND_API_URL", "http://127.0.0.1:7427").rstrip("/")

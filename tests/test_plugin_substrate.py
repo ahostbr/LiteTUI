@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from plugins import (  # noqa: E402
+from litetui.plugins import (  # noqa: E402
     PluginManifest,
     PluginContext,
     PluginRegistry,
@@ -168,7 +168,7 @@ def test_loader_isolates_import_failures_unless_module_is_critical():
     assert hits == ["s"]
     assert reg.status["_fp_does_not_exist_anywhere"].startswith("failed: ModuleNotFoundError")
     # ...but a CRITICAL module's import failure is a broken checkout: raise.
-    import plugins as plugins_pkg
+    from litetui import plugins as plugins_pkg
     saved = plugins_pkg.CRITICAL_MODULES
     plugins_pkg.CRITICAL_MODULES = frozenset({"_fp_missing_critical"})
     try:

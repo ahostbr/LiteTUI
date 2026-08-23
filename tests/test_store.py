@@ -11,8 +11,8 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import paths
+from litetui import app as m
+from litetui import paths
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-store-"))
 

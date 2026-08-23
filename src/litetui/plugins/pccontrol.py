@@ -4,9 +4,9 @@ The implementation stays in src/pccontrol_tool.py, already the cleanest
 tool shape in the tree (SPEC + run(args) + SCRIPT gate, zero app state);
 this module is its registration into the plugin registry.
 """
-import pccontrol_tool
-from plugins import PluginManifest
-from tool_policy import PCCONTROL_POLICY
+from litetui import pccontrol_tool
+from litetui.plugins import PluginManifest
+from litetui.tool_policy import PCCONTROL_POLICY
 
 
 def _register(ctx) -> None:

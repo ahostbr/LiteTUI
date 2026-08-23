@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import studio_tool
+from litetui import app as m
+from litetui import studio_tool
 
 
 # --------------------------------------------------------------------------
@@ -41,7 +41,7 @@ def test_the_dispatcher_resolves_studio_and_injects_the_seat():
     a.model_id = "the-current-seat"
     seen = {}
 
-    import studio_tool as st
+    from litetui import studio_tool as st
     real = st.run
     try:
         st.run = lambda args, seat_model=None, backend=None: seen.update(
@@ -200,7 +200,7 @@ def test_env_overrides_are_read_at_import(monkeypatch):
     """The URLs come from env so an end user (or a test) can repoint them.
     This pins that they are module constants derived from env, not literals
     buried in call sites."""
-    src = (Path(__file__).resolve().parent.parent / "src" / "studio_tool.py").read_text(
+    src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "studio_tool.py").read_text(
         encoding="utf-8")
     assert 'os.environ.get("LITEIMAGE_API_URL"' in src
     assert 'os.environ.get("LITESOUND_API_URL"' in src

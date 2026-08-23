@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import seat_guard
-import studio_tool
+from litetui import seat_guard
+from litetui import studio_tool
 
 #: The REAL shape lms ps --json returned on this box (2026-08-21), verbatim
 #: fields — the parser is tested against what the tool actually prints.

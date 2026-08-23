@@ -10,8 +10,8 @@ a task dispatched to the previous id was never seen by the seat.
 """
 import uuid
 
-import harness as harness_mod
-from harness import agent_id_for_convo, new_agent_id
+from litetui import harness as harness_mod
+from litetui.harness import agent_id_for_convo, new_agent_id
 
 CONVO = "5f8e1a90-2c3b-4d7e-9a10-0badc0ffee11"
 
@@ -63,7 +63,7 @@ def test_new_agent_id_is_still_random():
 # --- _sync_seat_identity: the wiring, not just the derivation ---------------
 from types import SimpleNamespace
 
-from app import LiteTUI
+from litetui.app import LiteTUI
 
 sync = LiteTUI._sync_seat_identity
 

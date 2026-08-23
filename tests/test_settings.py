@@ -16,8 +16,8 @@ from dataclasses import fields
 
 import pytest
 
-import settings as settings_mod
-from settings import Settings, sampling_kwargs
+from litetui import settings as settings_mod
+from litetui.settings import Settings, sampling_kwargs
 
 # Booting LiteTUI creates a real .convos/<uuid>/ before anything is typed, so a
 # test that instantiates the app pollutes the user's conversation list. Redirect
@@ -25,8 +25,8 @@ from settings import Settings, sampling_kwargs
 import tempfile
 from pathlib import Path as _Path
 
-import app as _app_mod
-import paths
+from litetui import app as _app_mod
+from litetui import paths
 
 paths.CONVO_DIR = _Path(tempfile.mkdtemp(prefix="convos-settings-unit-"))
 
@@ -139,7 +139,7 @@ async def test_screen_mounts_and_reads_back_edits():
     """
     from textual.app import App, ComposeResult
     from textual.widgets import Input, Switch
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     captured: dict = {}
 
@@ -194,7 +194,7 @@ async def test_screen_mounts_and_reads_back_edits():
 async def test_screen_refuses_invalid_and_does_not_dismiss():
     from textual.app import App, ComposeResult
     from textual.widgets import Input
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     captured: dict = {}
 
@@ -230,7 +230,7 @@ async def test_screen_refuses_invalid_and_does_not_dismiss():
 @pytest.mark.asyncio
 async def test_cancel_returns_none():
     from textual.app import App, ComposeResult
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     captured: dict = {}
 
@@ -256,7 +256,7 @@ async def test_env_locked_field_is_disabled(monkeypatch):
     """A field the env owns must render disabled, not editable-and-ignored."""
     from textual.app import App, ComposeResult
     from textual.widgets import Input
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     monkeypatch.setenv("LM_TOOL_ITERS", "33")
 
@@ -284,7 +284,7 @@ async def test_every_field_is_reachable_without_opening_its_tab():
     """
     from dataclasses import fields as dc_fields
     from textual.app import App, ComposeResult
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     class Host(App):
         def compose(self) -> ComposeResult:
@@ -330,7 +330,7 @@ async def test_collect_refuses_a_partial_save_instead_of_skipping():
     settings — indistinguishable, to the user, from the app ignoring them.
     """
     from textual.app import App, ComposeResult
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     class Host(App):
         def compose(self) -> ComposeResult:
@@ -354,7 +354,7 @@ async def test_collect_refuses_a_partial_save_instead_of_skipping():
 async def test_the_six_sections_are_tabs():
     from textual.app import App, ComposeResult
     from textual.widgets import TabPane
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     class Host(App):
         def compose(self) -> ComposeResult:
@@ -378,8 +378,8 @@ async def test_the_panel_is_centred_not_docked_top_left():
     that rule's selector list. Asserting the CSS source would have passed
     throughout the bug.
     """
-    import app as app_mod
-    from settings_screen import SettingsScreen
+    from litetui import app as app_mod
+    from litetui.settings_screen import SettingsScreen
 
     a = app_mod.LiteTUI()
     a._connect = lambda: None
@@ -427,7 +427,7 @@ async def test_panel_opens_when_the_saved_default_model_is_not_served():
     """
     from textual.app import App, ComposeResult
     from textual.widgets import Select
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     s = Settings()
     s.default_model = "some/model-that-is-not-loaded"
@@ -455,7 +455,7 @@ async def test_an_unserved_default_is_labelled_not_guessed():
     """It must be visible WHY it is not selected, not quietly normal."""
     from textual.app import App, ComposeResult
     from textual.widgets import Select
-    from settings_screen import SettingsScreen
+    from litetui.settings_screen import SettingsScreen
 
     s = Settings()
     s.default_model = "ghost/model"

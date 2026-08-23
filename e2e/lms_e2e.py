@@ -17,8 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import llm_backend
-from settings import Settings
+from litetui import llm_backend
+from litetui.settings import Settings
 
 ART = Path(__file__).resolve().parent / "artifacts" / "dual-backend"
 ART.mkdir(parents=True, exist_ok=True)

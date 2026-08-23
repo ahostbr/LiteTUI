@@ -4,9 +4,9 @@ Offered unconditionally: availability is RUNTIME state (is the app open?),
 and the tool reports its own precondition in one honest sentence, which
 beats silently not existing when the app is closed.
 """
-import studio_tool
-from plugins import PluginManifest
-from tool_policy import STUDIO_POLICY
+from litetui import studio_tool
+from litetui.plugins import PluginManifest
+from litetui.tool_policy import STUDIO_POLICY
 
 
 def _register(ctx) -> None:

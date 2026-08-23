@@ -29,7 +29,7 @@ import os
 
 import pytest
 
-import harness as harness_mod
+from litetui import harness as harness_mod
 
 
 class _Recorder:

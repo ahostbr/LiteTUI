@@ -11,9 +11,9 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-import paths
-from settings import THINKING_LEVELS
-from plugins import PluginManifest
+from litetui import paths
+from litetui.settings import THINKING_LEVELS
+from litetui.plugins import PluginManifest
 
 
 class HelpScreen(ModalScreen[None]):

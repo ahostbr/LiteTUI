@@ -14,9 +14,9 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import paths
-import settings as settings_mod
+from litetui import app as m
+from litetui import paths
+from litetui import settings as settings_mod
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-settings-"))
 ok = []
@@ -43,7 +43,7 @@ async def main():
     async with a.run_test() as pilot:
         a._handle_command("/settings")
         await pilot.pause()
-        from settings_screen import SettingsScreen
+        from litetui.settings_screen import SettingsScreen
 
         chk("a SettingsScreen is on top", isinstance(a.screen, SettingsScreen))
         # The knobs behind the two caps that started this must be reachable.

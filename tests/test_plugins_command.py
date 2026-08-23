@@ -9,10 +9,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import app as m  # noqa: E402
-import settings as settings_mod  # noqa: E402
-from plugins import PLUGIN_LOAD_ORDER  # noqa: E402
-from settings import Settings  # noqa: E402
+from litetui import app as m  # noqa: E402
+from litetui import settings as settings_mod  # noqa: E402
+from litetui.plugins import PLUGIN_LOAD_ORDER  # noqa: E402
+from litetui.settings import Settings  # noqa: E402
 
 
 def _app(monkeypatch, **settings_kw):

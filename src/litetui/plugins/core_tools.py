@@ -16,11 +16,11 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-import ttyguard
-from fmt import fmt_dur
-from plugins import PluginManifest
-import tool_schemas
-from tool_policy import NETWORK_READ_POLICY, READ_POLICY, SHELL_POLICY, WRITE_POLICY
+from litetui import ttyguard
+from litetui.fmt import fmt_dur
+from litetui.plugins import PluginManifest
+from litetui import tool_schemas
+from litetui.tool_policy import NETWORK_READ_POLICY, READ_POLICY, SHELL_POLICY, WRITE_POLICY
 
 TOOL_MAX_LINES = 2000
 TOOL_MAX_BYTES = 50 * 1024  # 50KB

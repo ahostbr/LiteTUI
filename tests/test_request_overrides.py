@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from llm_backend import (
+from litetui.llm_backend import (
     BackendError,
     LMStudioBackend,
     OPENAI_NATIVE_PARAMS,
     split_request_kwargs,
 )
-from settings import Settings
+from litetui.settings import Settings
 
 
 def _backend(**infer) -> LMStudioBackend:

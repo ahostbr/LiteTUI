@@ -19,7 +19,7 @@ from pathlib import Path
 import json
 import tempfile
 import time
-import tool_schemas
+from litetui import tool_schemas
 
 SKILLS_DIR_NAME = "skills"
 MAX_SKILL_BYTES = 60_000

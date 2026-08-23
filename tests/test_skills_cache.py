@@ -17,9 +17,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import paths
-import skills as skills_mod
-from plugins.skills_plugin import _cmd_skills, _cmd_refresh
+from litetui import paths
+from litetui import skills as skills_mod
+from litetui.plugins.skills_plugin import _cmd_skills, _cmd_refresh
 
 
 def _make_skill(base: Path, folder: str, name: str, desc: str = "does things") -> Path:
@@ -56,13 +56,13 @@ class _StubApp:
         self.pushed.append((screen, callback))
 
     def refresh_skills(self):
-        import app as app_mod
+        from litetui import app as app_mod
         return app_mod.LiteTUI.refresh_skills(self)
 
 
 # ── the prompt is a file, not a constant ─────────────────────────────────────
 def test_no_tools_prompt_constant_survives_in_the_source() -> None:
-    src = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(
+    src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(
         encoding="utf-8", errors="ignore"
     )
     assert 'TOOLS_PROMPT = """' not in src, "the tools prompt is still hardcoded in app.py"

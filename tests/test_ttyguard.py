@@ -27,8 +27,8 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import sanitize
-import ttyguard
+from litetui import sanitize
+from litetui import ttyguard
 
 REPO = Path(__file__).resolve().parent.parent
 

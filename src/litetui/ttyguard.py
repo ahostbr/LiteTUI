@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import subprocess
 
-import sanitize
+from litetui import sanitize
 
 #: Windows: never spawn a console window for a child of a TUI.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)

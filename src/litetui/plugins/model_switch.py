@@ -25,11 +25,11 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, Select, Static, TabbedContent, TabPane
 
-import llm_backend
-import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
-import settings as settings_mod
-from picker import PickerScreen
-from plugins import PluginManifest
+from litetui import llm_backend
+from litetui import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
+from litetui import settings as settings_mod
+from litetui.picker import PickerScreen
+from litetui.plugins import PluginManifest
 
 
 # ── /model /models /reconnect (bodies verbatim, rows now source-tagged) ──────

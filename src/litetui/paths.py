@@ -1,14 +1,27 @@
 """The path anchors — ONE owner for where the data lives.
 
-src/ is one level below the repo root, where the DATA lives — .convos,
-settings.json, skills/, systemprompt.md. Anchoring to __file__.parent
-would silently re-home every store into src/; this module sits at the same
-depth app.py does, and test_paths.py proves the anchor by resolution.
+src/litetui/ is TWO levels below the repo root, where the DATA lives — .convos,
+settings.json, skills/, systemprompt.md. Anchoring too shallow silently re-homes
+every store inside the package; test_paths.py proves the anchor by resolution.
+
+🔴 THE DEPTH IS COUNTED BY HAND AND IT HAS ALREADY BEEN WRONG ONCE. When this
+module moved from src/paths.py to src/litetui/paths.py, `parent.parent` kept
+resolving — to src/ instead of the repo root — and 13 test files failed with
+`FileNotFoundError: src/tools/harness.json`. Nothing warned; a path anchor that
+is off by one directory is still a valid Path.
+
+⚠️ FIVE OTHER MODULES COMPUTE THE SAME ANCHOR THEMSELVES rather than importing
+ROOT from here — app.py, chrome_tool.py, pccontrol_tool.py, seat_guard.py and
+settings.py — so the count below is duplicated six ways and every copy must be
+edited together. The line under this one claims plugins never compute ROOT
+themselves; that is true of plugins/ and false of those five. Consolidating them
+onto this ROOT would delete the whole class, and is deliberately NOT done in a
+rename commit.
 Plugins import these; they never compute ROOT themselves.
 """
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 PROMPTS_DIR = ROOT / "prompts"
 SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
 #: The tools section of the system prompt. Lived as a string constant in

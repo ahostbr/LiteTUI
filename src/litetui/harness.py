@@ -26,11 +26,11 @@ from __future__ import annotations
 import json
 import os
 import sys
-import ttyguard
+from litetui import ttyguard
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-import tool_schemas
+from litetui import tool_schemas
 
 INBOX_ROOT = Path.home() / ".liteharness" / "inbox"
 NEW, CUR, DONE = INBOX_ROOT / "new", INBOX_ROOT / "cur", INBOX_ROOT / "done"

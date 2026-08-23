@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-import llm_backend
-from llm_backend import IniUnexpressible, ModelRow, write_preset_ini
-from settings import Settings
+from litetui import llm_backend
+from litetui.llm_backend import IniUnexpressible, ModelRow, write_preset_ini
+from litetui.settings import Settings
 
 ALL_FLAGS = frozenset(llm_backend.FLAG_FOR.values())
 

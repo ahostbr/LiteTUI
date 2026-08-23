@@ -26,7 +26,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-import paths
+from litetui import paths
 
 SCHEMA_DIR_NAME = "tools"
 

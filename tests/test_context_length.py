@@ -34,9 +34,9 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
-from settings import Settings
+from litetui import app as app_mod
+from litetui import paths
+from litetui.settings import Settings
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-ctx-"))
 
@@ -84,7 +84,7 @@ def _app(ctx=120000, recorder=None, info=None):
 # the CONTRACT it protects did not move an inch.
 
 def _lms_info(monkeypatch, payload):
-    import llm_backend
+    from litetui import llm_backend
     monkeypatch.setattr(
         llm_backend, "_http_json", lambda url, body=None, timeout=10: payload
     )

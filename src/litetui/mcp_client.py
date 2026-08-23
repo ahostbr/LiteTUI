@@ -29,7 +29,7 @@ import queue
 import subprocess
 import threading
 import time
-import ttyguard
+from litetui import ttyguard
 from pathlib import Path
 
 MCP_CONFIG_NAME = "mcp.json"

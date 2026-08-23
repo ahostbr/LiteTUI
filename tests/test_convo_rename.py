@@ -28,8 +28,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-from plugins.convo import _cmd_rename
+from litetui import app as m
+from litetui.plugins.convo import _cmd_rename
 
 
 def _write(tmp_path: Path, *records) -> Path:
@@ -141,7 +141,7 @@ def test_rename_with_no_conversation_says_so(tmp_path: Path) -> None:
 
 def test_both_listings_go_through_the_label_helper() -> None:
     """Drift gate: one shared picker renders the label; no direct title."""
-    src = (Path(__file__).resolve().parent.parent / "src" / "plugins" / "convo.py").read_text(
+    src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "plugins" / "convo.py").read_text(
         encoding="utf-8", errors="ignore"
     )
     assert "_convo_title(msgs)" not in src, (

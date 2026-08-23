@@ -78,7 +78,7 @@ def _never_write_the_live_settings(tmp_path, monkeypatch):
     tmp_path (test_settings.py does, correctly) behave exactly as before. Only
     the root=None case — the live file — is redirected.
     """
-    import settings as settings_mod
+    from litetui import settings as settings_mod
 
     real_settings_path = settings_mod.settings_path
 

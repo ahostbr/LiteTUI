@@ -7,9 +7,9 @@ the command surfaces over it.
 """
 import time
 
-import paths
-from picker import PickerScreen
-from plugins import PluginManifest
+from litetui import paths
+from litetui.picker import PickerScreen
+from litetui.plugins import PluginManifest
 
 
 def _convo_meta_bits(path, msgs) -> tuple[str, int, str]:

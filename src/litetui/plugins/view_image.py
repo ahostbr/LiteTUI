@@ -8,9 +8,9 @@ and the tool loop injects a user turn carrying the image through the same
 door the paste path uses. Returning base64 here would burn a megabyte of
 context to show the model nothing.
 """
-from plugins import PluginManifest
-import tool_schemas
-from tool_policy import READ_POLICY
+from litetui.plugins import PluginManifest
+from litetui import tool_schemas
+from litetui.tool_policy import READ_POLICY
 
 VIEW_IMAGE_TOOL_SPEC = tool_schemas.load("view_image")
 

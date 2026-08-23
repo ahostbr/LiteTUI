@@ -6,9 +6,9 @@ an argument closed over at registration, so no module holds a hidden App
 reference and two apps in one process (the test suite's normal state)
 cannot cross wires.
 """
-import ask_user_question as auq_mod
-from plugins import PluginManifest
-from tool_policy import USER_QUESTION_POLICY
+from litetui import ask_user_question as auq_mod
+from litetui.plugins import PluginManifest
+from litetui.tool_policy import USER_QUESTION_POLICY
 
 
 def _register(ctx) -> None:

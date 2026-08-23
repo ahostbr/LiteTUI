@@ -8,7 +8,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-from tool_policy import PolicyDecision, approval_preview
+from litetui.tool_policy import PolicyDecision, approval_preview
 
 
 class ToolApprovalScreen(ModalScreen[bool]):

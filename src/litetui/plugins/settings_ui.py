@@ -4,9 +4,9 @@ The Settings dataclass, its persistence, and the apply-mapping
 (_on_settings_saved with its deferred-list doctrine) stay app-owned:
 single owner of a fact many plugins read. This is the door to the screen.
 """
-from settings_screen import SettingsScreen
+from litetui.settings_screen import SettingsScreen
 
-from plugins import PluginManifest
+from litetui.plugins import PluginManifest
 
 
 def _cmd_settings(app, name: str, arg: str) -> None:

@@ -27,8 +27,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import ttyguard
+from litetui import app as m
+from litetui import ttyguard
 
 
 def make_app():

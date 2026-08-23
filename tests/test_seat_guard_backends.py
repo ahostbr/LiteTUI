@@ -8,7 +8,7 @@ verbatim so the studio tool can surface it.
 """
 from __future__ import annotations
 
-import seat_guard
+from litetui import seat_guard
 
 
 class FakeLlamaBackend:

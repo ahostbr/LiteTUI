@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, Select
 
-import app as app_mod
-import llm_backend
-import paths
-from plugins.model_switch import ModelConfigScreen
-from settings import Settings
+from litetui import app as app_mod
+from litetui import llm_backend
+from litetui import paths
+from litetui.plugins.model_switch import ModelConfigScreen
+from litetui.settings import Settings
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modelscreen-"))
 

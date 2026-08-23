@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 from textual.app import App
 
-from app import LiteTUI
-from tool_approval import ToolApprovalScreen
-from tool_policy import INTERACTIVE, SHELL_POLICY, approval_preview, evaluate
+from litetui.app import LiteTUI
+from litetui.tool_approval import ToolApprovalScreen
+from litetui.tool_policy import INTERACTIVE, SHELL_POLICY, approval_preview, evaluate
 
 
 def _decision(tmp_path):

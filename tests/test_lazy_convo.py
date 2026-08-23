@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
+from litetui import app as app_mod
+from litetui import paths
 
 
 def _fresh_store() -> Path:

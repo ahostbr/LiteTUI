@@ -43,10 +43,10 @@ from textual.widgets import (
     TabPane,
 )
 
-import settings as settings_mod
-from colorpicker import ColorPickerScreen
-from settings import Settings
-from tool_policy import INTERACTIVE, PROFILE_NAMES, SCHEDULED
+from litetui import settings as settings_mod
+from litetui.colorpicker import ColorPickerScreen
+from litetui.settings import Settings
+from litetui.tool_policy import INTERACTIVE, PROFILE_NAMES, SCHEDULED
 
 THINKING_CHOICES = [
     ("off — no reasoning (may be ignored, see docs)", "off"),
@@ -62,7 +62,7 @@ def _theme_choices(custom: dict | None = None):
     custom themes, computed at call time — a module-level constant missed
     every theme created after import."""
     from textual.theme import BUILTIN_THEMES
-    import themes as themes_mod
+    from litetui import themes as themes_mod
     names = [n for n in BUILTIN_THEMES if n not in themes_mod.LIGHT_BUILTINS] + [
         n for n in themes_mod.ALL_THEMES if n not in BUILTIN_THEMES
     ] + [n for n in (custom or {}) if n not in themes_mod.ALL_THEMES]
@@ -502,7 +502,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
     def _custom_theme_rows(self):
         """Name + the 10 token fields, prefilled from the ACTIVE theme."""
-        import themes as themes_mod
+        from litetui import themes as themes_mod
         try:
             resolved = self.app.current_theme.to_color_system().generate()
         except Exception:
@@ -545,7 +545,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
         event.stop()
         tok = wid[3:]
         box = w
-        import themes as themes_mod
+        from litetui import themes as themes_mod
         try:
             resolved = self.app.current_theme.to_color_system().generate()
             merged = {**(self.app.current_theme.variables or {}), **resolved}
@@ -664,7 +664,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
         # The theme creator: a non-empty name mints (or overwrites) a custom
         # theme from the ct-* fields and SELECTS it, so Ctrl+S gives instant
         # feedback instead of a saved-but-invisible theme.
-        import themes as themes_mod
+        from litetui import themes as themes_mod
         ct_name = self.query_one("#ct-name", Input).value.strip()
         if ct_name:
             # THE SAME LIST THE FORM RENDERS. _custom_theme_rows loops

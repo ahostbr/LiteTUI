@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from plugins import PluginManifest
+from litetui.plugins import PluginManifest
 
 PLUGIN_ID = "glassbox"
 
@@ -258,7 +258,7 @@ def register(ctx, root: Path | None = None) -> None:
 
 def _default_root(ctx) -> Path:
     try:
-        import paths
+        from litetui import paths
         return Path(paths.ROOT) / "artifacts"
     except Exception:
         return Path.cwd()

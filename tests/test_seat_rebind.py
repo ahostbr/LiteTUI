@@ -38,8 +38,8 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import harness as harness_mod
+from litetui import app as app_mod
+from litetui import harness as harness_mod
 
 CLI_VERB = 3  # [python, "-m", "liteharness.cli", <verb>, ...]
 

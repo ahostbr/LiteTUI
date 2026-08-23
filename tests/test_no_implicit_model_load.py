@@ -23,9 +23,9 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
-from settings import Settings
+from litetui import app as app_mod
+from litetui import paths
+from litetui.settings import Settings
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-noload-"))
 
@@ -60,7 +60,7 @@ def recorder(monkeypatch):
     """Watches BOTH load channels: the legacy `lms load` argv through
     ttyguard, and the dual-backend seam (backend.load). "nothing loads
     unless the user asked" must hold whichever road a load takes."""
-    import llm_backend
+    from litetui import llm_backend
 
     r = _Recorder()
     r.backend_loads = []

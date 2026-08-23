@@ -33,8 +33,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import themes as themes_mod
+from litetui import app as m
+from litetui import themes as themes_mod
 
 
 def make_app():
@@ -137,8 +137,8 @@ async def test_the_creator_SAVES_the_extra_rows() -> None:
     """
     from textual.app import App, ComposeResult
     from textual.widgets import Input
-    from settings_screen import SettingsScreen
-    import settings as settings_mod
+    from litetui.settings_screen import SettingsScreen
+    from litetui import settings as settings_mod
 
     class Host(App):
         def compose(self) -> ComposeResult:

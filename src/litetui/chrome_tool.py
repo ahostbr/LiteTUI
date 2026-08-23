@@ -25,10 +25,10 @@ import os
 import sys
 from pathlib import Path
 
-import ttyguard
-import tool_schemas
+from litetui import ttyguard
+from litetui import tool_schemas
 
-ROOT = Path(__file__).resolve().parent.parent  # repo root; src/ is below it
+ROOT = Path(__file__).resolve().parent.parent.parent  # repo root; src/ is below it
 # Lives under tools/ since 2026-08-20. The gate below is
 # `SCRIPT.exists()`: a wrong path does not error, it removes the tool
 # from the model's list entirely — the capability just stops existing,

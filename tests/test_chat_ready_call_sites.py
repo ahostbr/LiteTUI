@@ -41,10 +41,10 @@ from pathlib import Path
 
 import pytest
 
-import app as app_mod
-import paths
-from llm_backend import BackendError
-from settings import Settings
+from litetui import app as app_mod
+from litetui import paths
+from litetui.llm_backend import BackendError
+from litetui.settings import Settings
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-chatready-"))
 
@@ -340,7 +340,7 @@ async def test_the_tool_summary_side_call_is_left_unguarded_and_falls_back():
     (outside it). What must hold: an unready model still yields a usable tool
     result, and the raw 400 still never reaches the user.
     """
-    import tool_context
+    from litetui import tool_context
 
     a = _app(
         _Backend(ready=False),
@@ -415,7 +415,7 @@ def test_the_shipped_compaction_bound_is_far_below_the_backend_ceiling():
     """The value itself, not just the mechanism. If someone later raises this
     to the backend's ceiling the test above still passes — it patches the
     constant — so the shipped number needs its own assertion."""
-    import llm_backend
+    from litetui import llm_backend
 
     assert app_mod.COMPACT_READY_TIMEOUT_S <= 30, (
         "a compaction holds the exclusive chat group; the user's next message "

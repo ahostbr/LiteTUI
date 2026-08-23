@@ -5,9 +5,9 @@ Also owns the Toggle-agent-tools palette row — one of the two rows that are
 not slash-commands, kept via the explicit palette_row escape hatch so the
 derived palette stays lossless.
 """
-from settings import THINKING_LEVELS
+from litetui.settings import THINKING_LEVELS
 
-from plugins import PluginManifest
+from litetui.plugins import PluginManifest
 
 
 def _cmd_clear_screen(app, name: str, arg: str) -> None:

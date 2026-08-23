@@ -29,8 +29,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import plugins as plugins_mod
+from litetui import app as m
+from litetui import plugins as plugins_mod
 
 EXPECTED_GROUPS = ("convo", "backend", "tools", "automation", "screen", "app")
 

@@ -14,27 +14,27 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-import harness as harness_mod
+from litetui import harness as harness_mod
 from dataclasses import dataclass, fields as fields_of
 from functools import partial
 
-import settings as settings_mod
-from settings import Settings
+from litetui import settings as settings_mod
+from litetui.settings import Settings
 
-import llm_backend
-import paths
-import ttyguard
-import mcp_client
-import sanitize
-from fmt import fmt_dur
-import scheduler as sched_mod
-import tool_context
-import tool_policy
-import themes as themes_mod
-from colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
-from tool_approval import ToolApprovalScreen
-import skills as skills_mod
-import plugins as plugins_mod
+from litetui import llm_backend
+from litetui import paths
+from litetui import ttyguard
+from litetui import mcp_client
+from litetui import sanitize
+from litetui.fmt import fmt_dur
+from litetui import scheduler as sched_mod
+from litetui import tool_context
+from litetui import tool_policy
+from litetui import themes as themes_mod
+from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
+from litetui.tool_approval import ToolApprovalScreen
+from litetui import skills as skills_mod
+from litetui import plugins as plugins_mod
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -5120,7 +5120,7 @@ class LiteTUI(App):
                 return sorted(mgr.servers.keys())
             import json as _json
             from pathlib import Path as _Path
-            cfg = _Path(__file__).resolve().parent.parent / "mcp.json"
+            cfg = _Path(__file__).resolve().parent.parent.parent / "mcp.json"
             if cfg.exists():
                 data = _json.loads(cfg.read_text(encoding="utf-8"))
                 servers = data.get("mcpServers") or data.get("servers") or {}

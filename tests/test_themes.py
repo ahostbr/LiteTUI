@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 from textual.theme import BUILTIN_THEMES
 
-import themes as themes_mod
-from app import LiteTUI
+from litetui import themes as themes_mod
+from litetui.app import LiteTUI
 
 LITESUITE_THEMES_TS = Path("C:/Projects/LiteSuite/apps/web/src/litesuite/lib/themes.ts")
 
@@ -87,7 +87,7 @@ def test_the_port_matches_the_source_token_for_token():
 
 # --- persistence -------------------------------------------------------------
 def test_watch_theme_persists_a_change(monkeypatch):
-    import settings as settings_mod
+    from litetui import settings as settings_mod
     saved = []
     monkeypatch.setattr(settings_mod, "save", lambda st: saved.append(st.theme_name))
     ns = SimpleNamespace(settings=SimpleNamespace(theme_name="textual-dark"))
@@ -99,7 +99,7 @@ def test_watch_theme_persists_a_change(monkeypatch):
 def test_watch_theme_skips_a_no_op_write(monkeypatch):
     """Boot applies the saved theme, which fires the watcher with the name
     already in settings — writing there would rewrite the file every boot."""
-    import settings as settings_mod
+    from litetui import settings as settings_mod
     saved = []
     monkeypatch.setattr(settings_mod, "save", lambda st: saved.append(1))
     ns = SimpleNamespace(settings=SimpleNamespace(theme_name="matrix"))
@@ -156,7 +156,7 @@ def test_healthy_is_colorless_in_every_shade():
 
 # --- the strip ---------------------------------------------------------------
 def test_light_builtins_are_stripped_from_choices():
-    from settings_screen import _theme_choices
+    from litetui.settings_screen import _theme_choices
     names = [n for n, _ in _theme_choices()]
     for light in themes_mod.LIGHT_BUILTINS:
         assert light not in names, f"{light} still offered"
@@ -204,7 +204,7 @@ def test_theme_from_tokens_rejects_short_hex_and_empty_name():
 
 
 def test_choices_include_customs_without_duplicating_registry_names():
-    from settings_screen import _theme_choices
+    from litetui.settings_screen import _theme_choices
     names = [n for n, _ in _theme_choices({"my-noir": {}, "matrix": {}})]
     assert "my-noir" in names
     assert names.count("matrix") == 1   # a custom shadowing a port lists once

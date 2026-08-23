@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from plugins import core_tools as ct
+from litetui.plugins import core_tools as ct
 
 pytestmark = pytest.mark.skipif(
     ct.powershell_exe() is None, reason="no PowerShell on PATH"

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-import skills as sk
+from litetui import skills as sk
 
 
 def _write(d: Path, name: str, frontmatter: str, body: str = "body\n") -> Path:

@@ -21,13 +21,13 @@ from textual.widgets import Select
 from textual.widgets import Static
 from textual.widgets import Switch
 from textual.widgets.option_list import Option
-import calendar_view as calview
-import scheduler as sched_mod
-import schedule_builder as sb_mod
-from ticker import NumberTicker
+from litetui import calendar_view as calview
+from litetui import scheduler as sched_mod
+from litetui import schedule_builder as sb_mod
+from litetui.ticker import NumberTicker
 from rich.text import Text
-import paths
-from tool_policy import INTERACTIVE, SCHEDULED
+from litetui import paths
+from litetui.tool_policy import INTERACTIVE, SCHEDULED
 
 
 def _theme_palette(app) -> dict:

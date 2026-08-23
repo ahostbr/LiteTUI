@@ -3,7 +3,7 @@
 The machinery (_start_mark, the worker group, ttyguard.popen envelope)
 stays app-owned; this is the command that starts it.
 """
-from plugins import PluginManifest
+from litetui.plugins import PluginManifest
 
 
 def _cmd_mark(app, name: str, arg: str) -> None:

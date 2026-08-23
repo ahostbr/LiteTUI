@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 
-from scheduler import _ALIASES
+from litetui.scheduler import _ALIASES
 
 #: Preset ids and their dropdown labels, in menu order.
 PRESETS = [

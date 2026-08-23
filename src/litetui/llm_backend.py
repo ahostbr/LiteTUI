@@ -84,8 +84,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-import paths
-import ttyguard
+from litetui import paths
+from litetui import ttyguard
 
 # ── Where the engine lives (LiteSuite's Model Hub install) ───────────────────
 
@@ -1244,7 +1244,7 @@ def _merged_overrides(settings, key: str | None) -> dict:
     single home) with this model's Inference-tab overrides layered on top.
     An override set to None means 'force server default' and REMOVES the
     global value rather than sending null."""
-    import settings as settings_mod
+    from litetui import settings as settings_mod
 
     merged = settings_mod.sampling_kwargs(settings)
     for k, v in settings.model_infer_overrides.get(key or "", {}).items():

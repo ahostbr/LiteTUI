@@ -5,12 +5,12 @@ swallow a genuinely broken checkout into a silent half-boot); this module
 owns the two ways discovered skills reach the model: the loader tool and
 the index that rides the system prompt.
 """
-import skills as skills_mod
-from picker import PickerScreen
-import paths
+from litetui import skills as skills_mod
+from litetui.picker import PickerScreen
+from litetui import paths
 import time
-from plugins import PROMPT_ORDER, PluginManifest
-from tool_policy import READ_POLICY
+from litetui.plugins import PROMPT_ORDER, PluginManifest
+from litetui.tool_policy import READ_POLICY
 
 
 #: Picker row id for "show me the old text report". Not a skill name, and

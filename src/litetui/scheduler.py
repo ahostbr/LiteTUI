@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from tool_policy import SCHEDULED
+from litetui.tool_policy import SCHEDULED
 
 #: How often the app polls. Cron resolves to the minute, so anything under 60s
 #: is enough; 20s keeps a job's fire within a third of a minute of its slot

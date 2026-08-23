@@ -21,9 +21,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m
-import paths
-import scheduler as sched_mod
+from litetui import app as m
+from litetui import paths
+from litetui import scheduler as sched_mod
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +71,7 @@ def test_slash_cron_reaches_the_handler():
 
 def test_cron_appears_in_help():
     """An undiscoverable command is one nobody will ever type."""
-    src = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(
+    src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(
         encoding="utf-8", errors="ignore")
     assert '"/cron' in src, "/cron is not listed in the help text"
 

@@ -32,10 +32,10 @@ from pathlib import Path
 
 import pytest
 
-import llm_backend
-import paths
-from llm_backend import BackendError, LlamaCppBackend
-from settings import Settings
+from litetui import llm_backend
+from litetui import paths
+from litetui.llm_backend import BackendError, LlamaCppBackend
+from litetui.settings import Settings
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MODELS_BODY = json.loads((FIXTURES / "llama_single_model_models_b9360.json").read_text())

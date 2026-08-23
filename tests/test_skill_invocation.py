@@ -37,8 +37,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import skills as skills_mod
-from plugins.skills_plugin import _cmd_skills, _REPORT_ROW
+from litetui import skills as skills_mod
+from litetui.plugins.skills_plugin import _cmd_skills, _REPORT_ROW
 
 BODY = "STEP ONE: do the thing.\nSTEP TWO: do the other thing."
 

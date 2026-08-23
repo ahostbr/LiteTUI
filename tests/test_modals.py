@@ -14,10 +14,10 @@ import pytest
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as m  # noqa: E402
-import paths  # noqa: E402
-from picker import PickerScreen  # noqa: E402
-from plugins.help_plugin import HelpScreen  # noqa: E402
+from litetui import app as m  # noqa: E402
+from litetui import paths  # noqa: E402
+from litetui.picker import PickerScreen  # noqa: E402
+from litetui.plugins.help_plugin import HelpScreen  # noqa: E402
 from textual.widgets import OptionList  # noqa: E402
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modal-"))
@@ -140,6 +140,6 @@ async def test_connection_banner_still_offers_exactly_one_switch_hint():
     guard against duplication and deletion while surviving a rewording, which is
     the only part that was ever load-bearing.
     """
-    src = (Path(__file__).resolve().parent.parent / "src" / "app.py").read_text(encoding="utf-8")
+    src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
     hints = re.findall(r"/model <\w+> to switch", src)
     assert len(hints) == 1, f"expected exactly one switch hint, found {len(hints)}: {hints}"

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable
 
-from tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
+from litetui.tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
 
 # System-prompt section slots. The composition order is MODEL BEHAVIOR, not
 # code shape — it decides what the model reads every turn, so the canonical
@@ -44,30 +44,30 @@ PROMPT_ORDER = {
 # no test is KNOWN to be order-sensitive, but that is an unverified
 # assumption, so the ordering is kept until someone proves it free.
 PLUGIN_LOAD_ORDER: tuple[str, ...] = (
-    "plugins.core_tools",
-    "plugins.view_image",
-    "plugins.pccontrol",
-    "plugins.chrome",
-    "plugins.ask_user_question",
-    "plugins.studio",
-    "plugins.skills_plugin",
-    "plugins.harness_plugin",
-    "plugins.mcp_plugin",
-    "plugins.themes_plugin",
-    "plugins.mark_plugin",
-    "plugins.misc",
-    "plugins.convo",
-    "plugins.model_switch",
-    "plugins.help_plugin",
-    "plugins.settings_ui",
-    "plugins.scheduler_plugin",
-    "plugins.glassbox_plugin",
+    "litetui.plugins.core_tools",
+    "litetui.plugins.view_image",
+    "litetui.plugins.pccontrol",
+    "litetui.plugins.chrome",
+    "litetui.plugins.ask_user_question",
+    "litetui.plugins.studio",
+    "litetui.plugins.skills_plugin",
+    "litetui.plugins.harness_plugin",
+    "litetui.plugins.mcp_plugin",
+    "litetui.plugins.themes_plugin",
+    "litetui.plugins.mark_plugin",
+    "litetui.plugins.misc",
+    "litetui.plugins.convo",
+    "litetui.plugins.model_switch",
+    "litetui.plugins.help_plugin",
+    "litetui.plugins.settings_ui",
+    "litetui.plugins.scheduler_plugin",
+    "litetui.plugins.glassbox_plugin",
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists
 # (a syntax error, a missing dependency at import). The manifest's own
 # critical flag can only speak once the module has imported.
-CRITICAL_MODULES: frozenset[str] = frozenset({"plugins.core_tools"})
+CRITICAL_MODULES: frozenset[str] = frozenset({"litetui.plugins.core_tools"})
 
 
 @dataclass(frozen=True)

@@ -29,8 +29,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from plugins import PluginContext, PluginRegistry
-from plugins import glassbox_plugin as gb
+from litetui.plugins import PluginContext, PluginRegistry
+from litetui.plugins import glassbox_plugin as gb
 
 
 def _event(channel="output", intensity=1.0, label="x") -> dict:
@@ -175,8 +175,8 @@ def test_the_plugin_is_in_the_load_order() -> None:
     """A plugin file that nothing loads is the same as no plugin. Discovery is
     the explicit tuple, not the filesystem, so a module can sit complete and
     tested on disk and never run."""
-    from plugins import PLUGIN_LOAD_ORDER
-    assert "plugins.glassbox_plugin" in PLUGIN_LOAD_ORDER
+    from litetui.plugins import PLUGIN_LOAD_ORDER
+    assert "litetui.plugins.glassbox_plugin" in PLUGIN_LOAD_ORDER
 
 
 def test_a_real_app_ends_up_with_a_glassbox_observer() -> None:
@@ -184,8 +184,8 @@ def test_a_real_app_ends_up_with_a_glassbox_observer() -> None:
     project keeps leaving open: the module exists, it is in the load order, its
     register() runs, AND the running app's registry actually holds the
     observer. Four places; asserting fewer is how half a feature ships."""
-    import app as app_mod
-    from settings import Settings
+    from litetui import app as app_mod
+    from litetui.settings import Settings
 
     a = app_mod.LiteTUI()
     a.settings = Settings()
@@ -198,8 +198,8 @@ def test_a_real_app_ends_up_with_a_glassbox_observer() -> None:
 def test_the_running_app_publishes_a_real_channel_to_the_hub() -> None:
     """And the last link: an app-side _glassbox call reaches the hub a browser
     would be subscribed to. Everything before this proves a component works."""
-    import app as app_mod
-    from settings import Settings
+    from litetui import app as app_mod
+    from litetui.settings import Settings
 
     a = app_mod.LiteTUI()
     a.settings = Settings()

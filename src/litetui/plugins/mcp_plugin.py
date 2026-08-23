@@ -10,8 +10,8 @@ MCPManager construction and load() stay host-owned lines in __init__
 (a broken mcp.json should fail loud there, not vanish into per-plugin
 isolation).
 """
-from plugins import PluginManifest
-from tool_policy import MCP_UNKNOWN_POLICY
+from litetui.plugins import PluginManifest
+from litetui.tool_policy import MCP_UNKNOWN_POLICY
 
 
 def _register(ctx) -> None:

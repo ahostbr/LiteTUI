@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from plugins import PluginContext, PluginRegistry
+from litetui.plugins import PluginContext, PluginRegistry
 
 
 def _ctx(reg: PluginRegistry, owner: str) -> PluginContext:

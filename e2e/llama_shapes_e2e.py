@@ -35,7 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import llm_backend  # noqa: E402
+from litetui import llm_backend  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
 ART = Path(__file__).resolve().parent / "artifacts" / "dual-backend"
@@ -78,7 +78,7 @@ def _call(url: str, body: dict | None = None, timeout: float = 30.0):
 def _backend_pointed_at(host: str):
     """A real LlamaCppBackend aimed at `host` and nothing else: no attach
     candidates and no disk scan, so what it reports came from the server."""
-    from settings import Settings
+    from litetui.settings import Settings
     s = Settings()
     s.llama_host = host
     s.llama_attach_hosts = []
@@ -90,7 +90,7 @@ def _backend_pointed_at(host: str):
 
 
 def _smallest_gguf() -> Path | None:
-    from settings import Settings
+    from litetui.settings import Settings
     rows = llm_backend.scan_models(Settings())
     paths_ = [Path(r.path) for r in rows if r.path]
     paths_ = [p for p in paths_ if p.stat().st_size <= MAX_BYTES]

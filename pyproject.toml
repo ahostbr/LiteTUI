@@ -28,7 +28,7 @@ dependencies = [
 [project.scripts]
 # `app:main` is real — src/app.py:5265. It resolves once the package actually
 # builds, which is what [build-system] above now provides.
-litetui = "app:main"
+litetui = "litetui.app:main"
 
 [dependency-groups]
 # The tooling the gates need, declared rather than assumed present. The project
@@ -51,45 +51,21 @@ dev = [
 ]
 
 [tool.setuptools]
-# INTERIM LAYOUT, DELIBERATE. The reviewed target is a real package at
-# src/litetui/, and that move is deferred rather than forgotten: tests import
-# these modules top-level (`import app` ×50, `import paths` ×37), and at the
-# time of writing another worktree held uncommitted edits to app.py,
-# harness.py and mcp_client.py — renaming those out from under it would have
-# left its changes with no destination. Mapping the src root gets the build
-# backend and the entry point working today without moving one file.
 package-dir = { "" = "src" }
-py-modules = [
-    "app",
-    "ask_user_question",
-    "calendar_view",
-    "chrome_tool",
-    "colorpicker",
-    "fmt",
-    "harness",
-    "llm_backend",
-    "mcp_client",
-    "paths",
-    "pccontrol_tool",
-    "picker",
-    "sanitize",
-    "schedule_builder",
-    "scheduler",
-    "seat_guard",
-    "settings",
-    "settings_screen",
-    "skills",
-    "studio_tool",
-    "themes",
-    "ticker",
-    "tool_context",
-    "tool_schemas",
-    "ttyguard",
-    "version",
-]
+
+# 🔴 DISCOVERED, NOT LISTED. This was an explicit py-modules inventory of 26
+# names and it went stale within hours: two modules arrived (tool_policy,
+# tool_approval) and were silently ABSENT from a built wheel -- 26 .py shipped,
+# 28 on disk. The editable dev install hides it completely, because it puts
+# src/ on the path instead of copying declared modules, so the only way to see
+# the gap was to build a wheel and look inside it.
+# A hand-maintained list of files is a second copy of the filesystem, and it
+# drifts the moment someone adds a file without reading this table.
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.dynamic]
-version = { attr = "version.__version__" }
+version = { attr = "litetui.version.__version__" }
 
 [tool.pytest.ini_options]
 # Collection is SCOPED, not left to discovery defaults: without this, any
