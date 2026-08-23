@@ -1869,6 +1869,23 @@ class LiteTUI(App):
         else:
             # Say so once. A seat nobody can reach that reports nothing is
             # indistinguishable from one that is simply idle.
+            #
+            # ...unless the operator switched it off, which is neither broken
+            # nor idle, and so is not news. LITETUI_NO_HARNESS already stops
+            # `register` from touching the live fleet -- but the gate covered
+            # the REGISTRY side effect and not this UI one, and a remedy that
+            # covers only part of what it was written for reads as fully
+            # applied. Under the suite every app instance therefore mounted a
+            # chat line and scrolled the log from a background worker, at a
+            # moment set by how long `register` took to refuse. Landing after a
+            # test's own content, that scroll is indistinguishable from the app
+            # autoscrolling on its own: it is what made the three thinking-block
+            # autoscroll tests fail ~20% of the time, at a rate that rose with
+            # how long the process had been alive (0/20 alone, 4-5/20 with
+            # siblings) because a longer process gives the worker more chances
+            # to land late.
+            if harness_mod.harness_disabled():
+                return
             self._system(f"harness seat OFFLINE ({self.seat.error or 'unknown'})")
             return
         try:

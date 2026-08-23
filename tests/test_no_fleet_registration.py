@@ -29,6 +29,7 @@ import os
 
 import pytest
 
+from litetui import app as app_mod
 from litetui import harness as harness_mod
 
 
@@ -183,3 +184,84 @@ def test_register_and_heartbeat_send_the_same_presence_fields(monkeypatch):
     for flag in ("--agent-id", "--cli", "--model", "--tier", "--name", "--session-pid"):
         assert flag in base, flag
     assert "--takeover" not in base, "takeover belongs to register(), not to the shared argv"
+
+
+# ── arm 4: armed, the disabled seat is SILENT, not merely harmless ────────
+#
+# Arms 1-3 prove the guard stops registration reaching the live fleet, and they
+# were airtight about it. Nothing asserted the other half: that a disabled seat
+# also says nothing. It did not. `_inbox_monitor`'s failure branch called
+# `_system(...)`, which mounts a ChatMessage and calls `_scroll_down()` -- so
+# under the suite every app instance mounted a widget and scrolled the log from
+# a background worker, at a moment set by how long `register` took to refuse.
+#
+# That is not cosmetic. Landing after a test's own content, that scroll is
+# indistinguishable from the app autoscrolling on its own, and it is what made
+# the three tests in test_thinking_autoscroll.py fail ~20% of the time for
+# months -- diagnosed repeatedly as an autoscroll-policy bug, because the mount
+# came from a worker nobody was looking at.
+#
+# THE SHAPE WORTH REMEMBERING: the guard was not missing and not un-invoked. It
+# was PARTIAL -- it covered the registry side effect and not the UI one -- and
+# from the caller a partial remedy is indistinguishable from a complete one.
+# Every isolation gate deserves the question: what does this disable, and what
+# does it merely decline to do quietly?
+
+
+class _FakeSeat:
+    def __init__(self, error: str) -> None:
+        self.model = None
+        self.name = "LiteTUI"
+        self.agent_id = "test-agent-id"
+        self.registered = False
+        self.error = error
+
+    def register(self) -> bool:
+        return False
+
+
+class _FakeApp:
+    """Just enough app for _inbox_monitor's failure path, and nothing more."""
+
+    def __init__(self, seat) -> None:
+        self.seat = seat
+        self.model_id = "m"
+        self.said: list[str] = []
+        self._seat_started = False
+
+    def _system(self, text: str) -> None:
+        self.said.append(text)
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_seat_mounts_nothing(monkeypatch):
+    """Armed: the worker must reach the UI zero times."""
+    assert harness_mod.harness_disabled(), "arm 1 covers this; bail loudly if it regressed"
+
+    app = _FakeApp(_FakeSeat(f"disabled by {harness_mod.NO_HARNESS_ENV}"))
+    await app_mod.LiteTUI._inbox_monitor.__wrapped__(app)
+
+    assert app._seat_started, (
+        "the worker never got as far as the branch under test, so this proved nothing"
+    )
+    assert app.said == [], (
+        f"a deliberately-disabled seat announced itself into the chat log: {app.said}. "
+        "_system() mounts a widget AND scrolls, from a background worker, at an "
+        "unpredictable moment."
+    )
+
+
+@pytest.mark.asyncio
+async def test_control_a_genuinely_broken_seat_still_says_so(monkeypatch):
+    """THE CONTROL. Without it, the arm above passes just as happily if the
+    notice were deleted outright — and then a seat that is genuinely
+    unreachable would fail in total silence, which is the bug the notice was
+    written to prevent."""
+    monkeypatch.setattr(harness_mod, "harness_disabled", lambda: False)
+
+    app = _FakeApp(_FakeSeat("connection refused"))
+    await app_mod.LiteTUI._inbox_monitor.__wrapped__(app)
+
+    assert len(app.said) == 1 and "OFFLINE" in app.said[0], (
+        f"a seat that failed for a REAL reason must still report it; said={app.said}"
+    )
