@@ -40,6 +40,7 @@ from pathlib import Path
 
 import skills as skills_mod  # for DEFAULT_EXTRA_ROOTS only
 from typing import Any, Literal
+from tool_policy import INTERACTIVE
 
 SETTINGS_FILENAME = "settings.json"
 
@@ -129,6 +130,9 @@ class Settings:
     #: "[stopped — reached N tool iterations in one turn]".
     tool_iterations: int = 48
     tools_enabled: bool = True
+    #: Authority profile for ordinary human conversation turns. The host,
+    #: never the model, applies this at each tool call.
+    tool_policy_profile: str = INTERACTIVE
 
     # ── Tool output context (tool_context.py) ────────────────────────────────
     #: What a tool's output contributes to the conversation: "off" puts the raw

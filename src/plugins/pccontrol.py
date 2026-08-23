@@ -6,6 +6,7 @@ this module is its registration into the plugin registry.
 """
 import pccontrol_tool
 from plugins import PluginManifest
+from tool_policy import PCCONTROL_POLICY
 
 
 def _register(ctx) -> None:
@@ -15,6 +16,7 @@ def _register(ctx) -> None:
         pccontrol_tool.PCCONTROL_TOOL_SPEC,
         pccontrol_tool.run,
         gate=lambda: pccontrol_tool.SCRIPT.exists(),
+        policy=PCCONTROL_POLICY,
     )
 
 

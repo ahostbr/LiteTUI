@@ -8,6 +8,7 @@ cannot cross wires.
 """
 import ask_user_question as auq_mod
 from plugins import PluginManifest
+from tool_policy import USER_QUESTION_POLICY
 
 
 def _register(ctx) -> None:
@@ -17,6 +18,7 @@ def _register(ctx) -> None:
     ctx.tool(
         auq_mod.ASK_USER_QUESTION_TOOL_SPEC,
         lambda args: auq_mod.run(args, app),
+        policy=USER_QUESTION_POLICY,
     )
 
 

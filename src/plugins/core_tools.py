@@ -20,6 +20,7 @@ import ttyguard
 from fmt import fmt_dur
 from plugins import PluginManifest
 import tool_schemas
+from tool_policy import NETWORK_READ_POLICY, READ_POLICY, SHELL_POLICY, WRITE_POLICY
 
 TOOL_MAX_LINES = 2000
 TOOL_MAX_BYTES = 50 * 1024  # 50KB
@@ -339,11 +340,11 @@ def _register(ctx) -> None:
     # Only when a PowerShell actually exists: a tool that cannot run is worse
     # than an absent one, because the model spends a call finding out.
     if powershell_exe() is not None:
-        ctx.tool(powershell_spec(), tool_powershell)
-    ctx.tool(BASH_SPEC, tool_bash)
-    ctx.tool(READ_SPEC, tool_read)
-    ctx.tool(WRITE_SPEC, tool_write)
-    ctx.tool(WEB_FETCH_SPEC, tool_web_fetch)
+        ctx.tool(powershell_spec(), tool_powershell, policy=SHELL_POLICY)
+    ctx.tool(BASH_SPEC, tool_bash, policy=SHELL_POLICY)
+    ctx.tool(READ_SPEC, tool_read, policy=READ_POLICY)
+    ctx.tool(WRITE_SPEC, tool_write, policy=WRITE_POLICY)
+    ctx.tool(WEB_FETCH_SPEC, tool_web_fetch, policy=NETWORK_READ_POLICY)
 
 
 PLUGIN = PluginManifest(id="core-tools", critical=True, register=_register)

@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable
 
+from tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
+
 # System-prompt section slots. The composition order is MODEL BEHAVIOR, not
 # code shape — it decides what the model reads every turn, so the canonical
 # order lives here, once, and a plugin claiming an occupied slot is refused.
@@ -86,6 +88,7 @@ class ToolEntry:
     spec: dict
     run: Callable[[dict], str]
     gate: Callable[[], bool] | None = None
+    policy: ToolPolicy = MCP_UNKNOWN_POLICY
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,7 @@ class DynamicTools:
     owner: str
     specs_fn: Callable[[], list[dict]]
     dispatch_fn: Callable[[str], Callable | None]
+    policy: ToolPolicy = MCP_UNKNOWN_POLICY
 
 
 @dataclass(frozen=True)
@@ -197,7 +201,8 @@ class PluginRegistry:
 
     # ── registration (called via PluginContext, owner pre-bound) ──────────
 
-    def add_tool(self, owner: str, spec: dict, run, gate=None) -> None:
+    def add_tool(self, owner: str, spec: dict, run, gate=None,
+                 policy: ToolPolicy | None = None) -> None:
         name = spec["function"]["name"]
         prior = self._tool_by_name.get(name)
         if prior is not None:
@@ -205,12 +210,15 @@ class PluginRegistry:
                 f"tool {name!r}: {owner!r} collides with {prior.owner!r} — "
                 "one owner per fact; a silently shadowed tool is worse than a crash"
             )
-        entry = ToolEntry(owner, name, spec, run, gate)
+        entry = ToolEntry(owner, name, spec, run, gate, policy or MCP_UNKNOWN_POLICY)
         self.tools.append(entry)
         self._tool_by_name[name] = entry
 
-    def add_dynamic(self, owner: str, specs_fn, dispatch_fn) -> None:
-        self.dynamic.append(DynamicTools(owner, specs_fn, dispatch_fn))
+    def add_dynamic(self, owner: str, specs_fn, dispatch_fn,
+                    policy: ToolPolicy | None = None) -> None:
+        self.dynamic.append(
+            DynamicTools(owner, specs_fn, dispatch_fn, policy or MCP_UNKNOWN_POLICY)
+        )
 
     def add_command(self, owner: str, tokens, handler, palette=None, help="",
                     group="app", order=500) -> None:
@@ -267,6 +275,23 @@ class PluginRegistry:
             fn = d.dispatch_fn(name)
             if fn is not None:
                 return fn
+        return None
+
+    def policy_for(self, name: str) -> ToolPolicy | None:
+        """Policy metadata for one callable tool, static or dynamic.
+
+        Dynamic providers carry a conservative provider-wide policy because
+        LiteTUI cannot infer the effects of arbitrary MCP tools from their
+        names or prose descriptions.  Undeclared third-party tools receive the
+        same fail-safe policy during registration, so this never returns a
+        permission-free callable.
+        """
+        entry = self._tool_by_name.get(name)
+        if entry is not None:
+            return entry.policy
+        for d in self.dynamic:
+            if d.dispatch_fn(name) is not None:
+                return d.policy
         return None
 
     def emit(self, event: dict) -> None:
@@ -327,11 +352,13 @@ class PluginContext:
         self._reg = registry
         self._owner = owner
 
-    def tool(self, spec: dict, run, gate=None) -> None:
-        self._reg.add_tool(self._owner, spec, run, gate)
+    def tool(self, spec: dict, run, gate=None,
+             policy: ToolPolicy | None = None) -> None:
+        self._reg.add_tool(self._owner, spec, run, gate, policy)
 
-    def dynamic_tools(self, specs_fn, dispatch_fn) -> None:
-        self._reg.add_dynamic(self._owner, specs_fn, dispatch_fn)
+    def dynamic_tools(self, specs_fn, dispatch_fn,
+                      policy: ToolPolicy | None = None) -> None:
+        self._reg.add_dynamic(self._owner, specs_fn, dispatch_fn, policy)
 
     def command(self, tokens, handler, palette=None, help="",
                 group="app", order=500) -> None:

@@ -114,7 +114,7 @@ def test_powershell_is_offered_before_bash() -> None:
     class _Ctx:
         app = None
 
-        def tool(self, spec, fn):
+        def tool(self, spec, fn, **_metadata):
             seen.append(spec["function"]["name"])
 
         def command(self, *a, **k):

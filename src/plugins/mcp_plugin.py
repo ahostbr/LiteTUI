@@ -11,6 +11,7 @@ MCPManager construction and load() stay host-owned lines in __init__
 isolation).
 """
 from plugins import PluginManifest
+from tool_policy import MCP_UNKNOWN_POLICY
 
 
 def _register(ctx) -> None:
@@ -18,6 +19,7 @@ def _register(ctx) -> None:
     ctx.dynamic_tools(
         lambda: app.mcp.tool_specs(),
         lambda name: app._mcp_dispatch.get(name),
+        policy=MCP_UNKNOWN_POLICY,
     )
 
 

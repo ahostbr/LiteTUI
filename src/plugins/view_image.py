@@ -10,6 +10,7 @@ context to show the model nothing.
 """
 from plugins import PluginManifest
 import tool_schemas
+from tool_policy import READ_POLICY
 
 VIEW_IMAGE_TOOL_SPEC = tool_schemas.load("view_image")
 
@@ -24,6 +25,7 @@ def _register(ctx) -> None:
         VIEW_IMAGE_TOOL_SPEC,
         lambda args: app._tool_view_image(args),
         gate=lambda: app.model_type != "llm",
+        policy=READ_POLICY,
     )
 
 
