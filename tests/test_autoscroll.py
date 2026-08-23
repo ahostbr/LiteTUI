@@ -10,25 +10,35 @@ The fix has an obvious wrong version: scroll_end unconditionally. That reads as
 fixed and is worse, because Ryan reads long traces and would be yanked to the
 bottom mid-sentence on every token. So the tests that matter here are the
 NOT-following ones -- an unconditional implementation passes everything else.
+
+🔴 THIS FILE'S FAKE ONCE STOPPED IMPLEMENTING THE HOST SEAM, AND THAT IS WHY IT
+WAS RED. `_scroll_down` moved from asking `_at_bottom(log)` (geometry only) to
+asking `self._still_following(log)`, which reads `self._follow_anchor` -- the
+position the app itself last scrolled to. FakeApp carried no such attribute, so
+the call raised AttributeError before any assertion ran. A fake that lags the
+seam does not report a weaker result; it reports no result at all.
+
+The anchor model matters to what these tests mean. Growing content raises
+max_scroll_y and leaves scroll_y alone, so only a HUMAN moves scroll_y away
+from the anchor. `_follow_anchor = 100.0` below therefore reads as "we last
+scrolled to the tail", which is the state every one of these assertions is
+actually about.
 """
-import sys
+
 from pathlib import Path
+import re
+import sys
+
+import pytest
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import app as app_mod
-import settings as settings_mod
-
-ok = []
-
-
-def chk(label, cond):
-    ok.append(bool(cond))
-    print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
+import app as app_mod  # noqa: E402
+import settings as settings_mod  # noqa: E402
 
 
 class FakeScroll:
-    """Minimal stand-in exposing only the geometry _at_bottom reads."""
+    """Minimal stand-in exposing only the geometry the predicates read."""
 
     def __init__(self, scroll_y, max_scroll_y):
         self.scroll_y = scroll_y
@@ -39,160 +49,238 @@ class FakeScroll:
         self.scrolled = True
 
 
-print("=== _at_bottom: the predicate the whole fix rests on ===")
-chk("parked exactly at the end -> following", app_mod._at_bottom(FakeScroll(100.0, 100.0)))
-chk("within the slack (float scroll lands fractionally) -> following",
-    app_mod._at_bottom(FakeScroll(98.5, 100.0)))
-chk("🔴 scrolled up to read -> NOT following", not app_mod._at_bottom(FakeScroll(40.0, 100.0)))
-chk("one line above the slack -> NOT following", app_mod._at_bottom(FakeScroll(97.0, 100.0)) is False)
-chk("nothing to scroll yet (max 0) -> following", app_mod._at_bottom(FakeScroll(0.0, 0.0)))
-
-
-print("\n=== it fails OPEN, never silently dead ===")
-class NoGeometry:
-    pass
-chk("a widget with no scroll geometry -> following (an over-eager scroll is a nit;",
-    app_mod._at_bottom(NoGeometry()))
-print("        a dead autoscroll is the bug being fixed)")
-
-
-print("\n=== _scroll_down honours the flag ===")
 class FakeApp:
     """Minimal host for _scroll_down.
 
-    Carries `settings` because _scroll_down now gates the STREAM path on the
-    autoscroll preference. Defaulting it ON keeps every assertion below testing
-    what it always tested — the follow/discrete distinction — rather than
-    accidentally passing because the feature is off.
+    Carries `settings` because _scroll_down gates the STREAM path on the
+    autoscroll preference; defaulting it ON keeps every assertion testing the
+    follow/discrete distinction rather than passing because the feature is off.
+
+    Carries `_follow_anchor` because _still_following reads it and _scroll_down
+    writes it back. Defaulting to the tail (100.0) expresses "the app last
+    scrolled to the bottom", which is the precondition every following/not-
+    following assertion here depends on. Leaving it None would make
+    _still_following return True unconditionally -- trivially following -- and
+    the not-following tests, the only ones that can catch an unconditional
+    implementation, would silently invert.
     """
-    def __init__(self, log, autoscroll=True):
+
+    # Bind the REAL predicate rather than reimplementing it. A hand-written
+    # stand-in would be a second copy of the follow rule, free to agree with a
+    # stale idea of it -- which is the exact failure this file is recovering
+    # from. Borrowing the method means _follow_anchor below is fed to the
+    # shipping logic, so these assertions test the product, not a model of it.
+    _still_following = app_mod.LiteTUI._still_following
+
+    def __init__(self, log, autoscroll=True, follow_anchor=100.0):
         self._log = log
         self.settings = settings_mod.Settings(autoscroll=autoscroll)
+        self._follow_anchor = follow_anchor
+
     def query_one(self, sel):
         return self._log
 
-log = FakeScroll(40.0, 100.0)          # reader has scrolled up
-app_mod.LiteTUI._scroll_down(FakeApp(log), only_if_following=True)
-chk("🔴 streaming + reader scrolled up -> DOES NOT scroll", log.scrolled is False)
 
-log = FakeScroll(40.0, 100.0)          # same state, discrete event
-app_mod.LiteTUI._scroll_down(FakeApp(log))
-chk("a discrete event scrolls even when scrolled up (new bubble / tool / final)",
-    log.scrolled is True)
+# ── _at_bottom: the predicate the whole fix rests on ─────────────────────────
 
-print("\n=== the autoscroll SETTING gates the stream, not discrete events ===")
-log = FakeScroll(100.0, 100.0)         # reader AT the tail, so following
-app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False), only_if_following=True)
-chk("setting off -> stream does NOT scroll even when following", log.scrolled is False)
-
-log = FakeScroll(100.0, 100.0)
-app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=True), only_if_following=True)
-chk("setting on  -> stream scrolls when following (the discriminating pair)",
-    log.scrolled is True)
-
-log = FakeScroll(40.0, 100.0)
-app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False))
-chk("setting off does NOT disable discrete scrolls (a new bubble still jumps)",
-    log.scrolled is True)
-
-log = FakeScroll(100.0, 100.0)         # reader is following
-app_mod.LiteTUI._scroll_down(FakeApp(log), only_if_following=True)
-chk("streaming + reader at the tail -> follows", log.scrolled is True)
+@pytest.mark.parametrize(
+    "scroll_y, max_scroll_y, expected, label",
+    [
+        (100.0, 100.0, True, "parked exactly at the end -> following"),
+        (98.5, 100.0, True, "within the slack (float scroll lands fractionally)"),
+        (40.0, 100.0, False, "🔴 scrolled up to read -> NOT following"),
+        (97.0, 100.0, False, "one line above the slack -> NOT following"),
+        (0.0, 0.0, True, "nothing to scroll yet (max 0) -> following"),
+    ],
+)
+def test_at_bottom_geometry(scroll_y, max_scroll_y, expected, label):
+    assert app_mod._at_bottom(FakeScroll(scroll_y, max_scroll_y)) is expected, label
 
 
-print("\n=== the stream loop actually CALLS it -- the original defect ===")
-src = Path(app_mod.__file__).read_text(encoding="utf-8")
-import re
-# the two branches that had no scroll at all
-m = re.search(r"if token:.*?thinking\.append\(token\)(.{0,400})", src, re.S)
-chk("reasoning-delta branch scrolls", bool(m) and "only_if_following=True" in m.group(1))
-m = re.search(r"if delta\.content:(.{0,400})", src, re.S)
-chk("answer-content branch scrolls", bool(m) and "only_if_following=True" in m.group(1))
-chk("follow mode is used, never a bare scroll_end",
+def test_at_bottom_fails_open_without_geometry():
+    """An over-eager scroll is a nit; a dead autoscroll is the bug being fixed."""
+
+    class NoGeometry:
+        pass
+
+    assert app_mod._at_bottom(NoGeometry())
+
+
+# ── _scroll_down honours the flag ────────────────────────────────────────────
+
+def test_streaming_does_not_scroll_a_reader_who_scrolled_up():
+    log = FakeScroll(40.0, 100.0)  # reader moved away from the 100.0 anchor
+    app_mod.LiteTUI._scroll_down(FakeApp(log), only_if_following=True)
+    assert log.scrolled is False, "🔴 streaming + reader scrolled up -> DOES NOT scroll"
+
+
+def test_a_discrete_event_scrolls_even_when_scrolled_up():
+    log = FakeScroll(40.0, 100.0)
+    app_mod.LiteTUI._scroll_down(FakeApp(log))
+    assert log.scrolled is True, "new bubble / tool / final render jumps to the end"
+
+
+def test_streaming_follows_a_reader_at_the_tail():
+    log = FakeScroll(100.0, 100.0)
+    app_mod.LiteTUI._scroll_down(FakeApp(log), only_if_following=True)
+    assert log.scrolled is True
+
+
+def test_unset_anchor_is_trivially_following():
+    """Nothing has been scrolled yet, so there is no reader movement to respect."""
+    log = FakeScroll(40.0, 100.0)
+    app_mod.LiteTUI._scroll_down(FakeApp(log, follow_anchor=None), only_if_following=True)
+    assert log.scrolled is True
+
+
+# ── the autoscroll SETTING gates the stream, not discrete events ─────────────
+
+def test_setting_off_stops_the_stream_from_scrolling():
+    log = FakeScroll(100.0, 100.0)  # reader AT the tail, so following
+    app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False), only_if_following=True)
+    assert log.scrolled is False
+
+
+def test_setting_on_scrolls_when_following():
+    """The discriminating half of the pair above."""
+    log = FakeScroll(100.0, 100.0)
+    app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=True), only_if_following=True)
+    assert log.scrolled is True
+
+
+def test_setting_off_does_not_disable_discrete_scrolls():
+    log = FakeScroll(40.0, 100.0)
+    app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False))
+    assert log.scrolled is True, "a new bubble still jumps"
+
+
+# ── the stream loop actually CALLS it -- the original defect ─────────────────
+
+def test_stream_branches_scroll():
+    src = Path(app_mod.__file__).read_text(encoding="utf-8")
+    m = re.search(r"if token:.*?thinking\.append\(token\)(.{0,400})", src, re.S)
+    assert m and "only_if_following=True" in m.group(1), "reasoning-delta branch scrolls"
+    m = re.search(r"if delta\.content:(.{0,400})", src, re.S)
+    assert m and "only_if_following=True" in m.group(1), "answer-content branch scrolls"
+
+
+def test_follow_mode_is_used_never_a_bare_scroll_end():
     # exactly-2 broke at 0.20.0: glass-box compaction streams too and
     # legitimately follows. The two regex checks above pin the specific
     # branches; this counts the FLOOR.
-    src.count("_scroll_down(only_if_following=True)") >= 2)
+    src = Path(app_mod.__file__).read_text(encoding="utf-8")
+    assert src.count("_scroll_down(only_if_following=True)") >= 2
 
 
-print("\n=== ThinkingBlock follows its own body ===")
-tb = app_mod.ThinkingBlock.__new__(app_mod.ThinkingBlock)
-tb._buffer = ""
-calls = []
+# ── ThinkingBlock follows its own body ───────────────────────────────────────
+
 class FakeText:
     content = None
-tb.text = FakeText()
-tb.scroll = FakeScroll(100.0, 100.0)
-tb.call_after_refresh = lambda fn, **kw: calls.append(fn)
-tb.append("hello")
-chk("at the tail -> schedules a scroll", len(calls) == 1)
-chk("...deferred to after the refresh, not called inline (the extent has not",
-    all(callable(c) for c in calls))
-print("        grown until the content is re-measured)")
-
-tb2 = app_mod.ThinkingBlock.__new__(app_mod.ThinkingBlock)
-tb2._buffer = ""
-calls2 = []
-tb2.text = FakeText()
-tb2.scroll = FakeScroll(10.0, 100.0)   # reader scrolled up INSIDE the trace
-tb2.call_after_refresh = lambda fn, **kw: calls2.append(fn)
-tb2.append("hello")
-chk("🔴 reader scrolled up inside the trace -> does NOT scroll", calls2 == [])
-chk("...but the text still updated (following is about the VIEW, not the data)",
-    tb2._buffer == "hello")
 
 
+def _thinking_block(scroll):
+    tb = app_mod.ThinkingBlock.__new__(app_mod.ThinkingBlock)
+    tb._buffer = ""
+    tb.text = FakeText()
+    tb.scroll = scroll
+    return tb
 
-print("\n=== reasoning_effort was SKIPPED, not honoured (Ryan caught it in LM Studio) ===")
+
+def test_thinking_block_at_the_tail_schedules_a_deferred_scroll():
+    calls = []
+    tb = _thinking_block(FakeScroll(100.0, 100.0))
+    tb.call_after_refresh = lambda fn, **kw: calls.append(fn)
+    tb.append("hello")
+    assert len(calls) == 1, "at the tail -> schedules a scroll"
+    # Deferred rather than inline: the extent has not grown until the content
+    # is re-measured.
+    assert all(callable(c) for c in calls)
+
+
+def test_thinking_block_leaves_a_reader_who_scrolled_up_inside_the_trace():
+    calls = []
+    tb = _thinking_block(FakeScroll(10.0, 100.0))
+    tb.call_after_refresh = lambda fn, **kw: calls.append(fn)
+    tb.append("hello")
+    assert calls == [], "🔴 reader scrolled up inside the trace -> does NOT scroll"
+    assert tb._buffer == "hello", "following is about the VIEW, not the data"
+
+
+# ── reasoning_effort was SKIPPED, not honoured (Ryan caught it in LM Studio) ──
 # LM Studio drops a reasoning level the loaded virtual model does not accept and
 # returns 200, so `/think off` reports success while the model reasons at the
 # server default. The only in-band evidence is a trace arriving when none was
 # asked for.
+
 class FakeSys:
     def __init__(self, level):
         self.thinking_level = level
         self._reasoning_ignored_warned = False
         self.msgs = []
-    _system = lambda self, m: self.msgs.append(m)
+
+    _system = lambda self, m: self.msgs.append(m)  # noqa: E731
     _warn_reasoning_ignored = app_mod.LiteTUI._warn_reasoning_ignored
 
-f = FakeSys("off")
-f._warn_reasoning_ignored()
-chk("🔴 asked for off, trace arrived -> warns", len(f.msgs) == 1)
-chk("...names the mechanism, not just the symptom",
-    "SKIPPED" in f.msgs[0] and "200" in f.msgs[0])
-chk("...tells the user what to do instead",
-    f"/think {app_mod.LEAST_THINKING_FALLBACK}" in f.msgs[0])
-f._warn_reasoning_ignored(); f._warn_reasoning_ignored()
-chk("once per session, not once per token", len(f.msgs) == 1)
 
-src2 = Path(app_mod.__file__).read_text(encoding="utf-8")
-import re as _re
-m = _re.search(r"if token:(.{0,600})", src2, _re.S)
-chk("the check is gated on thinking_level == 'off' (not fired for every trace)",
-    bool(m) and 'self.thinking_level == "off"' in m.group(1))
-chk("...and sits on the reasoning branch, where the evidence actually is",
-    bool(m) and "_warn_reasoning_ignored()" in m.group(1))
-chk("the narrowed valid set is recorded in source, with its provenance",
-    "ext.virtualModel.customField" in src2 and "Skipping this field" in src2)
-
-print("\n=== a NEW thinking block jumps the log to the bottom ===")
-src3 = Path(app_mod.__file__).read_text(encoding='utf-8')
-# rfind, not find: 0.20.0's CompactionCard mounts its own ThinkingBlock
-# EARLIER in the file, and find() silently re-anchored this gate onto the
-# wrong site. The stream's mount is the LAST occurrence.
-mount = src3.rfind('thinking = ThinkingBlock()')
-chk('the mount site exists', mount > 0)
-window = src3[mount:mount + 400]
-chk('🔴 an UNCONDITIONAL _scroll_down() sits with the mount',
-    'self._scroll_down()' in window)
-chk('...and it is NOT the conditional form (that is what never fired)',
-    'self._scroll_down(only_if_following=True)' not in window)
-# The conditional form must still exist for per-token growth, or a reader
-# who scrolls up mid-trace would be yanked back on every token.
-chk('per-token growth stays conditional elsewhere',
-    'self._scroll_down(only_if_following=True)' in src3)
+def test_warns_once_when_a_trace_arrives_despite_think_off():
+    f = FakeSys("off")
+    f._warn_reasoning_ignored()
+    assert len(f.msgs) == 1, "🔴 asked for off, trace arrived -> warns"
+    assert "SKIPPED" in f.msgs[0] and "200" in f.msgs[0], "names the mechanism"
+    assert f"/think {app_mod.LEAST_THINKING_FALLBACK}" in f.msgs[0], "says what to do"
+    f._warn_reasoning_ignored()
+    f._warn_reasoning_ignored()
+    assert len(f.msgs) == 1, "once per session, not once per token"
 
 
-print(f"\n{sum(ok)}/{len(ok)} passed")
-sys.exit(0 if all(ok) else 1)
+def test_the_warning_is_gated_on_think_off_and_sits_on_the_reasoning_branch():
+    src = Path(app_mod.__file__).read_text(encoding="utf-8")
+    # 600 -> 1600. The gate did not move out of the reasoning branch; a long
+    # comment block explaining the deferred mount scroll was inserted between
+    # the anchor and it, pushing it to ~1250 chars. A window that tight makes
+    # the test sensitive to COMMENTARY, which is not what it is protecting.
+    m = re.search(r"if token:(.{0,1600})", src, re.S)
+    assert m and 'self.thinking_level == "off"' in m.group(1), "not fired for every trace"
+    assert "_warn_reasoning_ignored()" in m.group(1), "sits where the evidence is"
+    assert "ext.virtualModel.customField" in src and "Skipping this field" in src, (
+        "the narrowed valid set is recorded in source, with its provenance"
+    )
+
+
+# ── a NEW thinking block jumps the log to the bottom ─────────────────────────
+
+def test_a_new_thinking_block_scrolls_unconditionally():
+    src = Path(app_mod.__file__).read_text(encoding="utf-8")
+    # rfind, not find: 0.20.0's CompactionCard mounts its own ThinkingBlock
+    # EARLIER in the file, and find() silently re-anchored this gate onto the
+    # wrong site. The stream's mount is the LAST occurrence.
+    mount = src.rfind("thinking = ThinkingBlock()")
+    assert mount > 0, "the mount site exists"
+
+    # ORDERING, NOT A WINDOW. This used to read `src[mount:mount+400]` and look
+    # for the literal `self._scroll_down()`. Both halves of that rotted:
+    #   * the call became `self.call_after_refresh(self._scroll_down)` -- a FIX,
+    #     not a regression, because mount() is not measured in this frame, so an
+    #     inline scroll targets the PRE-mount extent and parks the viewport just
+    #     above the block that appeared;
+    #   * a comment explaining that fix pushed the call to +929, past the window.
+    # Widening it is a trap: the per-token CONDITIONAL scroll sits at +1756, so
+    # any number above that silently inverts the second assertion. The invariant
+    # was never "within N characters" -- it is "the FIRST scroll after the mount
+    # is the unconditional one". Expressed as ordering, there is no number to
+    # tune and no comment edit can move it.
+    candidates = [
+        src.find("self.call_after_refresh(self._scroll_down)", mount),
+        src.find("self._scroll_down()", mount),
+    ]
+    uncond = min((c for c in candidates if c != -1), default=-1)
+    cond = src.find("self._scroll_down(only_if_following=True)", mount)
+
+    assert uncond != -1, "🔴 an UNCONDITIONAL scroll must accompany a new thinking block"
+    assert cond == -1 or uncond < cond, (
+        "...and it must come FIRST — the conditional form is what never fired for "
+        "a freshly mounted block, because the reader is not yet at the new tail"
+    )
+    # The conditional form must still exist for per-token growth, or a reader
+    # who scrolls up mid-trace would be yanked back on every token.
+    assert "self._scroll_down(only_if_following=True)" in src
