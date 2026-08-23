@@ -265,3 +265,151 @@ async def test_control_a_genuinely_broken_seat_still_says_so(monkeypatch):
     assert len(app.said) == 1 and "OFFLINE" in app.said[0], (
         f"a seat that failed for a REAL reason must still report it; said={app.said}"
     )
+
+
+# ── arm 5: the OTHER live-state surfaces, with their accidents removed ─────
+#
+# Arms 1-4 cover registration and the UI notice. They left three surfaces
+# reaching the live fleet with the guard armed: deregister, send and discover
+# all ran, and poll() MOVES files out of the shared maildir irreversibly.
+#
+# Measured 2026-08-23, with LITETUI_NO_HARNESS=1 set:
+#     h.discover()  ->  "Active agents (6): [active] SilverBolt (ac965cc1-...) ..."
+# The gate was on and the live roster came back with real agent ids.
+#
+# 🔴 THE REASON THIS SURVIVED IS THE REASON THESE TESTS LOOK PARANOID. All three
+# were inert in the suite, each for a DIFFERENT ACCIDENTAL REASON, and not one of
+# them was the guard:
+#     poll      the inbox worker returned before reaching its loop
+#     send      `registered` was False, so the tool refused first
+#     discover  THE LOCKED VENV HAS NO `liteharness` INSTALLED
+# A test that passes for those reasons has tested the accident, not the gate,
+# and it keeps passing after someone adds `liteharness` to the dev group -- the
+# obvious thing to do the first time a test needs it -- which silently re-arms
+# the hazard.
+#
+# So every arm below DELETES ITS OWN ACCIDENT FIRST: the transport is stubbed so
+# the CLI always "works", `registered` is forced True, and poll is called
+# directly rather than through the worker. Each ships with a control proving it
+# can still fail.
+#
+# ⚠️ THE MAILDIR IS REDIRECTED TO tmp_path IN EVERY ARM THAT CAN TOUCH IT.
+# The finding is that this path eats live mail; proving it must not be the thing
+# that eats live mail.
+
+
+@pytest.fixture
+def sandbox(tmp_path, monkeypatch):
+    """Point every filesystem surface at tmp_path. Never the real maildir."""
+    monkeypatch.setattr(harness_mod, "INBOX_ROOT", tmp_path / "inbox")
+    monkeypatch.setattr(harness_mod, "NEW", tmp_path / "inbox" / "new")
+    monkeypatch.setattr(harness_mod, "DONE", tmp_path / "inbox" / "done")
+    (tmp_path / "inbox" / "new").mkdir(parents=True)
+    (tmp_path / "inbox" / "done").mkdir(parents=True)
+    return tmp_path
+
+
+def _mail(box, to, body="ping"):
+    import datetime as dt
+    import json as _json
+    f = box / "inbox" / "new" / "m.json"
+    f.write_text(_json.dumps({
+        "from": "22222222-2222-2222-2222-222222222222", "to": to, "body": body,
+        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }), encoding="utf-8")
+    return f
+
+
+def test_discover_is_gated_even_when_the_cli_would_answer(recorder):
+    """ACCIDENT REMOVED: the transport is stubbed, so the CLI always succeeds.
+
+    This is the arm that would have caught the original defect. It cannot pass
+    for the venv's reasons, because there is no subprocess left to fail.
+    """
+    out = harness_mod.discover()
+    assert recorder.calls == [], f"the live registry was queried: {recorder.calls}"
+    assert "Registered agent" not in out, out
+
+
+def test_control_discover_really_does_run_when_not_disabled(recorder, monkeypatch):
+    """Proves the arm above could have failed."""
+    monkeypatch.delenv(harness_mod.NO_HARNESS_ENV, raising=False)
+    harness_mod.discover()
+    assert len(recorder.calls) == 1, recorder.calls
+    assert "discover" in recorder.calls[0]
+
+
+def test_send_is_gated_even_when_the_seat_claims_registration(recorder, sandbox):
+    """ACCIDENT REMOVED: `registered` forced True, so the tool-level refusal
+    (`if not seat.registered`) cannot be what stops this."""
+    seat = _seat()
+    seat.registered = True
+
+    assert seat.send("22222222-2222-2222-2222-222222222222", "hi") is False
+    assert recorder.calls == [], f"a send reached the fleet: {recorder.calls}"
+    strays = list(sandbox.glob(".litetui_send_*.txt"))
+    assert strays == [], f"a temp file was written outside the door: {strays}"
+
+
+def test_control_send_really_does_transmit_when_not_disabled(recorder, sandbox, monkeypatch):
+    monkeypatch.delenv(harness_mod.NO_HARNESS_ENV, raising=False)
+    seat = _seat()
+    seat.registered = True
+    assert seat.send("22222222-2222-2222-2222-222222222222", "hi") is True
+    assert len(recorder.calls) == 1 and "send" in recorder.calls[0], recorder.calls
+
+
+def test_poll_consumes_no_mail_when_disabled(sandbox):
+    """ACCIDENT REMOVED: poll() is called DIRECTLY, not through the worker
+    whose early return was doing the protecting.
+
+    The assertion that matters is not the return value -- it is that the
+    message is STILL IN new/. A poller that returns nothing but has already
+    moved the file has still eaten it.
+    """
+    seat = _seat()
+    f = _mail(sandbox, seat.agent_id)
+
+    assert seat.poll() == []
+    assert f.exists(), "the message was moved out of new/ by a disabled seat"
+    assert list((sandbox / "inbox" / "done").iterdir()) == []
+
+
+def test_control_poll_really_does_claim_mail_when_not_disabled(sandbox, monkeypatch):
+    monkeypatch.delenv(harness_mod.NO_HARNESS_ENV, raising=False)
+    seat = _seat()
+    f = _mail(sandbox, seat.agent_id)
+
+    got = seat.poll()
+    assert len(got) == 1 and got[0]["body"] == "ping", got
+    assert not f.exists(), "a claimed message must leave new/"
+
+
+def test_deregister_is_gated_even_for_a_seat_that_claims_registration(recorder):
+    """ACCIDENT REMOVED: `registered` forced True, so deregister's own
+    `if not self.registered` early return cannot be what stops it."""
+    seat = _seat()
+    seat.registered = True
+    seat.deregister()
+    assert recorder.calls == [], f"deregister reached the live registry: {recorder.calls}"
+
+
+def test_every_cli_call_in_this_module_goes_through_the_one_door():
+    """THE STRUCTURAL ARM: a future call site cannot quietly bypass the gate.
+
+    Behavioural tests can only cover the surfaces that exist today. This is the
+    one invariant that also covers the ones nobody has written yet, and it is
+    the actual lesson of the defect: the guard was not wrong, it was PARTIAL,
+    and partial is indistinguishable from complete at every call site.
+    """
+    import inspect
+    src = inspect.getsource(harness_mod)
+    assert src.count("ttyguard.run(") == 1, (
+        "every liteharness CLI call must go through _cli(), which is the single "
+        "place the disabled-path guard lives. A second ttyguard.run( means a "
+        "surface that reaches the live fleet with the harness switched off."
+    )
+    door = inspect.getsource(harness_mod._cli)
+    assert "ttyguard.run(" in door and "harness_disabled()" in door, (
+        "the one remaining ttyguard.run( must be the guarded one, inside _cli"
+    )

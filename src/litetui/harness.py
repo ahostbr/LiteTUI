@@ -64,6 +64,46 @@ def harness_disabled() -> bool:
     return bool(os.environ.get(NO_HARNESS_ENV, "").strip())
 
 
+class _Refused:
+    """What the CLI door hands back when the harness is switched off.
+
+    A result object rather than a raised exception: every caller in this module
+    already branches on `returncode`, so a refusal looks exactly like a failed
+    call and no caller has to learn a new control flow to stay correct.
+    """
+
+    returncode = 1
+    stdout = ""
+    stderr = f"refused: {NO_HARNESS_ENV} is set"
+
+
+def _cli(argv: list[str], *, timeout: int):
+    """THE ONE DOOR to the liteharness CLI. Every subprocess in this module
+    goes through here, so the disabled-path check lives in ONE place.
+
+    WHY A DOOR AND NOT FIVE GUARDS. `harness_disabled()` used to gate exactly
+    two of this module's five live-state surfaces -- register and heartbeat,
+    both registry WRITES. deregister, send and discover reached the live fleet
+    with the guard armed. Measured 2026-08-23: with LITETUI_NO_HARNESS=1 set,
+    `discover()` returned the live roster, six agents with real ids.
+
+    They were inert in the suite for THREE UNRELATED ACCIDENTAL REASONS, none
+    of which was the guard: poll because the inbox worker returned before its
+    loop, send because `registered` was False, and discover because the locked
+    venv has no `liteharness` installed. A contract held by three coincidences
+    reads exactly like a contract held by one guard, and each coincidence could
+    evaporate on its own -- adding `liteharness` to the dev group, which is the
+    obvious thing to do the first time a test needs it, re-arms discover with no
+    code change and nothing to fail.
+
+    A new CLI call added later gets the guard by construction, because there is
+    nowhere else to make one from.
+    """
+    if harness_disabled():
+        return _Refused()
+    return ttyguard.run(argv, timeout=timeout)
+
+
 def new_agent_id() -> str:
     return str(uuid.uuid4())
 
@@ -181,7 +221,7 @@ class Seat:
         if not self.registered or harness_disabled():
             return False
         try:
-            r = ttyguard.run(self._presence_argv(), timeout=30)
+            r = _cli(self._presence_argv(), timeout=30)
             if r.returncode == 0:
                 self.name = _resolved_name(r.stdout) or self.name
                 return True
@@ -205,7 +245,7 @@ class Seat:
             self.error = f"disabled by {NO_HARNESS_ENV}"
             return False
         try:
-            r = ttyguard.run(
+            r = _cli(
                 self._presence_argv() + [
                  # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
                  #
@@ -289,7 +329,7 @@ class Seat:
         if not self.registered:
             return
         try:
-            ttyguard.run(
+            _cli(
                 [sys.executable, "-m", "liteharness.cli", "deregister",
                  "--agent-id", self.agent_id],
                 timeout=15,
@@ -367,7 +407,15 @@ class Seat:
         Order: read -> verify addressee -> move -> return. Moving BEFORE
         confirming the addressee is how a poller steals mail, and the move is
         irreversible from the sender's point of view.
+
+        GATED SEPARATELY FROM _cli BECAUSE IT NEVER GOES THROUGH IT. This is
+        the only live-state surface here that is pure filesystem, and it is the
+        destructive one: it MOVES files out of the shared maildir, which is how
+        six agents coordinate, and the move is irreversible from the sender's
+        side. A disabled harness must not consume mail it will never deliver.
         """
+        if harness_disabled():
+            return []
         if not NEW.is_dir():
             return []
         out: list[dict] = []
@@ -394,7 +442,15 @@ class Seat:
 
     def send(self, to: str, body: str) -> bool:
         """Reply into the fleet. Uses --body-file: an inline double-quoted
-        message runs backticks as shell commands and still reports success."""
+        message runs backticks as shell commands and still reports success.
+
+        Guarded HERE as well as at the door, because the tmp file is written
+        into the live ~/.liteharness/ directory BEFORE the CLI is called -- a
+        refusal at the door alone would still create and unlink a file in a
+        directory a disabled harness has no business touching.
+        """
+        if harness_disabled():
+            return False
         try:
             tmp = INBOX_ROOT.parent / f".litetui_send_{uuid.uuid4().hex}.txt"
             tmp.write_text(body, encoding="utf-8")
@@ -402,7 +458,7 @@ class Seat:
                 # NO --priority flag: this CLI has no such option, and unknown tokens
                 # fall through into the message body — combined with --body-file that
                 # is "both given" -> exit 1. Every send would fail for it.
-                r = ttyguard.run(
+                r = _cli(
                     [sys.executable, "-m", "liteharness.cli", "send", to,
                      "--body-file", str(tmp), "--from", self.agent_id],
                     timeout=30,
@@ -474,7 +530,7 @@ def discover() -> str:
     paint over the TUI.
     """
     try:
-        r = ttyguard.run(
+        r = _cli(
             [sys.executable, "-m", "liteharness.cli", "discover"],
             timeout=30,
         )
