@@ -172,6 +172,13 @@ COMPACT_MAX_TOOL_ITERS = 8
 # are hoping to win. The turn path keeps the full 300s on purpose.
 COMPACT_READY_TIMEOUT_S = 10
 
+# How often a CONTINUOUS glass-box channel may fire. thinking and output arrive
+# once per token and their intensity is tok/s, which cannot meaningfully change
+# between two tokens — so emitting per token floods an observer to tell it the
+# same thing hundreds of times. Discrete channels (a tool call, a store write, a
+# ledger) are never throttled: dropping one loses the event itself.
+GLASSBOX_MIN_INTERVAL_S = 0.2
+
 # Loaded from prompts/compact.md — edit the FILE; it is read at import.
 COMPACT_PROMPT = load_prompt("compact")
 
@@ -1660,6 +1667,8 @@ class LiteTUI(App):
         # latency. All optional/None until a reliable turn has happened.
         self._eta_samples: list[float] = []
         self._eta_last_prompt_tokens: int | None = None
+        # Last emit time per glass-box channel, for the continuous ones only.
+        self._gb_last: dict[str, float] = {}
         self._eta_first_delta: float | None = None
         # The thinking block currently streaming (its header timer): set
         # at block creation, cleared by _thinking_done when the trace
@@ -2876,6 +2885,15 @@ class LiteTUI(App):
 
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
+        # THE AMBIENT CHANNEL — the brain's base luminance, so a filling window
+        # literally brightens it. Silent without ctx_max: "used out of unknown"
+        # is not a fraction, and reporting 0.0 would draw an EMPTY window rather
+        # than an unknown one, which is a different and wrong claim.
+        if value and self.ctx_max:
+            self._glassbox(
+                "window_fill", value / self.ctx_max,
+                f"{value:,}/{self.ctx_max:,}", discrete=True,
+            )
 
     def _refresh_ctx_label(self) -> None:
         # query_one would raise TooManyMatches if a recompose ever left two
@@ -3137,6 +3155,58 @@ class LiteTUI(App):
         self._compact_is_auto = True
         self._handle_command("/compact")
 
+    # ── glass box: the turn, as signal ───────────────────────────────────
+    #
+    # Tier 1 of the thermal-brain wiring. Every channel below is an event
+    # LiteTUI ALREADY produces — this adds no new signal, only a transport, so
+    # nothing here may change behaviour or cost anything when unobserved.
+
+    def _glassbox(self, channel: str, intensity: float = 1.0, label: str = "",
+                  *, discrete: bool = False) -> None:
+        """Fire one channel at whatever plugins are watching.
+
+        THE EMPTY-OBSERVER SHORT CIRCUIT IS FIRST AND MUST STAY FIRST. The
+        thinking and output branches call this once per token, so with no
+        observers the whole feature has to cost one attribute read and a falsy
+        list check — not a clock read, not a dict write. A user who has not
+        installed the brain must not pay for it.
+
+        `discrete` means "this is an event, not a level". A tool call, a store
+        write, a ledger and a window-fill change are things that HAPPENED;
+        throttling one loses it. thinking and output are levels sampled per
+        token, where two consecutive samples say the same thing.
+
+        Never raises: PluginRegistry.emit already swallows a failing observer
+        and records it on that plugin's status row.
+        """
+        reg = getattr(self, "plugins", None)
+        if reg is None or not reg.observers:
+            return
+        if not discrete:
+            now = time.monotonic()
+            if now - self._gb_last.get(channel, 0.0) < GLASSBOX_MIN_INTERVAL_S:
+                return
+            self._gb_last[channel] = now
+        reg.emit({"channel": channel, "intensity": float(intensity), "label": label})
+
+    def _glassbox_tool(self, name: str) -> None:
+        """A dispatch fires ONE channel, never both.
+
+        `write` is store_write rather than tool_call because the design treats
+        the agent changing durable state as a different event from the agent
+        calling something — and firing both would double-count every write in
+        whatever the observer is drawing.
+        """
+        channel = "store_write" if name == "write" else "tool_call"
+        self._glassbox(channel, 1.0, name, discrete=True)
+
+    def _glassbox_rate(self, channel: str) -> None:
+        """Continuous channel whose intensity is the live tok/s, normalised
+        against a fast-but-reachable ceiling so the common case has headroom
+        rather than sitting pinned at 1.0."""
+        tps = self.tps or 0.0
+        self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
+
     def _system(self, text: str) -> None:
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(text), classes="system-msg"))
@@ -3246,6 +3316,11 @@ class LiteTUI(App):
             # test, and invisible in the app. Defer instead, and the mount order
             # of the caller stops mattering.
             self._attach_cancel_button(tool)
+            # Fired here rather than at dispatch because THIS is the point the
+            # app itself treats as "a tool is now running" — same condition the
+            # timer and the cancel control key off, so the brain cannot light
+            # up for a call the app does not consider in flight.
+            self._glassbox_tool(getattr(tool, "tool_name", "") or "tool")
         if self._elapsed_task is None or self._elapsed_task.done():
             try:
                 self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
@@ -4110,10 +4185,17 @@ class LiteTUI(App):
             tool_acc: dict[int, dict] = {}
             tool_msgs: dict[int, ToolMessage] = {}
 
+            request_messages = self._request_messages()
+            # PROMPT ASSEMBLY IS THE EVENT. This is where the conversation and
+            # the live store are folded into the thing the model actually
+            # reads, and it is the last moment before the turn is committed.
+            self._glassbox(
+                "context", 1.0, f"{len(request_messages)} messages", discrete=True
+            )
             kwargs: dict = {
                 "model": self.model_id or "local-model",
                 # Live store merged in here, not stored on self.conversation.
-                "messages": self._request_messages(),
+                "messages": request_messages,
                 "stream": True,
                 "max_tokens": (
                     self.settings.max_tokens_tools
@@ -4185,6 +4267,7 @@ class LiteTUI(App):
                     )
                     if token:
                         self._tps_tick()
+                        self._glassbox_rate("thinking")
                         reasoning += token
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
@@ -4214,6 +4297,7 @@ class LiteTUI(App):
                         self._scroll_down(only_if_following=True)
                     if delta.content:
                         self._tps_tick()
+                        self._glassbox_rate("output")
                         self._thinking_done()
                         self._elapsed_stop_body()
                         text_full += delta.content
@@ -4896,6 +4980,14 @@ class LiteTUI(App):
         # (summary + pair outweigh a tiny history), and "\u2212-189%" is the
         # formatter lying twice at once.
         delta = f"\u2212{pct}%" if pct >= 0 else f"+{-pct}%"
+        # THE LEDGER CHANNEL carries the real numbers, not a placeholder \u2014 the
+        # same before/after the card shows, so the brain and the card can never
+        # disagree about what a compaction did.
+        self._glassbox(
+            "ledger", 1.0,
+            f"{before_count} \u2192 {len(self.conversation)} messages ({delta})",
+            discrete=True,
+        )
         card.finish(
             f"done \u00b7 {before_count} \u2192 {len(self.conversation)} messages "
             f"\u00b7 {before_chars:,} \u2192 {after_chars:,} chars ({delta})"

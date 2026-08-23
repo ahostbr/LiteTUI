@@ -59,6 +59,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "plugins.help_plugin",
     "plugins.settings_ui",
     "plugins.scheduler_plugin",
+    "plugins.glassbox_plugin",
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists
@@ -92,6 +93,21 @@ class DynamicTools:
     owner: str
     specs_fn: Callable[[], list[dict]]
     dispatch_fn: Callable[[str], Callable | None]
+
+
+@dataclass(frozen=True)
+class Observer:
+    """A plugin WATCHING the host, rather than offering something to the user.
+
+    The other four tables all answer "what can the user reach". This one
+    answers "who is listening", and it is the only table whose entries the
+    host calls rather than the user. The glass-box brain is the first
+    consumer: it contributes no tool and no command, it only needs to know
+    when the host thought, called, wrote, or finished.
+    """
+
+    owner: str
+    handler: Callable[[dict], None]
 
 
 #: Palette groups, in display order (Ryan, 2026-08-22).
@@ -175,6 +191,7 @@ class PluginRegistry:
         self.commands: dict[str, CommandEntry] = {}   # every alias token maps here
         self.palette_rows: list[PaletteRow] = []
         self.prompt_sections: list[PromptSection] = []
+        self.observers: list[Observer] = []           # watchers; see emit()
         self.status: dict[str, str] = {}              # id -> active|disabled|failed: ...
         self._tool_by_name: dict[str, ToolEntry] = {}
 
@@ -214,6 +231,13 @@ class PluginRegistry:
                         group="app", order=500, tag="") -> None:
         self.palette_rows.append(PaletteRow(owner, title, help, run, group, order, tag))
 
+    def add_observer(self, owner: str, handler) -> None:
+        """No collision check, deliberately. The other tables refuse a second
+        owner because a shadowed tool or command is a SILENT loss of function.
+        Watching is not exclusive: any number of plugins may observe the same
+        event and none of them consumes it, so there is nothing to shadow."""
+        self.observers.append(Observer(owner, handler))
+
     def add_prompt_section(self, owner: str, order: int, render, enabled=None) -> None:
         for s in self.prompt_sections:
             if s.order == order:
@@ -245,6 +269,29 @@ class PluginRegistry:
                 return fn
         return None
 
+    def emit(self, event: dict) -> None:
+        """Hand one host event to every observer. Called from the STREAM LOOP,
+        so two properties are load bearing:
+
+        TELEMETRY MAY FAIL; IT MAY NOT BE LOAD BEARING. A raising observer is
+        swallowed and the remaining observers still run. If a broken telemetry
+        plugin could take the turn down, installing the brain would make the
+        app less reliable than not having it — and the symptom would surface as
+        a broken conversation with nothing pointing at the observer.
+
+        The failure is swallowed, not hidden: it is recorded on the plugin's
+        status row, which /plugins prints. A plugin that is silently failing
+        every event has somewhere to say so.
+
+        The list is copied before iteration so an observer that unloads its own
+        plugin mid-event cannot mutate the list being walked.
+        """
+        for obs in list(self.observers):
+            try:
+                obs.handler(event)
+            except Exception as e:                      # noqa: BLE001 — see above
+                self.status[obs.owner] = f"observer failed: {type(e).__name__}: {e}"
+
     def sections_sorted(self) -> list[PromptSection]:
         return sorted(self.prompt_sections, key=lambda s: s.order)
 
@@ -267,6 +314,7 @@ class PluginRegistry:
         self.commands = {t: e for t, e in self.commands.items() if e.owner != owner}
         self.palette_rows = [r for r in self.palette_rows if r.owner != owner]
         self.prompt_sections = [s for s in self.prompt_sections if s.owner != owner]
+        self.observers = [o for o in self.observers if o.owner != owner]
 
 
 class PluginContext:
@@ -295,6 +343,15 @@ class PluginContext:
 
     def prompt_section(self, order: int, render, enabled=None) -> None:
         self._reg.add_prompt_section(self._owner, order, render, enabled)
+
+    def observe(self, handler) -> None:
+        """Watch host events: handler({channel, intensity, label, ...}).
+
+        The only registration that gives nothing to the user. Your handler runs
+        INSIDE the stream loop — keep it cheap and non-blocking. Raising is
+        survivable (emit swallows it and records the failure on your status
+        row) but it means you saw nothing, so do not rely on it."""
+        self._reg.add_observer(self._owner, handler)
 
 
 def status_command(app, name: str, arg: str) -> None:
