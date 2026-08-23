@@ -7,21 +7,49 @@ and each has a test arm here:
      The positive arm asserts the pid is GONE from the process table, not that
      a bubble stopped updating.
   2. shell=True makes cmd.exe the child and the real work its GRANDCHILD —
-     proc.kill() orphans it. The tree arm asserts the grandchild died too, by
-     finding it in the table by a marker in its command line.
+     proc.kill() orphans it. The tree arm asserts the grandchild died too.
 
 Without the negative arm (same command, no cancel, still alive then completes
 normally) the positive arm would pass for a process that merely exits.
 
-The marker query filters out its OWN powershell process — a query for MARKER
-matches the process making the query, the same trap as the grep that matched
-our own conversation.
+🔴 HOW THESE TESTS IDENTIFY THE GRANDCHILD, AND WHY IT CHANGED (2026-08-23).
+They used to find it by scanning the whole process table for a marker in the
+command line. That instrument cost 5.8-25.6 s per call, the tests poll it, and
+its 30 s subprocess budget was not caught — so on a loaded box the
+TimeoutExpired escaped the poll and the test died at ~31 s having NEVER REACHED
+the assertion it exists to make. Measured 4 failures in 5 runs. A test that
+cannot reach its assertion reports the product as broken when the instrument
+is.
+
+The probe now ANNOUNCES ITS OWN PID and the tests hold an open HANDLE to it:
+
+    handle open + WaitForSingleObject      < 1 ms
+    Get-CimInstance Win32_Process        5800 - 25600 ms
+
+Three things that buys, beyond speed:
+  * The pid comes from the process itself, which proves it reached its first
+    statement — better evidence than a string matching its command line.
+  * A pidfile SURVIVES the process. The old table poll could only observe a
+    LIVE probe, which is why the timeout arm carried a documented latent race
+    (the probe was observable for ~2 s before the tool's own timeout killed
+    it). A file cannot be missed by arriving late. That race is now closed.
+  * Holding the handle pins the pid: Windows will not recycle a pid while a
+    handle to that process object is open, so "this pid exited" can never be
+    confused with "something else took the pid".
+
+The old query also had to exclude ITS OWN powershell process, because a query
+for MARKER matches the process making the query — the same trap as the grep
+that matched our own conversation. That trap is gone with the query, but it is
+worth remembering the next time something searches for a string it is itself
+carrying.
 """
+import ctypes
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from ctypes import wintypes
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,15 +67,84 @@ CORE_TOOLS_SRC = (_SRC / "plugins" / "core_tools.py").read_text(encoding="utf-8"
 TTYGUARD_SRC = (_SRC / "ttyguard.py").read_text(encoding="utf-8")
 
 
-def _pids_with_marker(marker: str) -> list[int]:
-    """Pids whose command line carries the marker — excluding the query."""
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         "(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*"
-         + marker + "*' -and $_.CommandLine -notlike '*Get-CimInstance*' }).ProcessId"],
-        capture_output=True, text=True, timeout=30,
-    ).stdout
-    return [int(x) for x in out.split() if x.strip().isdigit()]
+# ── the instrument ───────────────────────────────────────────────────────────
+
+_SYNCHRONIZE = 0x00100000
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WAIT_OBJECT_0 = 0x00000000
+
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_k32.OpenProcess.restype = wintypes.HANDLE
+_k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_k32.WaitForSingleObject.restype = wintypes.DWORD
+_k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+_k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+
+class _Pinned:
+    """An OPEN HANDLE to a process, so its pid cannot be recycled while we
+    assert on it.
+
+    A pid alone is not an identity on Windows — it can be reused the moment
+    the process object is freed, and "the pid is still there" would then be
+    answered by an unrelated process. An open handle keeps the object alive,
+    so exited() is a statement about THIS process and no other.
+
+    A pid that is already gone yields no handle. That is not an error: it is
+    the answer `exited() is True`, and it is how the timeout arm can pin a
+    probe the tool has already killed.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self._h = _k32.OpenProcess(
+            _SYNCHRONIZE | _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+
+    def exited(self) -> bool:
+        if not self._h:
+            return True
+        return _k32.WaitForSingleObject(self._h, 0) == _WAIT_OBJECT_0
+
+    def close(self) -> None:
+        if self._h:
+            _k32.CloseHandle(self._h)
+            self._h = None
+
+
+def _probe(tmp_path: Path, body: str) -> tuple[Path, Path]:
+    """A probe script that announces its own pid, then does `body`.
+
+    The write is atomic (write-then-replace): the tests poll for this file,
+    and a reader that caught a half-written pid would be a NEW flake traded
+    for the one being removed.
+    """
+    name = f"CANCELPROBE_{uuid.uuid4().hex[:12]}"
+    script = tmp_path / f"{name}.py"
+    pidfile = tmp_path / f"{name}.pid"
+    script.write_text(
+        "import os\n"
+        f"_pf = {str(pidfile)!r}\n"
+        "open(_pf + '.tmp', 'w').write(str(os.getpid()))\n"
+        "os.replace(_pf + '.tmp', _pf)\n"
+        + body,
+        encoding="utf-8",
+    )
+    return script, pidfile
+
+
+def _pinned_probe(pidfile: Path) -> _Pinned:
+    """Wait for the probe to announce itself, then pin it."""
+    box: dict = {}
+
+    def announced() -> bool:
+        try:
+            box["pid"] = int(pidfile.read_text().strip())
+            return True
+        except (OSError, ValueError):
+            return False
+
+    assert _wait(announced), f"probe never announced its pid at {pidfile.name}"
+    return _Pinned(box["pid"])
 
 
 @pytest.fixture(autouse=True)
@@ -74,10 +171,12 @@ def _wait(cond, ceiling=120.0, delay=0.1):
     """Poll cond until it holds or the wall-clock ceiling passes.
 
     The first draft budgeted 100 tries x 0.1s — a fixed 10-second sleep in
-    disguise, assuming Windows schedules the probe and the CIM query answers
-    inside 10s. A loaded box misses that for reasons unrelated to what these
-    tests measure. The ceiling is generous because it is only ever PAID on
-    failure — a passing poll returns the moment the condition holds.
+    disguise, assuming Windows schedules the probe inside 10s. A loaded box
+    misses that for reasons unrelated to what these tests measure. The ceiling
+    is generous because it is only ever PAID on failure — a passing poll
+    returns the moment the condition holds, and now that each probe costs
+    microseconds rather than seconds, `delay` is the real polling interval
+    instead of an aspiration.
     """
     deadline = time.monotonic() + ceiling
     while True:
@@ -92,80 +191,105 @@ def test_cancel_kills_the_whole_tree_and_the_turn_survives(tmp_path):
     """POSITIVE + TREE ARMS. The grandchild python must be GONE from the
     process table, and tool_bash must RETURN (an honest string) rather than
     hang — the turn carries on, which is the difference from Esc."""
-    marker = f"CANCELPROBE_{uuid.uuid4().hex[:12]}"
-    script = tmp_path / f"{marker}.py"
-    script.write_text("import time\nprint('probe up', flush=True)\ntime.sleep(300)\n")
+    script, pidfile = _probe(
+        tmp_path, "import time\nprint('probe up', flush=True)\ntime.sleep(300)\n")
     th, box = _run_bash_in_thread(
         {"command": f'"{sys.executable}" "{script}"', "timeout": 240})
 
     assert _wait(lambda: ttyguard.CANCELLABLE["proc"] is not None), \
         "tool_bash never populated the cancellable slot"
     proc = ttyguard.CANCELLABLE["proc"]
-    assert _wait(lambda: _pids_with_marker(marker)), \
-        "grandchild never appeared in the process table"
+    grandchild = _pinned_probe(pidfile)
+    shell_child = _Pinned(proc.pid)
+    try:
+        # The PREMISE of this whole test, asserted instead of assumed: with
+        # shell=True the pid we kill is not the pid doing the work. If these
+        # were ever the same process, the tree arm below would prove nothing
+        # and would still pass.
+        assert grandchild.pid != proc.pid, \
+            "no intermediate shell — trap 2 did not reproduce, so the tree " \
+            "assertion below would be vacuous"
+        assert not grandchild.exited(), "probe died before it could be cancelled"
 
-    # The exact core of action_cancel_tool, minus the notify.
-    ttyguard.CANCELLABLE["cancelled"] = True
-    ttyguard.kill_tree(proc.pid)
+        # The exact core of action_cancel_tool, minus the notify.
+        ttyguard.CANCELLABLE["cancelled"] = True
+        ttyguard.kill_tree(proc.pid)
 
-    th.join(timeout=30)
-    assert not th.is_alive(), "tool_bash did not return after the kill"
-    assert box["result"].startswith("[cancelled by user after"), box["result"]
-    # partial output written before the kill is preserved, not discarded
-    assert "probe up" in box["result"]
-    assert _wait(lambda: not _pids_with_marker(marker)), \
-        "GRANDCHILD SURVIVED — the tree kill missed the real work"
+        th.join(timeout=30)
+        assert not th.is_alive(), "tool_bash did not return after the kill"
+        assert box["result"].startswith("[cancelled by user after"), box["result"]
+        # partial output written before the kill is preserved, not discarded
+        assert "probe up" in box["result"]
+        assert _wait(lambda: grandchild.exited()), \
+            "GRANDCHILD SURVIVED — the tree kill missed the real work"
+        assert _wait(lambda: shell_child.exited()), \
+            "the shell itself survived the kill aimed straight at it"
+    finally:
+        grandchild.close()
+        shell_child.close()
 
 
 def test_negative_arm_no_cancel_means_normal_completion(tmp_path):
     """Without this, the test above measures only that processes eventually
     exit. Same shape, no cancel: alive while running, normal result after.
 
-    The probe HOLDS until the test releases it. Its first draft slept a fixed
-    2s, and the aliveness poll lost the race on a loaded box: one CIM query
-    can outlast the probe's whole lifetime, so the probe came and went between
-    two queries and "probe never started" fired for a probe that ran fine. No
-    ceiling cures that — a poll cannot find a process that already exited. The
-    release file makes the polled condition unmissable; the probe's own
-    deadline only bounds a crashed test run, it is never waited out."""
-    marker = f"CANCELPROBE_{uuid.uuid4().hex[:12]}"
-    script = tmp_path / f"{marker}.py"
-    release = tmp_path / f"{marker}.release"
-    script.write_text(
+    The probe HOLDS until the test releases it. An earlier draft slept a fixed
+    2s and the aliveness check lost the race on a loaded box — the probe came
+    and went between two observations, and "probe never started" fired for a
+    probe that had run fine. The release file makes the alive WINDOW
+    deterministic rather than a matter of timing; the pidfile makes the START
+    unmissable even if the observation is late. The probe's own deadline only
+    bounds a crashed test run, it is never waited out."""
+    name = f"release_{uuid.uuid4().hex[:8]}"
+    release = tmp_path / name
+    script, pidfile = _probe(
+        tmp_path,
         "import os, time\n"
         f"release = {str(release)!r}\n"
         "deadline = time.monotonic() + 240\n"
         "while not os.path.exists(release) and time.monotonic() < deadline:\n"
         "    time.sleep(0.1)\n"
-        "print('done cleanly')\n"
+        "print('done cleanly')\n",
     )
     th, box = _run_bash_in_thread(
         {"command": f'"{sys.executable}" "{script}"', "timeout": 240})
 
-    assert _wait(lambda: _pids_with_marker(marker)), "probe never started"
-    release.write_text("go")
-    th.join(timeout=60)
-    assert not th.is_alive()
-    assert "done cleanly" in box["result"]
-    assert "[cancelled" not in box["result"]
-    assert ttyguard.CANCELLABLE["proc"] is None  # slot cleared on the way out
+    probe = _pinned_probe(pidfile)
+    try:
+        assert not probe.exited(), \
+            "the probe exited before the test released it — it is not holding"
+        release.write_text("go")
+        th.join(timeout=60)
+        assert not th.is_alive()
+        assert "done cleanly" in box["result"]
+        assert "[cancelled" not in box["result"]
+        assert ttyguard.CANCELLABLE["proc"] is None  # slot cleared on the way out
+    finally:
+        probe.close()
 
 
 def test_timeout_now_kills_the_tree_too(tmp_path):
     """The old run() path timed out and LEFT THE TREE RUNNING (documented in
-    the spec as the 3m45s runaway). The popen path tree-kills on timeout."""
-    marker = f"CANCELPROBE_{uuid.uuid4().hex[:12]}"
-    script = tmp_path / f"{marker}.py"
-    script.write_text("import time\ntime.sleep(300)\n")
+    the spec as the 3m45s runaway). The popen path tree-kills on timeout.
+
+    This arm used to carry a latent race: the probe was observable in the
+    process table for only ~2s before the tool's own timeout killed it, so a
+    slow observation reported "probe never started" for a probe that started
+    fine. The pidfile is written by the probe and OUTLIVES it, so arriving
+    late can no longer be mistaken for never arriving."""
+    script, pidfile = _probe(tmp_path, "import time\ntime.sleep(300)\n")
     th, box = _run_bash_in_thread(
         {"command": f'"{sys.executable}" "{script}"', "timeout": 2})
 
-    assert _wait(lambda: _pids_with_marker(marker)), "probe never started"
-    th.join(timeout=60)
-    assert not th.is_alive()
-    assert box["result"].startswith("[timed out after 2s]")
-    assert _wait(lambda: not _pids_with_marker(marker)), \
-        "timeout reported but the tree is still running — the old lie"
+    probe = _pinned_probe(pidfile)
+    try:
+        th.join(timeout=60)
+        assert not th.is_alive()
+        assert box["result"].startswith("[timed out after 2s]")
+        assert _wait(lambda: probe.exited()), \
+            "timeout reported but the tree is still running — the old lie"
+    finally:
+        probe.close()
 
 
 # --- the action's guard, no app needed ---------------------------------------
@@ -175,6 +299,25 @@ def test_action_with_nothing_running_is_an_honest_no_op():
     LiteTUI.action_cancel_tool(ns)
     assert notes and "No cancellable tool" in notes[0]
     assert ttyguard.CANCELLABLE["cancelled"] is False   # nothing armed
+
+
+# --- the instrument's own gate -----------------------------------------------
+def test_the_pin_can_tell_a_live_process_from_a_dead_one():
+    """The control that stops this file's speed from being a lie. An
+    instrument that answers "exited" for everything is instant AND useless:
+    every arm above would pass with the product completely broken. So prove
+    both answers against processes whose state we already know."""
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pinned = _Pinned(live.pid)
+    try:
+        assert pinned.exited() is False, "a running process read as exited"
+        live.kill()
+        live.wait(timeout=30)
+        assert _wait(lambda: pinned.exited()), "a killed process read as alive"
+    finally:
+        pinned.close()
+    # A pid that never existed must not read as alive either.
+    assert _Pinned(0x7FFFFFF0).exited() is True
 
 
 # --- source gates ------------------------------------------------------------
