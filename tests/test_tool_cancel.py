@@ -43,6 +43,7 @@ that matched our own conversation. That trap is gone with the query, but it is
 worth remembering the next time something searches for a string it is itself
 carrying.
 """
+import ast
 import ctypes
 import subprocess
 import sys
@@ -340,5 +341,41 @@ def test_bash_goes_through_popen_not_run():
 
 
 def test_the_kill_is_a_tree_kill():
-    body = TTYGUARD_SRC.split("def kill_tree(", 1)[1].split("\ndef ", 1)[0]
-    assert "/T" in body and "/F" in body
+    """The kill must be a TREE kill — counted as a STATEMENT, not as a string.
+
+    🔴 WHY THIS IS NOT A GREP. The obvious gate is `"/T" in body`, and it was
+    that until 2026-08-23. It passes with the flag REMOVED, as long as
+    anything in the function merely MENTIONS it: measured by deleting /T from
+    the argv and leaving `# MUTATION: no /T` behind — the gate stayed green
+    while the tree kill was gone and both tree arms of this file failed. A
+    gate defeated by a comment reports the invariant forever, and the first
+    person to run it concludes it holds. (Same shape as tools/
+    tool_door_gate.py, where the second "door" was a docstring describing the
+    door.)
+
+    The AST carries no comments, so a sentence about the flag cannot be
+    mistaken for the flag.
+    """
+    tree = ast.parse(TTYGUARD_SRC)
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and n.name == "kill_tree"), None)
+    assert fn is not None, "ttyguard.kill_tree is gone"
+
+    # Every argv list literal inside kill_tree that is a taskkill invocation.
+    argvs = [
+        [e.value for e in node.elts
+         if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        for node in ast.walk(fn)
+        if isinstance(node, ast.List) and node.elts
+        and isinstance(node.elts[0], ast.Constant)
+        and node.elts[0].value == "taskkill"
+    ]
+    assert argvs, "kill_tree no longer builds a taskkill argv"
+    for flag, why in (
+        ("/T", "walk the TREE — without it the grandchild is orphaned, "
+               "which is trap 2 in this file's docstring"),
+        ("/F", "force — a cancel that asks nicely is a suggestion"),
+    ):
+        assert any(flag in argv for argv in argvs), \
+            f"taskkill lost {flag}: {why}"
