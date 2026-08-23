@@ -245,9 +245,24 @@ def test_cancel_kills_the_whole_tree_and_the_turn_survives(tmp_path):
             "assertion below would be vacuous"
         assert not grandchild.exited(), "probe died before it could be cancelled"
 
-        # The exact core of action_cancel_tool, minus the notify.
+        # The exact core of action_cancel_tool + _cancel_tool_tree, minus the
+        # notifies.
+        #
+        # 🔴 IT MUST PASS proc, NOT JUST THE PID, and this line is why the
+        # claim above needs re-checking whenever production moves. It read
+        # `kill_tree(proc.pid)` and called itself "the exact core of
+        # action_cancel_tool" — true when written, silently false the moment
+        # the app started passing the Popen. kill_tree's fast path is the job
+        # handle hanging off that object, so a pid-only call took the taskkill
+        # walk the app no longer takes: this test was exercising a path
+        # production had abandoned, while asserting it was production's.
         ttyguard.CANCELLABLE["cancelled"] = True
-        ttyguard.kill_tree(proc.pid)
+        killed = ttyguard.kill_tree(proc.pid, proc)
+        ttyguard.CANCELLABLE["kill_confirmed"] = killed
+        assert killed is True, \
+            "kill_tree could not CONFIRM the tree is gone — False does not " \
+            "mean it is alive, it means we do not know, and no caller may " \
+            "describe that as success"
 
         th.join(timeout=30)
         assert not th.is_alive(), "tool_bash did not return after the kill"
