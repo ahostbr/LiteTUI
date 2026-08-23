@@ -23,6 +23,11 @@ from litetui.settings import Settings
 
 from litetui import llm_backend
 from litetui import paths
+from litetui.conversation import (
+    CONVO_SEED_FILES,
+    TRANSCRIPT_NAME,
+    ConversationRepository,
+)
 from litetui import ttyguard
 from litetui import mcp_client
 from litetui import sanitize
@@ -81,57 +86,8 @@ def load_prompt(name: str, **variables: object) -> str:
 #: Marks an already-injected store block inside the system message. Detection
 #: by MARKER rather than a flag is what makes /resume correct: a flag lives in
 #: memory and dies with the process; the marker is persisted with the message.
-TRANSCRIPT_NAME = "convo.jsonl"
 STORE_HEADER = "## Your store, loaded once at the start of this conversation"
 
-CONVO_SEED_FILES = {
-    "memory.md": (
-        "# Memory Index\n\n"
-        "One line per memory, NEWEST AT THE TOP. Bodies live in "
-        f"`{paths.MEMORIES_DIR}/`.\n\n"
-        "`- [short title](memories/slug.md) — the hook`\n\n"
-        "POINTERS ONLY. ~50 tokens (about 200 chars) per line, hard. Enough to\n"
-        "decide whether to open the file, nothing more. If you are explaining\n"
-        "the thing here, it belongs in the topic file instead.\n\n"
-        "This file is injected into the system prompt ONCE, at the start of the\n"
-        "conversation, so a long line permanently crowds out other entries.\n\n"
-        "Append and edit only — never rewrite it to make it shorter. A line\n"
-        "removed here orphans a file that nothing will ever open again.\n\n"
-        "---\n\n"
-    ),
-    "soul.md": (
-        "# Soul\n\n"
-        "Who I am in this conversation. I write this for myself; it survives\n"
-        "/resume and /compact when the transcript does not.\n\n"
-        "## How the user works\n"
-        "_Preferences, tone, what they want more or less of._\n\n"
-        "## Standing corrections\n"
-        "_Things I got wrong and was corrected on. The correction, and WHY —\n"
-        "a rule without its reason gets re-litigated or misapplied._\n\n"
-        "## How I work here\n"
-        "_Habits that have proven useful in this conversation specifically._\n"
-    ),
-    "handoff.md": (
-        "# Handoff\n\n"
-        "Written so the next session can ACT without re-deriving anything.\n\n"
-        "> Every row must be CHECKABLE: name the file, the command, or the\n"
-        "> identifier. A query can be re-run; a bare claim can only be believed.\n"
-        "> State when each row was last MEASURED — not when it was assumed.\n\n"
-        "## 1. In flight\n"
-        "_What is running or half-done right now. 'Nothing' is a valid and\n"
-        "useful answer — say it explicitly rather than leaving the section out._\n\n"
-        "## 2. Owed — split by owner\n"
-        "_Mine / theirs / the user's. An unowned item is one nobody does._\n\n"
-        "## 3. Absent by decision\n"
-        "_What is deliberately NOT being done, and what defends that choice.\n"
-        "Without this, the next session rediscovers it and redoes it._\n\n"
-        "## 4. Caveats riding the green lines\n"
-        "_What 'it works' does NOT cover. The limits of every pass claim._\n\n"
-        "## 5. My corrections and retractions\n"
-        "_What I claimed and later found wrong. Carry these forward: a\n"
-        "retracted claim that is not written down comes back as fact._\n"
-    ),
-}
 
 # LM Studio's accepted set, read out of its own 400 body rather than the docs
 # (which omit reasoning_effort entirely):
@@ -1627,12 +1583,11 @@ class LiteTUI(App):
         self._tps_t0: float | None = None
         self._tps_n = 0
         self._tps_painted = 0.0
-        self.convo_id: str = ""
-        self.convo_dir: Path | None = None
-        self.convo_path: Path | None = None  # <convo_dir>/convo.jsonl
+        # The STORE owns where this conversation lives and how it is written.
+        # The properties below keep `self.convo_id` and friends resolving, so
+        # nothing that reads them had to change.
+        self.store = ConversationRepository(on_error=self._report_persist_error)
         # Staged-but-not-created. See _new_convo / _materialise_convo.
-        self._convo_pending = False
-        self._convo_loading = False  # suppress writes while replaying from disk
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
         # Did the LAST turn end because the user killed it, or because it
         # finished? Only the post-compaction wake ping cares: "resume the
@@ -1680,7 +1635,6 @@ class LiteTUI(App):
         # at block creation, cleared by _thinking_done when the trace
         # ends (first content token, first tool call, or turn end).
         self._thinking_live: ThinkingBlock | None = None
-        self._persist_error: str | None = None
         self._store_injected = False  # see STORE_HEADER; once per conversation
         # ONE seam for both engines (LM Studio / our llama-server). The chat
         # client is rebuilt in _connect after ensure_running(), because the
@@ -2373,18 +2327,12 @@ class LiteTUI(App):
     def _new_convo(self) -> None:
         """STAGE a conversation: pick its id and paths, touch no disk.
 
-        Nothing is created until the user actually says something. Booting the
-        app to run /resume used to mint a throwaway conversation first, so the
-        list you opened /resume to read filled with the debris of opening it.
-
-        The id and paths are assigned here anyway, so the footer can name the
-        conversation and /clear can report where it will live.
+        Nothing is created until the user actually says something. The id and
+        paths are assigned here anyway, so the footer can name the conversation
+        and /clear can report where it will live.
         """
-        self.convo_id = str(uuid.uuid4())
+        self.store.stage(str(uuid.uuid4()))
         self._refresh_ctx_label()   # the footer names the conversation
-        self.convo_dir = paths.CONVO_DIR / self.convo_id
-        self.convo_path = self.convo_dir / TRANSCRIPT_NAME
-        self._convo_pending = True
         self._sync_seat_identity()
 
     def _sync_seat_identity(self) -> None:
@@ -2436,219 +2384,166 @@ class LiteTUI(App):
 
         Writes meta, then a SNAPSHOT of whatever is already in memory — the
         system prompt is appended at boot, long before this runs, and the
-        snapshot is what carries it into the file. _read_convo already handles
-        `type: "snapshot"` by replacing the message list, so a conversation born
-        here reads back identically to one written record by record.
+        snapshot is what carries it into the file. ConversationRepository.read
+        already handles `type: "snapshot"` by replacing the message list, so a
+        conversation born here reads back identically to one written record by
+        record.
         """
-        if not getattr(self, "_convo_pending", False):
+        if not self.store.pending:
             return
-        if self.convo_dir is None or self.convo_path is None:
+        if self.store.convo_dir is None or self.store.convo_path is None:
             return
-        self._convo_pending = False   # cleared FIRST: _write_record below would
-                                      # otherwise see pending and skip its writes
-        try:
-            (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
-            for fname, seed in CONVO_SEED_FILES.items():
-                f = self.convo_dir / fname
-                if not f.exists():  # never clobber a resumed store
-                    f.write_text(seed, encoding="utf-8")
-        except OSError as e:
-            self._note_persist_error(e)
-        # The owning seat, so /resume can say WHOSE conversation this was.
-        # Written at creation because the seat may be renamed or re-registered
-        # later, and the answer wanted is who owned it THEN.
+        self.store.pending = False   # cleared FIRST: write_record below would
+                                     # otherwise see pending and skip its writes
+        self.store.seed()
         seat = getattr(self, "seat", None)
-        self._write_record(
-            {
-                "type": "meta",
-                "v": 3,
-                "id": self.convo_id,
-                "created": time.time(),
-                "model": self.model_id,
-                **({"agent_name": seat.name} if seat is not None else {}),
-                **({"agent_id": seat.agent_id} if seat is not None else {}),
-            }
+        self.store.record_meta(
+            self.model_id,
+            seat_name=seat.name if seat is not None else None,
+            seat_id=seat.agent_id if seat is not None else None,
         )
         # Everything said before the first user message (the system prompt) was
         # held in memory only. This is where it reaches disk.
         if self.conversation:
             self._snapshot("materialised on first message")
 
-    def _note_persist_error(self, e: Exception) -> None:
-        if self._persist_error is not None:
-            return
-        self._persist_error = f"{type(e).__name__}: {e}"
+    def _report_persist_error(self, msg: str) -> None:
+        """How the store speaks. It owns no widgets, so the app lends it one.
+
+        Called at most once per conversation — ConversationRepository.note_error
+        returns the text only for the FIRST failure. A store that has gone away
+        fails on every subsequent write, and repeating it would bury the
+        conversation the user is still trying to have.
+        """
         try:
             self._system(
-                f"[save failed — this conversation is memory-only]\n{self._persist_error}"
+                f"[save failed — this conversation is memory-only]\n{msg}"
             )
         except Exception:
             pass  # not mounted yet; /convos re-surfaces it
 
+    def _note_persist_error(self, e: Exception) -> None:
+        # Same route the store's own writers take — one path, so a failure
+        # reads identically whoever noticed it first.
+        self.store._raise_to_app(e)
+
     def _write_record(self, rec: dict) -> None:
-        if self.convo_path is None or self._convo_loading:
-            return
-        # Staged but not born: keep it in memory. _materialise_convo() snapshots
-        # self.conversation when it creates the file, so nothing written here
-        # would have been lost — and NOT writing is the entire point, otherwise
-        # the boot-time system prompt creates the directory it was meant to
-        # avoid creating.
-        if getattr(self, "_convo_pending", False):
-            return
-        try:
-            self.convo_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.convo_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-        except OSError as e:
-            # Surface it once. A persistence layer that fails silently is worse
-            # than none at all: you find out at /resume, when it is too late.
-            self._note_persist_error(e)
+        self.store.write_record(rec)
 
     def _append(self, msg: dict) -> None:
         """Append to the live conversation AND to disk. Single choke point."""
         self.conversation.append(msg)
-        self._write_record({"type": "msg", "ts": time.time(), "message": msg})
+        self.store.record_msg(msg)
 
     def _snapshot(self, reason: str = "") -> None:
-        """Full-list record. Kept for readability of older files; prefer _edit."""
-        self._write_record(
-            {
-                "type": "snapshot",
-                "ts": time.time(),
-                "reason": reason,
-                "messages": self.conversation,
-            }
-        )
+        self.store.record_snapshot(self.conversation, reason)
 
     def _edit(self, index: int, reason: str = "") -> None:
-        """Record an in-place change to ONE message.
-
-        /system and the tools toggle only ever rewrite message 0, which is the
-        biggest message in the file (system prompt + store block + tools). A
-        snapshot for that wrote the entire conversation to disk to record a
-        one-message change.
-        """
         if not (0 <= index < len(self.conversation)):
             return self._snapshot(reason)  # shouldn't happen; degrade safely
-        self._write_record(
-            {
-                "type": "edit",
-                "ts": time.time(),
-                "reason": reason,
-                "index": index,
-                "message": self.conversation[index],
-            }
-        )
+        self.store.record_edit(index, self.conversation[index], reason)
 
     def _truncate(self, keep_from: int, prepend: list[dict], reason: str = "") -> None:
-        """Record 'drop the head, splice these in front of what remains'."""
         keeps_system = bool(
             self.conversation and self.conversation[0].get("role") == "system"
         )
-        self._write_record(
-            {
-                "type": "truncate",
-                "ts": time.time(),
-                "reason": reason,
-                "keep_from": keep_from,
-                "keep_system": keeps_system,
-                "prepend": prepend,
-            }
-        )
+        self.store.record_truncate(keep_from, prepend, keeps_system, reason)
 
-    @staticmethod
-    def _read_convo(path: Path) -> tuple[dict, list[dict]]:
-        meta: dict = {}
-        msgs: list[dict] = []
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # tolerate a torn final line from a hard kill
-                kind = rec.get("type")
-                if kind == "meta":
-                    meta = rec
-                elif kind == "snapshot":
-                    msgs = list(rec.get("messages") or [])
-                elif kind == "rename":
-                    # APPEND-ONLY, like every other record here. The name is not
-                    # patched into the meta line -- rewriting a JSONL record in
-                    # place is how a torn write loses the whole transcript, and
-                    # the last rename simply wins on replay.
-                    new_name = rec.get("name")
-                    if isinstance(new_name, str):
-                        cleaned = new_name.strip()
-                        meta = {**meta, "name": cleaned} if cleaned else {
-                            k: v for k, v in meta.items() if k != "name"
-                        }
-                elif kind == "edit":
-                    i = rec.get("index")
-                    if isinstance(i, int) and 0 <= i < len(msgs) and isinstance(
-                        rec.get("message"), dict
-                    ):
-                        msgs[i] = rec["message"]
-                elif kind == "truncate":
-                    keep_from = rec.get("keep_from")
-                    if not isinstance(keep_from, int) or keep_from < 0:
-                        continue  # unreadable marker: leave the history intact
-                    head = []
-                    if (
-                        rec.get("keep_system")
-                        and msgs
-                        and msgs[0].get("role") == "system"
-                    ):
-                        head = [msgs[0]]
-                    prepend = [
-                        m for m in (rec.get("prepend") or []) if isinstance(m, dict)
-                    ]
-                    msgs = head + prepend + msgs[keep_from:]
-                elif kind == "msg" and isinstance(rec.get("message"), dict):
-                    msgs.append(rec["message"])
-        return meta, msgs
 
-    @staticmethod
-    def _fmt_size(n: int) -> str:
-        for unit, div in (("MB", 1024 * 1024), ("KB", 1024)):
-            if n >= div:
-                return f"{n / div:.1f}{unit}"
-        return f"{n}B"
+    @property
+    def store(self) -> ConversationRepository:
+        """The conversation store, created on first use.
 
-    @classmethod
-    def _convo_label(cls, meta: dict, msgs: list[dict]) -> str:
-        """What a conversation is CALLED in any listing.
-
-        A name given with /rename wins over the derived first-user-message
-        preview -- that is the whole point of naming one. Both /convos and the
-        /resume picker call this, because they already render the same column
-        and their own comment says the two must not drift.
+        LAZY ON PURPOSE, and this is not defensive programming. `convo_id` and
+        friends used to be plain attributes, so they worked on ANY instance --
+        including the `LiteTUI.__new__(LiteTUI)` construction the seat tests use
+        to get an app with no Textual mount. Creating the store only in
+        __init__ made the very first setter call explode there, which would
+        have turned this refactor into a behaviour change for every caller that
+        does not run the full constructor. Found by tests/test_seat_rebind.py,
+        8 failures, before this line existed.
         """
-        name = str((meta or {}).get("name") or "").strip()
-        if name:
-            return name
-        return cls._convo_title(msgs)
+        st = self.__dict__.get("_store")
+        if st is None:
+            st = ConversationRepository(on_error=self._report_persist_error)
+            self.__dict__["_store"] = st
+        return st
 
-    @classmethod
-    def _convo_title(cls, msgs: list[dict]) -> str:
-        for m in msgs:
-            if m.get("role") != "user":
-                continue
-            c = cls._flatten(m.get("content")).replace("\n", " ")
-            if c:
-                return c[:60] + ("\u2026" if len(c) > 60 else "")
-        return "(no user message)"
+    @store.setter
+    def store(self, v: ConversationRepository) -> None:
+        self.__dict__["_store"] = v
 
-    @staticmethod
-    def _flatten(content) -> str:
-        if isinstance(content, list):  # image turn: [{image_url...}, {text...}]
-            text = " ".join(
-                p.get("text", "") for p in content if isinstance(p, dict) and p.get("text")
-            )
-            return ("[image] " + text).strip()
-        return (content or "").strip()
+    # ── store state, surfaced under its original names ───────────────────
+    # These read and write ConversationRepository. They exist so the ~40 call
+    # sites that say `self.convo_dir` did not have to become `self.store.
+    # convo_dir` in the same commit that moved the logic -- one change at a
+    # time is what makes a behaviour-preserving refactor reviewable.
+    @property
+    def convo_id(self) -> str:
+        return self.store.convo_id
+
+    @convo_id.setter
+    def convo_id(self, v: str) -> None:
+        self.store.convo_id = v
+
+    @property
+    def convo_dir(self):
+        return self.store.convo_dir
+
+    @convo_dir.setter
+    def convo_dir(self, v) -> None:
+        self.store.convo_dir = v
+
+    @property
+    def convo_path(self):
+        return self.store.convo_path
+
+    @convo_path.setter
+    def convo_path(self, v) -> None:
+        self.store.convo_path = v
+
+    @property
+    def _convo_pending(self) -> bool:
+        return self.store.pending
+
+    @_convo_pending.setter
+    def _convo_pending(self, v: bool) -> None:
+        self.store.pending = v
+
+    @property
+    def _convo_loading(self) -> bool:
+        return self.store.loading
+
+    @_convo_loading.setter
+    def _convo_loading(self, v: bool) -> None:
+        self.store.loading = v
+
+    @property
+    def _persist_error(self):
+        return self.store.persist_error
+
+    @_persist_error.setter
+    def _persist_error(self, v) -> None:
+        self.store.persist_error = v
+
+    # ── conversation store ───────────────────────────────────────────
+    # Implementations moved to litetui.conversation.ConversationRepository.
+    # These aliases are the reason no call site changed: `LiteTUI._read_convo`
+    # and friends still resolve, so the 18 test files that call them by name
+    # keep working. Aliases, not wrappers -- one implementation, not two.
+    _read_convo = staticmethod(ConversationRepository.read)
+    _fmt_size = staticmethod(ConversationRepository.fmt_size)
+    _convo_label = staticmethod(ConversationRepository.label)
+    _convo_title = staticmethod(ConversationRepository.title)
+    _flatten = staticmethod(ConversationRepository.flatten)
+
+    def _list_convos(self) -> list[tuple[Path, dict, list[dict]]]:
+        """Returns (transcript_path, meta, messages) newest first."""
+        return ConversationRepository.list_all()
+
+
+
+
 
     def _resume(self, path: Path) -> None:
         try:
@@ -2719,24 +2614,6 @@ class LiteTUI(App):
         )
         self._scroll_down()
 
-    def _list_convos(self) -> list[tuple[Path, dict, list[dict]]]:
-        """Returns (transcript_path, meta, messages) newest first."""
-        if not paths.CONVO_DIR.exists():
-            return []
-        out = []
-        for d in paths.CONVO_DIR.iterdir():
-            if not d.is_dir():
-                continue
-            p = d / TRANSCRIPT_NAME
-            if not p.exists():
-                continue
-            try:
-                meta, msgs = self._read_convo(p)
-            except OSError:
-                continue
-            out.append((p, meta, msgs))
-        out.sort(key=lambda t: t[0].stat().st_mtime, reverse=True)
-        return out
 
     def _update_header(self) -> None:
         if self.tools_enabled:
