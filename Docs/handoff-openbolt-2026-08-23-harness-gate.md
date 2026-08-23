@@ -51,14 +51,28 @@ not repeated here.
 
 ### 2c. RYAN'S
 
-- **Every push.** Five repos have remotes and three are ahead — query, not a value:
-  `git -C <repo> ls-remote origin refs/heads/<branch>` vs local HEAD. **Use `ls-remote`, never
-  `rev-list`** — `rev-list` answers from a local cache and read 4-unpushed for a repo with nothing
-  unpushed tonight.
-- **126 uncommitted paths inside the nested repos** — covered by neither the snapshot nor the
-  bundles. Re-derive: `git -C <repo> status --porcelain | wc -l` per repo. Includes
-  `from-cogs-to-cosmos` 27 (his Minecraft pack work) and `LiteImage` 20 (0 ahead **and** has a
-  remote, so it passes every criterion applied so far).
+- ~~**Every push.** Five repos have remotes and three are ahead.~~ **DISCHARGED — Sentinel pushed
+  on Ryan's explicit instruction ("push all that have a remote, others keep local") shortly after
+  this file was first committed.** Re-verified by me against the server, not the cache:
+  **all 7 repos with remotes are IN SYNC, 0 ahead** — `C:/Projects` d60b1d3 · LiteTUI faf9616 ·
+  LiteSuite 1464f6a · liteharness-oss ecf38b4 · LiteModeler cade477 · LiteSound e25d118 ·
+  LiteImage 74bf7f6.
+  🔴 **Do not trust that list either — re-run the query:**
+  `git -C <repo> ls-remote origin refs/heads/<branch>` vs `git -C <repo> rev-parse HEAD`.
+  **Use `ls-remote`, never `rev-list`** — `rev-list` answers from a *local cache* and read
+  "4 unpushed" tonight for a repo with nothing unpushed. **A stale unpushed count is what makes
+  someone re-run a backup or hold a merge for nothing**, which is exactly what this row did within
+  minutes of being written.
+  ⚠️ Still NOT pushed, deliberately: the vendored `LiteSuite/resources/liteharness-plugin`
+  (local `8bb8fa7` vs server `4508824` — pushing it publishes a version **rollback**), and the four
+  no-remote repos, kept local by instruction.
+- **~124 uncommitted paths inside the nested repos** — covered by neither the untracked snapshot
+  nor the bundles, because a bundle carries **commits** and neither mechanism sees a **working
+  tree**. **This is a TIMESTAMP, not a fact** — it read 126 an hour earlier. Re-derive per repo:
+  `git -C <repo> status --porcelain | wc -l`. Largest: `from-cogs-to-cosmos` 27 (Ryan's Minecraft
+  pack work, and a repo with **no remote**), `LiteSuite` 22, `LiteImage` 20 — LiteImage being the
+  sharp case, since it is 0 ahead **and** has a remote, so it passes every criterion anyone applied
+  tonight while its 20 paths exist nowhere else.
 - **Whether the four no-remote repos get remotes.** `SimCraft` (1,559 commits),
   `from-cogs-to-cosmos` (40), `drmario` (24), `orch-e2e-site` (21). Committed history is bundled
   and verified; adding a remote is a bigger decision than a push and is his alone.
