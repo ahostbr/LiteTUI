@@ -60,6 +60,8 @@ def _cmd_help(app, name: str, arg: str) -> None:
         "screenshot + coords here\n"
         "/cron            scheduled prompts: add/list/rm/on/off/run "
         "(fires while the app is open)\n"
+        "/goal <objective> evidence-driven continuation; status/pause/resume/clear\n"
+        "/loop <15m> <p>  fixed-cadence prompt; list/pause/resume/clear\n"
         "/calendar /cal   the month; click a day to view, add or edit its jobs\n"
         "/compact [hint]  summarise older messages, keep the last "
         f"{app.settings.compact_keep_recent}\n"

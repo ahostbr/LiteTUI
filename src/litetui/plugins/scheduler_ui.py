@@ -274,16 +274,16 @@ class CalendarScreen(ModalScreen[None]):
         out.append("JOBS\n", style=pal["title"])
         side_map.append(None)
 
-        if not self._jobs:
+        cron_jobs = [j for j in self._jobs if getattr(j, "kind", "cron") == "cron"]
+        if not cron_jobs:
             out.append("\nnothing scheduled\n", style=pal["muted"])
             out.append("\n/cron add @daily <prompt>\n", style=pal["muted"])
             self._side_rows = side_map
             return out
 
-        today = date.today()
-        for job in self._jobs:
+        for job in cron_jobs:
             try:
-                nxt = job.cron().next_after(datetime.now())
+                nxt = job.next_after(datetime.now())
                 when = nxt.strftime("%a %d %H:%M") if nxt else "never"
                 broken = False
             except Exception:

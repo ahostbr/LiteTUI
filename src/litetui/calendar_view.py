@@ -121,6 +121,8 @@ def entries_for(jobs, when: date, cap: int = 2) -> list[DayEntry]:
     probe = datetime(when.year, when.month, when.day)
     out: list[DayEntry] = []
     for job in jobs:
+        if getattr(job, "kind", "cron") != "cron":
+            continue  # fixed loops live in /loop, not on calendar dates
         try:
             cron = job.cron()
         except Exception:
@@ -172,6 +174,8 @@ def month_totals(jobs, year: int, month: int) -> int:
     for day in range(1, days + 1):
         probe = datetime(year, month, day)
         for job in jobs:
+            if getattr(job, "kind", "cron") != "cron":
+                continue
             if not job.enabled:
                 continue
             try:

@@ -20,9 +20,11 @@ registries must not widen MCP's reach.
 """
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any, Callable
+from typing import Any
 
 from litetui.tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
 
@@ -61,6 +63,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.help_plugin",
     "litetui.plugins.settings_ui",
     "litetui.plugins.scheduler_plugin",
+    "litetui.plugins.goal_loop_plugin",
     "litetui.plugins.glassbox_plugin",
 )
 
@@ -112,6 +115,14 @@ class Observer:
 
     owner: str
     handler: Callable[[dict], None]
+
+
+@dataclass(frozen=True)
+class TurnFinalizer:
+    """A plugin reacting to an explicit plain-answer completion."""
+
+    owner: str
+    handler: Callable[[], Any]
 
 
 #: Palette groups, in display order (Ryan, 2026-08-22).
@@ -196,6 +207,7 @@ class PluginRegistry:
         self.palette_rows: list[PaletteRow] = []
         self.prompt_sections: list[PromptSection] = []
         self.observers: list[Observer] = []           # watchers; see emit()
+        self.turn_finalizers: list[TurnFinalizer] = []
         self.status: dict[str, str] = {}              # id -> active|disabled|failed: ...
         self._tool_by_name: dict[str, ToolEntry] = {}
 
@@ -245,6 +257,9 @@ class PluginRegistry:
         Watching is not exclusive: any number of plugins may observe the same
         event and none of them consumes it, so there is nothing to shadow."""
         self.observers.append(Observer(owner, handler))
+
+    def add_turn_finalizer(self, owner: str, handler) -> None:
+        self.turn_finalizers.append(TurnFinalizer(owner, handler))
 
     def add_prompt_section(self, owner: str, order: int, render, enabled=None) -> None:
         for s in self.prompt_sections:
@@ -317,6 +332,23 @@ class PluginRegistry:
             except Exception as e:                      # noqa: BLE001 — see above
                 self.status[obs.owner] = f"observer failed: {type(e).__name__}: {e}"
 
+    async def finalize_turn(self) -> None:
+        """Run completion hooks only when the host names a plain answer.
+
+        This is intentionally not driven by worker counts or idleness: a
+        persistent inbox monitor never becomes idle and is irrelevant to
+        whether the transcript contains completion evidence.
+        """
+        for finalizer in list(self.turn_finalizers):
+            try:
+                result = finalizer.handler()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as e:  # noqa: BLE001 — isolate optional plugins
+                self.status[finalizer.owner] = (
+                    f"turn finalizer failed: {type(e).__name__}: {e}"
+                )
+
     def sections_sorted(self) -> list[PromptSection]:
         return sorted(self.prompt_sections, key=lambda s: s.order)
 
@@ -340,6 +372,7 @@ class PluginRegistry:
         self.palette_rows = [r for r in self.palette_rows if r.owner != owner]
         self.prompt_sections = [s for s in self.prompt_sections if s.owner != owner]
         self.observers = [o for o in self.observers if o.owner != owner]
+        self.turn_finalizers = [f for f in self.turn_finalizers if f.owner != owner]
 
 
 class PluginContext:
@@ -379,6 +412,10 @@ class PluginContext:
         survivable (emit swallows it and records the failure on your status
         row) but it means you saw nothing, so do not rely on it."""
         self._reg.add_observer(self._owner, handler)
+
+    def turn_finalizer(self, handler) -> None:
+        """React to a persisted plain answer; never to ambient idleness."""
+        self._reg.add_turn_finalizer(self._owner, handler)
 
 
 def status_command(app, name: str, arg: str) -> None:
