@@ -5,6 +5,7 @@ reachable but mute. These assert the tool exists, is gated on registration, and
 refuses the two sends that would fail SILENTLY rather than loudly.
 """
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -72,6 +73,22 @@ print("\n=== check: polls without waiting for the monitor ===")
 box = Path(tempfile.mkdtemp(prefix="harness-tool-"))
 harness_mod.NEW, harness_mod.DONE = box / "new", box / "done"
 harness_mod.NEW.mkdir(parents=True)
+
+# The runner arms LITETUI_NO_HARNESS for every child process, and poll() now
+# refuses under it: a disabled seat must not consume mail it will never deliver.
+# What follows tests poll's DELIVERY LOGIC, not the gate, so it opts out -- the
+# same move test_no_fleet_registration's control arms make for register().
+#
+# 🔴 THE REDIRECT IS ASSERTED FIRST, AND THAT ORDER IS THE WHOLE POINT. Clearing
+# the guard while NEW still pointed at the real maildir would make this file eat
+# live fleet mail -- the precise hazard the guard was added for. An opt-out that
+# is safe only because someone remembered to redirect first is luck; this makes
+# it a precondition.
+assert harness_mod.NEW != Path.home() / ".liteharness" / "inbox" / "new", (
+    "refusing to un-gate poll() while NEW points at the live maildir"
+)
+_guard_was = os.environ.pop(harness_mod.NO_HARNESS_ENV, None)
+
 s4 = seat()
 chk("empty inbox says so, does not error", harness_mod.run(s4, {"action": "check"}) == "(no new messages)")
 import datetime as dt
@@ -99,3 +116,7 @@ for args in ({}, {"action": None}, {"action": "send"}, {"action": "check"}, {"ac
 
 print(f"\n{sum(ok)}/{len(ok)} passed")
 sys.exit(0 if all(ok) else 1)
+
+# Re-arm the guard for anything below this section.
+if _guard_was is not None:
+    os.environ[harness_mod.NO_HARNESS_ENV] = _guard_was

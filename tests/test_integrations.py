@@ -157,6 +157,21 @@ harness_mod.NEW, harness_mod.CUR, harness_mod.DONE = box / "new", box / "cur", b
 harness_mod.NEW.mkdir(parents=True)
 harness_mod.DONE.mkdir(parents=True)
 
+# The runner arms LITETUI_NO_HARNESS for every child process, and poll() now
+# refuses under it: a disabled seat must not consume mail it will never deliver.
+# What follows tests poll's DELIVERY LOGIC, not the gate, so it opts out -- the
+# same move test_no_fleet_registration's control arms make for register().
+#
+# 🔴 THE REDIRECT IS ASSERTED FIRST, AND THAT ORDER IS THE WHOLE POINT. Clearing
+# the guard while NEW still pointed at the real maildir would make this file eat
+# live fleet mail -- the precise hazard the guard was added for. An opt-out that
+# is safe only because someone remembered to redirect first is luck; this makes
+# it a precondition.
+assert harness_mod.NEW != Path.home() / ".liteharness" / "inbox" / "new", (
+    "refusing to un-gate poll() while NEW points at the live maildir"
+)
+_guard_was = os.environ.pop(harness_mod.NO_HARNESS_ENV, None)
+
 ME = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 seat = harness_mod.Seat(agent_id=ME, name="LiteTUI", model="m")
@@ -203,3 +218,7 @@ chk("a missing inbox is empty, not an exception", harness_mod.Seat("x", "y", "z"
 
 print(f"\n{sum(ok)}/{len(ok)} passed")
 sys.exit(0 if all(ok) else 1)
+
+# Re-arm the guard for anything below this section.
+if _guard_was is not None:
+    os.environ[harness_mod.NO_HARNESS_ENV] = _guard_was
