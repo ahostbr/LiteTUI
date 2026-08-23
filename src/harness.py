@@ -209,12 +209,37 @@ class Seat:
                 self._presence_argv() + [
                  # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
                  #
-                 # The agent id is minted per PROCESS and persisted nowhere, so
-                 # every launch is a new agent to the fleet -- that part is
-                 # correct and must stay (the conversation id cannot be reused
-                 # for it: convo_id changes WITHIN a process on /new and resume,
-                 # so identity would shift mid-session and two windows resuming
-                 # the same conversation would be two consumers on one mailbox).
+                 # 🔴 RETRACTED 2026-08-23. This block used to say the agent
+                 # id "is minted per PROCESS and persisted nowhere ... that part
+                 # is correct and must stay (the conversation id cannot be
+                 # reused for it)". THAT IS THE DESIGN RYAN REJECTED on
+                 # 2026-08-21, and it is documented here as if it were current.
+                 #
+                 # What actually ships: agent_id_for_convo() DERIVES the id from
+                 # the conversation, uuid5 over "litetui:seat:" + convo_id
+                 # (0852dab). Per-process ids were tried and measured -- one
+                 # conversation minted three ids in an evening, two of them
+                 # heartbeating at nothing, and a dispatched task landed in a
+                 # dead mailbox while `send` exited 0. See that function's
+                 # docstring for the full reasoning; it is not repeated here,
+                 # because a second copy is a second thing that can drift.
+                 #
+                 # The old block's ONE correct observation survives the change:
+                 # identity does shift within a process on /new and /resume, and
+                 # two windows on the same conversation now share one id and so
+                 # poll one mailbox. That is a consequence of the ruling, not an
+                 # argument against it -- silent misdelivery was the worse cost.
+                 # The shift is handled: Seat.rebind() retires the old row and
+                 # re-registers under the new id in one transition.
+                 #
+                 # ⭐ Why this retraction is left in place instead of the lines
+                 # simply being deleted: the false premise regenerates. A reader
+                 # who finds no trace of it re-derives it from first principles
+                 # and reaches the rejected design again. In this repo A COMMENT
+                 # IS A HYPOTHESIS -- three prose-contradicts-code defects were
+                 # found here in one day (this one, _sync_seat_identity's
+                 # "the next heartbeat re-registers", and mcp_client's "every
+                 # wait is bounded"). Follow the control flow, not the prose.
                  #
                  # But without --takeover the NAME cannot carry across either:
                  # the previous process still holds "LiteTUI" in the registry, so
