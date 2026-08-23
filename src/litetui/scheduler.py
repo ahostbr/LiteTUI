@@ -33,9 +33,10 @@ import json
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+
 from litetui.tool_policy import SCHEDULED
 
 #: How often the app polls. Cron resolves to the minute, so anything under 60s
@@ -238,9 +239,52 @@ class Job:
     #: job so an explicit human override is durable rather than ambient app
     #: state that silently changes every automation at once.
     tool_profile: str = SCHEDULED
+    #: ``cron`` keeps the historical path. ``loop`` is a fixed cadence owned
+    #: by one conversation and is polled by the SAME monitor.
+    kind: str = "cron"
+    owner_convo_id: str = ""
+    interval_minutes: int = 0
+    next_run_at: str | None = None
+
+    @classmethod
+    def loop(
+        cls,
+        *,
+        prompt: str,
+        interval_minutes: int,
+        owner_convo_id: str,
+        tool_profile: str = SCHEDULED,
+        now: datetime | str | None = None,
+    ) -> "Job":
+        if interval_minutes < 1:
+            raise ValueError("loop interval must be at least one minute")
+        start = (
+            datetime.fromisoformat(now)
+            if isinstance(now, str)
+            else (now or datetime.now())
+        )
+        return cls(
+            prompt=prompt,
+            schedule=f"@every {interval_minutes}m",
+            kind="loop",
+            owner_convo_id=owner_convo_id,
+            interval_minutes=interval_minutes,
+            next_run_at=(start + timedelta(minutes=interval_minutes)).isoformat(
+                timespec="seconds"
+            ),
+            tool_profile=tool_profile,
+        )
 
     def cron(self) -> Cron:
         return Cron.parse(self.schedule)
+
+    def next_after(self, now: datetime) -> datetime | None:
+        if self.kind == "loop":
+            try:
+                return datetime.fromisoformat(self.next_run_at or "")
+            except ValueError:
+                return None
+        return self.cron().next_after(now)
 
     def describe(self) -> str:
         state = "on " if self.enabled else "off"
@@ -253,6 +297,27 @@ class Job:
 def slot_of(when: datetime) -> str:
     """The minute a moment belongs to, as a stable key."""
     return when.strftime("%Y-%m-%dT%H:%M")
+
+
+def prepare_fire(job: Job, active_convo_id: str, now: datetime) -> str | None:
+    """Advance a loop or return the reason it must pause.
+
+    Cron jobs need no preparation. Keeping the ownership decision here leaves
+    app.py as the delivery adapter instead of making the god object own loop
+    policy.
+    """
+    if job.kind != "loop":
+        return None
+    if job.owner_convo_id and job.owner_convo_id != active_convo_id:
+        job.enabled = False
+        return (
+            f"/loop {job.id} paused: owner conversation "
+            f"{job.owner_convo_id[:8]} is not active"
+        )
+    job.next_run_at = (
+        now + timedelta(minutes=max(1, job.interval_minutes))
+    ).isoformat(timespec="seconds")
+    return None
 
 
 def due(jobs: list[Job], now: datetime) -> list[Job]:
@@ -268,6 +333,14 @@ def due(jobs: list[Job], now: datetime) -> list[Job]:
     ready = []
     for job in jobs:
         if not job.enabled:
+            continue
+        if job.kind == "loop":
+            try:
+                next_run = datetime.fromisoformat(job.next_run_at or "")
+            except ValueError:
+                continue
+            if now >= next_run and job.last_fired_slot != slot_of(now):
+                ready.append(job)
             continue
         try:
             cron = job.cron()

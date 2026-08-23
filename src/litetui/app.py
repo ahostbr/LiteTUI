@@ -1950,6 +1950,14 @@ class LiteTUI(App):
         in a log that only records successes.
         """
         now = datetime.now()
+        blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
+        if blocked:
+            try:
+                sched_mod.save(self._jobs, paths.ROOT)
+            except OSError:
+                pass
+            self._system(blocked)
+            return
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
@@ -1960,7 +1968,8 @@ class LiteTUI(App):
         label = job.label or job.id
         text = job.prompt
         profile = getattr(job, "tool_profile", tool_policy.SCHEDULED)
-        banner = f"[cron {label} \u00b7 {job.schedule}]\n{text}"
+        source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
+        banner = f"[{source} {label} \u00b7 {job.schedule}]\n{text}"
 
         if job.new_conversation and not self._chat_running():
             self._handle_command("/new")
@@ -2103,7 +2112,7 @@ class LiteTUI(App):
         lines.append("")
         for job in self._jobs:
             try:
-                nxt = job.cron().next_after(now)
+                nxt = job.next_after(now)
                 when = nxt.strftime("%a %d %b %H:%M") if nxt else "never"
             except sched_mod.CronError as e:
                 # A job that can never fire must SAY so here. Silently listing
@@ -4488,6 +4497,7 @@ class LiteTUI(App):
             if not tool_acc:
                 # Turn is over. Check the window AFTER this worker exits:
                 # _compact shares group="chat" and would cancel us mid-frame.
+                await self.plugins.finalize_turn()
                 self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
                 return  # plain answer — agent loop done
