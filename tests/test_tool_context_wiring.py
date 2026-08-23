@@ -117,6 +117,34 @@ def test_summ_empty_reply_degrades_to_mask(tmp_path):
     assert "masked" in run(ns)
 
 
+def test_summ_failure_records_why_it_fell_back(tmp_path):
+    """The mask fallback is correct; falling back SILENTLY is the defect. A
+    backend that can never summarise degrades every big result to a mask, and
+    without a recorded reason that persistent failure is invisible forever."""
+    ns, _ = app_double(tmp_path, "llm-tool-summ", raise_=True)
+    run(ns)
+    log = tmp_path / "tool-raw" / "summarise-failures.log"
+    assert log.exists(), "the fallback must leave a recorded reason"
+    text = log.read_text(encoding="utf-8")
+    assert "RuntimeError" in text and "side call down" in text
+    assert "-bash.txt" in text  # the reason names the parked raw it belongs to
+
+
+def test_summ_empty_reply_records_why_it_fell_back(tmp_path):
+    ns, _ = app_double(tmp_path, "llm-tool-summ", reply="   ")
+    run(ns)
+    text = (tmp_path / "tool-raw" / "summarise-failures.log").read_text(encoding="utf-8")
+    assert "empty summary" in text
+
+
+def test_summ_success_records_no_failure(tmp_path):
+    """Control: the log only ever carries failures — a reason written on
+    success would bury the real ones under noise."""
+    ns, _ = app_double(tmp_path, "llm-tool-summ", reply="a fine summary")
+    run(ns)
+    assert not (tmp_path / "tool-raw" / "summarise-failures.log").exists()
+
+
 # --- placement ---------------------------------------------------------------
 def test_exactly_one_call_site_and_it_is_not_in_compact():
     """_compact's tool loop feeds a THROWAWAY `ask` list — summarising there

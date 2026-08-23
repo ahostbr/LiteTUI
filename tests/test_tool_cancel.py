@@ -70,12 +70,22 @@ def _run_bash_in_thread(args):
     return th, box
 
 
-def _wait(cond, tries=100, delay=0.1):
-    for _ in range(tries):
+def _wait(cond, ceiling=120.0, delay=0.1):
+    """Poll cond until it holds or the wall-clock ceiling passes.
+
+    The first draft budgeted 100 tries x 0.1s — a fixed 10-second sleep in
+    disguise, assuming Windows schedules the probe and the CIM query answers
+    inside 10s. A loaded box misses that for reasons unrelated to what these
+    tests measure. The ceiling is generous because it is only ever PAID on
+    failure — a passing poll returns the moment the condition holds.
+    """
+    deadline = time.monotonic() + ceiling
+    while True:
         if cond():
             return True
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(delay)
-    return False
 
 
 def test_cancel_kills_the_whole_tree_and_the_turn_survives(tmp_path):
@@ -103,20 +113,37 @@ def test_cancel_kills_the_whole_tree_and_the_turn_survives(tmp_path):
     assert box["result"].startswith("[cancelled by user after"), box["result"]
     # partial output written before the kill is preserved, not discarded
     assert "probe up" in box["result"]
-    assert _wait(lambda: not _pids_with_marker(marker), tries=50), \
+    assert _wait(lambda: not _pids_with_marker(marker)), \
         "GRANDCHILD SURVIVED — the tree kill missed the real work"
 
 
 def test_negative_arm_no_cancel_means_normal_completion(tmp_path):
     """Without this, the test above measures only that processes eventually
-    exit. Same shape, no cancel: alive while running, normal result after."""
+    exit. Same shape, no cancel: alive while running, normal result after.
+
+    The probe HOLDS until the test releases it. Its first draft slept a fixed
+    2s, and the aliveness poll lost the race on a loaded box: one CIM query
+    can outlast the probe's whole lifetime, so the probe came and went between
+    two queries and "probe never started" fired for a probe that ran fine. No
+    ceiling cures that — a poll cannot find a process that already exited. The
+    release file makes the polled condition unmissable; the probe's own
+    deadline only bounds a crashed test run, it is never waited out."""
     marker = f"CANCELPROBE_{uuid.uuid4().hex[:12]}"
     script = tmp_path / f"{marker}.py"
-    script.write_text("import time\ntime.sleep(2)\nprint('done cleanly')\n")
+    release = tmp_path / f"{marker}.release"
+    script.write_text(
+        "import os, time\n"
+        f"release = {str(release)!r}\n"
+        "deadline = time.monotonic() + 240\n"
+        "while not os.path.exists(release) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.1)\n"
+        "print('done cleanly')\n"
+    )
     th, box = _run_bash_in_thread(
         {"command": f'"{sys.executable}" "{script}"', "timeout": 240})
 
     assert _wait(lambda: _pids_with_marker(marker)), "probe never started"
+    release.write_text("go")
     th.join(timeout=60)
     assert not th.is_alive()
     assert "done cleanly" in box["result"]
@@ -137,7 +164,7 @@ def test_timeout_now_kills_the_tree_too(tmp_path):
     th.join(timeout=60)
     assert not th.is_alive()
     assert box["result"].startswith("[timed out after 2s]")
-    assert _wait(lambda: not _pids_with_marker(marker), tries=50), \
+    assert _wait(lambda: not _pids_with_marker(marker)), \
         "timeout reported but the tree is still running — the old lie"
 
 

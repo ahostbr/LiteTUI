@@ -2162,12 +2162,29 @@ class LiteTUI(App):
                 extra_body={"reasoning_effort": "low"},
             )
             summary = (resp.choices[0].message.content or "").strip()
-        except Exception:
+            why_no_summary = "side call returned an empty summary"
+        except Exception as e:
             summary = ""
+            why_no_summary = f"side call failed — {type(e).__name__}: {e}"
         if not summary:
             # Side call failed or produced nothing: fall back to the MASK.
             # Still non-lossy (the pointer survives), still cheap — and more
             # honest than a fabricated one-line "summary".
+            #
+            # The fallback is right; falling back SILENTLY is not. Without a
+            # recorded reason, a backend that can never summarise degrades
+            # every big result to a mask and nothing anywhere says why.
+            line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {path.name}: {why_no_summary}\n"
+
+            def _record() -> None:
+                with (sidecar / "summarise-failures.log").open(
+                        "a", encoding="utf-8") as f:
+                    f.write(line)
+
+            try:
+                await asyncio.to_thread(_record)
+            except OSError:
+                pass  # the record must never take the fallback down with it
             return tool_context.render_mask(name, raw, pointer)
         return tool_context.render_summary(name, raw, pointer, summary)
 
