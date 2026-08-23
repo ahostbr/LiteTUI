@@ -35,6 +35,7 @@ from litetui.fmt import fmt_dur
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import tool_policy
+from litetui.turn_engine import TurnEngine
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
 from litetui.tool_approval import ToolApprovalScreen
@@ -3045,37 +3046,19 @@ class LiteTUI(App):
         """The window percent when a compaction is DUE, else None. A TEST — it
         never starts one.
 
-        Split out so the agent loop can ASK between tool iterations without
-        acting. _stream and _compact are BOTH @work(exclusive=True,
-        group="chat"), so calling _maybe_autocompact from inside the loop
-        would cancel the loop that called it — mid-turn, possibly between an
-        assistant message carrying tool_calls and its results. The loop breaks
-        and schedules the compaction for after the worker exits instead.
+        The policy itself is TurnEngine.autocompact_due, which is pure and can
+        be exercised without a Textual mount; this reads the live values it
+        needs off the app. See that function for why each refusal to answer is
+        load bearing.
         """
-        if not self.settings.autocompact_enabled:
-            return None
-        if not self.ctx_max or not self.ctx_used:
-            return None  # window size unknown - never guess a threshold
-        if not getattr(self, "ctx_loaded", False):
-            # The model is not loaded, so ctx_max is its CEILING, not its
-            # window. Dividing by it computes a threshold against a number the
-            # session does not have: 80% of 262,144 is 209,715 tokens, which an
-            # 8k window can never reach, so this would silently never fire and
-            # the model would blow its real context instead. Refusing is the
-            # same rule as the line above - never guess a threshold.
-            return None
-        if self.ctx_used == getattr(self, "_autocompact_failed_at", None):
-            # The last compaction FAILED and the window has not moved since.
-            # The inputs are identical, so the next attempt fails identically —
-            # and each attempt is a full request. This is the retry loop that
-            # was watched in the wild: "Compacting 126 messages / Compact
-            # failed / Compacting 126 messages", no backoff. Wait for a real
-            # change instead of asking the same question again.
-            return None
-        pct = self.ctx_used * 100 // self.ctx_max
-        if pct < self.settings.autocompact_at_percent:
-            return None
-        return pct
+        return TurnEngine.autocompact_due(
+            enabled=self.settings.autocompact_enabled,
+            at_percent=self.settings.autocompact_at_percent,
+            ctx_max=self.ctx_max,
+            ctx_used=self.ctx_used,
+            ctx_loaded=bool(getattr(self, "ctx_loaded", False)),
+            failed_at=getattr(self, "_autocompact_failed_at", None),
+        )
 
     def _maybe_autocompact(self) -> None:
         """Start a compaction if one is due. SCHEDULE this — never call it from
@@ -4149,41 +4132,16 @@ class LiteTUI(App):
             self._glassbox(
                 "context", 1.0, f"{len(request_messages)} messages", discrete=True
             )
-            kwargs: dict = {
-                "model": self.model_id or "local-model",
-                # Live store merged in here, not stored on self.conversation.
-                "messages": request_messages,
-                "stream": True,
-                "max_tokens": (
-                    self.settings.max_tokens_tools
-                    if self.tools_enabled
-                    else self.settings.max_tokens_chat
-                ),
-                "stream_options": {"include_usage": True},
-            }
-            # Sampling: global /settings defaults with this model's Inference
-            # overrides layered on top (only values actually SET are sent —
-            # an unset knob must leave the server's own default in charge).
-            # Split native-vs-extra_body: the OpenAI client's create() has
-            # typed params and no **kwargs, so top_k/min_p/repeat_penalty as
-            # top-level keys are a TypeError, not a passthrough.
-            native, extra, response_format = llm_backend.split_request_kwargs(
-                self.backend.request_overrides(self.model_id)
+            kwargs = TurnEngine.chat_request(
+                model_id=self.model_id,
+                messages=request_messages,
+                tools_enabled=self.tools_enabled,
+                max_tokens_tools=self.settings.max_tokens_tools,
+                max_tokens_chat=self.settings.max_tokens_chat,
+                request_overrides=self.backend.request_overrides(self.model_id),
+                thinking_level=self.thinking_level,
+                tools=self._all_tools() if self.tools_enabled else None,
             )
-            kwargs.update(native)
-            if response_format is not None:
-                kwargs["response_format"] = response_format
-            if self.tools_enabled:
-                kwargs["tools"] = self._all_tools()
-            # reasoning_effort rides extra_body so the value lands in the JSON
-            # verbatim: the client types it as a fixed Literal, and two of LM
-            # Studio's six ("none", "xhigh") are not in it.
-            if self.thinking_level:
-                extra["reasoning_effort"] = (
-                    "none" if self.thinking_level == "off" else self.thinking_level
-                )
-            if extra:
-                kwargs["extra_body"] = extra
 
             self._tps_start()
             try:
@@ -4277,31 +4235,25 @@ class LiteTUI(App):
                         # thinks, then decides), so the header timer stops here.
                         self._thinking_done()
                     for tc in tool_calls:
-                        idx = tc.index
-                        slot = tool_acc.setdefault(
-                            idx, {"id": None, "name": "", "arguments": ""}
+                        idx, named_now, argued_now = TurnEngine.accumulate_tool_call(
+                            tool_acc, tc
                         )
-                        if tc.id:
-                            slot["id"] = tc.id
-                        fn = tc.function
-                        if fn is not None:
-                            if fn.name:
-                                slot["name"] += fn.name
-                                if idx not in tool_msgs:
-                                    msg = ToolMessage(fn.name)
-                                    tool_msgs[idx] = msg
-                                    # Mount FIRST. _tool_begin attaches the
-                                    # cancel control beside this widget, which
-                                    # it cannot do while the widget has no
-                                    # parent. The old order skipped it silently.
-                                    self.query_one("#chat-log").mount(msg)
-                                    self._tool_begin(msg)
-                                self._scroll_down()
-                            if fn.arguments:
-                                slot["arguments"] += fn.arguments
-                                if idx in tool_msgs:
-                                    tool_msgs[idx].set_args(slot["arguments"])
-                                    self._scroll_down()
+                        if named_now:
+                            if idx not in tool_msgs:
+                                msg = ToolMessage(tool_acc[idx]["name"])
+                                tool_msgs[idx] = msg
+                                # Mount FIRST. _tool_begin attaches the cancel
+                                # control beside this widget, which it cannot
+                                # do while the widget has no parent. The old
+                                # order skipped it silently.
+                                self.query_one("#chat-log").mount(msg)
+                                self._tool_begin(msg)
+                            # Every name fragment, not only the first: the
+                            # original scrolled here at the `if fn.name` level.
+                            self._scroll_down()
+                        if argued_now and idx in tool_msgs:
+                            tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
+                            self._scroll_down()
             except Exception as e:
                 self._elapsed_stop_body()
                 self._thinking_done()
@@ -4765,30 +4717,14 @@ class LiteTUI(App):
             card.set_status(f"checking {self.model_id} is ready")
             await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
             for round_no in range(1, self.settings.compact_max_tool_iters + 1):
-                kwargs: dict = {
-                    "model": self.model_id or "local-model",
-                    "messages": ask,
-                    # STREAMED, so the card can show the summary being born.
-                    # The old call was stream=False and the whole act was a
-                    # black box between "Compacting..." and the ledger.
-                    "stream": True,
-                    "max_tokens": self.settings.compact_max_tokens,
-                    # See _warn_reasoning_ignored for why the level must be
-                    # one the model actually accepts: a virtual model whose
-                    # level set lacks "none" DROPS the field with a 200 and
-                    # reasons at ITS default anyway.
-                    "extra_body": {
-                        "reasoning_effort": (
-                            "none"
-                            if self.settings.compact_thinking_level == "off"
-                            else self.settings.compact_thinking_level
-                        )
-                    },
-                }
-                if self.tools_enabled:
-                    # Passed so STEP 1 of COMPACT_PROMPT can actually happen.
-                    # Without them the instruction to persist is theatre.
-                    kwargs["tools"] = self._all_tools()
+                kwargs = TurnEngine.compact_request(
+                    model_id=self.model_id,
+                    messages=ask,
+                    max_tokens=self.settings.compact_max_tokens,
+                    thinking_level=self.settings.compact_thinking_level,
+                    tools_enabled=self.tools_enabled,
+                    tools=self._all_tools() if self.tools_enabled else None,
+                )
 
                 stream = await self.client.chat.completions.create(**kwargs)
                 text_full = ""
@@ -4818,25 +4754,18 @@ class LiteTUI(App):
                         self._scroll_down(only_if_following=True)
                     for tc in (getattr(delta, "tool_calls", None) or []):
                         card.thinking_done()
-                        idx = tc.index
-                        slot = tool_acc.setdefault(
-                            idx, {"id": None, "name": "", "arguments": ""}
+                        idx, named_now, argued_now = TurnEngine.accumulate_tool_call(
+                            tool_acc, tc
                         )
-                        if tc.id:
-                            slot["id"] = tc.id
-                        fn = tc.function
-                        if fn is not None:
-                            if fn.name:
-                                slot["name"] += fn.name
-                                if idx not in tool_msgs:
-                                    msg = ToolMessage(fn.name)
-                                    tool_msgs[idx] = msg
-                                    card.add_tool(msg)
-                                    self._scroll_down()
-                            if fn.arguments:
-                                slot["arguments"] += fn.arguments
-                                if idx in tool_msgs:
-                                    tool_msgs[idx].set_args(slot["arguments"])
+                        if named_now and idx not in tool_msgs:
+                            msg = ToolMessage(tool_acc[idx]["name"])
+                            tool_msgs[idx] = msg
+                            card.add_tool(msg)
+                            # Only on creation here, unlike _stream: the card
+                            # scrolls when a tool APPEARS, not per fragment.
+                            self._scroll_down()
+                        if argued_now and idx in tool_msgs:
+                            tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
 
                 card.thinking_done()
                 if not tool_acc:
