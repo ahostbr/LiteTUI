@@ -209,12 +209,37 @@ class Seat:
                 self._presence_argv() + [
                  # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
                  #
-                 # The agent id is minted per PROCESS and persisted nowhere, so
-                 # every launch is a new agent to the fleet -- that part is
-                 # correct and must stay (the conversation id cannot be reused
-                 # for it: convo_id changes WITHIN a process on /new and resume,
-                 # so identity would shift mid-session and two windows resuming
-                 # the same conversation would be two consumers on one mailbox).
+                 # 🔴 RETRACTED 2026-08-23. This block used to say the agent
+                 # id "is minted per PROCESS and persisted nowhere ... that part
+                 # is correct and must stay (the conversation id cannot be
+                 # reused for it)". THAT IS THE DESIGN RYAN REJECTED on
+                 # 2026-08-21, and it is documented here as if it were current.
+                 #
+                 # What actually ships: agent_id_for_convo() DERIVES the id from
+                 # the conversation, uuid5 over "litetui:seat:" + convo_id
+                 # (0852dab). Per-process ids were tried and measured -- one
+                 # conversation minted three ids in an evening, two of them
+                 # heartbeating at nothing, and a dispatched task landed in a
+                 # dead mailbox while `send` exited 0. See that function's
+                 # docstring for the full reasoning; it is not repeated here,
+                 # because a second copy is a second thing that can drift.
+                 #
+                 # The old block's ONE correct observation survives the change:
+                 # identity does shift within a process on /new and /resume, and
+                 # two windows on the same conversation now share one id and so
+                 # poll one mailbox. That is a consequence of the ruling, not an
+                 # argument against it -- silent misdelivery was the worse cost.
+                 # The shift is handled: Seat.rebind() retires the old row and
+                 # re-registers under the new id in one transition.
+                 #
+                 # ⭐ Why this retraction is left in place instead of the lines
+                 # simply being deleted: the false premise regenerates. A reader
+                 # who finds no trace of it re-derives it from first principles
+                 # and reaches the rejected design again. In this repo A COMMENT
+                 # IS A HYPOTHESIS -- three prose-contradicts-code defects were
+                 # found here in one day (this one, _sync_seat_identity's
+                 # "the next heartbeat re-registers", and mcp_client's "every
+                 # wait is bounded"). Follow the control flow, not the prose.
                  #
                  # But without --takeover the NAME cannot carry across either:
                  # the previous process still holds "LiteTUI" in the registry, so
@@ -271,6 +296,63 @@ class Seat:
             )
         except Exception:
             pass
+
+    def rebind(self, new_agent_id: str) -> bool:
+        """Move this seat to a new identity in ONE transition.
+
+        🔴 WHAT THIS REPLACES WAS A SILENT DEREGISTRATION. app.py's
+        `_sync_seat_identity()` used to deregister the old row, assign the new
+        id, and set `registered = False`, on the theory — stated in its own
+        docstring, three lines above the assignment that defeated it — that the
+        next heartbeat would register the new identity. `heartbeat()` opens with
+        `if not self.registered`, so it returned immediately, and `register()`
+        is reached from exactly ONE place: startup. Nothing re-armed the seat.
+        After /new or /resume the app was absent from `discover`, its id named
+        no registry row, and the footer read "unregistered". Probed 2026-08-23:
+        registered False, heartbeat False, transport calls 0.
+
+        ⭐ The lesson is not "that comment was wrong". It is that the comment
+        and the assignment that contradicts it were BOTH read many times, by
+        the person who wrote them, and the sentence won. Follow the control
+        flow in this file; do not trust its prose.
+
+        ⚠️ A SEAT THAT NEVER HELD A REGISTRATION IS NOT RE-REGISTERED HERE.
+        Boot reaches this seam before startup registration runs, and the model
+        id is not known until `_connect` settles — registering early would
+        claim the row as model "unknown". Adopting the id and returning False
+        is the honest report of "nothing was rebound", not a failure.
+
+        Failure is LOUD, unlike `heartbeat()`. A missed beat is not news; a
+        seat that has silently stopped existing is exactly the news that went
+        unreported for the entire life of this bug. `error` carries the reason
+        and the caller surfaces it.
+        """
+        if new_agent_id == self.agent_id:
+            return self.registered
+
+        was_registered = self.registered
+        if was_registered:
+            # Retire the OLD row while `agent_id` still NAMES it. It carries
+            # this process's pid, so every liveness check that separates ghost
+            # from live reads it as alive and keeps offering it as a delivery
+            # target. Order is load-bearing: swapping the id first would leave
+            # the stale row on the roster forever.
+            #
+            # Swallowed, and only here: a roster that keeps a stale row beats a
+            # seat that never comes back. Letting this abort the rebind would
+            # trade the ghost for the exact invisibility this method exists to
+            # end — a strictly worse failure than the one being avoided.
+            try:
+                self.deregister()
+            except Exception:
+                pass
+            self.registered = False
+
+        self.agent_id = new_agent_id
+        self.error = None
+        if not was_registered:
+            return False
+        return self.register()
 
     # ── inbox ───────────────────────────────────────────────────────────────
     def _addressed_to_me(self, msg: dict) -> bool:

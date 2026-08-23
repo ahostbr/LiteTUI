@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -56,6 +57,15 @@ class MCPServer:
         self.error: str | None = None
         self._lock = threading.Lock()
         self._id = 0
+        # Frames drained off stdout by _reader_loop. `None` is the sentinel for
+        # "nothing more will arrive" (EOF or a dead reader).
+        self._frames: queue.Queue = queue.Queue()
+        # Responses that arrived for a DIFFERENT id than the one being awaited.
+        # Bounded in practice: `call()` serialises requests per server, so only
+        # frames belonging to already-abandoned requests can accumulate — and a
+        # timeout kills the process, so they stop arriving.
+        self._pending: dict[int, dict] = {}
+        self._reader: threading.Thread | None = None
 
     # ── wire ────────────────────────────────────────────────────────────────
     def _next_id(self) -> int:
@@ -65,42 +75,122 @@ class MCPServer:
     def _send(self, payload: dict) -> None:
         if not self.proc or not self.proc.stdin:
             raise MCPError("server is not running")
+        # A poisoned server (see _poison) keeps its Popen object, with a closed
+        # stdin and an exit code. Writing to it would raise ValueError three
+        # frames down; say what actually happened instead.
+        if self.proc.poll() is not None:
+            raise MCPError(f"server is not running (exit {self.proc.returncode})")
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         self.proc.stdin.write(line)
         self.proc.stdin.flush()
 
-    def _read_until(self, want_id: int, timeout: float) -> dict:
-        """Read frames until the one matching want_id. Notifications are skipped.
+    def _start_reader(self) -> None:
+        """Drain stdout on a thread of its own. Idempotent.
 
-        A server may interleave its own notifications with responses, so
-        matching on `id` is required — taking the next line would eventually
-        pair a response with the wrong request, which is worse than a timeout
-        because it succeeds.
+        🔴 THIS IS THE BOUND. `_read_until` used to check its deadline and then
+        call `stdout.readline()` on the CALLER's thread. That read blocks, so a
+        server which stays alive and emits no newline held the call forever —
+        the deadline was never re-examined and neither was `poll()`. Probed
+        2026-08-23: still blocked at 5s against a declared 0.1s timeout, with
+        the module docstring one screen above promising "every wait is bounded".
+
+        Moving the blocking read here is what makes the timeout real: the reader
+        may block as long as it likes, because nothing waits on IT — callers
+        wait on a queue, which takes a deadline.
         """
-        if not self.proc or not self.proc.stdout:
+        if self._reader and self._reader.is_alive():
+            return
+        self._reader = threading.Thread(
+            target=self._reader_loop, name=f"mcp-reader-{self.name}", daemon=True
+        )
+        self._reader.start()
+
+    def _reader_loop(self) -> None:
+        """Parse frames off stdout until it ends. Never raises to the caller."""
+        stdout = self.proc.stdout if self.proc else None
+        if stdout is None:
+            self._frames.put(None)
+            return
+        try:
+            while True:
+                line = stdout.readline()
+                if not line:
+                    break                       # EOF — the pipe is done
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    # Not a frame. Servers that print banners to stdout are
+                    # common and their noise must not be mistaken for a
+                    # protocol error.
+                    self._log.write(f"[{self.name}] non-JSON stdout: {line[:400]}\n")
+                    self._log.flush()
+                    continue
+                self._frames.put(msg)
+        except Exception as e:
+            self._log.write(f"[{self.name}] reader stopped: {type(e).__name__}: {e}\n")
+            self._log.flush()
+        finally:
+            # Sentinel, in a finally: a caller blocked on the queue must be
+            # released even when the reader dies of something unforeseen.
+            # Without it, killing the reader would recreate the very hang this
+            # whole change removes.
+            self._frames.put(None)
+
+    def _poison(self, why: str) -> None:
+        """Retire a server that missed its deadline.
+
+        ⚠️ A LATE FRAME IS WORSE THAN NO FRAME. The server may still deliver
+        the response after the timeout, and the next request would then take it
+        as its own answer — matching on `id` narrows that but does not close it,
+        because a retried call re-asks the same question and would accept the
+        stale reply. So the process goes, and the next call starts clean.
+        """
+        self.error = why
+        try:
+            self.stop()
+        except Exception:
+            pass
+
+    def _read_until(self, want_id: int, timeout: float) -> dict:
+        """Wait for the frame matching want_id, bounded by `timeout`.
+
+        Notifications are skipped and responses for OTHER ids are held rather
+        than dropped: the reader drains continuously now, so a frame belonging
+        to another request can arrive mid-wait, and discarding it would strand
+        whoever is waiting on it — a hang with no timeout attached.
+        """
+        if not self.proc:
             raise MCPError("server is not running")
+        held = self._pending.pop(want_id, None)
+        if held is not None:
+            return held
+
         deadline = time.monotonic() + timeout
         while True:
-            if time.monotonic() > deadline:
-                raise MCPError(f"timed out after {timeout:.0f}s waiting for response")
-            if self.proc.poll() is not None:
-                raise MCPError(f"server exited with code {self.proc.returncode}")
-            line = self.proc.stdout.readline()
-            if not line:
-                raise MCPError("server closed its stdout")
-            line = line.strip()
-            if not line:
-                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                why = f"timed out after {timeout:.0f}s waiting for response"
+                self._poison(why)
+                raise MCPError(why)
+            # Capped so the deadline is re-examined on a regular tick rather
+            # than only when a frame happens to land.
             try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                # Not a frame. Servers that print banners to stdout are common
-                # and their noise must not be mistaken for a protocol error.
-                self._log.write(f"[{self.name}] non-JSON stdout: {line[:400]}\n")
-                self._log.flush()
+                msg = self._frames.get(timeout=min(remaining, 0.25))
+            except queue.Empty:
                 continue
-            if msg.get("id") == want_id:
+            if msg is None:
+                code = self.proc.poll() if self.proc else None
+                if code is not None:
+                    raise MCPError(f"server exited with code {code}")
+                raise MCPError("server closed its stdout")
+            mid = msg.get("id")
+            if mid == want_id:
                 return msg
+            if mid is not None:
+                self._pending[mid] = msg
 
     def _request(self, method: str, params: dict | None = None, timeout: float = CALL_TIMEOUT) -> dict:
         rid = self._next_id()
@@ -133,6 +223,10 @@ class MCPServer:
             # ttyguard's defaults; the envelope runs the terminal repair
             # once after the spawn and does not own the process.
         )
+        # BEFORE the handshake: `initialize` waits on the same primitive every
+        # tool call does, so a server that stalls during the handshake would
+        # hang the app at BOOT rather than at first use.
+        self._start_reader()
         self._request(
             "initialize",
             {
