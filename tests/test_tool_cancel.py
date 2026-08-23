@@ -133,6 +133,39 @@ def _probe(tmp_path: Path, body: str) -> tuple[Path, Path]:
     return script, pidfile
 
 
+def _reap(*pinned: _Pinned) -> None:
+    """Kill anything still running, then release the handles. Every arm's
+    `finally`.
+
+    A test that dies mid-way used to leave its probe sleeping out the full
+    300s. On a SHARED box that is not untidiness: it inflates the process
+    table that everyone else's measurements are taken against, and the
+    flakiness it causes looks like the defect under test rather than like
+    litter. Measured 2026-08-23 — twelve of these were alive across three
+    worktrees at one point, and an instruction to "clean up the leaked
+    processes" nearly killed an in-flight measurement instead.
+
+    The pid is exact: the probe reported it itself and the handle has PINNED
+    it, so this cannot kill a stranger that inherited the number.
+
+    🔴 Deliberately NOT ttyguard.kill_tree — cleanup must not depend on the
+    code under test, and kill_tree's 15s budget is itself the defect this
+    file is currently reporting. Failure here is swallowed because nothing
+    reads the outcome and the fallback is the probe's own timeout, i.e.
+    exactly today's behaviour. That is not the same swallow as kill_tree's:
+    no one is being TOLD this succeeded.
+    """
+    for p in pinned:
+        try:
+            if not p.exited():
+                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        finally:
+            p.close()
+
+
 def _pinned_probe(pidfile: Path) -> _Pinned:
     """Wait for the probe to announce itself, then pin it."""
     box: dict = {}
@@ -226,8 +259,7 @@ def test_cancel_kills_the_whole_tree_and_the_turn_survives(tmp_path):
         assert _wait(lambda: shell_child.exited()), \
             "the shell itself survived the kill aimed straight at it"
     finally:
-        grandchild.close()
-        shell_child.close()
+        _reap(grandchild, shell_child)
 
 
 def test_negative_arm_no_cancel_means_normal_completion(tmp_path):
@@ -266,7 +298,7 @@ def test_negative_arm_no_cancel_means_normal_completion(tmp_path):
         assert "[cancelled" not in box["result"]
         assert ttyguard.CANCELLABLE["proc"] is None  # slot cleared on the way out
     finally:
-        probe.close()
+        _reap(probe)
 
 
 def test_timeout_now_kills_the_tree_too(tmp_path):
@@ -290,7 +322,7 @@ def test_timeout_now_kills_the_tree_too(tmp_path):
         assert _wait(lambda: probe.exited()), \
             "timeout reported but the tree is still running — the old lie"
     finally:
-        probe.close()
+        _reap(probe)
 
 
 # --- the action's guard, no app needed ---------------------------------------
