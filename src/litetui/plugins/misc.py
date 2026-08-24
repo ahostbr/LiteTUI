@@ -1,9 +1,9 @@
 """Small host-surface commands: clear-screen, thinking level, quit.
 
 Handler bodies moved verbatim from the _handle_command chain (self -> app).
-Also owns the Toggle-agent-tools palette row — one of the two rows that are
-not slash-commands, kept via the explicit palette_row escape hatch so the
-derived palette stays lossless.
+Also owns the Tools palette row, which used to be a Toggle-agent-tools row and
+is now the tool LIST (`/tools`, T076) — the toggle itself stayed on Ctrl+T,
+because every tools-off refusal names that key to the user and to the model.
 """
 from litetui.settings import THINKING_LEVELS
 
@@ -52,7 +52,27 @@ def _cmd_quit(app, name: str, arg: str) -> None:
 # Four rows Textual used to own. They are ours now so they can carry a group,
 # a description and a slash command like everything else in the palette.
 def _cmd_tools(app, name: str, arg: str) -> None:
-    app.action_toggle_tools()
+    """/tools SHOWS THE TOOL LIST. It used to toggle.
+
+    Ryan, 2026-08-24: "remove the func of /tools switching on and off and make
+    it show this list please."
+
+    🔴 Ctrl+T KEEPS THE TOGGLE, deliberately. Every tools-off refusal names it
+    to the model and the user ("Ctrl+T, or Settings -> Agent loop"), so
+    repointing the command without repointing the key would leave those
+    messages pointing at a control that no longer does what they say. The list
+    carries its own global switch, and that switch calls the same verb.
+    """
+    from litetui.side_panel import open_dialog
+    from litetui.tool_list import ToolListBody
+
+    # `open_dialog`, not `show_dialog`: this handler is SYNC and show_dialog is
+    # a coroutine — the same mismatch OpenBolt measured for three of the four
+    # existing dialogs (T078). He added this shape for exactly that, so the
+    # bridge is one call rather than a worker spawned here. No callback: every
+    # change in the list is already written when it is made, so there is no
+    # answer to collect.
+    open_dialog(app, ToolListBody)
 
 
 def _cmd_keys(app, name: str, arg: str) -> None:
@@ -144,8 +164,8 @@ def _register(ctx) -> None:
     # command. It has one now, so it goes through the front door.
     ctx.command(
         ("/tools",), _cmd_tools,
-        palette="Toggle agent tools",
-        help="Let it read files, run commands and edit things. Ctrl+T.",
+        palette="Tools",
+        help="Every tool, with a checkbox each, and one switch for all of them.",
         group="tools",
         order=10,
     )

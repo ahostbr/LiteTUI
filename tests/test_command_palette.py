@@ -87,7 +87,7 @@ def test_the_palette_covers_the_features_it_was_missing():
                 "Calendar", "New scheduled job", "Scheduled jobs", "Settings",
                 "Switch model", "New conversation", "Conversations",
                 "Compact conversation", "Skills", "Mark the screen",
-                "Toggle agent tools", "Help",
+                "Tools", "Help",
             } - titles
             assert not missing, f"palette rows absent: {sorted(missing)}"
     _run(body())
@@ -201,15 +201,28 @@ def test_running_new_scheduled_job_opens_the_builder_on_daily(tmp_path):
     _run(body())
 
 
-def test_running_toggle_tools_flips_and_the_header_follows():
+def test_running_the_tools_row_opens_the_list_and_does_NOT_toggle():
+    """This row used to toggle. Ryan asked for it to show the list instead:
+    "remove the func of /tools switching on and off and make it show this
+    list please." (T076)
+
+    📌 THE OLD PROPERTY WAS NOT DROPPED, IT MOVED. That the toggle verb still
+    flips the flag, rebuilds the prompt and persists is asserted in
+    tests/test_toggle_tools_persists.py, where the verb now lives. Ctrl+T
+    still calls it — only the palette row and /tools changed.
+    """
     async def body():
         a = make_app()
         async with a.run_test(size=(190, 48)) as pilot:
             before = a.tools_enabled
-            run = next(r for t, _h, r in _table(a) if t == "Toggle agent tools")
+            run = next(r for t, _h, r in _table(a) if t == "Tools")
             run()
-            await pilot.pause()
-            assert a.tools_enabled is (not before)
+            for _ in range(20):
+                await pilot.pause()
+                if a.screen.query("ToolListBody"):
+                    break
+            assert a.screen.query("ToolListBody"), "the row did not open the tool list"
+            assert a.tools_enabled is before, "the row still toggled — it must only show"
     _run(body())
 
 
