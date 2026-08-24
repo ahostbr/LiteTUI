@@ -68,7 +68,7 @@ cheaper wins.
 
 | # | step | owner | moves | does NOT move |
 |---|---|---|---|---|
-| **S1** | `ctx.notify(text)`; `_system` keeps a 1-line delegation | SilverBolt | reach-through **99 → 50** | lines, methods, knot |
+| **S1** | **`app.system_message(text)` — a PUBLIC method on the app**, `_system` kept as a one-line alias; SilverBolt rewrites the 49 call sites | **both — see §2a** | private reach-through **99 → 50** | lines, methods, knot |
 | **S3** | Relocate the eight owner-plugin methods into their plugins | **both — see §3** | **−321 lines, −8 methods, reach 50 → 42** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
 | **O-A** | Delete the six `ConversationRepository` compatibility shims — **requires S2** | OpenBolt | **−6 methods**, −~10 lines | lines (barely), reach (already 0 via S2), knot |
@@ -80,6 +80,38 @@ cheaper wins.
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed_*`/`_eta_*`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | `ctx.conversation` facade (`_compact` excluded) | SilverBolt | reach **11 → 5** | lines, methods, knot |
 | **S7/O5** | The turn-engine boundary: `_stream` (345 ln), `_compact` (262), `_handle_command` | **both, last** | lines, knot | — |
+
+### 2a. S1 — RESHAPED, AND WHY THE ORIGINAL SHAPE WOULD HAVE MERGED CLEAN AND DONE NOTHING
+
+🔴 **`ctx.notify` was approved, and it was unbuildable.** SilverBolt stopped before the first line
+and measured the *call sites* rather than the accesses: **49 of 49 `app._system(...)` sites have
+`app` in scope and NOT `ctx`** (96 of 99 overall are app-only). Command handlers are **module-level
+functions `(app, name, arg)`** registered from inside `_register(ctx)` but **not closures over it**
+(`plugins/__init__.py:165`, `app.py:5187`), so a handler cannot reach `ctx` even in principle.
+⇒ `ctx.notify` would have typechecked, tested green, merged, and moved reach-through **99 → 99**.
+
+⭐ **WHY NEITHER PHASE-1 DOC CAUGHT IT — the durable part.** Both of us counted **accesses**.
+Neither asked **what is in scope at the call site**. An access proves a coupling exists; it says
+nothing about what a replacement would have *available* to it. Same class as the phantom member:
+we measured the thing and not the thing's **context**.
+📌 **Any future "seal it behind X" step must answer *is X reachable from every call site?* BEFORE it
+is scheduled** — not when someone sits down to write it.
+
+**The shape (ruled):** a public, documented method **is** a supported API. The metric is *private*
+reach-through, not "number of things named `ctx`".
+
+> **COMMIT 1 — OpenBolt, `app.py`:** add `def system_message(self, text: str) -> None:` (body
+> unchanged) plus `_system = system_message` as a one-line alias. **SUITE GREEN.**
+> **COMMIT 2 — SilverBolt, `plugins/**`:** the 49 sites, one token each,
+> `app._system(` → `app.system_message(`. **SUITE GREEN.**
+> **COMMIT 3 — OpenBolt, later and optional:** drop the `_system` alias. **Verify by grep BEFORE
+> deleting, not after.**
+
+**Both alternatives were considered and rejected.** Changing the handler contract to
+`(ctx, name, arg)` touches the registry type, `app.py:5187` and every handler in 13 plugin files —
+it is its own step with its own predecessors, not something smuggled under a step scoped "no state,
+no lifecycle". And `ctx.notify` *alongside* the public method for the 3 ctx-reachable sites is two
+doors to one behaviour, one of them with three callers — a worse surface than either alone.
 
 **S1 first, unconditionally.** `_system` is 49 of 99, every hit a call, zero reads, return value
 unused, four lines of body. Nothing else on either list is that cheap, and until it is sealed
