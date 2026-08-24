@@ -55,6 +55,9 @@ it did not*. That is §6, and it is binding on every report in this task.
 **no executable statement anywhere in `plugins/`**. It is not on the seal list. Anyone working
 from the grep will hunt a caller that does not exist.
 
+📌 **A text gate counts the prose *about* the thing. Never size coupling from a grep.** Both seats
+produced the AST number independently before it was adopted here.
+
 ---
 
 ## 2. THE ORDER
@@ -100,8 +103,11 @@ reached exactly once, by exactly that plugin:
 | `_cron_monitor` | 16 | `scheduler_plugin.py` |
 | `_register_custom_themes` | 11 | `themes_plugin.py` |
 
-> **COMMIT 1 — SilverBolt: the body ARRIVES in the owning plugin. `app.py` untouched.**
-> **COMMIT 2 — OpenBolt: `app.py` loses the method.**
+> **COMMIT 1 — SilverBolt: the body ARRIVES in the owning plugin. `app.py` untouched. SUITE GREEN.**
+> **COMMIT 2 — OpenBolt: `app.py` loses the method. SUITE GREEN.**
+
+**Green at BOTH commits is the property, not a formality** — it is what keeps the branch bisectable
+for everyone else while a two-seat move is half-done.
 
 **It cannot be the other way round.** The moment `app.py` loses `_inbox_monitor`, the plugin that
 calls `app._inbox_monitor` breaks, and the suite is red *between* the two commits — which
