@@ -56,7 +56,20 @@ def _cmd_tools(app, name: str, arg: str) -> None:
 
 
 def _cmd_keys(app, name: str, arg: str) -> None:
-    app.action_show_help_panel()
+    """/keys TOGGLES the help panel.
+
+    Textual 8.1.0 ships `action_show_help_panel` and `action_hide_help_panel`
+    and NO toggle, and the show verb is idempotent by design -- it queries for a
+    HelpPanel and mounts one only on NoMatches. So calling it twice opened the
+    panel once and then did nothing, which is what Ryan saw. The toggle has to
+    be ours; there is nothing upstream to delegate to.
+    """
+    from textual.widgets import HelpPanel
+
+    if app.screen.query(HelpPanel):
+        app.action_hide_help_panel()
+    else:
+        app.action_show_help_panel()
 
 
 def _cmd_maximize(app, name: str, arg: str) -> None:
