@@ -33,6 +33,12 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=True):
         return approve
 
     return SimpleNamespace(
+        # T073 put a toggle check ahead of the policy gate, so a host that
+        # models the POLICY path has to say tools are on. Stated rather than
+        # defaulted: `_execute_tool` reads the attribute directly instead of
+        # `getattr(..., True)`, because a guard whose missing input means
+        # "permit" is not a guard.
+        tools_enabled=True,
         _active_tool_profile=profile,
         _dispatch_for=lambda _name: run,
         plugins=_Policies(policy),

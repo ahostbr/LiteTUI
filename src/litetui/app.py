@@ -262,6 +262,33 @@ LITETUI_SPLASH = (
 
 
 
+#: What every tool returns while the tools toggle is OFF, and the note that
+#: replaces the tools prompt section. One string each, in one place, because
+#: the model reads both and they must not drift apart.
+#:
+#: Both name the REAL controls, verified rather than invented: Ctrl+T is what
+#: the app's own toggle message advertises (`action_toggle_tools`), and the
+#: switch is `settings_screen.py:308`, labelled "Tools enabled" on the
+#: "Agent loop" tab. A refusal that sends the user somewhere that does not
+#: exist is worse than no refusal at all.
+TOOLS_DISABLED_RESULT = (
+    "[disabled] Tools are turned OFF in LiteTUI, so nothing ran and nothing "
+    "changed. Only the user can turn them on: Ctrl+T, or Settings -> Agent "
+    "loop -> Tools enabled. Tell them that in plain language, then answer as "
+    "best you can without tools. Do not retry and do not try another tool."
+)
+
+TOOLS_DISABLED_PROMPT = (
+    "\nTOOLS ARE ADVERTISED BUT DISABLED. The schemas are offered so "
+    "that a tool call is a real call rather than text you type out; every one "
+    "of them will be refused without running. If you need a tool, call it "
+    "normally, read the refusal, and tell the user that tools are off in "
+    "LiteTUI and only they can enable them (Ctrl+T, or Settings -> Agent loop "
+    "-> Tools enabled). Never write tool-call syntax into your reply as "
+    "prose." "\n"
+)
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -1016,13 +1043,26 @@ class LiteTUI(App):
             # straight onto the first word of this one. Caught by
             # test_prompt_compose's reference fold, which is exactly what that
             # test exists to notice.
-            lambda: "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n",
+            lambda: (
+                "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
+                if self.tools_enabled
+                else TOOLS_DISABLED_PROMPT
+            ),
             # Gated on BOTH the toggle and the file. A missing file must not
             # render as an empty section: the tools would still be OFFERED to
             # the model with no instructions on how to use them, which is a
             # worse state than not offering them, and a silent one. The boot
             # check below is what makes the absence audible.
-            enabled=lambda: self.tools_enabled and paths.TOOLS_PROMPT_FILE.exists(),
+            #
+            # 🔴 T073: the schemas are advertised even when the toggle is OFF,
+            # so offering them with no instructions became reachable through
+            # the TOGGLE and not only through a missing file. The render above
+            # answers it — full instructions when on, a short note when off —
+            # so the OFF state ships neither all of tools.md nor silence. The
+            # file gate still applies only to the ON branch, which needs it.
+            enabled=lambda: (
+                paths.TOOLS_PROMPT_FILE.exists() if self.tools_enabled else True
+            ),
         )
         # The substrate's own status readout — host-registered so it can
         # never be disabled away with a plugin.
@@ -1345,6 +1385,15 @@ class LiteTUI(App):
         host. A denial returns an ordinary tool result so the model can adapt
         without an exception tearing the tool-call pairing apart.
         """
+        # THE TOGGLE IS ENFORCED HERE, BEFORE RESOLUTION, so a disabled tool
+        # cannot run even if another branch is added above the policy gate.
+        # ok=False because nothing executed — callers use that flag to record
+        # writes, and no write happened.
+        # 🔴 DELIBERATELY NOT EXECUTABLE, AND THE TEXT FORM IS DELIBERATELY NOT
+        # PARSED: detect-and-execute would defeat the one guarantee this
+        # setting exists to make.
+        if not self.tools_enabled:
+            return TOOLS_DISABLED_RESULT, False
         fn = self._dispatch_for(name)
         if fn is None:
             return f"[error] unknown tool: {name}", False
@@ -3315,7 +3364,7 @@ class LiteTUI(App):
                 max_tokens_chat=self.settings.max_tokens_chat,
                 request_overrides=self.backend.request_overrides(self.model_id),
                 thinking_level=self.thinking_level,
-                tools=self._all_tools() if self.tools_enabled else None,
+                tools=self._all_tools(),  # advertised even when OFF — see turn_engine
             )
 
             self._tps.start()
@@ -3885,7 +3934,7 @@ class LiteTUI(App):
                     max_tokens=self.settings.compact_max_tokens,
                     thinking_level=self.settings.compact_thinking_level,
                     tools_enabled=self.tools_enabled,
-                    tools=self._all_tools() if self.tools_enabled else None,
+                    tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                 )
 
                 stream = await self.client.chat.completions.create(**kwargs)
