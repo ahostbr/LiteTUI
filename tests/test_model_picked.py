@@ -2,11 +2,29 @@
 resident model from being reloaded for nothing.
 
 WHY THIS FILE EXISTS. The member is reached ONLY as a `push_screen` callback
-reference (`plugins/model_switch.py`, the `app.on_model_picked` argument) and
-is never called by name anywhere in the tree. Nothing calls it, so nothing
-accidentally covered it: when this file was written,
-`git grep -l on_model_picked -- tests/` returned ZERO, on a branch where the
-rename had already shipped. A green suite was never evidence for this member.
+reference (`plugins/model_switch.py`, the `app.on_model_picked` argument) and is
+never called by name anywhere in the tree, so `git grep -l on_model_picked --
+tests/` returns ZERO.
+
+CORRECTED AFTER THE FACT, AND THE CORRECTION IS THE POINT. This docstring first
+concluded from that ZERO that "nothing accidentally covered it". THAT WAS WRONG.
+`tests/test_modals.py` drives the picker WIRING and never names the symbol; run
+against the full suite with this file deselected, it already covers three of the
+four arms:
+
+    gut the body                     -> 2 RED in test_modals.py   already covered
+    remove the whole guard           -> 1 RED in test_modals.py   already covered
+    drop only the same-model clause  -> 1141 passed, GREEN        UNWATCHED
+
+ZERO MENTIONS IS NOT ZERO COVERAGE. The original mutations were run against this
+file alone, which measures THIS FILE'S sensitivity, not the codebase's coverage.
+
+So what this file adds is one genuinely unwatched arm --
+`test_repicking_the_current_model_does_not_reload_it` is the only test in the
+tree that watches it -- plus explicit, named coverage beside implicit wiring
+coverage, which a rename can silently detach. Not a closed hole.
+(Not measured: whether the empty-string case is separately covered; `not
+model_id` folds None and "" together and only the same-model clause was isolated.)
 
 The guard is not cosmetic. `_apply_context_length` reloads the model on the
 llama.cpp backend -- evicting resident weights -- so re-picking the model you
