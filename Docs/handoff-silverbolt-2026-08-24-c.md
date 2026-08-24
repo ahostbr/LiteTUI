@@ -13,7 +13,7 @@ This one is **on `main`**, not a side branch.
 git -C C:/Projects/LiteTUI status --porcelain   # 5 lines, NONE of them mine:
 #   M prompts/systemprompt.md   <- RYAN'S, and FENCED (PLAN.md:1024). Do not touch, do not commit.
 #   ?? .playwright-cli/  ?? skills/find-claude-skills/  ?? temp/  ?? tools/pccontrol/screenshot.py
-git rev-parse --short HEAD origin/main          # c55d9d2 == c55d9d2
+git rev-parse --short HEAD origin/main          # 16bc4e7 (or later) == same
 ```
 
 | sha | what |
@@ -24,9 +24,10 @@ git rev-parse --short HEAD origin/main          # c55d9d2 == c55d9d2
 | `22349d8` | fix `/keys` toggle |
 | `80162a7` | T073 engine half — rule_key + evaluate(always_allow=, deny=) |
 | `c55d9d2` | **T073 items 1–3 — tri-state modal, settings, call site. WIRED END TO END.** |
+| `16bc4e7` | **T073 items 5–6 — deny stops the turn; every refusal in prompts/tool-denied.md** |
 
 Board: T062 · T066 · T070 · T072 **done**. T073 **building**, mine.
-⚠️ §2 items 1–3 below are now DONE — see §10, which supersedes them.
+⚠️ §2 items 1–3 AND 5–6 are now DONE — see §10, which supersedes them. Only item 4 is left.
 
 ## 2. T073 — WHAT LANDED, WHAT HAS NOT
 
@@ -48,14 +49,13 @@ claim a reader lands on directly. Items 4–6 are still owed. Full detail in §1
    via `_remember_tool_rule` when the human answers "always".
 4. **`AUTONOMOUS` profile** — a third `ToolProfile`, everything in `allow`, nothing in `confirm`.
    `PROFILE_NAMES` at tool_policy.py:50, `PROFILES` at :127.
-5. **Deny-stops-turn** — `app.py:1416` returns `[policy denied by user] {name}, False` and the loop
-   CONTINUES. Ryan wants it to stop the turn. **Implement as a CHOICE, not a deletion:** my own
-   `action_cancel_tool` docstring already ruled the other way on purpose (the turn carries on with
-   an honest result; Esc stops the whole turn — two deliberate verbs).
-6. **Sentinel's item B** — move the four hardcoded refusal strings to `prompts/tool-denied.md`.
-   They INTERPOLATE (`{name}`, `{decision.reason}`), so it is a TEMPLATE: a missing placeholder must
-   RAISE, and a missing FILE must fall back to a built-in constant, never to silence. A refusal that
-   renders its own braces is worse than the hardcoded string it replaced.
+5. ✅ **DONE `16bc4e7` — deny stops the turn.** Ryan was asked replace-vs-supplement with the cost
+   of replacing stated and chose **REPLACE**, so the two deliberate verbs are now one. It also
+   surfaced a pre-existing lie in the loop's tail — see §10.
+6. ✅ **DONE `16bc4e7` — every refusal lives in `prompts/tool-denied.md`.** Ryan ruled that
+   `TOOLS_DISABLED_RESULT` migrates too (all five). ⚠️ The "missing placeholder must RAISE" rule
+   written here was **REVERSED** during implementation — it raises at TEST time and falls back at
+   RUNTIME. §10 says why.
 
 ### THE SIGNATURE QUESTION, ANSWERED — do not re-derive it
 
@@ -99,14 +99,19 @@ instead of reverting it. That is why `80162a7` was pushed before the last three 
 
 ## 5. OWED — SPLIT BY OWNER
 
-**MINE** — items **4–6** of §2 (1–3 landed at `c55d9d2`). Sentinel's ordering was **always-allow
-FIRST**, because it is the one that makes the rest usable — that is discharged. Field evidence for
-why it came first: Ryan killed his own qwen seat rather than keep answering the modal, so the guard
-was not overridden, it was ROUTED AROUND.
+**MINE** — **item 4 only**, and it is BLOCKED on a file boundary, not on effort: `TOOL_PROFILE_CHOICES`
+is hardcoded in `settings_screen.py`, which is OpenBolt's under Sentinel's T075 boundary (`77153e6c`).
+Items 1–3 landed at `c55d9d2`, items 5–6 at `16bc4e7`. Sentinel's ordering was **always-allow FIRST**
+because it is the one that makes the rest usable — discharged. Field evidence for why it came first:
+Ryan killed his own qwen seat rather than keep answering the modal, so the guard was not overridden,
+it was ROUTED AROUND.
 
-**RYAN'S** — (a) the `prompts/systemprompt.md` edit in the working tree is his and uncommitted;
-(b) ruling on whether `TOOLS_DISABLED_*` joins the refusal-string migration (propose, do not
-assume); (c) whether deny-stops-turn replaces or supplements the existing verb.
+**RYAN'S** — (a) the `prompts/systemprompt.md` edit in the working tree is his and uncommitted.
+✅ (b) and (c) are ANSWERED (2026-08-24): `TOOLS_DISABLED_RESULT` **does** join the migration (all
+five), and deny-stops-turn **REPLACES** the existing verb. Both shipped in `16bc4e7`.
+📌 Still his, newly: whether `TOOL_PROFILE_CHOICES` should be derived from `PROFILE_NAMES` instead
+of hardcoded — that is what makes item 4 a two-file change, and deriving it removes the drift class
+entirely.
 
 **SENTINEL'S** — the `liteharness-oss/hooks.py` parking-guidance edit is still **uncommitted in the
 working tree**, and that tree is production for the per-turn nudge: an uncommitted edit there is
@@ -206,9 +211,39 @@ this file and that refactor. Do not delete it as redundant — it looks redundan
 
 | # | item | state |
 |---|---|---|
-| 4 | `AUTONOMOUS` profile — third `ToolProfile`, all in `allow` (tool_policy.py:50, :127) | **unblocked**, deliberately deferred by Sentinel |
-| 5 | deny-stops-turn at the call site | **BLOCKED — Ryan: replace or supplement?** |
-| 6 | four refusal strings → `prompts/tool-denied.md` (a TEMPLATE: missing placeholder RAISES, missing file falls back to a constant, never to silence) | **BLOCKED — Ryan: does `TOOLS_DISABLED_*` join it?** |
+| 4 | `AUTONOMOUS` profile — third `ToolProfile`, all in `allow` (tool_policy.py:50, :127) | **BLOCKED ON A FILE BOUNDARY** — see below |
+| 5 | deny-stops-turn at the call site | ✅ **DONE `16bc4e7`** — Ryan ruled REPLACE |
+| 6 | every refusal → `prompts/tool-denied.md` | ✅ **DONE `16bc4e7`** — Ryan ruled migrate ALL FIVE, `TOOLS_DISABLED_RESULT` included |
+
+**ITEM 4 IS NOT MERELY DEFERRED ANY MORE — IT CANNOT BE DONE ALONE.**
+`TOOL_PROFILE_CHOICES` is **hardcoded at `settings_screen.py:77–80`**, and that file is shared with
+OpenBolt's T075 under Sentinel's boundary (message `77153e6c`). Adding a `ToolProfile` without the
+matching row there ships a profile no one can select; adding the row without the profile fails the
+`tool_policy_profile not in PROFILE_NAMES` check at save. **It is one edit across two files, one of
+which is not mine to take.** Ask Sentinel to sequence it.
+📌 That hardcoded list is itself the hazard: the UI's set of profiles and `tool_policy.PROFILES` can
+drift silently in one direction. Deriving the choices from `PROFILE_NAMES` would remove the whole
+class — and would also make item 4 a one-file change.
+
+### WHAT ITEMS 5 AND 6 ACTUALLY CHANGED
+
+- **Deny ends the turn.** The refusal is still returned and still recorded; the loop just gets no
+  further round-trip. `_stop_reason` names the cause, and both it and `_stop_requested` are cleared
+  at turn start so a reason cannot outlive its turn.
+- 🔴 **A LIE WAS ALREADY REACHABLE AND IS NOW FIXED.** `_stream`'s tool loop breaks at the top on
+  `_stop_requested` and **falls through to the bottom of the function**, which printed
+  *"reached N tool iterations — raise it in /settings"*. Any early break blamed a cap that was never
+  hit. Reachable before this change by pressing **Escape while a TOOL is executing** rather than
+  while the model streams. **Nothing in the suite mentioned that message**, which is why it lived.
+- **Refusals live in `prompts/tool-denied.md`.** `validate_tool_denied()` RAISES on a broken file —
+  loud, at test time. `tool_denied()` never raises for the same faults and falls back to a built-in
+  constant, because the moment a refusal is needed is the worst moment to throw.
+  ⚠️ **That is a change of position from §10's earlier wording** ("a missing placeholder must
+  RAISE"). Raising at runtime turns a refusal into an exception at the worst possible moment; the
+  intent — never render a literal `{name}`, never go silent — is better served by rejecting the
+  broken section. Recorded as a reversal, not left to look like the original plan.
+- **`TOOLS_DISABLED_PROMPT` did NOT move** and is flagged in place: it is a system-prompt section
+  composed at turn start, not a refusal returned in place of a tool result.
 
 Nothing writes `tool_deny` yet — it is `settings.json` by hand. A fourth "Always refuse" button is
 the obvious next increment and was **not** built, because "deny forever" from a mid-turn modal is a

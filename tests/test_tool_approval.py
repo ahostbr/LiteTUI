@@ -11,6 +11,7 @@ from litetui.tool_approval import (
     ToolApproval,
     ToolApprovalScreen,
 )
+from litetui.textfmt import tool_denied
 from litetui.tool_policy import INTERACTIVE, SHELL_POLICY, approval_preview, evaluate
 
 
@@ -252,7 +253,12 @@ async def test_a_standing_rule_does_not_cover_wider_authority(monkeypatch):
             tui, pilot, {"command": "rm -rf ./build"}, DENIED
         )
     assert escalated is True, "a wider authority reused the narrower rule"
-    assert result == ("[policy denied by user] approval_probe", False)
+    # Compared against the RENDERER, not a frozen literal: the refusal text now
+    # lives in prompts/tool-denied.md and is meant to be edited. A hardcoded
+    # copy here would fail on every legitimate wording change while still not
+    # noticing the one thing that matters — that the tool was refused.
+    assert result == (tool_denied("by-user", name="approval_probe"), False)
+    assert "approval_probe" in result[0] and "{" not in result[0]
     assert len(calls) == 1, "the destructive call ran without its own approval"
 
 

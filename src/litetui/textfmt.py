@@ -18,6 +18,7 @@ names are still reachable through `litetui.app`. See PLAN.md §6.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from litetui import paths
@@ -46,6 +47,113 @@ def load_prompt(name: str, **variables: object) -> str:
     for key, value in variables.items():
         text = text.replace("{" + key + "}", str(value))
     return text
+
+
+#: Every refusal LiteTUI can hand back in place of a tool result, and the
+#: placeholders each one MUST carry. These constants are the floor: prompts/
+#: is editable, and a refusal is the one message that has to survive a broken
+#: edit of its own source. See `tool_denied`.
+TOOL_DENIED_REQUIRED: dict[str, tuple[str, ...]] = {
+    "unknown-tool": ("name",),
+    "no-metadata": ("name",),
+    "profile": ("name", "reason"),
+    "by-user": ("name",),
+    "tools-off": (),
+}
+
+TOOL_DENIED_FALLBACK: dict[str, str] = {
+    "unknown-tool": "[error] unknown tool: {name}",
+    "no-metadata": "[policy denied] {name}: no capability metadata",
+    "profile": (
+        "[policy denied] {name}: {reason}. Nothing ran and nothing changed. "
+        "This is the active authority profile refusing, not the user — do not "
+        "ask them to approve it and do not retry."
+    ),
+    "by-user": (
+        "[policy denied by user] {name} — the user was asked and refused, so "
+        "nothing ran and nothing changed. The turn ended there, by their "
+        "choice. Do not retry and wait for their next message."
+    ),
+    "tools-off": (
+        "[disabled] Tools are turned OFF in LiteTUI, so nothing ran and "
+        "nothing changed. Only the user can turn them on: Ctrl+T, or Settings "
+        "-> Agent loop -> Tools enabled. Tell them that in plain language, "
+        "then answer as best you can without tools. Do not retry and do not "
+        "try another tool."
+    ),
+}
+
+
+def _tool_denied_sections() -> dict[str, str]:
+    """`## key` sections of prompts/tool-denied.md, comments stripped."""
+    text = (paths.PROMPTS_DIR / "tool-denied.md").read_text(encoding="utf-8")
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    out: dict[str, str] = {}
+    key = None
+    buf: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if key is not None:
+                out[key] = "\n".join(buf).strip()
+            key, buf = line[3:].strip(), []
+        elif key is not None:
+            buf.append(line)
+    if key is not None:
+        out[key] = "\n".join(buf).strip()
+    return {k: v for k, v in out.items() if v}
+
+
+def validate_tool_denied() -> None:
+    """RAISE on a broken prompts/tool-denied.md.  Called by the tests.
+
+    The loud half of the contract lives HERE, where a failure costs a red test
+    and not a refusal. `tool_denied` never raises for the same faults, because
+    the moment a refusal is needed is the worst possible moment to throw.
+    """
+    sections = _tool_denied_sections()
+    for key, required in TOOL_DENIED_REQUIRED.items():
+        if key not in sections:
+            raise ValueError(f"prompts/tool-denied.md: missing section '## {key}'")
+        missing = [p for p in required if "{" + p + "}" not in sections[key]]
+        if missing:
+            raise ValueError(
+                f"prompts/tool-denied.md: section '## {key}' lost placeholder(s) "
+                + ", ".join("{" + m + "}" for m in missing)
+            )
+
+
+def tool_denied(key: str, **variables: object) -> str:
+    """One refusal, rendered.  NEVER raises for a bad file, NEVER goes silent.
+
+    A refusal is the one message that must survive its own source being
+    broken. Three faults fall back to `TOOL_DENIED_FALLBACK[key]`:
+
+      * the file is missing or unreadable,
+      * the `## key` section was renamed or deleted,
+      * the section lost a placeholder it is required to carry.
+
+    THE THIRD IS THE POINT. Rendering a literal `{name}` at the model is worse
+    than the hardcoded string this replaced — it turns a refusal into
+    something that reads like a bug, and the model may treat it as one. So a
+    section that cannot name the tool is not used at all.
+
+    An unknown `key` DOES raise: that is a programmer error, not a user edit,
+    and every key is exercised by the tests.
+    """
+    if key not in TOOL_DENIED_REQUIRED:
+        raise KeyError(f"no such tool-denied key: {key!r}")
+    template = TOOL_DENIED_FALLBACK[key]
+    try:
+        section = _tool_denied_sections().get(key)
+    except OSError:
+        section = None
+    if section and all(
+        "{" + p + "}" in section for p in TOOL_DENIED_REQUIRED[key]
+    ):
+        template = section
+    for name, value in variables.items():
+        template = template.replace("{" + name + "}", str(value))
+    return " ".join(template.split())
 
 
 def memory_prompt(convo_id: str, folder: Path) -> str:

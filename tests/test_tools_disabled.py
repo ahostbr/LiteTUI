@@ -59,7 +59,7 @@ async def test_a_disabled_tool_is_refused_without_being_resolved():
     app = _Refused(enabled=False)
     result, ok = await _run(app)
     assert ok is False, "ok=True would let a caller record a write that never happened"
-    assert result == app_mod.TOOLS_DISABLED_RESULT
+    assert result == app_mod.tool_denied("tools-off")
     assert app.looked_up == [], "the tool was resolved — refusal must come first"
 
 
@@ -76,7 +76,9 @@ def test_the_refusal_names_controls_that_actually_exist():
     # A refusal that sends the user somewhere that does not exist is worse than
     # no refusal. Ctrl+T is the app's own toggle (`action_toggle_tools`); the
     # switch is on the "Agent loop" tab of the settings screen.
-    text = app_mod.TOOLS_DISABLED_RESULT
+    # Reads the SHIPPED prompts/tool-denied.md, not a constant: this test
+    # is what catches an edit to that file deleting the controls it names.
+    text = app_mod.tool_denied("tools-off")
     assert "Ctrl+T" in text
     assert "Tools enabled" in text and "Agent loop" in text
     assert "disabled" in text.lower()
