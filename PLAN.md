@@ -132,7 +132,8 @@ A dependency mentioned once in a paragraph is a dependency someone executes out 
 | **OpenBolt's alias cleanup** (delete the 6 `ConversationRepository` shims) | **S2 complete** | `plugins/convo.py` is the last caller keeping the shim alive |
 | **S3 commit 2** (deletion) | **S3 commit 1** (arrival) | §3 — otherwise the suite is red between commits |
 | **S7 / O5** (`_stream`, `_compact`) | **O4 complete** | both are inside the knot; boundary work before the knot splits is guesswork |
-| everything | **T069 landed** | ✅ discharged — `9108042` + `b45863e`, pushed |
+| everything that restructures `app.py` | **T069 MERGED INTO `main`** | 🔴 **NOT DISCHARGED — measured 2026-08-24.** `9108042`/`b45863e` are **pushed to `docs/adr-extraction`, which `git merge-base --is-ancestor origin/docs/adr-extraction origin/main` reports is NOT merged.** This branch does not contain them either. T069 rewrites a comment block at `app.py:1879` **inside `class LiteTUI`** (+5 −9). Restructuring `app.py` first is precisely what the brief says destroys that work silently. **PUSHED IS NOT LANDED.** |
+| this branch | **a base move onto `main`** | its merge-base is `112e146`; `main` is `ab8b4a9`. The 2 missing commits are only `.github/workflows/ci.yml`, so nothing conflicts today — but **Sentinel sequences base moves, neither seat rebases the shared worktree.** |
 
 **S1, S2, S4 and O0 have no predecessors** and may run in any order or in parallel.
 
