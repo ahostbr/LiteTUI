@@ -104,7 +104,15 @@ def tool_profile_choices() -> list[tuple[str, str]]:
 
 DIALOG_STYLE_CHOICES = [
     ("modal — dialog covers the chat (current)", "modal"),
-    ("sidebar — dialog splits off the right, chat stays readable", "sidebar"),
+    ("sidebar — dialog splits off the side, chat stays readable", "sidebar"),
+]
+
+# Two axes, two controls, deliberately NOT folded into one four-state select.
+# "modal on the left" is not a state, so a combined control would have to either
+# offer it or explain why it is missing.
+DIALOG_SIDE_CHOICES = [
+    ("right (default)", "right"),
+    ("left", "left"),
 ]
 
 
@@ -506,6 +514,14 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "obscuring and blocking are separate things and only the "
                             "first changes. T075 spike: /test-sidebar honours this; the "
                             "existing dialogs do not yet.",
+                        )
+                        yield from self._select_row(
+                            "dialog_side", "Sidebar side", DIALOG_SIDE_CHOICES,
+                            "Which edge a sidebar dialog docks to. Only has an "
+                            "effect while Dialog style is 'sidebar'. Separate "
+                            "control on purpose: 'modal on the left' is not a "
+                            "state, so one combined four-way control would have "
+                            "to offer it or explain its absence.",
                         )
                         yield from self._switch_row(
                             "autoscroll", "Follow output",

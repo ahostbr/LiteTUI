@@ -60,9 +60,13 @@ BodyFactory = Callable[[], Widget]
 class DialogController:
     """Owns the future. Views come and go beneath it."""
 
-    def __init__(self, app, body_factory: BodyFactory, style: str) -> None:
+    def __init__(self, app, body_factory: BodyFactory, style: str,
+                 side: str = "right") -> None:
         self.app = app
         self.style = style
+        #: "right" | "left". Which edge a sidebar view docks to. Additive with a
+        #: default, so existing three-arg construction is unaffected.
+        self.side = side
         self._body_factory = body_factory
         self._future: asyncio.Future[Any] | None = None
         self._done = False
@@ -153,16 +157,33 @@ class _ViewMixin:
 class SidePanel(Widget, _ViewMixin):
     """Right-hand split view. Carves space; the chat reflows narrower."""
 
+    # 🔴 THE SIDE IS A CLASS, NOT A PATCHED STYLE. `split` decides the layout, so
+    # it has to be right before the first layout pass; a class set in __init__ is,
+    # and a style assigned in on_mount would relayout after one frame at the wrong
+    # edge. `split: left` is first-class in Textual — verified against the shipped
+    # lib, not assumed: textual.css.constants.VALID_EDGE == {bottom,left,none,right,top}.
+    #
+    # ⚠️ ONLY THE BORDER FLIPS. The padding here is `padding: 0 1` — SYMMETRIC — so
+    # there is nothing directional to mirror. (HelpPanel carries `padding-right: 1`
+    # and would need it; this panel never copied that, and mirroring a property the
+    # artifact does not have is a change made against the source you copied FROM
+    # rather than the thing you wrote.)
     DEFAULT_CSS = """
     SidePanel {
-        split: right;
         width: 33%;
         min-width: 30;
         max-width: 60;
-        border-left: vkey $foreground 30%;
         height: 100%;
         padding: 0 1;
         layout: vertical;
+    }
+    SidePanel.-side-right {
+        split: right;
+        border-left: vkey $foreground 30%;
+    }
+    SidePanel.-side-left {
+        split: left;
+        border-right: vkey $foreground 30%;
     }
     """
 
@@ -170,7 +191,11 @@ class SidePanel(Widget, _ViewMixin):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(self, controller: DialogController, body: Widget) -> None:
-        super().__init__()
+        # Signature deliberately UNCHANGED — the side rides on the controller.
+        # A consumer (SilverBolt's tool-list dialog, T076) is building against
+        # this constructor while this edit lands.
+        side = "left" if getattr(controller, "side", "right") == "left" else "right"
+        super().__init__(classes="-side-" + side)
         self.controller = controller
         self.body = body
         self._prev_focus = None
@@ -245,7 +270,8 @@ def request_swap(widget: Widget) -> None:
         ctrl.app.call_next(ctrl.swap)
 
 
-async def show_dialog(app, body_factory: BodyFactory, *, style: str | None = None) -> Any:
+async def show_dialog(app, body_factory: BodyFactory, *, style: str | None = None,
+                      side: str | None = None) -> Any:
     """Show a dialog and await its answer, honouring `dialog_style`.
 
     `body_factory` is called once per host — a swap builds a fresh body and
@@ -255,4 +281,6 @@ async def show_dialog(app, body_factory: BodyFactory, *, style: str | None = Non
     """
     if style is None:
         style = app.settings.dialog_style
-    return await DialogController(app, body_factory, style).open()
+    if side is None:
+        side = app.settings.dialog_side
+    return await DialogController(app, body_factory, style, side).open()

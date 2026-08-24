@@ -266,6 +266,11 @@ class Settings:
     #: T075 SPIKE knob: only /test-sidebar honours it so far, and the existing
     #: dialogs are deliberately untouched until Ryan has looked at it.
     dialog_style: str = "modal"
+    #: Which edge a sidebar dialog docks to: "right" (default, unchanged) or
+    #: "left". Independent of dialog_style — this only matters when that is
+    #: "sidebar", but it is a separate decision and gets a separate control
+    #: rather than being folded into a four-state one.
+    dialog_side: str = "right"
 
     # ── Footer ───────────────────────────────────────────────────────────────
     #: Each field of the status footer, individually. Defaults match what the

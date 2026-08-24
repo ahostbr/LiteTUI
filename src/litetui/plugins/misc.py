@@ -95,9 +95,10 @@ def _cmd_test_sidebar(app, name: str, arg: str) -> None:
     # The guard caught exactly that on the first run; this is the fix, not an
     # exemption. (The scan-set gap itself is reported as discovered work.)
     style = app.settings.dialog_style
+    side = app.settings.dialog_side
 
     async def _run() -> None:
-        answer = await show_dialog(app, DemoDialogBody, style=style)
+        answer = await show_dialog(app, DemoDialogBody, style=style, side=side)
         app.notify(
             f"Demo dialog answered: {answer!r}"
             if answer is not None
