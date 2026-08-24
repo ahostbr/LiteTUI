@@ -11,7 +11,17 @@ Written at Sentinel's order ahead of a compaction.
 ## 1. IN FLIGHT — NOTHING
 
 `git status --porcelain` → **0**. `git rev-list --count origin/refactor/app-decomposition..HEAD` → **0**.
-Local = server = **`d47af72`**.
+Local = server. 🔴 **THIS ROW CANNOT NAME ITS OWN SHA — RE-RUN IT, DO NOT READ IT.**
+```
+git rev-parse --short HEAD
+git status --porcelain | wc -l
+git rev-list --count origin/refactor/app-decomposition..HEAD
+```
+Written at `d47af72`; **committing this file advanced HEAD**, so the sha you hold is strictly
+later. At the time of writing those three answered `9e6e9de` / `0` / `0`.
+⭐ A handoff is the one document that is stale about its own position **by construction** —
+which is exactly why the header rule says every row is a symbol, a query, or a sha. I wrote a
+bare value and it was wrong one commit later. **The queries are the position; this prose is not.**
 
 ⚠️ **ON THE API ERROR Sentinel FLAGGED** ("Connection lost mid-response"): I re-verified every
 artifact I touched after it rather than assuming. `ci.yml` parses, its job names are unchanged, and
@@ -108,9 +118,13 @@ only covers claims you knew you were about to make.
 
 - ⚠️ **`run_all` EXIT CODE is the gate, never the pytest count.** Last full green: **REAL EXIT 0**,
   97 pytest files + 13 scripts, re-run *after* the CI commit.
-  🔴 **NOT re-run after `e252d84` or the `0065961` merge** — both are a `.yml` edit and a new test
-  file, neither of which can change existing behaviour, but *"cannot"* has been wrong all night.
-  **Run it before trusting a green.**
+  ✅ **DISCHARGED — re-run at `9e6e9de`, after `e252d84` AND the `0065961` merge: REAL EXIT 0**,
+  **98** pytest files + 13 scripts.
+  ⚠️ **The file count moved 97 → 98** — the merge added a collected test file. So the reasoning
+  that would have let me skip this run (*"a `.yml` edit and a new test file cannot change existing
+  behaviour"*) was **not** what made the tree green; running the gate was. **A new file changes what
+  the suite COLLECTS even when it changes nothing the suite ASSERTS** — and collection is where
+  an import error lands, which is a red that no amount of reasoning about the diff would predict.
 - ⚠️ **`find_conversation.py` establishes PRESENCE but never ABSENCE.** A ranked hit is a
   nearest-neighbour: it counts only if it **names your target AND quotes it AND the quote is still
   on disk**. Ranking is term-rarity, not membership. Use `find` for absence, unscoped across all
