@@ -1861,6 +1861,34 @@ class LiteTUI(App):
     def _persist_error(self, v) -> None:
         self.store.persist_error = v
 
+    # -- the supported plugin surface ------------------------------------
+    #
+    # PURE ADDITIONS beside `_jobs` and `_mcp_dispatch`, which stay private and
+    # unchanged: the 13 private uses in this file keep working untouched. An
+    # ARRIVAL commit has to be green standing alone, so converting those 13 here
+    # would make it a rename wearing a refactor's clothes (PLAN 2b).
+
+    @property
+    def jobs(self) -> list:
+        """The live scheduler job list -- SHARED MUTABLE STATE, not a copy.
+
+        NOT READ-ONLY, despite what T070's plan called it. Callers mutate
+        through it: `plugins/scheduler_ui._apply_job_edit` does
+        `jobs.remove(job)` / `jobs.append(...)` and then saves. Returning a
+        copy here would silently drop every edit made in the calendar UI.
+        """
+        return self._jobs
+
+    @property
+    def mcp_dispatch(self) -> dict:
+        """The cached MCP tool-name -> handler map.
+
+        Read-only in practice -- the only caller does `.get(name)`. Cached at
+        init from `self.mcp.dispatch()`; a caller who rebuilds it per lookup
+        pays for the whole map on every tool call.
+        """
+        return self._mcp_dispatch
+
     # ── conversation store ───────────────────────────────────────────
     # Implementations moved to litetui.conversation.ConversationRepository.
     # These aliases are the reason no call site changed: `LiteTUI._read_convo`
