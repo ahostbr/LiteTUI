@@ -1977,7 +1977,37 @@ class LiteTUI(App):
     _update_header = update_header
 
     def action_toggle_tools(self) -> None:
+        """THE one verb for the global tools switch. Ctrl+T, the `/tools`
+        list's global toggle, and the settings screen all end up here or do
+        exactly what it does.
+
+        🔴 IT PERSISTS (Ryan, 2026-08-24, asked and ruled). It used to write
+        only the RUNTIME flag, never `settings.tools_enabled` — so Ctrl+T was
+        silently session-scoped while the settings switch was not, and the two
+        disagreed the moment you used either:
+
+          * open Settings after Ctrl+T and the switch showed the SAVED value,
+            not the live one — a control lying about the state it governs;
+          * save Settings after Ctrl+T and your toggle was silently REVERTED,
+            by a screen you opened to change something else entirely.
+
+        Nothing documented that split, and boot reads the persisted field, so
+        it read as an oversight rather than a design. Ryan was offered keeping
+        Ctrl+T as a deliberate temporary override and chose one behaviour
+        everywhere: "make all three persist".
+        """
         self.tools_enabled = not self.tools_enabled
+        # Written through the SAME field the settings screen binds to, so
+        # there is nothing to keep in sync — there is one value with three
+        # surfaces onto it.
+        self.settings.tools_enabled = self.tools_enabled
+        try:
+            settings_mod.save(self.settings)
+        except OSError:
+            # A toggle that lasts one session beats a crash on Ctrl+T. Said
+            # out loud rather than swallowed: a silent half-success here is
+            # exactly the disagreement this change exists to remove.
+            self._system("could not save the tools setting — this session only")
         if self.conversation and self.conversation[0].get("role") == "system":
             # Rebuilt through the single builder. Hand-rolling it here is how
             # the store block gets dropped on the first Ctrl+T.
