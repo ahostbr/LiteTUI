@@ -143,7 +143,29 @@ class _ViewMixin:
     def _restore_focus_target(self):
         return getattr(self, "_prev_focus", None)
 
-    def _focus_something(self) -> None:
+    def _focus_is_inside_body(self) -> bool:
+        screen = getattr(self, "screen", None)
+        focused = getattr(screen, "focused", None)
+        if focused is None:
+            return False
+        return focused in self.body.walk_children(with_self=True)
+
+    def _take_focus(self) -> None:
+        """Focus the first focusable — UNLESS the carried state already placed it.
+
+        🔴 THIS ORDERING WAS A REAL BUG, found by the first REAL dialog on this
+        host. `on_mount` called `apply_carried_state` and then focused the first
+        focusable unconditionally, so a body whose `set_state` restored focus had
+        it CLOBBERED one line later. On ConfirmStop that put focus back on
+        "Yes, stop" after a swap — while the user was deciding whether to stop.
+
+        ⭐ The T075 focus test could not see it: it asserted focus landed
+        *somewhere inside the body*, which is true of the wrong button too. An
+        assertion satisfiable by the wrong answer is not a weaker test, it is an
+        absent one.
+        """
+        if self._focus_is_inside_body():
+            return
         for node in self.query("*"):
             if node.focusable:
                 node.focus()
@@ -152,6 +174,9 @@ class _ViewMixin:
             self.focus()
         except Exception:
             pass
+
+    # Kept as the old name so nothing outside this module has to change.
+    _focus_something = _take_focus
 
 
 class SidePanel(Widget, _ViewMixin):
@@ -257,10 +282,26 @@ def _controller_for(widget: Widget) -> DialogController | None:
 
 
 def close_dialog(widget: Widget, value: Any = None) -> None:
-    """Answer the dialog containing `widget`. The body's only exit."""
+    """Answer the dialog containing `widget`. The body's only exit.
+
+    🔴 THE FALLBACK IS LOAD-BEARING, NOT DEFENSIVE. A body must also work inside
+    a PLAIN `ModalScreen` that this module never created — which is exactly how
+    the existing dialogs stay convertible without breaking their identity. The
+    codebase asserts `isinstance(screen, ConfirmStop)` and binds CSS by class
+    name (`ConfirmStop, PickerScreen, HelpScreen, SettingsScreen { ... }`), so a
+    conversion that replaced those screens with `_ModalHost` would change what
+    the modal path IS while claiming to only add a sidebar.
+
+    Without this branch a body hosted by its own ModalScreen calls close_dialog
+    and NOTHING HAPPENS — no error, no dismissal, a dead button.
+    """
     ctrl = _controller_for(widget)
     if ctrl is not None:
         ctrl.resolve(value)
+        return
+    screen = widget.screen
+    if screen is not None:
+        screen.dismiss(value)
 
 
 def request_swap(widget: Widget) -> None:
@@ -268,6 +309,59 @@ def request_swap(widget: Widget) -> None:
     ctrl = _controller_for(widget)
     if ctrl is not None:
         ctrl.app.call_next(ctrl.swap)
+
+
+def present_dialog(app, body_factory: BodyFactory, modal_factory, callback=None) -> None:
+    """Sidebar when the setting says so; otherwise THE ORIGINAL MODAL SCREEN.
+
+    ⚠️ THE MODAL BRANCH DELIBERATELY DOES NOT GO THROUGH THIS MODULE. It calls
+    `push_screen(modal_factory(), callback)` — the exact line the call site used
+    before — so with the setting at its default, converted dialogs are not merely
+    equivalent to the old behaviour, they ARE the old behaviour: same class, same
+    CSS selector, same `isinstance` identity, same screen stack.
+
+    Routing the modal branch through `_ModalHost` would have been tidier and
+    would have silently changed what `ConfirmStop` and `PickerScreen` ARE. Two
+    tests bind to that identity (`test_modals`, `test_modal_centering`) and would
+    have caught it — but only after the claim "this only adds a sidebar" had
+    already been written down.
+    """
+    if getattr(app.settings, "dialog_style", "modal") == "sidebar":
+        open_dialog(app, body_factory, callback,
+                    style="sidebar", side=app.settings.dialog_side)
+    else:
+        app.push_screen(modal_factory(), callback)
+
+
+def open_dialog(app, body_factory: BodyFactory, callback=None, *,
+                style: str | None = None, side: str | None = None) -> None:
+    """Open a dialog and hand the answer to `callback`. The `push_screen` shape.
+
+    🔴 THIS EXISTS BECAUSE `show_dialog` FIT ONE CONSUMER IN FOUR. The T075 spike
+    shipped an await-only surface, validated against a demo body whose caller I
+    also wrote — so the host was tested against my own assumptions rather than
+    against the codebase. Read from the real call sites afterwards:
+
+        ToolApprovalScreen   await push_screen_wait(...)         AWAIT     fits
+        ConfirmStop          push_screen(screen, callback)        CALLBACK  did not
+        PickerScreen x5      push_screen(screen, callback)        CALLBACK  did not
+        AskUserQuestion      pushed from a WORKER THREAD          neither
+
+    `push_screen(screen, callback)` is this codebase's idiom, so the host has to
+    speak it. With this, a conversion is a one-line swap at the call site instead
+    of a rewrite of the caller into a worker — and a conversion that forces its
+    callers to restructure is one that quietly does not get done.
+
+    Deliberately returns None rather than the Worker: a caller that can `await`
+    should be using `show_dialog`, and handing back an awaitable here would make
+    two ways to do the same thing look interchangeable when they are not.
+    """
+    async def _run() -> None:
+        result = await show_dialog(app, body_factory, style=style, side=side)
+        if callback is not None:
+            callback(result)
+
+    app.run_worker(_run(), name="dialog")
 
 
 async def show_dialog(app, body_factory: BodyFactory, *, style: str | None = None,

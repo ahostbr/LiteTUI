@@ -40,6 +40,10 @@ from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
+# Imported for the BODY's exits. side_panel imports nothing from widgets, so
+# this does not close a cycle — checked rather than assumed.
+from litetui.side_panel import close_dialog
 from textual.widgets import (
     Button, Footer, Header, Input, OptionList, Static, )
 from textual.widgets.option_list import Option
@@ -555,15 +559,28 @@ class ToolMessage(Static):
         )
 
 
-class ConfirmStop(ModalScreen[bool]):
-    """Yes/No before interrupting a running turn.
+class ConfirmStopBody(Widget):
+    """The Yes/No content, host-agnostic so it works in a modal OR a sidebar.
 
-    pi binds escape straight to `app.interrupt` and aborts with no confirmation
-    (keybindings.ts:78, "Cancel or abort"), showing only an `esc to interrupt`
-    hint in the spinner. Ryan asked for a confirmation here instead: a local 27B
-    turn is slow and expensive enough that losing one to a stray escape costs
-    more than the extra keypress. Escape inside the dialog answers No, so the
-    accidental-escape case is a no-op rather than a lost turn.
+    🔴 THE SCREEN BELOW IS NOT REPLACED, AND THAT IS THE WHOLE DESIGN. Two things
+    in this codebase bind to `ConfirmStop` being a real, distinct `ModalScreen`:
+
+        app.py CSS      `ConfirmStop, PickerScreen, HelpScreen, SettingsScreen {`
+                        — the centering rule, asserted by test_modal_centering
+        test_modals.py  `assert isinstance(e.screen, m.ConfirmStop)`
+
+    Swapping the modal path onto the generic `_ModalHost` would have changed what
+    the modal IS while the commit message said it only ADDED a sidebar. So the
+    content moved down here, `ConfirmStop` composes it, and the modal path is
+    byte-identical to what it always was.
+
+    Exits go through `close_dialog`, which resolves the sidebar controller when
+    there is one and falls back to `screen.dismiss` when the host is this
+    screen — so one body, both hosts, no branch in the handlers.
+    """
+
+    DEFAULT_CSS = """
+    ConfirmStopBody { height: auto; layout: vertical; }
     """
 
     BINDINGS = [
@@ -585,18 +602,64 @@ class ConfirmStop(ModalScreen[bool]):
                 yield Button("Yes, stop", variant="error", id="yes")
                 yield Button("No, keep going", variant="primary", id="no")
 
+    # ── state carry across a live host swap ──────────────────────────────────
+    def get_state(self) -> dict:
+        """Almost nothing to carry — but which button was focused is real, and
+        losing it would move focus onto 'Yes, stop' mid-decision."""
+        focused = self.screen.focused if self.screen is not None else None
+        return {"focused_id": getattr(focused, "id", None)}
+
+    def set_state(self, state: dict) -> None:
+        fid = state.get("focused_id")
+        if fid:
+            try:
+                self.query_one(f"#{fid}").focus()
+            except Exception:
+                pass
+
+    def action_answer_yes(self) -> None:
+        close_dialog(self, True)
+
+    def action_answer_no(self) -> None:
+        close_dialog(self, False)
+
+    @on(Button.Pressed, "#yes")
+    def _yes(self) -> None:
+        close_dialog(self, True)
+
+    @on(Button.Pressed, "#no")
+    def _no(self) -> None:
+        close_dialog(self, False)
+
+
+class ConfirmStop(ModalScreen[bool]):
+    """Yes/No before interrupting a running turn.
+
+    pi binds escape straight to `app.interrupt` and aborts with no confirmation
+    (keybindings.ts:78, "Cancel or abort"), showing only an `esc to interrupt`
+    hint in the spinner. Ryan asked for a confirmation here instead: a local 27B
+    turn is slow and expensive enough that losing one to a stray escape costs
+    more than the extra keypress. Escape inside the dialog answers No, so the
+    accidental-escape case is a no-op rather than a lost turn.
+    """
+
+    # The content lives in ConfirmStopBody so the sidebar host can mount the
+    # SAME widget. Bindings stay here too: a ModalScreen is what has focus when
+    # the dialog opens as a modal, so `y`/`n`/Esc must resolve at this level.
+    BINDINGS = [
+        Binding("escape", "answer_no", "No", show=False),
+        Binding("n", "answer_no", "No", show=False),
+        Binding("y", "answer_yes", "Yes", show=False),
+        Binding("enter", "answer_yes", "Yes", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield ConfirmStopBody()
+
     def action_answer_yes(self) -> None:
         self.dismiss(True)
 
     def action_answer_no(self) -> None:
-        self.dismiss(False)
-
-    @on(Button.Pressed, "#yes")
-    def _yes(self) -> None:
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#no")
-    def _no(self) -> None:
         self.dismiss(False)
 
 

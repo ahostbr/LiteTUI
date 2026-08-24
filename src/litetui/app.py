@@ -18,6 +18,7 @@ from functools import partial
 
 from litetui import settings as settings_mod
 from litetui.settings import Settings
+from litetui.side_panel import present_dialog
 
 from litetui import llm_backend
 from litetui import paths
@@ -67,6 +68,7 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     Completion,
     CompactionCard,
     ConfirmStop,
+    ConfirmStopBody,
     ContextFooter,
     FoldBlock,
     LiteTUICommands,
@@ -3044,7 +3046,9 @@ class LiteTUI(App):
             # the two stops would be the one the wake ping ignored.
             self._turn_abandoned = True
             return
-        self.push_screen(ConfirmStop(), self._on_stop_answer)
+        # Sidebar or modal, decided by the setting. With dialog_style at its
+        # default this is still literally `push_screen(ConfirmStop(), cb)`.
+        present_dialog(self, ConfirmStopBody, ConfirmStop, self._on_stop_answer)
 
     def _on_stop_answer(self, stop: bool | None) -> None:
         if not stop:
