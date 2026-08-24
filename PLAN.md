@@ -68,6 +68,7 @@ cheaper wins.
 | **S1** | `ctx.notify(text)`; `_system` keeps a 1-line delegation | SilverBolt | reach-through **99 → 50** | lines, methods, knot |
 | **S3** | Relocate the eight owner-plugin methods into their plugins | **both — see §3** | **−321 lines, −8 methods, reach 50 → 42** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
+| **O-A** | Delete the six `ConversationRepository` compatibility shims — **requires S2** | OpenBolt | **−6 methods**, −~10 lines | lines (barely), reach (already 0 via S2), knot |
 | **S4** | Read-only `jobs` / `mcp_dispatch` properties | SilverBolt | reach **34 → 31** | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups (19 methods, ~244 ln) | OpenBolt | −244 lines, **−19 methods** | knot |
