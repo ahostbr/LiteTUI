@@ -74,10 +74,10 @@ cheaper wins.
 | **O-A** | Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test call sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **−6 methods**, −~10 lines | lines (barely), reach (already 0 via S2), knot |
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
-| **O2** | Clean-lift the six stateless groups (19 methods, ~244 ln) | OpenBolt | −244 lines, **−19 methods** | knot |
-| **O3** | `_cron_*` → `CronService` — **scope reduced by S3, see §5** | OpenBolt | −~80 lines, −3 methods | knot |
+| **O2** | Clean-lift the six stateless groups — **12 methods / 212 ln, see §5b** | OpenBolt | −212 lines, **−12 methods** | knot |
+| **O3** | `_cron`/`_cron_*` → `CronService` — **scope reduced by S3, see §5** | OpenBolt | −~80 lines, −3 methods | knot |
 | **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **40 → 22** (AST) | lines, methods, knot |
-| **O4** | Seal the knot's plugin-facing members; split `_elapsed_*`/`_eta_*`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
+| **O4** | Seal the knot's plugin-facing members; split `_elapsed`/`_elapsed_*`, `_eta`/`_eta_*`, `_tps`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **22 → 15** (AST) | lines, methods, knot |
 | **S7/O5** | The turn-engine boundary: `_stream` (345 ln), `_compact` (262), `_handle_command` | **both, last** | lines, knot | — |
 
@@ -342,9 +342,9 @@ starts.
 |---|---|---|
 | **O0** | 15 widget classes (`ThinkingBlock`, `CompactionCard`, `SkillAutocomplete`, `ToolMessage`, `ConfirmStop`, `AnswerBody`, `FoldBlock`, `PromptInput`, `CancelToolButton`, `ContextFooter`, `AssistantMessage`, `ThinkingHeader`, `_FoldHeader`, `ChatMessage`, `Completion`) → `litetui/widgets/`; 12 pure helpers (`tool_display_parts`, `_markdown_to_text`, `render_progress`, `thinking_header_text`, `tps_text`, `midturn_action`, `is_reliable_rate_sample`, `load_prompt`, `memory_prompt`, `_at_bottom`, `_mark_delivered`, `main`) → `litetui/text/` | **−739 lines.** Methods 137→137. Reach unchanged. Knot untouched. |
 | **O-A** | delete the six `ConversationRepository` shims | **−6 methods.** Reach already 0 via S2. |
-| **O2** | `_sync_*` (91 ln) · `_glassbox_*` (43) · `_load_*` (37) · `_append_*` (34) · `_store_*` (29) · `_convo_*` (10) → services | −~244 lines, **−19 methods.** Knot untouched. |
-| **O3** | remaining `_cron_*` → `CronService`; the framework member delegates | −~80 lines, −3 methods |
-| **O4** | `_elapsed_*` (4) · `_eta_*` (4) · `_tps_*` (3) off the knot behind one state object | −~200 ln, −~10 methods, **first step that shrinks the KNOT** |
+| **O2** | `_sync`/`_sync_*` (71 ln) · `_glassbox`/`_glassbox_*` (43) · `_load`/`_load_*` (37) · `_append`/`_append_*` (34) · `_store`/`_store_*` (27) · `_convo`/`_convo_*` (8) → services | −~244 lines, **−19 methods.** Knot untouched. |
+| **O3** | remaining `_cron`/`_cron_*` → `CronService`; the framework member delegates | −~80 lines, −3 methods |
+| **O4** | `_elapsed`/`_elapsed_*` (4) · `_eta`/`_eta_*` (4) · `_tps`/`_tps_*` (3) off the knot behind one state object | −~200 ln, −~10 methods, **first step that shrinks the KNOT** |
 | **O5** | `_stream` (345 ln) — with S7 | high risk, last |
 
 ### WHAT CANNOT MOVE, AND WHY
@@ -450,3 +450,23 @@ the change could possibly explain.
 4. **EVERY METRIC STATES WHERE IT WAS TAKEN** — "at HEAD `<sha>`" or "in verify tree from `<sha>`".
    **A bare number is inadmissible.** This whole task has been a run of numbers that were each
    correct for a tree nobody named.
+
+---
+
+## 9. 🔴 NOTATION: WRITE `_x`/`_x_*`, NEVER `_x_*` ALONE
+
+**Two seats, no communication, hours apart, built the SAME broken matcher from ONE line of this
+document.** The groups were written `_sync_*`, `_glassbox_*` — with a trailing underscore — and both
+readers transcribed the wildcard into `name.startswith("_glassbox_")`, **which cannot match a method
+called exactly `_glassbox`**. `_glassbox` (27 ln) and `_append` (4 ln) vanished from both counts.
+
+⚠️ **A defect two independent readers reproduce is a defect in the WRITING, not in the readers.**
+`_glassbox_*` reads as "the glassbox family" to a human and compiles to "excludes `_glassbox`" in a
+matcher. Same family as a text gate counting the prose *about* a thing: the notation and the set it
+denotes are not the same object.
+
+⭐ **AND THE TRAP THAT ALMOST CLOSED IT WRONG: WHEN TWO SEATS AGREE ON A SURPRISING NUMBER, THAT IS
+NOT CORROBORATION.** Both of us got 14/189, both concluded the PLAN was stale, and each was more
+confident *because* the other matched. Independent agreement is evidence only when the INPUTS are
+independent — a shared document makes them anything but. Two matching wrong answers are more
+persuasive than one and no more correct.
