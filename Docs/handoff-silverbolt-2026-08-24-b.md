@@ -36,6 +36,37 @@ git -C .worktrees/decomp        status --porcelain              # OpenBolt's O4-
 arrival (2 of 3) · `f45fadc` skills docstring · `e9f30bd` + `c61343d` `tools/comment_census.py`.
 Memory: `c925273`, `5b3fd25` on `ahostbr/dotclaude`.
 
+## 2a. 🔴 SECTION 2 AND SECTION 3 ARE CORRECTED — READ THIS BEFORE EITHER
+
+**Item 1 is DONE (`fe66929`). And its central claim below — "ZERO COVERAGE", "that green was never
+watching this member" — is FALSE, falsified by me at `837f408`.**
+
+The two mutations I used to justify it were run against `tests/test_model_picked.py` ONLY, my own
+new file. That measures MY FILE'S sensitivity, not the codebase's coverage. Re-run against the full
+suite with my file deselected:
+
+| mutation | full suite minus my file | meaning |
+|---|---|---|
+| gut the body | **2 RED** in `tests/test_modals.py` | positive arm already covered |
+| remove the whole guard | **1 RED** in `tests/test_modals.py` | Esc/`None` arm already covered |
+| drop only the same-model clause | **1141 passed, GREEN** | this one arm genuinely unwatched |
+
+`test_modals.py` drives the picker WIRING and never names the symbol, so the `git grep … -- tests/`
+→ 0 below was true and meant nothing. **ZERO MENTIONS IS NOT ZERO COVERAGE.** OpenBolt measured the
+identical false positive on `_on_stop_answer`, the same hour, in the same file.
+
+⇒ **THE LAW: A MUTATION IS ONLY AS WIDE AS THE TEST SET YOU RUN IT AGAINST.** "A predictor ranks, a
+mutation concludes" needs the qualifier *only when run against the whole suite*.
+⇒ What `fe66929` actually bought: ONE new arm — `test_repicking_the_current_model_does_not_reload_it`
+is the only test in the tree that watches it — plus explicit named coverage beside implicit wiring
+coverage. Worth having; not a closed hole.
+⚠️ NOT measured: whether the empty-string case is separately covered. Only the same-model clause was
+isolated.
+
+⭐ **`_on_convo_picked` in §3 STANDS — that probe WAS full-suite** (95 pytest files + 13 scripts,
+REAL EXIT 0). I ran the wide control correctly on someone else's member and then narrowed it on my
+own. The method regressed inside one session, on the case where I had a stake in the answer.
+
 ## 2. 🔴 ITEM 1 — `on_model_picked` TEST: **OWED AND UNSTARTED. MINE. DO THIS FIRST.**
 
 **It is S5's member, S5 is LANDED, so the hole is live on the branch right now** — not ahead of it.
