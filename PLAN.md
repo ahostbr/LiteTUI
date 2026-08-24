@@ -72,7 +72,7 @@ cheaper wins.
 | **S3** | Relocate the eight owner-plugin methods into their plugins | **both — see §3** | **−321 lines, −8 methods, reach 50 → 42** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
 | **O-A** | Delete the six `ConversationRepository` compatibility shims — **requires S2** | OpenBolt | **−6 methods**, −~10 lines | lines (barely), reach (already 0 via S2), knot |
-| **S4** | Read-only `jobs` / `mcp_dispatch` properties | SilverBolt | reach **34 → 31** | everything else |
+| **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups (19 methods, ~244 ln) | OpenBolt | −244 lines, **−19 methods** | knot |
 | **O3** | `_cron_*` → `CronService` — **scope reduced by S3, see §5** | OpenBolt | −~80 lines, −3 methods | knot |
@@ -180,7 +180,29 @@ rewrites nothing, so it is safe while another seat has work in this tree. A reba
 under whoever is not running it. **Merging `origin/main` into a shared branch needs no permission;
 rebasing it is never allowed.**
 
-**S1, S2, S4 and O0 have no predecessors** and may run in any order or in parallel.
+**S1, S2 and O0 have no predecessors** and may run in any order or in parallel.
+
+🔴 **S4 WAS LISTED HERE AND THAT WAS WRONG — CORRECTED 2026-08-24 02:05.** S4 has a HARD
+predecessor: `app.jobs` raises `AttributeError` until OpenBolt's properties land, and unlike S1
+there is **no compatibility window** (S1 survived because `_system` was aliased to both names).
+So S4's plugin-side edits are broken from the instant they change until arrival lands. **This line
+actively licensed a knowingly-red commit on a shared branch**; SilverBolt refused to make one and
+was right to. **S4 is strictly arrival-first: OpenBolt lands the two properties, THEN the 3 call
+sites convert.**
+
+### §5a — `jobs` IS SHARED MUTABLE STATE, NOT A READ
+
+The row above said *"read-only"* through eight revisions of this plan and it is false:
+`plugins/scheduler_plugin.py:25` hands `app._jobs` to `scheduler_ui._apply_job_edit`, which does
+`jobs.remove(job)` / `jobs.append(...)` and then persists. **A property returning a copy would
+silently discard every edit made in the calendar UI**, and documenting it as read-only would put a
+false contract in a docstring.
+
+⭐ **The classification error, in SilverBolt's own words: he sorted the members by ACCESS KIND
+(read vs call) and concluded "reads are safe to expose read-only". A READ OF A MUTABLE OBJECT IS A
+WRITE CHANNEL.** Counting reads does not tell you what the read is FOR. Both `_jobs` and
+`_mcp_dispatch` stay private; the properties are pure additions beside them, no aliases, nothing to
+delete later. `mcp_dispatch` genuinely is read-only — its only caller does `.get(name)`.
 
 ---
 
