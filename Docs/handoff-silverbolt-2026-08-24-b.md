@@ -87,16 +87,26 @@ without its owner drifts.
 
 **The work:** one test file, ~20 lines, its own commit. Callback behaviour — picking a model
 switches it; picking `None` or the same model is a no-op. **No app.py change, no S6 dependency,
-nothing OpenBolt holds.** Verify RED against a gutted `on_model_picked`, then GREEN against the
-restored one. Do it in a **detached worktree** (shared tree is dirty), junction-scan before removal.
+nothing OpenBolt holds.** ~~Verify RED against a gutted `on_model_picked`, then GREEN against the
+restored one.~~ → **NOT SUFFICIENT — that is what I did and it is why §2a exists.** Run BOTH arms
+(gut the body AND remove the guard) against the **FULL SUITE with your new file deselected**, or
+you measure your own file's sensitivity and call it coverage. Detached worktree; junction-scan
+before removal.
 
 ## 3. THE PREDICTOR — THE RULE, BECAUSE NO SCRIPT LANDED
 
 Sentinel: *"a method nobody can re-run is a result, not an instrument."* It exists only as an inline
 measurement. **The rule, so it can be rebuilt in ~40 lines:**
 
-> **A member reached ONLY as a callback reference — never called by name — is a blind spot.**
-> Nothing calls it, so nothing accidentally covers it.
+> **A member reached ONLY as a callback reference — never called by name — is a CANDIDATE.**
+> ~~Nothing calls it, so nothing accidentally covers it.~~ → **FALSE.** Coverage can arrive by
+> WIRING — a test that drives the dialog/picker and never names the symbol. The predictor RANKS;
+> only a full-suite mutation CONCLUDES. **Measured precision: 2 of 4 fully blind, 3 of 4 yielded
+> any real gap.** Still a ~14x lift on a 3.6% base rate (4 candidates from 112 methods) — run it
+> again wider, but never ship its output as a finding.
+> 🔴 **SPECIAL-CASE `tests/test_modals.py`.** Both false positives tonight were cleared by
+> that one file: it is where callback members get exercised WITHOUT being named, so it is the
+> systematic blind spot of any symbol-counting scan.
 
 **Scope and exclusions it REQUIRES, each learned from a defect:**
 
@@ -115,8 +125,8 @@ Result at `6ec9934`, scope `src`+`tests`, 171 of 171 files, skipped none, proper
 | member | test files | only reference |
 |---|---|---|
 | `_on_convo_picked` | **0** | `plugins/convo.py` — **MEASURED blind by mutation** |
-| `on_model_picked` | **0** | `plugins/model_switch.py` — **mine, item 1** |
-| `_on_stop_answer` | **0** | `app.py` — *neither of us had it; the predictor's real payoff* |
+| `on_model_picked` | **0** | ⚠ **PARTIAL, not blind — 1 arm of 4.** `test_modals.py` covers the rest by wiring |
+| `_on_stop_answer` | **0** | 🔴 **FALSE POSITIVE — FULLY COVERED** (OpenBolt, full-suite, both arms). Not a payoff |
 | `_report_persist_error` | **0** | `app.py` |
 | `_flush_pending_input` | 1 | — |
 
