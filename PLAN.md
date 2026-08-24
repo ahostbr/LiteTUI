@@ -71,7 +71,7 @@ cheaper wins.
 | **S1** | **`app.system_message(text)` — a PUBLIC method on the app**, `_system` kept as a one-line alias; SilverBolt rewrites the 49 call sites | **both — see §2a** | private reach-through **99 → 50** | lines, methods, knot |
 | **S3** | Relocate the eight owner-plugin methods into their plugins | **both — see §3** | **−321 lines, −8 methods, reach 50 → 42** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
-| **O-A** | Delete the six `ConversationRepository` compatibility shims — **requires S2** | OpenBolt | **−6 methods**, −~10 lines | lines (barely), reach (already 0 via S2), knot |
+| **O-A** | Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test call sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **−6 methods**, −~10 lines | lines (barely), reach (already 0 via S2), knot |
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups (19 methods, ~244 ln) | OpenBolt | −244 lines, **−19 methods** | knot |
@@ -154,11 +154,72 @@ all three sit inside `_register(ctx)` bodies. ⭐ **A supported surface with 3 p
 > `_compact` · `_on_convo_picked` · `_materialise_convo` · `_resume` · `_edit` → the same names
 > without the underscore.
 
-**Arrival-first each time, WITH a compatibility window:** OpenBolt adds the public name plus a
-one-line private alias so host call sites keep working; SilverBolt then converts. Because the alias
-exists these **may land in either order** — unlike S4, which has no alias and is strictly
-arrival-first (§5a). **That difference is the whole reason the generic "commit your side anyway"
-instruction was withdrawn: the window is a property of the STEP.**
+🔴 **CORRECTED 02:20 — THIS PARAGRAPH SAID S5/S6 "MAY LAND IN EITHER ORDER" AND THAT LICENSED A
+RED COMMIT.** The retracted claim: *"because the alias exists these may land in either order —
+unlike S4, which has no alias and is strictly arrival-first."* **Wrong.** SilverBolt caught it inside
+twenty minutes of it landing.
+
+**THE ALIAS PROTECTS THE APP'S OWN CALL SITES, NOT THE CONSUMER'S.** `_system = system_message` keeps
+`self._system(...)` working inside `app.py`, and `_jobs` keeps ~12 `self._jobs` uses working. That is
+what makes the ARRIVAL commit green **standing alone**, and what lets the alias deletion be a
+separate third commit later. **It says nothing about which side may land first.** A consumer calling
+`app.system_message(...)` would have raised `AttributeError` before OpenBolt's commit 1 just as
+`app.jobs` does now.
+
+⭐ **THE CORRECT DISCRIMINATOR — ONE GREP, NO MEMORY OF WHAT AN ALIAS IS FOR:**
+**DOES THE TARGET NAME ALREADY EXIST AT HEAD?**
+
+| | |
+|---|---|
+| **ALREADY EXISTS** | no arrival needed at all — **the consumer lands alone.** |
+| **DOES NOT EXIST** | **strictly arrival-first**, consumer waits. |
+
+Measured at HEAD (`def <name>(` / `<name> = ` at class indent in `app.py`):
+
+```
+system_message 1   <- S1's arrival HAS landed
+store          2   <- already public. THIS is why S2 landed by itself, blocking nobody.
+connect 0 · fetch_context_window 0 · update_header 0 · apply_context_length 0
+on_model_picked 0 · jobs 0 · mcp_dispatch 0 · new_convo 0 · resume 0 · compact 0
+```
+
+⇒ **S1, S4, S5 AND S6 ARE ALL STRICTLY ARRIVAL-FIRST.** S2 was the only step that was ever
+consumer-alone, and it was so because its targets were already public.
+
+**So: OpenBolt lands the public name + private alias; THEN SilverBolt converts. Every time.** The
+alias still matters — it is what keeps the arrival commit green on its own — it is just not a licence
+to reorder.
+
+📌 **AND NOTE HOW THIS ERROR PROPAGATED,** because it is the failure mode of this whole document:
+SilverBolt's report said S1 "had a compatibility window" — true of the app's call sites, which is what
+he meant. **The orchestrator read it as true of the consumer's and wrote it into the plan as a
+scheduling rule.** An imprecise sentence in a report becomes doctrine one hop later. **The plan is
+where a worker's shorthand turns into everyone's instruction, so a claim entering it needs the
+measurement attached, not the phrasing.**
+
+### 2c. O-A IS NOT A TWO-LINE COMMIT — MEASURED, AST AT HEAD
+
+Executable callers of each shim **outside `app.py`**:
+
+```
+_read_convo      7   test_convo_rename x4, test_convos x3
+_convo_label     3   test_convo_rename x3
+_list_convos     2   test_lazy_convo x1, test_resume_identity x1
+_persist_error   1   test_convos_picker x1
+_fmt_size        0   DEAD — deletable with no edits
+_write_record    0   DEAD — deletable with no edits
+remaining PRODUCT (src/) callers: NONE
+```
+
+⇒ **Two are free. The other four need 13 test call sites across 5 files updated in the same commit**,
+or the suite goes red. *"TESTS ONLY"* was correct and is the good news; **"pure deletion" is the part
+that needed a number attached.** All 13 are mechanical — but it is not the two-line commit the row
+implied, and the person writing it should know that before they sit down.
+
+📌 `_list_convos` reads **2** here against the orchestrator's earlier **3**: the third was the
+`convo.py` docstring line, fixed at `e364fd3`. **Same phantom, now gone at the source** — and this is
+the third count in one shift that was true when written and false two commits later.
+
 
 **WHAT THE RESHAPE COSTS: nothing.** Same members, same counts, same order, same predecessors, same
 arrival-first law — only the name the plugin calls. `43 → 40 → 22 → 15` is unchanged. What it
@@ -236,8 +297,9 @@ rebasing it is never allowed.**
 **S1, S2 and O0 have no predecessors** and may run in any order or in parallel.
 
 🔴 **S4 WAS LISTED HERE AND THAT WAS WRONG — CORRECTED 2026-08-24 02:05.** S4 has a HARD
-predecessor: `app.jobs` raises `AttributeError` until OpenBolt's properties land, and unlike S1
-there is **no compatibility window** (S1 survived because `_system` was aliased to both names).
+predecessor: `app.jobs` raises `AttributeError` until OpenBolt's properties land. ⚠️ **This
+originally added "unlike S1, which had a compatibility window" — CORRECTED, see §2b: S1 was equally
+arrival-first. The alias protects `app.py`'s own `self._system(...)` calls, never the plugin's.**
 So S4's plugin-side edits are broken from the instant they change until arrival lands. **This line
 actively licensed a knowingly-red commit on a shared branch**; SilverBolt refused to make one and
 was right to. **S4 is strictly arrival-first: OpenBolt lands the two properties, THEN the 3 call
