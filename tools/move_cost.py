@@ -35,14 +35,19 @@ It reports four things a member-only census cannot:
 Every count prints its DENOMINATOR ("compared N of M"): a total without one reads
 the same whether everything was examined or nothing was.
 
-EXIT  0 nothing found · 1 sites found (there is a sweep to do) · 2 NO MEASUREMENT
-      HAPPENED -- the query matched no member, the class was absent, a file
-      failed to parse, OR argparse rejected the command line. Never a silent pass.
+EXIT  0 nothing found
+      1 sites found -- there is a sweep to do
+      2 ARGPARSE USAGE ERROR. Not ours; argparse owns this code. You typed it
+        wrong. (`--roots` is nargs="*" and GREEDY: `--roots src tests <members>`
+        swallows the members. Put the members FIRST.)
+      3 NO MEASUREMENT HAPPENED -- the members are not on that class at that ref,
+        the class is absent, or a file failed to parse.
 
-⚠️ `--roots` is nargs="*" and GREEDY: put the members FIRST or it swallows them
-   and argparse exits 2. That is the same code as "nothing was examined", which
-   is correct -- both mean no measurement happened -- but read the first line of
-   output before treating a 2 as a finding about the code.
+⚠️ 2 AND 3 ARE DIFFERENT KINDS OF STATEMENT AND MUST NOT SHARE A CODE.
+   3 is a finding ABOUT THE CODE    -> go look at the tree
+   2 is a fact about the INVOCATION -> retype the command
+   A caller that can read only the exit code cannot tell them apart, and the
+   dangerous direction is that A TYPO READS AS A FINDING.
 """
 from __future__ import annotations
 
@@ -136,12 +141,12 @@ def main() -> int:
     src = blob(args.ref, args.app_file)
     if src is None:
         print(f"!! {args.app_file} unreadable at {args.ref}")
-        return 2
+        return 3
     cls = next((n for n in ast.parse(src).body
                 if isinstance(n, ast.ClassDef) and n.name == args.cls), None)
     if cls is None:
         print(f"!! class {args.cls} not found")
-        return 2
+        return 3
     fns = {i.name: i for i in cls.body
            if isinstance(i, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
@@ -162,7 +167,7 @@ def main() -> int:
             state[attr].append(m)
     if not found:
         print("  NOTHING WAS EXAMINED — the member query matched no method on the class.")
-        return 2
+        return 3
     if not state:
         print("\n  No state is re-homed by this move: the sweep is the members only.")
 
@@ -184,7 +189,7 @@ def main() -> int:
             tree = ast.parse(text)
         except SyntaxError:
             print(f"  !! PARSE FAILED {f} — counted as a problem, not skipped")
-            return 2
+            return 3
         scanned += 1
         seen.add(f)
         for n in ast.walk(tree):
