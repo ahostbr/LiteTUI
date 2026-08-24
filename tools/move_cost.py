@@ -225,20 +225,66 @@ def main() -> int:
     for f, ln, arg in fakes[:12]:
         print(f"        {f}:{ln}  ...({arg}=...)")
 
+    # ---- member-shaped sites -------------------------------------------
+    # SilverBolt's find: a STUB CLASS that DEFINES the private name is a site,
+    # and tracing state alone reaches the FILE without ever naming the DEF LINE.
+    # After a rename the caller uses the public name and a stub class defining
+    # only the private one raises -- RED, so it will not hide, but a pre-cost
+    # exists to size the commit and 5 vs 7 sites is a different commit.
+    member_sites: list[tuple[str, int, str, str]] = []
+    for f in files:
+        text = blob(args.ref, f)
+        if text is None:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ClassDef):
+                for item in n.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                            and item.name in found and f != args.app_file:
+                        member_sites.append((f, item.lineno, item.name,
+                                             f"STUB-CLASS DEF in {n.name}"))
+            elif isinstance(n, ast.Attribute) and n.attr in found:
+                member_sites.append((f, n.lineno, n.attr,
+                                     f"{ast.unparse(n.value)}.{n.attr}"))
+            elif isinstance(n, ast.keyword) and n.arg in found:
+                member_sites.append((f, n.lineno, n.arg, "keyword/fake"))
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+                    and n.func.id == "setattr" and len(n.args) > 1 \
+                    and isinstance(n.args[1], ast.Constant) and n.args[1].value in found:
+                member_sites.append((f, n.lineno, n.args[1].value, "setattr(str)"))
+
+    print("")
+    print("=" * 78)
+    print(f"2b. MEMBER-SHAPED SITES   [{len(member_sites)} site(s), "
+          f"{len({m[0] for m in member_sites})} file(s)]")
+    print("=" * 78)
+    stubdefs = [m for m in member_sites if m[3].startswith("STUB-CLASS DEF")]
+    print(f"  of which STUB-CLASS DEFS: {len(stubdefs)}  "
+          "<- a state-only trace reaches the FILE and never the DEF LINE")
+    for f, ln, name, how in stubdefs:
+        print(f"        {f}:{ln}  def {name}(...)   {how}")
+    for f, ln, name, how in [m for m in member_sites if m not in stubdefs][:12]:
+        print(f"        {f}:{ln}  {how}")
+
     print("")
     print("=" * 78)
     print("3. THE PRE-COST")
     print("=" * 78)
-    total = len(red) + len(inert) + len(fakes)
-    allfiles = {r[0] for r in red} | {r[0] for r in inert} | {f for f, _, _ in fakes}
+    total = len(red) + len(inert) + len(fakes) + len(member_sites)
+    allfiles = {r[0] for r in red} | {r[0] for r in inert} | {f for f, _, _ in fakes} | {m[0] for m in member_sites}
     print(f"  members moving        {len(found)}")
     print(f"  state re-homed        {len(state)}  {sorted(state)}")
     same = [r for r in red + inert if r[0] == args.app_file]
     print(f"  sweep                 {total} site(s) in {len(allfiles)} file(s)")
-    print(f"     of which SAME-FILE {len(same)}   <- in {args.app_file}: YOURS, same commit")
+    print(f"     of which SAME-FILE {len(same)}   <- SUBSET of RED+INERT, in {args.app_file}: YOURS, same commit")
     print(f"     of which INERT     {len(inert)}   <- invisible to a green suite")
     print(f"     of which RED       {len(red)}")
     print(f"     of which FAKES     {len(fakes)}")
+    print(f"     of which MEMBERS   {len(member_sites)}   <- incl. {len(stubdefs)} stub-class def(s)")
     skipped = [f for f in files if f not in seen]
     print(f"  [scanned {scanned} of {len(files)} tracked .py under {args.roots} at ref {args.ref}"
           + (f" | SKIPPED {skipped}]" if skipped else " | skipped none]"))
