@@ -18,6 +18,8 @@ would defeat the one guarantee this setting exists to make, so the test below
 asserts the dispatch is never even LOOKED UP.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 import litetui.app as app_mod
@@ -37,6 +39,17 @@ class _Refused:
     def __init__(self, enabled: bool):
         self.tools_enabled = enabled
         self.looked_up: list[str] = []
+        # T076 added a PER-TOOL denylist between the global refusal and
+        # dispatch, so the ENABLED path now legitimately reads settings.
+        # Empty, so this stub still exercises the enabled path all the way to
+        # _dispatch_for and fails there as designed.
+        #
+        # ⚠️ THE DISABLED PATH'S GUARANTEE IS UNWEAKENED, and that is why this
+        # is safe to add: the global refusal returns BEFORE the per-tool check,
+        # so with enabled=False this attribute is never touched at all. If that
+        # ordering is ever inverted, the tools-off refusal starts depending on
+        # a field it should not need.
+        self.settings = SimpleNamespace(tools_disabled=[])
 
     def _dispatch_for(self, name):          # noqa: D102
         self.looked_up.append(name)

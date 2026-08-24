@@ -44,6 +44,16 @@ call, do not reach for a different tool to accomplish the same thing, and do
 not treat the refusal as an obstacle to work around. Wait for their next
 message.
 
+## tool-disabled
+<!-- placeholders: {name} -->
+
+[disabled] The user has switched `{name}` OFF in the tool list, so nothing ran
+and nothing changed. Its schema is not offered to you any more; you are seeing
+this because the name reached the host anyway. Only the user can switch it back
+on (/tools). Do not retry it, and do not reach for a different tool to
+accomplish the same thing — they turned this one off on purpose. Say plainly
+that it is off, then carry on with what you can still do.
+
 ## tools-off
 <!-- placeholders: none -->
 

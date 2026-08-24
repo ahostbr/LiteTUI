@@ -371,6 +371,14 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "overridden by allowing the same thing.",
                             placeholder="none",
                         )
+                        yield from self._text_row(
+                            "tools_disabled", "Tools switched off",
+                            "The boxes you untick in /tools, by tool name. A tool listed "
+                            "here has its schema withheld from the model AND is refused "
+                            "if called anyway — the second matters because a name it used "
+                            "earlier in the same conversation still reaches the host.",
+                            placeholder="none — every registered tool is offered",
+                        )
                         yield from self._select_row(
                             "tool_context_mode", "Tool output context", TOOL_CONTEXT_CHOICES,
                             "What a tool result contributes to the conversation. Both "

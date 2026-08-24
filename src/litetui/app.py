@@ -1087,6 +1087,14 @@ class LiteTUI(App):
             group="tools",
             order=30,
         )
+        # The per-tool denylist, as a LIVE READ. A lambda and not a snapshot so
+        # unticking a box in /tools takes effect on the next request instead of
+        # the next restart. `or ()` because the field can be null in a
+        # hand-edited settings.json, and a None here would crash tool_specs on
+        # every turn rather than failing to hide one tool.
+        self.plugins.tools_disabled = lambda: frozenset(
+            self.settings.tools_disabled or ()
+        )
         self._plugin_manifests = plugins_mod.register_plugins(
             self, self.plugins,
             disabled=frozenset(self.settings.plugins_disabled or ()),
@@ -1408,6 +1416,24 @@ class LiteTUI(App):
         # setting exists to make.
         if not self.tools_enabled:
             return tool_denied("tools-off"), False
+        # 🔴 THE SECOND MECHANISM, AND IT IS NOT REDUNDANT WITH WITHHOLDING THE
+        # SCHEMA. `PluginRegistry.tool_specs` already hides a switched-off tool
+        # from the model, but `dispatch_for` deliberately does not consult
+        # gates — "dispatch has never been gated, only the offer is". So a name
+        # the model REMEMBERS still arrives here.
+        #
+        # The case that makes this necessary rather than merely prudent is the
+        # ordinary one: a tool used earlier in THIS conversation and switched
+        # off mid-session. Its call and its result are already in the
+        # transcript, so withholding the schema removes it from the inventory
+        # while leaving a worked example of using it in the history — and a
+        # model imitating its own transcript is exactly the T072 mechanism.
+        # No amount of schema withholding reaches that; only this line does.
+        #
+        # Before resolution, for the same reason the global toggle is: a tool
+        # the user switched off must not run even if a branch is added above.
+        if name in (self.settings.tools_disabled or ()):
+            return tool_denied("tool-disabled", name=name), False
         fn = self._dispatch_for(name)
         if fn is None:
             return tool_denied("unknown-tool", name=name), False

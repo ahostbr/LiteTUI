@@ -143,6 +143,15 @@ class Settings:
     #: before any allow rule: a refusal the human wrote down wins over
     #: everything. No UI writes this yet -- settings.json only, by hand.
     tool_deny: list[str] = field(default_factory=list)
+    #: Per-tool denylist by tool NAME — the boxes unticked in `/tools`.
+    #: A DENYLIST and not an allowlist, mirroring `mcp_disabled_servers`: with
+    #: an allowlist a newly registered tool is INVISIBLE until someone notices
+    #: and adds it, and a capability that silently fails to appear is far worse
+    #: than one that appears and gets unticked.
+    #: Two mechanisms honour it — the schema is withheld from `tool_specs()`,
+    #: AND the call is refused at the authorization door, because a name
+    #: remembered from earlier in the same conversation still reaches the host.
+    tools_disabled: list[str] = field(default_factory=list)
 
     # ── Tool output context (tool_context.py) ────────────────────────────────
     #: What a tool's output contributes to the conversation: "off" puts the raw

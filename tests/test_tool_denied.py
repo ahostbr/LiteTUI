@@ -36,6 +36,26 @@ def test_the_shipped_file_is_well_formed():
     validate_tool_denied()
 
 
+def test_the_two_tables_cover_exactly_the_same_keys():
+    """TOOL_DENIED_REQUIRED and TOOL_DENIED_FALLBACK must agree.
+
+    🔴 WRITTEN BECAUSE THEY DID NOT. Adding `tool-disabled` to REQUIRED and not
+    to FALLBACK made every refusal for that key raise KeyError — the fallback
+    is the FLOOR, so a gap there is not a degraded message, it is an exception
+    thrown at exactly the moment a refusal was needed.
+
+    Two structures that must agree with nothing enforcing it is the same drift
+    class as the profile list, and it reappeared within the hour. A key added
+    to one table now fails here instead of at a refusal.
+    """
+    assert set(TOOL_DENIED_REQUIRED) == set(TOOL_DENIED_FALLBACK)
+    # and every fallback must itself carry the placeholders it promises, since
+    # the fallback is what gets used precisely when the file cannot be trusted
+    for key, required in TOOL_DENIED_REQUIRED.items():
+        for p in required:
+            assert "{" + p + "}" in TOOL_DENIED_FALLBACK[key], f"{key} floor lost {p}"
+
+
 def test_every_refusal_names_the_tool_and_leaks_no_braces():
     for key, out in _render_all().items():
         assert "{" not in out and "}" not in out, f"{key} rendered a raw placeholder"

@@ -210,6 +210,16 @@ class PluginRegistry:
         self.turn_finalizers: list[TurnFinalizer] = []
         self.status: dict[str, str] = {}              # id -> active|disabled|failed: ...
         self._tool_by_name: dict[str, ToolEntry] = {}
+        #: The human's per-tool denylist, as a LIVE PROVIDER rather than a set.
+        #: Unchecking a tool must take effect on the next request, not the next
+        #: restart, and a snapshot taken at construction cannot do that.
+        #:
+        #: It is consulted INSIDE `tool_specs()` rather than passed in by the
+        #: caller on purpose: a parameter is something a new call site can
+        #: forget, and forgetting it would silently offer a tool the user
+        #: switched off. Defaults to "nothing disabled", so every bare registry
+        #: — which is what the tests build — behaves exactly as before.
+        self.tools_disabled: Callable[[], frozenset[str]] = frozenset
 
     # ── registration (called via PluginContext, owner pre-bound) ──────────
 
@@ -274,10 +284,35 @@ class PluginRegistry:
 
     def tool_specs(self) -> list[dict]:
         """Gated static specs, then every dynamic provider's, in registration
-        order — the same shape _all_tools() has always returned."""
-        specs = [e.spec for e in self.tools if e.gate is None or e.gate()]
+        order — the same shape _all_tools() has always returned.
+
+        MINUS anything the user switched off in the tool list. Withholding the
+        schema is the primary mechanism: `prompts/tools.md` deliberately does
+        NOT enumerate tools ("an inventory written here drifts the moment a
+        tool is added, and the schemas cannot"), so the schemas ARE the model's
+        only inventory and a withheld tool is one it never learns exists.
+
+        ⚠️ Withholding is not sufficient on its own and is not the only guard.
+        `dispatch_for` does not consult gates, so a name remembered from
+        earlier in the SAME conversation still reaches the host — see the
+        refusal at `_execute_tool`'s authorization door. Two mechanisms,
+        because this one cannot cover that case.
+
+        The denylist is name-based and applies to DYNAMIC specs too. MCP tools
+        are normally governed by `mcp_disabled_servers` at the server level and
+        the tool list does not offer per-MCP checkboxes — but a name that lands
+        in the denylist must be honoured wherever it came from. A denylist that
+        silently ignores half its entries is worse than not having one.
+        """
+        off = self.tools_disabled()
+        specs = [
+            e.spec for e in self.tools
+            if (e.gate is None or e.gate()) and e.name not in off
+        ]
         for d in self.dynamic:
-            specs.extend(d.specs_fn())
+            specs.extend(
+                s for s in d.specs_fn() if s["function"]["name"] not in off
+            )
         return specs
 
     def dispatch_for(self, name: str):

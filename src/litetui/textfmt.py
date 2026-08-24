@@ -58,6 +58,7 @@ TOOL_DENIED_REQUIRED: dict[str, tuple[str, ...]] = {
     "no-metadata": ("name",),
     "profile": ("name", "reason"),
     "by-user": ("name",),
+    "tool-disabled": ("name",),
     "tools-off": (),
 }
 
@@ -73,6 +74,12 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
         "[policy denied by user] {name} — the user was asked and refused, so "
         "nothing ran and nothing changed. The turn ended there, by their "
         "choice. Do not retry and wait for their next message."
+    ),
+    "tool-disabled": (
+        "[disabled] The user has switched `{name}` OFF in the tool list, so "
+        "nothing ran and nothing changed. Only the user can switch it back on "
+        "(/tools). Do not retry it, and do not reach for a different tool to "
+        "accomplish the same thing — they turned this one off on purpose."
     ),
     "tools-off": (
         "[disabled] Tools are turned OFF in LiteTUI, so nothing ran and "
