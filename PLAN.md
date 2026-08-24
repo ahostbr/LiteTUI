@@ -76,9 +76,9 @@ cheaper wins.
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups (19 methods, ~244 ln) | OpenBolt | −244 lines, **−19 methods** | knot |
 | **O3** | `_cron_*` → `CronService` — **scope reduced by S3, see §5** | OpenBolt | −~80 lines, −3 methods | knot |
-| **S5** | `ctx.model` facade (`model_switch.py`'s 20 hits) | SilverBolt | reach **31 → 11** | lines, methods, knot |
+| **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **40 → 22** (AST) | lines, methods, knot |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed_*`/`_eta_*`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
-| **S6** | `ctx.conversation` facade (`_compact` excluded) | SilverBolt | reach **11 → 5** | lines, methods, knot |
+| **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **22 → 15** (AST) | lines, methods, knot |
 | **S7/O5** | The turn-engine boundary: `_stream` (345 ln), `_compact` (262), `_handle_command` | **both, last** | lines, knot | — |
 
 ### 2a. S1 — RESHAPED, AND WHY THE ORIGINAL SHAPE WOULD HAVE MERGED CLEAN AND DONE NOTHING
@@ -116,6 +116,59 @@ doors to one behaviour, one of them with three callers — a worse surface than 
 **S1 first, unconditionally.** `_system` is 49 of 99, every hit a call, zero reads, return value
 unused, four lines of body. Nothing else on either list is that cheap, and until it is sealed
 every later extraction has to preserve a private name that 13 plugin files depend on.
+
+### 2b. 🔴 THE `ctx` FACADE IS DROPPED ENTIRELY — S5 AND S6 WERE UNBUILDABLE, SAME REASON
+
+**The rule at the end of §2a paid for itself twice, before either step was scheduled.** SilverBolt
+classified all **43** remaining reach-throughs by *what is in scope at the call site*, by AST at
+`origin/refactor/app-decomposition`:
+
+```
+40  app only        file                  hits   app-only   ctx
+ 3  ctx reachable   model_switch            18       18       0   <- S5's ENTIRE target
+                    convo                    7        7       0   <- S6's ENTIRE target
+                    scheduler_plugin         5        4       1
+                    misc / skills_plugin     6        6       0
+                    settings_ui              2        2       0
+                    harness/mark/themes      3        3       0
+                    mcp_plugin                1        0       1
+                    view_image                1        0       1
+```
+
+⇒ **`ctx.model` has ZERO reachable call sites. `ctx.conversation` has ZERO.** Both would have
+typechecked, tested green, merged, and moved reach-through by **exactly 0** — the `ctx.notify` false
+green again, twice more, on the **two largest remaining steps**.
+
+⇒ **THE IDEA IS DROPPED, NOT DEFERRED.** Only **3 of 43** sites could ever call a `ctx` facade, and
+all three sit inside `_register(ctx)` bodies. ⭐ **A supported surface with 3 possible callers out of
+43 is not the API; it is the exception.**
+
+**THE SHAPE THAT WORKS — public methods on the app, the S1 pattern:**
+
+> **S5** (5 members, 18 hits, all in `model_switch.py`, which IS the model UI):
+> `_connect` (5) · `_fetch_ctx_window` (6) · `_update_header` (4) · `_apply_context_length` (2) ·
+> `_on_model_picked` (1) → `connect()` · `fetch_context_window()` · `update_header()` ·
+> `apply_context_length()` · `on_model_picked()`
+>
+> **S6** (7 members, 1 hit each, all in `convo.py`): `_new_convo` · `_load_system_prompt` ·
+> `_compact` · `_on_convo_picked` · `_materialise_convo` · `_resume` · `_edit` → the same names
+> without the underscore.
+
+**Arrival-first each time, WITH a compatibility window:** OpenBolt adds the public name plus a
+one-line private alias so host call sites keep working; SilverBolt then converts. Because the alias
+exists these **may land in either order** — unlike S4, which has no alias and is strictly
+arrival-first (§5a). **That difference is the whole reason the generic "commit your side anyway"
+instruction was withdrawn: the window is a property of the STEP.**
+
+**WHAT THE RESHAPE COSTS: nothing.** Same members, same counts, same order, same predecessors, same
+arrival-first law — only the name the plugin calls. `43 → 40 → 22 → 15` is unchanged. What it
+prevents is **two commits that land clean and move nothing**.
+
+📌 **A stale count, self-reported:** the S5 row said **20** hits; it is **18**. The 20 counted two
+`_system` hits that S1 has since converted — true when written, stale two commits later. Same as the
+orchestrator's `grep` figure of 46 (AST: **43**) and the `convo.py` docstring. **A count is only true
+at a ref.**
+
 
 ---
 
@@ -160,7 +213,7 @@ A dependency mentioned once in a paragraph is a dependency someone executes out 
 
 | this step | cannot start until | why |
 |---|---|---|
-| **O4** (seal the knot's plugin-facing members) | **S5 complete** | `_update_header`, `_fetch_ctx_window`, `_connect` are frozen by `model_switch.py` until the `ctx.model` facade replaces those 20 hits |
+| **O4** (seal the knot's plugin-facing members) | **S5 complete** | `_update_header`, `_fetch_ctx_window`, `_connect` are frozen by `model_switch.py` until **public methods** replace those **18** hits. **The dependency SURVIVES the §2b reshape:** renaming them public does not unfreeze the internals structurally, but it removes the plugin's dependency on the PRIVATE NAME, which is what blocks him. He can then move `_connect`'s body into a service and leave `connect()` delegating — exactly what S1 did for `_system`. |
 | **OpenBolt's alias cleanup** (delete the 6 `ConversationRepository` shims) | **S2 complete** | `plugins/convo.py` is the last caller keeping the shim alive |
 | **S3 commit 2** (deletion) | **S3 commit 1** (arrival) | §3 — otherwise the suite is red between commits |
 | **S7 / O5** (`_stream`, `_compact`) | **O4 complete** | both are inside the knot; boundary work before the knot splits is guesswork |
