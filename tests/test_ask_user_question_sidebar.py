@@ -61,11 +61,49 @@ def _harness():
     return st, done, box, (lambda: aq.AskUserQuestionBody(st, done, box))
 
 
-async def _settle(pilot, app, n=10):
+async def _settle(pilot, app, n=20):
+    """Wait until the dialog is really there.
+
+    🔴 THE OBVIOUS SECOND CLAUSE IS WORTHLESS IN A SIDEBAR. `screen.focused is
+    not None` looks like "the dialog took focus" and is not: the panel shares a
+    screen with the chat, so `focused` is ALREADY the message input before this
+    dialog has laid out at all. A wait built on it exits on the first pause and
+    is a tick count wearing a condition's clothes — which is precisely how a
+    test passes alone, passes on one machine, and fails inside a full suite on
+    another.
+
+    So the condition is the body being present AND FOCUS BEING INSIDE IT.
+    """
     for _ in range(n):
         await pilot.pause()
-        if app.screen.query(aq.AskUserQuestionBody) and app.screen.focused is not None:
+        found = app.screen.query(aq.AskUserQuestionBody)
+        if not found:
+            continue
+        focused = app.screen.focused
+        if focused is not None and focused in found[0].walk_children(with_self=True):
             return
+
+
+async def _settle_clickable(pilot, app, selector, n=20):
+    """Wait until `selector` is what the MOUSE would actually hit.
+
+    A widget can exist, be queryable and still have a zero region, or be under
+    something that has not finished laying out. `get_widget_at` on its own centre
+    is the only check that asks the question the click asks.
+    """
+    for _ in range(n):
+        await pilot.pause()
+        hits = app.screen.query(selector)
+        if not hits:
+            continue
+        w = hits[0]
+        r = w.region
+        if not r.width or not r.height:
+            continue
+        top = app.screen.get_widget_at(r.x + r.width // 2, r.y + r.height // 2)[0]
+        if top is w or w in top.ancestors_with_self:
+            return w
+    return None
 
 
 @pytest.mark.asyncio
@@ -189,14 +227,14 @@ async def test_a_real_MOUSE_CLICK_ticks_an_option_in_the_sidebar():
         a.run_worker(ctrl.open(), name="auq")
         await _settle(pilot, a)
 
-        rows = a.screen.query(".auq-row")
-        assert rows, "no option rows rendered in the sidebar"
-        row = rows[0]
-        r = row.region
-        hit = a.screen.get_widget_at(r.x + r.width // 2, r.y + r.height // 2)[0]
-        assert hit is row or row in hit.ancestors_with_self, (
-            f"the option row is not what the mouse hits — {type(hit).__name__} is "
-            "on top of it, so clicking an option would do nothing"
+        # Wait for the row to be REACHABLE BY THE MOUSE, not merely present.
+        # The previous version asserted hit-testing on the first frame where the
+        # body existed, which is a race: this test was reported RED on another
+        # machine at the same sha while passing 1322/1322 here.
+        row = await _settle_clickable(pilot, a, ".auq-row")
+        assert row is not None, (
+            "no option row ever became mouse-reachable — either nothing rendered "
+            "or something is permanently on top of it"
         )
         await pilot.click(".auq-row")
         for _ in range(4):

@@ -124,9 +124,19 @@ class ToolApprovalBody(Vertical):
     #
     # 📌 THE BASE CLASS WAS NEVER THE CAUSE, and I checked rather than assuming:
     # `Widget` -> `Container` changed nothing while the extra level was present,
-    # and with the level gone a `Widget` base works fine. It is the DEPTH, not
-    # the type. Measured both ways, because "I swapped two things and it started
-    # working" is not a diagnosis.
+    # and with the level gone a `Widget` base works fine. Removing the level is
+    # what fixed it HERE. Measured both ways, because "I swapped two things and
+    # it started working" is not a diagnosis.
+    #
+    # ⚠️ CORRECTION TO MY OWN FIRST WRITE-UP: this used to end "it is the DEPTH,
+    # not the type", stated as a general law. IT IS NOT ONE. T082 wrapped
+    # `AskUserQuestionBody`'s compose in an extra level as a deliberate mutation
+    # and that dialog's click test STAYED GREEN — so an extra level is not
+    # sufficient to swallow clicks. Something more specific to this dialog is
+    # involved (an auto-sized body under the screen's `align: center middle` is
+    # the obvious suspect) and I have NOT isolated it.
+    # ⇒ Established: removing the level fixed THIS case and the base class did
+    # not. Not established: that depth alone explains it anywhere else.
     #
     # `width: 78` is the original value and stays the basis; `max-width: 100%`
     # is what lets it fit a 60-column sidebar.

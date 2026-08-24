@@ -71,11 +71,43 @@ async def _open(a, pilot, style="sidebar"):
     for _ in range(8):
         await pilot.pause()
     a.run_worker(_run(), name="approval")
-    for _ in range(10):
+    # 🔴 `focused is not None` IS VACUOUS IN A SIDEBAR and this used to rely on
+    # it. The panel shares a screen with the chat, so the message input is
+    # ALREADY focused before this dialog has laid out — the loop exited on the
+    # first pause and everything after it raced. Wait for focus to be INSIDE THE
+    # BODY, which is the thing that was actually meant.
+    for _ in range(20):
         await pilot.pause()
-        if a.screen.query(ToolApprovalBody) and a.screen.focused is not None:
+        found = a.screen.query(ToolApprovalBody)
+        if not found:
+            continue
+        focused = a.screen.focused
+        if focused is not None and focused in found[0].walk_children(with_self=True):
             break
     return ctrl, got
+
+
+async def _settle_clickable(pilot, app, selector, n=20):
+    """Wait until `selector` is what the MOUSE would actually hit.
+
+    Existing, queryable and laid-out are three different things. `get_widget_at`
+    on the widget's own centre is the only check that asks the question a click
+    asks — and asserting it on the first frame the body exists is a race that
+    passed 1322/1322 on one machine and failed on another at the same sha.
+    """
+    for _ in range(n):
+        await pilot.pause()
+        hits = app.screen.query(selector)
+        if not hits:
+            continue
+        w = hits[0]
+        r = w.region
+        if not r.width or not r.height:
+            continue
+        top = app.screen.get_widget_at(r.x + r.width // 2, r.y + r.height // 2)[0]
+        if top is w or w in top.ancestors_with_self:
+            return w
+    return None
 
 
 def test_denied_is_falsy_and_both_approvals_are_truthy() -> None:
@@ -210,12 +242,14 @@ async def test_the_buttons_answer_a_real_MOUSE_CLICK_in_the_sidebar() -> None:
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
         ctrl, got = await _open(a, pilot)
-        btn = a.screen.query_one("#tool-approval-deny")
-        r = btn.region
-        hit = a.screen.get_widget_at(r.x + r.width // 2, r.y + r.height // 2)[0]
-        assert hit is btn, (
-            f"the Deny button is not what the mouse hits — {type(hit).__name__} is "
-            "on top of it, so the click never reaches the handler"
+        # Wait for the button to be REACHABLE BY THE MOUSE, not merely present.
+        # Asserting hit-testing on the first available frame is what made this
+        # test machine-dependent: green 1322/1322 here, red on another box at
+        # the same sha.
+        btn = await _settle_clickable(pilot, a, "#tool-approval-deny")
+        assert btn is not None, (
+            "the Deny button never became mouse-reachable — either nothing "
+            "rendered or something is permanently on top of it"
         )
         await pilot.click("#tool-approval-deny")
         for _ in range(4):
