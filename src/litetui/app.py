@@ -1405,19 +1405,52 @@ class LiteTUI(App):
             policy,
             args,
             paths.ROOT,
+            tool_name=name,
+            always_allow=frozenset(self.settings.tool_always_allow or ()),
+            deny=frozenset(self.settings.tool_deny or ()),
         )
         if decision.action == tool_policy.DENY:
             return f"[policy denied] {name}: {decision.reason}", False
         if decision.action == tool_policy.CONFIRM:
-            approved = await self.push_screen_wait(
+            answer = await self.push_screen_wait(
                 ToolApprovalScreen(name, args, decision)
             )
-            if not approved:
+            # `not answer` covers three cases on purpose: DENIED, and None from
+            # a screen dismissed without a value, and any future falsy answer.
+            # ToolApproval.__bool__ is what keeps this line correct now that the
+            # modal returns a tri-state instead of a bool.
+            if not answer:
                 return f"[policy denied by user] {name}", False
+            if answer.remember:
+                self._remember_tool_rule(name, decision.capabilities)
         try:
             return str(await asyncio.to_thread(fn, args)), True
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}", False
+
+    def _remember_tool_rule(self, name: str, capabilities: frozenset[str]) -> None:
+        """Record "always allow" so the same question is not asked twice.
+
+        Keyed by tool AND the capabilities that triggered THIS prompt, so the
+        rule grants exactly the authority the human was shown and nothing
+        wider.  The same tool asking for more prompts again.
+
+        A failed write costs one repeated prompt next session; raising here
+        would fail the tool call the human just approved, which is the worse of
+        the two.  The in-memory rule still holds for the rest of this session,
+        and the message says so rather than leaving a silent half-success.
+        """
+        key = tool_policy.rule_key(name, capabilities)
+        if key in self.settings.tool_always_allow:
+            return
+        self.settings.tool_always_allow.append(key)
+        try:
+            settings_mod.save(self.settings)
+        except OSError:
+            self._system(
+                f"could not save the always-allow rule for {key} "
+                "— it holds for this session only"
+            )
 
     def _system_prompt_text(self) -> str:
         """systemprompt.md + the store block + the tools block, in that order.

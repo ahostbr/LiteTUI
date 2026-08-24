@@ -6,7 +6,7 @@ import pytest
 from litetui import app as app_mod
 from litetui import scheduler
 from litetui.settings import Settings
-from litetui.tool_approval import ToolApprovalScreen
+from litetui.tool_approval import DENIED, ONCE, ToolApprovalScreen
 from litetui.tool_policy import (
     INTERACTIVE,
     NETWORK_READ_POLICY,
@@ -25,7 +25,7 @@ class _Policies:
         return self.policy
 
 
-def _host(policy, run, *, profile=INTERACTIVE, approve=True):
+def _host(policy, run, *, profile=INTERACTIVE, approve=ONCE):
     seen = []
 
     async def confirm(screen):
@@ -43,6 +43,11 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=True):
         _dispatch_for=lambda _name: run,
         plugins=_Policies(policy),
         push_screen_wait=confirm,
+        # Standing allow/deny rules are read straight off settings, by the same
+        # reasoning as tools_enabled above: a missing rule set must not mean
+        # "no rules apply" by accident. Defaults are empty, so this host models
+        # a machine where the human has never answered "always".
+        settings=Settings(),
     ), seen
 
 
@@ -62,7 +67,7 @@ async def test_sensitive_interactive_call_requires_one_host_decision():
     host, screens = _host(
         SHELL_POLICY,
         lambda args: calls.append(args) or "ran",
-        approve=True,
+        approve=ONCE,
     )
     result, ok = await app_mod.LiteTUI._execute_tool(
         host, "powershell", {"command": "git status"}
@@ -78,7 +83,7 @@ async def test_denied_modal_and_scheduled_profile_never_execute(tmp_path):
     host, screens = _host(
         WRITE_POLICY,
         lambda args: called.append(args) or "wrote",
-        approve=False,
+        approve=DENIED,
     )
     result, ok = await app_mod.LiteTUI._execute_tool(
         host, "write", {"path": str(tmp_path / "x"), "content": "x"}

@@ -133,6 +133,16 @@ class Settings:
     #: Authority profile for ordinary human conversation turns. The host,
     #: never the model, applies this at each tool call.
     tool_policy_profile: str = INTERACTIVE
+    #: The human's standing answers to the approval modal, keyed by
+    #: `tool_policy.rule_key` -- "<tool>:<sorted,capabilities>", NOT the tool
+    #: name alone. Written by the modal's "Always allow" button.
+    #: `list[str]` and not `frozenset` because `_coerce` handles list[str] and
+    #: would silently drop a set; converted at the call site in app.py.
+    tool_always_allow: list[str] = field(default_factory=list)
+    #: Standing refusals, same key shape. Consulted BEFORE the profile and
+    #: before any allow rule: a refusal the human wrote down wins over
+    #: everything. No UI writes this yet -- settings.json only, by hand.
+    tool_deny: list[str] = field(default_factory=list)
 
     # ── Tool output context (tool_context.py) ────────────────────────────────
     #: What a tool's output contributes to the conversation: "off" puts the raw

@@ -320,6 +320,21 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "execution, desktop control, or other sensitive effects. "
                             "Scheduled is read-only and never opens an unattended prompt.",
                         )
+                        yield from self._text_row(
+                            "tool_always_allow", "Never ask again for",
+                            "Written by the approval modal's 'Always allow'. Each entry is "
+                            "tool:authority, so a rule covers that tool at that authority "
+                            "and nothing wider — a bigger request still asks. Clear the "
+                            "box to start being asked again.",
+                            placeholder="none — every sensitive call asks",
+                        )
+                        yield from self._text_row(
+                            "tool_deny", "Always refuse",
+                            "Same tool:authority form. Checked before the profile and "
+                            "before any allow rule, so a refusal written here cannot be "
+                            "overridden by allowing the same thing.",
+                            placeholder="none",
+                        )
                         yield from self._select_row(
                             "tool_context_mode", "Tool output context", TOOL_CONTEXT_CHOICES,
                             "What a tool result contributes to the conversation. Both "

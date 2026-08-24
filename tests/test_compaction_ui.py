@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from litetui import tool_approval
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as app_mod
 from litetui import paths
@@ -231,7 +233,7 @@ def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path):
             # may write durable memory. This test is about the visible tool
             # card/ledger path, so approve that independent boundary once.
             async def approve(_screen):
-                return True
+                return tool_approval.ONCE
             a.push_screen_wait = approve
             a._compact()
             await _settle(a, pilot, ticks=12)
