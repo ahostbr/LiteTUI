@@ -56,6 +56,14 @@ def _reference(a) -> str:
         ).strip()
         if a.skills:
             base = (base + skills_mod.index_block(a.skills)).strip()
+    else:
+        # T073: tools OFF no longer means NO tools section. The schemas are
+        # still advertised to the model (so it takes the structured path and
+        # never types tool markup as prose), so the prompt must say they are
+        # refused and who can turn them on — shipping silence here is the
+        # "offered with no instructions" state this file's fold exists to
+        # notice. The skills index stays off with the tools, as before.
+        base = (base + m.TOOLS_DISABLED_PROMPT).strip()
     return base
 
 
