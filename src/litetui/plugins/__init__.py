@@ -64,6 +64,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.settings_ui",
     "litetui.plugins.scheduler_plugin",
     "litetui.plugins.goal_loop_plugin",
+    "litetui.plugins.runtime_log_plugin",
     "litetui.plugins.glassbox_plugin",
 )
 
