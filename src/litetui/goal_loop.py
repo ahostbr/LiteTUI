@@ -377,9 +377,41 @@ def _loop_jobs(app: Any) -> list[scheduler.Job]:
     return [job for job in app.jobs if getattr(job, "kind", "cron") == "loop"]
 
 
+def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> None:
+    """Pause or resume one loop, and persist it.
+
+    🔴 EXTRACTED SO THE GUI CANNOT GROW A SECOND COPY. Resuming is not just a
+    flag: it also re-arms `next_run_at`, or a loop resumed after a long pause
+    would fire immediately instead of at its own cadence. A panel that set
+    `enabled = True` by hand would look right, save correctly, and change the
+    behaviour — the failure this codebase has paid for repeatedly today.
+    """
+    job.enabled = on
+    if on:
+        job.next_run_at = (
+            datetime.now() + timedelta(minutes=job.interval_minutes)
+        ).isoformat(timespec="seconds")
+    scheduler.save(app.jobs, paths.ROOT)
+
+
+def remove_loop(app: Any, job: scheduler.Job) -> None:
+    """Delete one loop, and persist it. Same reason as `set_loop_enabled`."""
+    app.jobs.remove(job)
+    scheduler.save(app.jobs, paths.ROOT)
+
+
 def loop_command(app: Any, arg: str) -> None:
     arg = arg.strip()
-    if not arg or arg.lower() in {"list", "ls", "status"}:
+    if not arg:
+        # BARE /loop OPENS THE PANEL (T074). `/loop list` still prints text, so
+        # anything reading that form keeps working — the GUI takes the bare
+        # invocation only, which is where a human lands and a script does not.
+        from litetui.loop_list import LoopListBody
+        from litetui.side_panel import open_dialog
+
+        open_dialog(app, LoopListBody)
+        return
+    if arg.lower() in {"list", "ls", "status"}:
         jobs = _loop_jobs(app)
         if not jobs:
             app._system("/loop: none. Use /loop <15m|2h|1d> <prompt>.")
@@ -401,16 +433,10 @@ def loop_command(app: Any, arg: str) -> None:
             return
         job = hits[0]
         if verb.lower() in {"clear", "rm", "remove"}:
-            app.jobs.remove(job)
-            scheduler.save(app.jobs, paths.ROOT)
+            remove_loop(app, job)
             app._system(f"/loop removed {job.id}")
         else:
-            job.enabled = verb.lower() == "resume"
-            if job.enabled:
-                job.next_run_at = (
-                    datetime.now() + timedelta(minutes=job.interval_minutes)
-                ).isoformat(timespec="seconds")
-            scheduler.save(app.jobs, paths.ROOT)
+            set_loop_enabled(app, job, verb.lower() == "resume")
             app._system(f"/loop {job.id} {'resumed' if job.enabled else 'paused'}")
         return
     interval_token, _, prompt = arg.partition(" ")
