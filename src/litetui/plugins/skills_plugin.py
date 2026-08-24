@@ -50,16 +50,16 @@ def _invoke(app, want: str, extra: str = "") -> None:
     Ryan, 2026-08-22: "invoking a skill just prints it to the screen... its not
     getting sent to the agent correctly." There was no send to break — this
     command was written as a viewer (its comment said "Show what the MODEL would
-    receive") and `app._system` only mounts a widget into the chat log. The old
-    banner said "N chars as the model sees it" about a delivery that never
-    happened, so the falsehood was printed to the user on every invocation.
+    receive") and `app.system_message` only mounts a widget into the chat
+    log. The old banner said "N chars as the model sees it" about a delivery
+    that never happened, so the falsehood was printed to the user on every
+    invocation.
 
-    Delivery goes through _append_to_system, NOT _append, and that is a
-    portability constraint rather than a preference: qwen/qwen3.8-27b's chat
-    template raises "System message must be at the beginning" and 500s when a
-    second role:"system" turn appears mid-conversation (app.py:2968). Extending
-    the first system turn is also idempotent, which gives re-invoking the same
-    skill the right behaviour for nothing.
+    Delivery is a USER turn plus a stream -- `app._append` with role "user",
+    then `app._stream()` -- and deliberately NOT a second role:"system" turn.
+    That is a portability constraint rather than a preference: qwen/qwen3.8-27b's
+    chat template raises "System message must be at the beginning" and 500s when
+    a second system turn appears mid-conversation.
 
     Nothing of the body reaches the screen. The log gets one line saying what
     was loaded; the skill itself is for the model to read, and dumping it into
