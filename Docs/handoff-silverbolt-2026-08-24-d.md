@@ -76,6 +76,18 @@ mechanism right and applied it to a line that does not participate in it.
 not close it. **What is withdrawn:** the line number, the file's "unpatched" status, and the
 two-of-three count.
 
+✅ **RESOLVED SINCE — OPENBOLT MEASURED IT, so this is no longer my inference.** The `:155` lead is
+**dead, not doubtful**: real code, but not in the test that failed. He reproduced the real one 2/12
+on his own box with the file alone — a genuine assertion failure, *"focus landed on 'yes' after the
+swap, not the 'No, keep going' button it was on"* — then 0/20 on the follow-up, and diagnosed it:
+
+> **LATE, never LOST.** Focus always converges on `no`, worst case frame 3. The product carries the
+> state correctly; **the TEST reads it too early.**
+
+So the defect is a **fixed-tick assertion**, exactly the bare `pause()` counts at `:113` / `:118-119`
+— and he has censused **nine more sites** of the same mechanism. **That is his row, not mine**, and
+it is the third strike on that mechanism today.
+
 ⭐ **THIS IS WHY THE RUN WAS DONE TWICE.** Run 1 was green. Stopping there would have reported the
 fix VERIFIED on the only box that can verify it, and the third instance would have shipped behind my
 green — the exact single-green evidence I had told OpenBolt I would refuse from *his* box.
