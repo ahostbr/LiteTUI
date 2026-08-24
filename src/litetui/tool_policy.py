@@ -47,7 +47,9 @@ DENY = "deny"
 
 INTERACTIVE = "interactive"
 SCHEDULED = "scheduled"
-PROFILE_NAMES = (INTERACTIVE, SCHEDULED)
+#: PROFILE_NAMES is DERIVED from PROFILES, below — see the note there. It used
+#: to be a hand-written tuple here, which meant the same set of profiles was
+#: spelled out in three places.
 
 Classifier = Callable[[Mapping[str, object], Path], Iterable[str]]
 
@@ -80,6 +82,11 @@ class ToolProfile:
     name: str
     allow: frozenset[str]
     confirm: frozenset[str]
+    #: One clause, shown to the human in the settings dropdown. It lives HERE
+    #: rather than beside the widget so a profile carries its own description:
+    #: adding a profile cannot produce an option with no explanation, because
+    #: there is no second list to forget to update.
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,7 @@ INTERACTIVE_PROFILE = ToolProfile(
             DESTRUCTIVE_IRREVERSIBLE,
         }
     ),
+    summary="inspect freely, confirm sensitive actions",
 )
 
 # Scheduled prompts are unattended.  Their default is intentionally narrower:
@@ -122,12 +130,29 @@ SCHEDULED_PROFILE = ToolProfile(
     SCHEDULED,
     allow=frozenset({READ_ONLY}),
     confirm=frozenset(),
+    summary="read-only tools only",
 )
 
+#: 🔴 THE ONE SOURCE OF PROFILES. Everything else is derived from it.
+#:
+#: This used to be three hand-written lists — this dict, a PROFILE_NAMES tuple,
+#: and TOOL_PROFILE_CHOICES in settings_screen.py — and they could drift in a
+#: direction nothing caught: a profile added here but not to the others EXISTS,
+#: is refused by the settings validator, and cannot be selected by anyone. It
+#: was reachable and silent. Adding a profile is now one edit, in one place.
+#:
+#: ⚠️ INSERTION ORDER IS NOW THE DROPDOWN ORDER, so it is a human-facing
+#: decision rather than a formality. Left exactly as the hand-written list had
+#: it, deliberately: this commit is a derivation and nothing else, so the
+#: derived choices can be asserted equal to the old hardcoded pairs. Reordering
+#: inside a refactor is a UI change wearing a refactor's clothes.
 PROFILES = {
     INTERACTIVE: INTERACTIVE_PROFILE,
     SCHEDULED: SCHEDULED_PROFILE,
 }
+
+#: Derived, never hand-written. `tuple` so it stays immutable and ordered.
+PROFILE_NAMES = tuple(PROFILES)
 
 
 def rule_key(tool_name: str, capabilities: Iterable[str]) -> str:

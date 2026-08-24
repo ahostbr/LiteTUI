@@ -46,7 +46,12 @@ from textual.widgets import (
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerScreen
 from litetui.settings import Settings
-from litetui.tool_policy import INTERACTIVE, PROFILE_NAMES, SCHEDULED
+# THE MODULE, not the names. `from ... import PROFILES` binds at import
+# time, which would make the "derivation" a snapshot: a profile added
+# later would not appear, and the test proving it appears could only pass
+# by patching THIS module -- i.e. by touching the screen, which is the
+# exact thing the derivation exists to stop being necessary.
+from litetui import tool_policy
 
 THINKING_CHOICES = [
     ("off — no reasoning (may be ignored, see docs)", "off"),
@@ -74,10 +79,28 @@ TOOL_CONTEXT_CHOICES = [
     ("llm-tool-summ — side-call summary toward the task", "llm-tool-summ"),
 ]
 
-TOOL_PROFILE_CHOICES = [
-    ("interactive — inspect freely, confirm sensitive actions", INTERACTIVE),
-    ("scheduled — read-only tools only", SCHEDULED),
-]
+def tool_profile_choices() -> list[tuple[str, str]]:
+    """The profile dropdown, DERIVED from `tool_policy.PROFILES`.
+
+    🔴 THIS USED TO BE A HAND-WRITTEN LIST, and that let the UI's set of
+    profiles drift from the engine's in a direction nothing caught: a profile
+    added to `PROFILES` but not here EXISTS, is rejected by the validator at
+    the bottom of this file, and cannot be selected by anyone. Nothing went
+    red. The reverse drift was loud, so only the silent half ever bit.
+
+    A FUNCTION, not a module constant, because a constant is computed once at
+    import and a test cannot then add a profile and watch it appear — which is
+    the property that makes the drift impossible rather than merely fixed.
+    """
+    return [
+        (
+            f"{name} — {tool_policy.PROFILES[name].summary}"
+            if tool_policy.PROFILES[name].summary
+            else name,
+            name,
+        )
+        for name in tool_policy.PROFILE_NAMES
+    ]
 
 
 class _Row(Horizontal):
@@ -315,7 +338,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
                         )
                         yield from self._select_row(
                             "tool_policy_profile", "Conversation tool authority",
-                            TOOL_PROFILE_CHOICES,
+                            tool_profile_choices(),
                             "Host-enforced. Interactive turns ask before writes, process "
                             "execution, desktop control, or other sensitive effects. "
                             "Scheduled is read-only and never opens an unattended prompt.",
@@ -663,9 +686,9 @@ class SettingsScreen(ModalScreen[Settings | None]):
             raise ValueError("autocompact_at_percent: must be between 1 and 99")
         if out.tool_iterations < 1:
             raise ValueError("tool_iterations: must be at least 1")
-        if out.tool_policy_profile not in PROFILE_NAMES:
+        if out.tool_policy_profile not in tool_policy.PROFILE_NAMES:
             raise ValueError(
-                f"tool_policy_profile: must be one of {', '.join(PROFILE_NAMES)}"
+                f"tool_policy_profile: must be one of {', '.join(tool_policy.PROFILE_NAMES)}"
             )
         if out.compact_max_tokens < 256:
             raise ValueError("compact_max_tokens: below 256 no summary can fit")
