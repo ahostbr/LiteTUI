@@ -17,11 +17,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+# THE MODULE, not the name. `from litetui.paths import CONVO_DIR` binds at
+# import time, and the store is REDIRECTED by many tests (and could be by any
+# future caller) — a snapshot would silently classify against a directory that
+# is no longer the store. Same late-binding trap as the profile choices.
+from litetui import paths
+
 
 # The required vocabulary.  A tool may carry more than one capability: shell
 # execution is process_execution, and a command that formats a disk is also
 # destructive_irreversible.
 READ_ONLY = "read_only"
+#: The agent writing ITS OWN STORE — `.convos/<id>/**`: the transcript, the
+#: memory index, soul.md, handoff.md, memories/. Distinct from workspace_write
+#: because it is a different ACT, not a smaller one: persisting yourself is not
+#: editing the user's code, and the two were indistinguishable until T083.
+#:
+#: 🔴 THE BUG THAT FORCED THE DISTINCTION. Compaction is the agent writing down
+#: what survives it, and it runs on whatever profile the last turn left behind.
+#: After a scheduled turn that is `scheduled`, which is read-only — so every
+#: compaction after a cron or /loop job SILENTLY DISCARDED the handoff and the
+#: memories, politely, while the turn reported success. Under `interactive` it
+#: was no better in kind: workspace_write means CONFIRM, so an autocompact
+#: opened an approval modal in the middle of compacting.
+SELF_STORE = "self_store"
 WORKSPACE_WRITE = "workspace_write"
 EXTERNAL_WRITE = "external_write"
 PROCESS_EXECUTION = "process_execution"
@@ -32,6 +51,7 @@ DESTRUCTIVE_IRREVERSIBLE = "destructive_irreversible"
 CAPABILITIES = frozenset(
     {
         READ_ONLY,
+        SELF_STORE,
         WORKSPACE_WRITE,
         EXTERNAL_WRITE,
         PROCESS_EXECUTION,
@@ -111,7 +131,7 @@ class PolicyDecision:
 # another UI is visible to the host and therefore requires Ryan's confirmation.
 INTERACTIVE_PROFILE = ToolProfile(
     INTERACTIVE,
-    allow=frozenset({READ_ONLY, NETWORK}),
+    allow=frozenset({READ_ONLY, NETWORK, SELF_STORE}),
     confirm=frozenset(
         {
             WORKSPACE_WRITE,
@@ -129,25 +149,17 @@ INTERACTIVE_PROFILE = ToolProfile(
 # modal nobody is present to answer.
 SCHEDULED_PROFILE = ToolProfile(
     SCHEDULED,
-    allow=frozenset({READ_ONLY}),
+    allow=frozenset({READ_ONLY, SELF_STORE}),
     confirm=frozenset(),
     summary="read-only tools only",
 )
 
-#: 🔴 THE ONE SOURCE OF PROFILES. Everything else is derived from it.
-#:
-#: This used to be three hand-written lists — this dict, a PROFILE_NAMES tuple,
-#: and TOOL_PROFILE_CHOICES in settings_screen.py — and they could drift in a
-#: direction nothing caught: a profile added here but not to the others EXISTS,
-#: is refused by the settings validator, and cannot be selected by anyone. It
-#: was reachable and silent. Adding a profile is now one edit, in one place.
-#:
 #: Everything, unattended, no questions. The point of the row: Ryan killed his
 #: own agent seat rather than keep answering the modal, and a guard that gets
 #: ROUTED AROUND protects nothing. This is the supported way to say "do not ask
 #: me", instead of the unsupported one (kill the agent, or leave tools off).
 #:
-#: `allow=CAPABILITIES` is DERIVED, not a copy of the seven names, for the same
+#: `allow=CAPABILITIES` is DERIVED, never a copy of the names, for the same
 #: reason PROFILE_NAMES is: a capability added later would otherwise land
 #: OUTSIDE this profile's allow AND confirm, and "autonomous" would start
 #: refusing something. Fail-safe, but it would mean the profile quietly stopped
@@ -166,6 +178,14 @@ AUTONOMOUS_PROFILE = ToolProfile(
     summary="every capability, unattended, never asks",
 )
 
+#: 🔴 THE ONE SOURCE OF PROFILES. Everything else is derived from it.
+#:
+#: This used to be three hand-written lists — this dict, a PROFILE_NAMES tuple,
+#: and TOOL_PROFILE_CHOICES in settings_screen.py — and they could drift in a
+#: direction nothing caught: a profile added here but not to the others EXISTS,
+#: is refused by the settings validator, and cannot be selected by anyone. It
+#: was reachable and silent. Adding a profile is now one edit, in one place.
+#:
 #: ⚠️ INSERTION ORDER IS THE DROPDOWN ORDER, so it is a human-facing decision
 #: rather than a formality (Sentinel raised exactly this). Ordered by AUTHORITY
 #: GRANTED, ASCENDING — the list reads as a scale of trust and the widest
@@ -330,7 +350,24 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def classify_write(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
+    """Three answers, not two: the agent's own store, the workspace, elsewhere.
+
+    🔴 THE SELF-STORE CHECK MUST COME FIRST, because `.convos` lives INSIDE the
+    workspace — asking "is it in the workspace?" first would answer yes for
+    every self-store write and the third case would be unreachable.
+
+    The store is read from `paths.CONVO_DIR` — the ONE anchor — rather than
+    rebuilt as `workspace / ".convos"`. That second spelling would agree with
+    the real store only by coincidence, which is the drift pair this codebase
+    keeps paying for.
+
+    Escapes are handled by `_resolve_path`, which resolves before either test:
+    `.convos/<id>/../../src/x.py` resolves out of the store and is classified
+    as the workspace write it actually is.
+    """
     target = _resolve_path(args.get("path"), workspace)
+    if _inside(target, Path(paths.CONVO_DIR).resolve()):
+        return (SELF_STORE,)
     return (WORKSPACE_WRITE,) if _inside(target, workspace) else (EXTERNAL_WRITE,)
 
 
