@@ -26,7 +26,7 @@ def _app(monkeypatch, **settings_kw):
 def test_plugins_command_lists_every_plugin_active(monkeypatch):
     a = _app(monkeypatch)
     msgs = []
-    a._system = lambda t: msgs.append(t)
+    a.system_message = a._system = lambda t: msgs.append(t)
     a._handle_command("/plugins")
     out = msgs[-1]
     assert f"{len(PLUGIN_LOAD_ORDER)} plugin(s)" in out
@@ -39,7 +39,7 @@ def test_plugins_command_lists_every_plugin_active(monkeypatch):
 def test_disable_discriminates_and_survives_in_plugins_output(monkeypatch):
     a = _app(monkeypatch, plugins_disabled=["mark"])
     msgs = []
-    a._system = lambda t: msgs.append(t)
+    a.system_message = a._system = lambda t: msgs.append(t)
     # the disabled plugin's command is genuinely gone...
     a._handle_command("/mark")
     assert "Unknown: /mark" in msgs[-1]
@@ -50,7 +50,7 @@ def test_disable_discriminates_and_survives_in_plugins_output(monkeypatch):
     # plugin's — the readout must not die with a disabled plugin.
     a2 = _app(monkeypatch, plugins_disabled=["misc"])
     msgs2 = []
-    a2._system = lambda t: msgs2.append(t)
+    a2.system_message = a2._system = lambda t: msgs2.append(t)
     a2._handle_command("/plugins")
     assert "disabled  misc" in msgs2[-1]
     # negative control on the same app: an ENABLED plugin's command still

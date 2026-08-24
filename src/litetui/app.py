@@ -6,8 +6,6 @@ import io
 import json
 import os
 import re
-import subprocess
-import tempfile
 import statistics
 import time
 import uuid
@@ -33,6 +31,58 @@ from litetui import ttyguard
 from litetui import mcp_client
 from litetui import sanitize
 from litetui.fmt import fmt_dur
+
+# 🔴 RE-EXPORT, NOT JUST AN IMPORT. These nine helpers and one constant were
+# defined here until T070 step O0 moved them to `textfmt`. They are imported
+# back because callers reach them THROUGH THIS MODULE — tests do
+# `from litetui.app import render_progress, tool_display_parts` and
+# `app_mod.tps_text`, with 24 outside references to `render_progress` alone.
+# Dropping the names here would have been a rename dressed as a refactor.
+# ⚠️ So this move reduces app.py's LINE COUNT and nothing else: the API surface
+# is unchanged and every name is still reachable at `litetui.app.<name>`.
+from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
+    TOOL_NAME_DEFAULT,
+    _markdown_to_text,
+    is_reliable_rate_sample,
+    load_prompt,
+    memory_prompt,
+    midturn_action,
+    render_progress,
+    thinking_header_text,
+    tool_display_parts,
+    tps_text,
+)
+# 🔴 RE-EXPORT, same reason as `textfmt` above. Every widget below is used
+# inside this file AND reached from tests as `from litetui.app import ToolMessage`
+# / `app_mod.CompactionCard` — 16 outside references to ToolMessage alone, 13 to
+# ThinkingBlock. The re-export is what makes O0 a move instead of a break.
+# ⚠️ It buys a shorter app.py and nothing else: same API surface, same method
+# count on LiteTUI, same plugin reach-through.
+from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
+    AnswerBody,
+    AssistantMessage,
+    CancelToolButton,
+    ChatMessage,
+    Completion,
+    CompactionCard,
+    ConfirmStop,
+    ContextFooter,
+    FoldBlock,
+    LiteTUICommands,
+    PromptInput,
+    SkillAutocomplete,
+    ThinkingBlock,
+    ThinkingHeader,
+    ToolMessage,
+    _at_bottom,
+    _FoldHeader,
+    _mark_delivered,
+)
+# O2: nine stateless helpers now live in `appsvc`. They take `app` as their
+# first parameter because they still READ app state — the coupling is visible
+# in the signature instead of hidden behind `self`. LiteTUI loses nine methods;
+# plugin reach-through and the shared-state knot are unchanged.
+from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import tool_policy
@@ -59,31 +109,14 @@ from openai import AsyncOpenAI
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
+from litetui import cron as cron_mod
+from litetui import turnstats
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_IMAGE_DIM = 1536
-# The path anchors live in paths.py — one owner; test_paths.py proves the
-# resolution. MARK_SCRIPT stays here: it is /mark's fact, not a store's.
-MARK_SCRIPT = paths.ROOT / "tools" / "pccontrol" / "marker_overlay.ps1"
 
 
-def load_prompt(name: str, **variables: object) -> str:
-    """A prompt from prompts/<name>.md, with {name} placeholders substituted.
-
-    Replacement, not str.format(): these files are meant to be EDITED, and a
-    stray brace in hand-edited prose must not crash the app — only the
-    placeholders that are actually passed get touched.
-
-    A missing file raises FileNotFoundError naming the path, at import time
-    for the module-level prompts — a prompt that silently loads empty would
-    be a model quietly running without its instructions, which is worse than
-    not booting.
-    """
-    text = (paths.PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
-    for key, value in variables.items():
-        text = text.replace("{" + key + "}", str(value))
-    return text
 
 #: Marks an already-injected store block inside the system message. Detection
 #: by MARKER rather than a flag is what makes /resume correct: a flag lives in
@@ -148,15 +181,6 @@ COMPACT_PROMPT = load_prompt("compact")
 # would cost a full turn every time someone compacted just to free context.
 WAKE_AFTER_COMPACT = load_prompt("wake-after-compact")
 
-def memory_prompt(convo_id: str, folder: Path) -> str:
-    """The block appended to the system prompt so the agent can find its own
-    store. Body lives in prompts/conversation-store.md — read PER CALL, so
-    edits take effect on the next conversation without a restart."""
-    return load_prompt(
-        "conversation-store",
-        convo_id=convo_id,
-        store_path=str(folder).replace("\\", "/"),
-    )
 
 
 # ════════════════════════════════════════════════════════════════
@@ -170,351 +194,32 @@ def memory_prompt(convo_id: str, folder: Path) -> str:
 TOOL_MAX_ITERATIONS = int(os.environ.get("LM_TOOL_ITERS", "48"))
 
 
-@dataclass(frozen=True)
-class Completion:
-    """One row the slash picker can offer: an app COMMAND, or a skill.
-
-    `sort` is precomputed and total, so refilter can order a MIXED list with a
-    single comparison — commands in palette order, then skills alphabetically.
-    Building it at construction is what lets two orderings that are not
-    comparable to each other live in one list.
-    """
-
-    name: str
-    description: str
-    kind: str            # "command" | "skill"
-    sort: tuple
 
 
-class SkillAutocomplete(Vertical):
-    """Slash names, rising from the message area as one is typed: the app's own
-    COMMANDS and the skills library, in one list.
-
-    The id and class name still say "skill" because the CSS and the tests bind
-    to them; the contents are both kinds. That name is not cosmetic history —
-    it is what the bug was. The widget did exactly what it was called, so
-    /settings /convos /model and ~20 others were invisible to the one
-    affordance built for finding them.
-
-    Deliberately NOT a modal. A modal takes focus, which would stop the typing
-    that is doing the filtering -- the whole interaction is "keep typing and
-    watch the list narrow", so the Input must never lose focus. That is also
-    why the keys are intercepted on the Input rather than bound here.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(id="skill-ac")
-        self.options = OptionList(id="skill-ac-list")
-        self._matches: list = []
-
-    def compose(self) -> ComposeResult:
-        yield self.options
-
-    def refilter(self, candidates, fragment: str) -> bool:
-        """Narrow to `fragment`. Returns whether anything survived.
-
-        A PREFIX match sorts above a mere substring one: typing "ls-a" should
-        offer ls-arch before something that merely contains the letters, and
-        the first row is what Tab takes. Within equal prefix quality the
-        candidate's own `sort` decides, which is what puts COMMANDS ahead of
-        skills — they are the app's own surface and they always exist, while a
-        skills library may be empty.
-        """
-        want = (fragment or "").lower()
-        hits = [c for c in candidates if want in c.name.lower()]
-        hits.sort(key=lambda c: (not c.name.lower().startswith(want), c.sort))
-        self._matches = hits[:200]
-
-        self.options.clear_options()
-        for c in self._matches:
-            desc = " ".join((c.description or "").split())
-            # Labelled, because the user has to be able to tell a command from
-            # a skill WITHOUT running it. Fixed-width so the column does not
-            # ripple as the list narrows.
-            tag = "[command]" if c.kind == "command" else "[skill]"
-            self.options.add_option(Option(f"{c.name:<26}{tag:<11}{desc[:40]}"))
-        if self._matches:
-            self.options.highlighted = 0
-        self.display = bool(self._matches)
-        return bool(self._matches)
-
-    def move(self, delta: int) -> None:
-        if not self._matches:
-            return
-        cur = self.options.highlighted or 0
-        self.options.highlighted = max(0, min(len(self._matches) - 1, cur + delta))
-
-    def current(self) -> str | None:
-        """The name Tab would take, or None when nothing is showing."""
-        if not self._matches or not self.display:
-            return None
-        i = self.options.highlighted or 0
-        if not (0 <= i < len(self._matches)):
-            return None
-        return self._matches[i].name
-
-    def dismiss_list(self) -> None:
-        self.display = False
-        self._matches = []
 
 
-class PromptInput(Input):
-    """The message box. Steals a few keys ONLY while the picker is open.
-
-    Tab, up and down all belong to Input normally, so they are intercepted
-    here and released the moment the list is hidden -- a widget that keeps a
-    key it does not need is how tab-to-focus silently disappears.
-    """
-
-    def on_key(self, event) -> None:
-        ac = getattr(self.app, "_skill_ac", None)
-        if ac is None or not ac.display:
-            return
-        if event.key == "tab":
-            self.app.accept_skill_completion()
-        elif event.key == "down":
-            ac.move(1)
-        elif event.key == "up":
-            ac.move(-1)
-        elif event.key == "escape":
-            ac.dismiss_list()
-        else:
-            return
-        event.prevent_default()
-        event.stop()
 
 
-class ChatMessage(Static):
-    """A single chat message bubble."""
-
-    pass
 
 
-def _at_bottom(widget, slack: int = 2) -> bool:
-    """Is this scrollable already parked at (or within `slack` lines of) the end?
-
-    The whole point of autoscroll here is to FOLLOW a stream, and the whole
-    danger is yanking a reader who has scrolled up to read something. Both call
-    sites ask this first, so following happens only when the reader was already
-    following.
-
-    `slack` exists because scroll_y is a float and a stream lands fractions of a
-    line at a time; requiring exact equality would drop out of follow mode after
-    the first token and never return. Fails OPEN (returns True) if the widget
-    does not expose scroll geometry -- an over-eager scroll is a visual nit, a
-    silently dead autoscroll is the bug being fixed.
-    """
-    try:
-        return widget.scroll_y >= widget.max_scroll_y - slack
-    except Exception:
-        return True
 
 
-class CancelToolButton(Static):
-    """Kill ONE running tool's bash TREE, keep the turn. Mounted beside that
-    tool's own elapsed timer.
-
-    It used to float on the header layer at the top-left, which said nothing
-    about WHICH tool it would kill -- the control and the thing it acts on were
-    at opposite ends of the screen. It is now mounted directly after the
-    ToolMessage it belongs to, next to the timer that is counting that call up.
-
-    One instance per in-flight tool, so it carries a CLASS, not an id: an id
-    must be unique and there can be several tools running at once.
-
-    Hidden unless a cancellable subprocess is actually running — a control
-    that is visible and does nothing is a lie, and this repo has shipped that
-    class of control before. Visibility is driven by the same repaint tick
-    that animates the elapsed timers, so it needs no timer of its own.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(" ✕ cancel tool ", classes="cancel-tool")
-
-    def on_click(self) -> None:
-        self.app.action_cancel_tool()
 
 
-class ThinkingHeader(Static):
-    """Clickable header row that toggles the parent thinking block."""
-
-    def __init__(self) -> None:
-        super().__init__("\u25be Thinking", classes="thinking-header")
-
-    def on_click(self) -> None:
-        block = self.parent
-        if isinstance(block, ThinkingBlock):
-            block.set_expanded(not block.expanded)
 
 
-class ThinkingBlock(Vertical):
-    """Collapsible model thinking/reasoning trace (click header to toggle)."""
-
-    def __init__(self) -> None:
-        super().__init__(classes="thinking-block expanded")
-        self._buffer = ""
-        # A ThinkingBlock is only ever constructed on the first
-        # reasoning token, so construction IS the trace's start:
-        # stamp it here rather than having the app reach in.
-        self._t0: float | None = time.monotonic()
-        self._marker = "\u25be"      # expand glyph, kept in sync by set_expanded
-        self.text = Static("", id="thinking-text")
-        self.scroll = VerticalScroll(self.text, classes="thinking-body")
-
-    def compose(self) -> ComposeResult:
-        yield ThinkingHeader()
-        yield self.scroll
-
-    @property
-    def expanded(self) -> bool:
-        return self.has_class("expanded")
-
-    def set_expanded(self, value: bool) -> None:
-        if value:
-            self.add_class("expanded")
-        else:
-            self.remove_class("expanded")
-        marker = "\u25be" if value else "\u25b8"
-        self._marker = marker
-        self.query_one(ThinkingHeader).content = f"{marker} Thinking"
-
-    def append(self, token: str) -> None:
-        self._buffer += token
-        # This never scrolled the VerticalScroll it owns, so the trace grew
-        # below the fold with the viewport pinned at the top. Measure BEFORE
-        # the content grows: afterwards we are no longer at the bottom by
-        # definition, so the test would always read "not following".
-        follow = _at_bottom(self.scroll)
-        # NOTE: use the `content` setter, not .update() — in textual 8.0.2
-        # update() does not invalidate the content-size cache, so an
-        # auto-height parent would freeze at the first (small) height.
-        self.text.content = Text(self._buffer + " \u258c")
-        if follow:
-            # After the refresh: the scroll extent does not grow until the
-            # new content has been re-measured.
-            self.call_after_refresh(self.scroll.scroll_end, animate=False)
-
-    def finalize(self) -> None:
-        self.text.content = Text(self._buffer)
-
-    # -- header timer ------------------------------------------------------
-    #
-    # The block stamps its own t0 at construction (see __init__), the
-    # app feeds it one repaint tick (repaint_header, with the app's
-    # own tps value) and stops it (reset_header, inside
-    # _thinking_done). The strings are pure (thinking_header_text),
-    # so they are testable without a live app; the tps number is the
-    # app's single reactive, never a second one.
-
-    def repaint_header(self, tps: float | None) -> None:
-        """One repaint tick from the app's _elapsed_repaint loop. tps
-        arrives as an argument - the block never reaches for the app
-        itself, so this stays testable on a bare double."""
-        if self._t0 is None:
-            return
-        self.query_one(ThinkingHeader).content = thinking_header_text(
-            self._marker, self._t0, time.monotonic(), tps)
-
-    def reset_header(self) -> None:
-        """The trace stopped streaming: back to a plain header, no timer.
-        The app calls it once, inside _thinking_done (idempotent there)."""
-        self._t0 = None
-        try:
-            self.query_one(ThinkingHeader).content = f"{self._marker} Thinking"
-        except Exception:
-            # Not composed yet — a fast stream (compaction's tool-call chunk
-            # right behind the first reasoning token) can end the trace before
-            # the block's children exist. A pre-compose reset is a true no-op:
-            # compose() renders the header with exactly this text anyway.
-            pass
 
 
-def _markdown_to_text(src: str, width: int) -> Text:
-    """Markdown rendered to a styled Text.
-
-    Rich renders the Markdown to SEGMENTS; rebuilding those as a Text keeps
-    every style (bold, bullets, code colour) while giving Textual a visual type
-    it can select from. Falls back to the raw source if rendering ever fails —
-    unstyled but readable and selectable beats an exception mid-turn.
-    """
-    try:
-        console = Console(width=max(1, width), highlight=False)
-        out = Text()
-        for seg in console.render(Markdown(src), console.options.update(width=max(1, width))):
-            if seg.text:
-                out.append(seg.text, seg.style)
-        return out
-    except Exception:
-        return Text(src)
 
 
-def midturn_action(enter_interrupts: bool, alt_chord: bool) -> str:
-    """Pure: what a mid-turn submission does — "queue" or "interrupt".
-
-    ONE mapping with two ends and a boolean that swaps them (Ryan, 2026-08-21:
-    "swapping the default behavior between those two in the settings page").
-    NOT a queue path plus a hardcoded interrupt chord — that shape, under the
-    swapped setting, leaves the user with no way to queue at all.
-
-        enter_interrupts=False:  Enter -> queue      chord -> interrupt
-        enter_interrupts=True:   Enter -> interrupt  chord -> queue
-    """
-    return "interrupt" if (enter_interrupts != alt_chord) else "queue"
 
 
-def render_progress(t0: float, now: float, prompt_tokens=None, learned_rate=None) -> str:
-    """Pure: the in-flight bubble text while no answer token has arrived yet.
-    Elapsed since t0, always, with a trailing '…' to signal still working.
-    An ETA is appended ONLY when there is both a learned prompt-eval rate and a
-    prompt token count to apply it to; a None or zero rate (or a missing token
-    count) yields elapsed-only and never divides by zero. `prompt_tokens` is an
-    ESTIMATE (the previous turn's count), so the ETA is a projection, not a
-    measurement of this turn. Inputs are optional so the pre-ETA callers
-    (tool_display_parts, the pre-token answer bubble) keep working unchanged."""
-    base = f"{fmt_dur(now - t0)} …"
-    if (learned_rate is not None and learned_rate > 0
-            and prompt_tokens is not None and prompt_tokens > 0):
-        eta_s = prompt_tokens / learned_rate
-        return f"{base} · est ~{fmt_dur(eta_s)}"
-    return base
 
 
-def is_reliable_rate_sample(prompt_tokens, first_token_s, floor: float = 0.25) -> bool:
-    """Pure: the KV-cache gate. A rate sample is only trustworthy when the turn
-    demonstrably REPROCESSED the prompt, which surfaces as a first-token latency
-    at or above `floor` (default 0.25s). A cache-hit turn returns well under the
-    floor and its prompt_tokens/latency is a misleading rate (fixed overhead
-    dominates when few tokens are reprocessed), so admitting it into the median
-    would make a large post-compact turn predict minutes. Requires BOTH a positive
-    token count AND a first-token latency at the floor — either missing/zero
-    means the sample is not usable."""
-    return (prompt_tokens is not None and prompt_tokens > 0
-            and first_token_s is not None and first_token_s >= floor)
 
 
-def tps_text(tps: float) -> str:
-    """Pure: the tok/s field, one format for every surface (the footer,
-    the thinking header). The caller decides whether to show it at all:
-    a None reactive means "no number yet" and renders as absence, never
-    a rendered 0.0, which would be a lie about a number that does not
-    exist."""
-    return f"{tps:.1f} tok/s"
 
 
-def thinking_header_text(marker: str, t0: float, now: float,
-                         tps: float | None) -> str:
-    """Pure: the thinking block header while the trace is streaming.
-    '<marker> Thinking · 12.3s ... · 24.1 tok/s' — the elapsed part is
-    render_progress (no ETA: a reasoning trace has no token count until
-    it ends, and a confidently wrong number is worse than none), the
-    tok/s part is tps_text (the footer's own format, one source). tps
-    None -> elapsed only; the field is never rendered as 0.0 tok/s.
-    `marker` is the expand glyph, so a collapsed block keeps its own
-    state in the same string."""
-    text = f"{marker} Thinking · {render_progress(t0, now)}"
-    if tps is not None:
-        text += f" · {tps_text(tps)}"
-    return text
 
 
 # The launch wordmark. Module-level so a test can assert on it without a running
@@ -533,423 +238,28 @@ LITETUI_SPLASH = (
 #: The tool card's colours when no theme is reachable -- the values that were
 #: hardcoded in this function before `tool-text` became a theme token. Kept as
 #: the default so the pure function stays callable with no app and no theme.
-TOOL_NAME_DEFAULT = "#e8a33d"
-
-
-def _mark_delivered(item: dict) -> None:
-    """A queued bubble stops saying "queued" once the model can see it.
-
-    The title was the only signal that a message was waiting, so leaving it
-    after delivery is the same lie pointing the other way.
-
-    Module-level, not a method: it touches only `item`, and as a method it
-    forced every test double of the flush path to grow an unrelated attribute
-    just to be called. A helper that constrains its callers' shape for no
-    reason is a tax on every future test.
-    """
-    bubble = item.get("bubble")
-    if bubble is None:
-        return
-    try:
-        bubble.border_title = "You"
-    except Exception:
-        pass
-
-
-def tool_display_parts(tool, max_lines: int = 12, name_color: str | None = None) -> list:
-    """Pure: the (text, style) parts for a ToolMessage's display from its state.
-    Testable without a Textual app (no widget.content / console involved).
-    `tool` needs: tool_name, _args, _result, _ok, _t0, _took.
-
-    `name_color` is the theme's $tool-text. Optional, and defaulted, so this
-    stays a pure function that a test can call with nothing but a stub tool."""
-    arg_line = tool._args.replace("\n", " ")
-    if len(arg_line) > 110:
-        arg_line = arg_line[:107] + "..."
-    parts = [(f"\U0001F527 {tool.tool_name}", f"bold {name_color or TOOL_NAME_DEFAULT}")]
-    if arg_line:
-        parts.append(("  " + arg_line, "#8b95a7"))
-    if tool._result is not None:
-        lines = tool._result.split("\n")
-        shown = "\n".join(lines[:max_lines])
-        if len(lines) > max_lines:
-            shown += f"\n\u2026 ({len(lines) - max_lines} more lines, {len(tool._result)} chars total)"
-        style = "bold #e5534b" if not tool._ok else "#7d8799"
-        parts.append(("\n" + shown, style))
-    if tool._result is None:
-        parts.append(("\n  \u23f1 " + render_progress(tool._t0, time.monotonic()), "#8b95a7"))
-    else:
-        parts.append(("\n  ⏱ " + fmt_dur(tool._took or 0.0), "#5c6470"))
-    return parts
-
-
-class AnswerBody(Static):
-    """The answer text. Rendered as Markdown, and still selectable.
-
-    Textual extracts selected text via Widget.get_selection(), which returns
-    None unless the rendered visual is a Text or Content. A Rich `Markdown`
-    renderable is neither, so the finished answer could not be highlighted or
-    copied — while the thinking block and tool output, both plain text, could.
-
-    Rather than give up the Markdown rendering, extract from a PLAIN-TEXT render
-    taken at the SAME WIDTH. Matching the width is not an optimisation: the
-    selection offsets Textual hands us are positions in what is on SCREEN, so
-    extracting from the raw markdown source would silently return text from a
-    different place.
-    """
-
-    #: Remembered so a resize can re-render at the new width.
-    _markdown_source: str = ""
-
-    def set_markdown(self, src: str) -> None:
-        """Show `src` as markdown, in a form Textual can select.
-
-        Assigning `Markdown(src)` directly is what broke selection: Textual
-        creates a selection only for a widget whose visual is a Text/Content,
-        so the answer became inert the moment the turn finished.
-        """
-        self._markdown_source = src
-        self.content = _markdown_to_text(src, self._render_width())
-
-    def _render_width(self) -> int:
-        return self.content_region.width or self.size.width or 80
-
-    def on_resize(self, _event) -> None:
-        # Re-wrap at the new width. Without this the answer keeps the column
-        # count it was born with and looks broken after a pane resize.
-        if self._markdown_source:
-            self.content = _markdown_to_text(self._markdown_source, self._render_width())
-
-
-class _FoldHeader(Static):
-    """Clickable header for a FoldBlock."""
-
-    def __init__(self, label: str) -> None:
-        super().__init__(f"\u25b8 {label}", classes="thinking-header")
-        self.label = label
-
-    def on_click(self) -> None:
-        block = self.parent
-        if isinstance(block, FoldBlock):
-            block.set_expanded(not block.expanded)
-
-
-class FoldBlock(Vertical):
-    """A collapsible static payload — ThinkingBlock's shape minus the timer.
-
-    COLLAPSED by default, which is the difference in kind: a thinking trace
-    is watched as it streams, while this holds content whose default view is
-    the fold line itself (the compaction prompt: present for inspection,
-    not for re-reading on every compact). Reuses the thinking-block CSS so
-    the two fold identically.
-    """
-
-    def __init__(self, label: str, text: str) -> None:
-        super().__init__(classes="thinking-block")     # no 'expanded' class
-        self._label = label
-        self.header = _FoldHeader(label)
-        self.scroll = VerticalScroll(Static(Text(text)), classes="thinking-body")
-
-    def compose(self) -> ComposeResult:
-        yield self.header
-        yield self.scroll
-
-    @property
-    def expanded(self) -> bool:
-        return self.has_class("expanded")
-
-    def set_expanded(self, value: bool) -> None:
-        if value:
-            self.add_class("expanded")
-        else:
-            self.remove_class("expanded")
-        marker = "\u25be" if value else "\u25b8"
-        self.header.content = f"{marker} {self._label}"
-
-
-class CompactionCard(Vertical):
-    """The glass box. Every CLI treats compaction as a spinner and a prayer;
-    this renders the whole act in the grammar the user already reads — the
-    exact prompt (folded), the model's thinking, the summary STREAMING in,
-    every store write as a real tool card, and a ledger at the end. Nothing
-    about a compaction is secret; it was only ever undisplayed.
-    """
-
-    def __init__(self, plan: str, prompt_text: str, auto: bool = False) -> None:
-        super().__init__(classes="compaction-card")
-        self.auto = auto
-        # Construction IS the start of the compaction, so stamp t0 here rather
-        # than having the worker reach in -- same rule ThinkingBlock follows.
-        self._t0 = time.monotonic()
-        self._took: float | None = None
-        self._title = Static(self._title_text(), classes="compaction-title")
-        self._plan = Static(plan, classes="compaction-plan")
-        self.prompt_fold = FoldBlock("Compaction prompt", prompt_text)
-        self.body = AnswerBody("")
-        self.status = Static("", classes="compaction-status")
-        self.thinking: ThinkingBlock | None = None
-
-    def _title_text(self) -> Text:
-        """Title with the elapsed clock. Frozen once _took is set, so the card
-        keeps reporting how long it actually took instead of resetting to zero."""
-        elapsed = self._took if self._took is not None else (time.monotonic() - self._t0)
-        stamp = fmt_dur(elapsed) if self._took is not None else f"{fmt_dur(elapsed)} \u2026"
-        return Text.assemble(
-            ("\U0001F5DC Compaction", "bold"),
-            (f" \u00b7 {stamp}", "dim"),
-            (" \u00b7 automatic", "dim") if self.auto else ("", ""),
-        )
-
-    def tick(self) -> None:
-        """One repaint from the app's shared elapsed loop; no-op once settled."""
-        self._title.content = self._title_text()
-
-    def compose(self) -> ComposeResult:
-        yield self._title
-        yield self._plan
-        yield self.prompt_fold
-        yield self.body
-        yield self.status
-
-    def think(self, token: str) -> None:
-        if self.thinking is None:
-            self.thinking = ThinkingBlock()
-            self.mount(self.thinking, before=self.body)
-            # THE SECOND MOUNT SITE. _scroll_down's docstring says a new thinking
-            # block scrolls unconditionally, and the streaming path does exactly
-            # that -- but a block created through here never scrolled at all, so
-            # the fix was only ever wired at one of the two places that mount one.
-            # Deferred for the same reason as the streaming site: measure, then scroll.
-            self.app.call_after_refresh(self.app._scroll_down)
-        self.thinking.append(token)
-
-    def thinking_done(self) -> None:
-        if self.thinking is not None:
-            self.thinking.finalize()
-            self.thinking.reset_header()
-
-    def add_tool(self, msg: "ToolMessage") -> None:
-        self.mount(msg, before=self.status)
-
-    def set_status(self, text: str) -> None:
-        self.status.content = Text(text)
-
-    def finish(self, ledger: str) -> None:
-        self._took = time.monotonic() - self._t0
-        self.tick()
-        self.status.content = Text(ledger)
-        self.add_class("done")
-
-    def fail(self, reason: str) -> None:
-        self._took = time.monotonic() - self._t0
-        self.tick()
-        self.status.content = Text(reason, style="bold red")
-        self.add_class("failed")
-
-
-class AssistantMessage(Vertical):
-    """Assistant bubble — optional thinking block above the answer body."""
-
-    def __init__(self) -> None:
-        super().__init__(classes="assistant-msg")
-        self.thinking: ThinkingBlock | None = None
-        self.body = AnswerBody("...", id="answer-body")
-
-    def compose(self) -> ComposeResult:
-        yield self.body
-
-
-class ToolMessage(Static):
-    """A single tool call (name + streamed args) and its display-truncated result."""
-
-    MAX_DISPLAY_LINES = 12
-
-    def __init__(self, name: str) -> None:
-        super().__init__(Text.assemble((f"\U0001F527 {name}", "bold #e8a33d")), classes="tool-msg")
-        # NOTE: Textual's Widget base class owns `name` (read-only property),
-        # so the tool's name lives in `tool_name`.
-        self.tool_name = name
-        self._args = ""
-        self._result: str | None = None
-        self._ok = True
-        # Elapsed timing: t0 at creation, _took settled in set_result.
-        self._t0 = time.monotonic()
-        self._took: float | None = None
-
-    def set_args(self, args_json: str) -> None:
-        self._args = args_json
-        self._update_display()
-
-    def set_result(self, result: str, ok: bool) -> None:
-        self._result = result
-        self._ok = ok
-        self._took = time.monotonic() - self._t0
-        self._update_display()
-
-    def _tick(self) -> None:
-        """Live elapsed repaint while the call is still running; no-op once the
-        result has landed. Driven by the app's shared elapsed repaint task."""
-        if self._result is None:
-            self._update_display()
-
-    # NOTE: must NOT be named `_render` — Textual's Widget._render() is an
-    # internal method that must return a Visual; shadowing it breaks layout.
-    def _tool_name_color(self) -> str:
-        """The active theme's $tool-text, or the default when unthemed.
-
-        Best-effort on purpose: a ToolMessage is constructed in tests with no
-        app attached, and a colour lookup must never be the reason a tool card
-        fails to render."""
-        try:
-            v = self.app.current_theme.variables.get("tool-text")
-            return v or TOOL_NAME_DEFAULT
-        except Exception:
-            return TOOL_NAME_DEFAULT
-
-    def _update_display(self) -> None:
-        self.content = Text.assemble(
-            *tool_display_parts(self, self.MAX_DISPLAY_LINES, self._tool_name_color())
-        )
-
-
-class ConfirmStop(ModalScreen[bool]):
-    """Yes/No before interrupting a running turn.
-
-    pi binds escape straight to `app.interrupt` and aborts with no confirmation
-    (keybindings.ts:78, "Cancel or abort"), showing only an `esc to interrupt`
-    hint in the spinner. Ryan asked for a confirmation here instead: a local 27B
-    turn is slow and expensive enough that losing one to a stray escape costs
-    more than the extra keypress. Escape inside the dialog answers No, so the
-    accidental-escape case is a no-op rather than a lost turn.
-    """
-
-    BINDINGS = [
-        Binding("escape", "answer_no", "No", show=False),
-        Binding("n", "answer_no", "No", show=False),
-        Binding("y", "answer_yes", "Yes", show=False),
-        Binding("enter", "answer_yes", "Yes", show=False),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="confirm-box"):
-            yield Static("Stop the agent's turn?", id="confirm-title")
-            yield Static(
-                "Whatever it has already written is kept.\n"
-                "Y / Enter = stop      N / Esc = keep going",
-                id="confirm-sub",
-            )
-            with Horizontal(id="confirm-buttons"):
-                yield Button("Yes, stop", variant="error", id="yes")
-                yield Button("No, keep going", variant="primary", id="no")
-
-    def action_answer_yes(self) -> None:
-        self.dismiss(True)
-
-    def action_answer_no(self) -> None:
-        self.dismiss(False)
-
-    @on(Button.Pressed, "#yes")
-    def _yes(self) -> None:
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#no")
-    def _no(self) -> None:
-        self.dismiss(False)
-
-
-class ContextFooter(Footer):
-    """Textual's Footer plus a live context-window readout on the right."""
-
-    def compose(self) -> ComposeResult:
-        yield from super().compose()
-        # CLASS, not id. Footer recomposes (Textual removes its children and
-        # re-runs compose), and a fixed `id` on a recomposed child raises
-        # DuplicateIds the moment the removal has not landed before the mount.
-        # That crashed the whole app; duplicate CLASSES are legal, so the worst
-        # case degrades to a stale label instead of a traceback.
-        label = Static("", classes="ctx-label")
-        app = self.app
-        if hasattr(app, "ctx_label_text"):
-            label.content = app.ctx_label_text
-        yield label
-
-
-class LiteTUICommands(Provider):
-    """LiteTUI's features in the command palette.
-
-    The stock palette knows five Textual commands and nothing about this
-    app — 90% of what LiteTUI does was undiscoverable from ctrl+p. Each row
-    here carries the SAME command string the dispatcher handles, invoked
-    through the same `_handle_command` the keyboard uses, so the palette can
-    never grow behaviour of its own. A drift test walks this table against
-    the dispatcher source; a renamed command breaks the test, not the row.
-    """
-
-    def _commands(self):
-        app = self.app
-
-        def cmd(command: str):
-            return partial(app._handle_command, command)
-
-        # DERIVED from the registry — the one place commands are declared.
-        # A hand-authored second table is the drift class this replaced.
-        rows = []
-        seen: set[int] = set()
-        for entry in app.plugins.commands.values():
-            if entry.palette is None or id(entry) in seen:
-                continue
-            seen.add(id(entry))
-            rows.append((
-                plugins_mod.palette_sort_key(entry.group, entry.order, entry.palette),
-                entry.group,
-                entry.palette,
-                # The slash command is DERIVED, never written into the help
-                # string. It used to be typed inline as "(/compact)", which put
-                # a machine token in the middle of a sentence a newcomer was
-                # trying to read -- and gave the text a second chance to drift
-                # from the command it names.
-                self._describe(entry.help, entry.tokens[0]),
-                cmd(entry.tokens[0]),
-            ))
-        for r in app.plugins.palette_rows:
-            rows.append((
-                plugins_mod.palette_sort_key(r.group, r.order, r.title),
-                r.group,
-                r.title,
-                self._describe(r.help, r.tag or None),
-                r.run,
-            ))
-        rows.sort(key=lambda row: row[0])
-
-        # The group name leads the title. Textual's palette has no section
-        # headers, so this is what makes the grouping visible -- and it makes
-        # search BETTER rather than worse: typing "backend" now surfaces the
-        # whole family together instead of one row that happens to say it.
-        labels = plugins_mod.PALETTE_GROUP_LABELS
-        return [
-            (f"{labels.get(group, group.title())}  \u203a  {title}", help_text, run)
-            for _key, group, title, help_text, run in rows
-        ]
-
-    @staticmethod
-    def _describe(help_text: str, token: str | None) -> str:
-        """Plain sentence first, the slash command as a trailing tag."""
-        text = (help_text or "").strip()
-        if not token:
-            return text
-        return f"{text}   {token}" if text else token
-
-    async def discover(self) -> Hits:
-        """The list shown before any query is typed — full feature roll."""
-        for title, help_text, run in self._commands():
-            yield DiscoveryHit(title, run, help=help_text)
-
-    async def search(self, query: str) -> Hits:
-        matcher = self.matcher(query)
-        for title, help_text, run in self._commands():
-            score = matcher.match(title)
-            if score > 0:
-                yield Hit(score, matcher.highlight(title), run, help=help_text)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 #: What every tool returns while the tools toggle is OFF, and the note that
@@ -1608,10 +918,9 @@ class LiteTUI(App):
         self._pending_tool_images: list[tuple[str, str]] = []
         # "vlm" | "llm" | None, learned from the same request as the ctx window.
         self.model_type: str | None = None
-        # tok/s accounting, reset per turn by _tps_start.
-        self._tps_t0: float | None = None
-        self._tps_n = 0
-        self._tps_painted = 0.0
+        # tok/s accounting, reset per turn by TpsState.start. `tps` itself
+        # stays a reactive on the class -- assigning it IS the repaint.
+        self._tps = turnstats.TpsState()
         # The STORE owns where this conversation lives and how it is written.
         # The properties below keep `self.convo_id` and friends resolving, so
         # nothing that reads them had to change.
@@ -1628,9 +937,7 @@ class LiteTUI(App):
         # Elapsed-time display while a turn is in flight (pre-token) and while
         # tool calls run. The repaint is a task on the worker's own event loop
         # (interleaves with the stream); the display string is render_progress.
-        self._elapsed_task = None
-        self._elapsed_body = None            # AnswerBody in its pre-token phase
-        self._elapsed_body_t0: float = 0.0
+        self._elapsed = turnstats.ElapsedState(self)
         self._inflight_tools: list = []      # ToolMessages awaiting their result
         self._cancel_buttons: dict = {}      # ToolMessage -> its CancelToolButton
         # The last scroll position this app SET. Following is judged against it,
@@ -1648,18 +955,12 @@ class LiteTUI(App):
         #: Cron jobs, loaded once at construction. A scheduled prompt is an
         #: INPUT nobody typed, so it rides the same held/flushed path as inbox
         #: mail rather than growing a second delivery route.
-        self._jobs: list = sched_mod.load(paths.ROOT)
-        # ETA: a rolling median of prompt-eval tokens/sec, learned ONLY from
-        # turns that demonstrably reprocessed the prompt (the KV-cache gate in
-        # is_reliable_rate_sample). _eta_last_prompt_tokens is the previous
-        # turn's count, used as the ESTIMATE this turn's ETA is projected from;
-        # _eta_first_delta is this turn's first-delta time, for first-token
-        # latency. All optional/None until a reliable turn has happened.
-        self._eta_samples: list[float] = []
-        self._eta_last_prompt_tokens: int | None = None
+        self._cron = cron_mod.CronService(self)
+        # ETA state and its three fields moved to turnstats.EtaState (O4-a);
+        # the docstring that explained them moved with them.
+        self._eta = turnstats.EtaState()
         # Last emit time per glass-box channel, for the continuous ones only.
         self._gb_last: dict[str, float] = {}
-        self._eta_first_delta: float | None = None
         # The thinking block currently streaming (its header timer): set
         # at block creation, cleared by _thinking_done when the trace
         # ends (first content token, first tool call, or turn end).
@@ -1685,7 +986,7 @@ class LiteTUI(App):
         # prompt, which is what "off" has to mean for a context-costing feature.
         # `[]`, not `{}` — discover() returns a LIST, and load() iterates its
         # argument expecting Skill objects. A dict would yield keys.
-        self.skills, self.skills_cached_at = self._load_skills()
+        self.skills, self.skills_cached_at = appsvc.load_skills(self, )
         self.mcp = mcp_client.MCPManager(paths.ROOT)
         if self.settings.mcp_enabled:
             self.mcp.load()
@@ -1934,24 +1235,6 @@ class LiteTUI(App):
         self._active_tool_profile = profile
         self._stream()
 
-    @work(exclusive=True, group="cron")
-    async def _cron_monitor(self) -> None:
-        """Fire scheduled prompts while the app is up.
-
-        Its own worker group, deliberately. Sharing "chat" with _stream would
-        make every tick cancel the turn in flight -- the exact trap autocompact
-        fell into, where a checker started work from inside the work it was
-        checking.
-        """
-        while True:
-            await asyncio.sleep(sched_mod.TICK_SECONDS)
-            try:
-                ready = sched_mod.due(self._jobs, datetime.now())
-            except Exception:
-                continue  # a scheduling bug must never take the chat down
-            for job in ready:
-                self._fire_job(job)
-
     def _fire_job(self, job) -> None:
         """Deliver a job as a real user turn, holding if one is running.
 
@@ -1965,7 +1248,7 @@ class LiteTUI(App):
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
         if blocked:
             try:
-                sched_mod.save(self._jobs, paths.ROOT)
+                sched_mod.save(self.jobs, paths.ROOT)
             except OSError:
                 pass
             self._system(blocked)
@@ -1973,7 +1256,7 @@ class LiteTUI(App):
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
-            sched_mod.save(self._jobs, paths.ROOT)
+            sched_mod.save(self.jobs, paths.ROOT)
         except OSError:
             pass  # an unwritable store must not stop the job from running
 
@@ -1999,142 +1282,6 @@ class LiteTUI(App):
         self._append({"role": "user", "content": text})
         self._active_tool_profile = profile
         self._stream()
-
-    def _cron_command(self, arg: str) -> None:
-        """/cron — add, list, remove, enable, disable, or fire a job now."""
-        arg = arg.strip()
-        if not arg or arg.lower() in ("list", "ls"):
-            self._cron_list()
-            return
-
-        verb, _, rest = arg.partition(" ")
-        verb = verb.lower()
-        rest = rest.strip()
-
-        if verb == "add":
-            self._cron_add(rest)
-            return
-
-        if verb in ("rm", "del", "remove"):
-            job = self._cron_find(rest)
-            if not job:
-                return
-            self._jobs.remove(job)
-            sched_mod.save(self._jobs, paths.ROOT)
-            self._system(f"/cron: removed {job.id} ({job.label or job.prompt[:40]})")
-            return
-
-        if verb in ("on", "off", "enable", "disable"):
-            job = self._cron_find(rest)
-            if not job:
-                return
-            job.enabled = verb in ("on", "enable")
-            sched_mod.save(self._jobs, paths.ROOT)
-            self._system(f"/cron: {job.id} is now {'ON' if job.enabled else 'OFF'}")
-            return
-
-        if verb == "run":
-            job = self._cron_find(rest)
-            if not job:
-                return
-            # Fires REGARDLESS of schedule and of enabled — "run" is the human
-            # asking for it now, which is a different act from the schedule
-            # coming round. It still stamps the slot, so an actual due-time
-            # inside this same minute will not double up.
-            self._fire_job(job)
-            return
-
-        self._system(
-            "/cron add <schedule> <prompt>   e.g. /cron add @daily summarise my inbox\n"
-            "/cron list | rm <id> | on <id> | off <id> | run <id>\n"
-            "schedule: 5-field cron (min hour day month weekday) or "
-            "@hourly @daily @weekly @monthly"
-        )
-
-    def _cron_find(self, token: str):
-        """Resolve an id prefix or a label to exactly one job, or say why not.
-
-        Ambiguity is reported rather than resolved to the first match: picking
-        one silently is how the wrong job gets deleted.
-        """
-        token = token.strip()
-        if not token:
-            self._system("/cron: which job? Use /cron list to see ids.")
-            return None
-        hits = [j for j in self._jobs
-                if j.id.startswith(token) or (j.label and j.label == token)]
-        if not hits:
-            self._system(f"/cron: no job matches {token!r}. /cron list shows them.")
-            return None
-        if len(hits) > 1:
-            ids = ", ".join(j.id for j in hits)
-            self._system(f"/cron: {token!r} matches {len(hits)} jobs ({ids}) — be more specific.")
-            return None
-        return hits[0]
-
-    def _cron_add(self, rest: str) -> None:
-        if not rest:
-            self._system("/cron add <schedule> <prompt>")
-            return
-
-        tokens = rest.split()
-        if tokens[0].startswith("@"):
-            schedule, prompt = tokens[0], " ".join(tokens[1:])
-        elif len(tokens) > 5:
-            schedule, prompt = " ".join(tokens[:5]), " ".join(tokens[5:])
-        else:
-            self._system(
-                "/cron add: a schedule is 5 fields (min hour day month weekday) "
-                "or an @alias, followed by the prompt.\n"
-                "  /cron add 0 9 * * 1-5 what is on for today?"
-            )
-            return
-
-        if not prompt:
-            self._system("/cron add: that schedule parsed, but there is no prompt after it.")
-            return
-
-        try:
-            cron = sched_mod.Cron.parse(schedule)
-        except sched_mod.CronError as e:
-            # The error names the FIELD. "invalid cron expression" would leave
-            # the person guessing which of five to fix.
-            self._system(f"/cron add: {e}")
-            return
-
-        job = sched_mod.Job(prompt=prompt, schedule=schedule)
-        self._jobs.append(job)
-        sched_mod.save(self._jobs, paths.ROOT)
-
-        nxt = cron.next_after(datetime.now())
-        when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"
-        self._system(f"/cron: added {job.id} — next fire {when}\n  {prompt}")
-
-    def _cron_list(self) -> None:
-        if not self._jobs:
-            self._system(
-                "/cron: no jobs.\n"
-                "  /cron add @daily summarise what I did yesterday\n"
-                "  /cron add */30 * * * * check the build"
-            )
-            return
-
-        now = datetime.now()
-        lines = [f"{len(self._jobs)} job(s) — jobs fire only while LiteTUI is open"]
-        lines.append("")
-        for job in self._jobs:
-            try:
-                nxt = job.next_after(now)
-                when = nxt.strftime("%a %d %b %H:%M") if nxt else "never"
-            except sched_mod.CronError as e:
-                # A job that can never fire must SAY so here. Silently listing
-                # it beside working jobs is how it sits dead for weeks.
-                when = f"BROKEN — {e}"
-            state = "on " if job.enabled else "off"
-            head = f"  {job.id}  {state}  {job.schedule:<16} next {when}"
-            lines.append(head)
-            lines.append(f"        x{job.run_count}  {job.prompt}")
-        self._system("\n".join(lines))
 
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
         """What this tool result contributes to the CONVERSATION (tool_context).
@@ -2322,33 +1469,6 @@ class LiteTUI(App):
             )
         return text
 
-    def _store_block(self, live: bool = False) -> str:
-        # memory.md is capped hardest ON PURPOSE: it is an index, and an index
-        # that needs more than this has stopped being one.
-        parts = []
-        for name, cap in (("memory.md", 6000), ("soul.md", 8000), ("handoff.md", 8000)):
-            body = self._read_store_file(name, cap)
-            if body:
-                parts.append(f"### {name} (current contents)\n\n{body}")
-        if not parts:
-            return ""
-        if live:
-            return (
-                "\n\n## Your store, as it stands right now\n\n"
-                "Re-read from disk just now.\n\n" + "\n\n".join(parts) + "\n"
-            )
-        # RULING (Ryan, 2026-08-19): injected ONCE, not per turn. Re-sending
-        # three files every turn is affordable at 1M context and is NOT on a
-        # local 27B, where it crowds out the conversation itself. The text
-        # below must not promise a per-turn refresh -- an instruction that
-        # quietly stopped being true is worse than no instruction at all.
-        return (
-            "\n\n" + STORE_HEADER + "\n\n"
-            "This is a SNAPSHOT taken at the start of the conversation, not a "
-            "live view, and it is NOT re-sent each turn. If you have written to "
-            "these files since, or need their current contents, read them with "
-            "the `read` tool.\n\n" + "\n\n".join(parts) + "\n"
-        )
 
     def _inject_store_once(self) -> None:
         """Merge the store into the system message, exactly once per conversation.
@@ -2367,7 +1487,7 @@ class LiteTUI(App):
         if STORE_HEADER in current:
             self._store_injected = True  # resumed a convo that already has it
             return
-        block = self._store_block()
+        block = appsvc.store_block(self, )
         if not block:
             return  # empty store: nothing to inject, and no marker to leave
         self.conversation[0] = {**self.conversation[0], "content": current + block}
@@ -2503,13 +1623,37 @@ class LiteTUI(App):
         # reads identically whoever noticed it first.
         self.store._raise_to_app(e)
 
-    def _write_record(self, rec: dict) -> None:
-        self.store.write_record(rec)
-
     def _append(self, msg: dict) -> None:
         """Append to the live conversation AND to disk. Single choke point."""
         self.conversation.append(msg)
         self.store.record_msg(msg)
+
+    def _append_to_system(self, text: str) -> None:
+        """Extend the FIRST system message rather than adding another one.
+
+        Multiple role:"system" turns are not portable. qwen/qwen3.8-27b's chat
+        template raises "System message must be at the beginning" and the request
+        fails with a 500; other builds of the same model accept it. Anything the
+        model must know belongs in the one system turn it is guaranteed to read.
+
+        🔴 RETURNED FROM `appsvc` (O2 `22a7834` lifted it; ruled back here). It
+        WRITES `self.conversation[0]`, and `appsvc` holds helpers that take `app`
+        and READ it. §5c had already withdrawn `_sync_fleet_identity` permanently
+        for writing the SAME object through the SAME channel — two rulings on one
+        object have to agree, and `conversation` is read at 48 sites in `src/`.
+        """
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            self._append({"role": "system", "content": text})
+            return
+        current = self.conversation[0].get("content") or ""
+        if text in current:
+            return                      # idempotent across resume/re-register
+        self.conversation[0] = {
+            **self.conversation[0],
+            "content": current.rstrip() + "\n\n" + text if current else text,
+        }
+        if not getattr(self, "_convo_loading", False):
+            self._edit(0, "system prompt extended")
 
     def _snapshot(self, reason: str = "") -> None:
         self.store.record_snapshot(self.conversation, reason)
@@ -2594,36 +1738,62 @@ class LiteTUI(App):
     def _convo_loading(self, v: bool) -> None:
         self.store.loading = v
 
-    @property
-    def _persist_error(self):
-        return self.store.persist_error
+    # -- the supported plugin surface ------------------------------------
+    #
+    # Added by S4 as PURE ADDITIONS beside the then-private `_jobs` and
+    # `_mcp_dispatch`, so the arrival commit was green standing alone: converting
+    # this file's own uses in the same commit would have made it a rename wearing
+    # a refactor's clothes (PLAN §2b).
+    #
+    # ⚠️ `_jobs` IS GONE as of O3 — `CronService` owns the list and `jobs`
+    # delegates to it, so this is no longer a facade over a private field beside
+    # it. `_mcp_dispatch` is unchanged and still private.
 
-    @_persist_error.setter
-    def _persist_error(self, v) -> None:
-        self.store.persist_error = v
+    @property
+    def jobs(self) -> list:
+        """The live scheduler job list -- SHARED MUTABLE STATE, not a copy.
+
+        NOT READ-ONLY, despite what T070's plan called it. Callers mutate
+        through it: `plugins/scheduler_ui._apply_job_edit` does
+        `jobs.remove(job)` / `jobs.append(...)` and then saves. Returning a
+        copy here would silently drop every edit made in the calendar UI.
+        """
+        return self._cron.jobs
+
+    @property
+    def cron(self) -> "cron_mod.CronService":
+        """The scheduler service, which OWNS the job list.
+
+        Public so `scheduler_plugin` reaches a supported surface instead of two
+        app privates: `app.cron.command(...)` and `cron_mod.monitor(app)` replace
+        `app._cron_command(...)` and `app._cron_monitor()`.
+        """
+        return self._cron
+
+    @property
+    def mcp_dispatch(self) -> dict:
+        """The cached MCP tool-name -> handler map.
+
+        Read-only in practice -- the only caller does `.get(name)`. Cached at
+        init from `self.mcp.dispatch()`; a caller who rebuilds it per lookup
+        pays for the whole map on every tool call.
+        """
+        return self._mcp_dispatch
 
     # ── conversation store ───────────────────────────────────────────
-    # Implementations moved to litetui.conversation.ConversationRepository.
-    # These aliases are the reason no call site changed: `LiteTUI._read_convo`
-    # and friends still resolve, so the 18 test files that call them by name
-    # keep working. Aliases, not wrappers -- one implementation, not two.
-    _read_convo = staticmethod(ConversationRepository.read)
-    _fmt_size = staticmethod(ConversationRepository.fmt_size)
-    _convo_label = staticmethod(ConversationRepository.label)
+    # Implementations live in litetui.conversation.ConversationRepository.
+    # The aliases that carried `read`, `fmt_size`, `label` and `list_all`
+    # through the move are GONE -- their callers now name the repository.
+    # These two are still aliased because their call sites were not in that
+    # commit's scope, so they are the last of this set, not a pattern to
+    # extend. Aliases, not wrappers -- one implementation, not two.
     _convo_title = staticmethod(ConversationRepository.title)
     _flatten = staticmethod(ConversationRepository.flatten)
-
-    def _list_convos(self) -> list[tuple[Path, dict, list[dict]]]:
-        """Returns (transcript_path, meta, messages) newest first."""
-        return ConversationRepository.list_all()
-
-
-
 
 
     def _resume(self, path: Path) -> None:
         try:
-            meta, msgs = self._read_convo(path)
+            meta, msgs = ConversationRepository.read(path)
         except OSError as e:
             self._system(f"Could not read {path.name}: {type(e).__name__}: {e}")
             return
@@ -2691,7 +1861,7 @@ class LiteTUI(App):
         self._scroll_down()
 
 
-    def _update_header(self) -> None:
+    def update_header(self) -> None:
         if self.tools_enabled:
             # COUNTED, not quoted. "tools:4" was a literal from when there
             # were exactly four, and it stayed 4 while view_image, chrome,
@@ -2716,6 +1886,12 @@ class LiteTUI(App):
         # footer lying until the next completion came back.
         self._refresh_ctx_label()
 
+    # ARRIVAL ALIAS (PLAN §2b). One implementation under two names, so this
+    # commit is green STANDING ALONE: app.py's own private call sites keep
+    # working untouched, and converting them here would make the arrival a
+    # rename wearing a refactor's clothes. The alias goes when the consumers do.
+    _update_header = update_header
+
     def action_toggle_tools(self) -> None:
         self.tools_enabled = not self.tools_enabled
         if self.conversation and self.conversation[0].get("role") == "system":
@@ -2730,7 +1906,7 @@ class LiteTUI(App):
     # ── Connection ───────────────────────────────────────────────
 
     @work(exclusive=True, group="init")
-    async def _connect(self) -> None:
+    async def connect(self) -> None:
         try:
             # The llama backend may spawn its own server here (never loading
             # a model) or attach to LiteSuite's — either way, say which.
@@ -2819,6 +1995,8 @@ class LiteTUI(App):
             # the wrong hostname.
             self._system(f"Could not connect to {self.backend.host()} — {e}")
 
+    _connect = connect          # arrival alias (PLAN §2b)
+
     # ── Context window readout (footer) ───────────────────────
 
     @property
@@ -2896,20 +2074,10 @@ class LiteTUI(App):
             add(f"{pct * 100:.0f}%", ctx_style)
 
         if s.footer_show_tps:
-            self._append_tps_into(t, sep)
+            appsvc.append_tps_into(self, t, sep)
 
         return t
 
-    def _append_tps_into(self, t: Text, sep: str) -> None:
-        if self.tps is None:
-            return
-        if t.plain:
-            t.append(sep, "#5c6370")
-        # Coloured by how it FEELS to use, not by an absolute scale: this is a
-        # local model on one GPU, and the number that matters is whether the
-        # answer arrives faster than you read it.
-        style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
-        t.append(tps_text(self.tps), style)
 
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
@@ -2942,7 +2110,7 @@ class LiteTUI(App):
             label.content = text
 
     @work(exclusive=True, group="ctxload")
-    async def _apply_context_length(self, force: bool = False) -> None:
+    async def apply_context_length(self, force: bool = False) -> None:
         """Ask LM Studio to (re)load the active model at the configured window.
 
         A reload evicts the resident weights, so it must not happen when it
@@ -2998,8 +2166,10 @@ class LiteTUI(App):
         # readout is what we got, and the server may clamp to what fits in VRAM.
         self._fetch_ctx_window()
 
+    _apply_context_length = apply_context_length     # arrival alias (PLAN §2b)
+
     @work(exclusive=True, group="ctx")
-    async def _fetch_ctx_window(self) -> None:
+    async def fetch_context_window(self) -> None:
         """Ask the backend for the active model's (window, type, loaded).
 
         The ceiling-vs-window contract (a model that is merely INSTALLED must
@@ -3018,6 +2188,10 @@ class LiteTUI(App):
         else:
             self.ctx_max, self.model_type, self.ctx_loaded = None, None, False
         self._refresh_ctx_label()
+
+    # The public name spells out "context" to match `apply_context_length`;
+    # the alias keeps the abbreviated private spelling its 4 in-file callers use.
+    _fetch_ctx_window = fetch_context_window         # arrival alias (PLAN §2b)
 
     # ── Message display ──────────────────────────────────────────────────────────
 
@@ -3063,26 +2237,6 @@ class LiteTUI(App):
         self.conversation[0]["content"] = fixed
         return True
 
-    def _append_to_system(self, text: str) -> None:
-        """Extend the FIRST system message rather than adding another one.
-
-        Multiple role:"system" turns are not portable. qwen/qwen3.8-27b's chat
-        template raises "System message must be at the beginning" and the request
-        fails with a 500; other builds of the same model accept it. Anything the
-        model must know belongs in the one system turn it is guaranteed to read.
-        """
-        if not self.conversation or self.conversation[0].get("role") != "system":
-            self._append({"role": "system", "content": text})
-            return
-        current = self.conversation[0].get("content") or ""
-        if text in current:
-            return                      # idempotent across resume/re-register
-        self.conversation[0] = {
-            **self.conversation[0],
-            "content": (current.rstrip() + "\n\n" + text) if current else text,
-        }
-        if not getattr(self, "_convo_loading", False):
-            self._edit(0, "system prompt extended")
 
     def _clear_screen(self, *, note: str | None = None) -> None:
         """Wipe the RENDERED transcript. The conversation is untouched.
@@ -3171,6 +2325,14 @@ class LiteTUI(App):
     # LiteTUI ALREADY produces — this adds no new signal, only a transport, so
     # nothing here may change behaviour or cost anything when unobserved.
 
+    # 🔴 RETURNED FROM `appsvc` (O2 `22a7834` lifted all three; ruled back here).
+    # `_glassbox` writes `self._gb_last`, and appsvc holds helpers that take
+    # `app` and READ it. The other two came back with it, not on their own
+    # merits: each is a one-line wrapper, so leaving them there would have made
+    # them call `app._glassbox(...)` — an app method that WRITES, which the
+    # rephrased appsvc contract denies. Restored from the pre-O2 blob verbatim
+    # rather than by un-transforming the moved copy.
+
     def _glassbox(self, channel: str, intensity: float = 1.0, label: str = "",
                   *, discrete: bool = False) -> None:
         """Fire one channel at whatever plugins are watching.
@@ -3217,10 +2379,38 @@ class LiteTUI(App):
         tps = self.tps or 0.0
         self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
 
-    def _system(self, text: str) -> None:
+    def system_message(self, text: str) -> None:
+        """Post a system line into the chat log — **the supported way for a
+        plugin to say something to the user.**
+
+        Public because `app._system(...)` was **49 of the 99** private
+        reach-throughs from `plugins/`: half the coupling in the tree, every hit
+        a call, zero reads, return value unused. A public, documented method
+        *is* a supported API; the metric this moves is **private** reach-through.
+
+        🔴 **WHY NOT `ctx.notify`, which was the approved plan.** It was
+        unbuildable: **all 49 call sites have `app` in scope and NOT `ctx`.**
+        Command handlers are module-level functions `(app, name, arg)`
+        registered from inside `_register(ctx)` but **not closures over it**
+        (`plugins/__init__.py:165`, `app.py:5187`), so a handler cannot reach
+        `ctx` even in principle. `ctx.notify` would have typechecked, tested
+        green, merged, and moved reach-through **99 → 99**.
+
+        📌 The lesson that cost, generalised: counting *accesses* tells you a
+        coupling exists; it does not tell you what a replacement would have
+        **in scope** to replace it with. Ask "is X reachable from every call
+        site?" before scheduling any "seal it behind X" step.
+        """
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(text), classes="system-msg"))
         self._scroll_down()
+
+    # Compatibility alias. Keeps the 62 in-file call sites and every not-yet-
+    # migrated plugin working while S1 lands in two commits (arrival here,
+    # call-site rewrite in plugins/).
+    # Dropped only once `grep -rn "\._system(" src/` is empty — VERIFIED BEFORE
+    # DELETING, NOT AFTER.
+    _system = system_message
 
     def _user_bubble(self, text: str, has_image: bool, queued: bool = False):
         log = self.query_one("#chat-log")
@@ -3252,39 +2442,6 @@ class LiteTUI(App):
     # prompt processing can dominate, and folding it in would report a number
     # that says more about the prompt than about the model.
 
-    def _tps_start(self) -> None:
-        self._tps_t0 = None
-        self._tps_n = 0
-        self._tps_painted = 0.0
-
-    def _tps_tick(self) -> None:
-        """One streamed delta arrived. Live estimate only -- see _tps_final."""
-        now = time.monotonic()
-        if self._tps_t0 is None:
-            self._tps_t0 = now
-            return          # nothing to divide by yet
-        self._tps_n += 1
-        elapsed = now - self._tps_t0
-        # Repaint at most 4x/second. The footer is one Static, but this runs on
-        # every token of every turn, and a repaint per token on a 27B is a real
-        # cost paid to render a number that changes in the third decimal.
-        if elapsed >= 0.4 and now - self._tps_painted >= 0.25:
-            self.tps = self._tps_n / elapsed
-            self._tps_painted = now
-
-    def _tps_final(self, completion_tokens: int) -> None:
-        """Settle to the exact figure the server reports.
-
-        The live number counts STREAM DELTAS, which are only approximately
-        tokens. `usage.completion_tokens` is the server's own count and includes
-        reasoning tokens, so it matches what the model actually generated.
-        """
-        if self._tps_t0 is None or not completion_tokens:
-            return
-        elapsed = time.monotonic() - self._tps_t0
-        if elapsed > 0:
-            self.tps = completion_tokens / elapsed
-
     def watch_tps(self, value: float | None) -> None:
         self._refresh_ctx_label()
 
@@ -3294,24 +2451,6 @@ class LiteTUI(App):
     # shows live ELAPSED TIME. The display string is a pure function
     # (render_progress); this is only the repaint glue. The repaint task runs
     # on the worker's own event loop, interleaving with the `async for` stream.
-
-    def _elapsed_cancel(self) -> None:
-        task = self._elapsed_task
-        if task is not None and not task.done():
-            task.cancel()
-        self._elapsed_task = None
-
-    def _elapsed_start(self, body) -> None:
-        self._elapsed_cancel()
-        self._elapsed_body = body
-        self._elapsed_body_t0 = time.monotonic()
-        try:
-            self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
-        except RuntimeError:
-            self._elapsed_task = None
-
-    def _elapsed_stop_body(self) -> None:
-        self._elapsed_body = None
 
     def _tool_begin(self, tool) -> None:
         if tool not in self._inflight_tools:
@@ -3331,11 +2470,7 @@ class LiteTUI(App):
             # timer and the cancel control key off, so the brain cannot light
             # up for a call the app does not consider in flight.
             self._glassbox_tool(getattr(tool, "tool_name", "") or "tool")
-        if self._elapsed_task is None or self._elapsed_task.done():
-            try:
-                self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
-            except RuntimeError:
-                self._elapsed_task = None
+        self._elapsed.ensure_running()
 
     def _attach_cancel_button(self, tool, _retry: bool = False) -> None:
         """Put a cancel control directly after `tool`, whenever that becomes possible.
@@ -3388,7 +2523,7 @@ class LiteTUI(App):
     async def _elapsed_repaint(self) -> None:
         # Repaint the in-flight bubble and any running tool calls ~4x/sec.
         # Self-retires after ~1s with nothing active, so it never outlives the
-        # turn by long; _elapsed_start also cancels a lingering one.
+        # turn by long; ElapsedState.start also cancels a lingering one.
         idle = 0.0
         while True:
             await asyncio.sleep(0.25)
@@ -3396,7 +2531,7 @@ class LiteTUI(App):
             card = self._compact_card
             card_live = card is not None and card._took is None
             active = (
-                self._elapsed_body is not None
+                self._elapsed.body is not None
                 or self._inflight_tools
                 or self._thinking_live is not None
                 or card_live
@@ -3411,14 +2546,14 @@ class LiteTUI(App):
             except Exception:
                 pass
             if active:
-                if self._elapsed_body is not None:
+                if self._elapsed.body is not None:
                     # ETA: project this turn's prompt-processing time from the
                     # previous turn's token count and the learned median rate.
                     # Before any reliable turn both are None and the pure fn
                     # yields elapsed-only (the honest state).
-                    self._elapsed_body.content = render_progress(
-                        self._elapsed_body_t0, now,
-                        self._eta_estimate_tokens(), self._eta_learned_rate())
+                    self._elapsed.body.content = render_progress(
+                        self._elapsed.body_t0, now,
+                        self._eta.estimate_tokens(), self._eta.learned_rate())
                 if self._thinking_live is not None:
                     # The app owns the tps reactive; the block only renders it.
                     self._thinking_live.repaint_header(self.tps)
@@ -3444,41 +2579,6 @@ class LiteTUI(App):
     # reaches a floor (is_reliable_rate_sample) -- turns that demonstrably
     # reprocessed the prompt. A confidently wrong ETA is worse than an honest
     # elapsed counter, so until such a turn exists the body shows elapsed only.
-
-    def _eta_record_first_delta(self) -> None:
-        """Stamp the first delta of the current turn. first_token_s is then
-        _eta_first_delta - _elapsed_body_t0 (the turn start). Idempotent: only
-        the first delta sets it, so later deltas don't move it."""
-        if self._eta_first_delta is None:
-            self._eta_first_delta = time.monotonic()
-
-    def _eta_learn(self, prompt_tokens) -> None:
-        """End of a turn: remember this turn's token count as the ESTIMATE for
-        the next turn's ETA, and if this turn is a reliable sample (first-token
-        latency at the floor), fold its rate into the median. A cache-hit turn
-        does not touch the median, so its misleadingly low rate never pollutes
-        the ETA."""
-        if prompt_tokens:
-            self._eta_last_prompt_tokens = int(prompt_tokens)
-        first = self._eta_first_delta
-        self._eta_first_delta = None
-        if first is not None and self._elapsed_body_t0 > 0.0:
-            first_token_s = first - self._elapsed_body_t0
-            if is_reliable_rate_sample(prompt_tokens, first_token_s):
-                self._eta_samples.append(prompt_tokens / first_token_s)
-
-    def _eta_learned_rate(self):
-        """The rolling median of reliable rate samples, or None if none yet.
-        A None rate makes render_progress elapsed-only, the honest state before
-        a single reliable turn has happened."""
-        if not self._eta_samples:
-            return None
-        return statistics.median(self._eta_samples)
-
-    def _eta_estimate_tokens(self):
-        """The token count the next turn's ETA is projected from: the most
-        recent real count. None until the first turn reports usage."""
-        return self._eta_last_prompt_tokens
 
     def _warn_reasoning_ignored(self) -> None:
         """The server sent a reasoning trace after we asked for none.
@@ -3715,7 +2815,7 @@ class LiteTUI(App):
                 for entry in img:
                     p = Path(str(entry))
                     if p.suffix.lower() in IMAGE_EXTS and p.exists():
-                        b64 = self._load_image_file(p)
+                        b64 = appsvc.load_image_file(self, p)
                         if b64:
                             self.pending_image = b64
                             self.notify(f"Image attached from file: {p.name}", timeout=2)
@@ -3747,7 +2847,7 @@ class LiteTUI(App):
 
     # ── Modal callbacks ──────────────────────────────────────────
 
-    def _on_model_picked(self, model_id: str | None) -> None:
+    def on_model_picked(self, model_id: str | None) -> None:
         if not model_id or model_id == self.model_id:
             return
         self.model_id = model_id
@@ -3755,6 +2855,15 @@ class LiteTUI(App):
         self._fetch_ctx_window()
         self._system(f"Switched to: {self.model_id}")
         self._apply_context_length()
+
+    # ⚠️ `_on_` IS NOT A "HIDDEN FROM TEXTUAL" PREFIX. MessagePump dispatch does
+    # `cls.__dict__.get(f"_{method_name}") or cls.__dict__.get(method_name)` —
+    # the UNDERSCORED name is the one it looks for FIRST. So the private spelling
+    # was never the framework-invisible one, and this rename moves the callback
+    # to the SECOND lookup slot, not into the pump. Neither name collides: no
+    # Message in this app or in Textual produces the handler name
+    # `on_model_picked` (the only local Message subclass is `ticker.Changed`).
+    _on_model_picked = on_model_picked               # arrival alias (PLAN §2b)
 
     def _on_convo_picked(self, path_str: str | None) -> None:
         if not path_str:
@@ -3866,18 +2975,6 @@ class LiteTUI(App):
             self.pending_image = None
             self.notify("Image removed", timeout=2)
 
-    def _load_image_file(self, path: Path) -> str | None:
-        try:
-            from PIL import Image as PILImage
-
-            img = PILImage.open(path)
-            if max(img.size) > MAX_IMAGE_DIM:
-                img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM), PILImage.LANCZOS)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            return base64.b64encode(buf.getvalue()).decode()
-        except Exception:
-            return None
 
     def _tool_view_image(self, args: dict) -> str:
         """Stage an image for the model to actually see. Never raises.
@@ -3913,7 +3010,7 @@ class LiteTUI(App):
                 "image type (png, jpg, jpeg, gif, webp, bmp)"
             )
 
-        b64 = self._load_image_file(path)
+        b64 = appsvc.load_image_file(self, path)
         if b64 is None:
             return f"[error] view_image: could not decode {path.name} as an image"
 
@@ -4043,7 +3140,7 @@ class LiteTUI(App):
         if text and not image_b64:
             path, rest = self._split_image_path(text)
             if path is not None:
-                image_b64 = self._load_image_file(path)
+                image_b64 = appsvc.load_image_file(self, path)
                 if image_b64:
                     text = rest  # keep the question; do not discard it
                     self.notify(f"Image loaded: {path.name}", timeout=2)
@@ -4245,7 +3342,7 @@ class LiteTUI(App):
                 compact_due = True
                 break
             widget = self._assistant_bubble()
-            self._elapsed_start(widget.body)
+            self._elapsed.start(widget.body)
             thinking: ThinkingBlock | None = None
             text_full = ""
             reasoning = ""
@@ -4270,7 +3367,7 @@ class LiteTUI(App):
                 tools=self._all_tools(),  # advertised even when OFF — see turn_engine
             )
 
-            self._tps_start()
+            self._tps.start()
             try:
                 # ASK BEFORE OPENING THE STREAM. Inside this try on purpose:
                 # the plain words then land in the same widget that used to
@@ -4280,7 +3377,7 @@ class LiteTUI(App):
                 await self._ensure_chat_ready()
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
-                self._elapsed_stop_body()
+                self._elapsed.stop_body()
                 self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
@@ -4292,23 +3389,32 @@ class LiteTUI(App):
                     u = getattr(chunk, "usage", None)
                     if u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
-                        self._tps_final(int(getattr(u, "completion_tokens", 0) or 0))
+                        rate = self._tps.final(
+                            int(getattr(u, "completion_tokens", 0) or 0))
+                        if rate is not None:
+                            self.tps = rate
                         # ETA: this is the end of the turn -- the usage chunk
                         # carries prompt_tokens, so fold this turn into the
                         # learned rate (gated) and remember its count as the
                         # estimate for the next turn's ETA.
-                        self._eta_learn(getattr(u, "prompt_tokens", None))
+                        self._eta.learn(
+                            getattr(u, "prompt_tokens", None),
+                            self._elapsed.body_t0,
+                            is_reliable_rate_sample,
+                        )
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
-                    self._eta_record_first_delta()
+                    self._eta.record_first_delta()
                     # LM Studio streams the thinking trace as `reasoning_content`
                     # (some other OpenAI-compatible servers use `reasoning`).
                     token = getattr(delta, "reasoning_content", None) or getattr(
                         delta, "reasoning", None
                     )
                     if token:
-                        self._tps_tick()
+                        rate = self._tps.tick()
+                        if rate is not None:
+                            self.tps = rate
                         self._glassbox_rate("thinking")
                         reasoning += token
                         if thinking is None and self.settings.show_thinking:
@@ -4338,10 +3444,12 @@ class LiteTUI(App):
                         # read as "only scrolls when the message comes through".
                         self._scroll_down(only_if_following=True)
                     if delta.content:
-                        self._tps_tick()
+                        rate = self._tps.tick()
+                        if rate is not None:
+                            self.tps = rate
                         self._glassbox_rate("output")
                         self._thinking_done()
-                        self._elapsed_stop_body()
+                        self._elapsed.stop_body()
                         text_full += delta.content
                         widget.body.content = Text(text_full + " \u258c")
                         self._scroll_down(only_if_following=True)
@@ -4382,14 +3490,14 @@ class LiteTUI(App):
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
                             self._scroll_down()
             except Exception as e:
-                self._elapsed_stop_body()
+                self._elapsed.stop_body()
                 self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
                 return
 
-            self._elapsed_stop_body()
+            self._elapsed.stop_body()
             # Final render of this turn's bubble. _thinking_done
             # finalizes the trace (idempotent if a content or tool token
             # already ended it) and stops the header timer with the stream.
@@ -4640,27 +3748,6 @@ class LiteTUI(App):
         _mark_delivered(item)
         self._stream()
 
-    def _load_skills(self):
-        """The skill index, from cache when there is one.
-
-        Discovery walks every configured library on every boot, which is why a
-        folder added while the app was running never appeared: the answer was
-        computed once at startup and nothing could ask again. The cache does not
-        change that -- it makes the recomputation an explicit, cheap act
-        (/skills refresh) instead of a restart.
-
-        Returns (skills, generated_at). generated_at is 0.0 for a fresh scan,
-        which is how /skills knows whether it is showing cached data and how old
-        it is: a cache nobody can date is a cache nobody can distrust.
-        """
-        if not self.settings.skills_enabled:
-            return [], 0.0
-        cached = skills_mod.read_cache(paths.ROOT)
-        if cached is not None:
-            return cached
-        found = skills_mod.discover_all(paths.ROOT, self.settings.skill_roots)
-        skills_mod.write_cache(paths.ROOT, found)
-        return found, 0.0
 
     def refresh_skills(self) -> tuple[list[str], list[str]]:
         """Re-scan every library and rewrite the cache. Returns (added, removed).
@@ -4813,11 +3900,7 @@ class LiteTUI(App):
         self._compact_card = card
         # The shared elapsed loop retires after ~1s idle, and a compaction can
         # begin with nothing else in flight -- without this the clock never ticks.
-        if self._elapsed_task is None or self._elapsed_task.done():
-            try:
-                self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
-            except RuntimeError:
-                self._elapsed_task = None
+        self._elapsed.ensure_running()
         self._scroll_down()
 
         ask = list(head) + [
@@ -4826,7 +3909,7 @@ class LiteTUI(App):
         if system:
             # Merge the live store in, so it can see what memory.md already
             # holds and update rather than duplicate.
-            block = self._store_block(live=True)
+            block = appsvc.store_block(self, live=True)
             ask.insert(0, {**system, "content": system.get("content", "") + block})
 
         # Tools are passed so STEP 1 of COMPACT_PROMPT can actually happen.
@@ -5041,29 +4124,6 @@ class LiteTUI(App):
 
     # ── Commands ─────────────────────────────────────────────────
 
-    def _mcp_server_names(self) -> list[str]:
-        """Server names from mcp.json, for the per-server toggles.
-
-        Returns [] rather than raising when MCP is absent or unreadable: a
-        settings screen that cannot open because an optional config file is
-        malformed is worse than one that shows no MCP section.
-        """
-        try:
-            mgr = getattr(self, "mcp", None)
-            if mgr is not None and getattr(mgr, "servers", None):
-                return sorted(mgr.servers.keys())
-            import json as _json
-            from pathlib import Path as _Path
-            cfg = _Path(__file__).resolve().parent.parent.parent / "mcp.json"
-            if cfg.exists():
-                data = _json.loads(cfg.read_text(encoding="utf-8"))
-                servers = data.get("mcpServers") or data.get("servers") or {}
-                if isinstance(servers, dict):
-                    return sorted(servers.keys())
-        except Exception:
-            pass
-        return []
-
     def _on_settings_saved(self, new: Settings | None) -> None:
         """Persist and apply. None = the user cancelled, so change nothing."""
         if new is None:
@@ -5140,38 +4200,6 @@ class LiteTUI(App):
             "my marker: respond to what I am pointing at."
         )
 
-    def _start_mark(self) -> None:
-        """/mark — the human screen-marker channel.
-
-        Spawns the interactive marker overlay (draggable ring + send/cancel),
-        then polls for its handoff file. The overlay writes the JSON and a PNG
-        of the marked monitor WITH THE RING STILL IN THE SHOT — the ring is
-        the highlight; that is the whole feature.
-        """
-        if not MARK_SCRIPT.exists():
-            self._system(f"/mark: overlay script missing at {MARK_SCRIPT}")
-            return
-        handoff = Path(tempfile.mkdtemp(prefix="litetui_mark_")) / "mark.json"
-        try:
-            # No -Label: a spaced label dies through some launch paths, and
-            # the ring is self-explanatory. Keep the HANDLE — a timeout must
-            # take the unanswered ring down, not leave it as screen litter.
-            proc = ttyguard.popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", str(MARK_SCRIPT),
-                 "-Interactive", "-HandoffFile", str(handoff),
-                 "-Color", "cyan"],
-                stdin=subprocess.DEVNULL,
-            )
-        except OSError as e:
-            self._system(f"/mark: could not launch the overlay: {e}")
-            return
-        self._system(
-            "Marker up — drag the ring onto the thing, then click send. "
-            "(x or Esc cancels; times out in 3 minutes.)"
-        )
-        self._mark_wait(handoff, proc)
-
     @work(exclusive=True, group="mark")
     async def _mark_wait(self, handoff: Path, proc) -> None:
         """Poll for the overlay's handoff. Group "mark", NOT "chat" — waiting
@@ -5200,7 +4228,7 @@ class LiteTUI(App):
         if data.get("cancelled"):
             self._system("/mark: cancelled.")
             return
-        b64 = self._load_image_file(Path(data["png"]))
+        b64 = appsvc.load_image_file(self, Path(data["png"]))
         if not b64:
             self._system(f"/mark: could not read the screenshot at {data.get('png')}")
             return

@@ -1,7 +1,7 @@
 """The scheduler's screens: the month grid, the day view, the job builder.
 
 Moved WHOLE from app.py in the plugin split — screen internals unchanged,
-including their (deliberately broad) access to app._jobs and _fire_job.
+including their (deliberately broad) access to app.jobs and _fire_job.
 The app's CSS still styles these by class name; the house centering
 selector includes them, and the POSITION gate proves it.
 """

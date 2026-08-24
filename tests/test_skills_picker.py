@@ -53,9 +53,12 @@ class _StubApp:
         # delivered, which is exactly what happened.
         self.conversation: list[dict] = [{"role": "system", "content": "BASE"}]
 
-    def _system(self, text):
+    def system_message(self, text):
         self.said.append(text)
 
+    # The real class aliases these to one function; the stub mirrors it so a
+    # caller of either name reaches this recorder.
+    _system = system_message
     def _append(self, msg: dict) -> None:
         self.conversation.append(msg)
 

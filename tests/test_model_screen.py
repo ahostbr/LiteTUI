@@ -51,7 +51,7 @@ def _app(monkeypatch, backend_name="llamacpp"):
     a = app_mod.LiteTUI()
     a.settings = Settings()
     a._connect = lambda: None
-    a._system = lambda *x, **k: None
+    a.system_message = a._system = lambda *x, **k: None
     b = _StubBackend()
     b.name = backend_name
     a.backend = b
@@ -112,7 +112,7 @@ async def test_lmstudio_greys_what_the_sdk_cannot_drive(monkeypatch):
 async def test_invalid_schema_is_refused_with_dicts_untouched(monkeypatch):
     a = _app(monkeypatch)
     told = []
-    a._system = lambda msg, *x, **k: told.append(str(msg))
+    a.system_message = a._system = lambda msg, *x, **k: told.append(str(msg))
     async with a.run_test() as pilot:
         a.push_screen(ModelConfigScreen("m"))
         await pilot.pause()

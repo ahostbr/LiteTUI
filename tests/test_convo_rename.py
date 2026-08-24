@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 from litetui.plugins.convo import _cmd_rename
+from litetui.conversation import ConversationRepository
 
 
 def _write(tmp_path: Path, *records) -> Path:
@@ -42,30 +43,51 @@ META = {"type": "meta", "v": 3, "id": "abc", "model": "m"}
 SNAP = {"type": "snapshot", "messages": [{"role": "user", "content": "how do I do X"}]}
 
 
+class _StubStore:
+    """The PUBLIC conversation store, which is what the plugin reaches for now.
+
+    `convo.py` used to call `app._write_record(...)` — a one-line private
+    delegation to exactly this. Stubbing the public seam instead means the test
+    exercises the surface the plugin actually depends on.
+    """
+
+    def __init__(self):
+        self.records: list[dict] = []
+        self.persist_error: str | None = None
+
+    def write_record(self, rec):
+        self.records.append(rec)
+
+
 class _StubApp:
     """Enough app for /rename, and nothing that can reach a real conversation."""
 
     def __init__(self, path=None):
         self.convo_path = path
-        self.records: list[dict] = []
+        self.store = _StubStore()
         self.said: list[str] = []
         self.materialised = 0
+
+    @property
+    def records(self) -> list[dict]:
+        """Kept so the assertions below read as they did; the records live in
+        the store now, because that is where the plugin writes them."""
+        return self.store.records
 
     def _materialise_convo(self):
         self.materialised += 1
 
-    def _write_record(self, rec):
-        self.records.append(rec)
-
-    def _system(self, text):
+    def system_message(self, text):
         self.said.append(text)
 
-    _read_convo = staticmethod(m.LiteTUI._read_convo)
+    # The real class aliases these to one function; the stub mirrors it so a
+    # caller of either name reaches this recorder.
+    _system = system_message
 
 
 def test_a_rename_record_folds_into_meta_on_replay(tmp_path: Path) -> None:
     p = _write(tmp_path, META, SNAP, {"type": "rename", "name": "paywall audit"})
-    meta, msgs = m.LiteTUI._read_convo(p)
+    meta, msgs = ConversationRepository.read(p)
     assert meta["name"] == "paywall audit"
     assert meta["id"] == "abc", "folding the name dropped the rest of the meta"
     assert len(msgs) == 1, "the rename record disturbed the messages"
@@ -77,7 +99,7 @@ def test_the_last_rename_wins(tmp_path: Path) -> None:
         {"type": "rename", "name": "first"},
         {"type": "rename", "name": "second"},
     )
-    meta, _ = m.LiteTUI._read_convo(p)
+    meta, _ = ConversationRepository.read(p)
     assert meta["name"] == "second"
 
 
@@ -87,18 +109,18 @@ def test_an_empty_rename_clears_the_name(tmp_path: Path) -> None:
         {"type": "rename", "name": "temporary"},
         {"type": "rename", "name": "   "},
     )
-    meta, _ = m.LiteTUI._read_convo(p)
+    meta, _ = ConversationRepository.read(p)
     assert "name" not in meta, "a cleared name lingered in meta"
 
 
 def test_the_name_wins_over_the_derived_preview() -> None:
     msgs = SNAP["messages"]
-    assert m.LiteTUI._convo_label({}, msgs) == m.LiteTUI._convo_title(msgs), (
+    assert ConversationRepository.label({}, msgs) == m.LiteTUI._convo_title(msgs), (
         "with no name, the listing must still show the first-message preview"
     )
-    assert m.LiteTUI._convo_label({"name": "paywall audit"}, msgs) == "paywall audit"
+    assert ConversationRepository.label({"name": "paywall audit"}, msgs) == "paywall audit"
     # Whitespace-only is not a name.
-    assert m.LiteTUI._convo_label({"name": "  "}, msgs) == m.LiteTUI._convo_title(msgs)
+    assert ConversationRepository.label({"name": "  "}, msgs) == m.LiteTUI._convo_title(msgs)
 
 
 def test_rename_writes_the_record_and_materialises_first(tmp_path: Path) -> None:
@@ -148,7 +170,10 @@ def test_both_listings_go_through_the_label_helper() -> None:
         "a listing still renders the derived preview directly — a named "
         "conversation would show in one surface and not the other"
     )
-    assert src.count("_convo_label(meta, msgs)") == 1, (
+    # Spelled `ConversationRepository.label(...)` since the plugin stopped
+    # going through the app's private alias. The ASSERTION is unchanged in
+    # strength — exactly one rendering site — only the name it matches moved.
+    assert src.count("label(meta, msgs)") == 1, (
         "the shared picker is the single rendering site for the label; "
         "a second listing means /convos and /resume have drifted apart"
     )

@@ -31,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui.plugins import PluginContext, PluginRegistry
 from litetui.plugins import glassbox_plugin as gb
+from litetui import appsvc
 
 
 def _event(channel="output", intensity=1.0, label="x") -> dict:

@@ -21,6 +21,7 @@ import pytest
 
 from litetui import app as app_mod
 from litetui import paths
+from litetui.conversation import ConversationRepository
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-resume-id-"))
 
@@ -94,7 +95,7 @@ def test_the_row_carries_both_ids():
     a = app_mod.LiteTUI()
     a._new_convo()
     a._materialise_convo()   # creation is lazy now — force it for these assertions
-    rows = a._list_convos()
+    rows = ConversationRepository.list_all()
     assert rows, "no conversations listed"
     path_, meta_, _msgs = rows[0]
     cid = path_.parent.name[:8]

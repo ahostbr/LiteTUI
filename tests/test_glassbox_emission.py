@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as app_mod
 from litetui.plugins import PluginContext
 from litetui.settings import Settings
+from litetui import appsvc
 
 
 # ── the same stream doubles the compaction tests use ────────────────────────

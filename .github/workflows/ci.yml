@@ -99,30 +99,69 @@ jobs:
       # The output goes to the STEP SUMMARY, not just the log. "Advisory" that
       # nobody reads is the same as not running it; the summary is the part
       # that makes "reports" true.
+      # SCOPE IS DELIBERATELY `.` AND IS NOT PINNED TO PATHS. Measured 2026-08-24:
+      # ruff's `respect-gitignore` default already excludes `.venv/`, `.worktrees/`
+      # and `artifacts/` (all gitignored), and there are zero untracked, unignored
+      # files — so `.` and an explicit root list produce the SAME 531 findings here.
+      # ⚠️ Pinning was tried and REJECTED: `src tests tools e2e` also scores 531,
+      # but only because `Docs/Plans/dual-backend/render_html.py` is currently
+      # CLEAN. It is tracked source, a pin would silently drop it, and the equal
+      # totals hid that. EQUAL TOTALS ARE NOT EQUAL SETS.
       - name: ruff (advisory)
         shell: bash
         run: |
+          # RYAN'S RULING 2026-08-24: print ALL of it, and use `concise`.
+          # Measured: the DEFAULT format is 8,642 lines for 531 findings, so the
+          # old 200-line tail showed 2.3% of the run — about twelve findings —
+          # while saying nothing about the rest. `--output-format=concise` is
+          # 533 lines for the SAME 531 findings, one per line, so the advisory
+          # now prints 100% of itself. No tail, no cap, nothing elided.
+          # ⚠️ The only remaining bound is GitHub's own ~1MB step-summary limit,
+          # which 533 lines (~50KB) is nowhere near. It is documented rather
+          # than pre-empted with a silent cap: a bound nobody announces is the
+          # defect this step just removed.
+          CMD='uv run --locked ruff check . --output-format=concise'
           OUT="${RUNNER_TEMP:-.}/ruff.txt"
-          uv run --locked ruff check . > "$OUT" 2>&1 || true
+          eval "$CMD" > "$OUT" 2>&1 || true
           {
             echo "### Ruff (advisory — never blocks)"
             echo ""
+            echo "Reproduce locally:"
             echo '```'
-            tail -n 200 "$OUT"
+            echo "$CMD"
+            echo '```'
+            echo "$(wc -l < "$OUT") output lines, all shown."
+            echo ""
+            echo '```'
+            cat "$OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
+      # mypy IS scoped to `src` on purpose, and that asymmetry with ruff's `.` is
+      # intentional rather than an oversight: type-checking tests and one-off
+      # tools produces noise about fixtures and scripts, while linting them is
+      # useful. The scope is stated in the printed command either way.
       - name: mypy (advisory)
         shell: bash
         run: |
+          # Same ruling: no tail, print all of it. mypy's output is already one
+          # line per finding, so it needed no format change — only the cap
+          # removed.
+          CMD='uv run --locked mypy src'
           OUT="${RUNNER_TEMP:-.}/mypy.txt"
-          uv run --locked mypy src > "$OUT" 2>&1 || true
+          eval "$CMD" > "$OUT" 2>&1 || true
           {
             echo "### mypy (advisory — never blocks)"
             echo ""
+            echo "Reproduce locally:"
             echo '```'
-            tail -n 200 "$OUT"
+            echo "$CMD"
+            echo '```'
+            echo "$(wc -l < "$OUT") output lines, all shown."
+            echo ""
+            echo '```'
+            cat "$OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0

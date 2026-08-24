@@ -52,7 +52,7 @@ def make_app(jobs):
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    a._jobs = jobs
+    a.jobs[:] = jobs
     return a
 
 
@@ -381,8 +381,8 @@ def test_creating_from_a_day_prefills_that_day_and_lands_everywhere(tmp_path):
             await pilot.click("#job-save")
             await pilot.pause()
 
-            assert len(a._jobs) == 1
-            made = a._jobs[0]
+            assert len(a.jobs) == 1
+            made = a.jobs[0]
             assert made.prompt == "water the plants"
             assert made.enabled is True
             assert made.run_count == 0
@@ -419,7 +419,7 @@ def test_deleting_takes_two_clicks_and_then_really_deletes(tmp_path):
             await pilot.click("#job-delete")
             await pilot.pause()
             assert isinstance(a.screen, JobScreen), "one click must not delete"
-            assert target in a._jobs
+            assert target in a.jobs
             assert "Really" in str(ed.query_one("#job-delete", m.Button).label)
 
             # Textual's Button IGNORES clicks while its -active pressed effect
@@ -432,7 +432,7 @@ def test_deleting_takes_two_clicks_and_then_really_deletes(tmp_path):
             await pilot.pause(0.4)
             await pilot.click("#job-delete")
             await pilot.pause()
-            assert target not in a._jobs
+            assert target not in a.jobs
             assert sched_mod.load(tmp_path) == [], "the delete never persisted"
     _run(body())
 

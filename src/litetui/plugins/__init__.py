@@ -427,7 +427,7 @@ def status_command(app, name: str, arg: str) -> None:
     lines = [f"{len(app.plugins.status)} plugin(s), load order:"]
     for pid, status in app.plugins.status.items():
         lines.append(f"  {status:<9} {pid}")
-    app._system(chr(10).join(lines))
+    app.system_message(chr(10).join(lines))
 
 
 def register_plugins(

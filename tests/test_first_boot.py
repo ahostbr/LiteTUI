@@ -25,7 +25,10 @@ paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-firstboot-"))
 def _app():
     a = app_mod.LiteTUI()
     a.settings = Settings()
-    a._connect = lambda: None
+    # BOTH NAMES. `_connect` is an ALIAS of `connect`, and an instance attribute
+    # shadows ONE NAME, not the object -- stubbing only the private one leaves
+    # `ms._activate`'s `app.connect()` resolving to the real worker.
+    a.connect = a._connect = lambda: None
     a._system = lambda *x, **k: None
     return a
 

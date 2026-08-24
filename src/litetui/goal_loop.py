@@ -374,7 +374,7 @@ def goal_command(app: Any, arg: str) -> None:
 
 
 def _loop_jobs(app: Any) -> list[scheduler.Job]:
-    return [job for job in app._jobs if getattr(job, "kind", "cron") == "loop"]
+    return [job for job in app.jobs if getattr(job, "kind", "cron") == "loop"]
 
 
 def loop_command(app: Any, arg: str) -> None:
@@ -401,8 +401,8 @@ def loop_command(app: Any, arg: str) -> None:
             return
         job = hits[0]
         if verb.lower() in {"clear", "rm", "remove"}:
-            app._jobs.remove(job)
-            scheduler.save(app._jobs, paths.ROOT)
+            app.jobs.remove(job)
+            scheduler.save(app.jobs, paths.ROOT)
             app._system(f"/loop removed {job.id}")
         else:
             job.enabled = verb.lower() == "resume"
@@ -410,7 +410,7 @@ def loop_command(app: Any, arg: str) -> None:
                 job.next_run_at = (
                     datetime.now() + timedelta(minutes=job.interval_minutes)
                 ).isoformat(timespec="seconds")
-            scheduler.save(app._jobs, paths.ROOT)
+            scheduler.save(app.jobs, paths.ROOT)
             app._system(f"/loop {job.id} {'resumed' if job.enabled else 'paused'}")
         return
     interval_token, _, prompt = arg.partition(" ")
@@ -429,6 +429,6 @@ def loop_command(app: Any, arg: str) -> None:
         owner_convo_id=app.convo_id,
         tool_profile=SCHEDULED,
     )
-    app._jobs.append(job)
-    scheduler.save(app._jobs, paths.ROOT)
+    app.jobs.append(job)
+    scheduler.save(app.jobs, paths.ROOT)
     app._system(f"/loop added {job.id} · every {minutes}m\n  {job.prompt}")

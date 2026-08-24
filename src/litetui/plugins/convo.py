@@ -1,13 +1,28 @@
 """Conversation lifecycle commands: new, system prompt, compact, list, resume.
 
-Handler bodies moved verbatim from the chain (self -> app). The persistence
-machinery they call (_new_convo, _list_convos, _resume, _compact, the store
-layout) stays app-owned — one owner for the transcript format; these are
-the command surfaces over it.
+Handler bodies moved verbatim from the chain (self -> app). These are the
+command surfaces; the transcript format has one owner and it is not here.
+
+READING AND LABELLING GO THROUGH THE PUBLIC REPOSITORY — `ConversationRepository`
+for `read`/`label`/`fmt_size`/`list_all`, and `app.store` for writes and the
+persist-error flag. The app still carries private aliases for those (T070 S2
+removed this plugin as their last product caller), so do not reach back through
+`app._*` for anything the repository already exposes.
+
+Still app-owned and reached privately, pending the `ctx.conversation` facade:
+new/resume/compact/edit/materialise and the picked-conversation callback.
+
+⚠️ This paragraph used to list `_list_convos` among the private calls. It was
+accurate when written and went stale at S2, and a `git grep app._` then counted
+the PROSE as a live caller and reported this plugin as blocking that alias's
+deletion. A private name written in a docstring is indistinguishable from a call
+site to any text gate — which is why coupling here is counted by AST, and why
+this paragraph is now kept true rather than merely informative.
 """
 import time
 
 from litetui import paths
+from litetui.conversation import ConversationRepository
 from litetui.picker import PickerScreen
 from litetui.plugins import PluginManifest
 
@@ -28,7 +43,7 @@ def _cmd_new(app, name: str, arg: str) -> None:
     app._new_convo()  # a fresh file — never reuse the old one
     app._load_system_prompt()
     app.query_one("#chat-log").remove_children()
-    app._system(
+    app.system_message(
         f"New conversation — {app.convo_id}\n"
         f"  store: {app.convo_dir}\n"
         f"  memory.md · soul.md · handoff.md · {paths.MEMORIES_DIR}/"
@@ -45,9 +60,9 @@ def _cmd_system(app, name: str, arg: str) -> None:
             )
         app._edit(0, "system prompt changed")
         preview = arg[:80] + ("..." if len(arg) > 80 else "")
-        app._system(f"System prompt set: {preview}")
+        app.system_message(f"System prompt set: {preview}")
     else:
-        app._system("Usage: /system <prompt>")
+        app.system_message("Usage: /system <prompt>")
 
 
 def _cmd_compact(app, name: str, arg: str) -> None:
@@ -58,9 +73,9 @@ def _open_convos_picker(app) -> None:
     """The conversation picker modal, shared by /convos and /resume so
     the two commands show one UI instead of one modal and one wall of
     chat text. Selecting a row opens it; Esc closes it."""
-    rows = app._list_convos()
+    rows = ConversationRepository.list_all()
     if not rows:
-        app._system("Nothing to resume.")
+        app.system_message("Nothing to resume.")
         return
     # Same picker as /model, so the two interactions cannot drift.
     items = []
@@ -77,12 +92,12 @@ def _open_convos_picker(app) -> None:
             (
                 str(path),
                 f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
-                f"{app._fmt_size(path.stat().st_size):>7}  "
-                f"{app._convo_label(meta, msgs)}",
+                f"{ConversationRepository.fmt_size(path.stat().st_size):>7}  "
+                f"{ConversationRepository.label(meta, msgs)}",
             )
         )
     title = "Resume a conversation"
-    if app._persist_error:
+    if app.store.persist_error:
         # _note_persist_error announces the FIRST save failure and is
         # never heard from again; this badge is the on-demand
         # re-statement, on the exact surface the user is looking at.
@@ -114,11 +129,11 @@ def _cmd_rename(app, name: str, arg: str) -> None:
         current = ""
         if app.convo_path is not None and app.convo_path.exists():
             try:
-                meta, _msgs = app._read_convo(app.convo_path)
+                meta, _msgs = ConversationRepository.read(app.convo_path)
                 current = str(meta.get("name") or "")
             except OSError:
                 current = ""
-        app._system(
+        app.system_message(
             f"This conversation is named {current!r}." if current
             else "This conversation has no name. Give it one with /rename <name>."
         )
@@ -130,16 +145,16 @@ def _cmd_rename(app, name: str, arg: str) -> None:
     # naming an old one, instead of silently doing nothing.
     app._materialise_convo()
     if app.convo_path is None:
-        app._system("No conversation to name yet.")
+        app.system_message("No conversation to name yet.")
         return
-    app._write_record({"type": "rename", "name": wanted})
-    app._system(f"Named this conversation {wanted!r}. It shows in /convos and /resume.")
+    app.store.write_record({"type": "rename", "name": wanted})
+    app.system_message(f"Named this conversation {wanted!r}. It shows in /convos and /resume.")
 
 
 def _cmd_resume(app, name: str, arg: str) -> None:
-    rows = app._list_convos()
+    rows = ConversationRepository.list_all()
     if not rows:
-        app._system("Nothing to resume.")
+        app.system_message("Nothing to resume.")
         return
     target = None
     if arg.isdigit():
@@ -155,7 +170,7 @@ def _cmd_resume(app, name: str, arg: str) -> None:
                 target = row
                 break
     if target is None and arg:
-        app._system(
+        app.system_message(
             f"No conversation matches {arg!r}. Run /resume with no argument to pick one."
         )
         return

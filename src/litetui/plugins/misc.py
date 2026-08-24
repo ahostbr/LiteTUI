@@ -25,22 +25,22 @@ def _cmd_think(app, name: str, arg: str) -> None:
             "\nunset means the field is not sent at all — LM Studio then "
             "applies its OWN default, which is xhigh. 'unset' is not 'off'."
         )
-        app._system(
+        app.system_message(
             f"Thinking level: {current}\n"
             f"Levels: {', '.join(THINKING_LEVELS)}, or 'unset'\n"
             f"Usage: /think <level>{note}"
         )
     elif arg.lower() in ("unset", "default", "server"):
         app.thinking_level = None
-        app._update_header()
-        app._system("Thinking level unset — LM Studio's default (xhigh) applies.")
+        app.update_header()
+        app.system_message("Thinking level unset — LM Studio's default (xhigh) applies.")
     elif arg.lower() in THINKING_LEVELS:
         app.thinking_level = arg.lower()
-        app._update_header()
+        app.update_header()
         wire = "none" if app.thinking_level == "off" else app.thinking_level
-        app._system(f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})")
+        app.system_message(f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})")
     else:
-        app._system(
+        app.system_message(
             f"Unknown level: {arg}\nValid: {', '.join(THINKING_LEVELS)}, unset"
         )
 
