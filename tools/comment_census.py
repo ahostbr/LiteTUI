@@ -133,14 +133,25 @@ def norm(s: str) -> str:
     return " ".join(s.replace("#", " ").split()).lower()
 
 
-def census(moves, new_ref: str) -> int:
-    lost_total = 0
+def census(moves, new_ref: str) -> tuple[int, int, int, int]:
+    """Returns (lost, compared, skipped, failed).
+
+    🔴 FOUR NUMBERS, NOT ONE. A bare "TOTAL 0" is unreadable: it means the same
+    thing whether ten bodies were compared and none lost a line, or nine were
+    SKIPPED and the tenth was clean. That is a total without a denominator, and
+    it is how a control that tested nothing reads as a pass -- which happened, to
+    a reader of this tool, on its first day. The per-row SKIP already prints its
+    discriminator; the summary has to as well, or a reader who only reads the
+    last line is back where they started.
+    """
+    lost_total = compared = skipped = failed = 0
     for pre_ref, old, new_path, new, in_class in moves:
         before = grab(blob(pre_ref, APP), old, True)
         after = grab(blob(new_ref, new_path), new, in_class)
         label = f"{old} -> {new_path.rsplit('/', 1)[-1]}:{new}"
         if before is None or after is None:
             print(f"   SKIP {label}  (before={before is not None} after={after is not None})")
+            skipped += 1
             continue
         try:
             # STRICT CHECK FIRST: ast.parse rejects more than tokenize does, so
@@ -152,11 +163,13 @@ def census(moves, new_ref: str) -> int:
             # render as "nothing was lost".
             print(f" FAIL  {label:52} PARSE FAILED: {type(e).__name__}: {e}")
             lost_total += 1
+            failed += 1
             continue
         can = [norm(c) for c in ca]
         lost = [c for c in cb if norm(c) not in can]
         dan = norm(da)
         dlost = [ln.strip() for ln in db.split("\n") if ln.strip() and norm(ln) not in dan]
+        compared += 1
         lost_total += len(lost) + len(dlost)
         flag = "LOST" if (lost or dlost) else "  ok"
         print(f" {flag}  {label:52} comments {len(cb):>2} -> {len(ca):<2}  doc {len(db):>4}B -> {len(da):<4}B")
@@ -164,7 +177,7 @@ def census(moves, new_ref: str) -> int:
             print(f"          - {c}")
         for d in dlost:
             print(f"          - (doc) {d[:88]}")
-    return lost_total
+    return lost_total, compared, skipped, failed
 
 
 def main() -> int:
@@ -189,9 +202,18 @@ def main() -> int:
         moves = MOVES
 
     print(f"COMMENT / DOCSTRING CENSUS — {len(moves)} move(s), new side read from {args.new_ref}\n")
-    total = census(moves, args.new_ref)
-    print(f"\nTOTAL lost comment/doc lines: {total}")
-    return 1 if total else 0
+    lost, compared, skipped, failed = census(moves, args.new_ref)
+    # 🔴 FOUR NUMBERS. A bare "TOTAL 0" reads the same whether ten bodies were
+    # compared and nothing was lost, or nine were SKIPPED and the tenth was
+    # clean. A total without a denominator is how a control that tested nothing
+    # reads as a pass -- which happened to a reader of this tool on day one.
+    print(f"\nTOTAL lost comment/doc lines: {lost}"
+          f"   [compared {compared} of {len(moves)}"
+          f" | skipped {skipped} | parse-failed {failed}]")
+    if compared == 0:
+        print("  NOTHING WAS COMPARED. That is not a pass -- check the refs and the names.")
+        return 2
+    return 1 if lost else 0
 
 
 if __name__ == "__main__":
