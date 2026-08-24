@@ -75,7 +75,7 @@ cheaper wins.
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups — **12 methods / 212 ln, see §5b** | OpenBolt | −212 lines, **−12 methods** | knot |
-| **O3** | `_cron`/`_cron_*` → `CronService` — **scope ENLARGED, not reduced: S3 no longer touches cron at all. `_cron_command` (50) + `_cron_monitor` (16) are O3's, so ONE ROW OWNS THE FAMILY** (Ryan, *scope not sequence*, §3d) | OpenBolt | **−148 lines, −5 methods** — DERIVED, not the old "−~80/−3": `_cron_monitor` 16 · `_cron_command` 50 · `_cron_find` 20 · `_cron_add` 37 · `_cron_list` 25. **Units agree (defs = items = names).** `_fire_job` (47 ln) is a **candidate 6th** — see §3d | knot |
+| **O3** | `_cron`/`_cron_*` → `CronService` — **scope ENLARGED, not reduced: S3 no longer touches cron at all. `_cron_command` (50) + `_cron_monitor` (16) are O3's, so ONE ROW OWNS THE FAMILY** (Ryan, *scope not sequence*, §3d) | OpenBolt | **−148 lines, −5 methods** — DERIVED, not the old "−~80/−3": `_cron_monitor` 16 · `_cron_command` 50 · `_cron_find` 20 · `_cron_add` 37 · `_cron_list` 25. **Units agree (defs = items = names).** **+ `_fire_job` 47 ⇒ 6 methods / 195 lines** (taken, §3d). ⚠️ **NOT zero-edit: 9 test call sites in 3 files, and 2 gates go red — pre-costed in §3f** | knot |
 | **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b. **ARRIVAL ✅ `63fd480` (OpenBolt). Consumer OPEN (SilverBolt), now 18 + 2 `misc.py` sites + the 92-stub sweep** | SilverBolt + OpenBolt | reach **40 → 20** (AST — *corrected from 22: the 2 `misc.py` `_update_header` sites are folded in*) | lines, methods, knot — **the arrival moves the def-grep by 0 while adding 5 members, see §2c** |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed`/`_elapsed_*`, `_eta`/`_eta_*`, `_tps`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **22 → 15** (AST) | lines, methods, knot |
@@ -503,10 +503,42 @@ around, and O3 receives the whole family at once with nothing moving underneath 
 | `_cron_monitor` | 16 | from S3 · `@work(group="cron")` — movable, §3b |
 | **TOTAL** | **148** | **5 methods; defs = class-body items = names, none is an alias** |
 
-📌 **`_fire_job` (47 ln) is a candidate 6th and the measurement says take it:** its **only** `app.py`
-callers are `_cron_monitor` and `_cron_command`, and **no plugin reaches it.** Once both callers
-move it has no caller left behind — the ③ disqualifier of §3c reversed into a reason *to* include
-it. With it: **6 methods, 195 lines.**
+📌 **`_fire_job` (47 ln) — TAKEN AS THE 6TH** (Sentinel: *"no caller left behind is the whole test"*),
+re-verified at `a90c369`: its **only** `app.py` callers are `_cron_monitor` (`:1226`) and
+`_cron_command` (`:1317`), and **no plugin reaches it executably** — the two plugin hits are **prose
+in module docstrings** (`scheduler_plugin.py:3`, `scheduler_ui.py:4`). Once both callers move it has
+no caller left behind, so §3c's ③ disqualifier reverses into a reason *to* include it.
+⇒ **O3 = 6 methods, 195 lines.**
+
+### 3f. 🔴 O3 IS NOT ZERO-EDIT EITHER — PRE-COSTED BEFORE ANYONE SITS DOWN, WHICH IS THE O-A LESSON
+
+O-A's row implied a two-line commit and cost **13** test sites. **So O3 is costed first this time.**
+AST at `a90c369`, prose separated from calls:
+
+| | |
+|---|---|
+| **9 executable test call sites, 3 files** | `test_cron_wiring.py` ×5 (`:64` `_cron_command`; `:193/212/231/251` `_fire_job`) · `test_goal_loop.py` ×2 · `test_tool_policy_wiring.py` ×2 |
+| **2 prose mentions — NOT call sites** | `test_cron_wiring.py:31` names `_cron_add` and `_fire_job` in a docstring |
+| `_fire_job` carries **8 of the 9** | |
+
+⭐ **HALF THE SWEEP IS NEARLY FREE, because four sites already call it in the TARGET SHAPE:**
+`app_mod.LiteTUI._fire_job(app, job)` is an **unbound** call passing `app` explicitly — which is
+precisely `cronsvc.fire_job(app, job)`. The other four are bound (`a._fire_job(job)`).
+
+**THE GATES, INVENTORIED BEFORE THE WORK RATHER THAN DISCOVERED DURING IT:**
+
+| gate | fate | why |
+|---|---|---|
+| `test_cron_appears_in_help` `:72-76` | 🔴 **GOES RED** | reads **`app.py`'s source** and asserts `'"/cron' in src`. **All 14 `"/cron` strings in `app.py` sit inside cron-family methods**, so after O3 the file holds none. Re-point at the service module — that preserves its strength exactly |
+| `test_slash_cron_reaches_the_handler` `:60-69` | 🔴 goes red — **loudly, which is the good kind** | stubs `a._cron_command = lambda …` and depends on a LATE lookup through the command registry. When the plugin registers the service directly the stub is never consulted and `seen == []` fails. **It does not go inert** |
+| `test_the_cron_worker_starts_and_is_not_in_the_chat_group` `:263` | ✅ **HOLDS** | asserts on `{w.group for w in a.workers}`, and `@work(group="cron")` keeps its explicit group through a move to module level (§3b probe) |
+
+⚠️ **`test_cron_appears_in_help` IS ALREADY WEAKER THAN ITS NAME.** It claims `/cron` "appears in
+help" and actually asserts the *string* `"/cron` appears **anywhere in `app.py`** — 14 hits, of which
+only `:1321-1322` are help text; the rest are error messages and a docstring. **It would pass with
+the help entry deleted.** Re-pointing keeps it exactly as weak as it is today; gating the help
+REGISTRATION would make it check what it is named for. **That is a widening, so it is flagged here
+rather than folded silently into O3.**
 
 ### 3e. WHERE THE REMAINING **20** REACH-THROUGH SITES ACTUALLY ARE
 
