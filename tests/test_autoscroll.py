@@ -160,7 +160,14 @@ def test_stream_branches_scroll():
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
     m = re.search(r"if token:.*?thinking\.append\(token\)(.{0,400})", src, re.S)
     assert m and "only_if_following=True" in m.group(1), "reasoning-delta branch scrolls"
-    m = re.search(r"if delta\.content:(.{0,400})", src, re.S)
+    # ⚠️ THE WINDOW IS A PROXIMITY PROXY, NOT A SPECIFICATION. It asserts the
+    # branch scrolls; the character count is only how far it looks. Widened
+    # 400 -> 600 at T070 O4-c, when publishing the tps rate added two lines to
+    # this branch and pushed a scroll call that was still there out of range.
+    # Verified before widening: there is exactly ONE `only_if_following=True`
+    # in the following 1,200 chars, so a wider window cannot pass by matching
+    # the next branch's call instead of this one.
+    m = re.search(r"if delta\.content:(.{0,600})", src, re.S)
     assert m and "only_if_following=True" in m.group(1), "answer-content branch scrolls"
 
 

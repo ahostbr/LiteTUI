@@ -891,10 +891,9 @@ class LiteTUI(App):
         self._pending_tool_images: list[tuple[str, str]] = []
         # "vlm" | "llm" | None, learned from the same request as the ctx window.
         self.model_type: str | None = None
-        # tok/s accounting, reset per turn by _tps_start.
-        self._tps_t0: float | None = None
-        self._tps_n = 0
-        self._tps_painted = 0.0
+        # tok/s accounting, reset per turn by TpsState.start. `tps` itself
+        # stays a reactive on the class -- assigning it IS the repaint.
+        self._tps = turnstats.TpsState()
         # The STORE owns where this conversation lives and how it is written.
         # The properties below keep `self.convo_id` and friends resolving, so
         # nothing that reads them had to change.
@@ -2394,39 +2393,6 @@ class LiteTUI(App):
     # prompt processing can dominate, and folding it in would report a number
     # that says more about the prompt than about the model.
 
-    def _tps_start(self) -> None:
-        self._tps_t0 = None
-        self._tps_n = 0
-        self._tps_painted = 0.0
-
-    def _tps_tick(self) -> None:
-        """One streamed delta arrived. Live estimate only -- see _tps_final."""
-        now = time.monotonic()
-        if self._tps_t0 is None:
-            self._tps_t0 = now
-            return          # nothing to divide by yet
-        self._tps_n += 1
-        elapsed = now - self._tps_t0
-        # Repaint at most 4x/second. The footer is one Static, but this runs on
-        # every token of every turn, and a repaint per token on a 27B is a real
-        # cost paid to render a number that changes in the third decimal.
-        if elapsed >= 0.4 and now - self._tps_painted >= 0.25:
-            self.tps = self._tps_n / elapsed
-            self._tps_painted = now
-
-    def _tps_final(self, completion_tokens: int) -> None:
-        """Settle to the exact figure the server reports.
-
-        The live number counts STREAM DELTAS, which are only approximately
-        tokens. `usage.completion_tokens` is the server's own count and includes
-        reasoning tokens, so it matches what the model actually generated.
-        """
-        if self._tps_t0 is None or not completion_tokens:
-            return
-        elapsed = time.monotonic() - self._tps_t0
-        if elapsed > 0:
-            self.tps = completion_tokens / elapsed
-
     def watch_tps(self, value: float | None) -> None:
         self._refresh_ctx_label()
 
@@ -3352,7 +3318,7 @@ class LiteTUI(App):
                 tools=self._all_tools() if self.tools_enabled else None,
             )
 
-            self._tps_start()
+            self._tps.start()
             try:
                 # ASK BEFORE OPENING THE STREAM. Inside this try on purpose:
                 # the plain words then land in the same widget that used to
@@ -3374,7 +3340,10 @@ class LiteTUI(App):
                     u = getattr(chunk, "usage", None)
                     if u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
-                        self._tps_final(int(getattr(u, "completion_tokens", 0) or 0))
+                        rate = self._tps.final(
+                            int(getattr(u, "completion_tokens", 0) or 0))
+                        if rate is not None:
+                            self.tps = rate
                         # ETA: this is the end of the turn -- the usage chunk
                         # carries prompt_tokens, so fold this turn into the
                         # learned rate (gated) and remember its count as the
@@ -3394,7 +3363,9 @@ class LiteTUI(App):
                         delta, "reasoning", None
                     )
                     if token:
-                        self._tps_tick()
+                        rate = self._tps.tick()
+                        if rate is not None:
+                            self.tps = rate
                         self._glassbox_rate("thinking")
                         reasoning += token
                         if thinking is None and self.settings.show_thinking:
@@ -3424,7 +3395,9 @@ class LiteTUI(App):
                         # read as "only scrolls when the message comes through".
                         self._scroll_down(only_if_following=True)
                     if delta.content:
-                        self._tps_tick()
+                        rate = self._tps.tick()
+                        if rate is not None:
+                            self.tps = rate
                         self._glassbox_rate("output")
                         self._thinking_done()
                         self._elapsed.stop_body()

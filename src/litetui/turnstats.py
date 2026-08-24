@@ -161,3 +161,63 @@ class ElapsedState:
             self.task = asyncio.create_task(self._app._elapsed_repaint())
         except RuntimeError:
             self.task = None
+
+
+class TpsState:
+    """Generation speed for the turn in flight: delta bookkeeping and the rate.
+
+    🔴 `tps` ITSELF IS NOT HERE, AND THAT IS NOT AN OVERSIGHT. On the app it is a
+    Textual `reactive` WITH a watcher — assigning it triggers the repaint AND
+    `watch_tps -> _refresh_ctx_label()`. Moving it to a plain attribute on this
+    object would silently delete both effects while every unit test kept passing,
+    which is exactly the failure class this whole step is sequenced around. So
+    the split is at the honest seam: this object owns the PRIVATE bookkeeping and
+    COMPUTES the rate; `_stream` publishes it. `tick` and `final` therefore return
+    `float | None` — a value to publish, or nothing — rather than writing through
+    to the app. Nothing here reaches into the app at all.
+    """
+
+    def __init__(self) -> None:
+        self.t0: float | None = None
+        self.n = 0
+        self.painted = 0.0
+
+    def start(self) -> None:
+        """A new turn: forget the previous one entirely."""
+        self.t0 = None
+        self.n = 0
+        self.painted = 0.0
+
+    def tick(self, now: float | None = None) -> float | None:
+        """One streamed delta arrived. Returns a live estimate to publish, or
+        None — see `final` for the figure that supersedes it.
+
+        Repaints at most 4x/second. The footer is one Static, but this runs on
+        every token of every turn, and a repaint per token on a 27B is a real
+        cost paid to render a number that changes in the third decimal.
+        """
+        now = time.monotonic() if now is None else now
+        if self.t0 is None:
+            self.t0 = now
+            return None         # nothing to divide by yet
+        self.n += 1
+        elapsed = now - self.t0
+        if elapsed >= 0.4 and now - self.painted >= 0.25:
+            self.painted = now
+            return self.n / elapsed
+        return None
+
+    def final(self, completion_tokens: int) -> float | None:
+        """Settle to the exact figure the server reports, or None to leave the
+        live estimate standing.
+
+        The live number counts STREAM DELTAS, which are only approximately
+        tokens. `usage.completion_tokens` is the server's own count and includes
+        reasoning tokens, so it matches what the model actually generated.
+        """
+        if self.t0 is None or not completion_tokens:
+            return None
+        elapsed = time.monotonic() - self.t0
+        if elapsed > 0:
+            return completion_tokens / elapsed
+        return None
