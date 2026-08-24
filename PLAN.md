@@ -76,7 +76,7 @@ cheaper wins.
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups — **12 methods / 212 ln, see §5b** | OpenBolt | −212 lines, **−12 methods** | knot |
 | **O3** | `_cron`/`_cron_*` → `CronService` — **scope reduced by S3, see §5** | OpenBolt | −~80 lines, −3 methods | knot |
-| **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **40 → 22** (AST) | lines, methods, knot |
+| **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b. **ARRIVAL ✅ `63fd480` (OpenBolt). Consumer OPEN (SilverBolt), now 18 + 2 `misc.py` sites + the 92-stub sweep** | SilverBolt + OpenBolt | reach **40 → 20** (AST — *corrected from 22: the 2 `misc.py` `_update_header` sites are folded in*) | lines, methods, knot — **the arrival moves the def-grep by 0 while adding 5 members, see §2c** |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed`/`_elapsed_*`, `_eta`/`_eta_*`, `_tps`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **22 → 15** (AST) | lines, methods, knot |
 | **S7/O5** | The turn-engine boundary: `_stream` (345 ln), `_compact` (262), `_handle_command` | **both, last** | lines, knot | — |
@@ -153,6 +153,36 @@ all three sit inside `_register(ctx)` bodies. ⭐ **A supported surface with 3 p
 > **S6** (7 members, 1 hit each, all in `convo.py`): `_new_convo` · `_load_system_prompt` ·
 > `_compact` · `_on_convo_picked` · `_materialise_convo` · `_resume` · `_edit` → the same names
 > without the underscore.
+
+✅ **S5 ARRIVAL LANDED `63fd480`** — five defs renamed in place, five `_x = x` aliases, **runtime**
+verified (`LiteTUI.public is LiteTUI._private` for all five, one implementation). Consumer half is
+SilverBolt's: 18 `model_switch.py` sites + **2 `misc.py` `_update_header` sites folded in, so reach
+moves 40 → 20, not 40 → 22** + the 92-stub sweep. `run_all` EXIT 0.
+
+🔴 **`_on_` IS NOT A "HIDDEN FROM TEXTUAL" PREFIX — AND S6 RENAMES AN `_on_*` MEMBER TOO.**
+The assumption going into S5 was that giving a plain callback a public `on_` name might hand it to
+the message pump. **It is the other way round.** `MessagePump._get_dispatch_methods` falls back to:
+
+```python
+method = cls.__dict__.get(f"_{method_name}") or cls.__dict__.get(method_name)
+```
+
+**The UNDERSCORED name is looked up FIRST.** `_on_model_picked` was never the framework-invisible
+spelling — it was the framework's *preferred* one, and the rename moved the callback to the **second**
+lookup slot. Safe here because no `Message` in this app or in Textual yields the handler name
+`on_model_picked` (the only local `Message` subclass is `ticker.Changed`) — **safe, not lucky, and
+checked rather than assumed.** ⚠️ **S6's `_on_convo_picked` → `on_convo_picked` inherits exactly this
+question. Enumerate the `Message` classes reachable there before assuming either spelling is inert.**
+
+⚠️ **ONE PUBLIC NAME IS NOT THE MECHANICAL DE-UNDERSCORING**, and a release query built from the
+private name will get it wrong: `_fetch_ctx_window` → **`fetch_context_window`**, spelled out to
+match `apply_context_length`. The other four drop the underscore and nothing else.
+
+📌 **`@work` TAKES THE WORKER NAME FROM `method.__name__`**, so renaming a decorated def renames its
+worker. Checked before relying on it: `exclusive` cancels by **group**, the groups are explicit
+strings and unchanged, and nothing in `src/` or `tests/` reads `worker.name` — every consumer reads
+`.group` (`app.py:2973`, `app.py:3047`, `test_cron_wiring:267`). The name reaches logs only. **Real
+behaviour change, no observer.**
 
 🔴 **CORRECTED 02:20 — THIS PARAGRAPH SAID S5/S6 "MAY LAND IN EITHER ORDER" AND THAT LICENSED A
 RED COMMIT.** The retracted claim: *"because the alias exists these may land in either order —
