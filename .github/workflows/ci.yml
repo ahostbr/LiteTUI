@@ -1,0 +1,128 @@
+# LiteTUI CI — introduced 2026-08-23. There was no .github/ directory at all
+# before this file, so nothing here is repairing a pipeline; this is the first one.
+#
+# 🔴 THE RULING THIS ENCODES (Ryan, 2026-08-23): ci_mode = blocking_tests_advisory_lint.
+#    TESTS BLOCK. LINT ADVISES. A failing test stops the merge; Ruff and mypy
+#    report and never gate. That split is the whole design, and it is why the
+#    two live in SEPARATE JOBS rather than as steps of one: a required check is
+#    selected by JOB NAME in branch protection, so "pytest (required)" can be
+#    made mandatory while "lint (advisory)" can never be, structurally, rather
+#    than by everyone remembering not to tick a box.
+#
+# WHY WINDOWS. This is a Windows-first project — it is developed and run on
+# Windows 11, its launch path is run.bat, and it shells out with Windows
+# semantics. A ubuntu-latest gate would be cheaper and faster and would be
+# GREEN ABOUT A PLATFORM NOBODY HERE RUNS. Add Linux later as an extra matrix
+# leg if it earns its place; do not swap this one out for it.
+#
+# WHY `uv run --locked`. Per T064 the locked runtime is the launch path. `--locked`
+# fails if uv.lock disagrees with pyproject.toml, so dependency drift shows up
+# as a CI failure instead of as a mystery divergence between two machines.
+# Bare `python -m pytest` would silently use whatever interpreter the runner
+# happened to expose — which is exactly how this repo's 976-passing baseline
+# turned out to be a property of one developer's global Python (pytest-asyncio
+# was installed there and declared nowhere; see pyproject.toml's dev group).
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+# Cancelling it is not just thrift: a stale green landing after a red one is a
+# confusing signal on the PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # 🔴 THIS IS THE GATE. Its name is what branch protection must require.
+    name: pytest (required)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Pinned rather than floating. requires-python is ">=3.11", which would
+      # let a runner upgrade change the interpreter under us and turn an
+      # unrelated red into "someone's commit broke CI". 3.11 is what the
+      # project is developed against.
+      - name: Pin Python
+        run: uv python install 3.11
+
+      # No `continue-on-error`, no `|| true`, no pipe. pytest's own exit code
+      # IS the gate, and anything downstream of a pipe would report the pipe's
+      # exit instead — a failure mode this repo has already been bitten by.
+      #
+      # Collection is scoped to tests/ by pyproject's testpaths, so e2e/ and
+      # anything marked `live` are not collected here. That is deliberate: CI
+      # has no LM Studio and no llama.cpp, and a gate that needs a model
+      # service is a gate that goes red for reasons unrelated to the change.
+      - name: pytest (locked runtime)
+        run: uv run --locked pytest -q
+
+  lint:
+    # ADVISORY BY RULING. This job reports and must never block. If you find
+    # yourself wanting to make it required, that is a conversation with Ryan,
+    # not an edit to this file.
+    name: lint (advisory)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Pin Python
+        run: uv python install 3.11
+
+      # ⚠️ EXIT 0 IS EXPLICIT AND THE ABSENCE OF A PIPE IS DELIBERATE.
+      # GitHub runs `bash` steps with `-eo pipefail`, so `ruff check . | tee`
+      # would propagate ruff's failure through the pipe and gate the job —
+      # precisely what the ruling forbids, via a mechanism that looks harmless.
+      # Redirect to a file, then read the file, then exit 0 unconditionally.
+      #
+      # The output goes to the STEP SUMMARY, not just the log. "Advisory" that
+      # nobody reads is the same as not running it; the summary is the part
+      # that makes "reports" true.
+      - name: ruff (advisory)
+        shell: bash
+        run: |
+          OUT="${RUNNER_TEMP:-.}/ruff.txt"
+          uv run --locked ruff check . > "$OUT" 2>&1 || true
+          {
+            echo "### Ruff (advisory — never blocks)"
+            echo ""
+            echo '```'
+            tail -n 200 "$OUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: mypy (advisory)
+        shell: bash
+        run: |
+          OUT="${RUNNER_TEMP:-.}/mypy.txt"
+          uv run --locked mypy src > "$OUT" 2>&1 || true
+          {
+            echo "### mypy (advisory — never blocks)"
+            echo ""
+            echo '```'
+            tail -n 200 "$OUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
