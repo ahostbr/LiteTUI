@@ -58,9 +58,15 @@ def test_mark_route_exists_and_waits_outside_the_chat_group():
     # The route lives in the registry since the plugin split.
     from litetui import app as m
     assert "/mark" in m.LiteTUI().plugins.commands, "/mark is not registered"
-    body = APP_SRC.split("async def _mark_wait", 1)[0]
-    assert '@work(exclusive=True, group="mark")' in APP_SRC.split(
-        "def _start_mark", 1)[1], \
+    # Anchored on `_mark_wait` itself, which is what this gate is ABOUT.
+    # It used to slice from `def _start_mark` and read the decorator out of
+    # everything that followed — an anchor that S3 moved to mark_plugin.py, so
+    # the split returned a 1-element list and this raised IndexError instead of
+    # failing. The decorator string occurs exactly ONCE in app.py, so matching
+    # it as the line immediately before the def asserts the same single fact
+    # the old form did, without depending on an unrelated member's location.
+    head = APP_SRC.split("    async def _mark_wait", 1)[0]
+    assert head.rstrip().endswith('@work(exclusive=True, group="mark")'), \
         "the wait must not share the chat group — it would cancel turns"
 
 

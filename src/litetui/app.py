@@ -6,8 +6,6 @@ import io
 import json
 import os
 import re
-import subprocess
-import tempfile
 import statistics
 import time
 import uuid
@@ -115,9 +113,6 @@ from rich.text import Text
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_IMAGE_DIM = 1536
-# The path anchors live in paths.py — one owner; test_paths.py proves the
-# resolution. MARK_SCRIPT stays here: it is /mark's fact, not a store's.
-MARK_SCRIPT = paths.ROOT / "tools" / "pccontrol" / "marker_overlay.ps1"
 
 
 
@@ -4232,29 +4227,6 @@ class LiteTUI(App):
 
     # ── Commands ─────────────────────────────────────────────────
 
-    def _mcp_server_names(self) -> list[str]:
-        """Server names from mcp.json, for the per-server toggles.
-
-        Returns [] rather than raising when MCP is absent or unreadable: a
-        settings screen that cannot open because an optional config file is
-        malformed is worse than one that shows no MCP section.
-        """
-        try:
-            mgr = getattr(self, "mcp", None)
-            if mgr is not None and getattr(mgr, "servers", None):
-                return sorted(mgr.servers.keys())
-            import json as _json
-            from pathlib import Path as _Path
-            cfg = _Path(__file__).resolve().parent.parent.parent / "mcp.json"
-            if cfg.exists():
-                data = _json.loads(cfg.read_text(encoding="utf-8"))
-                servers = data.get("mcpServers") or data.get("servers") or {}
-                if isinstance(servers, dict):
-                    return sorted(servers.keys())
-        except Exception:
-            pass
-        return []
-
     def _on_settings_saved(self, new: Settings | None) -> None:
         """Persist and apply. None = the user cancelled, so change nothing."""
         if new is None:
@@ -4330,38 +4302,6 @@ class LiteTUI(App):
             "The screenshot attached is that monitor, and the ring drawn on it is "
             "my marker: respond to what I am pointing at."
         )
-
-    def _start_mark(self) -> None:
-        """/mark — the human screen-marker channel.
-
-        Spawns the interactive marker overlay (draggable ring + send/cancel),
-        then polls for its handoff file. The overlay writes the JSON and a PNG
-        of the marked monitor WITH THE RING STILL IN THE SHOT — the ring is
-        the highlight; that is the whole feature.
-        """
-        if not MARK_SCRIPT.exists():
-            self._system(f"/mark: overlay script missing at {MARK_SCRIPT}")
-            return
-        handoff = Path(tempfile.mkdtemp(prefix="litetui_mark_")) / "mark.json"
-        try:
-            # No -Label: a spaced label dies through some launch paths, and
-            # the ring is self-explanatory. Keep the HANDLE — a timeout must
-            # take the unanswered ring down, not leave it as screen litter.
-            proc = ttyguard.popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", str(MARK_SCRIPT),
-                 "-Interactive", "-HandoffFile", str(handoff),
-                 "-Color", "cyan"],
-                stdin=subprocess.DEVNULL,
-            )
-        except OSError as e:
-            self._system(f"/mark: could not launch the overlay: {e}")
-            return
-        self._system(
-            "Marker up — drag the ring onto the thing, then click send. "
-            "(x or Esc cancels; times out in 3 minutes.)"
-        )
-        self._mark_wait(handoff, proc)
 
     @work(exclusive=True, group="mark")
     async def _mark_wait(self, handoff: Path, proc) -> None:
