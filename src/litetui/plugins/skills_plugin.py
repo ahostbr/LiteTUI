@@ -6,7 +6,7 @@ owns the two ways discovered skills reach the model: the loader tool and
 the index that rides the system prompt.
 """
 from litetui import skills as skills_mod
-from litetui.picker import PickerScreen
+from litetui.picker import pick
 from litetui import paths
 import time
 from litetui.plugins import PROMPT_ORDER, PluginManifest
@@ -146,13 +146,12 @@ def _cmd_skills(app, name: str, arg: str) -> None:
             return
         _invoke(app, choice)
 
-    app.push_screen(
-        PickerScreen(
-            f"Skills ({len(app.skills)})",
-            rows,
-            hint="↑↓ move · Enter or click to read one · Esc to cancel",
-        ),
+    pick(
+        app,
+        f"Skills ({len(app.skills)})",
+        rows,
         _picked,
+        hint="↑↓ move · Enter or click to read one · Esc to cancel",
     )
 
 

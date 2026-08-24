@@ -28,7 +28,7 @@ from textual.widgets import Input, Label, Select, Static, TabbedContent, TabPane
 from litetui import llm_backend
 from litetui import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
 from litetui import settings as settings_mod
-from litetui.picker import PickerScreen
+from litetui.picker import pick
 from litetui.plugins import PluginManifest
 
 
@@ -72,10 +72,7 @@ def _cmd_model(app, name: str, arg: str) -> None:
         # Clickable picker. `/model <n>` and `/model <name>` are handled
         # above and still work, so scripting and muscle memory survive.
         rows = [(m, _row_label(app, m)) for m in app.available_models]
-        app.push_screen(
-            PickerScreen("Select a model", rows, current=app.model_id),
-            app.on_model_picked,
-        )
+        pick(app, "Select a model", rows, app.on_model_picked, current=app.model_id)
 
 
 def _cmd_reconnect(app, name: str, arg: str) -> None:
@@ -125,9 +122,7 @@ def _cmd_backend(app, name: str, arg: str) -> None:
         if choice:
             _switch_backend(app, choice)
 
-    app.push_screen(
-        PickerScreen("Select the engine", rows, current=app.backend.name), _picked
-    )
+    pick(app, "Select the engine", rows, _picked, current=app.backend.name)
 
 
 # ── /load /unload ────────────────────────────────────────────────────────────
@@ -563,10 +558,7 @@ def _activate(app) -> None:
         app.update_header()
         app.connect()
 
-    app.push_screen(
-        PickerScreen("Which engine should serve this seat?", rows, current=s.backend),
-        _picked,
-    )
+    pick(app, "Which engine should serve this seat?", rows, _picked, current=s.backend)
 
 
 # ── Registration ─────────────────────────────────────────────────────────────

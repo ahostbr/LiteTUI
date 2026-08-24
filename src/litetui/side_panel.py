@@ -114,6 +114,12 @@ class DialogController:
         try:
             body.set_state(self._state)
         except AttributeError:
+            pass          # a body without set_state simply carries nothing
+        except Exception:
+            # A body whose set_state cannot find a control it expected. Losing
+            # carried state is a visible, recoverable annoyance; letting it
+            # propagate out of on_mount kills the dialog the user is waiting on,
+            # which is not.
             pass
 
     def resolve(self, value: Any = None) -> None:
@@ -139,13 +145,53 @@ class _ViewMixin:
 
     controller: DialogController
     body: Widget
+    #: Bounded re-defers while waiting for the body to compose. See _settle.
+    _settle_tries: int = 4
 
     def _restore_focus_target(self):
         return getattr(self, "_prev_focus", None)
 
+    def _settle(self) -> None:
+        """Apply carried state and place focus — AFTER the body has composed.
+
+        🔴 DOING THIS DIRECTLY IN `on_mount` IS TOO EARLY. A host's `on_mount`
+        fires before its child's children exist, so a `set_state` that does
+        `self.query_one(OptionList)` finds nothing. The demo body got away with
+        it because `Input.value` is set on the widget the body yields directly;
+        PickerBody reaches one level deeper, into the OptionList's own state, and
+        that level is not there yet.
+
+        The symptom is not an exception — it is a picker that quietly reopens on
+        row 0 after a swap, having silently relocated the user's selection.
+
+        ⚠️ AND IT CAN FIRE AFTER TEARDOWN. Deferring to the next refresh means a
+        dialog answered immediately — a caller that resolves before the frame
+        lands — has already removed this view by the time this runs. `self.screen`
+        RAISES `NoScreen` rather than returning None in that state, so the guard
+        has to be a real check, not a `getattr(..., None)`.
+        """
+        if not self.is_mounted:
+            return
+        # ⚠️ ONE REFRESH IS NOT ALWAYS ENOUGH. The two hosts compose on different
+        # schedules — SidePanel is awaited into place, _ModalHost arrives through
+        # push_screen — so "the body has composed" has to be OBSERVED rather than
+        # assumed from a fixed number of frames. Wait for the body to have
+        # children, bounded, instead of guessing a delay that works on this
+        # machine.
+        if self._settle_tries > 0 and not self.body.children:
+            self._settle_tries -= 1
+            self.call_after_refresh(self._settle)
+            return
+        self.controller.apply_carried_state(self.body)
+        self._take_focus()
+
     def _focus_is_inside_body(self) -> bool:
-        screen = getattr(self, "screen", None)
-        focused = getattr(screen, "focused", None)
+        # `screen` is a property that RAISES when the node is detached — this
+        # cannot be written as getattr(self, "screen", None).
+        try:
+            focused = self.screen.focused
+        except Exception:
+            return False
         if focused is None:
             return False
         return focused in self.body.walk_children(with_self=True)
@@ -230,8 +276,8 @@ class SidePanel(Widget, _ViewMixin):
 
     def on_mount(self) -> None:
         self._prev_focus = self.screen.focused
-        self.controller.apply_carried_state(self.body)
-        self._focus_something()
+        # Deferred: the body's own children do not exist yet. See _settle.
+        self.call_after_refresh(self._settle)
 
     async def close_view(self) -> None:
         """Teardown ONLY. Deliberately not named dismiss, and never resolves."""
@@ -261,8 +307,8 @@ class _ModalHost(ModalScreen, _ViewMixin):
         yield self.body
 
     def on_mount(self) -> None:
-        self.controller.apply_carried_state(self.body)
-        self._focus_something()
+        # Deferred for the same reason as SidePanel's. See _settle.
+        self.call_after_refresh(self._settle)
 
     async def close_view(self) -> None:
         """Pop WITHOUT dismissing: dismiss would answer a push_screen_wait."""

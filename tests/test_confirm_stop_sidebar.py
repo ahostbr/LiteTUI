@@ -143,11 +143,39 @@ async def test_the_refusing_control_is_reachable_first_in_the_sidebar() -> None:
     """
     a = make_app()
     async with a.run_test(size=(120, 30)) as pilot:
+        # LET THE APP SETTLE FIRST. Opening a dialog in the same frame the app
+        # is still mounting is a race that does not exist in production: this
+        # dialog is raised by Escape during a turn, long after the chat input has
+        # taken focus. Without this wait the app's own startup focus lands AFTER
+        # the panel's and steals it — which is a real ordering, just not one any
+        # user can reach, and "fixing" the host for it would be fixing a
+        # scenario invented by the test.
+        for _ in range(10):
+            await pilot.pause()
+            if a.screen.focused is not None:
+                break
+
         ctrl = DialogController(a, ConfirmStopBody, "sidebar", "right")
         a.run_worker(ctrl.open(), name="dlg")
-        await pilot.pause()
 
-        body = a.screen.query_one(ConfirmStopBody)
+        # WAIT FOR THE STATE, DO NOT GUESS THE TICK. Focus is placed in the
+        # host's deferred `_settle`, which re-defers until the body has composed,
+        # so the number of frames is not fixed — it depends on which host and on
+        # how busy the loop is. This test passed alone and failed inside the full
+        # suite on exactly that difference. A bounded wait on the OBSERVABLE
+        # condition is deterministic; adding another `pause()` until it goes
+        # green is how a flake gets written down as a fix.
+        body = None
+        for _ in range(10):
+            await pilot.pause()
+            found = a.screen.query(ConfirmStopBody)
+            if found and a.screen.focused is not None:
+                inside = a.screen.focused in found[0].walk_children(with_self=True)
+                if inside:
+                    body = found[0]
+                    break
+        assert body is not None, "the dialog never took focus"
+
         focused = a.screen.focused
         assert focused is not None, "nothing focused — Enter would go to the chat"
         assert focused in body.walk_children(with_self=True), (

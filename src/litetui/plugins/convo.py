@@ -23,7 +23,7 @@ import time
 
 from litetui import paths
 from litetui.conversation import ConversationRepository
-from litetui.picker import PickerScreen
+from litetui.picker import pick
 from litetui.plugins import PluginManifest
 
 
@@ -102,13 +102,12 @@ def _open_convos_picker(app) -> None:
         # never heard from again; this badge is the on-demand
         # re-statement, on the exact surface the user is looking at.
         title += "  [!] SAVING IS BROKEN"
-    app.push_screen(
-        PickerScreen(
-            title,
-            items,
-            current=str(app.convo_path) if app.convo_path else None,
-        ),
+    pick(
+        app,
+        title,
+        items,
         app._on_convo_picked,
+        current=str(app.convo_path) if app.convo_path else None,
     )
 
 
