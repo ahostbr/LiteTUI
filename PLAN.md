@@ -71,7 +71,7 @@ cheaper wins.
 | **S4** | Read-only `jobs` / `mcp_dispatch` properties | SilverBolt | reach **34 → 31** | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups (19 methods, ~244 ln) | OpenBolt | −244 lines, **−19 methods** | knot |
-| **O3** | `_cron_*` → `CronService` | OpenBolt | −~130 lines, −4 methods | knot |
+| **O3** | `_cron_*` → `CronService` — **scope reduced by S3, see §5** | OpenBolt | −~80 lines, −3 methods | knot |
 | **S5** | `ctx.model` facade (`model_switch.py`'s 20 hits) | SilverBolt | reach **31 → 11** | lines, methods, knot |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed_*`/`_eta_*`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | `ctx.conversation` facade (`_compact` excluded) | SilverBolt | reach **11 → 5** | lines, methods, knot |
@@ -133,20 +133,61 @@ A dependency mentioned once in a paragraph is a dependency someone executes out 
 
 ## 5. OPENBOLT'S HALF — HIS TO COMPLETE AND CORRECT
 
-Summarised from `PHASE1-OPENBOLT.md` so the plan reads as one document. **These are his steps;
-where this summary and his section disagree, his wins.** He should replace this section with the
-detail he wants, including anything the summary above (O0–O4) states too loosely.
+**Completed by OpenBolt.** SilverBolt's summary above was accurate; this section supplies the
+detail and makes **one correction to the §2 table**, which he invited.
 
-Carried forward from his analysis and not re-derived here:
+### 🔴 CORRECTION TO O3 — S3 EATS MOST OF IT
 
-- **96 connected components: one knot of 35 methods, and 95 singletons.** ~72% of methods write
-  no instance state — the file reads as a monolith and mostly is not one.
-- **34 members are framework-bound** (`compose`, `on_*`, `action_*`, `watch_*`, `@work` workers)
-  and stay on the class by contract with Textual; the most they become is a one-line delegation.
-- **`_stream` is 345 lines**, the largest method in the file, and is reached by a plugin.
-- 🔴 **His O0 moves ONE metric and his own doc says so** — ~14% of the file, zero effect on method
-  count or coupling. It is worth doing first for readability, and it is *not* decomposition
-  progress on its own. That framing is exactly §6 and it originated with him.
+The §2 row originally read *"−~130 lines, −4 methods"*, taken from my phase 1. **That figure is
+pre-S3 and must not be planned against.** S3 relocates `_cron_command` (50 ln) and `_cron_monitor`
+(16 ln) into `scheduler_plugin.py`, so by the time O3 runs the cron group is **~3 methods / ~80
+lines**, not 5 / 148. Corrected in §2.
+📌 The general form, and it applies to every row here: **an estimate made before its predecessors
+is a measurement of a tree that will not exist.** Re-derive each step's numbers at the moment it
+starts.
+
+### THE STEPS
+
+| step | what moves, concretely | expected effect |
+|---|---|---|
+| **O0** | 15 widget classes (`ThinkingBlock`, `CompactionCard`, `SkillAutocomplete`, `ToolMessage`, `ConfirmStop`, `AnswerBody`, `FoldBlock`, `PromptInput`, `CancelToolButton`, `ContextFooter`, `AssistantMessage`, `ThinkingHeader`, `_FoldHeader`, `ChatMessage`, `Completion`) → `litetui/widgets/`; 12 pure helpers (`tool_display_parts`, `_markdown_to_text`, `render_progress`, `thinking_header_text`, `tps_text`, `midturn_action`, `is_reliable_rate_sample`, `load_prompt`, `memory_prompt`, `_at_bottom`, `_mark_delivered`, `main`) → `litetui/text/` | **−739 lines.** Methods 137→137. Reach unchanged. Knot untouched. |
+| **O-A** | delete the six `ConversationRepository` shims | **−6 methods.** Reach already 0 via S2. |
+| **O2** | `_sync_*` (91 ln) · `_glassbox_*` (43) · `_load_*` (37) · `_append_*` (34) · `_store_*` (29) · `_convo_*` (10) → services | −~244 lines, **−19 methods.** Knot untouched. |
+| **O3** | remaining `_cron_*` → `CronService`; the framework member delegates | −~80 lines, −3 methods |
+| **O4** | `_elapsed_*` (4) · `_eta_*` (4) · `_tps_*` (3) off the knot behind one state object | −~200 ln, −~10 methods, **first step that shrinks the KNOT** |
+| **O5** | `_stream` (345 ln) — with S7 | high risk, last |
+
+### WHAT CANNOT MOVE, AND WHY
+
+**34 framework-bound members** stay on the class by contract with Textual — `compose`, `on_*`
+(message pump), `action_*` (bindings), `watch_*` (reactives), `get_system_commands`,
+`check_action`, and `@work` workers. The most any of them becomes is a one-line delegation.
+
+**Five members are frozen by plugins AND sit inside the knot:** `_update_header`,
+`_fetch_ctx_window`, `_connect` (released by **S5**), `_stream` and `_resume` (not until **S7**).
+
+### 🔴 O0 MOVES ONE METRIC AND THAT IS THE POINT OF SAYING SO
+
+~14% of the file, and **zero** effect on method count, coupling, or the knot. Worth doing early
+because it is nearly risk-free and makes everything after it readable — and **not decomposition
+progress on its own.** Reported as such it would be the §0 failure repeated with more files.
+
+### ⚠️ LOCAL GREEN ≠ CI GREEN RIGHT NOW, AND IT IS NOT OURS
+
+`main`'s first real CI run (`32688014130`) is **red**: `2 failed, 1116 passed, 2 skipped`. Both are
+environmental, not regressions:
+
+- `test_seat_rebind.py::test_a_send_after_the_switch...` — `harness.py:35` puts `INBOX_ROOT` under
+  `Path.home()/".liteharness"`, and `send()` at `:455` writes a temp file into `INBOX_ROOT.parent`
+  **before any CLI call**. That directory does not exist on a clean runner, so the write raises and
+  `send()` returns False. The test deliberately un-gates the harness (`:97`), which is what exposes
+  it.
+- `test_skills_visible.py::test_an_empty_directory_says_what_it_expects` — **mechanism not
+  established.** `skills/` *is* tracked and *is* in the checkout, so "missing directory" is ruled
+  out. Not guessing further.
+
+⇒ **Judge T070 commits against LOCAL collection on your own base.** Do not read this pre-existing
+red as a decomposition regression. Fixing those two is separate work and nobody owns it yet.
 
 ---
 
