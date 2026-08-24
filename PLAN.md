@@ -393,6 +393,55 @@ the case that had just bitten, so the next case walked through the gap the fix d
 **mutating calls** (`append`/`extend`/`insert`/`remove`/`pop`/`clear`/`sort`/`update`/`add`/…),
 `del`, and `setattr(self, "name", …)`.
 
+### 3h. 🔴🔴 APPLYING v3 BACKWARDS FOUND A **SHIPPED** DEFECT: `appsvc` VIOLATES ITS OWN DOCSTRING — **DECISION OPEN, SENTINEL'S**
+
+`appsvc.py`'s module docstring, written by me in the same commit that created it (`22a7834`):
+
+> *"Every function here was a method that **WROTE NO INSTANCE STATE** … if one of these ever needs
+> to write `app.<something>`, **it belongs back on the class or behind a real service object, not
+> here.**"*
+
+**Two of the eight write.** Audited at `5277294`:
+
+| function | level | write |
+|---|---|---|
+| `glassbox` | **L1 direct** | `app._gb_last[channel] = now` — `appsvc.py:69`, SUBSCRIPT store |
+| `append_to_system` | **L1 direct** | `app.conversation[0] = {…}` — `appsvc.py:126`, SUBSCRIPT store |
+| `append_to_system` | **L2 transitive** | calls `app._append(…)`, which writes |
+
+The other six are clean — including `store_block` and `append_tps_into`, whose names suggest
+otherwise, so the audit discriminates.
+
+🔴 **AND `glassbox` IS THE WORSE OF THE TWO, BECAUSE THE DEFECT WAS *IN THE COMMIT MESSAGE*.**
+`22a7834`'s body says, verbatim: *"AND MY OWN 'STATELESS' CLASSIFIER WAS TOO NARROW: glassbox does
+`app._gb_last[channel] = now`, a SUBSCRIPT store, which the detector read as an attribute LOAD and
+scored as stateless."* ⇒ **I found the classifier error, wrote it down honestly, and shipped the lift
+it had wrongly cleared in the same commit.** *Documenting a flaw is not fixing it, and a commit body
+that confesses is not a commit that corrects.*
+
+⚠️ **AND IT CONTRADICTS §5c, WITH BOTH RULINGS MINE.** `append_to_system` writes
+`app.conversation[…]`; `_sync_fleet_identity` writes `self.conversation[0]["content"]` and was
+**permanently withdrawn** — *"there is no later commit that turns a mutating method into a stateless
+lift."* **Same object, same channel, opposite outcomes, four hours apart.** One of the two rulings
+is wrong and it cannot be settled by measuring harder.
+
+**THE OPTIONS, COSTED — the call is Sentinel's, and I have changed nothing:**
+
+| | effect |
+|---|---|
+| **(a) return both to the class** — what the docstring itself prescribes | O2's method delta **−8 → −6**; §5c stands; `appsvc` means what it says |
+| **(b) amend `appsvc`'s contract to permit writes** | keeps −8, but **guts the criterion that withdrew `_sync_*` and held `_tool_view_image`** — three decisions rest on it |
+| **(c) keep them as named exceptions** | the contract becomes advisory, which is how it failed the first time |
+
+⇒ **My recommendation is (a)**, on the narrow ground that the module's own stated remedy is (a) and
+two of the three decisions built on this criterion are newer than the violation.
+
+📌 **L2 IS THE SAME BLINDNESS ONE LEVEL UP, AND MY DETECTOR IS STILL LOCAL.** v3 fixed *"a mutating
+call is a write"* and still treats `app._append(…)` as an ordinary call. **A contract phrased
+"writes no instance state" is a TRANSITIVE property, and every detector written for it so far has
+been a local one** — the L2 pass above is one hop deep, and `append_to_system` also calls
+`app._edit(…)`, which writes through `store` at a *third* hop.
+
 **Re-run over all eight S3 members with v3:**
 - the two that shipped still read **ZERO** — **the arrival and the removal are sound**;
 - `_cron_command` reads **ONE**: `self._jobs.remove()` at `:1295`, which my clean bill also missed.
