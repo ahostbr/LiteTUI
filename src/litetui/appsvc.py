@@ -1,14 +1,43 @@
 """Stateless helpers lifted off `LiteTUI` — T070 step O2.
 
-Every function here was a method that WROTE NO INSTANCE STATE: it read a few
-attributes off the app and returned, or emitted. That is what made them liftable
-at all, and it is the property to preserve — if one of these ever needs to write
-`app.<something>`, it belongs back on the class or behind a real service object,
-not here.
-
 They take `app` as their first parameter because they still READ app state. That
-is honest rather than elegant: the coupling is now visible in the signature
-instead of hidden behind `self`.
+is honest rather than elegant: the coupling is visible in the signature instead
+of hidden behind `self`.
+
+🔴 THE MEMBERSHIP RULE, AND IT IS DECIDABLE — WHICH THE FIRST VERSION WAS NOT:
+
+    writes no instance state, AND calls no app method outside PURE.
+
+    PURE = {_read_store_file}
+
+The first version read *"every function here wrote no instance state"* — and
+**that is a TRANSITIVE property, while every instrument built to check it was a
+LOCAL one.** A direct-write detector clears any function that DELEGATES its
+writing, so the cleaner the code the higher its false-clean rate. Two
+independently-written detectors both gave `append_to_system` a pass while it
+wrote through `app._append` one level down. Widening cannot fix that: no finite
+widening discharges an unbounded call chain.
+
+One hop, bounded, checkable. **A call to anything not in PURE puts the function
+out of this module BY DEFAULT**, rather than pending a proof nobody can complete.
+
+📌 `_edit` is pure on the measurement and is deliberately NOT on the list: the
+only caller that reached it has left. An allowlist entry with no caller is a
+licence nobody asked for.
+
+⚠️ THE ALLOWLIST'S SIZE IS THE ACCEPTANCE TEST, NOT A CURIOSITY. Six of the
+seven survivors call no app method at all; the seventh calls one pure reader. **A
+rule that had needed a long allowlist would have been DESCRIBING the coupling
+rather than constraining it**, and would have failed — not succeeded with more
+entries.
+
+🔴 FOUR FUNCTIONS WERE RETURNED TO THE CLASS after this module shipped, and the
+audit that found them was this contract applied to its own module:
+`append_to_system` wrote `app.conversation[0]` (48 read sites in `src/`, and
+§5c had already withdrawn `_sync_fleet_identity` permanently for the same
+channel — two rulings on one object must agree). `_glassbox` wrote `_gb_last`,
+and `_glassbox_tool` / `_glassbox_rate` are one-line wrappers that would have had
+to call it. See PLAN §3h.
 
 ⚠️ WHAT THIS BUYS: `LiteTUI` loses these methods, so the class method count drops
 — the metric T070 exists to move. It does NOT reduce plugin reach-through and it
@@ -19,7 +48,6 @@ from __future__ import annotations
 
 import base64
 import io
-import time
 from pathlib import Path
 from litetui import paths
 from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
@@ -39,53 +67,7 @@ from rich.text import Text
 
 MAX_IMAGE_DIM = 1536
 STORE_HEADER = "## Your store, loaded once at the start of this conversation"
-GLASSBOX_MIN_INTERVAL_S = 0.2
 
-
-def glassbox(app, channel: str, intensity: float=1.0, label: str='', *, discrete: bool=False) -> None:
-    """Fire one channel at whatever plugins are watching.
-
-    THE EMPTY-OBSERVER SHORT CIRCUIT IS FIRST AND MUST STAY FIRST. The
-    thinking and output branches call this once per token, so with no
-    observers the whole feature has to cost one attribute read and a falsy
-    list check — not a clock read, not a dict write. A user who has not
-    installed the brain must not pay for it.
-
-    `discrete` means "this is an event, not a level". A tool call, a store
-    write, a ledger and a window-fill change are things that HAPPENED;
-    throttling one loses it. thinking and output are levels sampled per
-    token, where two consecutive samples say the same thing.
-
-    Never raises: PluginRegistry.emit already swallows a failing observer
-    and records it on that plugin's status row.
-    """
-    reg = getattr(app, 'plugins', None)
-    if reg is None or not reg.observers:
-        return
-    if not discrete:
-        now = time.monotonic()
-        if now - app._gb_last.get(channel, 0.0) < GLASSBOX_MIN_INTERVAL_S:
-            return
-        app._gb_last[channel] = now
-    reg.emit({'channel': channel, 'intensity': float(intensity), 'label': label})
-
-def glassbox_tool(app, name: str) -> None:
-    """A dispatch fires ONE channel, never both.
-
-    `write` is store_write rather than tool_call because the design treats
-    the agent changing durable state as a different event from the agent
-    calling something — and firing both would double-count every write in
-    whatever the observer is drawing.
-    """
-    channel = 'store_write' if name == 'write' else 'tool_call'
-    glassbox(app, channel, 1.0, name, discrete=True)
-
-def glassbox_rate(app, channel: str) -> None:
-    """Continuous channel whose intensity is the live tok/s, normalised
-    against a fast-but-reachable ceiling so the common case has headroom
-    rather than sitting pinned at 1.0."""
-    tps = app.tps or 0.0
-    glassbox(app, channel, min(1.0, tps / 60.0), tps_text(tps) if tps else '')
 
 def load_skills(app):
     """The skill index, from cache when there is one.
@@ -108,24 +90,6 @@ def load_skills(app):
     found = skills_mod.discover_all(paths.ROOT, app.settings.skill_roots)
     skills_mod.write_cache(paths.ROOT, found)
     return (found, 0.0)
-
-def append_to_system(app, text: str) -> None:
-    """Extend the FIRST system message rather than adding another one.
-
-    Multiple role:"system" turns are not portable. qwen/qwen3.8-27b's chat
-    template raises "System message must be at the beginning" and the request
-    fails with a 500; other builds of the same model accept it. Anything the
-    model must know belongs in the one system turn it is guaranteed to read.
-    """
-    if not app.conversation or app.conversation[0].get('role') != 'system':
-        app._append({'role': 'system', 'content': text})
-        return
-    current = app.conversation[0].get('content') or ''
-    if text in current:
-        return
-    app.conversation[0] = {**app.conversation[0], 'content': current.rstrip() + '\n\n' + text if current else text}
-    if not getattr(app, '_convo_loading', False):
-        app._edit(0, 'system prompt extended')
 
 def load_image_file(app, path: Path) -> str | None:
     try:

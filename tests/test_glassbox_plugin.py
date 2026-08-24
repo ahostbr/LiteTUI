@@ -207,7 +207,7 @@ def test_the_running_app_publishes_a_real_channel_to_the_hub() -> None:
     gb._ENABLED = True
     q = gb.HUB.subscribe()
     try:
-        appsvc.glassbox_tool(a, "bash")
+        a._glassbox_tool("bash")
         got = q.get_nowait()
         assert got["channel"] == "tool_call" and got["label"] == "bash"
     finally:

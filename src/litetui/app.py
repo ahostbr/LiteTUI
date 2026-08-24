@@ -1129,7 +1129,7 @@ class LiteTUI(App):
             # second one — a resumed conversation already carries one.
             if self._sync_fleet_identity():
                 return
-            appsvc.append_to_system(self, 
+            self._append_to_system(
                 self._fleet_identity_sentence()
                 + load_prompt("harness-capabilities")
             )
@@ -1740,6 +1740,33 @@ class LiteTUI(App):
         self.conversation.append(msg)
         self.store.record_msg(msg)
 
+    def _append_to_system(self, text: str) -> None:
+        """Extend the FIRST system message rather than adding another one.
+
+        Multiple role:"system" turns are not portable. qwen/qwen3.8-27b's chat
+        template raises "System message must be at the beginning" and the request
+        fails with a 500; other builds of the same model accept it. Anything the
+        model must know belongs in the one system turn it is guaranteed to read.
+
+        🔴 RETURNED FROM `appsvc` (O2 `22a7834` lifted it; ruled back here). It
+        WRITES `self.conversation[0]`, and `appsvc` holds helpers that take `app`
+        and READ it. §5c had already withdrawn `_sync_fleet_identity` permanently
+        for writing the SAME object through the SAME channel — two rulings on one
+        object have to agree, and `conversation` is read at 48 sites in `src/`.
+        """
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            self._append({"role": "system", "content": text})
+            return
+        current = self.conversation[0].get("content") or ""
+        if text in current:
+            return
+        self.conversation[0] = {
+            **self.conversation[0],
+            "content": current.rstrip() + "\n\n" + text if current else text,
+        }
+        if not getattr(self, "_convo_loading", False):
+            self._edit(0, "system prompt extended")
+
     def _snapshot(self, reason: str = "") -> None:
         self.store.record_snapshot(self.conversation, reason)
 
@@ -2157,7 +2184,7 @@ class LiteTUI(App):
         # is not a fraction, and reporting 0.0 would draw an EMPTY window rather
         # than an unknown one, which is a different and wrong claim.
         if value and self.ctx_max:
-            appsvc.glassbox(self, 
+            self._glassbox(
                 "window_fill", value / self.ctx_max,
                 f"{value:,}/{self.ctx_max:,}", discrete=True,
             )
@@ -2396,8 +2423,59 @@ class LiteTUI(App):
     # LiteTUI ALREADY produces — this adds no new signal, only a transport, so
     # nothing here may change behaviour or cost anything when unobserved.
 
+    # 🔴 RETURNED FROM `appsvc` (O2 `22a7834` lifted all three; ruled back here).
+    # `_glassbox` writes `self._gb_last`, and appsvc holds helpers that take
+    # `app` and READ it. The other two came back with it, not on their own
+    # merits: each is a one-line wrapper, so leaving them there would have made
+    # them call `app._glassbox(...)` — an app method that WRITES, which the
+    # rephrased appsvc contract denies. Restored from the pre-O2 blob verbatim
+    # rather than by un-transforming the moved copy.
 
+    def _glassbox(self, channel: str, intensity: float = 1.0, label: str = "",
+                  *, discrete: bool = False) -> None:
+        """Fire one channel at whatever plugins are watching.
 
+        THE EMPTY-OBSERVER SHORT CIRCUIT IS FIRST AND MUST STAY FIRST. The
+        thinking and output branches call this once per token, so with no
+        observers the whole feature has to cost one attribute read and a falsy
+        list check — not a clock read, not a dict write. A user who has not
+        installed the brain must not pay for it.
+
+        `discrete` means "this is an event, not a level". A tool call, a store
+        write, a ledger and a window-fill change are things that HAPPENED;
+        throttling one loses it. thinking and output are levels sampled per
+        token, where two consecutive samples say the same thing.
+
+        Never raises: PluginRegistry.emit already swallows a failing observer
+        and records it on that plugin's status row.
+        """
+        reg = getattr(self, "plugins", None)
+        if reg is None or not reg.observers:
+            return
+        if not discrete:
+            now = time.monotonic()
+            if now - self._gb_last.get(channel, 0.0) < GLASSBOX_MIN_INTERVAL_S:
+                return
+            self._gb_last[channel] = now
+        reg.emit({"channel": channel, "intensity": float(intensity), "label": label})
+
+    def _glassbox_tool(self, name: str) -> None:
+        """A dispatch fires ONE channel, never both.
+
+        `write` is store_write rather than tool_call because the design treats
+        the agent changing durable state as a different event from the agent
+        calling something — and firing both would double-count every write in
+        whatever the observer is drawing.
+        """
+        channel = "store_write" if name == "write" else "tool_call"
+        self._glassbox(channel, 1.0, name, discrete=True)
+
+    def _glassbox_rate(self, channel: str) -> None:
+        """Continuous channel whose intensity is the live tok/s, normalised
+        against a fast-but-reachable ceiling so the common case has headroom
+        rather than sitting pinned at 1.0."""
+        tps = self.tps or 0.0
+        self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
 
     def system_message(self, text: str) -> None:
         """Post a system line into the chat log — **the supported way for a
@@ -2540,7 +2618,7 @@ class LiteTUI(App):
             # app itself treats as "a tool is now running" — same condition the
             # timer and the cancel control key off, so the brain cannot light
             # up for a call the app does not consider in flight.
-            appsvc.glassbox_tool(self, getattr(tool, "tool_name", "") or "tool")
+            self._glassbox_tool(getattr(tool, "tool_name", "") or "tool")
         if self._elapsed_task is None or self._elapsed_task.done():
             try:
                 self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
@@ -3463,7 +3541,7 @@ class LiteTUI(App):
             # PROMPT ASSEMBLY IS THE EVENT. This is where the conversation and
             # the live store are folded into the thing the model actually
             # reads, and it is the last moment before the turn is committed.
-            appsvc.glassbox(self, 
+            self._glassbox(
                 "context", 1.0, f"{len(request_messages)} messages", discrete=True
             )
             kwargs = TurnEngine.chat_request(
@@ -3516,7 +3594,7 @@ class LiteTUI(App):
                     )
                     if token:
                         self._tps_tick()
-                        appsvc.glassbox_rate(self, "thinking")
+                        self._glassbox_rate("thinking")
                         reasoning += token
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
@@ -3546,7 +3624,7 @@ class LiteTUI(App):
                         self._scroll_down(only_if_following=True)
                     if delta.content:
                         self._tps_tick()
-                        appsvc.glassbox_rate(self, "output")
+                        self._glassbox_rate("output")
                         self._thinking_done()
                         self._elapsed_stop_body()
                         text_full += delta.content
@@ -4179,7 +4257,7 @@ class LiteTUI(App):
         # THE LEDGER CHANNEL carries the real numbers, not a placeholder \u2014 the
         # same before/after the card shows, so the brain and the card can never
         # disagree about what a compaction did.
-        appsvc.glassbox(self, 
+        self._glassbox(
             "ledger", 1.0,
             f"{before_count} \u2192 {len(self.conversation)} messages ({delta})",
             discrete=True,

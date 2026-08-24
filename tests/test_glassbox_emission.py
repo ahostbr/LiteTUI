@@ -166,7 +166,7 @@ async def test_the_turn_fires_context_before_it_streams() -> None:
 def test_a_tool_dispatch_fires_tool_call_with_its_name() -> None:
     a = _app()
     seen = _watch(a)
-    appsvc.glassbox_tool(a, "bash")
+    a._glassbox_tool("bash")
 
     ev = [e for e in seen if e["channel"] == "tool_call"]
     assert ev, f"no tool_call event: {_channels(seen)}"
@@ -178,7 +178,7 @@ def test_the_write_tool_fires_store_write_not_tool_call() -> None:
     changing durable state, which is not the same event as calling a tool."""
     a = _app()
     seen = _watch(a)
-    appsvc.glassbox_tool(a, "write")
+    a._glassbox_tool("write")
 
     assert "store_write" in _channels(seen), f"write did not route: {_channels(seen)}"
     assert "tool_call" not in _channels(seen), (
@@ -226,7 +226,7 @@ def test_the_helper_costs_nothing_when_nobody_is_watching() -> None:
     a._gb_last.clear()
 
     for _ in range(50):
-        appsvc.glassbox(a, "output", 1.0, "x")
+        a._glassbox("output", 1.0, "x")
 
     assert a._gb_last == {}, (
         "the throttle recorded state with no observers — the short circuit is "
@@ -239,7 +239,7 @@ def test_the_continuous_channels_are_throttled() -> None:
     seen = _watch(a)
 
     for _ in range(50):
-        appsvc.glassbox(a, "output", 1.0, "x")
+        a._glassbox("output", 1.0, "x")
 
     assert len(seen) < 50, "every token emitted an event — the observer is flooded"
     assert len(seen) >= 1, "the throttle swallowed the channel entirely"
@@ -252,7 +252,7 @@ def test_the_discrete_channels_are_never_throttled() -> None:
     seen = _watch(a)
 
     for i in range(5):
-        appsvc.glassbox(a, "tool_call", 1.0, f"tool-{i}", discrete=True)
+        a._glassbox("tool_call", 1.0, f"tool-{i}", discrete=True)
 
     got = [e for e in seen if e["channel"] == "tool_call"]
     assert len(got) == 5, f"a discrete event was throttled away: {len(got)} of 5"
@@ -265,9 +265,9 @@ def test_the_throttle_opens_again_after_its_interval() -> None:
     a = _app()
     seen = _watch(a)
 
-    appsvc.glassbox(a, "output", 1.0, "first")
+    a._glassbox("output", 1.0, "first")
     a._gb_last["output"] = time.monotonic() - (app_mod.GLASSBOX_MIN_INTERVAL_S + 0.01)
-    appsvc.glassbox(a, "output", 1.0, "second")
+    a._glassbox("output", 1.0, "second")
 
     assert len(seen) == 2, "the throttle never reopened"
 
@@ -278,8 +278,8 @@ def test_every_event_carries_the_three_fields_the_brain_reads() -> None:
     dark with no error anywhere."""
     a = _app()
     seen = _watch(a)
-    appsvc.glassbox_tool(a, "bash")
-    appsvc.glassbox(a, "output", 0.5, "x")
+    a._glassbox_tool("bash")
+    a._glassbox("output", 0.5, "x")
 
     for e in seen:
         assert {"channel", "intensity", "label"} <= set(e), f"malformed event: {e}"
