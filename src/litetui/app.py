@@ -23,6 +23,7 @@ from litetui.settings import Settings
 
 from litetui import llm_backend
 from litetui import paths
+from litetui import prompt_compiler
 from litetui.conversation import (
     CONVO_SEED_FILES,
     TRANSCRIPT_NAME,
@@ -1694,7 +1695,10 @@ class LiteTUI(App):
         _ord = plugins_mod.PROMPT_ORDER
         self.plugins.add_prompt_section(
             "host", _ord["BASE"],
-            lambda: paths.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip(),
+            lambda: prompt_compiler.compile_prompt_file(
+                paths.SYSTEM_PROMPT_FILE,
+                root=paths.ROOT,
+            ).strip(),
             enabled=lambda: paths.SYSTEM_PROMPT_FILE.exists(),
         )
         self.plugins.add_prompt_section(

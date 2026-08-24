@@ -8,7 +8,7 @@ Built against `qwen3.8-27b` on an RTX 5090. Nothing here talks to a hosted API.
 
 ```bash
 uv sync
-run.bat            # or: python app.py
+run.bat            # or: uv run --locked litetui
 ```
 
 Expects LM Studio's server on `http://localhost:1234/v1` with a model loaded.

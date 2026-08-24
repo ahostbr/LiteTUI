@@ -6,6 +6,8 @@ pre-refactor fold, copied verbatim; the app's composition must match it
 byte-for-byte under every gate state. If the registry refactor reorders,
 double-strips, or drops a section under any combination, this fails.
 """
+import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +25,26 @@ def _reference(a) -> str:
     # The pre-refactor _system_prompt_text, verbatim. The CONTRACT.
     base = ""
     if paths.SYSTEM_PROMPT_FILE.exists():
-        base = paths.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip()
+        authored = paths.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8")
+        configured = os.environ.get("CLAUDE_SKILL_DIR", "").strip()
+        skill_dir = (
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / ".claude" / "plugins" / "cache"
+        )
+        # Intentionally independent from prompt_compiler.compile_prompt. This
+        # is the reference side of the characterization gate, not a second
+        # invocation of the implementation it is meant to check.
+        base = authored.replace("<root>", str(paths.ROOT)).replace(
+            "${CLAUDE_SKILL_DIR}", str(skill_dir)
+        )
+        unresolved = re.findall(
+            r"<[A-Za-z_][A-Za-z0-9_]*>|\$\{[A-Za-z_][A-Za-z0-9_]*\}",
+            base,
+        )
+        if unresolved:
+            raise ValueError(f"reference found unresolved placeholders: {unresolved}")
+        base = base.strip()
     if a.convo_dir is not None:
         base = (base + m.memory_prompt(a.convo_id, a.convo_dir)).strip()
     if a.tools_enabled:
@@ -79,3 +100,11 @@ def test_the_gate_can_fail():
         "removing the skills index changed nothing — the gate is comparing "
         "a constant to itself"
     )
+
+
+def test_unknown_placeholder_fails_the_composed_prompt_gate(tmp_path, monkeypatch):
+    authored = tmp_path / "systemprompt.md"
+    authored.write_text("bad=${UNKNOWN_PROMPT_PATH}", encoding="utf-8")
+    monkeypatch.setattr(paths, "SYSTEM_PROMPT_FILE", authored)
+    with pytest.raises(ValueError, match="UNKNOWN_PROMPT_PATH"):
+        m.LiteTUI()
