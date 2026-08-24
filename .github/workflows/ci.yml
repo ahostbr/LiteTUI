@@ -99,28 +99,63 @@ jobs:
       # The output goes to the STEP SUMMARY, not just the log. "Advisory" that
       # nobody reads is the same as not running it; the summary is the part
       # that makes "reports" true.
+      # SCOPE IS DELIBERATELY `.` AND IS NOT PINNED TO PATHS. Measured 2026-08-24:
+      # ruff's `respect-gitignore` default already excludes `.venv/`, `.worktrees/`
+      # and `artifacts/` (all gitignored), and there are zero untracked, unignored
+      # files — so `.` and an explicit root list produce the SAME 531 findings here.
+      # ⚠️ Pinning was tried and REJECTED: `src tests tools e2e` also scores 531,
+      # but only because `Docs/Plans/dual-backend/render_html.py` is currently
+      # CLEAN. It is tracked source, a pin would silently drop it, and the equal
+      # totals hid that. EQUAL TOTALS ARE NOT EQUAL SETS.
       - name: ruff (advisory)
         shell: bash
         run: |
+          CMD='uv run --locked ruff check .'
           OUT="${RUNNER_TEMP:-.}/ruff.txt"
-          uv run --locked ruff check . > "$OUT" 2>&1 || true
+          eval "$CMD" > "$OUT" 2>&1 || true
+          TOTAL=$(wc -l < "$OUT")
           {
             echo "### Ruff (advisory — never blocks)"
             echo ""
+            echo "Reproduce locally:"
+            echo '```'
+            echo "$CMD"
+            echo '```'
+            # The listing is capped. Say so, with the number elided — a bounded
+            # output that does not announce its bound lets a reader derive a
+            # smaller count than the run actually produced.
+            if [ "$TOTAL" -gt 200 ]; then
+              echo "> ⚠️ Showing the LAST 200 of **$TOTAL** output lines — $((TOTAL - 200)) not shown. Run the command above for all of it."
+              echo ""
+            fi
             echo '```'
             tail -n 200 "$OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
+      # mypy IS scoped to `src` on purpose, and that asymmetry with ruff's `.` is
+      # intentional rather than an oversight: type-checking tests and one-off
+      # tools produces noise about fixtures and scripts, while linting them is
+      # useful. The scope is stated in the printed command either way.
       - name: mypy (advisory)
         shell: bash
         run: |
+          CMD='uv run --locked mypy src'
           OUT="${RUNNER_TEMP:-.}/mypy.txt"
-          uv run --locked mypy src > "$OUT" 2>&1 || true
+          eval "$CMD" > "$OUT" 2>&1 || true
+          TOTAL=$(wc -l < "$OUT")
           {
             echo "### mypy (advisory — never blocks)"
             echo ""
+            echo "Reproduce locally:"
+            echo '```'
+            echo "$CMD"
+            echo '```'
+            if [ "$TOTAL" -gt 200 ]; then
+              echo "> ⚠️ Showing the LAST 200 of **$TOTAL** output lines — $((TOTAL - 200)) not shown. Run the command above for all of it."
+              echo ""
+            fi
             echo '```'
             tail -n 200 "$OUT"
             echo '```'
