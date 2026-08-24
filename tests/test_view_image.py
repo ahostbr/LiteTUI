@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as app_mod
 from litetui.plugins.view_image import VIEW_IMAGE_TOOL_SPEC
+from litetui import appsvc
 
 ok = []
 
@@ -47,7 +48,7 @@ def make_png(name="probe.png", size=(64, 48)):
 
 class FakeApp:
     _tool_view_image = app_mod.LiteTUI._tool_view_image
-    _load_image_file = app_mod.LiteTUI._load_image_file
+    _load_image_file = appsvc.load_image_file
     _all_tools = app_mod.LiteTUI._all_tools
     _dispatch_for = app_mod.LiteTUI._dispatch_for
 

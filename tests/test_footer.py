@@ -14,6 +14,7 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as app_mod
+from litetui import appsvc
 
 ok = []
 
@@ -33,7 +34,7 @@ class FakeApp:
     ctx_label_text = app_mod.LiteTUI.ctx_label_text
     # Renamed when the early-return bug was fixed: the old _append_tps could be
     # skipped entirely when the context window had not resolved.
-    _append_tps_into = app_mod.LiteTUI._append_tps_into
+    _append_tps_into = appsvc.append_tps_into
     _tps_start = app_mod.LiteTUI._tps_start
     _tps_tick = app_mod.LiteTUI._tps_tick
     _tps_final = app_mod.LiteTUI._tps_final

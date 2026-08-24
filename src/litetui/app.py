@@ -80,6 +80,11 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     _FoldHeader,
     _mark_delivered,
 )
+# O2: nine stateless helpers now live in `appsvc`. They take `app` as their
+# first parameter because they still READ app state — the coupling is visible
+# in the signature instead of hidden behind `self`. LiteTUI loses nine methods;
+# plugin reach-through and the shared-state knot are unchanged.
+from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import tool_policy
@@ -966,7 +971,7 @@ class LiteTUI(App):
         # prompt, which is what "off" has to mean for a context-costing feature.
         # `[]`, not `{}` — discover() returns a LIST, and load() iterates its
         # argument expecting Skill objects. A dict would yield keys.
-        self.skills, self.skills_cached_at = self._load_skills()
+        self.skills, self.skills_cached_at = appsvc.load_skills(self, )
         self.mcp = mcp_client.MCPManager(paths.ROOT)
         if self.settings.mcp_enabled:
             self.mcp.load()
@@ -1129,7 +1134,7 @@ class LiteTUI(App):
             # second one — a resumed conversation already carries one.
             if self._sync_fleet_identity():
                 return
-            self._append_to_system(
+            appsvc.append_to_system(self, 
                 self._fleet_identity_sentence()
                 + load_prompt("harness-capabilities")
             )
@@ -1581,33 +1586,6 @@ class LiteTUI(App):
             )
         return text
 
-    def _store_block(self, live: bool = False) -> str:
-        # memory.md is capped hardest ON PURPOSE: it is an index, and an index
-        # that needs more than this has stopped being one.
-        parts = []
-        for name, cap in (("memory.md", 6000), ("soul.md", 8000), ("handoff.md", 8000)):
-            body = self._read_store_file(name, cap)
-            if body:
-                parts.append(f"### {name} (current contents)\n\n{body}")
-        if not parts:
-            return ""
-        if live:
-            return (
-                "\n\n## Your store, as it stands right now\n\n"
-                "Re-read from disk just now.\n\n" + "\n\n".join(parts) + "\n"
-            )
-        # RULING (Ryan, 2026-08-19): injected ONCE, not per turn. Re-sending
-        # three files every turn is affordable at 1M context and is NOT on a
-        # local 27B, where it crowds out the conversation itself. The text
-        # below must not promise a per-turn refresh -- an instruction that
-        # quietly stopped being true is worse than no instruction at all.
-        return (
-            "\n\n" + STORE_HEADER + "\n\n"
-            "This is a SNAPSHOT taken at the start of the conversation, not a "
-            "live view, and it is NOT re-sent each turn. If you have written to "
-            "these files since, or need their current contents, read them with "
-            "the `read` tool.\n\n" + "\n\n".join(parts) + "\n"
-        )
 
     def _inject_store_once(self) -> None:
         """Merge the store into the system message, exactly once per conversation.
@@ -1626,7 +1604,7 @@ class LiteTUI(App):
         if STORE_HEADER in current:
             self._store_injected = True  # resumed a convo that already has it
             return
-        block = self._store_block()
+        block = appsvc.store_block(self, )
         if not block:
             return  # empty store: nothing to inject, and no marker to leave
         self.conversation[0] = {**self.conversation[0], "content": current + block}
@@ -2183,20 +2161,10 @@ class LiteTUI(App):
             add(f"{pct * 100:.0f}%", ctx_style)
 
         if s.footer_show_tps:
-            self._append_tps_into(t, sep)
+            appsvc.append_tps_into(self, t, sep)
 
         return t
 
-    def _append_tps_into(self, t: Text, sep: str) -> None:
-        if self.tps is None:
-            return
-        if t.plain:
-            t.append(sep, "#5c6370")
-        # Coloured by how it FEELS to use, not by an absolute scale: this is a
-        # local model on one GPU, and the number that matters is whether the
-        # answer arrives faster than you read it.
-        style = "#e5534b" if self.tps < 5 else ("#e8a33d" if self.tps < 15 else "#7d8799")
-        t.append(tps_text(self.tps), style)
 
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
@@ -2205,7 +2173,7 @@ class LiteTUI(App):
         # is not a fraction, and reporting 0.0 would draw an EMPTY window rather
         # than an unknown one, which is a different and wrong claim.
         if value and self.ctx_max:
-            self._glassbox(
+            appsvc.glassbox(self, 
                 "window_fill", value / self.ctx_max,
                 f"{value:,}/{self.ctx_max:,}", discrete=True,
             )
@@ -2350,26 +2318,6 @@ class LiteTUI(App):
         self.conversation[0]["content"] = fixed
         return True
 
-    def _append_to_system(self, text: str) -> None:
-        """Extend the FIRST system message rather than adding another one.
-
-        Multiple role:"system" turns are not portable. qwen/qwen3.8-27b's chat
-        template raises "System message must be at the beginning" and the request
-        fails with a 500; other builds of the same model accept it. Anything the
-        model must know belongs in the one system turn it is guaranteed to read.
-        """
-        if not self.conversation or self.conversation[0].get("role") != "system":
-            self._append({"role": "system", "content": text})
-            return
-        current = self.conversation[0].get("content") or ""
-        if text in current:
-            return                      # idempotent across resume/re-register
-        self.conversation[0] = {
-            **self.conversation[0],
-            "content": (current.rstrip() + "\n\n" + text) if current else text,
-        }
-        if not getattr(self, "_convo_loading", False):
-            self._edit(0, "system prompt extended")
 
     def _clear_screen(self, *, note: str | None = None) -> None:
         """Wipe the RENDERED transcript. The conversation is untouched.
@@ -2458,51 +2406,8 @@ class LiteTUI(App):
     # LiteTUI ALREADY produces — this adds no new signal, only a transport, so
     # nothing here may change behaviour or cost anything when unobserved.
 
-    def _glassbox(self, channel: str, intensity: float = 1.0, label: str = "",
-                  *, discrete: bool = False) -> None:
-        """Fire one channel at whatever plugins are watching.
 
-        THE EMPTY-OBSERVER SHORT CIRCUIT IS FIRST AND MUST STAY FIRST. The
-        thinking and output branches call this once per token, so with no
-        observers the whole feature has to cost one attribute read and a falsy
-        list check — not a clock read, not a dict write. A user who has not
-        installed the brain must not pay for it.
 
-        `discrete` means "this is an event, not a level". A tool call, a store
-        write, a ledger and a window-fill change are things that HAPPENED;
-        throttling one loses it. thinking and output are levels sampled per
-        token, where two consecutive samples say the same thing.
-
-        Never raises: PluginRegistry.emit already swallows a failing observer
-        and records it on that plugin's status row.
-        """
-        reg = getattr(self, "plugins", None)
-        if reg is None or not reg.observers:
-            return
-        if not discrete:
-            now = time.monotonic()
-            if now - self._gb_last.get(channel, 0.0) < GLASSBOX_MIN_INTERVAL_S:
-                return
-            self._gb_last[channel] = now
-        reg.emit({"channel": channel, "intensity": float(intensity), "label": label})
-
-    def _glassbox_tool(self, name: str) -> None:
-        """A dispatch fires ONE channel, never both.
-
-        `write` is store_write rather than tool_call because the design treats
-        the agent changing durable state as a different event from the agent
-        calling something — and firing both would double-count every write in
-        whatever the observer is drawing.
-        """
-        channel = "store_write" if name == "write" else "tool_call"
-        self._glassbox(channel, 1.0, name, discrete=True)
-
-    def _glassbox_rate(self, channel: str) -> None:
-        """Continuous channel whose intensity is the live tok/s, normalised
-        against a fast-but-reachable ceiling so the common case has headroom
-        rather than sitting pinned at 1.0."""
-        tps = self.tps or 0.0
-        self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
 
     def system_message(self, text: str) -> None:
         """Post a system line into the chat log — **the supported way for a
@@ -2645,7 +2550,7 @@ class LiteTUI(App):
             # app itself treats as "a tool is now running" — same condition the
             # timer and the cancel control key off, so the brain cannot light
             # up for a call the app does not consider in flight.
-            self._glassbox_tool(getattr(tool, "tool_name", "") or "tool")
+            appsvc.glassbox_tool(self, getattr(tool, "tool_name", "") or "tool")
         if self._elapsed_task is None or self._elapsed_task.done():
             try:
                 self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
@@ -3030,7 +2935,7 @@ class LiteTUI(App):
                 for entry in img:
                     p = Path(str(entry))
                     if p.suffix.lower() in IMAGE_EXTS and p.exists():
-                        b64 = self._load_image_file(p)
+                        b64 = appsvc.load_image_file(self, p)
                         if b64:
                             self.pending_image = b64
                             self.notify(f"Image attached from file: {p.name}", timeout=2)
@@ -3181,18 +3086,6 @@ class LiteTUI(App):
             self.pending_image = None
             self.notify("Image removed", timeout=2)
 
-    def _load_image_file(self, path: Path) -> str | None:
-        try:
-            from PIL import Image as PILImage
-
-            img = PILImage.open(path)
-            if max(img.size) > MAX_IMAGE_DIM:
-                img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM), PILImage.LANCZOS)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            return base64.b64encode(buf.getvalue()).decode()
-        except Exception:
-            return None
 
     def _tool_view_image(self, args: dict) -> str:
         """Stage an image for the model to actually see. Never raises.
@@ -3228,7 +3121,7 @@ class LiteTUI(App):
                 "image type (png, jpg, jpeg, gif, webp, bmp)"
             )
 
-        b64 = self._load_image_file(path)
+        b64 = appsvc.load_image_file(self, path)
         if b64 is None:
             return f"[error] view_image: could not decode {path.name} as an image"
 
@@ -3358,7 +3251,7 @@ class LiteTUI(App):
         if text and not image_b64:
             path, rest = self._split_image_path(text)
             if path is not None:
-                image_b64 = self._load_image_file(path)
+                image_b64 = appsvc.load_image_file(self, path)
                 if image_b64:
                     text = rest  # keep the question; do not discard it
                     self.notify(f"Image loaded: {path.name}", timeout=2)
@@ -3571,7 +3464,7 @@ class LiteTUI(App):
             # PROMPT ASSEMBLY IS THE EVENT. This is where the conversation and
             # the live store are folded into the thing the model actually
             # reads, and it is the last moment before the turn is committed.
-            self._glassbox(
+            appsvc.glassbox(self, 
                 "context", 1.0, f"{len(request_messages)} messages", discrete=True
             )
             kwargs = TurnEngine.chat_request(
@@ -3624,7 +3517,7 @@ class LiteTUI(App):
                     )
                     if token:
                         self._tps_tick()
-                        self._glassbox_rate("thinking")
+                        appsvc.glassbox_rate(self, "thinking")
                         reasoning += token
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
@@ -3654,7 +3547,7 @@ class LiteTUI(App):
                         self._scroll_down(only_if_following=True)
                     if delta.content:
                         self._tps_tick()
-                        self._glassbox_rate("output")
+                        appsvc.glassbox_rate(self, "output")
                         self._thinking_done()
                         self._elapsed_stop_body()
                         text_full += delta.content
@@ -3955,27 +3848,6 @@ class LiteTUI(App):
         _mark_delivered(item)
         self._stream()
 
-    def _load_skills(self):
-        """The skill index, from cache when there is one.
-
-        Discovery walks every configured library on every boot, which is why a
-        folder added while the app was running never appeared: the answer was
-        computed once at startup and nothing could ask again. The cache does not
-        change that -- it makes the recomputation an explicit, cheap act
-        (/skills refresh) instead of a restart.
-
-        Returns (skills, generated_at). generated_at is 0.0 for a fresh scan,
-        which is how /skills knows whether it is showing cached data and how old
-        it is: a cache nobody can date is a cache nobody can distrust.
-        """
-        if not self.settings.skills_enabled:
-            return [], 0.0
-        cached = skills_mod.read_cache(paths.ROOT)
-        if cached is not None:
-            return cached
-        found = skills_mod.discover_all(paths.ROOT, self.settings.skill_roots)
-        skills_mod.write_cache(paths.ROOT, found)
-        return found, 0.0
 
     def refresh_skills(self) -> tuple[list[str], list[str]]:
         """Re-scan every library and rewrite the cache. Returns (added, removed).
@@ -4141,7 +4013,7 @@ class LiteTUI(App):
         if system:
             # Merge the live store in, so it can see what memory.md already
             # holds and update rather than duplicate.
-            block = self._store_block(live=True)
+            block = appsvc.store_block(self, live=True)
             ask.insert(0, {**system, "content": system.get("content", "") + block})
 
         # Tools are passed so STEP 1 of COMPACT_PROMPT can actually happen.
@@ -4308,7 +4180,7 @@ class LiteTUI(App):
         # THE LEDGER CHANNEL carries the real numbers, not a placeholder \u2014 the
         # same before/after the card shows, so the brain and the card can never
         # disagree about what a compaction did.
-        self._glassbox(
+        appsvc.glassbox(self, 
             "ledger", 1.0,
             f"{before_count} \u2192 {len(self.conversation)} messages ({delta})",
             discrete=True,
@@ -4515,7 +4387,7 @@ class LiteTUI(App):
         if data.get("cancelled"):
             self._system("/mark: cancelled.")
             return
-        b64 = self._load_image_file(Path(data["png"]))
+        b64 = appsvc.load_image_file(self, Path(data["png"]))
         if not b64:
             self._system(f"/mark: could not read the screenshot at {data.get('png')}")
             return

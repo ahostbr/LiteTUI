@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 from litetui import paths
+from litetui import appsvc
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-store-"))
 
@@ -89,8 +90,8 @@ chk("not latched, so a later write can still be picked up", b._store_injected is
 
 print("\n=== compaction still gets the LIVE view ===")
 c = make_app()
-live = c._store_block(live=True)
-once = c._store_block()
+live = appsvc.store_block(c, live=True)
+once = appsvc.store_block(c, )
 chk("live block reads 'as it stands right now'", "as it stands right now" in live)
 chk("live block is not the once-only text", m.STORE_HEADER not in live)
 chk("once block carries the marker", m.STORE_HEADER in once)
