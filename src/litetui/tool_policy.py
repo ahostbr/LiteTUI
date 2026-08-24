@@ -130,16 +130,57 @@ PROFILES = {
 }
 
 
+def rule_key(tool_name: str, capabilities: Iterable[str]) -> str:
+    """The identity of a standing allow/deny rule.
+
+    SCOPED TO THE TOOL **AND** THE CAPABILITIES THAT TRIGGERED THE PROMPT, not
+    to the tool name alone, and that is the whole safety of the feature.
+    A tool's authority is not fixed: `shell` classifies as process_execution
+    normally and ALSO as destructive_irreversible when its arguments match the
+    destructive-command pattern. A name-only rule would take one approval of
+    "run a shell command" and silently grant, on some later call, an authority
+    the human never saw and never agreed to.
+
+    So "always allow" means: this tool, doing the thing I was just shown. The
+    same tool asking for MORE authority prompts again, which is the only
+    version of the feature that is still a guard.
+    """
+    caps = ",".join(sorted(capabilities))
+    return f"{tool_name}:{caps}"
+
+
 def evaluate(
     profile_name: str,
     policy: ToolPolicy,
     args: Mapping[str, object] | None,
     workspace: Path,
+    *,
+    tool_name: str = "",
+    always_allow: frozenset[str] = frozenset(),
+    deny: frozenset[str] = frozenset(),
 ) -> PolicyDecision:
     """Return the host action for one proposed tool call.
 
     Unknown profiles fail closed.  A settings typo must never turn scheduled
     work into an unrestricted interactive turn.
+
+    `always_allow` and `deny` are the human's standing rules, keyed by
+    `rule_key`.  Two orderings here are load-bearing:
+
+      DENY WINS.  An explicit deny rule is consulted before anything else and
+      overrides both the profile and any allow rule.  A refusal the human wrote
+      down must not be reachable by adding a second rule that disagrees.
+
+      AN ALLOW RULE TURNS **CONFIRM** INTO ALLOW, AND NEVER **DENY** INTO
+      ALLOW.  Clicking "always allow" in an interactive modal must not hand the
+      unattended `scheduled` profile an authority it deliberately refuses --
+      the rule records that the human stopped being asked, not that the profile
+      changed.  Authority still comes from the profile; the rule only silences
+      a question the human has already answered.
+
+    `tool_name` defaults to empty so existing callers keep their behaviour
+    exactly: an empty name can never match a stored rule, so no rule applies.
+    That is the fail-safe direction.
     """
     profile = PROFILES.get(profile_name)
     capabilities = policy.classify(args or {}, Path(workspace).resolve())
@@ -152,6 +193,15 @@ def evaluate(
             f"unknown tool profile {profile_name!r}; denied ({names})",
         )
 
+    key = rule_key(tool_name, capabilities)
+    if tool_name and key in deny:
+        return PolicyDecision(
+            DENY,
+            profile.name,
+            capabilities,
+            f"denied by a standing rule for {key}",
+        )
+
     outside = capabilities - profile.allow - profile.confirm
     if outside:
         return PolicyDecision(
@@ -161,6 +211,13 @@ def evaluate(
             f"{profile.name} profile does not grant {', '.join(sorted(outside))}",
         )
     if policy.confirm_always or capabilities & profile.confirm:
+        if tool_name and key in always_allow:
+            return PolicyDecision(
+                ALLOW,
+                profile.name,
+                capabilities,
+                f"allowed by a standing rule for {key}",
+            )
         return PolicyDecision(
             CONFIRM,
             profile.name,
