@@ -169,9 +169,8 @@ def main() -> int:
     inert: list[tuple[str, int, str, str]] = []
     fakes: list[tuple[str, int, str]] = []
     scanned = 0
+    seen: set[str] = set()
     for f in files:
-        if f == args.app_file:
-            continue
         text = blob(args.ref, f)
         if text is None:
             continue
@@ -181,6 +180,7 @@ def main() -> int:
             print(f"  !! PARSE FAILED {f} — counted as a problem, not skipped")
             return 2
         scanned += 1
+        seen.add(f)
         for n in ast.walk(tree):
             if isinstance(n, ast.Attribute) and n.attr in state:
                 row = (f, n.lineno, n.attr, ast.unparse(n.value))
@@ -233,11 +233,15 @@ def main() -> int:
     allfiles = {r[0] for r in red} | {r[0] for r in inert} | {f for f, _, _ in fakes}
     print(f"  members moving        {len(found)}")
     print(f"  state re-homed        {len(state)}  {sorted(state)}")
+    same = [r for r in red + inert if r[0] == args.app_file]
     print(f"  sweep                 {total} site(s) in {len(allfiles)} file(s)")
+    print(f"     of which SAME-FILE {len(same)}   <- in {args.app_file}: YOURS, same commit")
     print(f"     of which INERT     {len(inert)}   <- invisible to a green suite")
     print(f"     of which RED       {len(red)}")
     print(f"     of which FAKES     {len(fakes)}")
-    print(f"  [scanned {scanned} of {len(files)} tracked .py under {args.roots} at ref {args.ref}]")
+    skipped = [f for f in files if f not in seen]
+    print(f"  [scanned {scanned} of {len(files)} tracked .py under {args.roots} at ref {args.ref}"
+          + (f" | SKIPPED {skipped}]" if skipped else " | skipped none]"))
     return 1 if total else 0
 
 
