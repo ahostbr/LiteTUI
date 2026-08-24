@@ -7,6 +7,14 @@
 `refactor/app-decomposition` will correctly report it ABSENT. It lives here because the shared
 `decomp` checkout is dirty with OpenBolt's in-flight O4-c and I was ordered to stay off it.
 
+🔴 **`T073` IS NOT A BOARD ROW — IT DOES NOT EXIST.** Every `T073` below, and the `Task-id: T073`
+trailer on `909a7d7` and `ff1487c`, points at nothing. The real row is **`T072`**, *"Tools-off must
+refuse, not emit raw markup"*, status **reviewing**, assigned to me. Verified against
+`lst run tasks action=list`, not taken on report. Read `T073` as `T072` throughout.
+The likely origin: row **`id: T071` carries the TITLE "T072 CI advisory scope…"** (OpenBolt's, queued
+— 1 mismatch out of the 9 rows that carry a title prefix), so counting titles gives the next row a
+number the ids had already used. Inference, not measurement — but the id/title mismatch is measured.
+
 **Work is not repeated here.** `PLAN.md` @ `refactor/app-decomposition`, the commit bodies of the
 shas below, and `HANDOFF-OPENBOLT-T070.md` carry it.
 
