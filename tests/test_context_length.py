@@ -220,11 +220,19 @@ def test_every_explicit_model_switch_applies_the_setting():
     # Each one is followed by an apply.
     for chunk in sites:
         head = chunk[:400]
-        assert "_apply_context_length()" in head, (
+        # TWO SPELLINGS, TWO HOMES: app.py calls the private alias, the plugin
+        # calls the public name since S5. Matching only one makes this gate
+        # measure an ADDRESS instead of the rule it is named for.
+        assert ("self._apply_context_length()" in head
+                or "app.apply_context_length()" in head), (
             "a model switch that does not apply the configured context length "
             "leaves LM Studio to JIT-load at its own default"
         )
 
     connect = app_src.split("Connected — model:", 1)[0][-1200:]
-    assert "_apply_context_length()" not in connect.replace(
+    # The SHORT form deliberately: it is a substring of the private spelling, so
+    # this one negative catches BOTH `self._apply_context_length()` and a future
+    # `self.apply_context_length()`. A negative assertion should over-match --
+    # under-matching is how it goes vacuous without anyone noticing.
+    assert "apply_context_length()" not in connect.replace(
         "# _apply_context_length()", ""), "connect must never load a model"

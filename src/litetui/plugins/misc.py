@@ -32,11 +32,11 @@ def _cmd_think(app, name: str, arg: str) -> None:
         )
     elif arg.lower() in ("unset", "default", "server"):
         app.thinking_level = None
-        app._update_header()
+        app.update_header()
         app.system_message("Thinking level unset — LM Studio's default (xhigh) applies.")
     elif arg.lower() in THINKING_LEVELS:
         app.thinking_level = arg.lower()
-        app._update_header()
+        app.update_header()
         wire = "none" if app.thinking_level == "off" else app.thinking_level
         app.system_message(f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})")
     else:

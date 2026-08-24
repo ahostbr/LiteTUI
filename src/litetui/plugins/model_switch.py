@@ -49,21 +49,21 @@ def _cmd_model(app, name: str, arg: str) -> None:
             idx = int(arg) - 1
             if 0 <= idx < len(app.available_models):
                 app.model_id = app.available_models[idx]
-                app._update_header()
-                app._fetch_ctx_window()
+                app.update_header()
+                app.fetch_context_window()
                 app.system_message(f"Switched to: {app.model_id}")
                 # An explicit switch is an explicit act — the thing the
                 # no-load-on-connect rule asks for. Boot still loads
                 # nothing.
-                app._apply_context_length()
+                app.apply_context_length()
             else:
                 app.system_message(f"Invalid number. Use 1-{len(app.available_models)}")
         elif arg in app.available_models:
             app.model_id = arg
-            app._update_header()
-            app._fetch_ctx_window()
+            app.update_header()
+            app.fetch_context_window()
             app.system_message(f"Switched to: {app.model_id}")
-            app._apply_context_length()
+            app.apply_context_length()
         else:
             app.system_message(f"Model not found: {arg}")
     elif not app.available_models:
@@ -74,12 +74,12 @@ def _cmd_model(app, name: str, arg: str) -> None:
         rows = [(m, _row_label(app, m)) for m in app.available_models]
         app.push_screen(
             PickerScreen("Select a model", rows, current=app.model_id),
-            app._on_model_picked,
+            app.on_model_picked,
         )
 
 
 def _cmd_reconnect(app, name: str, arg: str) -> None:
-    app._connect()
+    app.connect()
 
 
 # ── /backend ─────────────────────────────────────────────────────────────────
@@ -98,9 +98,9 @@ def _switch_backend(app, choice: str) -> None:
     # The conversation is NOT touched — history survives an engine switch;
     # only the endpoint and the model list change.
     app.model_id = ""
-    app._update_header()
+    app.update_header()
     app.system_message(f"Backend → {choice}; reconnecting…")
-    app._connect()
+    app.connect()
 
 
 def _cmd_backend(app, name: str, arg: str) -> None:
@@ -147,9 +147,9 @@ def _cmd_load(app, name: str, arg: str) -> None:
             return
         app.system_message(f"Loaded: {target}")
         if target == app.model_id:
-            app._fetch_ctx_window()
+            app.fetch_context_window()
         else:
-            app._connect()   # refresh the rows' loaded markers
+            app.connect()   # refresh the rows' loaded markers
 
     app.run_worker(_go(), group="modelctl", exclusive=True)
 
@@ -168,7 +168,7 @@ def _cmd_unload(app, name: str, arg: str) -> None:
             return
         app.system_message(f"Unloaded: {target} — VRAM freed")
         if target == app.model_id:
-            app._fetch_ctx_window()
+            app.fetch_context_window()
 
     app.run_worker(_go(), group="modelctl", exclusive=True)
 
@@ -491,7 +491,7 @@ class ModelConfigScreen(ModalScreen[None]):
                     return
                 app.system_message(f"{key}: load settings applied")
                 if key == app.model_id:
-                    app._fetch_ctx_window()
+                    app.fetch_context_window()
             app.run_worker(_apply(), group="modelctl", exclusive=True)
         elif app.backend.name == "lmstudio" and load_cfg.get("ctx") != prior_load.get("ctx"):
             async def _apply_lms() -> None:
@@ -502,7 +502,7 @@ class ModelConfigScreen(ModalScreen[None]):
                     return
                 app.system_message(f"{key}: context length applied")
                 if key == app.model_id:
-                    app._fetch_ctx_window()
+                    app.fetch_context_window()
             app.run_worker(_apply_lms(), group="modelctl", exclusive=True)
 
         app.system_message(f"Saved model config for {key}")
@@ -543,7 +543,7 @@ def _activate(app) -> None:
         settings_mod.save(s)
         if s.backend != app.backend.name:
             app.backend = llm_backend.make_backend(s)
-            app._connect()
+            app.connect()
         return
 
     rows = [
@@ -560,8 +560,8 @@ def _activate(app) -> None:
         if choice != app.backend.name:
             app.backend = llm_backend.make_backend(s)
             app.model_id = ""
-        app._update_header()
-        app._connect()
+        app.update_header()
+        app.connect()
 
     app.push_screen(
         PickerScreen("Which engine should serve this seat?", rows, current=s.backend),

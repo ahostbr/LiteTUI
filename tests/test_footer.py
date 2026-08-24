@@ -113,7 +113,7 @@ chk("the label is still addressed by CLASS, never a fixed id",
 chk("_refresh_ctx_label still updates EVERY match (a transient duplicate is cosmetic)",
     'for label in labels:' in src)
 chk("changing the thinking level refreshes the footer, not just the header",
-    "_update_header" in src and src.count("self._refresh_ctx_label()") >= 4)
+    "self._update_header()" in src and src.count("self._refresh_ctx_label()") >= 4)
 
 print("\n=== tok/s ===")
 import time as _t
