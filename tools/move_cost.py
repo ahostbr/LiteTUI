@@ -35,8 +35,14 @@ It reports four things a member-only census cannot:
 Every count prints its DENOMINATOR ("compared N of M"): a total without one reads
 the same whether everything was examined or nothing was.
 
-EXIT  0 nothing found · 1 sites found (there is a sweep to do) · 2 nothing was
-      examined, i.e. the query matched no member -- never a silent pass.
+EXIT  0 nothing found · 1 sites found (there is a sweep to do) · 2 NO MEASUREMENT
+      HAPPENED -- the query matched no member, the class was absent, a file
+      failed to parse, OR argparse rejected the command line. Never a silent pass.
+
+⚠️ `--roots` is nargs="*" and GREEDY: put the members FIRST or it swallows them
+   and argparse exits 2. That is the same code as "nothing was examined", which
+   is correct -- both mean no measurement happened -- but read the first line of
+   output before treating a 2 as a finding about the code.
 """
 from __future__ import annotations
 
