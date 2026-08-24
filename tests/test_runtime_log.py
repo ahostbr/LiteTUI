@@ -80,8 +80,11 @@ def test_first_party_plugin_is_always_on_without_a_command(tmp_path: Path) -> No
     runtime_log_plugin.register(Context(), root=tmp_path)
     assert len(observed) == 1
     observed[0]({"channel": "context", "intensity": 1.0, "label": "private"})
-    assert runtime_log_plugin._RECORDER is not None
-    runtime_log_plugin._RECORDER.close()
+    from litetui import runtime_log
+
+    assert runtime_log._ACTIVE is not None
+    runtime_log._ACTIVE.close()
+    runtime_log._ACTIVE = None
     logged = (tmp_path / ".logs" / "runtime.jsonl").read_text(encoding="utf-8")
     assert '"event":"signal"' in logged
     assert "private" not in logged

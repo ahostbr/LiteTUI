@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any
 
+from litetui import runtime_log
 from litetui.tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
 
 # System-prompt section slots. The composition order is MODEL BEHAVIOR, not
@@ -47,6 +48,7 @@ PROMPT_ORDER = {
 # assumption, so the ordering is kept until someone proves it free.
 PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.core_tools",
+    "litetui.plugins.runtime_log_plugin",
     "litetui.plugins.view_image",
     "litetui.plugins.pccontrol",
     "litetui.plugins.chrome",
@@ -64,7 +66,6 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.settings_ui",
     "litetui.plugins.scheduler_plugin",
     "litetui.plugins.goal_loop_plugin",
-    "litetui.plugins.runtime_log_plugin",
     "litetui.plugins.glassbox_plugin",
 )
 
@@ -332,6 +333,13 @@ class PluginRegistry:
                 obs.handler(event)
             except Exception as e:                      # noqa: BLE001 — see above
                 self.status[obs.owner] = f"observer failed: {type(e).__name__}: {e}"
+                runtime_log.record(
+                    "plugin_observer_failed",
+                    site="plugins.emit",
+                    component="plugin",
+                    plugin=obs.owner,
+                    error_type=type(e).__name__,
+                )
 
     async def finalize_turn(self) -> None:
         """Run completion hooks only when the host names a plain answer.
@@ -348,6 +356,13 @@ class PluginRegistry:
             except Exception as e:  # noqa: BLE001 — isolate optional plugins
                 self.status[finalizer.owner] = (
                     f"turn finalizer failed: {type(e).__name__}: {e}"
+                )
+                runtime_log.record(
+                    "plugin_finalizer_failed",
+                    site="plugins.finalize_turn",
+                    component="plugin",
+                    plugin=finalizer.owner,
+                    error_type=type(e).__name__,
                 )
 
     def sections_sorted(self) -> list[PromptSection]:
@@ -454,6 +469,13 @@ def register_plugins(
         try:
             manifest = import_module(mod_name).PLUGIN
         except Exception as e:  # noqa: BLE001
+            runtime_log.record(
+                "plugin_import_failed",
+                site="plugins.register.import",
+                component="plugin",
+                plugin=mod_name,
+                error_type=type(e).__name__,
+            )
             # No manifest yet, so the module NAME keys the failure and
             # CRITICAL_MODULES speaks for the criticality the manifest
             # could not declare.
@@ -468,6 +490,13 @@ def register_plugins(
             if manifest.register is not None:
                 manifest.register(PluginContext(app, registry, manifest.id))
         except Exception as e:  # noqa: BLE001 — isolation is the point
+            runtime_log.record(
+                "plugin_register_failed",
+                site="plugins.register.hook",
+                component="plugin",
+                plugin=manifest.id,
+                error_type=type(e).__name__,
+            )
             if manifest.critical:
                 raise
             registry.status[manifest.id] = f"failed: {type(e).__name__}: {e}"
@@ -485,6 +514,13 @@ def activate_plugins(app: Any, registry: PluginRegistry, manifests: list[PluginM
         try:
             manifest.activate(app)
         except Exception as e:  # noqa: BLE001
+            runtime_log.record(
+                "plugin_activate_failed",
+                site="plugins.activate",
+                component="plugin",
+                plugin=manifest.id,
+                error_type=type(e).__name__,
+            )
             if manifest.critical:
                 raise
             registry.status[manifest.id] = f"failed at activate: {type(e).__name__}: {e}"

@@ -29,7 +29,7 @@ import queue
 import subprocess
 import threading
 import time
-from litetui import ttyguard
+from litetui import runtime_log, ttyguard
 from pathlib import Path
 
 MCP_CONFIG_NAME = "mcp.json"
@@ -130,6 +130,13 @@ class MCPServer:
                     continue
                 self._frames.put(msg)
         except Exception as e:
+            runtime_log.record(
+                "mcp_reader_failed",
+                site="mcp.reader",
+                component="mcp",
+                server=self.name,
+                error_type=type(e).__name__,
+            )
             self._log.write(f"[{self.name}] reader stopped: {type(e).__name__}: {e}\n")
             self._log.flush()
         finally:
@@ -305,6 +312,13 @@ class MCPManager:
         try:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         except Exception as e:
+            runtime_log.record(
+                "mcp_config_failed",
+                site="mcp.manager.load",
+                component="mcp",
+                operation="config_load",
+                error_type=type(e).__name__,
+            )
             self.failures["mcp.json"] = f"unreadable: {e}"
             return
         servers = cfg.get("mcpServers") or cfg.get("servers") or {}
@@ -319,6 +333,14 @@ class MCPManager:
                 srv.start()
                 self.servers[name] = srv
             except Exception as e:
+                runtime_log.record(
+                    "mcp_server_start_failed",
+                    site="mcp.manager.load",
+                    component="mcp",
+                    server=name,
+                    operation="start",
+                    error_type=type(e).__name__,
+                )
                 # One bad server must not cost the others, and must not be
                 # silent: a tool that never appears looks like one the model
                 # simply chose not to use.
@@ -358,6 +380,14 @@ class MCPManager:
                         try:
                             return _srv.call(_tool, args)
                         except Exception as e:
+                            runtime_log.record(
+                                "mcp_tool_failed",
+                                site="mcp.dispatch",
+                                component="mcp",
+                                server=_srv.name,
+                                name=_tool,
+                                error_type=type(e).__name__,
+                            )
                             return f"[error] mcp {_srv.name}/{_tool}: {type(e).__name__}: {e}"
 
                     return _call

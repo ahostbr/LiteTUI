@@ -158,3 +158,37 @@ class RuntimeRecorder:
 
 def default_log_path(root: Path) -> Path:
     return Path(root) / ".logs" / "runtime.jsonl"
+
+
+_ACTIVE: RuntimeRecorder | None = None
+
+
+def install(
+    path: Path,
+    *,
+    max_bytes: int = 2 * 1024 * 1024,
+    backup_count: int = 3,
+) -> RuntimeRecorder:
+    """Install the process-wide sink once; producers all call :func:`record`."""
+    global _ACTIVE
+    if _ACTIVE is not None:
+        _ACTIVE.close()
+    _ACTIVE = RuntimeRecorder(
+        path,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
+    return _ACTIVE
+
+
+def record(event: str, **metadata: object) -> bool:
+    """The one producer seam. No installed sink is a cheap, safe no-op."""
+    if _ACTIVE is None:
+        return False
+    return _ACTIVE.write({"event": event, **metadata})
+
+
+def record_signal(signal: Mapping[str, object]) -> bool:
+    if _ACTIVE is None:
+        return False
+    return _ACTIVE.write_signal(signal)
