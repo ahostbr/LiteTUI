@@ -78,7 +78,7 @@ cheaper wins.
 | **O3** | `_cron`/`_cron_*` → `CronService` — **scope ENLARGED, not reduced: S3 no longer touches cron at all. `_cron_command` (50) + `_cron_monitor` (16) are O3's, so ONE ROW OWNS THE FAMILY** (Sentinel, *scope not sequence*, §3d) | OpenBolt | **−148 lines, −5 methods** — DERIVED, not the old "−~80/−3": `_cron_monitor` 16 · `_cron_command` 50 · `_cron_find` 20 · `_cron_add` 37 · `_cron_list` 25. **Units agree (defs = items = names).** **+ `_fire_job` 47 ⇒ 6 methods / 195 lines** (taken, §3d). ⚠️ **NOT zero-edit: 9 test call sites in 3 files, and 2 gates go red — pre-costed in §3f** | knot |
 | **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b. **ARRIVAL ✅ `63fd480` (OpenBolt). Consumer OPEN (SilverBolt), now 18 + 2 `misc.py` sites + the 92-stub sweep** | SilverBolt + OpenBolt | reach **40 → 20** (AST — *corrected from 22: the 2 `misc.py` `_update_header` sites are folded in*) | lines, methods, knot — **the arrival moves the def-grep by 0 while adding 5 members, see §2c** |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed`/`_elapsed_*`, `_eta`/`_eta_*`, `_tps`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
-| **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **22 → 15** (AST) | lines, methods, knot |
+| **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b. ⚠️ **ITS ARRIVAL IS NOT A PURE ADDITION: 4 source-text gates `IndexError` the moment the defs are renamed — they are re-pointed IN THE ARRIVAL COMMIT, see §2f** | SilverBolt + OpenBolt | reach **20 → 13** (AST — *corrected from 22→15; the base moved with S5*) | lines, methods, knot |
 | **S7/O5** | The turn-engine boundary: `_stream` (345 ln), `_compact` (262), `_handle_command` | **both, last** | lines, knot | — |
 
 ### 2a. S1 — RESHAPED, AND WHY THE ORIGINAL SHAPE WOULD HAVE MERGED CLEAN AND DONE NOTHING
@@ -183,6 +183,47 @@ worker. Checked before relying on it: `exclusive` cancels by **group**, the grou
 strings and unchanged, and nothing in `src/` or `tests/` reads `worker.name` — every consumer reads
 `.group` (`app.py:2973`, `app.py:3047`, `test_cron_wiring:267`). The name reaches logs only. **Real
 behaviour change, no observer.**
+
+### 2f. 🔴 S6's ARRIVAL BREAKS FOUR SOURCE-TEXT GATES — RULED: RE-POINT THEM, DO NOT FLIP THE ALIAS
+
+SilverBolt found it and I confirmed it independently by renaming all seven defs in a copy of
+`app.py` and running **each gate's own split expression**. Every one does
+`src.split("def _x", 1)[1]`, so the instant the literal is absent the subscript raises:
+
+| gate | today | post-arrival |
+|---|---|---|
+| `test_seat_rebind:271` `fn="_new_convo"` | ok | **IndexError** |
+| `test_seat_rebind:271` `fn="_resume"` | ok | **IndexError** |
+| `test_fleet_identity:126` `"def _resume"` | ok | **IndexError** |
+| `test_tool_context_wiring:154` `"async def _compact("` | ok | **IndexError** |
+
+⭐ **SAME LAW, OPPOSITE HALF:** S5's gates keyed on **call** literals, which only the *consumer*
+touches. S6's key on the **definition**, which only the *arrival* touches.
+
+**RULED (Sentinel, reversing his own recommendation): re-point the four literals IN THE ARRIVAL
+COMMIT.** The alternative — keeping `def _resume` and adding `resume = _resume` — was withdrawn.
+
+**The measurement that decided it**, because three of these gates protect the seat-rebind and
+fleet-identity bugs and a re-point must not widen them:
+
+- **Each public literal picks EXACTLY ONE thing** — all four, 1 occurrence.
+- **Zero prefix collisions across all seven names.** No method starts with `new_convo`, `resume`,
+  `compact`, `edit`, `materialise_convo`, `load_system_prompt`, or `on_convo_picked`.
+- ⇒ **the re-point preserves each gate's strength exactly.** It is 4 string literals in 3 files, not
+  "editing four safety gates" — **the cost was ESTIMATED at first and the estimate was the error.**
+
+**And flipping the alias does not remove the cost, it defers it to someone with no warning:** under
+that option the gates pass *only because* `def _resume` still exists, so the day the def goes public
+all four break with nobody expecting it — confirmed on the simulated tree, where after a genuine
+rename `def _resume` is **absent**. It would also leave **two opposite conventions for one pattern**
+(S5: public def + private alias; S6: the reverse), so whoever finally drops the aliases finds S5's
+deletions trivial and S6's gate-breaking.
+
+🔴 **THE SENTENCE THAT SETTLED IT, kept because it corrects a belief we were all holding:
+"ARRIVAL-FIRST" WAS NEVER "PURE ADDITION" — IT IS *GREEN AT EACH COMMIT*.** S5's arrival renamed
+five defs and happened to break no gate; **that was luck, not a property.** O-A landed with **13**
+test sites in one commit hours earlier and nobody thought it violated anything — S6's four literals
+are the same shape, smaller.
 
 🔴 **CORRECTED 02:20 — THIS PARAGRAPH SAID S5/S6 "MAY LAND IN EITHER ORDER" AND THAT LICENSED A
 RED COMMIT.** The retracted claim: *"because the alias exists these may land in either order —
