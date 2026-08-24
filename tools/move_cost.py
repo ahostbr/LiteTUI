@@ -210,6 +210,21 @@ def main() -> int:
         drop = [r for r in rows if args.receiver is not None and r[3] != args.receiver]
         return keep, drop
 
+    def _elided(n: int, shown: int) -> None:
+        """A LISTING IS A SAMPLE; THE PER-FILE COUNTS ABOVE ARE THE ANSWER.
+
+        SilverBolt scraped the site lines of a 19-site report, summed 16, and
+        derived "3 outside the moving file" where the truth was 8 -- because
+        this listing capped at 12 and said nothing.  A bounded output that
+        does not announce its bound lets a reader compute a SMALLER number
+        than the tool's own header, and arithmetic that refuses to reconcile
+        is the only thing that catches it.  Same family as the silent app.py
+        skip this tool shipped with: absence presenting as completeness.
+        """
+        if n > shown:
+            print(f"        ... {n - shown} MORE NOT LISTED  <- this listing is a "
+                  f"SAMPLE (capped at {shown}). COUNT THE PER-FILE LINES, NOT THESE.")
+
     def dump(label: str, rows, sep: str) -> None:
         by_recv: dict[str, int] = defaultdict(int)
         by_file: dict[str, int] = defaultdict(int)
@@ -222,6 +237,7 @@ def main() -> int:
             print(f"     {f:<48} {c}")
         for f, ln, attr, recv in rows[:12]:
             print(f"        {f}:{ln}  {recv}.{attr}{sep}")
+        _elided(len(rows), 12)
 
     if args.receiver is not None:
         inert, dropped_i = split(inert)
@@ -235,6 +251,7 @@ def main() -> int:
           f"{len(fakes)} site(s)")
     for f, ln, arg in fakes[:12]:
         print(f"        {f}:{ln}  ...({arg}=...)")
+    _elided(len(fakes), 12)
 
     # ---- member-shaped sites -------------------------------------------
     # SilverBolt's find: a STUB CLASS that DEFINES the private name is a site,
@@ -278,8 +295,10 @@ def main() -> int:
           "<- a state-only trace reaches the FILE and never the DEF LINE")
     for f, ln, name, how in stubdefs:
         print(f"        {f}:{ln}  def {name}(...)   {how}")
-    for f, ln, name, how in [m for m in member_sites if m not in stubdefs][:12]:
+    rest = [m for m in member_sites if m not in stubdefs]
+    for f, ln, name, how in rest[:12]:
         print(f"        {f}:{ln}  {how}")
+    _elided(len(rest), 12)
 
     print("")
     print("=" * 78)
@@ -292,7 +311,12 @@ def main() -> int:
     same = [r for r in red + inert if r[0] == args.app_file]
     print(f"  sweep                 {total} site(s) in {len(allfiles)} file(s)")
     print(f"     of which SAME-FILE {len(same)}   <- SUBSET of RED+INERT, in {args.app_file}: YOURS, same commit")
+    ext_inert = [r for r in inert if r[0] != args.app_file]
     print(f"     of which INERT     {len(inert)}   <- invisible to a green suite")
+    print(f"        INERT OUTSIDE {args.app_file}: {len(ext_inert)} in "
+          f"{len({r[0] for r in ext_inert})} file(s)   <- THE SILENT RISK. "
+          "Inert sites INSIDE the moving file leave WITH the methods and "
+          "resolve themselves; only these can stay green and wrong.")
     print(f"     of which RED       {len(red)}")
     print(f"     of which FAKES     {len(fakes)}")
     print(f"     of which MEMBERS   {len(member_sites)}   <- incl. {len(stubdefs)} stub-class def(s)")
