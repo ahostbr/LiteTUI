@@ -46,17 +46,12 @@ HEARTBEAT_EVERY = 12
 
 #: Set to a non-empty value to make registration a no-op.
 #:
-#: 🔴 THE SUITE USED TO EVICT THE RUNNING APP FROM THE FLEET. Tests construct
-#: LiteTUI, LiteTUI registers, and registration passes --takeover, which is
-#: documented to refuse a live holder and measurably does not (see register()).
-#: So every `python tests/run_all.py` took the name "LiteTUI" from Ryan's
-#: running instance and moved its registry row to ~/.liteharness/.ghost_evicted_*.
-#: Measured 2026-08-20: the live app was pid 474900 and its record was in the
-#: graveyard, while the roster's only LiteTUI row named a dead test process.
-#:
-#: Same family as the `lms load` on connect and the .convos pollution: the app's
-#: own startup path reaching LIVE SHARED STATE from a test. The registry is not
-#: this repo's to write during a test run.
+#: 🔴 SET THIS IN TESTS. Without it, constructing LiteTUI REGISTERS, and
+#: registration passes --takeover, which does not refuse a live holder -- so a
+#: test run EVICTS the developer's running app from the fleet registry and
+#: leaves a dead test process as the only LiteTUI row.
+#: The registry is live shared state and is not this repo's to write from a test.
+#: Why: Docs/adr/0002-tests-must-not-write-the-live-registry.md
 NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
 
 
@@ -249,67 +244,22 @@ class Seat:
                 self._presence_argv() + [
                  # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
                  #
-                 # 🔴 RETRACTED 2026-08-23. This block used to say the agent
-                 # id "is minted per PROCESS and persisted nowhere ... that part
-                 # is correct and must stay (the conversation id cannot be
-                 # reused for it)". THAT IS THE DESIGN RYAN REJECTED on
-                 # 2026-08-21, and it is documented here as if it were current.
+                 # 🔴 The agent id is DERIVED from the conversation (agent_id_for_convo,
+                 # uuid5), never minted per process. Ryan rejected per-process ids on
+                 # 2026-08-21 after they put a dispatched task in a DEAD MAILBOX while
+                 # `send` exited 0. Do NOT reintroduce them -- and do not re-derive them
+                 # from first principles either, which is what happens when this note is
+                 # simply deleted.
                  #
-                 # What actually ships: agent_id_for_convo() DERIVES the id from
-                 # the conversation, uuid5 over "litetui:seat:" + convo_id
-                 # (0852dab). Per-process ids were tried and measured -- one
-                 # conversation minted three ids in an evening, two of them
-                 # heartbeating at nothing, and a dispatched task landed in a
-                 # dead mailbox while `send` exited 0. See that function's
-                 # docstring for the full reasoning; it is not repeated here,
-                 # because a second copy is a second thing that can drift.
+                 # ⚠️ --takeover does NOT protect this seat. It is documented to refuse a
+                 # live holder and measurably does not, so a second process TAKES THE NAME.
+                 # Address mail by agent_id, never by name.
                  #
-                 # The old block's ONE correct observation survives the change:
-                 # identity does shift within a process on /new and /resume, and
-                 # two windows on the same conversation now share one id and so
-                 # poll one mailbox. That is a consequence of the ruling, not an
-                 # argument against it -- silent misdelivery was the worse cost.
-                 # The shift is handled: Seat.rebind() retires the old row and
-                 # re-registers under the new id in one transition.
+                 # ⚠️ A live session_pid is NOT enough: last_seen is written once, so a seat
+                 # decays to [ghost] at ~10 minutes. heartbeat() is what keeps it on the
+                 # roster.
                  #
-                 # ⭐ Why this retraction is left in place instead of the lines
-                 # simply being deleted: the false premise regenerates. A reader
-                 # who finds no trace of it re-derives it from first principles
-                 # and reaches the rejected design again. In this repo A COMMENT
-                 # IS A HYPOTHESIS -- three prose-contradicts-code defects were
-                 # found here in one day (this one, _sync_seat_identity's
-                 # "the next heartbeat re-registers", and mcp_client's "every
-                 # wait is bounded"). Follow the control flow, not the prose.
-                 #
-                 # But without --takeover the NAME cannot carry across either:
-                 # the previous process still holds "LiteTUI" in the registry, so
-                 # the name is refused and a random one is generated instead.
-                 # Measured on the live roster 2026-08-19 -- SIX rows for one
-                 # seat: LiteTUI, BlackGrid, HazeCrypt, PrimeWard, HotPack,
-                 # CyanWedge. Anyone who wrote down a name had a stale pointer
-                 # one restart later.
-                 #
-                 # --takeover is DOCUMENTED to evict only a ghost and to refuse
-                 # a genuinely live holder. ⚠ THAT GUARD DOES NOT PROTECT THIS
-                 # SEAT, and I measured it rather than assuming: two live probes,
-                 # and the second took the name from the first.
-                 #
-                 # _agent_record_live reads presence.session_pid and treats a
-                 # falsy one as NOT live. ✅ FIXED 2026-08-20: the CLI grew an
-                 # opt-in --session-pid, _presence_argv() passes ours, and a
-                 # restored seat was measured reading [active] rather than
-                 # [ghost]. (This block used to say the field was unreachable
-                 # from `liteharness.cli register` and that the seat "always
-                 # reads as a ghost" -- both were true when written and are not
-                 # now.)
-                 #
-                 # Two windows at once still trade the NAME; mail is addressed by
-                 # agent_id, so nothing is misdelivered.
-                 #
-                 # ⚠️ A LIVE PID IS NOT ENOUGH ON ITS OWN. `last_seen` is written
-                 # once at registration, so a seat with a correct live pid still
-                 # decays to [ghost] -- measured at 10 minutes. heartbeat() is
-                 # what keeps it on the roster.
+                 # Why: Docs/adr/0003-seat-identity-is-derived-from-the-conversation.md
                  "--takeover"],
                 timeout=30,
             )

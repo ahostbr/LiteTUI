@@ -1879,15 +1879,11 @@ class LiteTUI(App):
         text = harness_mod.format_message(msg)
         profile = tool_policy.SCHEDULED
         if self._chat_running():
-            # HELD, not appended. An appended-mid-turn message lands between
-            # an assistant message and its tool results where nothing announces
-            # it — measured 2026-08-21: the text sat in context for four
-            # turns while the model's own inbox tool said "(no new messages)"
-            # (truthfully — this monitor had already claimed the mail), so the
-            # model trusted the tool over its own context and never acted.
-            # Inert injection is not delivery. Held mail flushes as a REAL
-            # user turn the model cannot miss. Inbox mail always QUEUES —
-            # another agent's mail must never cancel work in flight.
+            # HELD, never appended: an appended mid-turn message lands where
+            # nothing announces it and the model trusts its inbox tool over its
+            # own context, so it goes unread. Inbox mail always QUEUES -- it must
+            # never cancel work in flight.
+            # Why: Docs/adr/0001-mid-turn-mail-is-held-not-appended.md
             self._user_bubble(text, False, queued=True)
             self._pending_input.append(
                 {"content": text, "text": text, "tool_profile": profile}
