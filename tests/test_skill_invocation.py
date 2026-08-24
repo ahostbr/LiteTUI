@@ -75,9 +75,12 @@ class _StubApp:
         self.turns = 0
         self.conversation: list[dict] = [{"role": "system", "content": "BASE PROMPT"}]
 
-    def _system(self, text):
+    def system_message(self, text):
         self.said.append(text)
 
+    # The real class aliases these to one function; the stub mirrors it so a
+    # caller of either name reaches this recorder.
+    _system = system_message
     def _user_bubble(self, text, has_image, queued=False):
         self.bubbles.append(text)
 

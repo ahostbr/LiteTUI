@@ -29,7 +29,7 @@ def _cmd_new(app, name: str, arg: str) -> None:
     app._new_convo()  # a fresh file — never reuse the old one
     app._load_system_prompt()
     app.query_one("#chat-log").remove_children()
-    app._system(
+    app.system_message(
         f"New conversation — {app.convo_id}\n"
         f"  store: {app.convo_dir}\n"
         f"  memory.md · soul.md · handoff.md · {paths.MEMORIES_DIR}/"
@@ -46,9 +46,9 @@ def _cmd_system(app, name: str, arg: str) -> None:
             )
         app._edit(0, "system prompt changed")
         preview = arg[:80] + ("..." if len(arg) > 80 else "")
-        app._system(f"System prompt set: {preview}")
+        app.system_message(f"System prompt set: {preview}")
     else:
-        app._system("Usage: /system <prompt>")
+        app.system_message("Usage: /system <prompt>")
 
 
 def _cmd_compact(app, name: str, arg: str) -> None:
@@ -61,7 +61,7 @@ def _open_convos_picker(app) -> None:
     chat text. Selecting a row opens it; Esc closes it."""
     rows = ConversationRepository.list_all()
     if not rows:
-        app._system("Nothing to resume.")
+        app.system_message("Nothing to resume.")
         return
     # Same picker as /model, so the two interactions cannot drift.
     items = []
@@ -119,7 +119,7 @@ def _cmd_rename(app, name: str, arg: str) -> None:
                 current = str(meta.get("name") or "")
             except OSError:
                 current = ""
-        app._system(
+        app.system_message(
             f"This conversation is named {current!r}." if current
             else "This conversation has no name. Give it one with /rename <name>."
         )
@@ -131,16 +131,16 @@ def _cmd_rename(app, name: str, arg: str) -> None:
     # naming an old one, instead of silently doing nothing.
     app._materialise_convo()
     if app.convo_path is None:
-        app._system("No conversation to name yet.")
+        app.system_message("No conversation to name yet.")
         return
     app.store.write_record({"type": "rename", "name": wanted})
-    app._system(f"Named this conversation {wanted!r}. It shows in /convos and /resume.")
+    app.system_message(f"Named this conversation {wanted!r}. It shows in /convos and /resume.")
 
 
 def _cmd_resume(app, name: str, arg: str) -> None:
     rows = ConversationRepository.list_all()
     if not rows:
-        app._system("Nothing to resume.")
+        app.system_message("Nothing to resume.")
         return
     target = None
     if arg.isdigit():
@@ -156,7 +156,7 @@ def _cmd_resume(app, name: str, arg: str) -> None:
                 target = row
                 break
     if target is None and arg:
-        app._system(
+        app.system_message(
             f"No conversation matches {arg!r}. Run /resume with no argument to pick one."
         )
         return

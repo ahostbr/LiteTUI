@@ -209,16 +209,16 @@ def _cmd_glassbox(app, name: str, arg: str) -> None:
     action = (arg or "").strip().lower()
     if action in ("start", "on", ""):
         _ENABLED = True
-        app._system(f"[glassbox] {SERVER.start()}")
-        app._system(f"[glassbox] recording to {_RECORDER.path}")
+        app.system_message(f"[glassbox] {SERVER.start()}")
+        app.system_message(f"[glassbox] recording to {_RECORDER.path}")
     elif action in ("stop", "off"):
         _ENABLED = False
-        app._system(f"[glassbox] {SERVER.stop()}")
+        app.system_message(f"[glassbox] {SERVER.stop()}")
     elif action == "status":
         where = f"http://{HOST}:{SERVER.port}/events" if SERVER.running else "not running"
-        app._system(f"[glassbox] {where}\n[glassbox] recording to {_RECORDER.path}")
+        app.system_message(f"[glassbox] {where}\n[glassbox] recording to {_RECORDER.path}")
     else:
-        app._system("[glassbox] usage: /glassbox [start|stop|status]")
+        app.system_message("[glassbox] usage: /glassbox [start|stop|status]")
 
 
 _RECORDER = Recorder(Path("glassbox.jsonl"))

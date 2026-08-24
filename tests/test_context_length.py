@@ -212,7 +212,7 @@ def test_every_explicit_model_switch_applies_the_setting():
     plug_src = (Path(app_mod.__file__).parent / "plugins" / "model_switch.py").read_text(encoding="utf-8")
     sites = []
     for src_text, marker in ((app_src, 'self._system(f"Switched to: {self.model_id}")'),
-                             (plug_src, 'app._system(f"Switched to: {app.model_id}")')):
+                             (plug_src, 'app.system_message(f"Switched to: {app.model_id}")')):
         parts = src_text.split(marker)
         sites.extend(parts[1:])
     assert len(sites) == 3, f"expected 3 switch sites across app+plugin, found {len(sites)}"

@@ -28,7 +28,7 @@ def _cmd_refresh(app) -> None:
     you the thing you just wrote was actually seen.
     """
     if not app.settings.skills_enabled:
-        app._system("Skills are OFF in /settings — nothing to refresh.")
+        app.system_message("Skills are OFF in /settings — nothing to refresh.")
         return
     added, removed = app.refresh_skills()
     where = skills_mod.cache_path(paths.ROOT)
@@ -41,7 +41,7 @@ def _cmd_refresh(app) -> None:
         lines.append("  no change")
     # A folder that produced nothing is the whole reason someone refreshes.
     lines.extend(_skipped_lines(app, paths.ROOT / skills_mod.SKILLS_DIR_NAME))
-    app._system("\n".join(lines))
+    app.system_message("\n".join(lines))
 
 
 def _invoke(app, want: str, extra: str = "") -> None:
@@ -69,7 +69,7 @@ def _invoke(app, want: str, extra: str = "") -> None:
     if body.startswith("[error]"):
         # Never inject a failed lookup — it would tell the model a skill does
         # not exist, and it would burn a turn saying so.
-        app._system(body)
+        app.system_message(body)
         return
     # THE BUBBLE AND THE MESSAGE CARRY DIFFERENT TEXT, DELIBERATELY. The screen
     # gets one line (Ryan: "remove any printing to the screen effect"); the
@@ -113,7 +113,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         _invoke(app, want, rest.strip())
         return
     if not app.settings.skills_enabled:
-        app._system(
+        app.system_message(
             "Skills are OFF in /settings, so none were discovered and the "
             "`skill` tool is not offered to the model."
         )
@@ -121,7 +121,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
     if not app.skills:
         # Nothing to pick. The report is the useful answer here: it says where
         # it looked, which is the whole question when the list is empty.
-        app._system(_skills_report(app, base))
+        app.system_message(_skills_report(app, base))
         return
 
     # A picker, not eighty lines of transcript. The full report stays one
@@ -131,7 +131,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
     if skipped:
         # A folder that produced no skill is the one thing a picker cannot
         # show, because it has no row. Say it out loud, briefly.
-        app._system("\n".join(x for x in skipped if x.strip()))
+        app.system_message("\n".join(x for x in skipped if x.strip()))
 
     rows = [(_REPORT_ROW, "Full report  —  roots, libraries, token cost, skipped folders")]
     for s in sorted(app.skills, key=lambda s: s.name.lower()):
@@ -142,7 +142,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         if not choice:
             return
         if choice == _REPORT_ROW:
-            app._system(_skills_report(app, base))
+            app.system_message(_skills_report(app, base))
             return
         _invoke(app, choice)
 

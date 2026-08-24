@@ -76,9 +76,12 @@ class _StubApp:
     def _materialise_convo(self):
         self.materialised += 1
 
-    def _system(self, text):
+    def system_message(self, text):
         self.said.append(text)
 
+    # The real class aliases these to one function; the stub mirrors it so a
+    # caller of either name reaches this recorder.
+    _system = system_message
     _read_convo = staticmethod(m.LiteTUI._read_convo)
 
 

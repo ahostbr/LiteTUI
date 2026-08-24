@@ -85,7 +85,7 @@ async def test_slash_skills_names_what_was_SKIPPED():
     pushed: list = []
     async with a.run_test() as pilot:
         await pilot.pause()
-        a._system = lambda s: msgs.append(s)
+        a.system_message = a._system = lambda s: msgs.append(s)
         a.push_screen = lambda screen, cb=None: pushed.append((screen, cb))
         a._handle_command("/skills")
         await pilot.pause()
@@ -134,7 +134,7 @@ async def test_slash_skills_actually_gives_the_body_to_the_model():
     turns: list[int] = []
     async with a.run_test() as pilot:
         await pilot.pause()
-        a._system = lambda s: msgs.append(s)
+        a.system_message = a._system = lambda s: msgs.append(s)
         a._user_bubble = lambda t, h, queued=False: bubbles.append(t)
         a._stream = lambda: turns.append(1)
         a._handle_command("/skills probe")
@@ -166,7 +166,7 @@ async def test_an_empty_directory_says_what_it_expects():
     pushed: list = []
     async with a.run_test() as pilot:
         await pilot.pause()
-        a._system = lambda s: msgs.append(s)
+        a.system_message = a._system = lambda s: msgs.append(s)
         a.push_screen = lambda screen, cb=None: pushed.append((screen, cb))
         a._handle_command("/skills")
         await pilot.pause()
@@ -199,7 +199,7 @@ async def test_disabled_says_so_rather_than_reporting_zero():
     msgs: list[str] = []
     async with a.run_test() as pilot:
         await pilot.pause()
-        a._system = lambda s: msgs.append(s)
+        a.system_message = a._system = lambda s: msgs.append(s)
         a._handle_command("/skills")
         await pilot.pause()
     assert "OFF" in msgs[-1] or "off" in msgs[-1]
