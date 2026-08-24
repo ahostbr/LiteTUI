@@ -180,15 +180,25 @@ class TpsState:
     def __init__(self) -> None:
         self.t0: float | None = None
         self.n = 0
+        #: `n` SPLIT BY KIND, never counted separately — see `tick`.
+        #: reasoning + content == n, always, because one increment site
+        #: partitions the same event rather than a second counter tallying
+        #: the same deltas. Two counts of one thing that must agree is the
+        #: drift class this file would otherwise be introducing.
+        self.reasoning = 0
+        self.content = 0
         self.painted = 0.0
 
     def start(self) -> None:
         """A new turn: forget the previous one entirely."""
         self.t0 = None
         self.n = 0
+        self.reasoning = 0
+        self.content = 0
         self.painted = 0.0
 
-    def tick(self, now: float | None = None) -> float | None:
+    def tick(self, now: float | None = None, *,
+             reasoning: bool = False) -> float | None:
         """One streamed delta arrived. Returns a live estimate to publish, or
         None — see `final` for the figure that supersedes it.
 
@@ -201,6 +211,13 @@ class TpsState:
             self.t0 = now
             return None         # nothing to divide by yet
         self.n += 1
+        # THE SAME INCREMENT, PARTITIONED. Not a second tally: the split has
+        # to sum to `n` or the header and the footer could disagree about a
+        # turn nobody could then reconcile.
+        if reasoning:
+            self.reasoning += 1
+        else:
+            self.content += 1
         elapsed = now - self.t0
         if elapsed >= 0.4 and now - self.painted >= 0.25:
             self.painted = now

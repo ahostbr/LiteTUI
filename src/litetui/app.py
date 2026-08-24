@@ -2672,7 +2672,11 @@ class LiteTUI(App):
                         self._eta.estimate_tokens(), self._eta.learned_rate())
                 if self._thinking_live is not None:
                     # The app owns the tps reactive; the block only renders it.
-                    self._thinking_live.repaint_header(self.tps)
+                    # The reasoning half of TpsState's partition — not a
+                    # separate tally, so it can never disagree with the
+                    # footer's output count or with the rate.
+                    self._thinking_live.repaint_header(
+                        self.tps, self._tps.reasoning)
                 for tool in self._inflight_tools:
                     tool._tick()
                 if card_live:
@@ -3540,7 +3544,10 @@ class LiteTUI(App):
                         delta, "reasoning", None
                     )
                     if token:
-                        rate = self._tps.tick()
+                        # TAGGED as reasoning, so TpsState's partition can tell
+                        # the thinking header's number from the footer's. Both
+                        # branches call the same tick; only the tag differs.
+                        rate = self._tps.tick(reasoning=True)
                         if rate is not None:
                             self.tps = rate
                         self._glassbox_rate("thinking")

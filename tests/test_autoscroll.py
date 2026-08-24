@@ -26,6 +26,7 @@ actually about.
 """
 
 from pathlib import Path
+import ast
 import re
 import sys
 
@@ -242,13 +243,35 @@ def test_warns_once_when_a_trace_arrives_despite_think_off():
 
 def test_the_warning_is_gated_on_think_off_and_sits_on_the_reasoning_branch():
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
-    # 600 -> 1600. The gate did not move out of the reasoning branch; a long
-    # comment block explaining the deferred mount scroll was inserted between
-    # the anchor and it, pushing it to ~1250 chars. A window that tight makes
-    # the test sensitive to COMMENTARY, which is not what it is protecting.
-    m = re.search(r"if token:(.{0,1600})", src, re.S)
-    assert m and 'self.thinking_level == "off"' in m.group(1), "not fired for every trace"
-    assert "_warn_reasoning_ignored()" in m.group(1), "sits where the evidence is"
+    # 🔴 THE BLOCK, NOT A CHARACTER WINDOW. This was `if token:(.{0,600})`, then
+    # `.{0,1600}` after a comment block pushed the gate out of range, and then it
+    # broke a THIRD time the same way (T079 added three comment lines above the
+    # tick). Each widening defers the same failure and makes the window wider
+    # than the thing it is meant to bound.
+    #
+    # The property is STRUCTURAL — "the gate lives inside the reasoning branch" —
+    # so it is asserted structurally. Commentary of any length is now irrelevant,
+    # which is what the previous comment already said it wanted.
+    tree = ast.parse(src)
+    blocks = [
+        ast.get_source_segment(src, node) or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "token"
+    ]
+    assert blocks, "no `if token:` reasoning branch found at all"
+    # There is more than one: `_stream` streams the trace and `_compact` extracts
+    # it again. The warning belongs to the streaming one, so ANY block carrying
+    # both is the proof — naming which would re-couple this to line order.
+    guarded = [
+        b for b in blocks
+        if 'self.thinking_level == "off"' in b and "_warn_reasoning_ignored()" in b
+    ]
+    assert guarded, (
+        "the think-off gate and the warning are no longer together inside a "
+        f"reasoning branch ({len(blocks)} such branches scanned)"
+    )
     assert "ext.virtualModel.customField" in src and "Skipping this field" in src, (
         "the narrowed valid set is recorded in source, with its provenance"
     )

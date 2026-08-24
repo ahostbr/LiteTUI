@@ -60,6 +60,7 @@ from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
     render_progress,
     thinking_header_text,
     tool_display_parts,
+    token_count_text,
     tps_text,
 )
 from litetui import skills as skills_mod
@@ -123,9 +124,31 @@ def store_block(app, live: bool=False) -> str:
     return '\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n' + '\n\n'.join(parts) + '\n'
 
 def append_tps_into(app, t: Text, sep: str) -> None:
+    """The generation-stats field: output tokens, then tok/s.
+
+    ⚠️ THE NAME SAYS tps AND IT NOW CARRIES BOTH. Kept rather than renamed
+    because test_footer aliases this symbol and the rename would be churn for
+    no behavioural gain — but the docstring has to say so, or the next reader
+    trusts the name.
+
+    Ryan asked for the count "next to toks", so it shares `footer_show_tps`
+    rather than growing its own toggle: LM Studio prints them as one cluster
+    ("17 GEN 2,775 tok") and that is what he is comparing against.
+
+    The OUTPUT half of TpsState's partition — the thinking header shows the
+    reasoning half. One counting site, so the two surfaces cannot disagree.
+    """
     if app.tps is None:
         return
     if t.plain:
+        t.append(sep, '#5c6370')
+    stats = getattr(app, '_tps', None)
+    produced = getattr(stats, 'content', 0) if stats is not None else 0
+    if produced:
+        # 0 renders as absence, never "0 tok" — a turn that produced only a
+        # tool call generated no prose, and painting a zero claims a measured
+        # nothing where there is simply nothing to say.
+        t.append(token_count_text(produced), '#7d8799')
         t.append(sep, '#5c6370')
     # Coloured by how it FEELS to use, not by an absolute scale: this is a
     # local model on one GPU, and the number that matters is whether the

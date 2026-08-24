@@ -246,8 +246,25 @@ def tps_text(tps: float) -> str:
     return f"{tps:.1f} tok/s"
 
 
+def token_count_text(tokens: int) -> str:
+    """Pure: the token-count field, one format for every surface (the footer,
+    the thinking header) — the same arrangement `tps_text` has, and for the
+    same reason.
+
+    Comma-grouped to match the readout Ryan is comparing against: LM Studio
+    prints "2,775 tok" and a bare 2775 beside it reads as a different quantity.
+
+    THE CALLER DECIDES WHETHER TO SHOW IT AT ALL. Zero is a real answer — a
+    turn that produced a tool call and no prose generated no output tokens —
+    but it is not a useful one to paint, and it is indistinguishable on screen
+    from "not counted yet". Both surfaces treat 0 as absence, which is the same
+    rule `tps_text` follows for None.
+    """
+    return f"{tokens:,} tok"
+
+
 def thinking_header_text(marker: str, t0: float, now: float,
-                         tps: float | None) -> str:
+                         tps: float | None, tokens: int | None = None) -> str:
     """Pure: the thinking block header while the trace is streaming.
     '<marker> Thinking · 12.3s ... · 24.1 tok/s' — the elapsed part is
     render_progress (no ETA: a reasoning trace has no token count until
@@ -255,8 +272,22 @@ def thinking_header_text(marker: str, t0: float, now: float,
     tok/s part is tps_text (the footer's own format, one source). tps
     None -> elapsed only; the field is never rendered as 0.0 tok/s.
     `marker` is the expand glyph, so a collapsed block keeps its own
-    state in the same string."""
+    state in the same string.
+
+    `tokens` is the count of REASONING deltas this turn (T079, Ryan: "total
+    tokens thinking that turn"). It sits between the elapsed time and the rate
+    so the line reads as quantity-then-speed. Zero or None renders as absence,
+    never "0 tok" — the docstring above already refuses that for tok/s and the
+    same argument applies: a rendered zero is a claim about a number that has
+    not been produced.
+
+    ⚠️ It is OUR delta count, not `usage.completion_tokens`. The server reports
+    ONE figure covering reasoning AND output together, so it cannot answer the
+    question this field asks. Ryan sanctioned the approximation explicitly:
+    "even if we calc it ourself"."""
     text = f"{marker} Thinking · {render_progress(t0, now)}"
+    if tokens:
+        text += f" · {token_count_text(tokens)}"
     if tps is not None:
         text += f" · {tps_text(tps)}"
     return text

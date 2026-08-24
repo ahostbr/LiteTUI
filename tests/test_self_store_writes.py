@@ -156,6 +156,12 @@ def test_the_store_check_comes_FIRST_when_the_store_is_INSIDE_the_workspace(monk
     two tests cannot overlap, so the ordering is not exercised at all: the test
     would pass without ever posing the question. Pinning the production shape
     is what makes this an assertion rather than an accident of collection order.
+
+    ⚠️ DO NOT "TIDY" THIS TO USE `_store()` LIKE ITS NEIGHBOURS. Under the
+    redirected fixture the store sits outside the repo, the two cases cannot
+    overlap, and this test would still pass — while no longer asking the
+    question it exists to ask. It is the only thing standing between a
+    reversed ordering and a fix that looks present and does nothing.
     """
     production_store = ROOT / ".convos"
     monkeypatch.setattr(paths, "CONVO_DIR", production_store)

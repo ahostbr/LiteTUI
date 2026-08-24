@@ -287,14 +287,19 @@ class ThinkingBlock(Vertical):
     # so they are testable without a live app; the tps number is the
     # app's single reactive, never a second one.
 
-    def repaint_header(self, tps: float | None) -> None:
-        """One repaint tick from the app's _elapsed_repaint loop. tps
-        arrives as an argument - the block never reaches for the app
-        itself, so this stays testable on a bare double."""
+    def repaint_header(self, tps: float | None,
+                       tokens: int | None = None) -> None:
+        """One repaint tick from the app's _elapsed_repaint loop. tps and
+        tokens arrive as ARGUMENTS - the block never reaches for the app
+        itself, so this stays testable on a bare double.
+
+        `tokens` is the reasoning-delta count for the turn (T079). Same
+        discipline as tps: passed in, never fetched, and defaulted so every
+        existing caller and double keeps working untouched."""
         if self._t0 is None:
             return
         self.query_one(ThinkingHeader).content = thinking_header_text(
-            self._marker, self._t0, time.monotonic(), tps)
+            self._marker, self._t0, time.monotonic(), tps, tokens)
 
     def reset_header(self) -> None:
         """The trace stopped streaming: back to a plain header, no timer.
