@@ -47,6 +47,7 @@ DENY = "deny"
 
 INTERACTIVE = "interactive"
 SCHEDULED = "scheduled"
+AUTONOMOUS = "autonomous"
 #: PROFILE_NAMES is DERIVED from PROFILES, below — see the note there. It used
 #: to be a hand-written tuple here, which meant the same set of profiles was
 #: spelled out in three places.
@@ -141,14 +142,45 @@ SCHEDULED_PROFILE = ToolProfile(
 #: is refused by the settings validator, and cannot be selected by anyone. It
 #: was reachable and silent. Adding a profile is now one edit, in one place.
 #:
-#: ⚠️ INSERTION ORDER IS NOW THE DROPDOWN ORDER, so it is a human-facing
-#: decision rather than a formality. Left exactly as the hand-written list had
-#: it, deliberately: this commit is a derivation and nothing else, so the
-#: derived choices can be asserted equal to the old hardcoded pairs. Reordering
-#: inside a refactor is a UI change wearing a refactor's clothes.
+#: Everything, unattended, no questions. The point of the row: Ryan killed his
+#: own agent seat rather than keep answering the modal, and a guard that gets
+#: ROUTED AROUND protects nothing. This is the supported way to say "do not ask
+#: me", instead of the unsupported one (kill the agent, or leave tools off).
+#:
+#: `allow=CAPABILITIES` is DERIVED, not a copy of the seven names, for the same
+#: reason PROFILE_NAMES is: a capability added later would otherwise land
+#: OUTSIDE this profile's allow AND confirm, and "autonomous" would start
+#: refusing something. Fail-safe, but it would mean the profile quietly stopped
+#: meaning what it says.
+#:
+#: ⚠️ THIS PROFILE HAS NO CONFIRM STEP, SO THE ONLY THING BETWEEN IT AND ANY
+#: TOOL IS A STANDING `deny` RULE. Those still win — the deny gate runs before
+#: the profile is consulted at all — and that is the one brake left.
+AUTONOMOUS_PROFILE = ToolProfile(
+    AUTONOMOUS,
+    allow=CAPABILITIES,
+    confirm=frozenset(),
+    # No em dash: the label is rendered as "<name> — <summary>", so a dash here
+    # produces "autonomous — never asks — every capability", which reads as two
+    # separate clauses bolted together.
+    summary="every capability, unattended, never asks",
+)
+
+#: ⚠️ INSERTION ORDER IS THE DROPDOWN ORDER, so it is a human-facing decision
+#: rather than a formality (Sentinel raised exactly this). Ordered by AUTHORITY
+#: GRANTED, ASCENDING — the list reads as a scale of trust and the widest
+#: option sits visibly at the end rather than beside its neighbours. Insertion
+#: order would have put `autonomous` next to `interactive`, which hides that it
+#: is the extreme.
+#:
+#: 📌 This REORDERS an existing dropdown (interactive/scheduled becomes
+#: scheduled/interactive). Held out of the derivation commit deliberately, so a
+#: reviewer could verify that one changed nothing visible; it belongs here,
+#: with the change that makes ordering matter.
 PROFILES = {
-    INTERACTIVE: INTERACTIVE_PROFILE,
     SCHEDULED: SCHEDULED_PROFILE,
+    INTERACTIVE: INTERACTIVE_PROFILE,
+    AUTONOMOUS: AUTONOMOUS_PROFILE,
 }
 
 #: Derived, never hand-written. `tuple` so it stays immutable and ordered.
@@ -235,7 +267,14 @@ def evaluate(
             capabilities,
             f"{profile.name} profile does not grant {', '.join(sorted(outside))}",
         )
-    if policy.confirm_always or capabilities & profile.confirm:
+    # 🔴 A PROFILE WITH AN EMPTY `confirm` SET NEVER OPENS A MODAL, and that
+    # guard is `profile.confirm and ...` rather than the capability test alone.
+    # `confirm_always` (MCP_UNKNOWN_POLICY) forces a prompt REGARDLESS of
+    # capabilities, so without this an unattended profile that allows
+    # everything would reach this branch and block on a human who is not there
+    # — the turn waits forever. `scheduled` never hit it only by construction:
+    # everything it does not allow is refused above, before this line.
+    if profile.confirm and (policy.confirm_always or capabilities & profile.confirm):
         if tool_name and key in always_allow:
             return PolicyDecision(
                 ALLOW,

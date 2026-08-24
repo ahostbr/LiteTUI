@@ -21,21 +21,48 @@ import pytest
 
 from litetui import tool_policy
 from litetui.settings_screen import tool_profile_choices
-from litetui.tool_policy import INTERACTIVE, PROFILE_NAMES, PROFILES, SCHEDULED
+from litetui.tool_policy import (
+    AUTONOMOUS,
+    INTERACTIVE,
+    PROFILE_NAMES,
+    PROFILES,
+    SCHEDULED,
+)
 
 
-def test_the_derivation_preserves_the_hand_written_list_exactly():
-    """The regression guard for the refactor itself.
+def test_the_original_labels_are_still_word_for_word():
+    """The surviving half of the derivation's regression guard.
 
-    These are the literal pairs that were hardcoded in settings_screen.py
-    before the derivation, in the order they were written. If the derived list
-    differs, the dropdown changed for the user — which may be intended, but not
-    by a commit whose whole claim is that it changed nothing visible.
+    It originally pinned the whole list, order included, so the derivation
+    commit could prove it changed nothing visible. Adding AUTONOMOUS changed
+    the list DELIBERATELY (a third entry, and a reorder to ascending
+    authority), so the order assertion moved to its own test below. What must
+    NOT drift is the wording of the two labels that already existed — a
+    refactor is allowed to add an option, not to silently reword the others.
     """
-    assert tool_profile_choices() == [
-        ("interactive — inspect freely, confirm sensitive actions", INTERACTIVE),
-        ("scheduled — read-only tools only", SCHEDULED),
+    labels = dict((v, k) for k, v in tool_profile_choices())
+    assert labels[INTERACTIVE] == "interactive — inspect freely, confirm sensitive actions"
+    assert labels[SCHEDULED] == "scheduled — read-only tools only"
+
+
+def test_the_dropdown_is_ordered_by_ascending_authority():
+    """The order is a human-facing decision, not insertion order.
+
+    scheduled (read-only) → interactive (asks) → autonomous (everything). The
+    list reads as a scale of trust and the widest option sits visibly at the
+    end. Insertion order would have put autonomous beside interactive, which
+    hides that it is the extreme.
+    """
+    assert [v for _l, v in tool_profile_choices()] == [
+        SCHEDULED, INTERACTIVE, AUTONOMOUS
     ]
+
+
+def test_no_label_renders_a_double_separator():
+    """The label is "<name> — <summary>", so an em dash inside a summary
+    produces two clauses bolted together. Caught on autonomous's first draft."""
+    for label, _value in tool_profile_choices():
+        assert label.count("—") <= 1, label
 
 
 def test_a_new_profile_appears_without_touching_the_screen(monkeypatch):
