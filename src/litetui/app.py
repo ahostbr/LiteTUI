@@ -49,6 +49,7 @@ from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
     midturn_action,
     render_progress,
     thinking_header_text,
+    tool_denied,
     tool_display_parts,
     tps_text,
 )
@@ -271,13 +272,19 @@ LITETUI_SPLASH = (
 #: switch is `settings_screen.py:308`, labelled "Tools enabled" on the
 #: "Agent loop" tab. A refusal that sends the user somewhere that does not
 #: exist is worse than no refusal at all.
-TOOLS_DISABLED_RESULT = (
-    "[disabled] Tools are turned OFF in LiteTUI, so nothing ran and nothing "
-    "changed. Only the user can turn them on: Ctrl+T, or Settings -> Agent "
-    "loop -> Tools enabled. Tell them that in plain language, then answer as "
-    "best you can without tools. Do not retry and do not try another tool."
-)
-
+#:
+#: 🔴 THE REFUSAL HALF NOW LIVES IN `prompts/tool-denied.md`, section
+#: `## tools-off`, reached through `textfmt.tool_denied("tools-off")` — one
+#: file holding every refusal LiteTUI hands the model. The constant that used
+#: to sit here is still the FLOOR (`textfmt.TOOL_DENIED_FALLBACK`), used when
+#: the file is missing or an edit breaks the section, so a refusal survives
+#: its own source being broken.
+#:
+#: ⚠️ TOOLS_DISABLED_PROMPT below DID NOT MOVE, deliberately: it is a SYSTEM
+#: PROMPT section, not a refusal, and it is composed at turn start rather than
+#: returned in place of a tool result. Migrating it is a separate question and
+#: has not been asked — the drift warning above is why it is flagged here
+#: rather than moved quietly.
 TOOLS_DISABLED_PROMPT = (
     "\nTOOLS ARE ADVERTISED BUT DISABLED. The schemas are offered so "
     "that a tool call is a real call rather than text you type out; every one "
@@ -927,6 +934,13 @@ class LiteTUI(App):
         self.store = ConversationRepository(on_error=self._report_persist_error)
         # Staged-but-not-created. See _new_convo / _materialise_convo.
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
+        #: WHY _stop_requested was set, as the line to show the user, or None
+        #: for the plain Esc case. It exists because the agent loop's tail used
+        #: to report "reached N tool iterations" for EVERY early break — so
+        #: stopping the turn any other way (Esc during tool execution, and now
+        #: denying a tool) explained itself with a cap that was never reached
+        #: and sent the user to /settings to raise it.
+        self._stop_reason: str | None = None
         # Did the LAST turn end because the user killed it, or because it
         # finished? Only the post-compaction wake ping cares: "resume the
         # in-flight task" is the wrong thing to say about a task the user
@@ -1393,13 +1407,13 @@ class LiteTUI(App):
         # PARSED: detect-and-execute would defeat the one guarantee this
         # setting exists to make.
         if not self.tools_enabled:
-            return TOOLS_DISABLED_RESULT, False
+            return tool_denied("tools-off"), False
         fn = self._dispatch_for(name)
         if fn is None:
-            return f"[error] unknown tool: {name}", False
+            return tool_denied("unknown-tool", name=name), False
         policy = self.plugins.policy_for(name)
         if policy is None:
-            return f"[policy denied] {name}: no capability metadata", False
+            return tool_denied("no-metadata", name=name), False
         decision = tool_policy.evaluate(
             getattr(self, "_active_tool_profile", tool_policy.INTERACTIVE),
             policy,
@@ -1410,7 +1424,7 @@ class LiteTUI(App):
             deny=frozenset(self.settings.tool_deny or ()),
         )
         if decision.action == tool_policy.DENY:
-            return f"[policy denied] {name}: {decision.reason}", False
+            return tool_denied("profile", name=name, reason=decision.reason), False
         if decision.action == tool_policy.CONFIRM:
             answer = await self.push_screen_wait(
                 ToolApprovalScreen(name, args, decision)
@@ -1420,7 +1434,18 @@ class LiteTUI(App):
             # ToolApproval.__bool__ is what keeps this line correct now that the
             # modal returns a tri-state instead of a bool.
             if not answer:
-                return f"[policy denied by user] {name}", False
+                # DENY STOPS THE TURN (Ryan, 2026-08-24 — asked whether this
+                # should replace or supplement the existing verb, answered
+                # REPLACE). The refusal is still returned and still recorded,
+                # so the transcript says what happened; the loop just does not
+                # get another round-trip to work around it with.
+                #
+                # The reason is set alongside the flag because the loop's tail
+                # otherwise reports "reached N tool iterations" for ANY early
+                # break — see _stop_reason.
+                self._stop_requested = True
+                self._stop_reason = f"[stopped — you denied {name}]"
+                return tool_denied("by-user", name=name), False
             if answer.remember:
                 self._remember_tool_rule(name, decision.capabilities)
         try:
@@ -3332,6 +3357,9 @@ class LiteTUI(App):
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         self._stop_requested = False
+        # Cleared with the flag it explains. A reason that outlived its turn
+        # would attribute THIS turn's ending to the last turn's cause.
+        self._stop_reason = None
         # A turn is starting, so nothing is abandoned any more. Cleared HERE
         # rather than where the ping reads it: a mark that only ever latched
         # would kill loop mode for the rest of the session after one Esc.
@@ -3351,8 +3379,15 @@ class LiteTUI(App):
         # first request, so by now the real window exists to be read.
         self._resync_ctx_if_stale()
         compact_due = False
+        stopped_early = False
         for _iteration in range(self.settings.tool_iterations):
             if self._stop_requested:
+                # NOT the iteration cap. Reaching the bottom of this function
+                # prints "reached N tool iterations — raise it in /settings",
+                # so an early break that falls through explains itself with a
+                # limit that was never hit and sends the user to change a
+                # setting that had nothing to do with it.
+                stopped_early = True
                 break
             if _iteration and self._autocompact_due() is not None:
                 # THE BUDGET IS SPENT INSIDE A TURN, SO IT MUST BE CHECKED
@@ -3679,6 +3714,15 @@ class LiteTUI(App):
                 else "[pausing to compact between tool iterations]"
             )
             self.call_after_refresh(self._maybe_autocompact)
+            return
+
+        if stopped_early:
+            # The turn was STOPPED, not exhausted. _stop_reason names the
+            # cause when there is one (denying a tool); a plain Esc during
+            # tool execution has already notified the user, so the generic
+            # line only has to avoid claiming a cap was reached.
+            self._system(self._stop_reason or "[stopped by you]")
+            self._turn_abandoned = True
             return
 
         self._system(
