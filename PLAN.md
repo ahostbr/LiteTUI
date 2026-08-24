@@ -75,7 +75,7 @@ cheaper wins.
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups — **12 methods / 212 ln, see §5b** | OpenBolt | −212 lines, **−12 methods** | knot |
-| **O3** | `_cron`/`_cron_*` → `CronService` — **scope ENLARGED, not reduced: S3 no longer touches cron at all. `_cron_command` (50) + `_cron_monitor` (16) are O3's, so ONE ROW OWNS THE FAMILY** (Sentinel, *scope not sequence*, §3d) | OpenBolt | **−148 lines, −5 methods** — DERIVED, not the old "−~80/−3": `_cron_monitor` 16 · `_cron_command` 50 · `_cron_find` 20 · `_cron_add` 37 · `_cron_list` 25. **Units agree (defs = items = names).** **+ `_fire_job` 47 ⇒ 6 methods / 195 lines** (taken, §3d). ⚠️ **NOT zero-edit: 9 test call sites in 3 files, and 2 gates go red — pre-costed in §3f** | knot |
+| **O3** | ✅ **SHIPPED `a7596ca`.** `_cron`/`_cron_*` → `CronService` in `litetui/cron.py`, which **OWNS the job list**. `monitor` is a MODULE function (`@work` needs a `DOMNode` first arg). **`_fire_job` HELD — it is the turn-engine seam, §3i** | OpenBolt | **−4 by all three units** (five removed, **one added**: the public `cron` property — −5 would be the wrong number) **· −139 lines · reach 19 → 17** | knot |
 | **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b. **ARRIVAL ✅ `63fd480` (OpenBolt). Consumer OPEN (SilverBolt), now 18 + 2 `misc.py` sites + the 92-stub sweep** | SilverBolt + OpenBolt | reach **40 → 20** (AST — *corrected from 22: the 2 `misc.py` `_update_header` sites are folded in*) | lines, methods, knot — **the arrival moves the def-grep by 0 while adding 5 members, see §2c** |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed`/`_elapsed_*`, `_eta`/`_eta_*`, `_tps`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b. ⚠️ **ITS ARRIVAL IS NOT A PURE ADDITION: 4 source-text gates `IndexError` the moment the defs are renamed — they are re-pointed IN THE ARRIVAL COMMIT, see §2f** | SilverBolt + OpenBolt | reach **20 → 13** (AST — *corrected from 22→15; the base moved with S5*) | lines, methods, knot |
@@ -650,6 +650,54 @@ in module docstrings** (`scheduler_plugin.py:3`, `scheduler_ui.py:4`). Once both
 no caller left behind, so §3c's ③ disqualifier reverses into a reason *to* include it.
 ⇒ **O3 = 6 methods, 195 lines.**
 
+### 3i. ✅ O3 SHIPPED — AND ITS PRE-COST WAS SHORT BY 6x, FOR A REASON WORTH THE ROW
+
+§3f pre-costed O3 at **9 test sites in 3 files** and was proud of costing it at all. The real sweep
+was **55 sites in 18 files**. The gap has one cause:
+
+🔴 **I COSTED THE METHODS AND NEVER THE STATE THE SERVICE EXISTS TO TAKE OWNERSHIP OF.**
+
+| missed | where | why the census did not see it |
+|---|---:|---|
+| `_jobs` in tests | **44 sites, 16 files** | never counted — §3f enumerated *method* references only |
+| `app._jobs` in `goal_loop.py` | **6 sites** | **product code.** My widened census scanned `tests/` only |
+| `SimpleNamespace(_jobs=[…])` fakes | **5 sites** | `ast.keyword`, not `ast.Attribute` — an attribute-walk sweep skips them **by construction** |
+
+⚠️ **25 of the 44 were ASSIGNMENTS, which would have gone SILENTLY INERT.** `a._jobs = []` still
+succeeds after the move: it binds a name nothing reads, and the test carries on passing against an
+empty job list. The reads would have gone red and announced themselves; the writes would not.
+
+📌 The swept form is `a.jobs[:] = X`, **not** `a.jobs = X`. `jobs` is a getter, and adding a setter
+to satisfy tests is adding API for tests. In-place replacement also keeps the app and any screen
+holding the list sharing **one** object rather than silently diverging.
+
+### 3j. 🔴 I WALKED INTO THE INERT-STUB HAZARD I HAD ADVISED THE OTHER SEAT ABOUT
+
+The extraction rewrote `self._system(…)` → `app.system_message(…)` as hygiene. **13 tests stub
+`a._system` on the instance**, and an instance attribute shadows **one name**, not the object — so
+the rewrite escaped every stub. It went red rather than inert only because `system_message` touches
+the DOM and an unmounted test app raises.
+
+**And the deviation bought nothing.** Reach-through counts **plugin-tier** access to app privates;
+`cron.py` is not the plugin tier, so the public name moved no number. **32 instance stubs of
+`_system` exist across 17 test files** — the surface a "harmless" rename would have escaped.
+⇒ **A rename from a private name to its public alias escapes every instance stub of the private
+name. That is true of S5, S6 and every step after — and the metric only rewards it at the plugin
+tier.**
+
+### 3k. ⚠️ `tests/test_cron_wiring.py` CANNOT PASS ALONE — AT ANY REF. NOT OURS.
+
+The first `LiteTUI()` built under a monkeypatched `paths.ROOT` fails importing `core_tools`
+(`BASH_SPEC = tool_schemas.load("bash")` resolves under the patched root). **Verified at `c8bff39`:
+15 failed there too.** Any file that constructs an app first clears it —
+`pytest tests/test_first_boot.py tests/test_cron_wiring.py` → 22 passed.
+
+🔴 **IT INVALIDATED TWO ROUNDS OF MY GATE PROOFS, AND BOTH TIMES THE CONTROL ARM IS WHAT SAID SO.**
+Round 1 used `-k` on that file alone; round 2 added a warm-up file **and kept `-k`, which deselects
+the warm-up**. Same artifact, one layer down. *"Revert → still red"* is not a result — **it is the
+instrument telling you it is not measuring.** A mutation proof without a revert arm would have
+shipped both.
+
 ### 3f. 🔴 O3 IS NOT ZERO-EDIT EITHER — PRE-COSTED BEFORE ANYONE SITS DOWN, WHICH IS THE O-A LESSON
 
 O-A's row implied a two-line commit and cost **13** test sites. **So O3 is costed first this time.**
@@ -782,7 +830,7 @@ starts.
 | **O-A** | ✅ `b1dd935` — delete the six `ConversationRepository` shims | **6 names, −4 `def`s, −19 ln.** Reach already 0 via S2. **Unit note in §2c.** |
 | **O2** | ✅ `22a7834` — 8 of the group members lifted to `appsvc`. `_glassbox`/`_glassbox_*` · `_load`/`_load_*` · `_append`/`_append_*` (part) · `_store`/`_store_*` | −128 ln, **−8 methods.** Knot untouched. |
 | ~~O2: `_sync`/`_sync_*` (71 ln)~~ | **WITHDRAWN — the group was never stateless. See §5c.** | — |
-| **O3** | remaining `_cron`/`_cron_*` → `CronService`; the framework member delegates | −~80 lines, −3 methods |
+| **O3** | ✅ `a7596ca` — `_cron`/`_cron_*` → `CronService` (owns `jobs`); `monitor` is a module function; `_fire_job` HELD | **−4 by all three units, −139 lines, reach 19 → 17.** The estimate here read −~80/−3 and had never been re-measured |
 | **O4** | `_elapsed`/`_elapsed_*` (4) · `_eta`/`_eta_*` (4) · `_tps`/`_tps_*` (3) off the knot behind one state object | −~200 ln, −~10 methods, **first step that shrinks the KNOT** |
 | **O5** | `_stream` (345 ln) — with S7 | high risk, last |
 
