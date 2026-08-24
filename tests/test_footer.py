@@ -87,8 +87,28 @@ chk("no context numbers yet -> em dash, no exception", "ctx \u2014" in t)
 
 print("\n=== the recompose constraints the Footer class already encodes ===")
 src = Path(app_mod.__file__).read_text(encoding="utf-8")
+
+# WHOLE-PACKAGE source, not app.py's. The ctx-label check below is an invariant
+# about how the label is ADDRESSED, not about which file constructs it -- and
+# 4e6125e proved the difference by moving the construction site to widgets.py
+# while the property itself held (classes="ctx-label" once, id="ctx-label" zero).
+# Reading one file made a correct lift look like a regression: red test, named
+# assertion, real diff, and nothing actually broken.
+#
+# A gate spelled `"literal" in <one file>` asserts TWO things and declares one --
+# the property, and silently "...and it lives HERE". T070 is a project whose
+# entire purpose is moving code out of app.py, so the undeclared half is the half
+# that breaks.
+#
+# The two chk() calls after this one still read `src` on purpose: their subjects
+# genuinely live in app.py today and they pass. They are on the SAME fuse -- O2
+# lifts method groups next -- so re-scope them when they move, do not pre-empt it.
+pkg_src = "".join(
+    p.read_text(encoding="utf-8", errors="replace")
+    for p in sorted(Path(app_mod.__file__).parent.rglob("*.py"))
+)
 chk("the label is still addressed by CLASS, never a fixed id",
-    'classes="ctx-label"' in src and 'id="ctx-label"' not in src)
+    'classes="ctx-label"' in pkg_src and 'id="ctx-label"' not in pkg_src)
 chk("_refresh_ctx_label still updates EVERY match (a transient duplicate is cosmetic)",
     'for label in labels:' in src)
 chk("changing the thinking level refreshes the footer, not just the header",
