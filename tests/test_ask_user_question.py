@@ -128,7 +128,12 @@ async def main():
 
         box, t = call_in_thread(a)
         await wait_for(pilot, lambda: isinstance(a.screen, aq.AskUserQuestionScreen))
-        scr = a.screen
+        # THE STATE LIVES ON THE BODY NOW. T082 split this widget into a modal
+        # screen plus a host-agnostic body so a sidebar can mount the same
+        # content, and the cursor and per-question state moved with it.
+        # Duplicating `_active` onto the screen would have kept this line
+        # working and left two counters free to drift — worse than the edit.
+        scr = a.screen.query_one(aq.AskUserQuestionBody)
         chk("AskUserQuestionScreen is on top while run() blocks", True)
         chk("three steps in the bar", len(list(scr.query(".auq-step-label"))) == 3)
         chk("active step is first", scr.query_one("#auq-lab-0").has_class("active"))
@@ -203,7 +208,7 @@ async def main():
         await pilot.pause()
         await pilot.press("a", "n", "o")             # note on q1
         await pilot.pause()
-        scr = b.screen
+        scr = b.screen.query_one(aq.AskUserQuestionBody)
         chk("q1 answered before submit", scr._states[0].answered)
         await pilot.click(scr.query_one("#auq-submit"))
         t.join(timeout=5)
@@ -217,7 +222,7 @@ async def main():
     async with c.run_test(size=(120, 30)) as pilot:
         box, t = call_in_thread(c)
         await wait_for(pilot, lambda: isinstance(c.screen, aq.AskUserQuestionScreen))
-        scr = c.screen
+        scr = c.screen.query_one(aq.AskUserQuestionBody)
         await pilot.press("enter")
         await pilot.pause()
         chk("something was ticked before cancel", scr._states[0].selected == {0})

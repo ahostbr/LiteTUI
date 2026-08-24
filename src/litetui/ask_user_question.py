@@ -57,6 +57,8 @@ import asyncio
 import threading
 from dataclasses import dataclass, field
 from typing import Any
+from functools import partial
+from litetui.side_panel import close_dialog, open_dialog
 from litetui import tool_schemas
 
 from rich.text import Text
@@ -211,14 +213,46 @@ class _OptionBody(Vertical):
 
 
 class AskUserQuestionScreen(ModalScreen[None]):
-    """The AskUserQuestion widget. See the module docstring for the contract."""
+    """The modal host. Kept as a distinct screen, same as the other three.
 
-    CSS = """
+    Its own `align: center middle` is what centres the dialog; the content
+    styling lives on the body, because Textual SCOPES `DEFAULT_CSS`/`CSS` to the
+    DECLARING class and a body lifted out of here would otherwise render
+    COMPLETELY UNSTYLED in a sidebar — no crash, no failing test.
+
+    📌 DEPTH IS UNCHANGED BY THE SPLIT. This screen used to compose
+    `Vertical(id="auq-box")`; it now composes a body that IS that box. That is
+    deliberate: one EXTRA level swallowed every mouse click on the tool-approval
+    dialog (T081), and this one has three `@on(events.Click)` handlers.
+    """
+
+    DEFAULT_CSS = """
     AskUserQuestionScreen {
         align: center middle;
     }
+    """
 
-    #auq-box {
+    def __init__(self, states: list[QuestionState], done: threading.Event,
+                 result_box: list[dict]) -> None:
+        super().__init__()
+        # The SAME objects the body gets, not copies — `states` is a list of
+        # mutable QuestionState and both names refer to one list. Kept here
+        # because the existing suite reads `screen._states` to assert what the
+        # human's clicks did, and that assertion is about the STATE, not about
+        # which widget happens to hold the reference.
+        self._states = states
+        self._done = done
+        self._result_box = result_box
+
+    def compose(self) -> ComposeResult:
+        yield AskUserQuestionBody(self._states, self._done, self._result_box)
+
+
+class AskUserQuestionBody(Vertical):
+    """The AskUserQuestion widget. See the module docstring for the contract."""
+
+    DEFAULT_CSS = """
+    AskUserQuestionBody {
         width: 92;
         max-width: 96%;
         height: auto;
@@ -330,53 +364,52 @@ class AskUserQuestionScreen(ModalScreen[None]):
     # ── compose ────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="auq-box"):
-            with Horizontal(id="auq-steps"):
-                for i, q in enumerate(self._states):
-                    # textual 8.0.2 removed widget.dataset: the id already
-                    # carries the index (auq-box-<i> / auq-lab-<i>).
-                    box = Static("☐", id=f"auq-box-{i}", classes="auq-checkbox")
-                    # 🔴 active must be true at COMPOSE, not just in on_mount:
-                    # _refresh_steps() runs in the async on_mount, and a caller
-                    # that checks the step bar the moment the screen is pushed
-                    # (compose done, on_mount not yet) saw the label WITHOUT the
-                    # active class — a window where the bar paints with no active
-                    # step. The body (auq-qbody) already sets it here; the label
-                    # now matches, so the invariant holds from first paint and
-                    # _refresh_steps() only maintains it on later jumps.
-                    lab = Static(
-                        q.label,
-                        id=f"auq-lab-{i}",
-                        classes="auq-step-label active" if i == self._active
-                        else "auq-step-label",
-                    )
-                    yield box
-                    yield lab
-            yield Static(self._states[0].question, id="auq-question")
-            with Vertical(id="auq-bodies"):
-                for i, q in enumerate(self._states):
-                    classes = "auq-qbody active" if i == self._active else "auq-qbody"
-                    with _OptionBody(id=f"auq-qbody-{i}", classes=classes):
-                        for j, opt in enumerate(q.options):
-                            # id = auq-opt-<qi>-<j> (dataset is gone in 8.x)
-                            row = Static(
-                                self._row_text(opt, False),
-                                id=f"auq-opt-{i}-{j}",
-                                classes="auq-row",
-                            )
-                            yield row
-                        # The auto "Type something" option: a row that hands
-                        # focus to the note field, per the locked spec.
-                        yield Static(
-                            "✎  Type something…",
-                            id=f"auq-note-{i}",
-                            classes="auq-row auq-note-row",
+        with Horizontal(id="auq-steps"):
+            for i, q in enumerate(self._states):
+                # textual 8.0.2 removed widget.dataset: the id already
+                # carries the index (auq-box-<i> / auq-lab-<i>).
+                box = Static("☐", id=f"auq-box-{i}", classes="auq-checkbox")
+                # 🔴 active must be true at COMPOSE, not just in on_mount:
+                # _refresh_steps() runs in the async on_mount, and a caller
+                # that checks the step bar the moment the screen is pushed
+                # (compose done, on_mount not yet) saw the label WITHOUT the
+                # active class — a window where the bar paints with no active
+                # step. The body (auq-qbody) already sets it here; the label
+                # now matches, so the invariant holds from first paint and
+                # _refresh_steps() only maintains it on later jumps.
+                lab = Static(
+                    q.label,
+                    id=f"auq-lab-{i}",
+                    classes="auq-step-label active" if i == self._active
+                    else "auq-step-label",
+                )
+                yield box
+                yield lab
+        yield Static(self._states[0].question, id="auq-question")
+        with Vertical(id="auq-bodies"):
+            for i, q in enumerate(self._states):
+                classes = "auq-qbody active" if i == self._active else "auq-qbody"
+                with _OptionBody(id=f"auq-qbody-{i}", classes=classes):
+                    for j, opt in enumerate(q.options):
+                        # id = auq-opt-<qi>-<j> (dataset is gone in 8.x)
+                        row = Static(
+                            self._row_text(opt, False),
+                            id=f"auq-opt-{i}-{j}",
+                            classes="auq-row",
                         )
-            yield Input(placeholder="Type something…", id="auq-note-input")
-            with Horizontal(id="auq-actions"):
-                yield Button("Chat about this", id="auq-chat")
-                yield Button("Submit", variant="primary", id="auq-submit")
-            yield Static(FOOTER_HINT, id="auq-hint")
+                        yield row
+                    # The auto "Type something" option: a row that hands
+                    # focus to the note field, per the locked spec.
+                    yield Static(
+                        "✎  Type something…",
+                        id=f"auq-note-{i}",
+                        classes="auq-row auq-note-row",
+                    )
+        yield Input(placeholder="Type something…", id="auq-note-input")
+        with Horizontal(id="auq-actions"):
+            yield Button("Chat about this", id="auq-chat")
+            yield Button("Submit", variant="primary", id="auq-submit")
+        yield Static(FOOTER_HINT, id="auq-hint")
 
     async def on_mount(self) -> None:
         self._refresh_steps()
@@ -535,7 +568,7 @@ class AskUserQuestionScreen(ModalScreen[None]):
             "questions": [q.to_dict() for q in self._states],
         })
         self._done.set()
-        self.dismiss()
+        close_dialog(self, None)
 
     def action_cancel(self) -> None:
         self._finish("cancelled")
@@ -571,14 +604,28 @@ def run(args: dict, app: App | None) -> str:
 
     done = threading.Event()
     result_box: list[dict] = []
-    screen = AskUserQuestionScreen(states, done, result_box)
     loop = getattr(app, "_loop", None)
+
+    # 🔴 THE ANSWER DOES NOT COME BACK THROUGH THE HOST'S FUTURE, AND MUST NOT.
+    # This dialog is driven from a WORKER THREAD: the body appends to
+    # `result_box` and sets `done`, and the polling loop below is what wakes the
+    # tool call. `close_dialog` only tears the view down. Two consequences:
+    #
+    #   SWAP         -> the view is rebuilt, `done` is NEVER set, the thread
+    #                   keeps waiting. Correct: nobody answered.
+    #   APP TEARDOWN -> `done` is never set either, so the loop's `is_running`
+    #                   check is the ONLY thing that releases the thread.
+    #
+    # Those two look identical from the host's side and are opposite, which is
+    # why the polling loop is carried across UNCHANGED rather than collapsed
+    # into an await on the dialog's result.
+    sidebar = getattr(app.settings, "dialog_style", "modal") == "sidebar"
 
     def _open() -> None:
         if loop is None:
             # App not running: the direct call fails and becomes the
             # same error string.
-            app.push_screen(screen)
+            app.push_screen(AskUserQuestionScreen(states, done, result_box))
             return
 
         async def _push() -> None:
@@ -588,10 +635,25 @@ def run(args: dict, app: App | None) -> str:
             # the screen's own message-pump task during the push; that
             # task copies THIS task's context, so it must carry
             # active_app or the screen's compose raises NoActiveAppError.
+            #
+            # THE SAME CONTEXT REQUIREMENT APPLIES TO THE SIDEBAR PATH: mounting
+            # also starts the widget's message pump, so the mount has to happen
+            # inside `app._context()` for exactly the same reason.
             with app._context():
-                app.push_screen(screen)
+                if sidebar:
+                    open_dialog(
+                        app,
+                        partial(AskUserQuestionBody, states, done, result_box),
+                        style="sidebar",
+                        side=app.settings.dialog_side,
+                    )
+                else:
+                    app.push_screen(
+                        AskUserQuestionScreen(states, done, result_box)
+                    )
 
-        # .result() returns once the push is processed on the loop.
+        # .result() returns once the push is processed on the loop. It bounds
+        # THE PUSH, not the answer — the answer is bounded by `done` below.
         asyncio.run_coroutine_threadsafe(_push(), loop).result(timeout=10)
 
     try:
