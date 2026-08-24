@@ -18,7 +18,7 @@ from functools import partial
 
 from litetui import settings as settings_mod
 from litetui.settings import Settings
-from litetui.side_panel import present_dialog
+from litetui.side_panel import present_dialog, show_dialog
 
 from litetui import llm_backend
 from litetui import paths
@@ -92,7 +92,7 @@ from litetui import tool_policy
 from litetui.turn_engine import TurnEngine
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
-from litetui.tool_approval import ToolApprovalScreen
+from litetui.tool_approval import ToolApprovalBody, ToolApprovalScreen
 from litetui import skills as skills_mod
 from litetui import plugins as plugins_mod
 
@@ -1454,8 +1454,15 @@ class LiteTUI(App):
         if decision.action == tool_policy.DENY:
             return tool_denied("profile", name=name, reason=decision.reason), False
         if decision.action == tool_policy.CONFIRM:
-            answer = await self.push_screen_wait(
-                ToolApprovalScreen(name, args, decision)
+            # Sidebar or modal, decided by the setting. `show_dialog` — not
+            # `open_dialog` — because this frame ALREADY awaits, and the whole
+            # turn is blocked on the answer. It returns the body's value, or
+            # None on cancel: the same falsy-on-cancel contract
+            # `push_screen_wait` had, so `not answer` below is unchanged.
+            answer = await show_dialog(
+                self,
+                partial(ToolApprovalBody, name, args, decision),
+                modal_factory=partial(ToolApprovalScreen, name, args, decision),
             )
             # `not answer` covers three cases on purpose: DENIED, and None from
             # a screen dismissed without a value, and any future falsy answer.

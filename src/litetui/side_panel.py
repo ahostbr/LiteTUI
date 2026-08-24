@@ -61,9 +61,14 @@ class DialogController:
     """Owns the future. Views come and go beneath it."""
 
     def __init__(self, app, body_factory: BodyFactory, style: str,
-                 side: str = "right") -> None:
+                 side: str = "right", trap_focus: bool = True) -> None:
         self.app = app
         self.style = style
+        #: Keep Tab inside the dialog while it is open. DEFAULT TRUE, because a
+        #: ModalScreen has always trapped focus — so trapping is what PRESERVES
+        #: existing behaviour across the conversion, and not trapping would be
+        #: the silent change. Informational sidebars can opt out.
+        self.trap_focus = trap_focus
         #: "right" | "left". Which edge a sidebar view docks to. Additive with a
         #: default, so existing three-arg construction is unaffected.
         self.side = side
@@ -259,7 +264,20 @@ class SidePanel(Widget, _ViewMixin):
     """
 
     can_focus = True
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        # 🔴 THE FOCUS TRAP. A ModalScreen traps focus BY CONSTRUCTION; this
+        # panel is a plain Widget mounted on the SAME screen as the chat, so
+        # without these two bindings Tab walks straight out of a PENDING TOOL
+        # APPROVAL and into the message input. The dialog stays open, the turn
+        # stays blocked, and the next Enter goes somewhere nobody is looking.
+        #
+        # ⚠️ NON-OBSCURING WAS THE FEATURE. NON-BLOCKING WAS NEVER ASKED FOR.
+        # Being able to SEE the chat while deciding is the improvement; being
+        # able to TAB INTO IT and leave a decision dangling is not.
+        Binding("tab", "focus_next_in_dialog", "Next", show=False),
+        Binding("shift+tab", "focus_prev_in_dialog", "Previous", show=False),
+    ]
 
     def __init__(self, controller: DialogController, body: Widget) -> None:
         # Signature deliberately UNCHANGED — the side rides on the controller.
@@ -291,6 +309,36 @@ class SidePanel(Widget, _ViewMixin):
 
     def action_cancel(self) -> None:
         self.controller.resolve(None)
+
+    # ── focus trap ───────────────────────────────────────────────────────────
+    def _trap_targets(self) -> list[Widget]:
+        return [n for n in self.body.walk_children(with_self=True) if n.focusable]
+
+    def _cycle_focus(self, step: int) -> None:
+        """Move focus WITHIN the body, wrapping at both ends.
+
+        Deliberately a real cycle rather than "refuse to move": a dialog you
+        cannot Tab around is its own accessibility failure, and the point is to
+        keep focus inside the decision, not to freeze it on one control.
+        """
+        if not self.controller.trap_focus:
+            self.screen.focus_next() if step > 0 else self.screen.focus_previous()
+            return
+        nodes = self._trap_targets()
+        if not nodes:
+            return
+        try:
+            cur = self.screen.focused
+        except Exception:
+            return
+        i = nodes.index(cur) if cur in nodes else (-1 if step > 0 else 0)
+        nodes[(i + step) % len(nodes)].focus()
+
+    def action_focus_next_in_dialog(self) -> None:
+        self._cycle_focus(1)
+
+    def action_focus_prev_in_dialog(self) -> None:
+        self._cycle_focus(-1)
 
 
 class _ModalHost(ModalScreen, _ViewMixin):
@@ -380,7 +428,8 @@ def present_dialog(app, body_factory: BodyFactory, modal_factory, callback=None)
 
 
 def open_dialog(app, body_factory: BodyFactory, callback=None, *,
-                style: str | None = None, side: str | None = None) -> None:
+                style: str | None = None, side: str | None = None,
+                trap_focus: bool = True) -> None:
     """Open a dialog and hand the answer to `callback`. The `push_screen` shape.
 
     🔴 THIS EXISTS BECAUSE `show_dialog` FIT ONE CONSUMER IN FOUR. The T075 spike
@@ -403,7 +452,8 @@ def open_dialog(app, body_factory: BodyFactory, callback=None, *,
     two ways to do the same thing look interchangeable when they are not.
     """
     async def _run() -> None:
-        result = await show_dialog(app, body_factory, style=style, side=side)
+        result = await show_dialog(app, body_factory, style=style, side=side,
+                                   trap_focus=trap_focus)
         if callback is not None:
             callback(result)
 
@@ -411,7 +461,8 @@ def open_dialog(app, body_factory: BodyFactory, callback=None, *,
 
 
 async def show_dialog(app, body_factory: BodyFactory, *, style: str | None = None,
-                      side: str | None = None) -> Any:
+                      side: str | None = None, trap_focus: bool = True,
+                      modal_factory=None) -> Any:
     """Show a dialog and await its answer, honouring `dialog_style`.
 
     `body_factory` is called once per host — a swap builds a fresh body and
@@ -423,4 +474,11 @@ async def show_dialog(app, body_factory: BodyFactory, *, style: str | None = Non
         style = app.settings.dialog_style
     if side is None:
         side = app.settings.dialog_side
-    return await DialogController(app, body_factory, style, side).open()
+    if style != "sidebar" and modal_factory is not None:
+        # THE ORIGINAL SCREEN, awaited exactly as before. Same reason as
+        # present_dialog's modal branch: a real dialog's own DEFAULT_CSS is
+        # SCOPED TO ITS CLASS, so routing it through `_ModalHost` renders it
+        # unstyled and changes what the modal IS. No controller here, so no
+        # swap — which matches: the modal branch never had one.
+        return await app.push_screen_wait(modal_factory())
+    return await DialogController(app, body_factory, style, side, trap_focus).open()

@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button, Static
 
+from litetui.side_panel import close_dialog
 from litetui.tool_policy import PolicyDecision, approval_preview
 
 
@@ -59,19 +61,85 @@ class ToolApprovalScreen(ModalScreen[ToolApproval]):
 
     BINDINGS = [Binding("escape", "deny", "Deny", show=False)]
 
+    # 🔴 ONLY THE SCREEN-LEVEL RULES LIVE HERE NOW. Textual SCOPES DEFAULT_CSS to
+    # the class that declares it, so every `#tool-approval-*` rule written here
+    # applied ONLY inside this screen — and the same body mounted in a SidePanel
+    # would have rendered completely unstyled. Not a crash, not a test failure:
+    # an approval dialog that looks like plain text, on the one surface where
+    # "looks wrong" and "is a different dialog" are hard to tell apart.
+    # The dimming overlay and centering ARE the modal's own, so they stay.
     DEFAULT_CSS = """
     ToolApprovalScreen {
         align: center middle;
         background: $background 70%;
     }
-    #tool-approval-box {
+    """
+
+    def __init__(self, tool_name: str, args: dict, decision: PolicyDecision):
+        super().__init__()
+        self.tool_name = tool_name
+        self.args = args
+        self.decision = decision
+
+    def compose(self) -> ComposeResult:
+        yield ToolApprovalBody(self.tool_name, self.args, self.decision)
+
+    def action_deny(self) -> None:
+        self.dismiss(DENIED)
+
+
+class ToolApprovalBody(Vertical):
+    """The approval content, host-agnostic — modal OR sidebar.
+
+    🔴 `ToolApprovalScreen` IS NOT REPLACED. It is still a distinct ModalScreen
+    with its own DEFAULT_CSS, because that CSS carries the dimming overlay
+    (`background: $background 70%`) and the centering that make the modal a
+    modal. A conversion that routed it through the generic host would have
+    changed what the approval LOOKS like on the default setting.
+
+    ⚠️ THE TRI-STATE IS NOT TOUCHED. `ToolApproval.__bool__` returns `approved`,
+    and DENIED is FALSY — that is the safety, not a convenience. Modelling this
+    as strings ("deny"/"once"/"always") reads perfectly and is catastrophic,
+    because `"deny"` is truthy and `if not answer:` would stop firing. The host
+    returns None on cancel, which is falsy too, so the whole conversion keeps
+    failing closed. Do not tidy this into an enum.
+    """
+
+    # The CONTENT styling, moved down from the screen so it applies in BOTH
+    # hosts. `width` is the one value that had to change: it was a flat `78`,
+    # which is wider than the sidebar strip (max 60). `100%` with a `max-width`
+    # fills the panel and still caps the modal at its original width.
+    # 🔴 THE BODY *IS* THE BOX. It does not wrap one.
+    #
+    # The first version nested a `Vertical(id="tool-approval-box")` inside a
+    # `Widget` body, which added ONE level of DOM depth over the original — and
+    # that level SWALLOWED MOUSE CLICKS. `get_widget_at` on the Deny button's
+    # own centre returned `ToolApprovalBody`, not the Button.
+    #
+    # ⚠️ EVERY KEYBOARD PATH STILL PASSED. Escape denied, `Button.press()`
+    # resolved, focus moved correctly. Only a real click failed, and the three
+    # tests that caught it were the pre-existing ones that click — none of the
+    # tests I wrote for ConfirmStop or Picker click anything, so my own suites
+    # would have shipped this.
+    #
+    # 📌 THE BASE CLASS WAS NEVER THE CAUSE, and I checked rather than assuming:
+    # `Widget` -> `Container` changed nothing while the extra level was present,
+    # and with the level gone a `Widget` base works fine. It is the DEPTH, not
+    # the type. Measured both ways, because "I swapped two things and it started
+    # working" is not a diagnosis.
+    #
+    # `width: 78` is the original value and stays the basis; `max-width: 100%`
+    # is what lets it fit a 60-column sidebar.
+    DEFAULT_CSS = """
+    ToolApprovalBody {
         width: 78;
-        max-width: 92%;
+        max-width: 100%;
         height: auto;
         max-height: 85%;
         padding: 1 2;
         border: round $warning;
         background: $surface;
+        layout: vertical;
     }
     #tool-approval-title {
         color: $warning;
@@ -110,39 +178,65 @@ class ToolApprovalScreen(ModalScreen[ToolApproval]):
 
     def compose(self) -> ComposeResult:
         caps = " · ".join(sorted(self.decision.capabilities))
-        with Vertical(id="tool-approval-box"):
-            yield Static(f"Allow `{self.tool_name}`?", id="tool-approval-title")
-            yield Static(
-                f"profile: {self.decision.profile}  ·  authority: {caps}\n"
-                f"{self.decision.reason}",
-                id="tool-approval-meta",
-            )
-            yield Static(approval_preview(self.args), id="tool-approval-args")
-            # Say what "always" actually covers.  The stored rule is keyed by
-            # tool AND authority, so it is much narrower than the button label
-            # suggests on its own -- and a human who reads "Always allow" as
-            # "never ask about this tool again" has agreed to something else.
-            yield Static(
-                f"Always = `{self.tool_name}` at this authority ({caps}); "
-                "a wider request asks again.",
-                id="tool-approval-hint",
-            )
-            with Horizontal(id="tool-approval-actions"):
-                yield Button("Deny", id="tool-approval-deny")
-                yield Button("Allow once", variant="warning", id="tool-approval-allow")
-                yield Button("Always allow", variant="error", id="tool-approval-always")
+        yield Static(f"Allow `{self.tool_name}`?", id="tool-approval-title")
+        yield Static(
+            f"profile: {self.decision.profile}  ·  authority: {caps}\n"
+            f"{self.decision.reason}",
+            id="tool-approval-meta",
+        )
+        yield Static(approval_preview(self.args), id="tool-approval-args")
+        # Say what "always" actually covers.  The stored rule is keyed by
+        # tool AND authority, so it is much narrower than the button label
+        # suggests on its own -- and a human who reads "Always allow" as
+        # "never ask about this tool again" has agreed to something else.
+        yield Static(
+            f"Always = `{self.tool_name}` at this authority ({caps}); "
+            "a wider request asks again.",
+            id="tool-approval-hint",
+        )
+        with Horizontal(id="tool-approval-actions"):
+            yield Button("Deny", id="tool-approval-deny")
+            yield Button("Allow once", variant="warning", id="tool-approval-allow")
+            yield Button("Always allow", variant="error", id="tool-approval-always")
+
+    # ── state carry across a live host swap ──────────────────────────────────
+    def get_state(self) -> dict:
+        """Which button was focused, and how far the preview was scrolled.
+
+        🔴 THE FOCUSED BUTTON IS SAFETY STATE HERE, not a nicety. Deny is
+        composed FIRST so a blind Enter refuses; if a swap silently returned
+        focus to the default while the user had deliberately moved to "Allow
+        once", the next Enter would answer a different question than the one
+        they were looking at. Restoring it keeps the user's own choice under
+        their finger.
+        """
+        try:
+            focused = self.screen.focused
+        except Exception:
+            focused = None
+        args = self.query_one("#tool-approval-args")
+        return {
+            "focused_id": getattr(focused, "id", None),
+            "args_scroll_y": getattr(args, "scroll_offset", None)
+            and args.scroll_offset.y,
+        }
+
+    def set_state(self, state: dict) -> None:
+        y = state.get("args_scroll_y")
+        if y:
+            self.query_one("#tool-approval-args").scroll_to(y=y, animate=False)
+        fid = state.get("focused_id")
+        if fid:
+            self.query_one(f"#{fid}").focus()
 
     @on(Button.Pressed, "#tool-approval-allow")
     def _allow(self) -> None:
-        self.dismiss(ONCE)
+        close_dialog(self, ONCE)
 
     @on(Button.Pressed, "#tool-approval-always")
     def _always(self) -> None:
-        self.dismiss(ALWAYS)
+        close_dialog(self, ALWAYS)
 
     @on(Button.Pressed, "#tool-approval-deny")
     def _deny(self) -> None:
-        self.dismiss(DENIED)
-
-    def action_deny(self) -> None:
-        self.dismiss(DENIED)
+        close_dialog(self, DENIED)
