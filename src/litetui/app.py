@@ -1740,9 +1740,6 @@ class LiteTUI(App):
         # reads identically whoever noticed it first.
         self.store._raise_to_app(e)
 
-    def _write_record(self, rec: dict) -> None:
-        self.store.write_record(rec)
-
     def _append(self, msg: dict) -> None:
         """Append to the live conversation AND to disk. Single choke point."""
         self.conversation.append(msg)
@@ -1831,14 +1828,6 @@ class LiteTUI(App):
     def _convo_loading(self, v: bool) -> None:
         self.store.loading = v
 
-    @property
-    def _persist_error(self):
-        return self.store.persist_error
-
-    @_persist_error.setter
-    def _persist_error(self, v) -> None:
-        self.store.persist_error = v
-
     # -- the supported plugin surface ------------------------------------
     #
     # PURE ADDITIONS beside `_jobs` and `_mcp_dispatch`, which stay private and
@@ -1868,27 +1857,19 @@ class LiteTUI(App):
         return self._mcp_dispatch
 
     # ── conversation store ───────────────────────────────────────────
-    # Implementations moved to litetui.conversation.ConversationRepository.
-    # These aliases are the reason no call site changed: `LiteTUI._read_convo`
-    # and friends still resolve, so the 18 test files that call them by name
-    # keep working. Aliases, not wrappers -- one implementation, not two.
-    _read_convo = staticmethod(ConversationRepository.read)
-    _fmt_size = staticmethod(ConversationRepository.fmt_size)
-    _convo_label = staticmethod(ConversationRepository.label)
+    # Implementations live in litetui.conversation.ConversationRepository.
+    # The aliases that carried `read`, `fmt_size`, `label` and `list_all`
+    # through the move are GONE -- their callers now name the repository.
+    # These two are still aliased because their call sites were not in that
+    # commit's scope, so they are the last of this set, not a pattern to
+    # extend. Aliases, not wrappers -- one implementation, not two.
     _convo_title = staticmethod(ConversationRepository.title)
     _flatten = staticmethod(ConversationRepository.flatten)
-
-    def _list_convos(self) -> list[tuple[Path, dict, list[dict]]]:
-        """Returns (transcript_path, meta, messages) newest first."""
-        return ConversationRepository.list_all()
-
-
-
 
 
     def _resume(self, path: Path) -> None:
         try:
-            meta, msgs = self._read_convo(path)
+            meta, msgs = ConversationRepository.read(path)
         except OSError as e:
             self._system(f"Could not read {path.name}: {type(e).__name__}: {e}")
             return

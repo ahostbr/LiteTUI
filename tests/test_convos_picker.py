@@ -105,7 +105,7 @@ async def test_convos_with_no_savings_stays_flat(tmp_path) -> None:
 async def test_broken_saves_badge_the_picker_title(tmp_path) -> None:
     seed_convo()
     a = make_app()
-    a._persist_error = "OSError: simulated disk failure"
+    a.store.persist_error = "OSError: simulated disk failure"
     async with a.run_test(size=(110, 30)) as pilot:
         await pilot.pause()
         a._handle_command("/convos")

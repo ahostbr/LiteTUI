@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 from litetui.plugins.convo import _cmd_rename
+from litetui.conversation import ConversationRepository
 
 
 def _write(tmp_path: Path, *records) -> Path:
@@ -82,12 +83,11 @@ class _StubApp:
     # The real class aliases these to one function; the stub mirrors it so a
     # caller of either name reaches this recorder.
     _system = system_message
-    _read_convo = staticmethod(m.LiteTUI._read_convo)
 
 
 def test_a_rename_record_folds_into_meta_on_replay(tmp_path: Path) -> None:
     p = _write(tmp_path, META, SNAP, {"type": "rename", "name": "paywall audit"})
-    meta, msgs = m.LiteTUI._read_convo(p)
+    meta, msgs = ConversationRepository.read(p)
     assert meta["name"] == "paywall audit"
     assert meta["id"] == "abc", "folding the name dropped the rest of the meta"
     assert len(msgs) == 1, "the rename record disturbed the messages"
@@ -99,7 +99,7 @@ def test_the_last_rename_wins(tmp_path: Path) -> None:
         {"type": "rename", "name": "first"},
         {"type": "rename", "name": "second"},
     )
-    meta, _ = m.LiteTUI._read_convo(p)
+    meta, _ = ConversationRepository.read(p)
     assert meta["name"] == "second"
 
 
@@ -109,18 +109,18 @@ def test_an_empty_rename_clears_the_name(tmp_path: Path) -> None:
         {"type": "rename", "name": "temporary"},
         {"type": "rename", "name": "   "},
     )
-    meta, _ = m.LiteTUI._read_convo(p)
+    meta, _ = ConversationRepository.read(p)
     assert "name" not in meta, "a cleared name lingered in meta"
 
 
 def test_the_name_wins_over_the_derived_preview() -> None:
     msgs = SNAP["messages"]
-    assert m.LiteTUI._convo_label({}, msgs) == m.LiteTUI._convo_title(msgs), (
+    assert ConversationRepository.label({}, msgs) == m.LiteTUI._convo_title(msgs), (
         "with no name, the listing must still show the first-message preview"
     )
-    assert m.LiteTUI._convo_label({"name": "paywall audit"}, msgs) == "paywall audit"
+    assert ConversationRepository.label({"name": "paywall audit"}, msgs) == "paywall audit"
     # Whitespace-only is not a name.
-    assert m.LiteTUI._convo_label({"name": "  "}, msgs) == m.LiteTUI._convo_title(msgs)
+    assert ConversationRepository.label({"name": "  "}, msgs) == m.LiteTUI._convo_title(msgs)
 
 
 def test_rename_writes_the_record_and_materialises_first(tmp_path: Path) -> None:

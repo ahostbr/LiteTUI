@@ -19,6 +19,7 @@ import pytest
 
 from litetui import app as app_mod
 from litetui import paths
+from litetui.conversation import ConversationRepository
 
 
 def _fresh_store() -> Path:
@@ -124,7 +125,7 @@ async def test_resume_adopts_without_minting_a_throwaway():
     async with b.run_test() as pilot:
         await pilot.pause()
         assert _count(d) == 1, "booting to resume minted a throwaway conversation"
-        rows = b._list_convos()
+        rows = ConversationRepository.list_all()
         b._resume(rows[0][0])
         await pilot.pause()
         assert _count(d) == 1

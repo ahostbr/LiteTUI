@@ -18,6 +18,7 @@ from pathlib import Path as _P
 sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "src"))
 
 from litetui.app import LiteTUI as A
+from litetui.conversation import ConversationRepository
 
 results = []
 
@@ -58,7 +59,7 @@ def t_msgs_replay():
         {"type": "msg", "message": {"role": "user", "content": "hello"}},
         {"type": "msg", "message": {"role": "assistant", "content": "hi"}},
     ])
-    meta, msgs = A._read_convo(p)
+    meta, msgs = ConversationRepository.read(p)
     eq(meta["id"], "A")
     eq([m["role"] for m in msgs], ["system", "user", "assistant"])
 
@@ -74,7 +75,7 @@ def t_snapshot_replaces():
                       {"role": "user", "content": "SUMMARY"}]},
         {"type": "msg", "message": {"role": "assistant", "content": "after"}},
     ])
-    _, msgs = A._read_convo(p)
+    _, msgs = ConversationRepository.read(p)
     eq([A._flatten(m["content"]) for m in msgs], ["sys", "SUMMARY", "after"])
     # negative control: the pre-snapshot text must NOT survive
     assert "old-one" not in json.dumps(msgs), "pre-snapshot message resurrected"
@@ -86,7 +87,7 @@ def t_torn_line_tolerated():
         {"type": "meta", "id": "C"},
         {"type": "msg", "message": {"role": "user", "content": "kept"}},
     ], tail_garbage='{"type": "msg", "mess')
-    _, msgs = A._read_convo(p)
+    _, msgs = ConversationRepository.read(p)
     eq(len(msgs), 1)
     eq(msgs[0]["content"], "kept")
 
