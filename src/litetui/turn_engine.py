@@ -125,7 +125,19 @@ class TurnEngine:
         kwargs.update(native)
         if response_format is not None:
             kwargs["response_format"] = response_format
-        if tools_enabled:
+        # 🔴 ADVERTISED EVEN WHEN TOOLS ARE OFF (T073). Withholding the schemas
+        # does not stop the model calling a tool — it stops it calling one
+        # STRUCTURALLY. With tools off, qwen3.8 emitted literal tool_call markup
+        # as PLAIN REPLY TEXT and the turn died there, because the only tool
+        # handling anywhere is the structured delta.tool_calls path and nothing
+        # parses the text form. The conversation history still carries earlier
+        # tool_calls and role:"tool" results from when tools were ON, so the
+        # model was imitating its own transcript.
+        # With the schemas present it takes the structured path, _execute_tool
+        # refuses before any side effect, and the turn continues.
+        # `max_tokens` above still follows tools_enabled: that is a BUDGET, not
+        # an advertisement.
+        if tools is not None:
             kwargs["tools"] = tools
         # reasoning_effort rides extra_body so the value lands in the JSON
         # verbatim: the client types it as a fixed Literal, and two of LM
@@ -170,9 +182,12 @@ class TurnEngine:
                 )
             },
         }
-        if tools_enabled:
+        if tools is not None:
             # Passed so STEP 1 of COMPACT_PROMPT can actually happen. Without
             # them the instruction to persist is theatre.
+            # Advertised even when tools are off, for the reason in
+            # chat_request: the schemas are what keep the model on the
+            # structured path. The call is then refused, not executed.
             kwargs["tools"] = tools
         return kwargs
 
