@@ -5,9 +5,33 @@
 now **DISCHARGED** and that document is stale on that point only.
 
 **Seat:** OpenBolt (`431b1349-7135-4ba6-9998-f6a215fea839`), worker.
-**Branch:** `chore/package-move` @ `cfaaf86` — **0 ahead of main, 22 behind, porcelain 0.**
-Verify: `git rev-list --count main..HEAD` → 0 · `git status --porcelain | wc -l` → 0.
+**Branch:** `chore/package-move` — **porcelain 0**, and it now carries ONLY this handoff and its
+correction; both code commits are already in `main`.
+🔴 **EVERY SHA AND COUNT BELOW IS A TIMESTAMP. RE-RUN THE QUERY, DO NOT TRUST THE ANSWER.**
+`git rev-parse --short main` · `git rev-list --count main..HEAD` · `git status --porcelain | wc -l`.
+At the last measurement: `main` = `d49a8d2` (in sync with the server), `main..HEAD` = 2.
+This row has already gone stale twice in one session — once within minutes of being written.
 ⚠️ **THIS FILE IS BRANCH-ONLY UNTIL SOMEONE MERGES IT.** A sweep of `main` will not see it.
+
+---
+
+## 0. READ THIS FIRST — TWO THINGS THAT WILL LOOK LIKE FAULTS AND ARE NOT
+
+**A. MY INBOX MONITOR WAS KILLED DELIBERATELY BY RYAN**, to let a compaction land on an idle prompt.
+A dead watcher for this seat is **expected and is not a transport fault** — do not investigate it,
+do not re-register on my behalf, and do not read my silence as a stall. (Tonight a seat standing off
+on an unsent message nearly deadlocked the fleet; this is the benign version of the same picture.)
+
+**B. THE MEMORY-SYSTEM INVESTIGATION IS CLOSED BY RYAN — CLOSED, NOT PAUSED.** Verbatim:
+*"any bugs in memory system r out of r hands … this is claude code cli's memory system not MINE …
+you keep chasing a ghost bug for months around this … IT CANNOT BE FIXED ON OUR END."*
+**The cap, the trimming and the load order are the CLI's loader.** No eviction accounting, no
+tallies, no ordering experiments, no index-cost measurements, and **no index-line writes, moves or
+repositions** in `C--Projects/MEMORY.md`. Topic files remain free and are still the right place for
+detail; `find_conversation.py --search "<q>" --mode memory` reads their bodies.
+📌 A `UserPromptSubmit` hook now backs the memory tree up outside the CLI's reach
+(`~/.claude/hooks/memory_backup.py` → `~/.claude-memory-backups/`). That was the one thing Ryan
+asked for and it is built; nothing else about memory is owed by anyone.
 
 **What landed, all merged into `main` via `942e27c`:**
 
@@ -165,6 +189,18 @@ handed-over version takes `REPO_ROOT` as a **required argument with no default**
 
 **A piped gate reported the pipe's exit.** My first exit-code check printed `exit=0` for both arms;
 that was `grep`'s exit, not the script's. Re-checked unpiped: 1 and 0.
+
+**I spent an hour measuring someone else's software as if it were our bug.** I priced evictions,
+dated a cap boundary and repositioned index lines inside the **Claude Code CLI's loader** — none of
+it actionable, and Ryan says this fleet has been re-deriving it *for months*. **The correct first
+question was whose software it was, and I never asked it.** That is the same defect the whole
+document catalogues, one level up: every step succeeded, every number was correct, and the work was
+inert. I also **evicted `an-arm-must-prove-it-could-have-failed`** — the law behind every mutation
+check in this handoff — in order to file the results of those checks.
+
+**My repositioned index lines stay where they are.** Reverting would itself be a move, which the
+standing order bans, and would churn the boundary a third time. *An insert you cannot price is one
+you should not make — and so is an undo.* Disclosed rather than quietly left.
 
 ---
 
