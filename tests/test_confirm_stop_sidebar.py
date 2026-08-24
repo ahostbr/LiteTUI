@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _settle import settle_until
 from litetui import app as m
 from litetui.side_panel import DialogController, SidePanel, close_dialog, request_swap
 from litetui.widgets import ConfirmStop, ConfirmStopBody
@@ -110,13 +111,20 @@ async def test_a_swap_carries_the_focused_button_AND_leaves_the_future_pending()
     async with a.run_test(size=(120, 40)) as pilot:
         ctrl = DialogController(a, ConfirmStopBody, "sidebar", "right")
         a.run_worker(ctrl.open(), name="dlg")
-        await pilot.pause()
+        await settle_until(pilot, lambda: a.screen.query(ConfirmStopBody))
 
         a.screen.query_one("#no").focus()
         await pilot.pause()
         request_swap(a.screen.query_one(ConfirmStopBody))
-        await pilot.pause()
-        await pilot.pause()
+        # A swap is call_next -> await _mount_view -> a _settle deferred again
+        # until the body composes. Two pauses was a guess about all three, and it
+        # was wrong 2 runs in 12 on this box. Wait for the carried focus to
+        # ARRIVE; the assertions below still decide whether it is the right one.
+        await settle_until(
+            pilot,
+            lambda: ctrl.style == "modal"
+            and getattr(a.screen.focused, "id", None) == "no",
+        )
 
         assert ctrl.style == "modal", "the swap did not change host"
         focused = a.screen.focused

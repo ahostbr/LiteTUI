@@ -48,6 +48,7 @@ from typing import Any, Callable
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
 
@@ -89,13 +90,30 @@ class DialogController:
 
     async def _mount_view(self) -> None:
         body = self._body_factory()
+        # 🔴 ASSIGN `_view` BEFORE THE AWAIT, NOT AFTER IT.
+        #
+        # `mount()` suspends, and the body is LIVE AND INTERACTIVE while it is
+        # suspended — its own swap button included. A swap scheduled in that
+        # window found `_view is None`, took the `if view is not None` branch in
+        # `swap()` at face value, and skipped the `get_state()` capture
+        # ENTIRELY. The dialog then rebuilt itself empty: everything the user
+        # had typed, silently gone, with no error anywhere.
+        #
+        # Measured 5 in 30 runs at 8484923 (`assert '' == 'half-written
+        # reason'`), and `get_state` was never called in any of the five.
+        # `resolve()` has the same `_view is None` branch, so the same window
+        # also leaked a view that was never torn down.
+        #
+        # There is no window to lose now: the controller owns the view from the
+        # moment the view exists, which is before anyone can touch it.
         if self.style == "sidebar":
             view: Any = SidePanel(self, body)
+            self._view = view
             await self.app.screen.mount(view)
         else:
             view = _ModalHost(self, body)
+            self._view = view
             self.app.push_screen(view)
-        self._view = view
 
     async def swap(self) -> None:
         """Change style IN PLACE. Must not touch the future."""
@@ -106,8 +124,13 @@ class DialogController:
             body = view.body
             try:
                 self._state = body.get_state()
-            except AttributeError:
-                self._state = {}   # a body without get_state simply carries nothing
+            except (AttributeError, NoMatches):
+                # AttributeError: a body without get_state simply carries nothing.
+                # NoMatches: the body exists but has not composed its children
+                # yet, so there is genuinely nothing typed to carry. Both are
+                # "nothing to carry" — neither is "do not bother looking", which
+                # is what the `_view is None` window used to do.
+                self._state = {}
             await view.close_view()
         self.style = "modal" if self.style == "sidebar" else "sidebar"
         await self._mount_view()

@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _settle import settle_until
 from litetui import app as m
 from litetui.picker import PickerBody, PickerScreen, pick
 from litetui.side_panel import DialogController, SidePanel, close_dialog, request_swap
@@ -91,7 +92,10 @@ async def test_current_row_is_preselected_in_the_sidebar_too() -> None:
     async with a.run_test(size=(120, 30)) as pilot:
         a.settings.dialog_style = "sidebar"
         pick(a, "Pick one", ROWS, lambda v: None, current="id-7")
-        await pilot.pause()
+        await settle_until(
+            pilot,
+            lambda: a.screen.query_one("#picker-list", OptionList).highlighted == 7,
+        )
         ol = a.screen.query_one("#picker-list", OptionList)
         assert ol.highlighted == 7, (
             f"highlighted row is {ol.highlighted}, not the current one (7)"
@@ -113,13 +117,18 @@ async def test_a_swap_carries_the_HIGHLIGHTED_ROW_and_leaves_the_future_pending(
             a, lambda: PickerBody("Pick one", ROWS), "sidebar", "right"
         )
         a.run_worker(ctrl.open(), name="dlg")
-        await pilot.pause()
+        await settle_until(pilot, lambda: a.screen.query(PickerBody))
 
         a.screen.query_one("#picker-list", OptionList).highlighted = 9
         await pilot.pause()
         request_swap(a.screen.query_one(PickerBody))
-        await pilot.pause()
-        await pilot.pause()
+        # Wait for the carried highlight to ARRIVE, not for two frames to pass.
+        # The assertion below still decides whether it is row 9.
+        await settle_until(
+            pilot,
+            lambda: ctrl.style == "modal"
+            and a.screen.query_one("#picker-list", OptionList).highlighted == 9,
+        )
 
         assert ctrl.style == "modal", "the swap did not change host"
         after = a.screen.query_one("#picker-list", OptionList).highlighted
@@ -149,10 +158,12 @@ async def test_ESC_DELIVERS_NONE_BUT_A_SWAP_DELIVERS_NOTHING() -> None:
             swapped.append(await ctrl.open())
 
         a.run_worker(_run(), name="dlg")
-        await pilot.pause()
+        await settle_until(pilot, lambda: a.screen.query(PickerBody))
         request_swap(a.screen.query_one(PickerBody))
-        await pilot.pause()
-        await pilot.pause()
+        # You cannot wait for "nothing was delivered". Wait for the swap to be
+        # COMPLETE — that is the point at which a resolve would already have
+        # happened — and only then assert that none did.
+        await settle_until(pilot, lambda: ctrl.style == "modal")
         assert swapped == [], f"the SWAP delivered {swapped} — it answered the picker"
         ctrl.resolve(None)
         await pilot.pause()

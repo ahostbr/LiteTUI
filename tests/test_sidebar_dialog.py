@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _settle import settle_until
 from litetui import app as m
 from litetui.dialog_demo import DemoDialogBody
 from litetui.settings import Settings
@@ -146,8 +147,13 @@ async def test_a_swap_carries_the_typed_text_AND_LEAVES_THE_FUTURE_PENDING() -> 
         body = a.screen.query_one(DemoDialogBody)
 
         request_swap(body)
-        await pilot.pause()
-        await pilot.pause()
+        # THE WORST OF THE FOUR: 3 failures in 10 runs at 8484923 on two bare
+        # pauses. Wait for the rebuilt body to carry the text, then assert.
+        await settle_until(
+            pilot,
+            lambda: ctrl.style == "modal"
+            and a.screen.query_one("#demo-note").value == "half-written reason",
+        )
 
         assert ctrl.style == "modal", f"swap did not change style (still {ctrl.style})"
         assert len(a.screen.query(SidePanel)) == 0, "the old view was not torn down"
@@ -175,8 +181,10 @@ async def test_swap_back_returns_to_the_sidebar_and_still_does_not_resolve() -> 
         ctrl, got = await _open(a, pilot, "modal")
         body = a.screen.query_one(DemoDialogBody)
         request_swap(body)
-        await pilot.pause()
-        await pilot.pause()
+        await settle_until(
+            pilot,
+            lambda: ctrl.style == "sidebar" and len(a.screen.query(SidePanel)) == 1,
+        )
 
         assert ctrl.style == "sidebar", f"swap back gave {ctrl.style}"
         assert len(a.screen.query(SidePanel)) == 1, "no panel after swapping to sidebar"
@@ -193,8 +201,14 @@ async def test_focus_lands_inside_the_new_host_after_a_swap() -> None:
         ctrl, _ = await _open(a, pilot, "sidebar")
         body = a.screen.query_one(DemoDialogBody)
         request_swap(body)
-        await pilot.pause()
-        await pilot.pause()
+        # `focused is not None` is VACUOUS as a wait here — the chat input is
+        # already focused — so wait for focus to be INSIDE the rebuilt body.
+        # The assertions below are unchanged and still decide the outcome.
+        await settle_until(
+            pilot,
+            lambda: a.screen.focused
+            in a.screen.query_one(DemoDialogBody).walk_children(with_self=True),
+        )
 
         focused = a.screen.focused
         assert focused is not None, "nothing is focused after the swap"
@@ -213,8 +227,10 @@ async def test_the_swap_button_names_its_destination_not_its_current_state() -> 
         ctrl, _ = await _open(a, pilot, "sidebar")
         assert str(a.screen.query_one("#demo-swap").label) == "Open as modal"
         request_swap(a.screen.query_one(DemoDialogBody))
-        await pilot.pause()
-        await pilot.pause()
+        await settle_until(
+            pilot,
+            lambda: str(a.screen.query_one("#demo-swap").label) == "Dock to side",
+        )
         assert str(a.screen.query_one("#demo-swap").label) == "Dock to side"
         ctrl.resolve(None)
 
