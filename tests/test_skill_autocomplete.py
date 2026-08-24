@@ -47,7 +47,7 @@ def make_app(tmp_path: Path):
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    a._jobs = []
+    a.jobs[:] = []
     a.skills = _skills(tmp_path, "ls-arch", "ls-arch-fable", "ls-mark", "banana-pro")
     return a
 

@@ -97,7 +97,7 @@ def test_cron_profile_rides_with_queued_and_idle_turns(monkeypatch):
     job = scheduler.Job(prompt="inspect", schedule="@daily")
 
     queued = SimpleNamespace(
-        _jobs=[job],
+        jobs=[job],
         _chat_running=lambda: True,
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
@@ -108,7 +108,7 @@ def test_cron_profile_rides_with_queued_and_idle_turns(monkeypatch):
 
     streamed = []
     idle = SimpleNamespace(
-        _jobs=[job],
+        jobs=[job],
         _chat_running=lambda: False,
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],

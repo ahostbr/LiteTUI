@@ -41,7 +41,7 @@ def make_app():
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    a._jobs = []
+    a.jobs[:] = []
     return a
 
 
@@ -196,7 +196,7 @@ def test_running_new_scheduled_job_opens_the_builder_on_daily(tmp_path):
             ed.query_one("#job-prompt", m.Input).value = "morning check"
             await pilot.click("#job-save")
             await pilot.pause()
-            assert [j.prompt for j in a._jobs] == ["morning check"]
+            assert [j.prompt for j in a.jobs] == ["morning check"]
             assert [j.prompt for j in sched_mod.load(tmp_path)] == ["morning check"]
     _run(body())
 

@@ -39,7 +39,7 @@ def make_app():
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    a._jobs = [sched_mod.Job(prompt="p", schedule="@daily", label="x")]
+    a.jobs[:] = [sched_mod.Job(prompt="p", schedule="@daily", label="x")]
     return a
 
 

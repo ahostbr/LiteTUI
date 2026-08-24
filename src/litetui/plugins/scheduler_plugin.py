@@ -5,12 +5,13 @@ queued-delivery funnel it feeds) stays app-owned; this plugin owns the
 command surfaces, the palette rows, and WHEN the monitor starts. The
 screens live in plugins.scheduler_ui, moved whole.
 """
+from litetui import cron as cron_mod
 from litetui.plugins import PluginManifest
 from litetui.plugins.scheduler_ui import CalendarScreen, JobScreen, _apply_job_edit
 
 
 def _cmd_cron(app, name: str, arg: str) -> None:
-    app._cron_command(arg)
+    app.cron.command(arg)
 
 
 def _cmd_calendar(app, name: str, arg: str) -> None:
@@ -56,7 +57,7 @@ def _register(ctx) -> None:
 
 
 def _activate(app) -> None:
-    app._cron_monitor()
+    cron_mod.monitor(app)
 
 
 PLUGIN = PluginManifest(id="scheduler", register=_register, activate=_activate)

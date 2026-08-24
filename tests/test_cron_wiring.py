@@ -30,10 +30,10 @@ from litetui import scheduler as sched_mod
 def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
     """Redirect the job store away from the repo.
 
-    `_fire_job` and `_cron_add` both call `sched_mod.save(self._jobs, ROOT)`,
-    and ROOT is the live checkout. A TEST MUST NEVER WRITE A PATH THE RUNNING
-    APP OWNS — three live stores in this repo were wrecked by their own suite
-    before that rule was written down.
+    `app._fire_job` and `CronService.add` both call
+    `sched_mod.save(<the job list>, ROOT)`, and ROOT is the live checkout. A TEST
+    MUST NEVER WRITE A PATH THE RUNNING APP OWNS — three live stores in this repo
+    were wrecked by their own suite before that rule was written down.
     """
     monkeypatch.setattr(paths, "ROOT", tmp_path)
 
@@ -44,7 +44,7 @@ def make_app():
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    a._jobs = []
+    a.jobs[:] = []
     return a
 
 
@@ -61,7 +61,11 @@ def test_slash_cron_reaches_the_handler():
     """The command must be routed. A method nobody calls is not a feature."""
     seen = []
     a = make_app()
-    a._cron_command = lambda arg: seen.append(arg)
+    # Stubs the SEAM the registry actually reaches since O3: the plugin calls
+    # `app.cron.command(arg)`. Stubbing `a._cron_command` here would not fail —
+    # it would go INERT, binding a name nothing looks up while the real handler
+    # ran underneath.
+    a.cron.command = lambda arg: seen.append(arg)
     a._handle_command("/cron")
     assert seen == [""]
 
@@ -70,8 +74,13 @@ def test_slash_cron_reaches_the_handler():
 
 
 def test_cron_appears_in_help():
-    """An undiscoverable command is one nobody will ever type."""
-    src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(
+    """An undiscoverable command is one nobody will ever type.
+
+    Reads cron.py since O3 moved the verbs there. app.py holds no `"/cron`
+    string at all now — all fourteen lived inside the cron family — so a gate
+    still pointed at app.py would raise rather than fail.
+    """
+    src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "cron.py").read_text(
         encoding="utf-8", errors="ignore")
     assert '"/cron' in src, "/cron is not listed in the help text"
 
@@ -87,8 +96,8 @@ def test_add_creates_and_persists_a_job(tmp_path):
 
     a._handle_command("/cron add @daily summarise what I did yesterday")
 
-    assert len(a._jobs) == 1
-    job = a._jobs[0]
+    assert len(a.jobs) == 1
+    job = a.jobs[0]
     assert job.schedule == "@daily"
     assert job.prompt == "summarise what I did yesterday"
     # persisted, not just held in memory
@@ -101,8 +110,8 @@ def test_add_with_a_five_field_schedule_splits_schedule_from_prompt():
     a._system = lambda t: None
     a._handle_command("/cron add 0 9 * * 1-5 what is on for today?")
 
-    assert a._jobs[0].schedule == "0 9 * * 1-5"
-    assert a._jobs[0].prompt == "what is on for today?"
+    assert a.jobs[0].schedule == "0 9 * * 1-5"
+    assert a.jobs[0].prompt == "what is on for today?"
 
 
 def test_a_bad_schedule_is_refused_and_names_the_field():
@@ -112,7 +121,7 @@ def test_a_bad_schedule_is_refused_and_names_the_field():
 
     a._handle_command("/cron add * 25 * * * this should not be accepted")
 
-    assert a._jobs == [], "a job with an unparseable schedule was stored anyway"
+    assert a.jobs == [], "a job with an unparseable schedule was stored anyway"
     assert "hour" in said[-1], f"the error did not name the bad field: {said[-1]!r}"
 
 
@@ -120,17 +129,17 @@ def test_a_schedule_with_no_prompt_is_refused():
     a = make_app()
     a._system = lambda t: None
     a._handle_command("/cron add @daily")
-    assert a._jobs == []
+    assert a.jobs == []
 
 
 def test_remove_takes_an_id_prefix():
     a = make_app()
     a._system = lambda t: None
     a._handle_command("/cron add @daily one")
-    jid = a._jobs[0].id
+    jid = a.jobs[0].id
 
     a._handle_command(f"/cron rm {jid[:4]}")
-    assert a._jobs == []
+    assert a.jobs == []
 
 
 def test_an_ambiguous_id_removes_nothing():
@@ -138,12 +147,12 @@ def test_an_ambiguous_id_removes_nothing():
     said = []
     a = make_app()
     a._system = lambda t: said.append(t)
-    a._jobs = [sched_mod.Job(prompt="a", schedule="@daily", id="ab11"),
+    a.jobs[:] = [sched_mod.Job(prompt="a", schedule="@daily", id="ab11"),
                sched_mod.Job(prompt="b", schedule="@daily", id="ab22")]
 
     a._handle_command("/cron rm ab")
 
-    assert len(a._jobs) == 2
+    assert len(a.jobs) == 2
     assert "matches 2" in said[-1]
 
 
@@ -151,12 +160,12 @@ def test_off_and_on_toggle_without_deleting():
     a = make_app()
     a._system = lambda t: None
     a._handle_command("/cron add @daily one")
-    jid = a._jobs[0].id
+    jid = a.jobs[0].id
 
     a._handle_command(f"/cron off {jid}")
-    assert a._jobs[0].enabled is False
+    assert a.jobs[0].enabled is False
     a._handle_command(f"/cron on {jid}")
-    assert a._jobs[0].enabled is True
+    assert a.jobs[0].enabled is True
 
 
 def test_list_reports_a_broken_schedule_instead_of_hiding_it():
@@ -164,7 +173,7 @@ def test_list_reports_a_broken_schedule_instead_of_hiding_it():
     said = []
     a = make_app()
     a._system = lambda t: said.append(t)
-    a._jobs = [sched_mod.Job(prompt="p", schedule="not a cron")]
+    a.jobs[:] = [sched_mod.Job(prompt="p", schedule="not a cron")]
 
     a._handle_command("/cron list")
     assert "BROKEN" in said[-1]
@@ -188,7 +197,7 @@ def test_a_job_that_fires_mid_turn_queues_and_never_starts_a_turn():
             a._stream = lambda *_, **__: streamed.append(1)
             a._chat_running = lambda: True          # a turn is in progress
             job = sched_mod.Job(prompt="scheduled work", schedule="* * * * *")
-            a._jobs = [job]
+            a.jobs[:] = [job]
 
             a._fire_job(job)
 
@@ -207,7 +216,7 @@ def test_a_job_that_fires_while_idle_starts_the_turn():
             a._stream = lambda *_, **__: streamed.append(1)
             a._chat_running = lambda: False
             job = sched_mod.Job(prompt="scheduled work", schedule="* * * * *")
-            a._jobs = [job]
+            a.jobs[:] = [job]
 
             a._fire_job(job)
 
@@ -226,14 +235,14 @@ def test_firing_stamps_the_slot_before_delivery_so_it_cannot_double_fire():
             a._stream = lambda *_, **__: None
             a._chat_running = lambda: False
             job = sched_mod.Job(prompt="p", schedule="* * * * *")
-            a._jobs = [job]
+            a.jobs[:] = [job]
 
             a._fire_job(job)
 
             assert job.last_fired_slot == sched_mod.slot_of(datetime.now())
             assert job.run_count == 1
             # and the tick that follows inside the same minute finds nothing
-            assert sched_mod.due(a._jobs, datetime.now()) == []
+            assert sched_mod.due(a.jobs, datetime.now()) == []
     _run(body())
 
 
@@ -246,7 +255,7 @@ def test_the_banner_names_the_job_but_the_model_receives_the_bare_prompt():
             a._stream = lambda *_, **__: None
             a._chat_running = lambda: False
             job = sched_mod.Job(prompt="do the thing", schedule="@daily", label="nightly")
-            a._jobs = [job]
+            a.jobs[:] = [job]
 
             a._fire_job(job)
 

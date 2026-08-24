@@ -109,6 +109,7 @@ from openai import AsyncOpenAI
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
+from litetui import cron as cron_mod
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -929,7 +930,7 @@ class LiteTUI(App):
         #: Cron jobs, loaded once at construction. A scheduled prompt is an
         #: INPUT nobody typed, so it rides the same held/flushed path as inbox
         #: mail rather than growing a second delivery route.
-        self._jobs: list = sched_mod.load(paths.ROOT)
+        self._cron = cron_mod.CronService(self)
         # ETA: a rolling median of prompt-eval tokens/sec, learned ONLY from
         # turns that demonstrably reprocessed the prompt (the KV-cache gate in
         # is_reliable_rate_sample). _eta_last_prompt_tokens is the previous
@@ -1202,24 +1203,6 @@ class LiteTUI(App):
         self._active_tool_profile = profile
         self._stream()
 
-    @work(exclusive=True, group="cron")
-    async def _cron_monitor(self) -> None:
-        """Fire scheduled prompts while the app is up.
-
-        Its own worker group, deliberately. Sharing "chat" with _stream would
-        make every tick cancel the turn in flight -- the exact trap autocompact
-        fell into, where a checker started work from inside the work it was
-        checking.
-        """
-        while True:
-            await asyncio.sleep(sched_mod.TICK_SECONDS)
-            try:
-                ready = sched_mod.due(self._jobs, datetime.now())
-            except Exception:
-                continue  # a scheduling bug must never take the chat down
-            for job in ready:
-                self._fire_job(job)
-
     def _fire_job(self, job) -> None:
         """Deliver a job as a real user turn, holding if one is running.
 
@@ -1233,7 +1216,7 @@ class LiteTUI(App):
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
         if blocked:
             try:
-                sched_mod.save(self._jobs, paths.ROOT)
+                sched_mod.save(self.jobs, paths.ROOT)
             except OSError:
                 pass
             self._system(blocked)
@@ -1241,7 +1224,7 @@ class LiteTUI(App):
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
-            sched_mod.save(self._jobs, paths.ROOT)
+            sched_mod.save(self.jobs, paths.ROOT)
         except OSError:
             pass  # an unwritable store must not stop the job from running
 
@@ -1267,142 +1250,6 @@ class LiteTUI(App):
         self._append({"role": "user", "content": text})
         self._active_tool_profile = profile
         self._stream()
-
-    def _cron_command(self, arg: str) -> None:
-        """/cron — add, list, remove, enable, disable, or fire a job now."""
-        arg = arg.strip()
-        if not arg or arg.lower() in ("list", "ls"):
-            self._cron_list()
-            return
-
-        verb, _, rest = arg.partition(" ")
-        verb = verb.lower()
-        rest = rest.strip()
-
-        if verb == "add":
-            self._cron_add(rest)
-            return
-
-        if verb in ("rm", "del", "remove"):
-            job = self._cron_find(rest)
-            if not job:
-                return
-            self._jobs.remove(job)
-            sched_mod.save(self._jobs, paths.ROOT)
-            self._system(f"/cron: removed {job.id} ({job.label or job.prompt[:40]})")
-            return
-
-        if verb in ("on", "off", "enable", "disable"):
-            job = self._cron_find(rest)
-            if not job:
-                return
-            job.enabled = verb in ("on", "enable")
-            sched_mod.save(self._jobs, paths.ROOT)
-            self._system(f"/cron: {job.id} is now {'ON' if job.enabled else 'OFF'}")
-            return
-
-        if verb == "run":
-            job = self._cron_find(rest)
-            if not job:
-                return
-            # Fires REGARDLESS of schedule and of enabled — "run" is the human
-            # asking for it now, which is a different act from the schedule
-            # coming round. It still stamps the slot, so an actual due-time
-            # inside this same minute will not double up.
-            self._fire_job(job)
-            return
-
-        self._system(
-            "/cron add <schedule> <prompt>   e.g. /cron add @daily summarise my inbox\n"
-            "/cron list | rm <id> | on <id> | off <id> | run <id>\n"
-            "schedule: 5-field cron (min hour day month weekday) or "
-            "@hourly @daily @weekly @monthly"
-        )
-
-    def _cron_find(self, token: str):
-        """Resolve an id prefix or a label to exactly one job, or say why not.
-
-        Ambiguity is reported rather than resolved to the first match: picking
-        one silently is how the wrong job gets deleted.
-        """
-        token = token.strip()
-        if not token:
-            self._system("/cron: which job? Use /cron list to see ids.")
-            return None
-        hits = [j for j in self._jobs
-                if j.id.startswith(token) or (j.label and j.label == token)]
-        if not hits:
-            self._system(f"/cron: no job matches {token!r}. /cron list shows them.")
-            return None
-        if len(hits) > 1:
-            ids = ", ".join(j.id for j in hits)
-            self._system(f"/cron: {token!r} matches {len(hits)} jobs ({ids}) — be more specific.")
-            return None
-        return hits[0]
-
-    def _cron_add(self, rest: str) -> None:
-        if not rest:
-            self._system("/cron add <schedule> <prompt>")
-            return
-
-        tokens = rest.split()
-        if tokens[0].startswith("@"):
-            schedule, prompt = tokens[0], " ".join(tokens[1:])
-        elif len(tokens) > 5:
-            schedule, prompt = " ".join(tokens[:5]), " ".join(tokens[5:])
-        else:
-            self._system(
-                "/cron add: a schedule is 5 fields (min hour day month weekday) "
-                "or an @alias, followed by the prompt.\n"
-                "  /cron add 0 9 * * 1-5 what is on for today?"
-            )
-            return
-
-        if not prompt:
-            self._system("/cron add: that schedule parsed, but there is no prompt after it.")
-            return
-
-        try:
-            cron = sched_mod.Cron.parse(schedule)
-        except sched_mod.CronError as e:
-            # The error names the FIELD. "invalid cron expression" would leave
-            # the person guessing which of five to fix.
-            self._system(f"/cron add: {e}")
-            return
-
-        job = sched_mod.Job(prompt=prompt, schedule=schedule)
-        self._jobs.append(job)
-        sched_mod.save(self._jobs, paths.ROOT)
-
-        nxt = cron.next_after(datetime.now())
-        when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"
-        self._system(f"/cron: added {job.id} — next fire {when}\n  {prompt}")
-
-    def _cron_list(self) -> None:
-        if not self._jobs:
-            self._system(
-                "/cron: no jobs.\n"
-                "  /cron add @daily summarise what I did yesterday\n"
-                "  /cron add */30 * * * * check the build"
-            )
-            return
-
-        now = datetime.now()
-        lines = [f"{len(self._jobs)} job(s) — jobs fire only while LiteTUI is open"]
-        lines.append("")
-        for job in self._jobs:
-            try:
-                nxt = job.next_after(now)
-                when = nxt.strftime("%a %d %b %H:%M") if nxt else "never"
-            except sched_mod.CronError as e:
-                # A job that can never fire must SAY so here. Silently listing
-                # it beside working jobs is how it sits dead for weeks.
-                when = f"BROKEN — {e}"
-            state = "on " if job.enabled else "off"
-            head = f"  {job.id}  {state}  {job.schedule:<16} next {when}"
-            lines.append(head)
-            lines.append(f"        x{job.run_count}  {job.prompt}")
-        self._system("\n".join(lines))
 
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
         """What this tool result contributes to the CONVERSATION (tool_context).
@@ -1759,7 +1606,7 @@ class LiteTUI(App):
             return
         current = self.conversation[0].get("content") or ""
         if text in current:
-            return
+            return                      # idempotent across resume/re-register
         self.conversation[0] = {
             **self.conversation[0],
             "content": current.rstrip() + "\n\n" + text if current else text,
@@ -1852,10 +1699,14 @@ class LiteTUI(App):
 
     # -- the supported plugin surface ------------------------------------
     #
-    # PURE ADDITIONS beside `_jobs` and `_mcp_dispatch`, which stay private and
-    # unchanged: the 13 private uses in this file keep working untouched. An
-    # ARRIVAL commit has to be green standing alone, so converting those 13 here
-    # would make it a rename wearing a refactor's clothes (PLAN 2b).
+    # Added by S4 as PURE ADDITIONS beside the then-private `_jobs` and
+    # `_mcp_dispatch`, so the arrival commit was green standing alone: converting
+    # this file's own uses in the same commit would have made it a rename wearing
+    # a refactor's clothes (PLAN §2b).
+    #
+    # ⚠️ `_jobs` IS GONE as of O3 — `CronService` owns the list and `jobs`
+    # delegates to it, so this is no longer a facade over a private field beside
+    # it. `_mcp_dispatch` is unchanged and still private.
 
     @property
     def jobs(self) -> list:
@@ -1866,7 +1717,17 @@ class LiteTUI(App):
         `jobs.remove(job)` / `jobs.append(...)` and then saves. Returning a
         copy here would silently drop every edit made in the calendar UI.
         """
-        return self._jobs
+        return self._cron.jobs
+
+    @property
+    def cron(self) -> "cron_mod.CronService":
+        """The scheduler service, which OWNS the job list.
+
+        Public so `scheduler_plugin` reaches a supported surface instead of two
+        app privates: `app.cron.command(...)` and `cron_mod.monitor(app)` replace
+        `app._cron_command(...)` and `app._cron_monitor()`.
+        """
+        return self._cron
 
     @property
     def mcp_dispatch(self) -> dict:

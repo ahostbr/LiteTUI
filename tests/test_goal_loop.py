@@ -258,7 +258,7 @@ def test_wrong_conversation_loop_pauses_without_delivery(
     delivered: list[str] = []
     app = SimpleNamespace(
         convo_id="other-b",
-        _jobs=[job],
+        jobs=[job],
         _system=notices.append,
         _chat_running=lambda: False,
         _handle_command=lambda command: delivered.append(command),
@@ -285,7 +285,7 @@ def test_due_loop_queues_behind_busy_owner_turn(tmp_path: Path, monkeypatch) -> 
     pending: list[dict] = []
     app = SimpleNamespace(
         convo_id="owner-a",
-        _jobs=[job],
+        jobs=[job],
         _pending_input=pending,
         _chat_running=lambda: True,
         _user_bubble=lambda *args, **kwargs: None,
@@ -305,13 +305,13 @@ def test_loop_command_creates_a_conversation_owned_scheduled_job(
     app = SimpleNamespace(
         convo_id="convo-a",
         convo_dir=tmp_path / "convo-a",
-        _jobs=[],
+        jobs=[],
         _materialise_convo=lambda: None,
         _system=notices.append,
     )
     monkeypatch.setattr(goal_mod.paths, "ROOT", tmp_path)
     goal_mod.loop_command(app, "15m inspect the build")
-    [job] = app._jobs
+    [job] = app.jobs
     assert job.kind == "loop"
     assert job.owner_convo_id == "convo-a"
     assert job.tool_profile == "scheduled"

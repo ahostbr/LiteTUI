@@ -37,7 +37,7 @@ def make_app():
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    a._jobs = []
+    a.jobs[:] = []
     return a
 
 

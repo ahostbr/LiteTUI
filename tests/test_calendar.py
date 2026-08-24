@@ -236,7 +236,7 @@ def test_slash_calendar_opens_the_screen():
         a = m.LiteTUI()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
-        a._jobs = [job(schedule="0 9 * * 1-5", label="standup")]
+        a.jobs[:] = [job(schedule="0 9 * * 1-5", label="standup")]
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
@@ -258,7 +258,7 @@ def _paint_at(width, height, jobs):
         a = m.LiteTUI()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
-        a._jobs = jobs
+        a.jobs[:] = jobs
         async with a.run_test(size=(width, height)) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
@@ -305,7 +305,7 @@ def test_paging_months_changes_what_is_drawn_and_returns():
         a = m.LiteTUI()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
-        a._jobs = []
+        a.jobs[:] = []
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
@@ -334,7 +334,7 @@ def test_the_calendar_opens_with_no_jobs_at_all():
         a = m.LiteTUI()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
-        a._jobs = []
+        a.jobs[:] = []
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
@@ -352,7 +352,7 @@ def test_a_broken_job_does_not_stop_the_calendar_from_painting():
         a = m.LiteTUI()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
-        a._jobs = [job(schedule="not a cron", label="bad one")]
+        a.jobs[:] = [job(schedule="not a cron", label="bad one")]
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
