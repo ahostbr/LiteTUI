@@ -69,7 +69,7 @@ cheaper wins.
 | # | step | owner | moves | does NOT move |
 |---|---|---|---|---|
 | **S1** | **`app.system_message(text)` — a PUBLIC method on the app**, `_system` kept as a one-line alias; SilverBolt rewrites the 49 call sites | **both — see §2a** | private reach-through **99 → 50** | lines, methods, knot |
-| **S3** | Relocate the eight owner-plugin methods into their plugins | **both — see §3** | **−321 lines, −8 methods, reach 50 → 42** | knot |
+| **S3** | Relocate the owner-plugin methods into their plugins — **NOW SEVEN, not eight: `_inbox_monitor` drops to O4, see §3b** | **both — see §3** | **−239 lines · −7 by all three units (§3a) · reach NET +5, NOT −8 — THE ROW'S FIGURE HAD THE WRONG SIGN, see §3a** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
 | **O-A** | ✅ **DONE `b1dd935`.** Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **6 names / −4 `def`s / −7 class-body items**, −19 lines — **see the unit note in §2c** | lines (barely), reach (already 0 via S2), knot |
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
@@ -307,12 +307,13 @@ at a ref.**
 
 ## 3. 🔴 THE ONE PLACE WE WRITE THE SAME FILE — S3, AND THE ORDER IS NOT NEGOTIABLE
 
-Eight methods move **out of `app.py` into the plugin that already owns the feature**. Each is
-reached exactly once, by exactly that plugin:
+**SEVEN** methods move **out of `app.py` into the plugin that already owns the feature** — eight
+were listed; `_inbox_monitor` **drops out by measurement, see §3b**. Each is reached exactly once,
+by exactly that plugin (**verified per site at `da6fe6b`, not inherited**):
 
 | method | lines | owning plugin |
 |---|---:|---|
-| `_inbox_monitor` | 82 | `harness_plugin.py` |
+| ~~`_inbox_monitor`~~ | ~~82~~ | **OUT → O4 (§3b)** |
 | `_on_settings_saved` | 65 | `settings_ui.py` |
 | `_cron_command` | 50 | `scheduler_plugin.py` |
 | `_tool_view_image` | 44 | `view_image.py` |
@@ -334,9 +335,80 @@ commit green.
 
 Per method or batched is SilverBolt's call. **The order is not.**
 
-⚠️ `_inbox_monitor` (82 ln) is relocatable *and* knot-adjacent. If moving it whole drags shared
-state into `harness_plugin.py`, it drops out of S3 and rejoins O4 — **decided by measurement at
-the time, not now**, and the decision is reported either way.
+### 3a. 🔴 S3's ROW IS RE-DERIVED, AND ITS REACH FIGURE HAS THE WRONG SIGN
+
+The row publishes **reach 50 → 42**, a **−8** built by counting the call site each plugin loses.
+**It does not count the sites the RELOCATED BODY creates.** Every `self._x` inside a moved method
+becomes `app._x` **from inside the plugin** — which is a reach-through, by the same definition the
+row is measured in. Measured at `da6fe6b`, unit = **AST call SITES** (not distinct members, per §2c):
+
+| method | ln | removed | added | **net** | owner |
+|---|---:|---:|---:|---:|---|
+| `_mcp_server_names` | 22 | 1 | 0 | **−1** | `settings_ui.py` |
+| `_register_custom_themes` | 11 | 1 | 0 | **−1** | `themes_plugin.py` |
+| `_tool_view_image` | 44 | 1 | 1 | 0 | `view_image.py` |
+| `_start_mark` | 31 | 1 | 1 | 0 | `mark_plugin.py` |
+| `_cron_monitor` | 16 | 1 | 1 | 0 | `scheduler_plugin.py` |
+| `_on_settings_saved` | 65 | 1 | 3 | **+2** | `settings_ui.py` |
+| `_inbox_monitor` | 82 | 1 | 4 | **+3** | `harness_plugin.py` |
+| `_cron_command` | 50 | 1 | 6 | **+5** | `scheduler_plugin.py` |
+| **TOTAL** | **321** | **8** | **16** | **+8** | |
+
+⇒ **AS WRITTEN, S3 MOVES REACH-THROUGH THE WRONG WAY BY 8 SITES.** Two of the eight are clean
+(**−1** each), three are neutral, and three make the metric worse. **The row's premise held** —
+each of the eight is reached exactly once, by exactly its own plugin, verified per site — so the
+**−8 removal is real; the +16 addition was simply never counted.**
+
+**LINES AND METHODS ARE UNCHANGED AND ALL THREE UNITS AGREE HERE:** −321 lines (the eight bodies
+sum to exactly 321, re-verified), and **−8 by every unit — `def`s, class-body items, and names —
+because none of the eight is an alias.** That is worth stating rather than assuming: it is the case
+§2c warns about *not* biting.
+
+📌 **A PUBLIC ACCESSOR MAKES A PRIVATE READ FREE, and two steps already paid for four of these.**
+`self._system` → `app.system_message` (S1) and `self._update_header` → `app.update_header` (S5)
+cost nothing after the move, and so do `app._jobs`/`app._mcp_dispatch` via S4's properties. The
+first pass of this measurement counted all four as new reach-through and read **+12**; resolving
+them against the class gives **+8**. ⚠️ **And the property detector initially missed `jobs` and
+`mcp_dispatch` because it required a one-statement body — their DOCSTRINGS are `body[0]`.** Same
+docstring-as-a-body-item off-by-one as the class-member disagreement in §2c, in a second instrument,
+the same day.
+
+### 3b. ✅ `_inbox_monitor` — THE DEFERRED DECISION, MADE: IT DROPS OUT OF S3 AND REJOINS O4
+
+§3 deferred this deliberately: *"if moving it whole drags shared state into `harness_plugin.py`, it
+drops out of S3 and rejoins O4 — decided by measurement at the time."* Measured at `da6fe6b`:
+
+**IT IS NOT IN THE KNOT, and the first instrument that said it was, was wrong.** Union-find over
+co-written attributes puts it in a 43-method component — **but `__init__` writes 44 distinct
+attributes and glues nearly the whole class together.** Excluding the constructor, the largest
+component is **11** and **`_inbox_monitor`'s component is `{_inbox_monitor}` — size 1.** ⭐ **A
+universal connector is not a coupling.** Any knot number quoted without saying whether `__init__`
+is in it is unusable.
+
+**IT MOVES ANYWAY — but on the STATE, not the knot:**
+
+| what it writes | who else | verdict |
+|---|---|---|
+| `app.seat.model` (borrowed-object store) | written by `__init__`, **read by 4 app methods** | 🔴 **`harness_plugin.py`'s OWN DOCSTRING declares this host-owned:** *"Seat CONSTRUCTION stays host-owned in `__init__` (a core ordering guarantee — monitors must never race the seat's existence)."* **The plugin says it does not own `seat`.** |
+| `app._seat_started` | written by `__init__`; **read by NOTHING in `src/`** — only `tests/test_no_fleet_registration.py:244` | a write-only flag with no in-app consumer; the plugin could own it, but nothing is gained |
+
+Plus it reaches **`app._sync_fleet_identity`**, which mutates `self.conversation[0]["content"]` and
+was **permanently withdrawn from movement in §5c**. So the body reaches into the conversation-
+mutation path that is app-owned by ruling.
+
+⇒ **VERDICT: `_inbox_monitor` LEAVES S3 AND REJOINS O4.** It costs **+3 reach**, it writes state the
+owning plugin explicitly disclaims, and it depends on a permanently app-owned mutator. S3 becomes
+**seven methods, 239 lines**, and its net reach becomes **+5**.
+
+🔬 **AND THE DECORATOR IS *NOT* THE BLOCKER — PROVEN BY RUNNING IT, WITH A NEGATIVE CONTROL.**
+`_inbox_monitor` and `_cron_monitor` are both `@work`, and §5's "WHAT CANNOT MOVE" lists `@work`
+workers as framework-bound. **That entry is too broad.** `textual.work`'s wrapper only does
+`self = args[0]; assert isinstance(self, DOMNode); self.run_worker(...)` — so a **module-level**
+plugin function `async def inbox_monitor(app, ...)` decorated with `@work` satisfies the contract.
+Ran it: the worker executed, `state=SUCCESS`, `group` preserved; the negative control (first arg a
+`str`) raised `AssertionError`, **so the probe discriminates.** ⇒ `_cron_monitor` is genuinely
+movable (net 0), and `_inbox_monitor`'s verdict rests on the state alone — which is the honest
+place for it to rest.
 
 ---
 
@@ -472,7 +544,18 @@ own retraction."* Raised twice, checked twice, correct both times.
 
 **34 framework-bound members** stay on the class by contract with Textual — `compose`, `on_*`
 (message pump), `action_*` (bindings), `watch_*` (reactives), `get_system_commands`,
-`check_action`, and `@work` workers. The most any of them becomes is a one-line delegation.
+`check_action`, and ~~`@work` workers~~. The most any of them becomes is a one-line delegation.
+
+🔴 **CORRECTED — `@work` DOES NOT BELONG ON THAT LIST, and the over-broad entry would have frozen
+two of S3's members for no reason.** `textual.work`'s wrapper does only
+`self = args[0]; assert isinstance(self, DOMNode); self.run_worker(...)`, so a **module-level**
+function `async def x(app, ...)` under `@work` satisfies the contract completely. **Proven by
+running it, not by reading it:** the worker executed with `state=SUCCESS` and its `group` intact,
+and the negative control — same decorator, first argument a `str` — raised `AssertionError`, so the
+probe discriminates. ⚠️ **`on_*` on that list needs the same scepticism from the opposite
+direction:** the message pump looks up `_on_x` **before** `on_x` (§2b), so the underscore never made
+a member framework-invisible. **Neither prefix nor decorator settles a member's status — the
+framework's actual contract does, and the only way to know it is to run it.**
 
 **Five members are frozen by plugins AND sit inside the knot:** `_update_header`,
 `_fetch_ctx_window`, `_connect` (released by **S5**), `_stream` and `_resume` (not until **S7**).
