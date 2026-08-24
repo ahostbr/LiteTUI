@@ -8,6 +8,7 @@ the command surfaces over it.
 import time
 
 from litetui import paths
+from litetui.conversation import ConversationRepository
 from litetui.picker import PickerScreen
 from litetui.plugins import PluginManifest
 
@@ -58,7 +59,7 @@ def _open_convos_picker(app) -> None:
     """The conversation picker modal, shared by /convos and /resume so
     the two commands show one UI instead of one modal and one wall of
     chat text. Selecting a row opens it; Esc closes it."""
-    rows = app._list_convos()
+    rows = ConversationRepository.list_all()
     if not rows:
         app._system("Nothing to resume.")
         return
@@ -77,12 +78,12 @@ def _open_convos_picker(app) -> None:
             (
                 str(path),
                 f"{stamp}  {cid}  {owner:<19}  {turns:>3} msg{badge}  "
-                f"{app._fmt_size(path.stat().st_size):>7}  "
-                f"{app._convo_label(meta, msgs)}",
+                f"{ConversationRepository.fmt_size(path.stat().st_size):>7}  "
+                f"{ConversationRepository.label(meta, msgs)}",
             )
         )
     title = "Resume a conversation"
-    if app._persist_error:
+    if app.store.persist_error:
         # _note_persist_error announces the FIRST save failure and is
         # never heard from again; this badge is the on-demand
         # re-statement, on the exact surface the user is looking at.
@@ -114,7 +115,7 @@ def _cmd_rename(app, name: str, arg: str) -> None:
         current = ""
         if app.convo_path is not None and app.convo_path.exists():
             try:
-                meta, _msgs = app._read_convo(app.convo_path)
+                meta, _msgs = ConversationRepository.read(app.convo_path)
                 current = str(meta.get("name") or "")
             except OSError:
                 current = ""
@@ -132,12 +133,12 @@ def _cmd_rename(app, name: str, arg: str) -> None:
     if app.convo_path is None:
         app._system("No conversation to name yet.")
         return
-    app._write_record({"type": "rename", "name": wanted})
+    app.store.write_record({"type": "rename", "name": wanted})
     app._system(f"Named this conversation {wanted!r}. It shows in /convos and /resume.")
 
 
 def _cmd_resume(app, name: str, arg: str) -> None:
-    rows = app._list_convos()
+    rows = ConversationRepository.list_all()
     if not rows:
         app._system("Nothing to resume.")
         return

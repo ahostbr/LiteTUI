@@ -42,20 +42,39 @@ META = {"type": "meta", "v": 3, "id": "abc", "model": "m"}
 SNAP = {"type": "snapshot", "messages": [{"role": "user", "content": "how do I do X"}]}
 
 
+class _StubStore:
+    """The PUBLIC conversation store, which is what the plugin reaches for now.
+
+    `convo.py` used to call `app._write_record(...)` — a one-line private
+    delegation to exactly this. Stubbing the public seam instead means the test
+    exercises the surface the plugin actually depends on.
+    """
+
+    def __init__(self):
+        self.records: list[dict] = []
+        self.persist_error: str | None = None
+
+    def write_record(self, rec):
+        self.records.append(rec)
+
+
 class _StubApp:
     """Enough app for /rename, and nothing that can reach a real conversation."""
 
     def __init__(self, path=None):
         self.convo_path = path
-        self.records: list[dict] = []
+        self.store = _StubStore()
         self.said: list[str] = []
         self.materialised = 0
 
+    @property
+    def records(self) -> list[dict]:
+        """Kept so the assertions below read as they did; the records live in
+        the store now, because that is where the plugin writes them."""
+        return self.store.records
+
     def _materialise_convo(self):
         self.materialised += 1
-
-    def _write_record(self, rec):
-        self.records.append(rec)
 
     def _system(self, text):
         self.said.append(text)
@@ -148,7 +167,10 @@ def test_both_listings_go_through_the_label_helper() -> None:
         "a listing still renders the derived preview directly — a named "
         "conversation would show in one surface and not the other"
     )
-    assert src.count("_convo_label(meta, msgs)") == 1, (
+    # Spelled `ConversationRepository.label(...)` since the plugin stopped
+    # going through the app's private alias. The ASSERTION is unchanged in
+    # strength — exactly one rendering site — only the name it matches moved.
+    assert src.count("label(meta, msgs)") == 1, (
         "the shared picker is the single rendering site for the label; "
         "a second listing means /convos and /resume have drifted apart"
     )
