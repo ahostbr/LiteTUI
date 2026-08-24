@@ -76,11 +76,13 @@ Sentinel initially bound it to S6 and **WITHDREW** that: parking a shipped hole 
 git merge-base --is-ancestor 63fd480 origin/refactor/app-decomposition   # YES — S5 arrival
 git merge-base --is-ancestor 4aeb5e7 origin/refactor/app-decomposition   # YES — my consumer half
 git show origin/refactor/app-decomposition:src/litetui/app.py | grep -c "def on_model_picked"  # 1
-git grep -l "on_model_picked" <ref> -- tests/ | wc -l                    # 0  ← ZERO COVERAGE
+git grep -l "on_model_picked" <ref> -- tests/ | wc -l                    # 0  ← NOT zero coverage
+#   ⚠ that 0 counts MENTIONS. test_modals.py covers 3 of 4 arms by WIRING. See §2a.
 ```
 
 **IT IS MINE AND I SHOULD SAY SO PLAINLY: I converted `model_switch.py:77` myself in `4aeb5e7` and
-reported `run_all REAL EXIT 0`. That green was never watching this member.** A coverage debt filed
+reported `run_all REAL EXIT 0`. ~~That green was never watching this member.~~ → **FALSE, see §2a:
+that green WAS watching it on 3 of 4 arms.**  A coverage debt filed
 without its owner drifts.
 
 **The work:** one test file, ~20 lines, its own commit. Callback behaviour — picking a model
