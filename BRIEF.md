@@ -131,7 +131,12 @@ and then release you to implement in parallel behind the file fence.
   **not yours** — do not debug it, just note it.
 - Commit trailers required: `Task-id: T070`, `Agent-Tier: worker`, `Agent-Name: <you>`,
   `Agent-ID: <your session id>`, `Complexity: complex`. **Never `Co-Authored-By`.**
-- **Do not push.** Every push is Ryan's trigger.
+- 🟢 **PUSH FREELY AND OFTEN — DO NOT ASK. AMENDED 2026-08-24, mid-task.** This brief
+  originally said *"Do not push. Every push is Ryan's trigger."* Ryan **RESCINDED** that gate
+  tonight, verbatim: *"we need to commit and push all the time … im tired of being asked and
+  its just good practice to make backups often"*. **Push `refactor/app-decomposition` after
+  every commit** — frequent pushes ARE the backup, and a seat with no `.jsonl` transcript has
+  no other one. ⚠️ Still mine, not yours: the **merge into `main`**. Push your branch, never main.
 
 ## 6. HOW I WANT TO BE TOLD THINGS
 
