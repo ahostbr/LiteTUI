@@ -26,8 +26,8 @@ git rev-parse --short HEAD origin/main          # 16bc4e7 (or later) == same
 | `c55d9d2` | **T073 items 1–3 — tri-state modal, settings, call site. WIRED END TO END.** |
 | `16bc4e7` | **T073 items 5–6 — deny stops the turn; every refusal in prompts/tool-denied.md** |
 
-Board: T062 · T066 · T070 · T072 **done**. T073 **building**, mine.
-⚠️ §2 items 1–3 AND 5–6 are now DONE — see §10, which supersedes them. Only item 4 is left.
+Board: T062 · T066 · T070 · T072 · T073 **done**. Nothing of mine open.
+✅ ALL SIX §2 items are DONE — see §10, which supersedes them. T073 is complete.
 
 ## 2. T073 — WHAT LANDED, WHAT HAS NOT
 
@@ -38,7 +38,7 @@ Board: T062 · T066 · T070 · T072 **done**. T073 **building**, mine.
 
 **Items 1–3 below LANDED at `c55d9d2`** — the text is kept for its reasoning, but the STATE
 sentences are corrected in place rather than banner-corrected, because a banner does not reach a
-claim a reader lands on directly. Items 4–6 are still owed. Full detail in §10.
+claim a reader lands on directly. **ALL SIX ARE NOW DONE.** Full detail in §10.
 
 1. ✅ **DONE — the modal is `ModalScreen[ToolApproval]`** with three buttons (deny / once / always).
    It is NOT a string enum, and §10 explains why that would have inverted the guard.
@@ -47,8 +47,8 @@ claim a reader lands on directly. Items 4–6 are still owed. Full detail in §1
    at the edge in `app.py`. ⚠️ Adding them ALSO required rows in `settings_screen.py` — see §10.
 3. ✅ **DONE — the call site** now passes `tool_name=name` and both rule sets, and writes the rule
    via `_remember_tool_rule` when the human answers "always".
-4. **`AUTONOMOUS` profile** — a third `ToolProfile`, everything in `allow`, nothing in `confirm`.
-   `PROFILE_NAMES` at tool_policy.py:50, `PROFILES` at :127.
+4. ✅ **DONE `43f1ce6` + `510bd47` — `AUTONOMOUS`.** The dropdown derives itself now, so the
+   profile set has ONE source. ⚠️ It would have HUNG on a `confirm_always` tool — §10.
 5. ✅ **DONE `16bc4e7` — deny stops the turn.** Ryan was asked replace-vs-supplement with the cost
    of replacing stated and chose **REPLACE**, so the two deliberate verbs are now one. It also
    surfaced a pre-existing lie in the loop's tail — see §10.
@@ -99,9 +99,9 @@ instead of reverting it. That is why `80162a7` was pushed before the last three 
 
 ## 5. OWED — SPLIT BY OWNER
 
-**MINE** — **item 4 only**, and it is BLOCKED on a file boundary, not on effort: `TOOL_PROFILE_CHOICES`
-is hardcoded in `settings_screen.py`, which is OpenBolt's under Sentinel's T075 boundary (`77153e6c`).
-Items 1–3 landed at `c55d9d2`, items 5–6 at `16bc4e7`. Sentinel's ordering was **always-allow FIRST**
+**MINE — NOTHING. T073 IS COMPLETE.** Items 1–3 `c55d9d2`, 5–6 `16bc4e7`, 4 `43f1ce6` + `510bd47`.
+The file boundary that blocked item 4 was dissolved rather than scheduled around: Sentinel ruled
+DERIVE, not sequence. Sentinel's ordering was **always-allow FIRST**
 because it is the one that makes the rest usable — discharged. Field evidence for why it came first:
 Ryan killed his own qwen seat rather than keep answering the modal, so the guard was not overridden,
 it was ROUTED AROUND.
@@ -211,19 +211,36 @@ this file and that refactor. Do not delete it as redundant — it looks redundan
 
 | # | item | state |
 |---|---|---|
-| 4 | `AUTONOMOUS` profile — third `ToolProfile`, all in `allow` (tool_policy.py:50, :127) | **BLOCKED ON A FILE BOUNDARY** — see below |
+| 4 | `AUTONOMOUS` profile | ✅ **DONE `43f1ce6` + `510bd47`** — Sentinel ruled DERIVE, not sequence |
 | 5 | deny-stops-turn at the call site | ✅ **DONE `16bc4e7`** — Ryan ruled REPLACE |
 | 6 | every refusal → `prompts/tool-denied.md` | ✅ **DONE `16bc4e7`** — Ryan ruled migrate ALL FIVE, `TOOLS_DISABLED_RESULT` included |
 
-**ITEM 4 IS NOT MERELY DEFERRED ANY MORE — IT CANNOT BE DONE ALONE.**
-`TOOL_PROFILE_CHOICES` is **hardcoded at `settings_screen.py:77–80`**, and that file is shared with
-OpenBolt's T075 under Sentinel's boundary (message `77153e6c`). Adding a `ToolProfile` without the
-matching row there ships a profile no one can select; adding the row without the profile fails the
-`tool_policy_profile not in PROFILE_NAMES` check at save. **It is one edit across two files, one of
-which is not mine to take.** Ask Sentinel to sequence it.
-📌 That hardcoded list is itself the hazard: the UI's set of profiles and `tool_policy.PROFILES` can
-drift silently in one direction. Deriving the choices from `PROFILE_NAMES` would remove the whole
-class — and would also make item 4 a one-file change.
+**T073 IS COMPLETE. ALL SIX ITEMS.** Item 4 was blocked on a file boundary — `TOOL_PROFILE_CHOICES`
+was hardcoded in `settings_screen.py`, OpenBolt's under T075. I asked Sentinel to sequence it; he
+ruled **DELETE THE THING THAT NEEDS SEQUENCING** and released the lines. Two commits:
+
+- **`43f1ce6` — the dropdown DERIVES itself.** The profile set was written out three times
+  (`PROFILES`, a hand-written `PROFILE_NAMES`, and the hardcoded choices). One direction of drift
+  was loud; **the other was silent** — a profile added to `PROFILES` alone EXISTS, is refused by the
+  save validator, and can be selected by nobody. One source now: `PROFILE_NAMES = tuple(PROFILES)`,
+  and the description lives on the `ToolProfile` as `summary`.
+  🔴 **The derivation is LIVE, not a snapshot, and that is the whole test.** The first version used
+  `from litetui.tool_policy import PROFILES`, which binds at import — so the test proving a new
+  profile appears could only pass by patching `settings_screen` itself, i.e. **by touching the
+  screen**, which is exactly what the derivation exists to make unnecessary. It would have certified
+  the property while violating it. It references the module now.
+- **`510bd47` — `AUTONOMOUS` itself**, one file, because of the above.
+  🔴 **IT WOULD HAVE HUNG.** `MCP_UNKNOWN_POLICY` sets `confirm_always=True`, which forces a prompt
+  REGARDLESS of capabilities. `scheduled` never reaches that branch only by construction. `autonomous`
+  allows everything, so nothing is refused earlier — it would have opened a modal **in a run with
+  nobody watching**, and the turn waits forever. Fixed in `evaluate`: **a profile with an empty
+  `confirm` set never opens a modal.** `scheduled` has an explicit control proving it still REFUSES.
+  ⚠️ **The only brake left under `autonomous` is a standing `deny` rule.** It holds — the deny gate
+  runs before the profile is consulted — and it stays capability-scoped. Both tested, both with the
+  control that the same call without the rule is allowed.
+  ⚠️ **The dropdown REORDERED**: `scheduled → interactive → autonomous`, ascending authority, so the
+  widest option sits visibly at the end. Held out of `43f1ce6` on purpose — that commit's claim was
+  that nothing visible changed.
 
 ### WHAT ITEMS 5 AND 6 ACTUALLY CHANGED
 
