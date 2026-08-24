@@ -69,13 +69,13 @@ cheaper wins.
 | # | step | owner | moves | does NOT move |
 |---|---|---|---|---|
 | **S1** | **`app.system_message(text)` — a PUBLIC method on the app**, `_system` kept as a one-line alias; SilverBolt rewrites the 49 call sites | **both — see §2a** | private reach-through **99 → 50** | lines, methods, knot |
-| **S3** | Relocate the owner-plugin methods into their plugins — **NOW THREE, not eight** (`_mcp_server_names` · `_tool_view_image` · `_start_mark`). Cron → O3 (Ryan); `_inbox_monitor` + `_on_settings_saved` + `_register_custom_themes` → §3b/§3c | **both — see §3** | **−97 lines · −3 by ALL THREE units** (defs = class-body items = names; none is an alias) **· reach NET −1** (removed 3, added 2, AST call SITES) **· 0 invisible plugin→plugin edges · 0 app→plugin edges** | knot |
+| **S3** | Relocate the owner-plugin methods into their plugins — **NOW THREE, not eight** (`_mcp_server_names` · `_tool_view_image` · `_start_mark`). Cron → O3 (Sentinel); `_inbox_monitor` + `_on_settings_saved` + `_register_custom_themes` → §3b/§3c | **both — see §3** | **−97 lines · −3 by ALL THREE units** (defs = class-body items = names; none is an alias) **· reach NET −1** (removed 3, added 2, AST call SITES) **· 0 invisible plugin→plugin edges · 0 app→plugin edges** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
 | **O-A** | ✅ **DONE `b1dd935`.** Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **6 names / −4 `def`s / −7 class-body items**, −19 lines — **see the unit note in §2c** | lines (barely), reach (already 0 via S2), knot |
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups — **12 methods / 212 ln, see §5b** | OpenBolt | −212 lines, **−12 methods** | knot |
-| **O3** | `_cron`/`_cron_*` → `CronService` — **scope ENLARGED, not reduced: S3 no longer touches cron at all. `_cron_command` (50) + `_cron_monitor` (16) are O3's, so ONE ROW OWNS THE FAMILY** (Ryan, *scope not sequence*, §3d) | OpenBolt | **−148 lines, −5 methods** — DERIVED, not the old "−~80/−3": `_cron_monitor` 16 · `_cron_command` 50 · `_cron_find` 20 · `_cron_add` 37 · `_cron_list` 25. **Units agree (defs = items = names).** **+ `_fire_job` 47 ⇒ 6 methods / 195 lines** (taken, §3d). ⚠️ **NOT zero-edit: 9 test call sites in 3 files, and 2 gates go red — pre-costed in §3f** | knot |
+| **O3** | `_cron`/`_cron_*` → `CronService` — **scope ENLARGED, not reduced: S3 no longer touches cron at all. `_cron_command` (50) + `_cron_monitor` (16) are O3's, so ONE ROW OWNS THE FAMILY** (Sentinel, *scope not sequence*, §3d) | OpenBolt | **−148 lines, −5 methods** — DERIVED, not the old "−~80/−3": `_cron_monitor` 16 · `_cron_command` 50 · `_cron_find` 20 · `_cron_add` 37 · `_cron_list` 25. **Units agree (defs = items = names).** **+ `_fire_job` 47 ⇒ 6 methods / 195 lines** (taken, §3d). ⚠️ **NOT zero-edit: 9 test call sites in 3 files, and 2 gates go red — pre-costed in §3f** | knot |
 | **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b. **ARRIVAL ✅ `63fd480` (OpenBolt). Consumer OPEN (SilverBolt), now 18 + 2 `misc.py` sites + the 92-stub sweep** | SilverBolt + OpenBolt | reach **40 → 20** (AST — *corrected from 22: the 2 `misc.py` `_update_header` sites are folded in*) | lines, methods, knot — **the arrival moves the def-grep by 0 while adding 5 members, see §2c** |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed`/`_elapsed_*`, `_eta`/`_eta_*`, `_tps`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **22 → 15** (AST) | lines, methods, knot |
@@ -308,7 +308,7 @@ at a ref.**
 ## 3. 🔴 THE ONE PLACE WE WRITE THE SAME FILE — S3, AND THE ORDER IS NOT NEGOTIABLE
 
 **THREE** methods move **out of `app.py` into the plugin that already owns the feature.** Eight were
-listed; five left, each for a *different* named reason (§3b, §3c, and Ryan's cron ruling). Each of
+listed; five left, each for a *different* named reason (§3b, §3c, and Sentinel's cron ruling). Each of
 the three is reached exactly once, by exactly that plugin — **verified per site at the ref, not
 inherited** — and **each writes nothing at all**:
 
@@ -323,8 +323,8 @@ inherited** — and **each writes nothing at all**:
 |---|---:|---|---|
 | `_inbox_monitor` | 82 | writes `seat.model` + `_seat_started`; owning plugin disclaims the seat | §3b |
 | `_on_settings_saved` | 65 | writes **5** fields, **4 public** and read at **26 plugin sites**; owning plugin disclaims it | §3c |
-| `_cron_command` | 50 | O3 owns the `_cron`/`_cron_*` family | Ryan, scope-not-sequence |
-| `_cron_monitor` | 16 | same family | Ryan |
+| `_cron_command` | 50 | O3 owns the `_cron`/`_cron_*` family | Sentinel, scope-not-sequence |
+| `_cron_monitor` | 16 | same family | Sentinel |
 | `_register_custom_themes` | 11 | writes nothing — leaves **only** because its sole `app.py` caller is `_on_settings_saved`, which stays | §3c |
 
 > **COMMIT 1 — SilverBolt: the body ARRIVES in the owning plugin. `app.py` untouched. SUITE GREEN.**
@@ -455,7 +455,7 @@ attributes and the two disqualified-on-state members write **seven between them*
 
 **Three independent disqualifiers, and each removed member fails exactly one:**
 ① **writes app state** → `_inbox_monitor`, `_on_settings_saved` · ② **belongs to another row's
-family** → the two cron members (Ryan: *scope, not sequence*) · ③ **has an `app.py` caller left
+family** → the two cron members (Sentinel: *scope, not sequence*) · ③ **has an `app.py` caller left
 behind** → `_register_custom_themes`, **which is derivative — it only bites because its caller is
 disqualified by ①.**
 
@@ -481,7 +481,18 @@ whole time.** Read the destination before costing the move.
 ⇒ **And `_cron_command` was the more honest of the two: it declared its cost as `+5`. This one's
 cost is mostly in fields the metric is not looking at.**
 
-### 3d. RULING (Ryan) — CRON IS A **SCOPE** PROBLEM, NOT A SEQUENCE ONE. ONE ROW OWNS THE FAMILY.
+### 3d. RULING (Sentinel) — CRON IS A **SCOPE** PROBLEM, NOT A SEQUENCE ONE. ONE ROW OWNS THE FAMILY.
+
+📌 **ATTRIBUTION CORRECTED — this ruling and the five-member table were recorded here as RYAN's for
+seven lines of this file, and they are SENTINEL's.** The mechanism is worth naming because it will
+recur: **Sentinel's word carries Ryan's authority, so his dispatches reach a worker seat through the
+same channel Ryan's do** — and a seat that does not separate *authority* from *authorship* will
+sign the orchestrator's rulings with the human's name by default.
+⭐ **MISATTRIBUTING UPWARD IS WORSE THAN MISATTRIBUTING SIDEWAYS** (Sentinel's corollary, and it is
+the durable half): a wrongly-credited peer corrects it within the hour — SilverBolt did exactly that
+on the same table — but **a wrongly-credited human makes a claim nobody in the thread is positioned
+to challenge, and converts a revisable ruling into an apparent mandate.** Here it would also have
+buried the more useful half of the record: that the ruling was *improved on* after it was made.
 
 The `S3-before-O3` hold was ruled on one arm — *S3 deletes 66 lines of cron that O3 targets*. The
 other arm points the opposite way: **relocating `_cron_command` CREATES 6 reach-throughs to
