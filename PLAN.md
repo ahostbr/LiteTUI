@@ -754,6 +754,75 @@ S4 intended.
 
 ---
 
+### 3l. ✅ O4 COMPLETE — AND THE ORDERING RATIONALE WAS WRONG, THE ORDER RIGHT
+
+**O4 landed exactly on the figure pre-registered before any of its three commits existed.**
+
+| | before O4 | after O4 | registered |
+|---|---|---|---|
+| methods (`^    (async )?def `) | 125 | **115** | 115 |
+| `app.py` lines | 4,333 | **4,242** | — |
+| knot comps>1 (excl `__init__`) | 43 | **34** | 34 |
+| components | `[13,13,6,3,3,3]` | **`[13,6,6,3,3,3]`** | same list |
+| largest component | 13 | **13** | 13, unchanged |
+
+`15f7668` `_eta`→`EtaState` · `fdf525f` `_elapsed`→`ElapsedState` · `f431829` `_tps`→`TpsState`.
+
+**⭐ THE ORDER'S DISCRIMINATOR IS EXTERNAL INERT, NOT TOTAL INERT** (SilverBolt, measured at
+`e0e2d93`). An inert site *inside* the file that is moving leaves **with** the methods and resolves
+itself; only sites **outside** it can stay green and wrong.
+
+| landing | total inert | files | **inert OUTSIDE `app.py`** |
+|---|---|---|---|
+| O4-a `_eta` | 6 | 1 | **0** |
+| O4-b `_elapsed` | 13 | 1 | **0** |
+| O4-c `_tps` | 19 | 3 | **8** → really **6**, see below |
+
+⇒ Not ascending-inert: **zero-risk, zero-risk, then all of it.** The two orderings agree here and
+will not always, and the next person applies whichever one is written down. `tools/move_cost.py`
+now prints the external count directly (`c0597a7`), because the first read of its output derived
+**3** where the answer was **8** — wrong in the direction that declares a risky landing safe.
+
+**🔴 AND "NO EXTERNAL INERT" NEVER MEANT "NO GATE NEEDED".** Two independent hazards were conflated:
+
+| hazard | what external-inert says |
+|---|---|
+| a stale reference that **loses** coverage | genuinely discharged by a 0 |
+| behaviour that **never had** coverage | **nothing at all** |
+
+Mutation controls, full suite, proof-of-edit at both endpoints:
+
+| family | gutted | suite | verdict |
+|---|---|---|---|
+| `EtaState` (**shipped** at `15f7668`) | `learn` records nothing | 1,123 passed, EXIT 0 | **BLIND** → fixed `6ec9934` |
+| `ElapsedState` | `start` records nothing | 1,115 passed, EXIT 0 | **BLIND** → fixed `fdf525f` |
+| `_tps` | both `self.tps` writers | **EXIT 1**, `test_footer.py` | sighted, and coverage **survived** the move |
+
+The axes are uncorrelated: **the only landing with real stale-reference exposure was the only one
+whose suite could catch a mutation.** Hold your new test aside while running the control — with it
+present the gutted run goes red because *your* test fires, which measures your test, not the
+pre-existing suite.
+
+**🔴 `tps` DOES NOT MOVE — A FIELD CAN BE A DESCRIPTOR WHOSE ASSIGNMENT IS A CALL.** `tps` is a
+Textual `reactive` (`app.py:865`) **with a watcher** (`watch_tps → _refresh_ctx_label`, `app.py:2429`).
+Assignment triggers the repaint *and* the watcher. On a plain service attribute both effects vanish
+**silently**. So `TpsState` owns the private bookkeeping and **returns** a rate; `_stream` publishes
+it, before `_glassbox_rate` — which reads `self.tps` on the next line.
+⚠️ **`move_cost` cannot see this and is not fixable by AST alone:** it reported `state re-homed 4`
+including `tps`. Two of the eight external sites were `tps` writes that stayed valid, so the real
+external sweep was **6**, all in `test_footer.py`. Before moving any field off a framework base
+class, grep `watch_<name>` and the class-body declaration — not just the `self.<name> =` sites.
+
+**⚠️ A TEST THAT ASSERTS A DISTANCE FAILS ON EDITS THAT PRESERVE ITS SUBJECT.**
+`test_stream_branches_scroll` regexes `app.py` source text for `only_if_following=True` within
+**400 chars** of `if delta.content:`. Two correct new lines pushed a scroll call *that is still
+there* to offset 455. Widened to 600 — **controlled both ways**: exactly one
+`only_if_following=True` in the following 1,200 chars (so a wider window cannot match a neighbour),
+and with the call removed the widened test **still fails**. Without that second check, "my change
+broke a test so I changed the test" is indistinguishable from disabling a gate.
+
+---
+
 ## 4. EXPLICIT PREDECESSORS — dependencies as rows, not prose
 
 A dependency mentioned once in a paragraph is a dependency someone executes out of order.
