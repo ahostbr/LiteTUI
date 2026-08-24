@@ -104,6 +104,8 @@ def load_image_file(app, path: Path) -> str | None:
         return None
 
 def store_block(app, live: bool=False) -> str:
+    # memory.md is capped hardest ON PURPOSE: it is an index, and an index
+    # that needs more than this has stopped being one.
     parts = []
     for name, cap in (('memory.md', 6000), ('soul.md', 8000), ('handoff.md', 8000)):
         body = app._read_store_file(name, cap)
@@ -113,6 +115,11 @@ def store_block(app, live: bool=False) -> str:
         return ''
     if live:
         return '\n\n## Your store, as it stands right now\n\nRe-read from disk just now.\n\n' + '\n\n'.join(parts) + '\n'
+    # RULING (Ryan, 2026-08-19): injected ONCE, not per turn. Re-sending
+    # three files every turn is affordable at 1M context and is NOT on a
+    # local 27B, where it crowds out the conversation itself. The text
+    # below must not promise a per-turn refresh -- an instruction that
+    # quietly stopped being true is worse than no instruction at all.
     return '\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n' + '\n\n'.join(parts) + '\n'
 
 def append_tps_into(app, t: Text, sep: str) -> None:
@@ -120,5 +127,8 @@ def append_tps_into(app, t: Text, sep: str) -> None:
         return
     if t.plain:
         t.append(sep, '#5c6370')
+    # Coloured by how it FEELS to use, not by an absolute scale: this is a
+    # local model on one GPU, and the number that matters is whether the
+    # answer arrives faster than you read it.
     style = '#e5534b' if app.tps < 5 else '#e8a33d' if app.tps < 15 else '#7d8799'
     t.append(tps_text(app.tps), style)
