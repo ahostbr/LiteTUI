@@ -1,9 +1,23 @@
 """Conversation lifecycle commands: new, system prompt, compact, list, resume.
 
-Handler bodies moved verbatim from the chain (self -> app). The persistence
-machinery they call (_new_convo, _list_convos, _resume, _compact, the store
-layout) stays app-owned — one owner for the transcript format; these are
-the command surfaces over it.
+Handler bodies moved verbatim from the chain (self -> app). These are the
+command surfaces; the transcript format has one owner and it is not here.
+
+READING AND LABELLING GO THROUGH THE PUBLIC REPOSITORY — `ConversationRepository`
+for `read`/`label`/`fmt_size`/`list_all`, and `app.store` for writes and the
+persist-error flag. The app still carries private aliases for those (T070 S2
+removed this plugin as their last product caller), so do not reach back through
+`app._*` for anything the repository already exposes.
+
+Still app-owned and reached privately, pending the `ctx.conversation` facade:
+new/resume/compact/edit/materialise and the picked-conversation callback.
+
+⚠️ This paragraph used to list `_list_convos` among the private calls. It was
+accurate when written and went stale at S2, and a `git grep app._` then counted
+the PROSE as a live caller and reported this plugin as blocking that alias's
+deletion. A private name written in a docstring is indistinguishable from a call
+site to any text gate — which is why coupling here is counted by AST, and why
+this paragraph is now kept true rather than merely informative.
 """
 import time
 
