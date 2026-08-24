@@ -164,8 +164,21 @@ A dependency mentioned once in a paragraph is a dependency someone executes out 
 | **OpenBolt's alias cleanup** (delete the 6 `ConversationRepository` shims) | **S2 complete** | `plugins/convo.py` is the last caller keeping the shim alive |
 | **S3 commit 2** (deletion) | **S3 commit 1** (arrival) | §3 — otherwise the suite is red between commits |
 | **S7 / O5** (`_stream`, `_compact`) | **O4 complete** | both are inside the knot; boundary work before the knot splits is guesswork |
-| everything that restructures `app.py` | **T069 MERGED INTO `main`** | 🔴 **NOT DISCHARGED — measured 2026-08-24.** `9108042`/`b45863e` are **pushed to `docs/adr-extraction`, which `git merge-base --is-ancestor origin/docs/adr-extraction origin/main` reports is NOT merged.** This branch does not contain them either. T069 rewrites a comment block at `app.py:1879` **inside `class LiteTUI`** (+5 −9). Restructuring `app.py` first is precisely what the brief says destroys that work silently. **PUSHED IS NOT LANDED.** |
-| this branch | **a base move onto `main`** | its merge-base is `112e146`; `main` is `ab8b4a9`. The 2 missing commits are only `.github/workflows/ci.yml`, so nothing conflicts today — but **Sentinel sequences base moves, neither seat rebases the shared worktree.** |
+| everything that restructures `app.py` | **T069 in THIS BRANCH** — `git merge-base --is-ancestor origin/docs/adr-extraction HEAD` | ✅ **ancestor → DISCHARGED** (branch `330662b`, `main` `ff4f122`). Re-run the query; do not trust this cell. |
+| this branch | **not behind main** — `git rev-list --count HEAD..origin/main` | ✅ **0.** Base moved by MERGE, not rebase. |
+
+🔴 **A PREDECESSOR ROW CARRIES THE QUERY, NEVER AN ADJECTIVE.** This row previously read
+*"✅ discharged — `9108042` + `b45863e`, pushed"*. **Pushed was true; discharged was false** — the
+commits existed on `docs/adr-extraction`, which was not merged into anything. `merge-base
+--is-ancestor` returns a *status code*; "pushed", "done" and "landed" return a feeling.
+📌 Three artifacts hit that same missing distinction in one night: a branch-only handoff invisible
+to a sweep of `main`, a 1,134 baseline that was correct for an unmerged branch, and this row.
+**The word was wrong because the format accepted either word.**
+
+⚠️ **MERGE IS NOT REBASE, and only one of them is forbidden here.** A merge adds a commit and
+rewrites nothing, so it is safe while another seat has work in this tree. A rebase rewrites history
+under whoever is not running it. **Merging `origin/main` into a shared branch needs no permission;
+rebasing it is never allowed.**
 
 **S1, S2, S4 and O0 have no predecessors** and may run in any order or in parallel.
 
@@ -251,7 +264,44 @@ as "decomposition progress" is the exact failure that put this row back on the b
 - **Only OpenBolt writes `app.py`.** SilverBolt defines the API surface; OpenBolt implements the
   delegation inside the file. The single exception is S3, governed by §3.
 - SilverBolt owns `plugins/**` and the new plugin API module.
-- Neither seat rebases the shared worktree; Sentinel sequences any base move.
+- **Merging `origin/main` into this shared branch needs no permission. Rebasing it is never
+  allowed.** A merge adds a commit and rewrites nothing, so it is safe while another seat has work
+  in the tree; a rebase rewrites history under whoever is not running it. The rule was never that
+  someone holds a lever — it is that nobody rewrites shared history.
 - `prompts/systemprompt.md` stays fenced and untouched.
 - Gates per commit: full suite green against **your base's own collected count**, ruff no worse
   than base (`ruff check src` = 220 on `ab8b4a9`), diff scoped to the files the step names.
+
+---
+
+## 8. 🔴 MEASUREMENT PROTOCOL — MANDATORY. NO METRIC COMES FROM THE WORKING TREE.
+
+**Two seats share this worktree and the close condition is a tree-wide count. Those two facts are
+incompatible, and the failure flatters you:**
+
+```
+reach-through measured from the working directory   92 hits / 28 members
+reach-through measured at HEAD                      99 hits / 34 members
+                                                    ^ the 7-hit gap was the OTHER SEAT'S
+                                                      UNCOMMITTED WORK
+```
+
+A number going down is exactly what this task exists to produce, so a contaminated reading looks
+like a **win** and nothing about it looks wrong. It was caught only because the drop was larger than
+the change could possibly explain.
+
+1. **METRICS FROM COMMITTED STATE ONLY.**
+   ```bash
+   git archive HEAD src/litetui | tar -x -C <tmp>   # then count against <tmp>
+   ```
+2. **SUITE RUNS IN A DETACHED VERIFY TREE**, never in the shared one — a full run here is a reading
+   of *both* working copies:
+   ```bash
+   git worktree add --detach .worktrees/<name>verify HEAD   # copy in ONLY your change
+   ```
+3. **VALIDATE THE INSTRUMENT BEFORE TRUSTING IT.** Confirm the verify tree really is HEAD plus your
+   one change: `git rev-parse HEAD:src` in both places must match. *A verify tree you have not
+   checked is just a second place to be wrong.*
+4. **EVERY METRIC STATES WHERE IT WAS TAKEN** — "at HEAD `<sha>`" or "in verify tree from `<sha>`".
+   **A bare number is inadmissible.** This whole task has been a run of numbers that were each
+   correct for a tree nobody named.

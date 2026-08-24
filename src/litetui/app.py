@@ -3168,10 +3168,38 @@ class LiteTUI(App):
         tps = self.tps or 0.0
         self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
 
-    def _system(self, text: str) -> None:
+    def system_message(self, text: str) -> None:
+        """Post a system line into the chat log — **the supported way for a
+        plugin to say something to the user.**
+
+        Public because `app._system(...)` was **49 of the 99** private
+        reach-throughs from `plugins/`: half the coupling in the tree, every hit
+        a call, zero reads, return value unused. A public, documented method
+        *is* a supported API; the metric this moves is **private** reach-through.
+
+        🔴 **WHY NOT `ctx.notify`, which was the approved plan.** It was
+        unbuildable: **all 49 call sites have `app` in scope and NOT `ctx`.**
+        Command handlers are module-level functions `(app, name, arg)`
+        registered from inside `_register(ctx)` but **not closures over it**
+        (`plugins/__init__.py:165`, `app.py:5187`), so a handler cannot reach
+        `ctx` even in principle. `ctx.notify` would have typechecked, tested
+        green, merged, and moved reach-through **99 → 99**.
+
+        📌 The lesson that cost, generalised: counting *accesses* tells you a
+        coupling exists; it does not tell you what a replacement would have
+        **in scope** to replace it with. Ask "is X reachable from every call
+        site?" before scheduling any "seal it behind X" step.
+        """
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(text), classes="system-msg"))
         self._scroll_down()
+
+    # Compatibility alias. Keeps the 62 in-file call sites and every not-yet-
+    # migrated plugin working while S1 lands in two commits (arrival here,
+    # call-site rewrite in plugins/).
+    # Dropped only once `grep -rn "\._system(" src/` is empty — VERIFIED BEFORE
+    # DELETING, NOT AFTER.
+    _system = system_message
 
     def _user_bubble(self, text: str, has_image: bool, queued: bool = False):
         log = self.query_one("#chat-log")
