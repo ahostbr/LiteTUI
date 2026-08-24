@@ -234,13 +234,22 @@ never stated.** Derived by diffing the AST class bodies at `be423af` vs the comm
 | unit | delta | why it differs |
 |---|---:|---|
 | distinct **names** deleted | **−6** | what this row meant |
-| **class-body items** | **−7** | `_persist_error` is ONE name and TWO defs — a `@property` and its `@setter` |
+| **class-body items** *(excluding the class docstring)* | **−7** | `_persist_error` is ONE name and TWO defs — a `@property` and its `@setter` |
 | `grep -cE '^    (async )?def '` | **−4** | the other three are `_x = staticmethod(...)` **assignments**, which a def-grep cannot see |
 | `app.py` lines | **−19** | |
 
 ⇒ **The headline metric for this whole task is blind to alias-shaped members.** Any future row that
 deletes or adds aliases must say which unit it is promising, or it will read as under-delivery
 (here) or over-delivery (a row that adds aliases and claims no method growth).
+
+⚠️ **AND THE SECOND UNIT NEEDS ITS OWN QUALIFIER — demonstrated on this very number, within the
+hour.** SilverBolt read *"AST class-body items"* at `e6ad763` as **141**; the count above is **140**.
+Neither is wrong: `len(cls.body)` counts the **class docstring** as an item and the count above
+excludes it. Node types at `e6ad763`: `FunctionDef 115 · AsyncFunctionDef 12 · Assign 10 ·
+AnnAssign 3` = **140**, `+ Expr 1` (the docstring) = **141**. **The deltas are unaffected** — both
+sides of a delta come from one instrument — but *two people naming the same metric one commit apart
+disagreed by one for a reason neither had stated.* **Write "excluding the class docstring" beside it,
+every time.**
 
 📌 **`five`/`six` are both correct and name different sets:** five of the six had **zero** product
 callers; `_read_convo` was the sixth and had one. And the 13 sites are **11 calls + 1 setter
@@ -374,11 +383,60 @@ starts.
 | step | what moves, concretely | expected effect |
 |---|---|---|
 | **O0** | 15 widget classes (`ThinkingBlock`, `CompactionCard`, `SkillAutocomplete`, `ToolMessage`, `ConfirmStop`, `AnswerBody`, `FoldBlock`, `PromptInput`, `CancelToolButton`, `ContextFooter`, `AssistantMessage`, `ThinkingHeader`, `_FoldHeader`, `ChatMessage`, `Completion`) → `litetui/widgets/`; 12 pure helpers (`tool_display_parts`, `_markdown_to_text`, `render_progress`, `thinking_header_text`, `tps_text`, `midturn_action`, `is_reliable_rate_sample`, `load_prompt`, `memory_prompt`, `_at_bottom`, `_mark_delivered`, `main`) → `litetui/text/` | **−739 lines.** Methods 137→137. Reach unchanged. Knot untouched. |
-| **O-A** | delete the six `ConversationRepository` shims | **−6 methods.** Reach already 0 via S2. |
-| **O2** | `_sync`/`_sync_*` (71 ln) · `_glassbox`/`_glassbox_*` (43) · `_load`/`_load_*` (37) · `_append`/`_append_*` (34) · `_store`/`_store_*` (27) · `_convo`/`_convo_*` (8) → services | −~244 lines, **−19 methods.** Knot untouched. |
+| **O-A** | ✅ `b1dd935` — delete the six `ConversationRepository` shims | **6 names, −4 `def`s, −19 ln.** Reach already 0 via S2. **Unit note in §2c.** |
+| **O2** | ✅ `22a7834` — 8 of the group members lifted to `appsvc`. `_glassbox`/`_glassbox_*` · `_load`/`_load_*` · `_append`/`_append_*` (part) · `_store`/`_store_*` | −128 ln, **−8 methods.** Knot untouched. |
+| ~~O2: `_sync`/`_sync_*` (71 ln)~~ | **WITHDRAWN — the group was never stateless. See §5c.** | — |
 | **O3** | remaining `_cron`/`_cron_*` → `CronService`; the framework member delegates | −~80 lines, −3 methods |
 | **O4** | `_elapsed`/`_elapsed_*` (4) · `_eta`/`_eta_*` (4) · `_tps`/`_tps_*` (3) off the knot behind one state object | −~200 ln, −~10 methods, **first step that shrinks the KNOT** |
 | **O5** | `_stream` (345 ln) — with S7 | high risk, last |
+
+### 5c. 🔴 THE `_sync`/`_sync_*` GROUP WAS NEVER STATELESS — WITHDRAWN FROM O2, AND THE REASON IS NOT THE ONE I GAVE
+
+O2 dropped `_sync_seat_identity` and `_sync_fleet_identity` from the batch and recorded the reason as
+**address coupling** — their tests assert them BY NAME against `app.py`'s source. That reason is true
+and it is not the load-bearing one. Address coupling is surmountable: a gate can be re-pointed.
+
+**The load-bearing reason, measured at `e6ad763` with the CORRECTED write detector:**
+
+| member | writes | shape |
+|---|---:|---|
+| `_sync_seat_identity` | 2 | `seat.agent_id = …`, `seat.error = …` — attribute stores on a **borrowed mutable object** |
+| `_sync_fleet_identity` | 1 | `self.conversation[0]["content"] = fixed` — a **SUBSCRIPT store** |
+| `_fleet_identity_sentence` | 0 | genuinely stateless (reads `self.seat` only) |
+
+⇒ **Two of the three real members mutate state, so neither belongs in `appsvc` at all** — that module
+is for helpers that take `app` and read it. The group's 71 lines were never a clean-lift candidate.
+
+🔴 **THIS IS THE THIRD INSTANCE OF ONE CLASSIFIER DEFECT, AND THE FIRST TWO WERE ALREADY WRITTEN
+DOWN.** `_sync_fleet_identity`'s subscript store is the *same shape* as `app._gb_last[ch] = now`,
+which scored `glassbox` as stateless in O2, which is the *same shape* as SilverBolt's `jobs`
+correction before that. **Three sightings, one rule, and the rule was recorded after the first one.**
+Knowing a rule and having your instrument apply it are separate facts about separate objects — the
+fix belongs in the detector, not in a note beside it.
+
+**WHAT THIS CLOSES.** The `_sync` row is withdrawn, not deferred: there is no later commit that makes
+a mutating method a stateless lift. If these two ever leave `app.py` it is as a **seat/identity
+service that OWNS the state**, which is O4-shaped work, not O2-shaped.
+
+**AND THE GATES ARE SOUND — audited, not assumed.** Before recommending anything about them:
+
+| gate | addressing | verdict |
+|---|---|---|
+| `test_seat_rebind:271` `src.split(f"def {fn}")` for `_new_convo`, `_resume` | literal split | **1 occurrence each, no prefix collision** — no sibling method starts with either name |
+| `test_seat_rebind:293` AST `FunctionDef == "_sync_seat_identity"` | AST | **1 def, and it walks the AST precisely so a docstring quoting `registered = False` cannot fool it** |
+| `test_seat_identity:155` `count("self._sync_seat_identity()") >= 2` | string count | **string 2 = AST calls 2** — no prose inflating it |
+| `test_fleet_identity:127,142` `"_sync_fleet_identity()" in …` | literal | 1 def, both call paths real |
+
+⇒ **There is nothing to repair in them, so there is no re-scoping commit either.** Re-pointing a
+sound gate to enable a move that is now withdrawn would be work whose only product is risk to four
+assertions that pin a bug which shipped.
+
+📌 **`harness.py:294` NEEDS NO EDIT, AND THE REASON IS VISIBLE IN ITS OWN TENSE.** It reads
+*"app.py's `_sync_seat_identity()` **used to** deregister the old row…"* — history, explaining why
+`Seat.rebind()` exists. The method still lives in `app.py` and now calls `rebind`. **A grep for the
+name returns 1 because the prose QUOTES it in order to retract it** — the exact trap
+`test_seat_rebind:280` documents one file away: *"a string grep cannot tell an instruction from its
+own retraction."* Raised twice, checked twice, correct both times.
 
 ### WHAT CANNOT MOVE, AND WHY
 
