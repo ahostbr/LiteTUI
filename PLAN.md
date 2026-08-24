@@ -69,13 +69,13 @@ cheaper wins.
 | # | step | owner | moves | does NOT move |
 |---|---|---|---|---|
 | **S1** | **`app.system_message(text)` — a PUBLIC method on the app**, `_system` kept as a one-line alias; SilverBolt rewrites the 49 call sites | **both — see §2a** | private reach-through **99 → 50** | lines, methods, knot |
-| **S3** | Relocate the owner-plugin methods into their plugins — **NOW SEVEN, not eight: `_inbox_monitor` drops to O4, see §3b** | **both — see §3** | **−239 lines · −7 by all three units (§3a) · reach NET +5, NOT −8 — THE ROW'S FIGURE HAD THE WRONG SIGN, see §3a** | knot |
+| **S3** | Relocate the owner-plugin methods into their plugins — **NOW THREE, not eight** (`_mcp_server_names` · `_tool_view_image` · `_start_mark`). Cron → O3 (Ryan); `_inbox_monitor` + `_on_settings_saved` + `_register_custom_themes` → §3b/§3c | **both — see §3** | **−97 lines · −3 by ALL THREE units** (defs = class-body items = names; none is an alias) **· reach NET −1** (removed 3, added 2, AST call SITES) **· 0 invisible plugin→plugin edges · 0 app→plugin edges** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
 | **O-A** | ✅ **DONE `b1dd935`.** Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **6 names / −4 `def`s / −7 class-body items**, −19 lines — **see the unit note in §2c** | lines (barely), reach (already 0 via S2), knot |
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups — **12 methods / 212 ln, see §5b** | OpenBolt | −212 lines, **−12 methods** | knot |
-| **O3** | `_cron`/`_cron_*` → `CronService` — **scope reduced by S3, see §5** | OpenBolt | −~80 lines, −3 methods | knot |
+| **O3** | `_cron`/`_cron_*` → `CronService` — **scope ENLARGED, not reduced: S3 no longer touches cron at all. `_cron_command` (50) + `_cron_monitor` (16) are O3's, so ONE ROW OWNS THE FAMILY** (Ryan, *scope not sequence*, §3d) | OpenBolt | **−148 lines, −5 methods** — DERIVED, not the old "−~80/−3": `_cron_monitor` 16 · `_cron_command` 50 · `_cron_find` 20 · `_cron_add` 37 · `_cron_list` 25. **Units agree (defs = items = names).** `_fire_job` (47 ln) is a **candidate 6th** — see §3d | knot |
 | **S5** | **Public methods** for `model_switch.py`'s **18** hits — the `ctx.model` facade is DROPPED, see §2b. **ARRIVAL ✅ `63fd480` (OpenBolt). Consumer OPEN (SilverBolt), now 18 + 2 `misc.py` sites + the 92-stub sweep** | SilverBolt + OpenBolt | reach **40 → 20** (AST — *corrected from 22: the 2 `misc.py` `_update_header` sites are folded in*) | lines, methods, knot — **the arrival moves the def-grep by 0 while adding 5 members, see §2c** |
 | **O4** | Seal the knot's plugin-facing members; split `_elapsed`/`_elapsed_*`, `_eta`/`_eta_*`, `_tps`/`_tps_*` off the knot | OpenBolt | −~200 ln, −~10 methods, **knot shrinks** | — |
 | **S6** | **Public methods** for `convo.py`'s 7 hits — the `ctx.conversation` facade is DROPPED, see §2b | SilverBolt + OpenBolt | reach **22 → 15** (AST) | lines, methods, knot |
@@ -307,20 +307,25 @@ at a ref.**
 
 ## 3. 🔴 THE ONE PLACE WE WRITE THE SAME FILE — S3, AND THE ORDER IS NOT NEGOTIABLE
 
-**SEVEN** methods move **out of `app.py` into the plugin that already owns the feature** — eight
-were listed; `_inbox_monitor` **drops out by measurement, see §3b**. Each is reached exactly once,
-by exactly that plugin (**verified per site at `da6fe6b`, not inherited**):
+**THREE** methods move **out of `app.py` into the plugin that already owns the feature.** Eight were
+listed; five left, each for a *different* named reason (§3b, §3c, and Ryan's cron ruling). Each of
+the three is reached exactly once, by exactly that plugin — **verified per site at the ref, not
+inherited** — and **each writes nothing at all**:
 
-| method | lines | owning plugin |
-|---|---:|---|
-| ~~`_inbox_monitor`~~ | ~~82~~ | **OUT → O4 (§3b)** |
-| `_on_settings_saved` | 65 | `settings_ui.py` |
-| `_cron_command` | 50 | `scheduler_plugin.py` |
-| `_tool_view_image` | 44 | `view_image.py` |
-| `_start_mark` | 31 | `mark_plugin.py` |
-| `_mcp_server_names` | 22 | `settings_ui.py` |
-| `_cron_monitor` | 16 | `scheduler_plugin.py` |
-| `_register_custom_themes` | 11 | `themes_plugin.py` |
+| method | lines | owning plugin | writes | net reach |
+|---|---:|---|---:|---:|
+| `_tool_view_image` | 44 | `view_image.py` | **0** | 0 |
+| `_start_mark` | 31 | `mark_plugin.py` | **0** | 0 |
+| `_mcp_server_names` | 22 | `settings_ui.py` | **0** | **−1** |
+| **TOTAL** | **97** | | **0** | **−1** |
+
+| removed from S3 | lines | why | rule |
+|---|---:|---|---|
+| `_inbox_monitor` | 82 | writes `seat.model` + `_seat_started`; owning plugin disclaims the seat | §3b |
+| `_on_settings_saved` | 65 | writes **5** fields, **4 public** and read at **26 plugin sites**; owning plugin disclaims it | §3c |
+| `_cron_command` | 50 | O3 owns the `_cron`/`_cron_*` family | Ryan, scope-not-sequence |
+| `_cron_monitor` | 16 | same family | Ryan |
+| `_register_custom_themes` | 11 | writes nothing — leaves **only** because its sole `app.py` caller is `_on_settings_saved`, which stays | §3c |
 
 > **COMMIT 1 — SilverBolt: the body ARRIVES in the owning plugin. `app.py` untouched. SUITE GREEN.**
 > **COMMIT 2 — OpenBolt: `app.py` loses the method. SUITE GREEN.**
@@ -363,6 +368,32 @@ each of the eight is reached exactly once, by exactly its own plugin, verified p
 sum to exactly 321, re-verified), and **−8 by every unit — `def`s, class-body items, and names —
 because none of the eight is an alias.** That is worth stating rather than assuming: it is the case
 §2c warns about *not* biting.
+
+🔴 **AND THAT TABLE SUMS THE MEMBERS AS IF THEY WERE INDEPENDENT. TWO OF THEM ARE NOT.**
+`_on_settings_saved` reaches `app._register_custom_themes`, and **both were S3 members bound for
+DIFFERENT plugins.** That one site's classification depends on whether the *other* member moved:
+
+- `_register_custom_themes` **stays** → the site is plugin → app-private = **counted**
+- `_register_custom_themes` **moves** → the site is `settings_ui.py` → `themes_plugin.py` =
+  **a plugin→plugin edge, which the reach metric cannot see in either direction**
+
+⇒ **The five-method scope scores BEST on the quoted metric (−1) precisely BECAUSE one of its
+couplings stopped being measurable.** Dropping the pair scores the same **−1** with nothing hidden.
+**A metric that rewards moving a dependency out of its own field of view is the false green this
+plan exists to prevent** — and here it would have paid a bonus for it.
+
+| S3 scope option | n | lines | NET (metric) | invisible plugin→plugin | app→plugin |
+|---|---:|---:|---:|---:|---|
+| five, as first ruled | 5 | 173 | **−1** | **1** | none |
+| drop `_on_settings_saved` only | 4 | 108 | −2 | 0 | 🔴 **app.py → `themes_plugin.py`** |
+| drop `_register_custom_themes` only | 4 | 162 | **+1** | 0 | none |
+| **drop the PAIR (adopted)** | **3** | **97** | **−1** | **0** | **none** |
+
+⚠️ **A THIRD ARM I HAD NOT MEASURED AT ALL: what stays behind and reaches IN.** Every pass before
+this one asked what a relocated body reaches *out* for. None asked whether anything still in
+`app.py` calls the member that left — which would force `app.py` to reach **into** a plugin, the
+reverse direction and the worse one. Measured for all eight: **exactly one member has an `app.py`
+caller left behind**, `_register_custom_themes`, and that caller is `_on_settings_saved`.
 
 📌 **A PUBLIC ACCESSOR MAKES A PRIVATE READ FREE, and two steps already paid for four of these.**
 `self._system` → `app.system_message` (S1) and `self._update_header` → `app.update_header` (S5)
@@ -409,6 +440,97 @@ Ran it: the worker executed, `state=SUCCESS`, `group` preserved; the negative co
 `str`) raised `AssertionError`, **so the probe discriminates.** ⇒ `_cron_monitor` is genuinely
 movable (net 0), and `_inbox_monitor`'s verdict rests on the state alone — which is the honest
 place for it to rest.
+
+### 3c. ⭐ THE ONE RULE THAT DECIDES EVERY S3 MEMBER: **A METHOD THAT WRITES APP STATE CANNOT MOVE**
+
+Every verdict above was reached case by case. Measured across all eight, they collapse into one
+criterion with **no exceptions and no borderline cases** — the three survivors write **zero**
+attributes and the two disqualified-on-state members write **seven between them**:
+
+| member | writes | verdict |
+|---|---:|---|
+| `_mcp_server_names` · `_tool_view_image` · `_start_mark` · `_register_custom_themes` · `_cron_command` · `_cron_monitor` | **0** | pure reads — **nothing to own, nothing to drag** |
+| `_inbox_monitor` | 2 | `seat.model` (borrowed store), `_seat_started` |
+| `_on_settings_saved` | **5** | `settings`, `theme`, `tools_enabled`, `thinking_level`, `_reasoning_ignored_warned` |
+
+**Three independent disqualifiers, and each removed member fails exactly one:**
+① **writes app state** → `_inbox_monitor`, `_on_settings_saved` · ② **belongs to another row's
+family** → the two cron members (Ryan: *scope, not sequence*) · ③ **has an `app.py` caller left
+behind** → `_register_custom_themes`, **which is derivative — it only bites because its caller is
+disqualified by ①.**
+
+#### `_on_settings_saved` — FLAGGED BY RYAN, AND IT LEAVES. IT IS WORSE THAN `_cron_command`.
+
+Not because of the `+2`. Three reasons, in ascending order of force:
+
+1. **The entanglement** — its `_register_custom_themes` read is the intra-S3 edge above.
+2. 🔴 **IT WRITES FOUR *PUBLIC* FIELDS, AND THE REACH METRIC ONLY COUNTS PRIVATE NAMES.**
+   `settings` (**15** plugin read sites), `thinking_level` (6), `theme` (3), `tools_enabled` (2) —
+   **26 plugin-tier reads of state this one method owns**, scored as **free** because none of the
+   names starts with an underscore. Moving it makes **one plugin the writer of state four other
+   plugins read**, and the metric records that as `+2`.
+3. 🔴 **`settings_ui.py`'s OWN MODULE DOCSTRING ALREADY SAYS SO**, unprompted and before any of this:
+   > *"The Settings dataclass, its persistence, and the apply-mapping (`_on_settings_saved` with its
+   > deferred-list doctrine) **stay app-owned: single owner of a fact many plugins read.**"*
+
+⭐ **TWO FOR TWO: BOTH MEMBERS DISQUALIFIED ON STATE WERE ALREADY DISCLAIMED BY THE VERY PLUGIN THEY
+WERE ASSIGNED TO** — `harness_plugin.py` on the seat (§3b), `settings_ui.py` here. **The owning
+plugin's docstring was a better instrument than the reach count, and it was sitting in the file the
+whole time.** Read the destination before costing the move.
+
+⇒ **And `_cron_command` was the more honest of the two: it declared its cost as `+5`. This one's
+cost is mostly in fields the metric is not looking at.**
+
+### 3d. RULING (Ryan) — CRON IS A **SCOPE** PROBLEM, NOT A SEQUENCE ONE. ONE ROW OWNS THE FAMILY.
+
+The `S3-before-O3` hold was ruled on one arm — *S3 deletes 66 lines of cron that O3 targets*. The
+other arm points the opposite way: **relocating `_cron_command` CREATES 6 reach-throughs to
+`app._cron_add` / `_cron_find` / `_cron_list` / `_fire_job`, which are O3's own targets.**
+**Bidirectional entanglement cannot be fixed by ordering** — either sequence has one row building
+what the other unbuilds.
+
+⇒ **BOTH cron members leave S3 for O3.** The entanglement *disappears* instead of being sequenced
+around, and O3 receives the whole family at once with nothing moving underneath it.
+
+**O3, DERIVED AT THE REF** (the old row said *"−~80 lines, −3 methods"* and was never re-measured):
+
+| member | ln | note |
+|---|---:|---|
+| `_cron_command` | 50 | from S3 |
+| `_cron_add` | 37 | |
+| `_cron_list` | 25 | |
+| `_cron_find` | 20 | |
+| `_cron_monitor` | 16 | from S3 · `@work(group="cron")` — movable, §3b |
+| **TOTAL** | **148** | **5 methods; defs = class-body items = names, none is an alias** |
+
+📌 **`_fire_job` (47 ln) is a candidate 6th and the measurement says take it:** its **only** `app.py`
+callers are `_cron_monitor` and `_cron_command`, and **no plugin reaches it.** Once both callers
+move it has no caller left behind — the ③ disqualifier of §3c reversed into a reason *to* include
+it. With it: **6 methods, 195 lines.**
+
+### 3e. WHERE THE REMAINING **20** REACH-THROUGH SITES ACTUALLY ARE
+
+A total is not a map, and the next row worth picking is the one holding the largest block. AST at
+`4aeb5e7`, receiver pinned to `app` (see the warning below):
+
+| file | sites | members |
+|---|---:|---|
+| `convo.py` | **7** | `_new_convo` `_load_system_prompt` `_edit` `_compact` `_on_convo_picked` `_materialise_convo` `_resume` — **exactly S6's target** |
+| `scheduler_plugin.py` | 3 | `_cron_command` `_cron_monitor` `_handle_command` |
+| `skills_plugin.py` | 3 | `_user_bubble` `_append` `_stream` |
+| `settings_ui.py` | 2 | `_mcp_server_names` `_on_settings_saved` |
+| `harness_plugin.py` · `mark_plugin.py` · `misc.py` · `themes_plugin.py` · `view_image.py` | 1 each | |
+
+**20 sites across 20 DISTINCT members — one site each, with no member reached twice.** S6 holds the
+single largest block at 7.
+
+⚠️ **A SCAN THAT DOES NOT PIN THE RECEIVER IS NOT A REACH SCAN.** Counting `.attr == "_jobs"` over
+the plugin tier returns **12 hits in `scheduler_ui.py`** and every one is `self._jobs` — the
+**screen's own constructor parameter** (`self._jobs = jobs`, `:114` and `:446`), not `app._jobs`.
+Reporting those as reach-through would have sent someone to "fix" a widget's local state. The
+receiver test (`isinstance(node.value, ast.Name) and node.value.id == "app"`) is what makes the
+number mean what it says — and `scheduler_ui.py` already uses the **public** `app.jobs`, exactly as
+S4 intended.
 
 ---
 
