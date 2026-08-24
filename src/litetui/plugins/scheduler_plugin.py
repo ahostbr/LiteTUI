@@ -14,7 +14,7 @@ def _cmd_cron(app, name: str, arg: str) -> None:
 
 
 def _cmd_calendar(app, name: str, arg: str) -> None:
-    app.push_screen(CalendarScreen(app._jobs))
+    app.push_screen(CalendarScreen(app.jobs))
 
 
 def _palette_new_job(app) -> None:
@@ -22,7 +22,7 @@ def _palette_new_job(app) -> None:
     builder opens on a sensible daily default instead of a date."""
     app.push_screen(
         JobScreen(None, prefill_schedule="0 9 * * *"),
-        lambda result: _apply_job_edit(app._jobs, None, result),
+        lambda result: _apply_job_edit(app.jobs, None, result),
     )
 
 
