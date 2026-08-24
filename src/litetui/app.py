@@ -1937,7 +1937,7 @@ class LiteTUI(App):
         self._scroll_down()
 
 
-    def _update_header(self) -> None:
+    def update_header(self) -> None:
         if self.tools_enabled:
             # COUNTED, not quoted. "tools:4" was a literal from when there
             # were exactly four, and it stayed 4 while view_image, chrome,
@@ -1962,6 +1962,12 @@ class LiteTUI(App):
         # footer lying until the next completion came back.
         self._refresh_ctx_label()
 
+    # ARRIVAL ALIAS (PLAN §2b). One implementation under two names, so this
+    # commit is green STANDING ALONE: app.py's own private call sites keep
+    # working untouched, and converting them here would make the arrival a
+    # rename wearing a refactor's clothes. The alias goes when the consumers do.
+    _update_header = update_header
+
     def action_toggle_tools(self) -> None:
         self.tools_enabled = not self.tools_enabled
         if self.conversation and self.conversation[0].get("role") == "system":
@@ -1976,7 +1982,7 @@ class LiteTUI(App):
     # ── Connection ───────────────────────────────────────────────
 
     @work(exclusive=True, group="init")
-    async def _connect(self) -> None:
+    async def connect(self) -> None:
         try:
             # The llama backend may spawn its own server here (never loading
             # a model) or attach to LiteSuite's — either way, say which.
@@ -2064,6 +2070,8 @@ class LiteTUI(App):
             # engines, settings.lm_host would blame the wrong SERVER, not just
             # the wrong hostname.
             self._system(f"Could not connect to {self.backend.host()} — {e}")
+
+    _connect = connect          # arrival alias (PLAN §2b)
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -2178,7 +2186,7 @@ class LiteTUI(App):
             label.content = text
 
     @work(exclusive=True, group="ctxload")
-    async def _apply_context_length(self, force: bool = False) -> None:
+    async def apply_context_length(self, force: bool = False) -> None:
         """Ask LM Studio to (re)load the active model at the configured window.
 
         A reload evicts the resident weights, so it must not happen when it
@@ -2234,8 +2242,10 @@ class LiteTUI(App):
         # readout is what we got, and the server may clamp to what fits in VRAM.
         self._fetch_ctx_window()
 
+    _apply_context_length = apply_context_length     # arrival alias (PLAN §2b)
+
     @work(exclusive=True, group="ctx")
-    async def _fetch_ctx_window(self) -> None:
+    async def fetch_context_window(self) -> None:
         """Ask the backend for the active model's (window, type, loaded).
 
         The ceiling-vs-window contract (a model that is merely INSTALLED must
@@ -2254,6 +2264,10 @@ class LiteTUI(App):
         else:
             self.ctx_max, self.model_type, self.ctx_loaded = None, None, False
         self._refresh_ctx_label()
+
+    # The public name spells out "context" to match `apply_context_length`;
+    # the alias keeps the abbreviated private spelling its 4 in-file callers use.
+    _fetch_ctx_window = fetch_context_window         # arrival alias (PLAN §2b)
 
     # ── Message display ──────────────────────────────────────────────────────────
 
@@ -2948,7 +2962,7 @@ class LiteTUI(App):
 
     # ── Modal callbacks ──────────────────────────────────────────
 
-    def _on_model_picked(self, model_id: str | None) -> None:
+    def on_model_picked(self, model_id: str | None) -> None:
         if not model_id or model_id == self.model_id:
             return
         self.model_id = model_id
@@ -2956,6 +2970,15 @@ class LiteTUI(App):
         self._fetch_ctx_window()
         self._system(f"Switched to: {self.model_id}")
         self._apply_context_length()
+
+    # ⚠️ `_on_` IS NOT A "HIDDEN FROM TEXTUAL" PREFIX. MessagePump dispatch does
+    # `cls.__dict__.get(f"_{method_name}") or cls.__dict__.get(method_name)` —
+    # the UNDERSCORED name is the one it looks for FIRST. So the private spelling
+    # was never the framework-invisible one, and this rename moves the callback
+    # to the SECOND lookup slot, not into the pump. Neither name collides: no
+    # Message in this app or in Textual produces the handler name
+    # `on_model_picked` (the only local Message subclass is `ticker.Changed`).
+    _on_model_picked = on_model_picked               # arrival alias (PLAN §2b)
 
     def _on_convo_picked(self, path_str: str | None) -> None:
         if not path_str:
