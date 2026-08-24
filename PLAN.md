@@ -299,9 +299,17 @@ the change could possibly explain.
    ```bash
    git worktree add --detach .worktrees/<name>verify HEAD   # copy in ONLY your change
    ```
-3. **VALIDATE THE INSTRUMENT BEFORE TRUSTING IT.** Confirm the verify tree really is HEAD plus your
-   one change: `git rev-parse HEAD:src` in both places must match. *A verify tree you have not
-   checked is just a second place to be wrong.*
+3. **VALIDATE THE INSTRUMENT IMMEDIATELY BEFORE THE RUN YOU INTEND TO QUOTE — not when you build
+   it.** Confirm the verify tree really is HEAD plus your one change: `git rev-parse HEAD:src` in
+   both places must match. *A verify tree you have not checked is just a second place to be wrong.*
+
+   🔴 **AMENDED after it nearly fired (2026-08-24).** A verify tree built at `d7e13d0` was
+   re-checked before its run and disagreed — `e9feb736df7d` vs `17463f9bcfd7` — because the other
+   seat had committed S2 in the interval. **The stale tree would have produced a GREEN FOR A TREE
+   THAT NO LONGER EXISTED**: nothing errors, the suite passes, the number gets quoted.
+   ⇒ **In a shared tree the instrument goes stale WHILE YOU USE IT.** A validation done at build
+   time certifies the tree you built, not the tree you are about to measure — and the gap between
+   those two is exactly when the other seat commits.
 4. **EVERY METRIC STATES WHERE IT WAS TAKEN** — "at HEAD `<sha>`" or "in verify tree from `<sha>`".
    **A bare number is inadmissible.** This whole task has been a run of numbers that were each
    correct for a tree nobody named.
