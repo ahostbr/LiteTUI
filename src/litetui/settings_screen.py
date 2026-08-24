@@ -79,6 +79,11 @@ TOOL_PROFILE_CHOICES = [
     ("scheduled — read-only tools only", SCHEDULED),
 ]
 
+DIALOG_STYLE_CHOICES = [
+    ("modal — dialog covers the chat (current)", "modal"),
+    ("sidebar — dialog splits off the right, chat stays readable", "sidebar"),
+]
+
 
 class _Row(Horizontal):
     """One label + control + help line."""
@@ -469,6 +474,15 @@ class SettingsScreen(ModalScreen[Settings | None]):
                         yield from self._switch_row(
                             "show_thinking", "Show thinking blocks",
                             "Render the model's reasoning trace in the transcript.",
+                        )
+                        yield from self._select_row(
+                            "dialog_style", "Dialog style", DIALOG_STYLE_CHOICES,
+                            "Sidebar dialogs CARVE space out of the layout instead of "
+                            "covering the chat, so you can still read the message that "
+                            "provoked a tool call while you decide. They still BLOCK — "
+                            "obscuring and blocking are separate things and only the "
+                            "first changes. T075 spike: /test-sidebar honours this; the "
+                            "existing dialogs do not yet.",
                         )
                         yield from self._switch_row(
                             "autoscroll", "Follow output",
