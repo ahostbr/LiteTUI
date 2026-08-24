@@ -24,12 +24,14 @@ cascade that ran after them.**
 Asked of the **server**, not the cache (`git ls-remote`, see §5.4):
 
 ```
-Projects        [develop] d60b1d3  IN SYNC
-LiteTUI         [main]    faf9616  IN SYNC
-LiteImage       [main]    74bf7f6  IN SYNC
-LiteSuite       [develop] 1464f6a  IN SYNC
+Projects        [develop] d60b1d3  IN SYNC        LiteTUI  [main] d49a8d2  IN SYNC
+LiteImage       [main]    74bf7f6  IN SYNC        LiteSuite [develop] 1464f6a  IN SYNC
 liteharness-oss [main]    ecf38b4  IN SYNC
 ```
+
+⚠️ **`LiteTUI main` MOVED AFTER THIS FILE WAS FIRST WRITTEN: `faf9616` → `d49a8d2`.**
+BoldChip's T063 is merged and pushed; suite **1,115 passed / 0 failed**; the merged tree matched
+the pre-merge prediction `87864ef5` exactly. Anything quoting `faf9616` is stale.
 
 **SENTINEL pushed, on Ryan's instruction** (*"push all that have a remote others keep local"*).
 I first reported this as *"Ryan has pushed"* — the state was right, the attribution was wrong, and
@@ -52,7 +54,23 @@ git -C C:/Projects/LiteTUI/.worktrees/turn-engine status --porcelain | wc -l # 0
 ```
 
 T060 **done** · T061 **done** · T062 **reviewing** (accepted by Sentinel; the board row is the
-only thing open) · T063 is BoldChip's.
+only thing open) · **T063 MERGED** (`1ec2402`, on `main`).
+
+🔴 **MY INBOX MONITOR IS DOWN ON PURPOSE. DO NOT DIAGNOSE IT.** Ryan killed it deliberately
+while compaction runs — *"im killing ur monitor until compact finishes dont be alarmed when it
+dies"*. A dead watcher and a broken watcher look identical, which is why this line exists.
+
+**Before re-arming, do NOT blindly re-run the SessionStart instruction** — Monitor tasks survive
+`/compact`, and following that instruction on top of a live one silently creates a second
+consumer that races for the same maildir. Count first:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -match 'liteharness' -and $_.CommandLine -match 'watch' -and
+                 $_.CommandLine -match 'ac965cc1-7c81-4ae5-a4ef-41ec2dc88bd0' }
+```
+
+**Exactly one** is correct. Zero → re-arm. Two or more → `TaskStop` down to one.
 
 ## 2. Owed — split by owner
 
@@ -62,8 +80,9 @@ Nothing. Every dispatch accepted and closed.
 ### THEIRS
 | seat | what |
 |---|---|
-| **Sentinel** | move T062 to done if he agrees; a ruling on **memory scope** (§3, last row) |
-| **BoldChip** | T063 `1ec2402` on `feat/goal-loop` — verified, merges clean, **HELD** |
+| **Sentinel** | move T062 to done if he agrees; sequence my 2 unmerged handoff commits |
+| **BoldChip** | T063 **merged**; now on prompt-placeholder validation + README (`systemprompt.md` ships a literal `<root>` to the model every turn) |
+| **Ryan** | four product items are with him; **nobody starts those until he answers** |
 | **unowned** | the **gradient question**. `.worktrees/verify` is **KEPT** for it — the only pre-fix tree, **irreproducible once dropped** |
 
 ### RYAN'S
@@ -83,6 +102,49 @@ Nothing. Every dispatch accepted and closed.
 | No retry in `kill_tree` | Sentinel's ruling. The deciding number — *given a first taskkill that blew 15s, how often does a second succeed?* — **has never been measured** |
 | Probes kept in scratchpad, not the tree | Throwaway instruments, and **three of them were wrong** (§5). Sentinel has them with the `argtypes` bug fixed |
 | Three fleet-content memories LEFT in the LiteImage scope | ✅ **The scope defect is RESOLVED for mine.** Sentinel ruled *"fleet-wide lessons go in `C--Projects`; the test is WHO NEEDS TO LOAD IT, not where you were sitting"*, and I moved **nine** files with their index lines (0 orphans both directions). `project_green_that_cannot_run`, `project_liteharness_cli_silent_flag_drop` and `project_restored_fixture_makes_no_diff` are fleet-content too but **are not mine to move** — 8 of the moved files link to them and those links now cross scopes. Flagged to Sentinel with the counts |
+
+## 3b. 🔴 THE MEMORY SYSTEM IS CLOSED BY RYAN'S RULING — DO NOT REOPEN IT
+
+After this file was first written, three seats spent a long stretch characterising
+`MEMORY.md`'s load cap. **Everything measured is true. None of it was ever actionable.**
+Ryan, verbatim:
+
+> *"any bugs in memory system r out of r hands … this is claude code cli's memory system not
+> MINE … you keep chasing a ghost bug for months around this … IT CANNOT BE FIXED ON OUR END
+> … claude code cli is the thing that is itself trimming the memory."*
+
+**The cap, the trimming and the load order belong to the CLI's loader.** Not his code, not ours.
+**INVESTIGATION CLOSED, NOT PAUSED.** No eviction accounting, no tallies, no ordering
+experiments, no index-cost measurements. If you find yourself measuring `MEMORY.md`, stop —
+this fleet has re-derived this for **months**, and that is the same defect one level up from the
+ones catalogued in §5: *finding a real property of someone else's software and treating it as
+our bug.*
+
+**What is TRUE and worth knowing (facts, not work items):**
+
+| | |
+|---|---|
+| ~90% of `C--Projects/MEMORY.md` never loads | cap binds around line 123 of 1,281 |
+| insertion at the cap **is eviction**, by BYTES not lines | my 9 lines (mean 192b, all inside the hook's 200 limit) evicted **21** thinner ones |
+| block-level HTML comments **are stripped** before reaching context | measured: 24 commented bullets absent, 30 plain ones present, same file, 4 lines apart |
+| whether stripping precedes the cap measurement | **UNKNOWN and untestable here** — all 206 comment markers sit past the boundary, so any test has zero discriminating power |
+| demoted ≠ deleted | every evicted entry's topic file is intact on disk; I verified all 8, incl. `an-arm-must-prove-it-could-have-failed` at 25,944 bytes |
+
+⚠️ **AND THE LIMIT ON THE FALLBACK, which is the one finding that survived** (Anvil's): a file's
+own near-verbatim title did **not** surface it in `find_conversation`'s top 4. *Reachable in
+principle is not reachable by the query a seat would actually type.* Also the CLI's index, so
+also not ours — but do not promise anyone that search fully compensates for a missing pointer.
+
+✅ **What Ryan DID ask for, and it is built and wired:** a `UserPromptSubmit` hook backing the
+memory tree up outside the CLI's reach — `~/.claude/hooks/memory_backup.py` →
+`~/.claude-memory-backups/`. Content-addressed, 1,222 files / 7.4 MB cold, verified to FIRE on a
+real change rather than merely exit 0, silent on stdout so it cannot inject into context.
+
+📌 **My own contribution to the mess, recorded so it is not repeated:** I moved 9 memory files
+into the `C--Projects` scope on Sentinel's ruling and prepended their index lines. It was
+executed correctly — top-inserted per Ryan's placement rule, orphan-checked both directions —
+and it still **cost 21 loaded entries**, including the placement rule itself. The files stay
+where they are. **Do not move them back, and do not "fix" the index.**
 
 ## 4. Caveats riding the green lines
 
@@ -154,9 +216,14 @@ for d in /c/Projects /c/Projects/LiteTUI /c/Projects/LiteImage \
 done
 ```
 
-**Suggested skills:** `/liteharness` (register + inbox monitor — mandatory), then
-`/ls-conversation-lookup` before any harness-behaviour claim. `/arch` only if the next task
-touches LiteSuite architecture; this session never needed it.
+**Suggested skills:** `/liteharness` (register + inbox monitor — mandatory, but read the
+watcher-count warning in §1 FIRST), then `/ls-conversation-lookup` before any harness-behaviour
+claim. `/arch` only if the next task touches LiteSuite architecture; this session never needed it.
+
+🔴 **AND THE ONE THAT SAVES THE MOST TIME: `MEMORY.md` IS CLOSED (§3b).** If a session starts
+by noticing the index is truncated, or that a rule "should have loaded", the answer is already
+written — it is the CLI's loader, it is not fixable here, and chasing it has cost this fleet
+months. Read §3b instead of measuring.
 
 **Do NOT** re-run the full LiteTUI suite to "confirm" `1099 passed` — that produces a second
 machine fact. Run it when you have changed something.
@@ -164,9 +231,12 @@ machine fact. Run it when you have changed something.
 ## Verification block
 
 ```bash
-git -C C:/Projects/LiteTUI rev-parse --short main                    # faf9616
+git -C C:/Projects/LiteTUI rev-parse --short main                    # d49a8d2 (NOT faf9616)
 git -C C:/Projects/LiteTUI status --porcelain | wc -l                # 6, none in src/ or tests/
 python C:/Projects/LiteTUI/tools/tool_door_gate.py                   # 1 door, 2 callers, exit 0
 find C:/Users/Ryan/.liteharness/untracked-snapshot-2026-08-23 -type d -empty | wc -l   # 0
 git -C C:/Projects/LiteTUI/.worktrees/kill-tree log --oneline -6
+# this branch: +2 unmerged (both handoff commits), 18 behind main after T063
+git -C C:/Projects/LiteTUI diff --name-only main...fix/kill-tree-honesty   # ONE file
+#   ^ THREE dots. Two dots lists 21 files because it also shows main being AHEAD.
 ```
