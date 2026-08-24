@@ -16,16 +16,31 @@ owners rather than one bundle and why the RENDERER stays behind:
 reach into two others — the coupling relocated rather than removed — so it stays
 on the app and reads from these.
 
-⚠️ ORDER MATTERS AND IT IS ASCENDING INERT EXPOSURE, not size: `_eta` (6 inert
-sites, 1 file) → `_elapsed` (13, 1 file) → `_tps` (19, 4 files). This step's
-characteristic failure is a SILENTLY INERT site — a stale write that still
-succeeds and binds a name nothing reads — and silent failures have no bisection
-if they all land together. Three narrow windows beat one wide one precisely
-because the suite cannot see this class of rot.
+⚠️ ORDER MATTERS AND THE DISCRIMINATOR IS **EXTERNAL** INERT, NOT TOTAL INERT.
+This step's characteristic failure is a SILENTLY INERT site — a stale write that
+still succeeds and binds a name nothing reads — and silent failures have no
+bisection if they all land together. But an inert site INSIDE the file that is
+moving leaves WITH the methods and resolves itself, so only inert sites OUTSIDE
+it can stay green and wrong:
+
+    landing         total inert   files   INERT OUTSIDE app.py  <- the risk
+    O4-a  _eta            6         1              0
+    O4-b  _elapsed       13         1              0
+    O4-c  _tps           19         3              8   test_footer.py 7,
+                                                       test_footer_fields.py 1
+
+⇒ The order is not ascending-inert, it is ZERO-RISK, ZERO-RISK, THEN ALL OF IT,
+and the mutation gate is owed only by O4-c and only against those two files.
+Ascending total inert and ascending external inert happen to agree here; they
+will not always, and the next person applies whichever one is written down.
+(Measured at `e0e2d93` by SilverBolt; `tools/move_cost.py` now prints the
+external count directly, because the first read of its output derived 3 where
+the answer was 8 — wrong in the direction that declares a risky landing safe.)
 """
 
 from __future__ import annotations
 
+import asyncio
 import statistics
 import time
 
@@ -87,3 +102,62 @@ class EtaState:
         """The token count the next turn's ETA is projected from: the most
         recent real count. None until the first turn reports usage."""
         return self.last_prompt_tokens
+
+
+class ElapsedState:
+    """The in-flight clock: which bubble is counting, since when, and the task
+    that repaints it.
+
+    THE RENDERER IS NOT HERE ON PURPOSE. `LiteTUI._elapsed_repaint` reads this
+    object, `tps` and `EtaState` together — it is a VIEW over all three families
+    — so it stays on the app and this class only asks the app to RUN it. That
+    is a call-coupling, not a state-coupling: nothing outside this object writes
+    `task` / `body` / `body_t0` any more, which is the property O4 exists to buy.
+
+    `ensure_running` is the fold-in of TWO byte-identical five-line blocks that
+    sat inline in `_tool_begin` and the compaction-card path, each reaching in to
+    assign `_elapsed_task` directly. They had to be swept for the move regardless;
+    writing the same restart twice against a new receiver would have carried the
+    duplication across instead of paying it off.
+    """
+
+    def __init__(self, app) -> None:
+        self._app = app
+        self.task = None
+        self.body = None            # AnswerBody in its pre-token phase
+        self.body_t0: float = 0.0
+
+    def cancel(self) -> None:
+        task = self.task
+        if task is not None and not task.done():
+            task.cancel()
+        self.task = None
+
+    def start(self, body) -> None:
+        """Begin counting for `body`. Cancels any lingering loop first, so a
+        turn can never be repainted by its predecessor's task."""
+        self.cancel()
+        self.body = body
+        self.body_t0 = time.monotonic()
+        self._spawn()
+
+    def stop_body(self) -> None:
+        """The bubble stopped being pre-token. The LOOP keeps running — tool
+        calls and the compaction card still need it — so this clears only the
+        body, never the task."""
+        self.body = None
+
+    def ensure_running(self) -> None:
+        """Restart the shared loop if it has retired. It self-retires after ~1s
+        idle, and a tool call or a compaction can begin with nothing else in
+        flight — without this the clock never ticks for them."""
+        if self.task is None or self.task.done():
+            self._spawn()
+
+    def _spawn(self) -> None:
+        # RuntimeError == no running loop (the unit tests construct the app
+        # outside one). A missing clock must never take down the turn.
+        try:
+            self.task = asyncio.create_task(self._app._elapsed_repaint())
+        except RuntimeError:
+            self.task = None

@@ -911,9 +911,7 @@ class LiteTUI(App):
         # Elapsed-time display while a turn is in flight (pre-token) and while
         # tool calls run. The repaint is a task on the worker's own event loop
         # (interleaves with the stream); the display string is render_progress.
-        self._elapsed_task = None
-        self._elapsed_body = None            # AnswerBody in its pre-token phase
-        self._elapsed_body_t0: float = 0.0
+        self._elapsed = turnstats.ElapsedState(self)
         self._inflight_tools: list = []      # ToolMessages awaiting their result
         self._cancel_buttons: dict = {}      # ToolMessage -> its CancelToolButton
         # The last scroll position this app SET. Following is judged against it,
@@ -2439,24 +2437,6 @@ class LiteTUI(App):
     # (render_progress); this is only the repaint glue. The repaint task runs
     # on the worker's own event loop, interleaving with the `async for` stream.
 
-    def _elapsed_cancel(self) -> None:
-        task = self._elapsed_task
-        if task is not None and not task.done():
-            task.cancel()
-        self._elapsed_task = None
-
-    def _elapsed_start(self, body) -> None:
-        self._elapsed_cancel()
-        self._elapsed_body = body
-        self._elapsed_body_t0 = time.monotonic()
-        try:
-            self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
-        except RuntimeError:
-            self._elapsed_task = None
-
-    def _elapsed_stop_body(self) -> None:
-        self._elapsed_body = None
-
     def _tool_begin(self, tool) -> None:
         if tool not in self._inflight_tools:
             self._inflight_tools.append(tool)
@@ -2475,11 +2455,7 @@ class LiteTUI(App):
             # timer and the cancel control key off, so the brain cannot light
             # up for a call the app does not consider in flight.
             self._glassbox_tool(getattr(tool, "tool_name", "") or "tool")
-        if self._elapsed_task is None or self._elapsed_task.done():
-            try:
-                self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
-            except RuntimeError:
-                self._elapsed_task = None
+        self._elapsed.ensure_running()
 
     def _attach_cancel_button(self, tool, _retry: bool = False) -> None:
         """Put a cancel control directly after `tool`, whenever that becomes possible.
@@ -2532,7 +2508,7 @@ class LiteTUI(App):
     async def _elapsed_repaint(self) -> None:
         # Repaint the in-flight bubble and any running tool calls ~4x/sec.
         # Self-retires after ~1s with nothing active, so it never outlives the
-        # turn by long; _elapsed_start also cancels a lingering one.
+        # turn by long; ElapsedState.start also cancels a lingering one.
         idle = 0.0
         while True:
             await asyncio.sleep(0.25)
@@ -2540,7 +2516,7 @@ class LiteTUI(App):
             card = self._compact_card
             card_live = card is not None and card._took is None
             active = (
-                self._elapsed_body is not None
+                self._elapsed.body is not None
                 or self._inflight_tools
                 or self._thinking_live is not None
                 or card_live
@@ -2555,13 +2531,13 @@ class LiteTUI(App):
             except Exception:
                 pass
             if active:
-                if self._elapsed_body is not None:
+                if self._elapsed.body is not None:
                     # ETA: project this turn's prompt-processing time from the
                     # previous turn's token count and the learned median rate.
                     # Before any reliable turn both are None and the pure fn
                     # yields elapsed-only (the honest state).
-                    self._elapsed_body.content = render_progress(
-                        self._elapsed_body_t0, now,
+                    self._elapsed.body.content = render_progress(
+                        self._elapsed.body_t0, now,
                         self._eta.estimate_tokens(), self._eta.learned_rate())
                 if self._thinking_live is not None:
                     # The app owns the tps reactive; the block only renders it.
@@ -3351,7 +3327,7 @@ class LiteTUI(App):
                 compact_due = True
                 break
             widget = self._assistant_bubble()
-            self._elapsed_start(widget.body)
+            self._elapsed.start(widget.body)
             thinking: ThinkingBlock | None = None
             text_full = ""
             reasoning = ""
@@ -3386,7 +3362,7 @@ class LiteTUI(App):
                 await self._ensure_chat_ready()
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
-                self._elapsed_stop_body()
+                self._elapsed.stop_body()
                 self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
@@ -3405,7 +3381,7 @@ class LiteTUI(App):
                         # estimate for the next turn's ETA.
                         self._eta.learn(
                             getattr(u, "prompt_tokens", None),
-                            self._elapsed_body_t0,
+                            self._elapsed.body_t0,
                             is_reliable_rate_sample,
                         )
                     if not chunk.choices:
@@ -3451,7 +3427,7 @@ class LiteTUI(App):
                         self._tps_tick()
                         self._glassbox_rate("output")
                         self._thinking_done()
-                        self._elapsed_stop_body()
+                        self._elapsed.stop_body()
                         text_full += delta.content
                         widget.body.content = Text(text_full + " \u258c")
                         self._scroll_down(only_if_following=True)
@@ -3492,14 +3468,14 @@ class LiteTUI(App):
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
                             self._scroll_down()
             except Exception as e:
-                self._elapsed_stop_body()
+                self._elapsed.stop_body()
                 self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
                 return
 
-            self._elapsed_stop_body()
+            self._elapsed.stop_body()
             # Final render of this turn's bubble. _thinking_done
             # finalizes the trace (idempotent if a content or tool token
             # already ended it) and stops the header timer with the stream.
@@ -3902,11 +3878,7 @@ class LiteTUI(App):
         self._compact_card = card
         # The shared elapsed loop retires after ~1s idle, and a compaction can
         # begin with nothing else in flight -- without this the clock never ticks.
-        if self._elapsed_task is None or self._elapsed_task.done():
-            try:
-                self._elapsed_task = asyncio.create_task(self._elapsed_repaint())
-            except RuntimeError:
-                self._elapsed_task = None
+        self._elapsed.ensure_running()
         self._scroll_down()
 
         ask = list(head) + [
