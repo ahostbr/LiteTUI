@@ -150,3 +150,27 @@ grep -n "ModalScreen" src/litetui/tool_approval.py          # still [bool] = ite
 ```
 
 Then §2 item 1: the tri-state modal. Not the autonomous profile, not the prompt migration.
+
+## 9. APPENDED AFTER THE FIRST PUSH — TWO SHELL HAZARDS YOU WILL HIT
+
+**Filed since: `e659381` on `ahostbr/dotclaude`** —
+`project_state_the_path_beside_the_repro.md`, 37 memory files / 37 linked / 0 orphans.
+
+**HAZARD 1 — `subprocess.run(["bash","-c", cmd])` DOES NOT PRESERVE `<<'QUOTED'` ON THIS BOX.**
+Backticks inside the heredoc body EXECUTE. The Bash tool's own heredoc DOES preserve them.
+Verified both directions. **You will hit this**, because every mutation script in section 3 works
+by spawning bash from Python. Two surfaces that look identical in a transcript, opposite behaviour.
+
+**HAZARD 2 — AN OPEN, UNEXPLAINED SHELL DEFECT. Do not close it with a theory.**
+*"unexpected EOF while looking for matching quote"* from the Bash tool on multi-line payloads,
+reproduced independently by two seats. **It is NOT a heredoc defect** — one instance had no heredoc
+at all — and both of us mis-framed it as one for an hour.
+Eliminated ON THE FAILING SURFACE: content · redirect · `cd &&` · command shape · backticks ·
+apostrophe parity (1/2/3) · em dash · heredoc-presence · scale. NO THEORY. STILL OPEN.
+⇒ Workaround that always works: write the file with a direct file write, not through the shell.
+
+⭐ **AND THE REASON THIS SECTION EXISTS AT ALL:** I bisected that failure to a 3-line minimal case
+with a character-level trigger and nearly published it as solved. It was measuring a DIFFERENT
+EXECUTION PATH. **A reproducer that reproduces *a* failure is not a reproducer of *the* failure —
+state the path beside the repro.** The bisect and the narrowing are exactly what would have made it
+land unchallenged; rigour on an unattributed measurement buys confidence, not correctness.
