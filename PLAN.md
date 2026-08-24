@@ -69,7 +69,7 @@ cheaper wins.
 | # | step | owner | moves | does NOT move |
 |---|---|---|---|---|
 | **S1** | **`app.system_message(text)` — a PUBLIC method on the app**, `_system` kept as a one-line alias; SilverBolt rewrites the 49 call sites | **both — see §2a** | private reach-through **99 → 50** | lines, methods, knot |
-| **S3** | Relocate the owner-plugin methods into their plugins — **NOW THREE, not eight** (`_mcp_server_names` · `_tool_view_image` · `_start_mark`). Cron → O3 (Sentinel); `_inbox_monitor` + `_on_settings_saved` + `_register_custom_themes` → §3b/§3c | **both — see §3** | **−97 lines · −3 by ALL THREE units** (defs = class-body items = names; none is an alias) **· reach NET −1** (removed 3, added 2, AST call SITES) **· 0 invisible plugin→plugin edges · 0 app→plugin edges** | knot |
+| **S3** | ✅ **SHIPPED `f299f6f` arrive + `1b0a1e5` remove — TWO methods, 53 ln, reach 20 → 19.** Relocate the owner-plugin methods into their plugins — eight listed, **`_tool_view_image` HELD at arrival (§3g)** (`_mcp_server_names` · `_tool_view_image` · `_start_mark`). Cron → O3 (Sentinel); `_inbox_monitor` + `_on_settings_saved` + `_register_custom_themes` → §3b/§3c | **both — see §3** | **−97 lines · −3 by ALL THREE units** (defs = class-body items = names; none is an alias) **· reach NET −1** (removed 3, added 2, AST call SITES) **· 0 invisible plugin→plugin edges · 0 app→plugin edges** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
 | **O-A** | ✅ **DONE `b1dd935`.** Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **6 names / −4 `def`s / −7 class-body items**, −19 lines — **see the unit note in §2c** | lines (barely), reach (already 0 via S2), knot |
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
@@ -353,12 +353,51 @@ listed; five left, each for a *different* named reason (§3b, §3c, and Sentinel
 the three is reached exactly once, by exactly that plugin — **verified per site at the ref, not
 inherited** — and **each writes nothing at all**:
 
-| method | lines | owning plugin | writes | net reach |
-|---|---:|---|---:|---:|
-| `_tool_view_image` | 44 | `view_image.py` | **0** | 0 |
-| `_start_mark` | 31 | `mark_plugin.py` | **0** | 0 |
-| `_mcp_server_names` | 22 | `settings_ui.py` | **0** | **−1** |
-| **TOTAL** | **97** | | **0** | **−1** |
+| method | lines | owning plugin | writes | net reach | status |
+|---|---:|---|---:|---:|---|
+| `_start_mark` | 31 | `mark_plugin.py` | 0 | 0 | ✅ `f299f6f` arrive · `1b0a1e5` remove |
+| `_mcp_server_names` | 22 | `settings_ui.py` | 0 | **−1** | ✅ `f299f6f` arrive · `1b0a1e5` remove |
+| ~~`_tool_view_image`~~ | ~~44~~ | — | **1** | 0 | 🔴 **HELD — my `writes 0` was WRONG, see §3g** |
+| **S3 AS SHIPPED** | **53** | | **0** | **−1** | reach **20 → 19**, `run_all` EXIT 0 both halves |
+
+### 3g. 🔴 MY WRITE DETECTOR WAS BLIND TO MUTATING METHOD CALLS — FOURTH SIGHTING, ONE FAMILY
+
+`_tool_view_image` was selected by §3c's rule — *"writes nothing: zero attribute stores, zero
+subscript stores, **zero borrowed-object stores**"*. SilverBolt held it at arrival and measured why:
+
+```
+self._pending_tool_images.append((str(path), b64))      app.py:3132
+```
+
+app-owned at `__init__` (`app.py:894`), consumed by the agent loop at `app.py:3725-3727`, which
+reads it and **replaces** it. **A `.append` on a borrowed list is the third category the criterion
+names** — and **my detector only ever looked at ASSIGNMENT forms** (`ast.Assign` / `AugAssign` /
+`AnnAssign` targets). A `.append` is a `Call`. It never appeared. **A criterion written to catch
+exactly this case did not implement it.**
+
+⭐ **THE DESTINATION'S DOCSTRING SAID SO FIRST, AGAIN — `view_image.py:6`: *"it stages it
+(`app._pending_tool_images`, AGENT-LOOP INFRASTRUCTURE)"*.** That is §3c's "read the destination"
+instrument applied to a member that had *passed*, and it made it **three for three**.
+
+🔴 **FOUR SIGHTINGS, FOUR INSTRUMENTS, FOUR SEATS — and each fix widened the detector by exactly
+the case that had just bitten, so the next case walked through the gap the fix did not cover:**
+
+| # | write | instrument that missed it |
+|---|---|---|
+| 1 | `app._gb_last[ch] = now` | my O2 "stateless" classifier — subscript store |
+| 2 | `jobs.remove(...)` / `.append(...)` | SilverBolt's read-only claim for `jobs` |
+| 3 | `self.conversation[0][...] = fixed` | §5c, caught only by the fix to (1) |
+| 4 | `_pending_tool_images.append(...)` | **§3c's rule, missed by the fix to (1)** |
+
+⇒ **ENUMERATE THE WRITE CHANNELS, NOT THE SYNTAX OF THE LAST FAILURE.** v3 covers assignment forms,
+**mutating calls** (`append`/`extend`/`insert`/`remove`/`pop`/`clear`/`sort`/`update`/`add`/…),
+`del`, and `setattr(self, "name", …)`.
+
+**Re-run over all eight S3 members with v3:**
+- the two that shipped still read **ZERO** — **the arrival and the removal are sound**;
+- `_cron_command` reads **ONE**: `self._jobs.remove()` at `:1295`, which my clean bill also missed.
+  It had already left S3 for O3 on a *different* ruling, so nothing was built on the wrong answer —
+  📌 **but a member that leaves for reason A is never re-checked against criterion B.**
 
 | removed from S3 | lines | why | rule |
 |---|---:|---|---|
