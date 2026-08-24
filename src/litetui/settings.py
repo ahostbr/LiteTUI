@@ -260,6 +260,12 @@ class Settings:
     custom_themes: dict = field(default_factory=dict)
     show_thinking: bool = True
     autoscroll: bool = True
+    #: How dialogs are presented. "modal" is the current behaviour and stays the
+    #: default. "sidebar" mounts them in a `split: right` panel so the chat
+    #: reflows narrower instead of being covered — see side_panel.py. This is a
+    #: T075 SPIKE knob: only /test-sidebar honours it so far, and the existing
+    #: dialogs are deliberately untouched until Ryan has looked at it.
+    dialog_style: str = "modal"
 
     # ── Footer ───────────────────────────────────────────────────────────────
     #: Each field of the status footer, individually. Defaults match what the

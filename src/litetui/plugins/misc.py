@@ -72,6 +72,42 @@ def _cmd_keys(app, name: str, arg: str) -> None:
         app.action_show_help_panel()
 
 
+def _cmd_test_sidebar(app, name: str, arg: str) -> None:
+    """/test-sidebar opens the T075 demo dialog THROUGH THE CURRENT SETTING.
+
+    It deliberately takes no argument. An override like `/test-sidebar modal`
+    would be quicker for an A/B, but the toggle is itself part of what is being
+    evaluated, and a command that can bypass it lets you ship a working demo
+    over a broken setting without noticing. Flip `Dialog style` in /settings and
+    run this again — that path exercises everything the real dialogs would use.
+
+    The handler has to be sync (app.py:4293 calls handlers directly), so the
+    await lives in a worker rather than in this frame.
+    """
+    from litetui.dialog_demo import DemoDialogBody
+    from litetui.side_panel import show_dialog
+
+    # Read the setting HERE, on the live path, rather than leaning on
+    # show_dialog's own lookup. test_no_dead_controls scans app.py, plugins/**
+    # and llm_backend.py — side_panel.py is NOT in that set, so a read that
+    # happens only there is invisible to the dead-control guard and this field
+    # would have shipped looking wired while the guard stayed quiet about it.
+    # The guard caught exactly that on the first run; this is the fix, not an
+    # exemption. (The scan-set gap itself is reported as discovered work.)
+    style = app.settings.dialog_style
+
+    async def _run() -> None:
+        answer = await show_dialog(app, DemoDialogBody, style=style)
+        app.notify(
+            f"Demo dialog answered: {answer!r}"
+            if answer is not None
+            else "Demo dialog cancelled (Esc)",
+            timeout=3,
+        )
+
+    app.run_worker(_run(), name="test-sidebar")
+
+
 def _cmd_maximize(app, name: str, arg: str) -> None:
     app.screen.action_maximize()
 
@@ -118,6 +154,13 @@ def _register(ctx) -> None:
         help="Which keys do what right now.",
         group="app",
         order=30,
+    )
+    ctx.command(
+        ("/test-sidebar",), _cmd_test_sidebar,
+        palette="Test sidebar dialog",
+        help="T075 spike: open a demo dialog in the current Dialog style.",
+        group="app",
+        order=31,
     )
     ctx.command(
         ("/screenshot",), _cmd_screenshot,
