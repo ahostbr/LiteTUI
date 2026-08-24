@@ -71,7 +71,7 @@ cheaper wins.
 | **S1** | **`app.system_message(text)` — a PUBLIC method on the app**, `_system` kept as a one-line alias; SilverBolt rewrites the 49 call sites | **both — see §2a** | private reach-through **99 → 50** | lines, methods, knot |
 | **S3** | Relocate the eight owner-plugin methods into their plugins | **both — see §3** | **−321 lines, −8 methods, reach 50 → 42** | knot |
 | **S2** | Point `convo.py` at `ConversationRepository` / `app.store` | SilverBolt | reach **42 → 34**; unblocks −6 aliases | lines, methods, knot |
-| **O-A** | Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test call sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **−6 methods**, −~10 lines | lines (barely), reach (already 0 via S2), knot |
+| **O-A** | ✅ **DONE `b1dd935`.** Delete the six `ConversationRepository` shims — **requires S2**. **NOT zero-edit: 2 are free, the other 4 need 13 test sites across 5 files fixed IN THE SAME COMMIT** or the deletion is red — see §2c | OpenBolt | **6 names / −4 `def`s / −7 class-body items**, −19 lines — **see the unit note in §2c** | lines (barely), reach (already 0 via S2), knot |
 | **S4** | `jobs` / `mcp_dispatch` properties — **`jobs` is NOT read-only, see §5a** — **ARRIVAL-FIRST on OpenBolt's two properties** | SilverBolt + OpenBolt | reach **43 → 40** (AST) | everything else |
 | **O0** | Lift 15 widget classes + 12 pure helpers to `litetui/widgets/`, `litetui/text/` | OpenBolt | **−739 lines** | **methods (137→137), reach (unchanged), knot** |
 | **O2** | Clean-lift the six stateless groups — **12 methods / 212 ln, see §5b** | OpenBolt | −212 lines, **−12 methods** | knot |
@@ -219,6 +219,39 @@ implied, and the person writing it should know that before they sit down.
 📌 `_list_convos` reads **2** here against the orchestrator's earlier **3**: the third was the
 `convo.py` docstring line, fixed at `e364fd3`. **Same phantom, now gone at the source** — and this is
 the third count in one shift that was true when written and false two commits later.
+
+#### ✅ DISCHARGED at `b1dd935` — and every count above held, re-measured at `be423af`
+
+The 7 / 3 / 2 / 1 / 0 / 0 split was still exact one week and five commits later, and the 13 landed
+on the nose. **The one line above that is wrong is `remaining PRODUCT (src/) callers: NONE`** — the
+census scope was *outside `app.py`*, and `app.py` is `src/`. `_read_convo` had exactly one product
+caller, `_resume`, which this commit repointed at `ConversationRepository.read`. *The scope was in
+the heading and not in the claim, so the claim reads broader than what was measured.*
+
+🔴 **THE ROW PROMISED `−6 methods` AND THE TRACKED GREP MOVED `−4`. Both are right; the unit was
+never stated.** Derived by diffing the AST class bodies at `be423af` vs the commit:
+
+| unit | delta | why it differs |
+|---|---:|---|
+| distinct **names** deleted | **−6** | what this row meant |
+| **class-body items** | **−7** | `_persist_error` is ONE name and TWO defs — a `@property` and its `@setter` |
+| `grep -cE '^    (async )?def '` | **−4** | the other three are `_x = staticmethod(...)` **assignments**, which a def-grep cannot see |
+| `app.py` lines | **−19** | |
+
+⇒ **The headline metric for this whole task is blind to alias-shaped members.** Any future row that
+deletes or adds aliases must say which unit it is promising, or it will read as under-delivery
+(here) or over-delivery (a row that adds aliases and claims no method growth).
+
+📌 **`five`/`six` are both correct and name different sets:** five of the six had **zero** product
+callers; `_read_convo` was the sixth and had one. And the 13 sites are **11 calls + 1 setter
+assignment + 1 alias definition** — "13 call sites" over-counts calls by two.
+
+⚠️ **TWO SHIMS OF THE SAME SHAPE SURVIVE AND ARE NOT IN ANY ROW:** `_convo_title` and `_flatten` are
+`staticmethod(ConversationRepository.…)` exactly like the three deleted here. They were never in the
+six, so they were never in the 13. Measured at `be423af`: `_convo_title` **5** outside-`app.py` sites
+(`test_convos` ×3, `test_convo_rename` ×2); `_flatten` **5** (`test_convos` ×4, plus
+`test_tool_context_wiring:47` as a **kwarg**, not an attribute — a grep for `._flatten` misses it)
+**and 2 live product callers inside `app.py`**. Whoever takes them owns those 2 product edits too.
 
 
 **WHAT THE RESHAPE COSTS: nothing.** Same members, same counts, same order, same predecessors, same
