@@ -13,7 +13,7 @@ This one is **on `main`**, not a side branch.
 git -C C:/Projects/LiteTUI status --porcelain   # 5 lines, NONE of them mine:
 #   M prompts/systemprompt.md   <- RYAN'S, and FENCED (PLAN.md:1024). Do not touch, do not commit.
 #   ?? .playwright-cli/  ?? skills/find-claude-skills/  ?? temp/  ?? tools/pccontrol/screenshot.py
-git rev-parse --short HEAD origin/main          # 80162a7 == 80162a7
+git rev-parse --short HEAD origin/main          # c55d9d2 == c55d9d2
 ```
 
 | sha | what |
@@ -22,9 +22,11 @@ git rev-parse --short HEAD origin/main          # 80162a7 == 80162a7
 | `fb49b9b` | merge T072 — tools-off refuse. **Merged BEFORE the decomposition, deliberately.** |
 | `cf517fe` | merge T070 — the whole app.py decomposition, 70 commits |
 | `22349d8` | fix `/keys` toggle |
-| `80162a7` | **T073 engine half — rule_key + evaluate(always_allow=, deny=)** |
+| `80162a7` | T073 engine half — rule_key + evaluate(always_allow=, deny=) |
+| `c55d9d2` | **T073 items 1–3 — tri-state modal, settings, call site. WIRED END TO END.** |
 
 Board: T062 · T066 · T070 · T072 **done**. T073 **building**, mine.
+⚠️ §2 items 1–3 below are now DONE — see §10, which supersedes them.
 
 ## 2. T073 — WHAT LANDED, WHAT HAS NOT
 
@@ -33,15 +35,17 @@ Board: T062 · T066 · T070 · T072 **done**. T073 **building**, mine.
 - `evaluate(..., *, tool_name="", always_allow=frozenset(), deny=frozenset())`.
 - `tests/test_tool_standing_rules.py`, 6 tests.
 
-**NOT STARTED — the other three quarters of the row:**
+**Items 1–3 below LANDED at `c55d9d2`** — the text is kept for its reasoning, but the STATE
+sentences are corrected in place rather than banner-corrected, because a banner does not reach a
+claim a reader lands on directly. Items 4–6 are still owed. Full detail in §10.
 
-1. **The modal is still `ModalScreen[bool]`** with two buttons. Needs a tri-state
-   (deny / once / always) and a third button. `src/litetui/tool_approval.py`, 87 lines.
-2. **Settings persistence.** No field exists yet. Proposed `tool_always_allow: list[str]` and
-   `tool_deny: list[str]` — `list[str]` because `_coerce` (settings.py:302) already handles that
-   type and **not** `frozenset`. Convert at the edge, in `app.py`.
-3. **The call site**, `app.py:1403` — `evaluate()` is not yet passed `tool_name=name` or the rule
-   sets, which is exactly why nothing has changed behaviour yet.
+1. ✅ **DONE — the modal is `ModalScreen[ToolApproval]`** with three buttons (deny / once / always).
+   It is NOT a string enum, and §10 explains why that would have inverted the guard.
+2. ✅ **DONE — settings persistence.** `tool_always_allow` / `tool_deny` exist as `list[str]` —
+   `list[str]` because `_coerce` (settings.py) handles that type and **not** `frozenset`; converted
+   at the edge in `app.py`. ⚠️ Adding them ALSO required rows in `settings_screen.py` — see §10.
+3. ✅ **DONE — the call site** now passes `tool_name=name` and both rule sets, and writes the rule
+   via `_remember_tool_rule` when the human answers "always".
 4. **`AUTONOMOUS` profile** — a third `ToolProfile`, everything in `allow`, nothing in `confirm`.
    `PROFILE_NAMES` at tool_policy.py:50, `PROFILES` at :127.
 5. **Deny-stops-turn** — `app.py:1416` returns `[policy denied by user] {name}, False` and the loop
@@ -95,9 +99,10 @@ instead of reverting it. That is why `80162a7` was pushed before the last three 
 
 ## 5. OWED — SPLIT BY OWNER
 
-**MINE** — items 1–6 of §2. Sentinel's ordering: **always-allow FIRST**, because it is the one that
-makes the rest usable. Field evidence: Ryan killed his own qwen seat rather than keep answering the
-modal, so the guard was not overridden, it was ROUTED AROUND.
+**MINE** — items **4–6** of §2 (1–3 landed at `c55d9d2`). Sentinel's ordering was **always-allow
+FIRST**, because it is the one that makes the rest usable — that is discharged. Field evidence for
+why it came first: Ryan killed his own qwen seat rather than keep answering the modal, so the guard
+was not overridden, it was ROUTED AROUND.
 
 **RYAN'S** — (a) the `prompts/systemprompt.md` edit in the working tree is his and uncommitted;
 (b) ruling on whether `TOOLS_DISABLED_*` joins the refusal-string migration (propose, do not
@@ -144,12 +149,15 @@ accepted this and declined a separate ceremony; it gets exercised by the next ro
 ## 8. FOR THE FAR SIDE — FIRST THREE COMMANDS
 
 ```bash
-git -C C:/Projects/LiteTUI log --oneline -3 origin/main     # 80162a7 at the top
+git -C C:/Projects/LiteTUI log --oneline -3 origin/main     # c55d9d2 at the top
 grep -c "^def rule_key" src/litetui/tool_policy.py          # 1 = the engine is there
-grep -n "ModalScreen" src/litetui/tool_approval.py          # still [bool] = item 1 is owed
+grep -n "ModalScreen" src/litetui/tool_approval.py          # [ToolApproval] = items 1-3 LANDED
 ```
 
-Then §2 item 1: the tri-state modal. Not the autonomous profile, not the prompt migration.
+🔴 **THIS SECTION IS SUPERSEDED BY §10.** It used to say "then §2 item 1: the tri-state modal" —
+**that is DONE** (`c55d9d2`). If the third command still prints `ModalScreen[bool]` you are not on
+`c55d9d2`; check the ref before building anything. The remaining work is §2 items **4, 5, 6**, and
+two of the three are blocked on a Ryan ruling — read §10 first.
 
 ## 9. APPENDED AFTER THE FIRST PUSH — TWO SHELL HAZARDS YOU WILL HIT
 
@@ -174,3 +182,87 @@ with a character-level trigger and nearly published it as solved. It was measuri
 EXECUTION PATH. **A reproducer that reproduces *a* failure is not a reproducer of *the* failure —
 state the path beside the repro.** The bisect and the narrowing are exactly what would have made it
 land unchallenged; rigour on an unattributed measurement buys confidence, not correctness.
+
+## 10. ITEMS 1–3 ARE DONE (`c55d9d2`). WHAT IS ACTUALLY LEFT, AND WHAT BLOCKS IT
+
+**Supersedes §2 items 1–3 and §8's "then item 1".** Always-allow now works end to end: the modal has
+three answers, settings hold the rule sets, the call site passes them and writes the rule.
+
+### The one design fact worth carrying forward
+
+The modal returns a frozen **`ToolApproval`** (`approved`, `remember`) whose `__bool__` is
+`approved` — NOT a string enum. That is deliberate and it is a trap worth stating out loud:
+
+> Three string states (`"deny"` / `"once"` / `"always"`) read perfectly and are silently
+> catastrophic, because **`"deny"` is TRUTHY**. `if not approved:` would stop firing and the Deny
+> button would begin RUNNING the tool — while every test that exercises the allow path still passes.
+
+`DENIED` is falsy, both approvals are truthy, and `push_screen_wait`'s None-on-teardown is falsy
+too, so every truthiness check written against the old `bool` keeps working AND keeps failing
+closed. **`test_denial_is_falsy_and_both_approvals_are_truthy` is the only thing standing between
+this file and that refactor. Do not delete it as redundant — it looks redundant.**
+
+### STILL OWED — and two of three need Ryan, not code
+
+| # | item | state |
+|---|---|---|
+| 4 | `AUTONOMOUS` profile — third `ToolProfile`, all in `allow` (tool_policy.py:50, :127) | **unblocked**, deliberately deferred by Sentinel |
+| 5 | deny-stops-turn at the call site | **BLOCKED — Ryan: replace or supplement?** |
+| 6 | four refusal strings → `prompts/tool-denied.md` (a TEMPLATE: missing placeholder RAISES, missing file falls back to a constant, never to silence) | **BLOCKED — Ryan: does `TOOLS_DISABLED_*` join it?** |
+
+Nothing writes `tool_deny` yet — it is `settings.json` by hand. A fourth "Always refuse" button is
+the obvious next increment and was **not** built, because "deny forever" from a mid-turn modal is a
+bigger commitment than "allow forever" and should be Ryan's call, not a symmetry argument.
+
+### 🔴 THE HAZARD THAT COST RYAN A LIVE ERROR — READ BEFORE TOUCHING `Settings`
+
+**Adding a field to the `Settings` dataclass with no settings-screen control does not hide one
+control. It makes Save raise from EVERY TAB.** `settings_screen.py::_collect` walks every field and
+refuses the whole write if any widget is missing. Ryan booted inside the 48 seconds between my two
+edits, went to **Compaction** — nothing to do with T073 — and got
+*"no control found for: tool_always_allow, tool_deny — refusing to save a partial settings object"*.
+
+⇒ **Add the field and its control in ONE edit.** Gate:
+`tests/test_settings.py::test_every_field_is_reachable_without_opening_its_tab`. A genuinely
+control-less field goes in the deliberate skip tuple in BOTH `_collect` and that test — not nowhere.
+✅ The guard is correct and is **not** to be softened: a save that silently drops unknown fields is
+how a settings file loses data. It is what made this loud instead of destructive.
+
+### The rival hypothesis, and how it was killed without running anything
+
+Sentinel proposed Textual `TabPane` children mounting **lazily** — `query_one` missing a control
+that exists, misfiring for any setting in an unvisited tab. Same symptom, real latent bug if true.
+
+Refuted by a test that was **already green**: at HEAD, before my fields, that test reports **zero**
+fields unreachable from an inactive tab. Lazy mounting does not discriminate by which field is
+newest — it would have been failing for every field in Compaction, Themes and Interface,
+continuously. It failed for two names and they were mine.
+
+> **A hypothesis that predicts a GLOBAL failure is refuted by any standing green test that would
+> have caught it. The negative control has been running the whole time.**
+
+⚠️ Path stated: that is Textual's `run_test` headless driver, not a real terminal — the one variable
+NOT measured. Corroborating but not decisive: `textual.lazy` / `Lazy(` → **0 hits** in `src/`, and
+`settings_screen.py:607` already carries *"If TabbedContent ever mounts panes lazily, this is the
+line that catches it."* The live probe (restart → Settings → Compaction → Save) discharges it and
+costs one restart; it was not run because Ryan was mid-200k-context run.
+
+### 📌 RYAN RUNS LITETUI FROM THIS SOURCE TREE WHILE YOU EDIT IT
+
+An already-running Python process is unaffected by an edit — imports happen once — so the whole risk
+is **when he restarts**. A multi-file change has an intermediate state, and the gap between your
+first and last write is a window in which a boot gets a self-inconsistent app. Mine was 48 seconds
+and it was enough. **Announce before writing under him; keep multi-file edits to one burst.**
+
+### Gate on `c55d9d2`
+
+`tests/run_all.py` **REAL EXIT 0** — 101 pytest-style files + 13 scripts, 101 predicted before the
+run. Direct `pytest -q` over all 114 globbed files: **1174 passed, 0 failed**. The totals differ by
+5 because run_all EXECUTES the script-style files rather than collecting them — two scopes, not a
+discrepancy.
+
+**Baseline measured, not assumed:** this change produced 7 failures; stashing only my four files and
+re-running them at HEAD gave 9 passed, so none were pre-existing. Two of the seven were test doubles
+returning a bare `True` from `push_screen_wait`. **The doubles were fixed, not the production code**
+— `getattr(answer, "remember", False)` was rejected because it would silently degrade "always" to
+"once" if the type ever drifted, turning a loud `AttributeError` into a feature that quietly stops.
