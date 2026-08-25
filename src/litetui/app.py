@@ -18,6 +18,7 @@ from functools import partial
 
 from litetui import settings as settings_mod
 from litetui.settings import Settings
+from litetui import side_panel
 from litetui.side_panel import present_dialog, show_dialog
 
 from litetui import llm_backend
@@ -52,6 +53,7 @@ from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
     thinking_header_text,
     tool_denied,
     tool_display_parts,
+    profile_text,
     tps_text,
 )
 # 🔴 RE-EXPORT, same reason as `textfmt` above. Every widget below is used
@@ -892,6 +894,31 @@ class LiteTUI(App):
         Binding("ctrl+x", "clear_image", "Clear Image", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear Chat"),
         Binding("ctrl+t", "toggle_tools", "Tools on/off"),
+        # shift+tab cycles the authority level, the way Claude Code's own
+        # shift+tab cycles its permission modes -- Ryan gave that as the spec
+        # with screenshots ("see same way claude works").
+        #
+        # 🔴 priority=True IS REQUIRED HERE AND I TRIED IT WITHOUT FIRST.
+        # The plan (and the brief) was to declare this WITHOUT priority so a
+        # focused dialog's own shift+tab would win by proximity. Measured: it
+        # then never fires AT ALL. Textual's own `Screen` already binds
+        # shift+tab to `focus_previous`, and a SCREEN binding beats an APP
+        # binding — so the polite version is dead everywhere, not just in
+        # dialogs, and every test would still have passed.
+        #
+        # priority=True fires everywhere, which on its own would walk focus
+        # out of a pending tool approval (see SidePanel's focus trap). So the
+        # precedence is decided EXPLICITLY in side_panel.handle_reverse_tab
+        # rather than inherited from a resolution order that cannot express
+        # "app, except in dialogs". test_a_dialog_keeps_its_own_shift_tab is
+        # the gate.
+        #
+        # MEASURED, not assumed: Textual 8.0.2's XTermParser turns the legacy
+        # back-tab sequence ESC [ Z into the key name "shift+tab", so this is
+        # reachable without the kitty protocol -- unlike ctrl+shift+enter
+        # above, which has no legacy encoding and needed the ctrl+j alias.
+        Binding("shift+tab", "cycle_tool_profile", "Authority",
+                priority=True, show=False),
     ]
 
     pending_image: reactive[str | None] = reactive(None)
@@ -1242,7 +1269,19 @@ class LiteTUI(App):
         arrives mid-turn is exactly the mail worth not losing.
         """
         text = harness_mod.format_message(msg)
-        profile = tool_policy.SCHEDULED
+        # 🔴 READS THE SETTING. It used to be a hardcoded SCHEDULED, so the
+        # option labelled "every capability, UNATTENDED, never asks" did not
+        # govern the unattended path that woke this turn -- Ryan hit it as a
+        # workspace_write denial while Settings showed autonomous. A control
+        # that names a case it does not govern is worse than no control.
+        #
+        # NOT a bare read: `unattended()` degrades a CONFIRM-CAPABLE profile
+        # to the read-only floor, because nobody is here to answer a modal.
+        # The default is `autonomous` (Ryan: "b default to auto") and needs no
+        # degrading -- its confirm set is empty. This still fires for a user
+        # who explicitly chose `interactive` and then received mail. See
+        # tool_policy.unattended.
+        profile = tool_policy.unattended(self.settings.tool_policy_profile)
         if self._chat_running():
             # HELD, never appended: an appended mid-turn message lands where
             # nothing announces it and the model trusts its inbox tool over its
@@ -1286,7 +1325,18 @@ class LiteTUI(App):
 
         label = job.label or job.id
         text = job.prompt
-        profile = getattr(job, "tool_profile", tool_policy.SCHEDULED)
+        # 🔴 THE SET LEVEL GOVERNS, NOT `job.tool_profile`. Ryan's ruling,
+        # verbatim: "cron and loops run at same set profile level my ruling".
+        # I had argued the other way -- that a per-job value is a durable
+        # answer and reading the setting here retroactively re-authorises jobs
+        # already on disk. He heard that and ruled anyway; it is his call.
+        #
+        # ⚠️ `job.tool_profile` IS THEREFORE NO LONGER CONSULTED AT FIRE TIME.
+        # The field still exists and still round-trips (tests/test_tool_policy.
+        # py asserts the persistence), so it is a dead knob pending removal --
+        # see its docstring in scheduler.py. Deleting a persisted schema field
+        # inside an authority fix would make both harder to review and revert.
+        profile = tool_policy.unattended(self.settings.tool_policy_profile)
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         banner = f"[{source} {label} \u00b7 {job.schedule}]\n{text}"
 
@@ -1443,7 +1493,14 @@ class LiteTUI(App):
         if policy is None:
             return tool_denied("no-metadata", name=name), False
         decision = tool_policy.evaluate(
-            getattr(self, "_active_tool_profile", tool_policy.INTERACTIVE),
+            # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
+            # this turn holds, the answer is the least authority -- never the
+            # widest, and never a confirm profile that would prompt a room
+            # with nobody in it. This read `INTERACTIVE` while INTERACTIVE was
+            # also the settings default, so the two agreed by coincidence;
+            # T084 moved the default to `autonomous` and that coincidence
+            # became a contradiction pointing the permissive way.
+            getattr(self, "_active_tool_profile", None) or tool_policy.SCHEDULED,
             policy,
             args,
             paths.ROOT,
@@ -2026,6 +2083,44 @@ class LiteTUI(App):
         self._system(f"Tools {state} — Ctrl+T to toggle")
         self._update_header()
 
+    def action_cycle_tool_profile(self) -> None:
+        """shift+tab: one step down the authority scale, wrapping.
+
+        Ryan's order, from his own screenshots of Claude Code:
+        autonomous -> interactive -> scheduled -> autonomous. The step itself
+        lives in `tool_policy.cycle`, derived from the PROFILES order, so the
+        direction is written once rather than here as a second list.
+
+        PERSISTS, for the same reason Ctrl+T does (Ryan, this session, "make
+        all three persist"): a key that changes a setting the settings screen
+        also shows must not leave the two disagreeing. Written through the
+        SAME field the screen binds to -- one value, several surfaces.
+
+        ⚠️ IT ALSO RETARGETS THE TURN IN FLIGHT. `_active_tool_profile` is what
+        `_execute_tool` actually reads, so without this line a press during a
+        running turn would change the footer and the saved setting while the
+        tools kept running under the old authority -- the footer would be
+        lying at exactly the moment someone is using the key to stop something.
+        Restricting takes effect on the next tool call, which is the direction
+        that matters.
+        """
+        if side_panel.handle_reverse_tab(self):
+            # A dialog owns the key while it is open. Returning here is what
+            # keeps Tab from walking out of a pending approval -- the app
+            # binding is priority, so nothing else would stop it.
+            return
+        nxt = tool_policy.cycle(self.settings.tool_policy_profile)
+        self.settings.tool_policy_profile = nxt
+        self._active_tool_profile = nxt
+        try:
+            settings_mod.save(self.settings)
+        except OSError:
+            # Same call as Ctrl+T: said out loud, never swallowed. A silent
+            # half-success is the disagreement this persistence exists to end.
+            self._system("could not save the authority level — this session only")
+        self._refresh_ctx_label()
+        self._system(f"{profile_text(nxt)} — {tool_policy.PROFILES[nxt].summary}")
+
     # ── Connection ───────────────────────────────────────────────
 
     @work(exclusive=True, group="init")
@@ -2146,6 +2241,23 @@ class LiteTUI(App):
             if t.plain:
                 t.append(sep, "#5c6370")
             t.append(chunk, style)
+
+        # THE AUTHORITY LEVEL, FIRST AND WITHOUT A TOGGLE. Ryan asked for it
+        # ("ALSO show this in the footer") after being denied a write while
+        # Settings showed autonomous -- the whole bug was that the authority
+        # actually in force was invisible. Every other field here is hideable
+        # from /settings; this one deliberately is not, because a readout that
+        # can be switched off reproduces exactly the condition that hid T084.
+        #
+        # The RESOLVED profile for the turn, not the stored setting: an
+        # unattended turn can be running under something narrower than what
+        # Settings says (tool_policy.unattended), and the whole point is to
+        # show which one is actually in force. Absence renders as absence --
+        # profile_text returns "" before any turn has resolved one.
+        level = profile_text(getattr(self, "_active_tool_profile", None))
+        if level:
+            add(level, "#7d8799" if tool_policy.stops_you(
+                self._active_tool_profile) else "#7aa2f7")
 
         # Identity, but only when the seat actually holds it. An unregistered
         # seat displaying a name it does not own is worse than showing nothing:
@@ -3866,7 +3978,9 @@ class LiteTUI(App):
         self._active_tool_profile = item.get(
             "tool_profile",
             getattr(getattr(self, "settings", None), "tool_policy_profile",
-                    tool_policy.INTERACTIVE),
+                    # The floor when there is no settings object at all --
+                    # same reasoning as the tool door above.
+                    tool_policy.SCHEDULED),
         )
         self._append({"role": "user", "content": item["content"]})
         _mark_delivered(item)
@@ -3892,7 +4006,9 @@ class LiteTUI(App):
         self._active_tool_profile = item.get(
             "tool_profile",
             getattr(getattr(self, "settings", None), "tool_policy_profile",
-                    tool_policy.INTERACTIVE),
+                    # The floor when there is no settings object at all --
+                    # same reasoning as the tool door above.
+                    tool_policy.SCHEDULED),
         )
         self._materialise_convo()
         self._append({"role": "user", "content": item["content"]})

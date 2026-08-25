@@ -289,6 +289,11 @@ def test_due_loop_queues_behind_busy_owner_turn(tmp_path: Path, monkeypatch) -> 
         _pending_input=pending,
         _chat_running=lambda: True,
         _user_bubble=lambda *args, **kwargs: None,
+        # _fire_job reads the SET level since Ryan's ruling ("cron and loops run
+        # at same set profile level"), so a double without settings no longer
+        # models the app. Stated as `scheduled` to keep this test's subject --
+        # that a due loop QUEUES behind a busy turn -- unchanged.
+        settings=SimpleNamespace(tool_policy_profile="scheduled"),
     )
     monkeypatch.setattr(app_mod.paths, "ROOT", tmp_path)
     app_mod.LiteTUI._fire_job(app, job)

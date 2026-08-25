@@ -207,6 +207,70 @@ PROFILES = {
 PROFILE_NAMES = tuple(PROFILES)
 
 
+def unattended(profile_name: str) -> str:
+    """The profile a turn NOBODY IS WATCHING actually runs under.
+
+    Honours the human's choice, with one mechanical exception: **a profile
+    whose mechanism is ASKING cannot be honoured when there is nobody to
+    ask.** It degrades to the read-only floor rather than opening a modal
+    against an empty room — the hang `evaluate` documents at its `profile.
+    confirm` guard, arriving by the other door.
+
+    🔴 THE TEST IS `.confirm`, NEVER THE PROFILE NAME. `interactive` is not
+    special; it is simply the profile that currently has a confirm set. A
+    fourth profile added later is classified by WHAT IT DOES, so this cannot
+    become a second table that has to agree with `PROFILES`.
+
+    ⚠️ THE DEGRADE DIRECTION IS DOWN, NEVER UP. An unrecognised name (a
+    hand-edited settings.json, a profile removed in a later version) also
+    returns the floor. `evaluate` would deny it outright anyway; returning
+    SCHEDULED here means such a turn can still read and still write its own
+    store, instead of failing every tool call it makes.
+    """
+    profile = PROFILES.get(profile_name)
+    if profile is None or profile.confirm:
+        return SCHEDULED
+    return profile_name
+
+
+def stops_you(profile_name: str) -> bool:
+    """Does this level ever STOP the agent -- by asking, or by refusing?
+
+    The footer glyph is derived from this rather than from a table of names,
+    for the reason `PROFILE_NAMES` is derived: a fourth profile must be
+    classified by WHAT IT DOES, not by having been remembered in a second
+    list. Ryan's model is Claude Code's footer, where the leading glyph tells
+    you at a glance whether this level will interrupt you, without reading the
+    words.
+
+    📌 NOTE THIS IS NOT `profile.confirm`. `scheduled` has an EMPTY confirm set
+    and still stops you constantly -- it refuses. Asking and refusing are both
+    interruptions from the user's side, and the glyph answers the user's
+    question ("will this run?"), not the implementation's.
+    """
+    profile = PROFILES.get(profile_name)
+    if profile is None:
+        return True  # unknown authority is not something to advertise as free
+    return profile.allow < CAPABILITIES
+
+
+def cycle(profile_name: str) -> str:
+    """shift+tab: one step DOWN the authority scale, wrapping.
+
+    Ryan's order, from his own screenshots of Claude Code:
+    autonomous -> interactive -> scheduled -> autonomous.
+
+    `PROFILES` is ordered by authority ASCENDING, so descending is that same
+    order stepped backwards -- the direction is expressed ONCE here rather
+    than as a second hand-written tuple that has to agree with `PROFILES`.
+    An unknown current value lands on the default rather than raising.
+    """
+    if profile_name not in PROFILE_NAMES:
+        return AUTONOMOUS
+    i = PROFILE_NAMES.index(profile_name)
+    return PROFILE_NAMES[(i - 1) % len(PROFILE_NAMES)]
+
+
 def rule_key(tool_name: str, capabilities: Iterable[str]) -> str:
     """The identity of a standing allow/deny rule.
 

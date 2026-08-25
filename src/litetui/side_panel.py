@@ -364,6 +364,47 @@ class SidePanel(Widget, _ViewMixin):
         self._cycle_focus(-1)
 
 
+def handle_reverse_tab(app) -> bool:
+    """shift+tab arrived at the APP. Does a dialog own it? Then do its move.
+
+    🔴 THIS EXISTS BECAUSE THE OBVIOUS ARRANGEMENT DOES NOT WORK, AND THE
+    FAILURE IS SILENT IN BOTH DIRECTIONS.
+
+    T084 binds shift+tab at app level to cycle the authority profile, the way
+    Claude Code's shift+tab cycles its permission modes. The plan was to
+    declare it WITHOUT `priority`, so a focused dialog's own shift+tab would
+    win by proximity. Measured instead: Textual's own `Screen` already binds
+    shift+tab to `focus_previous`, and a SCREEN binding beats an APP binding —
+    so the non-priority version never fired ANYWHERE, dialog or not.
+
+    With `priority=True` it fires everywhere, including over SidePanel's
+    `focus_prev_in_dialog`, which would walk focus out of a pending tool
+    approval — the exact escape the focus trap above exists to prevent.
+
+    So precedence is decided HERE, explicitly, instead of being inherited from
+    a resolution order that gives no way to say "app, except in dialogs":
+
+        dialog open  -> the dialog's own reverse-focus move, handled
+        otherwise    -> not handled; the app cycles the profile
+
+    Returns whether it was handled. Kept in this module because "what counts
+    as an open dialog" is this module's knowledge, and app.py holding a second
+    answer is how the two drift.
+    """
+    try:
+        screen = app.screen
+    except Exception:
+        return False                      # no screen yet: nothing to trap
+    if isinstance(screen, _ModalHost):
+        screen.focus_previous()
+        return True
+    panels = list(screen.query(SidePanel))
+    if not panels:
+        return False
+    panels[0].action_focus_prev_in_dialog()
+    return True
+
+
 class _ModalHost(ModalScreen, _ViewMixin):
     """Modal view. Same body, same controller, same future."""
 

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from textual.app import App
 
+from litetui import tool_policy
 from litetui.app import LiteTUI
 from litetui.tool_approval import (
     ALWAYS,
@@ -33,6 +34,15 @@ def _probe_app(monkeypatch):
     """
     tui = LiteTUI()
     tui._connect = lambda: None
+    # T084 moved the DEFAULT profile to `autonomous`, which never opens a
+    # modal. This test is about the CONFIRM machinery, so it states the
+    # profile it exercises instead of inheriting whatever the default is --
+    # depending on an ambient default is what made it break here at all.
+    tui.settings.tool_policy_profile = tool_policy.INTERACTIVE
+    # BOTH, because `_active_tool_profile` is stamped from settings at
+    # CONSTRUCTION and `_execute_tool` reads that, not the settings field.
+    # Setting only the settings value leaves the door on the old profile.
+    tui._active_tool_profile = tool_policy.INTERACTIVE
     tui.settings.tool_always_allow = []
     tui.settings.tool_deny = []
     saved = []
@@ -168,6 +178,15 @@ async def test_deny_button_denies(tmp_path):
 async def test_real_worker_waits_for_the_modal_before_execution():
     tui = LiteTUI()
     tui._connect = lambda: None
+    # T084 moved the DEFAULT profile to `autonomous`, which never opens a
+    # modal. This test is about the CONFIRM machinery, so it states the
+    # profile it exercises instead of inheriting whatever the default is --
+    # depending on an ambient default is what made it break here at all.
+    tui.settings.tool_policy_profile = tool_policy.INTERACTIVE
+    # BOTH, because `_active_tool_profile` is stamped from settings at
+    # CONSTRUCTION and `_execute_tool` reads that, not the settings field.
+    # Setting only the settings value leaves the door on the old profile.
+    tui._active_tool_profile = tool_policy.INTERACTIVE
     calls = []
     tui.plugins.add_tool(
         "test",

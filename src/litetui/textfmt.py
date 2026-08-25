@@ -22,6 +22,7 @@ import re
 import time
 from pathlib import Path
 from litetui import paths
+from litetui import tool_policy
 from litetui.fmt import fmt_dur
 from rich.console import Console
 from rich.markdown import Markdown
@@ -235,6 +236,33 @@ def is_reliable_rate_sample(prompt_tokens, first_token_s, floor: float = 0.25) -
     means the sample is not usable."""
     return (prompt_tokens is not None and prompt_tokens > 0
             and first_token_s is not None and first_token_s >= floor)
+
+
+def profile_text(profile_name: str | None) -> str:
+    """Pure: the authority-level field, one format for every surface -- the
+    same arrangement `tps_text` has, and for the same reason.
+
+    Reads "<glyph> <level> on", copying the shape of Claude Code's footer that
+    Ryan pointed at ("`>> auto mode on`"), because that is the thing he asked
+    for by example. The glyph is derived from `tool_policy.stops_you`, never
+    from a table here: this module must not become the second place that has
+    to know what a profile does.
+
+    🔴 THIS FIELD IS NOT HIDEABLE AND HAS NO TOGGLE, DELIBERATELY. Ryan hit
+    T084 precisely because the authority actually in force was invisible while
+    Settings showed something else. A footer that only speaks up in the
+    restrictive cases reproduces that exact failure, so the permissive level
+    is painted just as loudly -- Claude shows `>> auto mode on` as prominently
+    as `>> bypass permissions on`.
+
+    ABSENCE RENDERS AS ABSENCE: no resolved profile yet, or a name no longer
+    in `PROFILES`, returns "" so the caller paints nothing. Inventing a label
+    for an authority we cannot name would be a claim, not a readout.
+    """
+    if not profile_name or profile_name not in tool_policy.PROFILES:
+        return ""
+    glyph = "||" if tool_policy.stops_you(profile_name) else ">>"
+    return f"{glyph} {profile_name} on"
 
 
 def tps_text(tps: float) -> str:

@@ -16,6 +16,8 @@ settings page" — the two ENDS trade places, not a hardcoded chord.
 from pathlib import Path
 from types import SimpleNamespace
 
+from litetui.settings import Settings
+
 from textual.worker import WorkerState
 
 from litetui.app import LiteTUI, midturn_action
@@ -116,8 +118,13 @@ deliver = LiteTUI._deliver_inbox
 
 class InboxDouble(SimpleNamespace):
     def __init__(self, running):
+        # `settings` is REAL, not a stub. T084 made _deliver_inbox read
+        # `settings.tool_policy_profile`, and a double that lacks a field the
+        # app always has is not modelling the app -- softening the production
+        # read to `getattr(self, "settings", None)` for a fake's convenience
+        # would weaken the authority path to keep a test double comfortable.
         super().__init__(_running=running, _pending_input=[], bubbles=[],
-                         appended=[], streamed=0)
+                         appended=[], streamed=0, settings=Settings())
 
     def _chat_running(self):
         return self._running

@@ -6,6 +6,7 @@ from litetui import scheduler
 from litetui.settings import Settings
 from litetui.tool_policy import (
     ALLOW,
+    AUTONOMOUS,
     CONFIRM,
     DENY,
     DESTRUCTIVE_IRREVERSIBLE,
@@ -107,8 +108,19 @@ def test_every_first_party_registered_tool_has_explicit_policy():
         assert tui.plugins.policy_for(entry.name) is entry.policy
 
 
-def test_conversations_are_interactive_and_jobs_are_narrow_by_default(tmp_path):
-    assert Settings().tool_policy_profile == INTERACTIVE
+def test_every_turn_defaults_to_autonomous_and_the_job_knob_is_dead(tmp_path):
+    """RENAMED, because the old name asserted a design Ryan overruled.
+
+    It was `..._conversations_are_interactive_and_jobs_are_narrow_by_default`,
+    and both halves are now wrong: the conversation default is `autonomous`
+    ("b default to auto"), and a job's own `tool_profile` is no longer read
+    when the job fires ("cron and loops run at same set profile level").
+
+    The field itself still exists and still round-trips, which is why the
+    persistence half of this test is kept verbatim below -- removing a stored
+    field is a schema change and did not belong in the authority fix.
+    """
+    assert Settings().tool_policy_profile == AUTONOMOUS
     job = scheduler.Job(prompt="inspect status", schedule="@daily")
     assert job.tool_profile == SCHEDULED
 

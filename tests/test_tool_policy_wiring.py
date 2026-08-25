@@ -8,6 +8,7 @@ from litetui import scheduler
 from litetui.settings import Settings
 from litetui.tool_approval import DENIED, ONCE, ToolApprovalScreen
 from litetui.tool_policy import (
+    AUTONOMOUS,
     INTERACTIVE,
     NETWORK_READ_POLICY,
     READ_POLICY,
@@ -103,23 +104,43 @@ async def test_denied_modal_and_scheduled_profile_never_execute(tmp_path):
     assert scheduled_screens == [] and called == []
 
 
-def test_cron_profile_rides_with_queued_and_idle_turns(monkeypatch):
+def test_the_SET_level_rides_with_queued_and_idle_cron_turns(monkeypatch):
+    """The queued/idle mechanism is unchanged; WHERE the profile comes from is.
+
+    ⚠️ RENAMED FROM `test_cron_profile_rides_...`, because "the cron profile"
+    was `job.tool_profile` and that is no longer consulted. Ryan ruled: "cron
+    and loops run at same set profile level my ruling". The mechanism this
+    test protects -- that the profile reaches BOTH the queued item and
+    `_active_tool_profile` on the idle path -- is worth keeping and is why the
+    body survives nearly intact.
+
+    🔴 THE SETTING IS AUTONOMOUS AND THE JOB IS SCHEDULED, DELIBERATELY. With
+    both set to `scheduled` this test would pass whether the ruling was
+    implemented or not -- it would be asserting a value two sources agree on
+    and could not say which one it came from.
+    """
     monkeypatch.setattr(app_mod.sched_mod, "save", lambda *_a, **_k: None)
     job = scheduler.Job(prompt="inspect", schedule="@daily")
+    assert job.tool_profile == SCHEDULED, "premise: the job's own answer differs"
+
+    settings = Settings()
+    settings.tool_policy_profile = AUTONOMOUS
 
     queued = SimpleNamespace(
         jobs=[job],
+        settings=settings,
         _chat_running=lambda: True,
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
     )
     app_mod.LiteTUI._fire_job(queued, job)
-    assert queued._pending_input[0]["tool_profile"] == SCHEDULED
+    assert queued._pending_input[0]["tool_profile"] == AUTONOMOUS
 
     streamed = []
     idle = SimpleNamespace(
         jobs=[job],
+        settings=settings,
         _chat_running=lambda: False,
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
@@ -129,7 +150,7 @@ def test_cron_profile_rides_with_queued_and_idle_turns(monkeypatch):
         _active_tool_profile=INTERACTIVE,
     )
     app_mod.LiteTUI._fire_job(idle, job)
-    assert idle._active_tool_profile == SCHEDULED
+    assert idle._active_tool_profile == AUTONOMOUS
     assert streamed[-1] == "stream"
 
 
