@@ -544,7 +544,15 @@ class LiteTUI(App):
 
     #picker-list {
         height: auto;
-        max-height: 20;
+        /* 19, not 20: the box is height:auto capped at max-height:100%, so when
+           the list is long NOTHING shrinks and the LAST child is clipped -- the
+           swap button's bottom border fell one row outside the content box.
+           title 2 + list 20 + hint 4 + button 3 = 29 into 28 rows of content.
+           This cap is the only slack in the column, so it yields the one row.
+           ⚠️ It does NOT make the picker safe on a SHORT terminal: at 24 rows
+           main ALREADY clips the list and the hint with no button present.
+           That is a separate, pre-existing defect -- measured, not inferred. */
+        max-height: 19;
         background: $surface;
         border: none;
     }
