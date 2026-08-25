@@ -62,8 +62,20 @@ class PickerBody(Widget):
     # auto` had been standing in for.
     #
     # In a sidebar, SidePanel's DEFAULT_CSS overrides this to 100%, so the box
-    # caps at the panel height instead. Verified against SilverBolt's own tree:
-    # shortfall 0 in BOTH hosts with the swap button present.
+    # caps at the panel height instead.
+    #
+    # ⚠️ VERIFIED AT 100x32 ONLY — AND THAT SCOPE IS THE POINT, NOT A FOOTNOTE.
+    # Measured on SilverBolt's tree with the swap button present: shortfall 0 in
+    # both hosts. It does NOT hold at 24 rows, where this dialog still clips —
+    # see the strict xfails in tests/test_dialog_geometry.py. That failure is a
+    # DIFFERENT problem (nothing in the column shrinks or scrolls when it
+    # exceeds the box) and it predates both this fix and the swap button.
+    #
+    # The earlier version of this comment said "verified in BOTH hosts" with no
+    # viewport attached, which read as unconditional to anyone opening the file.
+    # A code comment carries no timestamp and no instrument, so an unscoped
+    # verification claim here is worse than the same claim in a message: the
+    # message dies with its context, this reads as current forever.
     DEFAULT_CSS = """
     PickerBody { width: 100%; height: 80%; align: center middle; layout: vertical; }
     """
