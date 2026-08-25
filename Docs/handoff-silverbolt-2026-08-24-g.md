@@ -88,7 +88,16 @@ centred. ⇒ **Print the SUBJECT beside the number:** `box x=11 w=78` cannot be 
 
 ## 0c. UPDATE — OWED, REPLACING §4
 
-- **MINE** — run both instruments on `dedcb35`, then merge. Nothing else.
+- **MINE** — ~~run both instruments on `dedcb35`, then merge~~ ✅ DONE (`81635b5`, then the
+  handoff at `d295cc1`). ⚠️ **BUT "Nothing else" IS NO LONGER TRUE — T087 OPENED OFF THIS ROW.**
+  `ab7add1` parameterised the containment gate over viewport height (24/32/50) and **six 24-row
+  clips appeared across three of the four dialogs, in both hosts** — pre-existing, shipped, and
+  invisible while the gate ran only at 100x32. They are `xfail(strict=True)`, so they are visible in
+  every run and turn into a hard FAILURE if anyone fixes one silently (controlled: `confirm_stop`,
+  which passes at 24, gives `[XPASS(strict)]` → exit 1). **The fix is ruled and owed by me:** dialogs
+  SCROLL when they do not fit, the action row is PINNED, and the gate keeps STRICT containment on the
+  action row so "reachable" does not become a universal excuse. Carried as its own item — it is a
+  structural change to three dialog bodies plus a rewrite of the gate's semantics, not a follow-up.
 - **OPENBOLT'S** — nothing. Clip fixed; `test_no_child_is_clipped_by_its_own_container` added and it
   bites without my button.
 - **RYAN'S** — nothing.
