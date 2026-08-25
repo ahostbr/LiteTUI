@@ -18,7 +18,7 @@ import json
 import time
 from pathlib import Path
 
-from litetui import paths
+from litetui import paths, runtime_log
 
 
 TRANSCRIPT_NAME = "convo.jsonl"
@@ -256,8 +256,15 @@ class ConversationRepository:
 
     def _raise_to_app(self, e: Exception) -> None:
         msg = self.note_error(e)
-        if msg is not None and self._on_error is not None:
-            self._on_error(msg)
+        if msg is not None:
+            runtime_log.record(
+                "persistence_failure",
+                site="conversation.repository",
+                component="conversation",
+                error_type=type(e).__name__,
+            )
+            if self._on_error is not None:
+                self._on_error(msg)
 
     # ── the record layer ─────────────────────────────────────────────────
     # One writer. Every record shape below funnels into write_record, so a

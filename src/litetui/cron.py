@@ -32,6 +32,7 @@ from datetime import datetime
 from textual import work
 
 from litetui import paths
+from litetui import runtime_log
 from litetui import scheduler as sched_mod
 
 
@@ -196,7 +197,23 @@ async def monitor(app) -> None:
         await asyncio.sleep(sched_mod.TICK_SECONDS)
         try:
             ready = sched_mod.due(app.cron.jobs, datetime.now())
-        except Exception:
+        except Exception as e:
+            # T065 producer #13. The approved list named this at app.py:1914;
+            # the T070 decomposition moved the monitor here, so the producer
+            # follows the CODE, not the line number. `site` says where it now
+            # lives — a site label that still said "app.cron_monitor" would
+            # send the next reader to a function that no longer exists.
+            #
+            # `except Exception:` was ALREADY the clause. Binding `as e` is
+            # inert, which is the only reason this is allowed: the T065 ruling
+            # forbids widening an except clause to make room for a log.
+            runtime_log.record(
+                "scheduler_tick_failed",
+                site="cron.monitor",
+                component="scheduler",
+                operation="due",
+                error_type=type(e).__name__,
+            )
             continue  # a scheduling bug must never take the chat down
         for job in ready:
             app._fire_job(job)

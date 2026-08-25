@@ -23,6 +23,7 @@ from litetui.side_panel import present_dialog, show_dialog
 from litetui import llm_backend
 from litetui import paths
 from litetui import prompt_compiler
+from litetui import runtime_log
 from litetui.conversation import (
     CONVO_SEED_FILES,
     TRANSCRIPT_NAME,
@@ -1210,6 +1211,13 @@ class LiteTUI(App):
             # to land late.
             if harness_mod.harness_disabled():
                 return
+            runtime_log.record(
+                "harness_registration_failed",
+                site="app.inbox_monitor",
+                component="harness",
+                operation="register",
+                status="failed",
+            )
             self._system(f"harness seat OFFLINE ({self.seat.error or 'unknown'})")
             return
         try:
@@ -1664,6 +1672,13 @@ class LiteTUI(App):
             seat.agent_id, ok = want, False
             seat.error = f"{type(e).__name__}: {e}"
         if was_registered and not ok:
+            runtime_log.record(
+                "harness_rebind_failed",
+                site="app.sync_seat_identity",
+                component="harness",
+                operation="rebind",
+                status="failed",
+            )
             # Loud, once. An unregistered seat that says nothing is precisely
             # the state that hid this defect for its whole life.
             self._system(f"harness seat could not rebind ({seat.error or 'unknown'})")
@@ -2110,6 +2125,14 @@ class LiteTUI(App):
                     f" at {self.backend.host()}"
                 )
         except Exception as e:
+            runtime_log.record(
+                "backend_connect_failed",
+                site="app.connect",
+                component="backend",
+                name=self.backend.name,
+                operation="connect",
+                error_type=type(e).__name__,
+            )
             self.sub_title = "Disconnected"
             # The one that rots silently: it kept naming localhost after the
             # client could be pointed elsewhere, so the error blamed the wrong host.
@@ -3516,6 +3539,13 @@ class LiteTUI(App):
                 await self._ensure_chat_ready()
                 stream = await self.client.chat.completions.create(**kwargs)
             except Exception as e:
+                runtime_log.record(
+                    "turn_stream_failed",
+                    site="app.stream.open",
+                    component="backend",
+                    operation="stream",
+                    error_type=type(e).__name__,
+                )
                 self._elapsed.stop_body()
                 self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")
@@ -3632,6 +3662,13 @@ class LiteTUI(App):
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
                             self._scroll_down()
             except Exception as e:
+                runtime_log.record(
+                    "turn_stream_failed",
+                    site="app.stream.iterate",
+                    component="backend",
+                    operation="stream",
+                    error_type=type(e).__name__,
+                )
                 self._elapsed.stop_body()
                 self._thinking_done()
                 widget.body.content = Text(f"Error: {e}", style="bold red")

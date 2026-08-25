@@ -30,6 +30,7 @@ SCRATCHPAD/
 
 # ── Runtime artefacts ────────────────────────────────────────────
 *.log
+.logs/
 tools/chrome-bridge/relay.pid
 tools/chrome-bridge/shots/
 
