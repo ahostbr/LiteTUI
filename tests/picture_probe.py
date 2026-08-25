@@ -151,8 +151,13 @@ async def shoot(style: str) -> None:
             btn = _subject(a.screen, box)
             report("PickerBody", a.screen, body)
             report("#picker-box", a.screen, box)
-            br, s = body.region, a.screen.size
-            print(f"  centred? left={br.x} right={s.width - (br.x + br.width)}"
+            # CENTRING IS MEASURED ON THE BOX, NOT THE BODY. The body is the
+            # full-width CONTAINER the box centres inside — after the
+            # height-cap fix it spans the screen, so reporting the body here
+            # printed "left=0 right=0" and read like a dialog flush against the
+            # edge. Same instrument, same numbers, wrong subject.
+            br, s = box.region, a.screen.size
+            print(f"  box centred? left={br.x} right={s.width - (br.x + br.width)}"
                   f"   (equal within 1 = centred)")
         report("SUBJECT", a.screen, btn)
         print(f"  SUBJECT {type(btn).__name__} label={str(getattr(btn, 'label', ''))!r}")
@@ -164,6 +169,10 @@ async def shoot(style: str) -> None:
         print(f"  last child bottom={br.y + br.height}  box bottom={cr.y + cr.height}"
               f"  FITS={fits}")
 
+        # ⚠️ THE TEXT BELOW CARRIES NO HORIZONTAL POSITION. Rows are rebuilt by
+        # joining their <text> runs in x order WITHOUT padding to x, so a box at
+        # x=11 and one at x=0 render identically here. Judge left/right from the
+        # regions above; use the text for CONTENT and VERTICAL position only.
         lines = svg_to_text(a.export_screenshot()).splitlines()
         br = btn.region
         # +1 OFFSET, and a window either side so a miscalibration is VISIBLE
