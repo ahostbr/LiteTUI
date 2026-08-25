@@ -58,7 +58,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 from functools import partial
-from litetui.side_panel import close_dialog, open_dialog
+from litetui.side_panel import SwapButton, close_dialog, open_dialog
 from litetui import tool_schemas
 
 from rich.text import Text
@@ -406,6 +406,7 @@ class AskUserQuestionBody(Vertical):
                         classes="auq-row auq-note-row",
                     )
         yield Input(placeholder="Type something…", id="auq-note-input")
+        yield SwapButton()
         with Horizontal(id="auq-actions"):
             yield Button("Chat about this", id="auq-chat")
             yield Button("Submit", variant="primary", id="auq-submit")

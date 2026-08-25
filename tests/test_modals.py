@@ -102,7 +102,10 @@ async def test_esc_stop_dialog_is_clickable_and_only_yes_stops():
         e.action_stop_turn()
         await pilot.pause()
         assert isinstance(e.screen, m.ConfirmStop), "ConfirmStop on top"
-        assert len(e.screen.query(m.Button)) == 2, "has two buttons"
+        # THREE since T086: Yes / No, plus the swap control Ryan asked for
+        # ("a button to swap back in forth DURING the dialog"). The count is
+        # scaffolding for the click test below, not the subject of it.
+        assert len(e.screen.query(m.Button)) == 3, "yes, no, and the swap control"
         await pilot.click(e.screen.query_one("#no", m.Button))
         await pilot.pause()
         assert not isinstance(e.screen, m.ConfirmStop), "No dismissed it"

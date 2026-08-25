@@ -11,7 +11,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
-from litetui.side_panel import close_dialog
+from litetui.side_panel import SwapButton, close_dialog
 from litetui.tool_policy import PolicyDecision, approval_preview
 
 
@@ -204,6 +204,7 @@ class ToolApprovalBody(Vertical):
             "a wider request asks again.",
             id="tool-approval-hint",
         )
+        yield SwapButton()
         with Horizontal(id="tool-approval-actions"):
             yield Button("Deny", id="tool-approval-deny")
             yield Button("Allow once", variant="warning", id="tool-approval-allow")

@@ -43,7 +43,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 # Imported for the BODY's exits. side_panel imports nothing from widgets, so
 # this does not close a cycle — checked rather than assumed.
-from litetui.side_panel import close_dialog
+from litetui.side_panel import SwapButton, close_dialog
 from textual.widgets import (
     Button, Footer, Header, Input, OptionList, Static, )
 from textual.widgets.option_list import Option
@@ -606,6 +606,7 @@ class ConfirmStopBody(Widget):
                 "Y / Enter = stop      N / Esc = keep going",
                 id="confirm-sub",
             )
+            yield SwapButton()
             with Horizontal(id="confirm-buttons"):
                 yield Button("Yes, stop", variant="error", id="yes")
                 yield Button("No, keep going", variant="primary", id="no")

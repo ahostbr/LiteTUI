@@ -23,7 +23,7 @@ from textual.widget import Widget
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from litetui.side_panel import close_dialog, present_dialog
+from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 DEFAULT_HINT = "↑↓ move · Enter or click to select · Esc to cancel"
 
@@ -83,6 +83,9 @@ class PickerBody(Widget):
                 *[Option(label, id=oid) for oid, label in self._rows], id="picker-list"
             )
             yield Static(self._hint, id="picker-hint")
+            # Swap host without answering. Styles itself (SwapButton owns
+            # its own DEFAULT_CSS), so this needs no rule in picker CSS.
+            yield SwapButton()
 
     def on_mount(self) -> None:
         ol = self.query_one(OptionList)

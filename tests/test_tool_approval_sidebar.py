@@ -137,7 +137,15 @@ async def test_TAB_CANNOT_LEAVE_A_PENDING_APPROVAL() -> None:
             await pilot.pause()
             fid = getattr(a.screen.focused, "id", None)
             seen.append(fid)
-            assert fid in BUTTONS, (
+            # 🔴 ASSERT THE INVARIANT, NOT AN INVENTORY. This used to be
+            # `fid in BUTTONS` — a hardcoded list of the three action buttons —
+            # and it went red the moment T086 added a fourth control INSIDE the
+            # dialog. Focus had not escaped anything; the proxy had simply
+            # stopped matching the thing it stood for, and its own message said
+            # "Tab escaped" about focus that was still inside the approval.
+            # Scope is what the trap actually protects, so scope is what is
+            # asserted: a fifth control now joins without touching this test.
+            assert a.screen.focused is not None and body in a.screen.focused.ancestors, (
                 f"Tab escaped the approval onto {fid!r} — a pending tool call is "
                 f"now behind a dialog nobody has focus in. Sequence: {seen}"
             )
@@ -157,7 +165,11 @@ async def test_shift_tab_also_stays_inside() -> None:
             await pilot.press("shift+tab")
             await pilot.pause()
             fid = getattr(a.screen.focused, "id", None)
-            assert fid in BUTTONS, f"shift+tab escaped onto {fid!r}"
+            # Same correction as the tab test above: scope, not inventory.
+            body = a.screen.query_one(ToolApprovalBody)
+            assert a.screen.focused is not None and body in a.screen.focused.ancestors, (
+                f"shift+tab escaped onto {fid!r}"
+            )
         ctrl.resolve(DENIED)
 
 
