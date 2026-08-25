@@ -289,17 +289,20 @@ def test_due_loop_queues_behind_busy_owner_turn(tmp_path: Path, monkeypatch) -> 
         _pending_input=pending,
         _chat_running=lambda: True,
         _user_bubble=lambda *args, **kwargs: None,
-        # _fire_job reads the SET level since Ryan's ruling ("cron and loops run
-        # at same set profile level"), so a double without settings no longer
-        # models the app. Stated as `scheduled` to keep this test's subject --
-        # that a due loop QUEUES behind a busy turn -- unchanged.
-        settings=SimpleNamespace(tool_policy_profile="scheduled"),
+        # T085: _fire_job no longer reads settings or the job at all -- it
+        # resolves to autonomous outright -- so the double needs neither. Left
+        # carrying settings because _fire_job's other branches may use it.
+        settings=SimpleNamespace(tool_policy_profile="interactive"),
     )
     monkeypatch.setattr(app_mod.paths, "ROOT", tmp_path)
     app_mod.LiteTUI._fire_job(app, job)
     assert job.run_count == 1
     assert len(pending) == 1
-    assert pending[0]["tool_profile"] == "scheduled"
+    # T085: a scheduled turn always runs auto ("just change it so schedule
+    # only runs auto mode"). This test's subject -- that a due loop QUEUES
+    # behind a busy turn rather than interrupting it -- is unchanged; only the
+    # authority stamped on the queued item moved.
+    assert pending[0]["tool_profile"] == "autonomous"
     assert pending[0]["content"] == job.prompt
 
 

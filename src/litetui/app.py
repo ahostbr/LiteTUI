@@ -1340,18 +1340,28 @@ class LiteTUI(App):
 
         label = job.label or job.id
         text = job.prompt
-        # 🔴 THE SET LEVEL GOVERNS, NOT `job.tool_profile`. Ryan's ruling,
-        # verbatim: "cron and loops run at same set profile level my ruling".
-        # I had argued the other way -- that a per-job value is a durable
-        # answer and reading the setting here retroactively re-authorises jobs
-        # already on disk. He heard that and ruled anyway; it is his call.
+        # 🔴 A SCHEDULED TURN IS ALWAYS AUTONOMOUS. HARDCODED ON PURPOSE.
+        # T085, Ryan: "just change it so schedule only runs auto mode ... light
+        # warning when setting that it must run auto for this reason".
         #
-        # ⚠️ `job.tool_profile` IS THEREFORE NO LONGER CONSULTED AT FIRE TIME.
-        # The field still exists and still round-trips (tests/test_tool_policy.
-        # py asserts the persistence), so it is a dead knob pending removal --
-        # see its docstring in scheduler.py. Deleting a persisted schema field
-        # inside an authority fix would make both harder to review and revert.
-        profile = tool_policy.unattended(self.settings.tool_policy_profile)
+        # THE REASON IS HERE because a hardcoded profile, on a path that used
+        # to read a setting, otherwise reads as a mistake: a scheduled task
+        # fires when nobody is at the keyboard. A level that stops to ASK has
+        # nobody to ask, so it would not run -- it would sit on a modal until
+        # someone came back. Choosing a level here is choosing between "runs"
+        # and "hangs", which is not a choice worth offering.
+        #
+        # ⚠️ THIS LINE HAS HELD THREE VALUES IN ONE EVENING: the job's own
+        # field, then `settings.tool_policy_profile` (Ryan's first ruling),
+        # now this. None was wrong when written. The conversation setting
+        # deliberately does NOT reach here any more -- changing how autonomous
+        # the CHAT is must not silently change what every saved automation may
+        # do.
+        #
+        # 📌 `unattended()` is deliberately NOT applied: autonomous has an
+        # EMPTY confirm set, so the degrade would be a no-op. Inbox mail is NOT
+        # a job -- it still reads the setting through `unattended()`.
+        profile = tool_policy.AUTONOMOUS
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         banner = f"[{source} {label} \u00b7 {job.schedule}]\n{text}"
 

@@ -49,8 +49,9 @@ from typing import Any, Callable
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
+from textual.widgets import Button
 
 #: What a dialog body must offer to survive a swap. Bodies without these still
 #: work — the state simply does not carry — so a body is never *required* to
@@ -392,8 +393,26 @@ class SidePanel(Widget, _ViewMixin):
         self._cycle_focus(-1)
 
 
+REVERSE_TAB = "shift+tab"
+
+
+def _own_binding(node, key: str):
+    """The action `node` itself binds to `key`, or None.
+
+    Reads the node's OWN merged binding map rather than a hand-kept list of
+    dialog classes -- which is the bug this function was rewritten to fix.
+    """
+    bindings = getattr(node, "_bindings", None)
+    if bindings is None:
+        return None
+    found = getattr(bindings, "key_to_bindings", {}).get(key)
+    if not found:
+        return None
+    return found[0].action
+
+
 def handle_reverse_tab(app) -> bool:
-    """shift+tab arrived at the APP. Does a dialog own it? Then do its move.
+    """shift+tab arrived at the APP. Does something nearer own it? Then run it.
 
     🔴 THIS EXISTS BECAUSE THE OBVIOUS ARRANGEMENT DOES NOT WORK, AND THE
     FAILURE IS SILENT IN BOTH DIRECTIONS.
@@ -405,32 +424,68 @@ def handle_reverse_tab(app) -> bool:
     shift+tab to `focus_previous`, and a SCREEN binding beats an APP binding —
     so the non-priority version never fired ANYWHERE, dialog or not.
 
-    With `priority=True` it fires everywhere, including over SidePanel's
-    `focus_prev_in_dialog`, which would walk focus out of a pending tool
-    approval — the exact escape the focus trap above exists to prevent.
+    With `priority=True` it fires everywhere, including over bindings that
+    mean something else entirely. So proximity is reimplemented HERE, because
+    the resolution order gives no way to say "app, except where something
+    nearer already means something by this key".
 
-    So precedence is decided HERE, explicitly, instead of being inherited from
-    a resolution order that gives no way to say "app, except in dialogs":
+    🔴 AND THE FIRST VERSION OF THIS FUNCTION ENUMERATED DIALOG CLASSES, WHICH
+    IS WHY IT SHIPPED A REGRESSION. It knew about `SidePanel` and `_ModalHost`
+    and nothing else, so `AskUserQuestionBody` -- which binds shift+tab to
+    `prev_question`, NOT to reverse focus -- lost its key and
+    test_ask_user_question.py went from 48/48 to 43/48. A list of the
+    surfaces I happened to remember is the same drift pair this whole task
+    exists to remove.
 
-        dialog open  -> the dialog's own reverse-focus move, handled
-        otherwise    -> not handled; the app cycles the profile
-
-    Returns whether it was handled. Kept in this module because "what counts
-    as an open dialog" is this module's knowledge, and app.py holding a second
-    answer is how the two drift.
+    So: walk from the focused node upward and run the FIRST node that binds
+    this key itself, skipping `Screen` (whose generic `focus_previous` is
+    exactly the binding this feature replaces). That is Textual's own
+    proximity rule, applied by hand because priority took it away.
     """
     try:
         screen = app.screen
     except Exception:
-        return False                      # no screen yet: nothing to trap
-    if isinstance(screen, _ModalHost):
+        return False                      # no screen yet: nothing to own it
+
+    focused = getattr(app, "focused", None)
+    if focused is not None:
+        for node in focused.ancestors_with_self:
+            if node is app or isinstance(node, Screen):
+                break
+            action = _own_binding(node, REVERSE_TAB)
+            if action is None:
+                continue
+            method = getattr(node, f"action_{action}", None)
+            if method is None:
+                continue
+            method()
+            return True
+
+    # ⚠️ BACKSTOP -- AND IT IS STILL A HAND-KEPT CLASS LIST, DEMOTED RATHER
+    # THAN REMOVED. Reached only when the walk above found nothing, i.e. when a
+    # dialog is open but focus is NOT inside it. SidePanel's focus trap exists
+    # to make that impossible, so this is a net under a net -- which is exactly
+    # what makes it easy to leave wrong: when it fires, something else has
+    # already failed and nobody is looking here.
+    #
+    # 🔴 IF IT IS EVER WRONG IT FAILS PERMISSIVE: a dialog surface named by
+    # neither class falls through and the authority level cycles from behind an
+    # open approval. Kept as a list deliberately -- a marker attribute only
+    # relocates "remember to add it", and registering open dialogs on the app
+    # is a change to the dialog LIFECYCLE, which is not worth making on a path
+    # with no demonstrated defect.
+    #
+    # 📌 THE CHECK THAT WOULD CATCH A NEW SURFACE, and the one I failed to run
+    # against my own fix: `grep -rn '"shift+tab"' src/litetui/`. I ran it to
+    # FIND the hazard and never re-ran it to VERIFY my coverage of it -- the
+    # enumeration was available the whole time. Two real surfaces exist; my
+    # first list named one of them plus `_ModalHost`, which does not bind this
+    # key at all. One true entry, one irrelevant entry, one miss, reading as
+    # deliberate coverage.
+    if isinstance(screen, _ModalHost) or screen.query(SidePanel):
         screen.focus_previous()
         return True
-    panels = list(screen.query(SidePanel))
-    if not panels:
-        return False
-    panels[0].action_focus_prev_in_dialog()
-    return True
+    return False
 
 
 class _ModalHost(ModalScreen, _ViewMixin):
@@ -505,6 +560,69 @@ def close_dialog(widget: Widget, value: Any = None) -> None:
     screen = widget.screen
     if screen is not None:
         screen.dismiss(value)
+
+
+class SwapButton(Button):
+    """THE swap control. One widget, used by every dialog body.
+
+    🔴 ONE CONTROL, NOT FOUR COPIES. T075 built this behaviour in
+    `dialog_demo.py` and the conversion briefs for the four real dialogs did not
+    carry it, so `grep -rn demo-swap` returned the demo and nothing else. Copying
+    the button into four bodies would have meant four copies of the relabel rule
+    as well -- four places to disagree about what the label should say. The
+    relabel logic below is MOVED from the demo, not duplicated.
+
+    📌 IT NAMES THE DESTINATION, NOT THE CURRENT STATE. "Sidebar" on a sidebar
+    dialog reads equally as a state and as an action; "Open as modal" can only be
+    read as the action. That reasoning is the demo's and it survives the move.
+
+    ⚠️ THE SWAP MUST NEVER RESOLVE THE DIALOG. It changes the HOST; the
+    controller keeps owning the future. `request_swap` is the only exit used
+    here precisely because `close_dialog` is the one that answers.
+    """
+
+    #: 🔴 THE CONTROL CARRIES ITS OWN STYLE, AND THAT IS THE WHOLE POINT.
+    #: Textual scopes DEFAULT_CSS to the DECLARING class — the mechanism that
+    #: broke the sidebar conversion, because the four dialog bodies' rules were
+    #: declared on the ModalScreens they were lifted out of and applied nowhere
+    #: once they moved. Declared HERE, the rule is scoped to SwapButton, so it
+    #: follows the button into any host: sidebar, modal, or a dialog nobody has
+    #: written yet.
+    #:
+    #: ⇒ The same scoping that was the bug is the fix, used the right way round.
+    #: It also keeps this control out of the four bodies' stylesheets entirely,
+    #: so adding the button needs ONE line per body and no CSS edit at all.
+    DEFAULT_CSS = """
+    SwapButton { width: 100%; margin: 0 0 1 0; }
+    """
+
+    DEFAULT_ID = "dialog-swap"
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__("", id=id or self.DEFAULT_ID)
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def relabel(self) -> None:
+        """Label for where pressing it TAKES you, which depends on where it is."""
+        in_sidebar = any(isinstance(n, SidePanel) for n in self.ancestors_with_self)
+        self.label = "Open as modal" if in_sidebar else "Dock to side"
+
+    def swappable(self) -> bool:
+        """Would pressing this actually do anything HERE?
+
+        🔴 THE HONEST ANSWER IS NOT ALWAYS YES, AND THAT IS THE WHOLE POINT OF
+        THIS METHOD. `request_swap` needs a `DialogController`, and only
+        `SidePanel` and `_ModalHost` ever carry one. `present_dialog`'s modal
+        branch deliberately pushes the ORIGINAL `ModalScreen` -- so a body shown
+        that way has NO controller and a swap there is a no-op.
+
+        A button that is visible, pressable and inert is the defect class this
+        whole day has been spent clearing. Callers use this to decide whether to
+        offer the control at all, rather than offering it and hoping.
+        """
+        return _controller_for(self) is not None
 
 
 def request_swap(widget: Widget) -> None:

@@ -384,7 +384,38 @@ def load(root: Path | None = None) -> Settings:
         raw = os.environ.get(env_key)
         if raw is not None and raw != "":
             setattr(s, name, _coerce(name, raw, getattr(s, name)))
+    s.tool_policy_profile = _selectable_profile(s.tool_policy_profile)
     return s
+
+
+def _selectable_profile(name: str) -> str:
+    """T085 MIGRATION. A stored level that is no longer selectable lands on one.
+
+    🔴 THIS IS NOT TIDINESS -- WITHOUT IT THE SETTINGS SCREEN CRASHES ON MOUNT.
+    `scheduled` was an offered choice until T085 removed it from the cycle, so
+    a settings.json written by yesterday's build can hold it. The screen builds
+    its dropdown with `Select(choices, value=stored, allow_blank=False)`, and
+    Textual raises `InvalidSelectValueError` from `Select._on_mount` when the
+    stored value is not among the options. Measured, not assumed: mounting one
+    with value="scheduled" against the T085 choices raises exactly that.
+
+    That is the same defect class as a settings FIELD with no control -- which
+    breaks Save from every tab -- arriving from the other side: a stored VALUE
+    with no option. Both take out a screen the user opened to fix something
+    else.
+
+    ⚠️ THE LANDING IS THE NARROWEST SELECTABLE LEVEL, never the widest. Going
+    `scheduled` -> `interactive` widens authority (read-only becomes
+    ask-before-sensitive), which is unavoidable once the floor stops being
+    selectable -- but every widened action now passes a human gate, and the
+    alternative (`autonomous`) would silently grant everything to someone who
+    had explicitly chosen read-only.
+    """
+    from litetui import tool_policy
+    selectable = tool_policy.selectable_profile_names()
+    if name in selectable:
+        return name
+    return selectable[0]
 
 
 def save(s: Settings, root: Path | None = None) -> Path:

@@ -46,6 +46,7 @@ from _settle import settle_until
 from litetui import app as m
 from litetui import tool_policy
 from litetui.side_panel import DialogController, SidePanel
+from litetui import textfmt
 from litetui.textfmt import profile_text
 from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, SCHEDULED
 from litetui.widgets import ConfirmStopBody
@@ -111,20 +112,68 @@ def test_absence_renders_as_ABSENCE(missing):
 # ── the cycle: Ryan's order, wrapping ──────────────────────────────────────
 
 def test_the_cycle_is_ryans_order_and_wraps():
+    """T085 cut it to TWO levels: "scheduled should not be its own mode"."""
     assert tool_policy.cycle(AUTONOMOUS) == INTERACTIVE
-    assert tool_policy.cycle(INTERACTIVE) == SCHEDULED
-    assert tool_policy.cycle(SCHEDULED) == AUTONOMOUS
+    assert tool_policy.cycle(INTERACTIVE) == AUTONOMOUS
 
 
-def test_the_cycle_visits_every_profile_and_returns():
-    """Derived over PROFILE_NAMES: a profile added later joins the cycle
-    automatically instead of becoming unreachable from the keyboard."""
+def test_scheduled_is_UNREACHABLE_from_the_keyboard():
+    """It survives as the floor `unattended()` degrades to — a mechanism, not
+    a mode. Pressing shift+tab must never land on it."""
+    assert SCHEDULED not in tool_policy.selectable_profile_names()
+    reached = {tool_policy.cycle(n) for n in tool_policy.PROFILE_NAMES}
+    assert SCHEDULED not in reached, "the floor is reachable by cycling again"
+
+
+def test_cycling_OFF_scheduled_lands_back_in_the_selectable_set():
+    """An old settings.json can still hold it. One press must escape, not
+    stick — and must land on the NARROWEST selectable level, never the widest."""
+    assert tool_policy.cycle(SCHEDULED) == INTERACTIVE
+
+
+def test_the_selectable_set_is_DERIVED_from_the_profile_flag(monkeypatch):
+    """Not a hand-written tuple. A profile marked unselectable leaves the cycle
+    and the dropdown together, because both read this one property."""
+    hidden = tool_policy.ToolProfile(
+        name="hidden", allow=frozenset({tool_policy.READ_ONLY}),
+        confirm=frozenset(), summary="not offered", selectable=False,
+    )
+    shown = tool_policy.ToolProfile(
+        name="shown", allow=frozenset({tool_policy.READ_ONLY}),
+        confirm=frozenset(), summary="offered", selectable=True,
+    )
+    monkeypatch.setitem(tool_policy.PROFILES, "hidden", hidden)
+    monkeypatch.setitem(tool_policy.PROFILES, "shown", shown)
+    names = tool_policy.selectable_profile_names()
+    assert "shown" in names and "hidden" not in names
+
+
+def test_an_unrecognised_profile_cycles_DOWN_not_up():
+    """Corrupt settings plus one keypress must not reach full authority.
+
+    Matches `unattended()`, which also sends an unknown name to the floor. The
+    first version of `cycle` returned AUTONOMOUS here and no test noticed --
+    found by re-reading my own diff, not by a red.
+    """
+    # T085: the landing moved from `scheduled` to `interactive` — not a
+    # loosening, but the consequence of the floor leaving the selectable set.
+    # What is asserted is unchanged: unknown lands on the NARROWEST level a
+    # human may hold, never the widest.
+    landed = tool_policy.cycle("not-a-profile")
+    assert landed == tool_policy.selectable_profile_names()[0]
+    assert landed != AUTONOMOUS, "corrupt settings plus one keypress reached max authority"
+
+
+def test_the_cycle_visits_every_SELECTABLE_profile_and_returns():
+    """Derived over the selectable set: a profile added later joins the cycle
+    automatically, and one marked unselectable leaves it automatically."""
+    order = tool_policy.selectable_profile_names()
     seen, cur = [], AUTONOMOUS
-    for _ in range(len(tool_policy.PROFILE_NAMES)):
+    for _ in range(len(order)):
         seen.append(cur)
         cur = tool_policy.cycle(cur)
     assert cur == AUTONOMOUS, "the cycle did not return to its start"
-    assert sorted(seen) == sorted(tool_policy.PROFILE_NAMES), "a profile is unreachable"
+    assert sorted(seen) == sorted(order), "a selectable profile is unreachable"
 
 
 # ── the footer: shows the RESOLVED level, and moves when it moves ──────────
@@ -213,6 +262,54 @@ async def test_a_dialog_keeps_its_own_shift_tab():
         )
 
 
+@pytest.mark.asyncio
+async def test_ASK_USER_QUESTION_keeps_shift_tab_for_prev_question():
+    """🔴 THE SCOPE I MISSED, AND IT SHIPPED A REGRESSION FOR ONE COMMIT.
+
+    `AskUserQuestionBody` binds shift+tab to `prev_question` -- NOT to reverse
+    focus. The first `handle_reverse_tab` enumerated dialog CLASSES, knew about
+    SidePanel and _ModalHost, and silently ate this one:
+    test_ask_user_question.py went 48/48 -> 43/48 at cc230c8.
+
+    My dialog test used ConfirmStopBody in a SidePanel and passed, which is
+    exactly a control that validates the INSTRUMENT and not the SCOPE -- one
+    dialog surface proved, the other assumed. This test is the second surface,
+    and the fix is a proximity walk so a THIRD surface needs no new entry here.
+    """
+    from litetui.ask_user_question import AskUserQuestionBody, QuestionState
+
+    a = make_app(AUTONOMOUS)
+    states = [
+        QuestionState(label="one", question="q1?",
+                      options=[{"title": "a", "description": ""}]),
+        QuestionState(label="two", question="q2?",
+                      options=[{"title": "b", "description": ""}]),
+    ]
+    async with a.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        body = AskUserQuestionBody(states, __import__("threading").Event(), [])
+        await a.screen.mount(body)
+        await settle_until(pilot, lambda: bool(a.screen.query(AskUserQuestionBody)))
+        body.focus()
+        await pilot.pause()
+
+        before = a.settings.tool_policy_profile
+        body.action_next_question()
+        await pilot.pause()
+        assert body._active == 1, "premise: next_question moved to q2"
+
+        await pilot.press("shift+tab")
+        await pilot.pause()
+
+        assert a.settings.tool_policy_profile == before, (
+            "shift+tab cycled the authority level inside AskUserQuestion — the "
+            "app binding ate prev_question"
+        )
+        assert body._active == 0, (
+            "shift+tab did not move back a question — prev_question never ran"
+        )
+
+
 def test_the_binding_is_declared_WITH_priority():
     """Asserted on the declaration too, not only on the behaviour.
 
@@ -229,6 +326,99 @@ def test_the_binding_is_declared_WITH_priority():
         "without priority the binding never fires: Textual's Screen already "
         "binds shift+tab to focus_previous and a screen beats an app"
     )
+
+
+# -- T085: the light warning, and the migration that stops a crash --------
+
+def test_the_creation_note_states_the_REASON_not_just_the_rule():
+    """Ryan asked for a "light warning when setting that it must run auto for
+    this reason". The reason IS the request.
+
+    A note that only says "scheduled tasks run in auto mode" is a fact the
+    reader can do nothing with. This asserts the mechanism is present -- that
+    nobody may be there, and that asking would therefore wait -- because that
+    is what lets someone predict a case nobody wrote down.
+    """
+    note = textfmt.SCHEDULED_AUTO_NOTE.lower()
+    assert "auto" in note
+    assert "keyboard" in note, "the note does not say WHY (nobody is there)"
+    assert "wait" in note or "hang" in note, (
+        "the note does not say what would go wrong instead"
+    )
+    # LIGHT: one sentence, no shouting, not a confirmation prompt.
+    assert note.count(".") == 0, "more than one sentence"
+    assert textfmt.SCHEDULED_AUTO_NOTE == textfmt.SCHEDULED_AUTO_NOTE.lstrip(), "padded"
+
+
+def test_BOTH_creation_paths_show_the_note(monkeypatch, tmp_path):
+    """/loop and /cron are two surfaces onto one decision. One text, used by
+    both, so they cannot drift into saying different things."""
+    from litetui import goal_loop, scheduler, paths as paths_mod
+
+    said = []
+    app = make_app(AUTONOMOUS)
+    app.jobs.clear()
+    app._system = lambda m, *a, **k: said.append(str(m))
+    app._materialise_convo = lambda: None
+    app.convo_id = "c1"
+    monkeypatch.setattr(goal_loop.scheduler, "save", lambda jobs, root=None: None)
+
+    goal_loop.loop_command(app, "15m check the deploy")
+    assert said, "/loop said nothing"
+    assert textfmt.SCHEDULED_AUTO_NOTE in said[-1], (
+        f"/loop did not show the note: {said[-1]!r}"
+    )
+
+    # /cron goes through CronService, which owns its own confirmation line.
+    from litetui import cron as cron_mod
+    said.clear()
+    svc = cron_mod.CronService(app)
+    monkeypatch.setattr(cron_mod.sched_mod, "save", lambda jobs, root=None: None)
+    svc.add("@daily summarise yesterday")
+    assert said, "/cron said nothing"
+    assert textfmt.SCHEDULED_AUTO_NOTE in said[-1], (
+        f"/cron did not show the note: {said[-1]!r}"
+    )
+
+
+def test_a_stored_scheduled_level_does_not_CRASH_the_settings_screen(tmp_path):
+    """🔴 MEASURED BEFORE IT WAS FIXED, NOT IMAGINED.
+
+    `scheduled` was an offered choice until T085 removed it, so a settings.json
+    written by yesterday's build holds it. The screen builds its dropdown as
+    `Select(choices, value=stored, allow_blank=False)`, and textual raises
+    InvalidSelectValueError from `Select._on_mount` when the stored value is
+    not among the options -- verified directly by mounting one.
+
+    That is the same class as a settings FIELD with no control (which breaks
+    Save from every tab) arriving from the other side: a stored VALUE with no
+    option. Both take out a screen the user opened to fix something else.
+    """
+    import json
+    from litetui import settings as settings_mod
+
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"tool_policy_profile": "scheduled"}), encoding="utf-8"
+    )
+    loaded = settings_mod.load(tmp_path)
+    assert loaded.tool_policy_profile in tool_policy.selectable_profile_names()
+    assert loaded.tool_policy_profile == INTERACTIVE, (
+        "landed somewhere other than the narrowest selectable level"
+    )
+
+
+def test_the_migration_never_lands_on_AUTONOMOUS(tmp_path):
+    """The narrowest selectable level, never the widest. Someone who chose
+    read-only must not be silently upgraded to "never asks"."""
+    import json
+    from litetui import settings as settings_mod
+
+    for stored in ("scheduled", "not-a-real-profile", ""):
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"tool_policy_profile": stored}), encoding="utf-8"
+        )
+        got = settings_mod.load(tmp_path).tool_policy_profile
+        assert got != AUTONOMOUS, f"{stored!r} was widened to autonomous"
 
 
 # ── persistence: the same ruling Ctrl+T got ────────────────────────────────

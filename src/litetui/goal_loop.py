@@ -19,7 +19,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from litetui import paths, scheduler
+from litetui import paths
+from litetui import textfmt, scheduler
 from litetui.tool_policy import INTERACTIVE, SCHEDULED
 
 GOAL_FILENAME = "goal.json"
@@ -457,4 +458,7 @@ def loop_command(app: Any, arg: str) -> None:
     )
     app.jobs.append(job)
     scheduler.save(app.jobs, paths.ROOT)
-    app._system(f"/loop added {job.id} · every {minutes}m\n  {job.prompt}")
+    app._system(
+        f"/loop added {job.id} · every {minutes}m\n  {job.prompt}\n"
+        f"  {textfmt.SCHEDULED_AUTO_NOTE}"
+    )

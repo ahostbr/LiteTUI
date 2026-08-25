@@ -213,20 +213,31 @@ def test_an_unknown_profile_degrades_DOWN():
     assert unattended("nonsense-not-a-profile") == SCHEDULED
 
 
-# -- CONTROL 2: cron/loop turns honour the set level (RYAN'S RULING) --------
+# -- T085: EVERY SCHEDULED TURN RUNS AUTO ----------------------------------
+#
+# ⚠️ THIS SECTION HAS BEEN REWRITTEN TWICE IN ONE EVENING and the churn is the
+# point of the comment. Ryan ruled, in order:
+#   1. "cron and loops run at same set profile level"      -> read the setting
+#   2. "select either auto mode or interactive" per job    -> read the job
+#   3. "just change it so schedule only runs auto mode"    -> autonomous, always
+# Each earlier version was correct when written. (3) is the live one, and it is
+# strictly simpler: it deletes the question "what does an interactive job do at
+# 3am", which is the question that would otherwise need attendance detection.
 
-def _fired_by_a_job(profile_name: str, monkeypatch) -> str:
+def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
     """Drive the REAL `_fire_job` and return the profile it stamped.
 
-    Same instrument as `_woken_by_mail`, for the same reason: a constructed
-    profile would prove nothing about which value the firing path picks.
+    `setting` defaults to something OTHER than autonomous, and `job_level` can
+    be set to something else again, so an assertion of `autonomous` cannot be
+    satisfied by either source leaking through — it can only pass if the fire
+    path resolves to autonomous on its own.
     """
     from litetui import scheduler
     from litetui import app as app_mod
 
     app = LiteTUI()
     app._connect = lambda: None
-    app.settings.tool_policy_profile = profile_name
+    app.settings.tool_policy_profile = setting
     app._chat_running = lambda: False
     app._user_bubble = lambda *a, **k: None
     app._append = lambda *a, **k: None
@@ -235,50 +246,44 @@ def _fired_by_a_job(profile_name: str, monkeypatch) -> str:
     monkeypatch.setattr(app_mod.sched_mod, "save", lambda jobs, root=None: None)
 
     job = scheduler.Job(prompt="nightly", schedule="@daily")
+    if job_level is not None:
+        job.tool_profile = job_level
     app.jobs.clear()
     app.jobs.append(job)
     app._fire_job(job)
     return app._active_tool_profile
 
 
-def test_autonomous_reaches_a_CRON_turn(monkeypatch):
-    """Ryan: "cron and loops run at same set profile level my ruling"."""
-    stamped = _fired_by_a_job(AUTONOMOUS, monkeypatch)
-    assert stamped == AUTONOMOUS, "a cron turn ignored the set level"
+def test_a_scheduled_turn_runs_AUTO_and_may_write_the_workspace(monkeypatch):
+    """Ryan: "just change it so schedule only runs auto mode"."""
+    stamped = _fired_by_a_job(monkeypatch)
+    assert stamped == AUTONOMOUS
     assert _write_outside_the_store(stamped).action == ALLOW
 
 
-def test_a_cron_turn_with_NO_saved_setting_gets_no_modal(monkeypatch):
-    """Control 5 again, by the route the ruling opened.
+def test_the_global_setting_does_NOT_reach_a_scheduled_turn(monkeypatch):
+    """Changing how autonomous the CHAT is must not change what every saved
+    automation may do. Asserted at BOTH ends of the range so this cannot pass
+    by the setting happening to agree."""
+    assert _fired_by_a_job(monkeypatch, setting=SCHEDULED) == AUTONOMOUS
+    assert _fired_by_a_job(monkeypatch, setting=INTERACTIVE) == AUTONOMOUS
 
-    Before the ruling a job was pinned to `scheduled` and could not reach a
-    confirm profile at all. Honouring the set level is what put an unattended
-    cron turn one step away from a modal nobody can answer.
-    """
-    stamped = _fired_by_a_job(INTERACTIVE, monkeypatch)
-    assert stamped == SCHEDULED
+
+def test_a_stale_per_job_level_does_NOT_reach_a_scheduled_turn(monkeypatch):
+    """`Job.tool_profile` still exists and still round-trips, so an old job
+    file can carry any value. It is vestigial and must not govern."""
+    assert _fired_by_a_job(monkeypatch, job_level=SCHEDULED) == AUTONOMOUS
+    assert _fired_by_a_job(monkeypatch, job_level=INTERACTIVE) == AUTONOMOUS
+
+
+def test_a_scheduled_turn_can_never_construct_a_modal(monkeypatch):
+    """The reason the answer is `autonomous` rather than a choice: nobody is
+    there to answer. Autonomous is safe here BECAUSE its confirm set is empty,
+    not because of its name — pinned so a later edit to the profile is caught."""
+    stamped = _fired_by_a_job(monkeypatch)
     assert not tool_policy.PROFILES[stamped].confirm
-
-
-def test_scheduled_setting_still_denies_a_CRON_write(monkeypatch):
-    """The ruling widened who is heard, not what `scheduled` grants."""
-    stamped = _fired_by_a_job(SCHEDULED, monkeypatch)
-    decision = _write_outside_the_store(stamped)
-    assert decision.action == DENY
-    assert "workspace_write" in decision.reason
-
-
-def test_the_dead_per_job_knob_no_longer_overrides_the_setting(monkeypatch):
-    """`job.tool_profile` defaults to `scheduled` and is NOT consulted.
-
-    If firing still read it, every job on disk would pin itself to `scheduled`
-    and the ruling would be silently unimplemented -- which is exactly how the
-    inbox bug looked from Settings.
-    """
-    from litetui import scheduler
-
-    assert scheduler.Job(prompt="p", schedule="@daily").tool_profile == SCHEDULED
-    assert _fired_by_a_job(AUTONOMOUS, monkeypatch) == AUTONOMOUS
+    decision = evaluate(stamped, tool_policy.MCP_UNKNOWN_POLICY, {"x": 1}, ROOT)
+    assert decision.action != tool_policy.CONFIRM
 
 
 def test_an_old_job_file_carrying_the_dead_key_still_loads(tmp_path):
