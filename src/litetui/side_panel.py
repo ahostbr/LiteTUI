@@ -49,7 +49,7 @@ from typing import Any, Callable
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 
 #: What a dialog body must offer to survive a swap. Bodies without these still
@@ -364,8 +364,26 @@ class SidePanel(Widget, _ViewMixin):
         self._cycle_focus(-1)
 
 
+REVERSE_TAB = "shift+tab"
+
+
+def _own_binding(node, key: str):
+    """The action `node` itself binds to `key`, or None.
+
+    Reads the node's OWN merged binding map rather than a hand-kept list of
+    dialog classes -- which is the bug this function was rewritten to fix.
+    """
+    bindings = getattr(node, "_bindings", None)
+    if bindings is None:
+        return None
+    found = getattr(bindings, "key_to_bindings", {}).get(key)
+    if not found:
+        return None
+    return found[0].action
+
+
 def handle_reverse_tab(app) -> bool:
-    """shift+tab arrived at the APP. Does a dialog own it? Then do its move.
+    """shift+tab arrived at the APP. Does something nearer own it? Then run it.
 
     🔴 THIS EXISTS BECAUSE THE OBVIOUS ARRANGEMENT DOES NOT WORK, AND THE
     FAILURE IS SILENT IN BOTH DIRECTIONS.
@@ -377,32 +395,50 @@ def handle_reverse_tab(app) -> bool:
     shift+tab to `focus_previous`, and a SCREEN binding beats an APP binding —
     so the non-priority version never fired ANYWHERE, dialog or not.
 
-    With `priority=True` it fires everywhere, including over SidePanel's
-    `focus_prev_in_dialog`, which would walk focus out of a pending tool
-    approval — the exact escape the focus trap above exists to prevent.
+    With `priority=True` it fires everywhere, including over bindings that
+    mean something else entirely. So proximity is reimplemented HERE, because
+    the resolution order gives no way to say "app, except where something
+    nearer already means something by this key".
 
-    So precedence is decided HERE, explicitly, instead of being inherited from
-    a resolution order that gives no way to say "app, except in dialogs":
+    🔴 AND THE FIRST VERSION OF THIS FUNCTION ENUMERATED DIALOG CLASSES, WHICH
+    IS WHY IT SHIPPED A REGRESSION. It knew about `SidePanel` and `_ModalHost`
+    and nothing else, so `AskUserQuestionBody` -- which binds shift+tab to
+    `prev_question`, NOT to reverse focus -- lost its key and
+    test_ask_user_question.py went from 48/48 to 43/48. A list of the
+    surfaces I happened to remember is the same drift pair this whole task
+    exists to remove.
 
-        dialog open  -> the dialog's own reverse-focus move, handled
-        otherwise    -> not handled; the app cycles the profile
-
-    Returns whether it was handled. Kept in this module because "what counts
-    as an open dialog" is this module's knowledge, and app.py holding a second
-    answer is how the two drift.
+    So: walk from the focused node upward and run the FIRST node that binds
+    this key itself, skipping `Screen` (whose generic `focus_previous` is
+    exactly the binding this feature replaces). That is Textual's own
+    proximity rule, applied by hand because priority took it away.
     """
     try:
         screen = app.screen
     except Exception:
-        return False                      # no screen yet: nothing to trap
-    if isinstance(screen, _ModalHost):
+        return False                      # no screen yet: nothing to own it
+
+    focused = getattr(app, "focused", None)
+    if focused is not None:
+        for node in focused.ancestors_with_self:
+            if node is app or isinstance(node, Screen):
+                break
+            action = _own_binding(node, REVERSE_TAB)
+            if action is None:
+                continue
+            method = getattr(node, f"action_{action}", None)
+            if method is None:
+                continue
+            method()
+            return True
+
+    # BACKSTOP: a dialog is open but focus is not inside it (the focus trap
+    # should prevent this; if it ever fails, cycling the authority level from
+    # behind an open approval is the wrong answer).
+    if isinstance(screen, _ModalHost) or screen.query(SidePanel):
         screen.focus_previous()
         return True
-    panels = list(screen.query(SidePanel))
-    if not panels:
-        return False
-    panels[0].action_focus_prev_in_dialog()
-    return True
+    return False
 
 
 class _ModalHost(ModalScreen, _ViewMixin):

@@ -263,10 +263,18 @@ def cycle(profile_name: str) -> str:
     `PROFILES` is ordered by authority ASCENDING, so descending is that same
     order stepped backwards -- the direction is expressed ONCE here rather
     than as a second hand-written tuple that has to agree with `PROFILES`.
-    An unknown current value lands on the default rather than raising.
+
+    ⚠️ AN UNKNOWN CURRENT VALUE LANDS ON THE FLOOR, NOT ON THE DEFAULT. This
+    returned AUTONOMOUS -- the WIDEST authority -- when settings held a name
+    that is not a profile. Nothing was actually granted by it (`evaluate`
+    denies an unknown profile outright, so such a turn has no authority to
+    escalate FROM), but it is the same permissive-on-an-error-path shape that
+    T084 removed from three `app.py` fallbacks in the same commit, and it
+    contradicted `unattended()`, which sends unknown DOWN. Corrupt settings
+    plus one keypress should not be a route to full authority.
     """
     if profile_name not in PROFILE_NAMES:
-        return AUTONOMOUS
+        return SCHEDULED
     i = PROFILE_NAMES.index(profile_name)
     return PROFILE_NAMES[(i - 1) % len(PROFILE_NAMES)]
 

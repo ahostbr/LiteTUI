@@ -116,6 +116,16 @@ def test_the_cycle_is_ryans_order_and_wraps():
     assert tool_policy.cycle(SCHEDULED) == AUTONOMOUS
 
 
+def test_an_unrecognised_profile_cycles_DOWN_not_up():
+    """Corrupt settings plus one keypress must not reach full authority.
+
+    Matches `unattended()`, which also sends an unknown name to the floor. The
+    first version of `cycle` returned AUTONOMOUS here and no test noticed --
+    found by re-reading my own diff, not by a red.
+    """
+    assert tool_policy.cycle("not-a-profile") == SCHEDULED
+
+
 def test_the_cycle_visits_every_profile_and_returns():
     """Derived over PROFILE_NAMES: a profile added later joins the cycle
     automatically instead of becoming unreachable from the keyboard."""
@@ -210,6 +220,54 @@ async def test_a_dialog_keeps_its_own_shift_tab():
         assert a.settings.tool_policy_profile == before, (
             "shift+tab cycled the authority level while a dialog was open — "
             "the app binding stole the dialog's reverse-focus key"
+        )
+
+
+@pytest.mark.asyncio
+async def test_ASK_USER_QUESTION_keeps_shift_tab_for_prev_question():
+    """🔴 THE SCOPE I MISSED, AND IT SHIPPED A REGRESSION FOR ONE COMMIT.
+
+    `AskUserQuestionBody` binds shift+tab to `prev_question` -- NOT to reverse
+    focus. The first `handle_reverse_tab` enumerated dialog CLASSES, knew about
+    SidePanel and _ModalHost, and silently ate this one:
+    test_ask_user_question.py went 48/48 -> 43/48 at cc230c8.
+
+    My dialog test used ConfirmStopBody in a SidePanel and passed, which is
+    exactly a control that validates the INSTRUMENT and not the SCOPE -- one
+    dialog surface proved, the other assumed. This test is the second surface,
+    and the fix is a proximity walk so a THIRD surface needs no new entry here.
+    """
+    from litetui.ask_user_question import AskUserQuestionBody, QuestionState
+
+    a = make_app(AUTONOMOUS)
+    states = [
+        QuestionState(label="one", question="q1?",
+                      options=[{"title": "a", "description": ""}]),
+        QuestionState(label="two", question="q2?",
+                      options=[{"title": "b", "description": ""}]),
+    ]
+    async with a.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        body = AskUserQuestionBody(states, __import__("threading").Event(), [])
+        await a.screen.mount(body)
+        await settle_until(pilot, lambda: bool(a.screen.query(AskUserQuestionBody)))
+        body.focus()
+        await pilot.pause()
+
+        before = a.settings.tool_policy_profile
+        body.action_next_question()
+        await pilot.pause()
+        assert body._active == 1, "premise: next_question moved to q2"
+
+        await pilot.press("shift+tab")
+        await pilot.pause()
+
+        assert a.settings.tool_policy_profile == before, (
+            "shift+tab cycled the authority level inside AskUserQuestion — the "
+            "app binding ate prev_question"
+        )
+        assert body._active == 0, (
+            "shift+tab did not move back a question — prev_question never ran"
         )
 
 
