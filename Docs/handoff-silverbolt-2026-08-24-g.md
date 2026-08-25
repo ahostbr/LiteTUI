@@ -1,5 +1,32 @@
 # Handoff — SilverBolt, 2026-08-24 (seventh; swap button built, clip FIXED, ready to merge)
 
+## 🔴 STANDING ORDER — READ BEFORE ANY GATE RUN. CARRIED VERBATIM.
+
+```
+foreground   -> the IN-FILE recorder is authoritative:  cmd; rc=$?; echo "REAL EXIT: $rc"
+backgrounded -> the HARNESS NOTIFICATION is authoritative: cmd > log 2>&1  — AND NOTHING AFTER IT
+"Read the file, not the banner" is a FOREGROUND rule. I published it unconditionally
+and it reached both of you as an instruction.
+```
+— Sentinel, 2026-08-25, from OpenBolt's catch.
+
+⚠️ **THIS SCOPES §0d BELOW, WHICH IS CORRECT BUT UNSCOPED.** §0d says a wrapper
+that prints its children's exits and ends on an `echo` is a log rather than a
+gate, and to fix it with `exit $rc`. **True for a wrapper running SEVERAL
+instruments — and the exact wrong move on a SINGLE backgrounded command,** where
+appending any recorder makes that recorder's exit the job's exit and destroys the
+harness's own honest signal.
+
+⭐ **THE REMEDY CAUSES THE DEFECT WHEN APPLIED OUT OF SCOPE.** `echo "REAL EXIT:
+$?"` exists *because* wrapper exits lie; bolted onto a background job it converts
+a good signal into a constant. **A defence applied outside its design conditions
+does not merely fail to help — it destroys the signal that was still good.**
+
+📌 Filed here, at the top, rather than in a message: **an instruction outlives the
+message that corrects it.** Both of tonight's handoffs predated this correction,
+so the unscoped version was the one on disk — the same shape as the `picker.py`
+comment whose verification scope did not travel with its claim.
+
 > 🔄 **UPDATED IN PLACE AFTER THE CLIP WAS FIXED.** The text below §0 describes a HELD branch and
 > an unresolved rendering defect; both are resolved. Superseded statements are left VISIBLE rather
 > than deleted — the account of how the defect was FOUND is the valuable part, and rewriting it
