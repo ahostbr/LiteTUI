@@ -102,15 +102,15 @@ async def test_sidebar_body_fills_the_panel_height(name, factory, selector) -> N
         a.run_worker(ctrl.open(), name="dlg")
         await settle_until(pilot, lambda: a.screen.query(SidePanel))
         panel = a.screen.query_one(SidePanel)
-        await settle_until(pilot, lambda: panel.body.outer_size.height > 0)
+        await settle_until(pilot, lambda: panel.body.region.height > 0)
 
-        assert panel.outer_size.height >= 30, (
-            f"{name}: panel is only {panel.outer_size.height} rows of a 40-row "
+        assert panel.region.height >= 30, (
+            f"{name}: panel is only {panel.region.height} rows of a 40-row "
             "screen — it is not carving full height"
         )
-        assert panel.body.outer_size.height >= panel.outer_size.height - 2, (
-            f"{name}: body is {panel.body.outer_size.height} rows inside a "
-            f"{panel.outer_size.height}-row panel — it is FLOATING, not filling"
+        assert panel.body.region.height >= panel.region.height - 2, (
+            f"{name}: body is {panel.body.region.height} rows inside a "
+            f"{panel.region.height}-row panel — it is FLOATING, not filling"
         )
         ctrl.resolve(None)
 
@@ -130,12 +130,12 @@ async def test_sidebar_content_is_not_wider_than_the_panel(name, factory, select
         a.run_worker(ctrl.open(), name="dlg")
         await settle_until(pilot, lambda: a.screen.query(SidePanel))
         panel = a.screen.query_one(SidePanel)
-        await settle_until(pilot, lambda: _box(panel.body, selector).outer_size.width > 0)
+        await settle_until(pilot, lambda: _box(panel.body, selector).region.width > 0)
 
         box = _box(panel.body, selector)
-        assert box.outer_size.width <= panel.outer_size.width, (
-            f"{name}: content is {box.outer_size.width} cols wide inside a "
-            f"{panel.outer_size.width}-col panel — THIS IS THE MID-WORD CLIP"
+        assert box.region.width <= panel.region.width, (
+            f"{name}: content is {box.region.width} cols wide inside a "
+            f"{panel.region.width}-col panel — THIS IS THE MID-WORD CLIP"
         )
         ctrl.resolve(None)
 
@@ -167,7 +167,7 @@ async def test_THE_PATH_RYAN_ACTUALLY_SAW_is_centred(name, screen_factory, selec
         a.push_screen(screen_factory())
         await settle_until(pilot, lambda: a.screen.query(selector))
         box = a.screen.query_one(selector)
-        await settle_until(pilot, lambda: box.outer_size.width > 0)
+        await settle_until(pilot, lambda: box.region.width > 0)
 
         region = box.region
         left = region.x
@@ -193,7 +193,7 @@ async def test_modal_box_is_horizontally_centred(name, factory, selector) -> Non
         ctrl = DialogController(a, factory, "modal", "right")
         a.run_worker(ctrl.open(), name="dlg")
         await settle_until(
-            pilot, lambda: _box(a.screen, selector).outer_size.width > 0
+            pilot, lambda: _box(a.screen, selector).region.width > 0
         )
         box = _box(a.screen, selector)
         region = box.region
