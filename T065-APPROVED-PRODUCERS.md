@@ -56,3 +56,45 @@ Apply the same test at **every** site: if adding the log requires editing the ex
 
 Report which of the four blind spots are now covered and which are not. The row closes only
 with that statement attached. Do not let the log's existence stand in for coverage.
+
+## Post-decomposition remap — symbols, priority, and gate contract
+
+Line numbers above describe the pre-decomposition tree. The stable integration contract is by
+symbol:
+
+| symbol / failure branch | event | priority |
+|---|---|---|
+| `ConversationRepository._raise_to_app` | `persistence_failure` | **load-bearing** — persistence blind spot |
+| `LiteTUI._inbox_monitor` registration-failed branch | `harness_registration_failed` | **load-bearing** — harness blind spot |
+| `LiteTUI._sync_seat_identity` registered rebind-failed branch | `harness_rebind_failed` | **load-bearing** — harness blind spot |
+| `MCPServer._reader_loop` outer exception | `mcp_reader_failed` | **load-bearing** — MCP blind spot |
+| `MCPManager.load` config read/parse exception | `mcp_config_failed` | **load-bearing** — MCP blind spot |
+| `MCPManager.load` per-server start exception | `mcp_server_start_failed` | **load-bearing** — MCP blind spot |
+| `MCPManager.dispatch` generated `_call` exception | `mcp_tool_failed` | **load-bearing** — MCP blind spot |
+| `PluginRegistry.emit` observer exception | `plugin_observer_failed` | **load-bearing** — swallowed-plugin blind spot |
+| `PluginRegistry.finalize_turn` finalizer exception | `plugin_finalizer_failed` | **load-bearing** — swallowed-plugin blind spot |
+| `register_plugins` optional module import exception | `plugin_import_failed` | **load-bearing** — swallowed-plugin blind spot |
+| `register_plugins` optional register-hook exception | `plugin_register_failed` | **load-bearing** — swallowed-plugin blind spot |
+| `activate_plugins` optional activate-hook exception | `plugin_activate_failed` | **load-bearing** — swallowed-plugin blind spot |
+| scheduler monitor's `due(...)` exception | `scheduler_tick_failed` | nice-to-have; drop if that owner vanished |
+| backend connection exception | `backend_connect_failed` | nice-to-have; drop if already covered canonically |
+| normal-turn stream-open and stream-iteration exceptions | `turn_stream_failed` | nice-to-have; two calls, one schema |
+
+Every producer carries bounded scalar metadata only. `error_type` is always
+`type(e).__name__`, never `str(e)`. Seat errors, host strings, prompts, tool arguments/results,
+conversation content, and free labels are never fields.
+
+The AST gate asserts, in words:
+
+1. exactly **16** `runtime_log.record(...)` producer calls exist across the approved producer
+   modules (the stream schema has two sites);
+2. their first literal arguments are exactly the **15 approved event names** above; and
+3. no producer call contains a prohibited body-bearing keyword (`prompt`, `body`, `content`,
+   `text`, `message`, `arguments`, `args`, `result`, `output`, `conversation`, `label`, or
+   `command`).
+
+After decomposition, re-aim the producer-file inventory to the new symbol owners. Preserve the
+load-bearing event set even when a symbol moved; nice-to-have events may be dropped when their
+old branch no longer exists or a canonical replacement already records it. If the number of
+approved calls intentionally changes, update the count and this artifact together rather than
+loosening the assertion.
