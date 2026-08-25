@@ -142,8 +142,11 @@ async def test_sidebar_content_is_not_wider_than_the_panel(name, factory, select
 
 @pytest.mark.parametrize("name,factory,selector", DIALOGS, ids=[d[0] for d in DIALOGS])
 @pytest.mark.parametrize("style", ["sidebar", "modal"])
+@pytest.mark.parametrize("h", [24, 32, 50])
 @pytest.mark.asyncio
-async def test_no_child_is_clipped_by_its_own_container(style, name, factory, selector) -> None:
+async def test_no_child_is_clipped_by_its_own_container(
+    request, h, style, name, factory, selector
+) -> None:
     """🔴 THE GAP SILVERBOLT FOUND IN THIS VERY FILE, AN HOUR AFTER I WROTE IT.
 
     Everything above asserts the BOX and the PANEL: right size, right place,
@@ -161,8 +164,31 @@ async def test_no_child_is_clipped_by_its_own_container(style, name, factory, se
     know about swap buttons, and it fails for ANY last-child clip in ANY of the
     four dialogs, in either host.
     """
+    # ── PRE-EXISTING, SHIPPED, AND INVISIBLE UNTIL THIS TEST GAINED `h` ──────
+    # At 24 rows THREE of the four dialogs clip, in BOTH hosts, with no swap
+    # button involved. This is not a regression: it is what a gate pinned to a
+    # single viewport was never able to say. `strict=True` is the point — the
+    # day someone fixes one of these, it XPASSes and pytest turns that into a
+    # FAILURE, which is what forces this list to shrink instead of rotting.
+    #
+    # Not fixed here because the fix is a DESIGN CHOICE, not a constant: no
+    # static CSS gives you both "hug when the content is small" and "shrink
+    # when it is too big" — `max-height` cannot express "shrink so my siblings
+    # fit", and `1fr` fills the slack and destroys the hug (measured: a 2-item
+    # picker renders an 18-row list). The mechanism that does both is
+    # SCROLLING, and that changes what "clipped" MEANS here: a scrolled child
+    # is outside `content_region` and is not clipped, it is reachable. Adopting
+    # it rewrites this assertion for scrollable containers. Awaiting a ruling.
+    SHORT_SCREEN_CLIPPERS = {"picker", "tool_approval", "ask_user_question"}
+    if h == 24 and name in SHORT_SCREEN_CLIPPERS:
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason=f"{name} clips on a 24-row terminal — pre-existing, both "
+                   "hosts, no swap button involved. See the note above.",
+        ))
+
     a = make_app()
-    async with a.run_test(size=(100, 32)) as pilot:
+    async with a.run_test(size=(100, h)) as pilot:
         ctrl = DialogController(a, factory, style, "right")
         a.run_worker(ctrl.open(), name="dlg")
         if style == "sidebar":
