@@ -84,9 +84,29 @@ swap, not the 'No, keep going' button it was on"* — then 0/20 on the follow-up
 > **LATE, never LOST.** Focus always converges on `no`, worst case frame 3. The product carries the
 > state correctly; **the TEST reads it too early.**
 
-So the defect is a **fixed-tick assertion**, exactly the bare `pause()` counts at `:113` / `:118-119`
-— and he has censused **nine more sites** of the same mechanism. **That is his row, not mine**, and
-it is the third strike on that mechanism today.
+🔴 **CORRECTED 2026-08-24 (later), AT THIS SENTENCE RATHER THAN IN A BANNER — THE QUOTE ABOVE IS
+TRUE OF THE FOCUS CASE AND FALSE AS A GENERAL DIAGNOSIS.** OpenBolt kept measuring and found it was
+**four tests in three files, not one**, and that the worst of them (`test_sidebar_dialog.py`
+`test_a_swap_carries_the_typed_text`, 3-in-10) was **LOST, not late**: `_mount_view()` assigned
+`self._view` AFTER the `await mount(view)`, so a swap inside that suspension found `_view is None`,
+took `swap()`'s `if view is not None` branch at face value and skipped the `get_state()` capture
+entirely — rebuilt empty, no error, and the same window leaked a view that was never torn down.
+That is a **product defect**, not a test artefact. Fixed by assigning `_view` before the await
+(probe 25/30 → 30/30). Three of the four were the fixed-tick shape and are fixed by the shared
+`tests/_settle.py`; this one was not.
+
+⭐ And the instance neither of us had looked at was the worst one — my run surfaced only the failure
+my collection order happened to hit, which is the stated limit of a single ordering, demonstrated
+rather than argued.
+
+So three of the four are a **fixed-tick assertion**, exactly the bare `pause()` counts at `:113` /
+`:118-119`. **That is his row, not mine**, and it is the third strike on that mechanism today.
+
+✅ **VALIDATED at `a5a5511` on this box, BOTH instruments, both GREEN** — `pytest -q tests/`
+1322 passed / 0 failed, and `run_all.py` REAL EXIT 0 (1317 passed, 117 files + 13 scripts). Measured
+on a tree carrying only his commit: my T084 work was stashed out first so a red could not be
+misattributed. The order/timing caveat in §3 still rides it — two greens are much stronger than the
+run-1-green/run-2-red split at `8484923`, and are still not a proof of absence.
 
 ⭐ **THIS IS WHY THE RUN WAS DONE TWICE.** Run 1 was green. Stopping there would have reported the
 fix VERIFIED on the only box that can verify it, and the third instance would have shipped behind my

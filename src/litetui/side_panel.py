@@ -432,9 +432,27 @@ def handle_reverse_tab(app) -> bool:
             method()
             return True
 
-    # BACKSTOP: a dialog is open but focus is not inside it (the focus trap
-    # should prevent this; if it ever fails, cycling the authority level from
-    # behind an open approval is the wrong answer).
+    # ⚠️ BACKSTOP -- AND IT IS STILL A HAND-KEPT CLASS LIST, DEMOTED RATHER
+    # THAN REMOVED. Reached only when the walk above found nothing, i.e. when a
+    # dialog is open but focus is NOT inside it. SidePanel's focus trap exists
+    # to make that impossible, so this is a net under a net -- which is exactly
+    # what makes it easy to leave wrong: when it fires, something else has
+    # already failed and nobody is looking here.
+    #
+    # 🔴 IF IT IS EVER WRONG IT FAILS PERMISSIVE: a dialog surface named by
+    # neither class falls through and the authority level cycles from behind an
+    # open approval. Kept as a list deliberately -- a marker attribute only
+    # relocates "remember to add it", and registering open dialogs on the app
+    # is a change to the dialog LIFECYCLE, which is not worth making on a path
+    # with no demonstrated defect.
+    #
+    # 📌 THE CHECK THAT WOULD CATCH A NEW SURFACE, and the one I failed to run
+    # against my own fix: `grep -rn '"shift+tab"' src/litetui/`. I ran it to
+    # FIND the hazard and never re-ran it to VERIFY my coverage of it -- the
+    # enumeration was available the whole time. Two real surfaces exist; my
+    # first list named one of them plus `_ModalHost`, which does not bind this
+    # key at all. One true entry, one irrelevant entry, one miss, reading as
+    # deliberate coverage.
     if isinstance(screen, _ModalHost) or screen.query(SidePanel):
         screen.focus_previous()
         return True
