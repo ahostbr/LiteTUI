@@ -51,6 +51,7 @@ from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
+from textual.widgets import Button
 
 #: What a dialog body must offer to survive a swap. Bodies without these still
 #: work — the state simply does not carry — so a body is never *required* to
@@ -514,6 +515,54 @@ def close_dialog(widget: Widget, value: Any = None) -> None:
     screen = widget.screen
     if screen is not None:
         screen.dismiss(value)
+
+
+class SwapButton(Button):
+    """THE swap control. One widget, used by every dialog body.
+
+    🔴 ONE CONTROL, NOT FOUR COPIES. T075 built this behaviour in
+    `dialog_demo.py` and the conversion briefs for the four real dialogs did not
+    carry it, so `grep -rn demo-swap` returned the demo and nothing else. Copying
+    the button into four bodies would have meant four copies of the relabel rule
+    as well -- four places to disagree about what the label should say. The
+    relabel logic below is MOVED from the demo, not duplicated.
+
+    📌 IT NAMES THE DESTINATION, NOT THE CURRENT STATE. "Sidebar" on a sidebar
+    dialog reads equally as a state and as an action; "Open as modal" can only be
+    read as the action. That reasoning is the demo's and it survives the move.
+
+    ⚠️ THE SWAP MUST NEVER RESOLVE THE DIALOG. It changes the HOST; the
+    controller keeps owning the future. `request_swap` is the only exit used
+    here precisely because `close_dialog` is the one that answers.
+    """
+
+    DEFAULT_ID = "dialog-swap"
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__("", id=id or self.DEFAULT_ID)
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def relabel(self) -> None:
+        """Label for where pressing it TAKES you, which depends on where it is."""
+        in_sidebar = any(isinstance(n, SidePanel) for n in self.ancestors_with_self)
+        self.label = "Open as modal" if in_sidebar else "Dock to side"
+
+    def swappable(self) -> bool:
+        """Would pressing this actually do anything HERE?
+
+        🔴 THE HONEST ANSWER IS NOT ALWAYS YES, AND THAT IS THE WHOLE POINT OF
+        THIS METHOD. `request_swap` needs a `DialogController`, and only
+        `SidePanel` and `_ModalHost` ever carry one. `present_dialog`'s modal
+        branch deliberately pushes the ORIGINAL `ModalScreen` -- so a body shown
+        that way has NO controller and a swap there is a no-op.
+
+        A button that is visible, pressable and inert is the defect class this
+        whole day has been spent clearing. Callers use this to decide whether to
+        offer the control at all, rather than offering it and hoping.
+        """
+        return _controller_for(self) is not None
 
 
 def request_swap(widget: Widget) -> None:

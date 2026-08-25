@@ -21,7 +21,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Button, Input, Static
 
-from litetui.side_panel import close_dialog, request_swap
+from litetui.side_panel import SwapButton, close_dialog, request_swap
 
 # A realistic width-stress payload: unwrapped, monospace, and wider than 60
 # columns on purpose. Whether this wraps, truncates or forces a horizontal
@@ -69,26 +69,19 @@ class DemoDialogBody(Widget):
         # The swap test types here. If a swap loses this, it would lose a
         # half-written reason on the real approval dialog too.
         yield Input(placeholder="note (type here, then swap)", id="demo-note")
-        # LABELLED FOR THE DESTINATION. A button labelled with where you already
-        # are is the classic toggle ambiguity — "Sidebar" on a sidebar dialog
-        # reads equally as a state and as an action.
-        yield Button("Open as modal", id="demo-swap")
+        # THE SHARED CONTROL, keeping this id so the CSS above and the T075
+        # relabel test keep binding to it. The label logic moved into
+        # SwapButton — it is not duplicated here any more.
+        yield SwapButton(id="demo-swap")
         with Horizontal(id="demo-buttons"):
             yield Button("Allow", variant="primary", id="demo-allow")
             yield Button("Always", variant="success", id="demo-always")
             yield Button("Deny", variant="error", id="demo-deny")
 
     def on_mount(self) -> None:
-        self._relabel_swap()
-
-    def _relabel_swap(self) -> None:
-        """Name the DESTINATION, which depends on the host we are currently in."""
-        from litetui.side_panel import SidePanel
-
-        in_sidebar = any(isinstance(n, SidePanel) for n in self.ancestors_with_self)
-        self.query_one("#demo-swap", Button).label = (
-            "Open as modal" if in_sidebar else "Dock to side"
-        )
+        # SwapButton labels itself on mount; this re-labels after a SWAP, when
+        # the same body is re-created under the other host.
+        self.query_one("#demo-swap", SwapButton).relabel()
 
     # ── state carry: data, not widgets ───────────────────────────────────────
     def get_state(self) -> dict:
