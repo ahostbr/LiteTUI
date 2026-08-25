@@ -16,16 +16,50 @@ git -C C:/Projects/LiteTUI rev-list --count origin/main..origin/feature/swap-but
 | what | state |
 |---|---|
 | **The clip** | ✅ **FIXED** — OpenBolt, `131926d`, on `main` via `805db77`. Root cause: `#picker-box { max-height: 80% }` resolving against a `height: auto` parent — **a base computed from the thing it constrains.** Moving the cap only RELOCATES the clip; one node must be definite. |
-| **My branch** | `feature/swap-button` = `dedcb35`, PUSHED, rebased onto `805db77`, **2 ahead of main** (fast-forward). `d9f1a65` the control + `dedcb35` probe fixes. |
+| **My branch** | ✅ **MERGED.** `origin/main` = `81635b5` (fast-forward `1e36dfe..81635b5`). Branch ref updated to the same sha. |
 | **The picture** | ✅ **LABEL PAINTS IN BOTH HOSTS.** modal `18\|█ Dock to side █` (was BLANK), sidebar `21\|▏█ Open as modal █`. sidebar full height True · modal box centred 11/11 · `FITS=True` both. |
-| **My gate** | ⚠️ **IN FLIGHT AND UNFINISHED WHEN THIS WAS WRITTEN — I DO NOT HAVE ITS EXITS.** |
-| **Merge** | ❌ **NOT DONE.** The only remaining step. |
+| **My gate** | ✅ **GREEN on `81635b5`** — instrument 1 exit 0 (1418 passed), instrument 2 exit 0 (1413 passed), off a FROZEN script (md5 verified identical after the run). |
+| **Merge** | ✅ **DONE.** See §0d for what the gate caught first — it was not a formality. |
+
+✅ **THAT INSTRUCTION WAS FOLLOWED AND IT PAID FOR ITSELF — see §0d.** The original text:
 
 🔴 **NEXT SEAT'S FIRST ACT: re-run BOTH instruments on `feature/swap-button`, merge only if both are
 green.** Do NOT merge on OpenBolt's green — that is HIS tree (he reported `run_all` REAL EXIT 0,
 1397 passed, 122+13). Do NOT merge on the picture alone: the picture proves it RENDERS, the suite
 proves nothing else broke. `pytest -q tests/` is structurally blind to script-style files (§3), so
 one instrument is not a gate here.
+
+## 0d. WHAT THE RE-RUN CAUGHT — THE HOLD WAS NOT A FORMALITY
+
+**The gate came back RED on my own branch.** `test_no_child_is_clipped_by_its_own_container[sidebar-picker]`:
+`SwapButton rows 28..30 outside Vertical content rows 2..29`. Discriminated, not assumed —
+same single test, `main` 4 passed / exit 0, branch 1 failed / exit 1. **Merging on the state this
+document described would have shipped a clipped control.**
+
+Cause: `#picker-box` is `height: auto` capped by `max-height: 100%`; nothing in the column shrinks,
+so overflow lands on the LAST child. `title 2 + list 20 + hint 4 + button 3 = 29` into 28 rows.
+Fix `81635b5`: `#picker-list` cap `20 → 19` — the only slack in the column.
+
+⚠️ **I REJECTED A GREENER ARM ON PURPOSE.** `height: 1fr` PASSED the gate and stopped the box hugging
+its content — a 2-item picker rendered an 18-row list instead of 4. Green and visibly wrong, which is
+this row's own failure class. ⇒ **Score candidate fixes on the gate AND on a number the gate does not
+assert.**
+
+🔴 **§0 SAID `FITS=True` IN BOTH HOSTS. THAT LINE WAS PRODUCED BY A BLIND CHECK.** My probe's `FITS`
+had two independent defects: it compared the child against the box's **`region`** (which includes the
+border row) instead of **`content_region`** (what actually clips), and it fed the picker **2 rows**
+when the gate feeds **12**. At 2 rows nothing overflows; fed 12, the `region` comparison would STILL
+have printed `FITS=True`. ⇒ **A containment check needs the rectangle that clips AND an input that
+makes the container overflow. Neither alone is a check.**
+
+📌 **STILL OPEN, NOT MINE, NOT FIXED:** on `main` today, at a **24-row terminal**, the picker clips
+the list AND the hint with **no swap button present** (children 2/20/4 into content rows 2..21).
+Measured, not inferred. The geometry gate only runs at 100x32, so nothing sees it.
+
+📌 **TWO INSTRUMENT LESSONS FROM THIS SESSION, BOTH SELF-INFLICTED:** a gate wrapper that PRINTS its
+children's exits but ends on an `echo` exits 0 and is a **log, not a gate** (`exit $rc`); and
+**editing a script while it runs changes what the running shell executes** — bash reads by byte
+offset, and my mid-run fix printed a fake `RED` over two exit-0 instruments. Run a frozen copy.
 
 ## 0b. UPDATE — WHAT §2 GOT RIGHT, AND THE ONE THING I GOT WRONG
 
