@@ -1,3 +1,71 @@
+# Handoff — SilverBolt, 2026-08-24 (seventh; swap button built, clip FIXED, ready to merge)
+
+> 🔄 **UPDATED IN PLACE AFTER THE CLIP WAS FIXED.** The text below §0 describes a HELD branch and
+> an unresolved rendering defect; both are resolved. Superseded statements are left VISIBLE rather
+> than deleted — the account of how the defect was FOUND is the valuable part, and rewriting it
+> away would hand the next seat a conclusion with no method.
+
+## 0. ⚡ CURRENT STATE — READ FIRST. EVERYTHING BELOW THIS SECTION PREDATES IT.
+
+```bash
+git -C C:/Projects/LiteTUI rev-parse --short origin/main                    # 805db77
+git -C C:/Projects/LiteTUI rev-parse --short origin/feature/swap-button     # dedcb35
+git -C C:/Projects/LiteTUI rev-list --count origin/main..origin/feature/swap-button   # 2
+```
+
+| what | state |
+|---|---|
+| **The clip** | ✅ **FIXED** — OpenBolt, `131926d`, on `main` via `805db77`. Root cause: `#picker-box { max-height: 80% }` resolving against a `height: auto` parent — **a base computed from the thing it constrains.** Moving the cap only RELOCATES the clip; one node must be definite. |
+| **My branch** | `feature/swap-button` = `dedcb35`, PUSHED, rebased onto `805db77`, **2 ahead of main** (fast-forward). `d9f1a65` the control + `dedcb35` probe fixes. |
+| **The picture** | ✅ **LABEL PAINTS IN BOTH HOSTS.** modal `18\|█ Dock to side █` (was BLANK), sidebar `21\|▏█ Open as modal █`. sidebar full height True · modal box centred 11/11 · `FITS=True` both. |
+| **My gate** | ⚠️ **IN FLIGHT AND UNFINISHED WHEN THIS WAS WRITTEN — I DO NOT HAVE ITS EXITS.** |
+| **Merge** | ❌ **NOT DONE.** The only remaining step. |
+
+🔴 **NEXT SEAT'S FIRST ACT: re-run BOTH instruments on `feature/swap-button`, merge only if both are
+green.** Do NOT merge on OpenBolt's green — that is HIS tree (he reported `run_all` REAL EXIT 0,
+1397 passed, 122+13). Do NOT merge on the picture alone: the picture proves it RENDERS, the suite
+proves nothing else broke. `pytest -q tests/` is structurally blind to script-style files (§3), so
+one instrument is not a gate here.
+
+## 0b. UPDATE — WHAT §2 GOT RIGHT, AND THE ONE THING I GOT WRONG
+
+**§2 stands as the account of the defect**, including that 72 tests — one of them a geometry gate
+written that hour for exactly this class — passed over an unreadable button. That is still the
+answer to *"how is this possible"*.
+
+🔴 **BUT §2's ELIMINATION LIST CONTAINS AN OVER-WIDE NEGATIVE.** It reads *"NOT max-height: 80% of
+32 = 25, box is 11"* under a heading saying **"do not redo these"**. **`max-height` WAS the cause.**
+I tested its numeric BOUND and reported the whole PROPERTY as eliminated. OpenBolt ran his own
+property matrix instead of trusting my list, so it cost nothing — the lesson survives the luck:
+
+> **A negative result is scoped to the property you ACTUALLY tested. An elimination list is not a
+> record of what you did — it is an INSTRUCTION TO OTHER PEOPLE TO STOP LOOKING.** A positive claim
+> is checked by whoever consumes it; a negative one is checked by nobody, because its whole purpose
+> is to remove a branch from someone else's search. The more helpful the framing, the more
+> load-bearing an over-wide negative becomes.
+
+⚠️ **MY OWN INSTRUMENT HAD THE SAME SHAPE TWICE** (fixed in `dedcb35`): `centred?` measured
+`PickerBody`, which the fix turns into the full-width container the box centres INSIDE, so it
+printed `left=0 right=0` — reading exactly like the off-centre symptom Ryan photographed. **I was
+one sentence from filing a regression in OpenBolt's fix that was a defect in mine.** And the text
+render carries **no horizontal position at all**, invisible for as long as everything happened to be
+centred. ⇒ **Print the SUBJECT beside the number:** `box x=11 w=78` cannot be misread the way
+`centred? left=0 right=0` can.
+
+## 0c. UPDATE — OWED, REPLACING §4
+
+- **MINE** — run both instruments on `dedcb35`, then merge. Nothing else.
+- **OPENBOLT'S** — nothing. Clip fixed; `test_no_child_is_clipped_by_its_own_container` added and it
+  bites without my button.
+- **RYAN'S** — nothing.
+- **UNOWNED** — ✅ RESOLVED. The probe is committed at `28871b1` as `tests/picture_probe.py`, an
+  INSTRUMENT: invisible to `run_all`'s `test_*.py` glob and to pytest's default collection, runnable
+  by explicit path so `conftest` applies. Its calibration travels inside the file.
+
+---
+
+*Original text follows, unedited.*
+
 # Handoff — SilverBolt, 2026-08-24 (seventh; P1 swap button built and HELD)
 
 **Supersedes** `Docs/handoff-silverbolt-2026-08-24-f.md`
