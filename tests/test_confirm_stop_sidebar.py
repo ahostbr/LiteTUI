@@ -120,17 +120,38 @@ async def test_a_swap_carries_the_focused_button_AND_leaves_the_future_pending()
         # until the body composes. Two pauses was a guess about all three, and it
         # was wrong 2 runs in 12 on this box. Wait for the carried focus to
         # ARRIVE; the assertions below still decide whether it is the right one.
-        await settle_until(
+        settled = await settle_until(
             pilot,
             lambda: ctrl.style == "modal"
             and getattr(a.screen.focused, "id", None) == "no",
         )
 
-        assert ctrl.style == "modal", "the swap did not change host"
+        # 🔴 THIS TEST HAS A ~1% RESIDUAL NOBODY HAS CAPTURED, SO IT REPORTS ITS
+        # OWN STATE ON FAILURE. It fired once and the loop that caught it kept
+        # only the summary line, so the assertion text was lost; ~180 runs since
+        # (isolated, file-ordered, and under verified CPU load) have not
+        # reproduced it. A 1% event is not worth grinding hundreds of runs for
+        # when the next natural occurrence can just explain itself.
+        #
+        # `settled` is the discriminator and it is why it is captured rather
+        # than discarded. Measured: this wait uses 1-2 frames of its 25, max 2
+        # across 78 calls, and never hits the cap even under contention that
+        # doubles wall-clock. So:
+        #     settled False -> the carry never ARRIVED. A wait cannot fix that;
+        #                      it is the LOST shape, like the _view-window bug.
+        #     settled True  -> the state arrived and something moved it AFTER.
+        # Those need opposite fixes, and the flag is the only cheap way to tell
+        # them apart from a CI log.
+        diag = (
+            f"[settled={settled} style={ctrl.style!r} "
+            f"focused={getattr(a.screen.focused, 'id', None)!r} "
+            f"pending={ctrl.pending} bodies={len(a.screen.query(ConfirmStopBody))}]"
+        )
+        assert ctrl.style == "modal", f"the swap did not change host {diag}"
         focused = a.screen.focused
         assert getattr(focused, "id", None) == "no", (
             f"focus landed on {getattr(focused, 'id', None)!r} after the swap, "
-            "not the 'No, keep going' button it was on"
+            f"not the 'No, keep going' button it was on {diag}"
         )
         assert ctrl.pending, "THE SWAP RESOLVED THE FUTURE — it answered the dialog"
         assert got == []
