@@ -284,6 +284,34 @@ class SidePanel(Widget, _ViewMixin):
         split: left;
         border-right: vkey $foreground 30%;
     }
+
+    /* 🔴 THE BODY MUST FILL THE PANEL, AND ONLY THE PANEL CAN SAY SO.
+     *
+     * Every dialog body was written for a ModalScreen, where `height: auto` and
+     * a `max-height: 85%` are right: the box is as tall as its content and the
+     * screen centres it. Mount that same body in a full-height panel and it
+     * renders as a FLOATING BOX in the top corner — which is what Ryan saw.
+     *
+     * Fixing this on each body would need one edit per body plus a promise to
+     * remember for the next one. It belongs HERE, on the host, because "fill the
+     * panel" is the PANEL's requirement and is true of every body ever mounted
+     * in one, including bodies that do not exist yet.
+     *
+     * max-width/max-height are overridden too: those caps exist to stop a MODAL
+     * covering the whole screen, and a strip that already carves its own space
+     * has no such problem.
+     *
+     * The `.-side-*` prefix is deliberate, not decoration: a bare `SidePanel >
+     * *` ties on specificity with a body's own `PickerBody {...}` rule and the
+     * winner would depend on source order. Type+class beats type, so this wins
+     * predictably.
+     */
+    SidePanel.-side-right > *, SidePanel.-side-left > * {
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        max-height: 100%;
+    }
     """
 
     can_focus = True
@@ -407,6 +435,23 @@ def handle_reverse_tab(app) -> bool:
 
 class _ModalHost(ModalScreen, _ViewMixin):
     """Modal view. Same body, same controller, same future."""
+
+    # 🔴 THIS HOST HAD NO CSS AT ALL, SO IT CENTRED NOTHING.
+    #
+    # The app stylesheet centres modals BY CLASS NAME — `ConfirmStop,
+    # PickerScreen, HelpScreen, ...` — which is why the ORIGINAL screens look
+    # right. `_ModalHost` is a class that stylesheet has never heard of, so a
+    # dialog SWAPPED from the sidebar to modal landed against the top-left while
+    # the very same body opened directly as a modal looked fine.
+    #
+    # Nothing caught it because the swap tests assert the future is still
+    # pending and the state carried — both true of a dialog rendered in the
+    # corner. Geometry needed its own gate: tests/test_dialog_geometry.py.
+    DEFAULT_CSS = """
+    _ModalHost {
+        align: center middle;
+    }
+    """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 

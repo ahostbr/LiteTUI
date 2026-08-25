@@ -31,8 +31,20 @@ DEFAULT_HINT = "↑↓ move · Enter or click to select · Esc to cancel"
 class PickerBody(Widget):
     """The list content, host-agnostic. Exits through `close_dialog`."""
 
+    # 🔴 `width: auto` IS WHAT RE-CENTRES THE MODAL, AND IT IS NOT COSMETIC.
+    #
+    # `align: center middle` lives on PickerScreen and centres the screen's
+    # CHILD. That child used to be `#picker-box` (width 78) and is now this
+    # body, because the conversion put a level between them. A body with no
+    # width rule defaults to FULL WIDTH, so the screen "centred" something
+    # already spanning the screen and `#picker-box` sat hard against the left
+    # edge — the off-centre dialog in Ryan's screenshot.
+    #
+    # `auto` shrinks the body to its box, so the screen centres what it was
+    # always meant to centre. The panel overrides this to 100% (SidePanel's
+    # DEFAULT_CSS) because filling is right there and shrinking is not.
     DEFAULT_CSS = """
-    PickerBody { height: auto; layout: vertical; }
+    PickerBody { width: auto; height: auto; layout: vertical; }
     """
 
     def __init__(self, title: str, rows: list[tuple[str, str]],

@@ -584,8 +584,11 @@ class ConfirmStopBody(Widget):
     screen — so one body, both hosts, no branch in the handlers.
     """
 
+    # `width: auto` so the screen's `align: center middle` centres the BOX and
+    # not a full-width wrapper. See PickerBody for the full account; this body
+    # has the same screen-centres-its-child shape and the same defect.
     DEFAULT_CSS = """
-    ConfirmStopBody { height: auto; layout: vertical; }
+    ConfirmStopBody { width: auto; height: auto; layout: vertical; }
     """
 
     BINDINGS = [

@@ -521,8 +521,14 @@ class LiteTUI(App):
         align: center middle;
     }
 
+    /* `max-width: 100%` — the sidebar strip caps at 60 columns and this box is
+       78, so without it the rows are CLIPPED MID-WORD ("LiteTUI ea"). The flat
+       78 stays the basis so the modal is unchanged; the cap only binds when the
+       host is narrower. Same fix ToolApprovalBody already carried — this box
+       was converted EARLIER and never swept. */
     #picker-box {
         width: 78;
+        max-width: 100%;
         max-height: 80%;
         height: auto;
         padding: 1 2;
@@ -827,6 +833,7 @@ class LiteTUI(App):
 
     #confirm-box {
         width: 56;
+        max-width: 100%;   /* clips in a narrow panel without this — see #picker-box */
         height: auto;
         padding: 1 2;
         background: $surface;
