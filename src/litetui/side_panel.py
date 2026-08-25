@@ -536,6 +536,21 @@ class SwapButton(Button):
     here precisely because `close_dialog` is the one that answers.
     """
 
+    #: 🔴 THE CONTROL CARRIES ITS OWN STYLE, AND THAT IS THE WHOLE POINT.
+    #: Textual scopes DEFAULT_CSS to the DECLARING class — the mechanism that
+    #: broke the sidebar conversion, because the four dialog bodies' rules were
+    #: declared on the ModalScreens they were lifted out of and applied nowhere
+    #: once they moved. Declared HERE, the rule is scoped to SwapButton, so it
+    #: follows the button into any host: sidebar, modal, or a dialog nobody has
+    #: written yet.
+    #:
+    #: ⇒ The same scoping that was the bug is the fix, used the right way round.
+    #: It also keeps this control out of the four bodies' stylesheets entirely,
+    #: so adding the button needs ONE line per body and no CSS edit at all.
+    DEFAULT_CSS = """
+    SwapButton { width: 100%; margin: 0 0 1 0; }
+    """
+
     DEFAULT_ID = "dialog-swap"
 
     def __init__(self, id: str | None = None) -> None:

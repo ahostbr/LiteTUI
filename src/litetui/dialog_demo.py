@@ -55,7 +55,8 @@ class DemoDialogBody(Widget):
     DemoDialogBody #demo-note { margin: 0 0 1 0; }
     DemoDialogBody #demo-buttons { height: auto; align: center middle; }
     DemoDialogBody #demo-buttons Button { margin: 0 1 0 0; }
-    DemoDialogBody #demo-swap { width: 100%; margin: 0 0 1 0; }
+    /* width/margin now come from SwapButton's own DEFAULT_CSS — the rule
+       moved with the control instead of being restated per host. */
     """
 
     def compose(self) -> ComposeResult:
