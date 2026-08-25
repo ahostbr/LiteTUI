@@ -235,18 +235,21 @@ class Job:
     run_count: int = 0
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     label: str = ""
-    #: 🔴 NO LONGER CONSULTED WHEN THE JOB FIRES -- A DEAD KNOB PENDING REMOVAL.
-    #: It used to be the durable per-job authority, deliberately immune to a
-    #: change of app setting. Ryan ruled otherwise ("cron and loops run at same
-    #: set profile level"), so `app._fire_job` now reads
-    #: `settings.tool_policy_profile` through `tool_policy.unattended()` and
-    #: ignores this field entirely.
+    #: 🔴 VESTIGIAL SINCE T085 -- NOT CONSULTED WHEN THE JOB FIRES.
+    #: Ryan: "just change it so schedule only runs auto mode". `app._fire_job`
+    #: resolves to `autonomous` outright, because a scheduled task fires when
+    #: nobody is at the keyboard and a level that stops to ask would hang
+    #: instead of running.
     #:
-    #: Kept only because it still round-trips through save/load and a test
-    #: asserts that. Removing it is safe whenever someone wants to -- `load`
-    #: filters to `__dataclass_fields__`, so old job files with the key still
-    #: parse -- but it is a schema change and did not belong in the authority
-    #: fix that killed it.
+    #: ⚠️ THIS FIELD'S WHOLE STORY IS ONE EVENING, so the git history reads
+    #: straight: it WAS the per-job authority; a ruling made the global setting
+    #: govern and it went dead; a ruling brought it back; this ruling removed
+    #: the choice altogether. Every one of those comments was true when written.
+    #:
+    #: Kept because it still round-trips through save/load and a test asserts
+    #: that. Removing it is safe (`load` filters to `__dataclass_fields__`, so
+    #: old job files keep parsing) but it is a schema change and belongs in its
+    #: own commit rather than in an authority change.
     tool_profile: str = SCHEDULED
     #: ``cron`` keeps the historical path. ``loop`` is a fixed cadence owned
     #: by one conversation and is polled by the SAME monitor.

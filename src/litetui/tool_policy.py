@@ -108,6 +108,17 @@ class ToolProfile:
     #: adding a profile cannot produce an option with no explanation, because
     #: there is no second list to forget to update.
     summary: str = ""
+    #: Can a human CHOOSE this as their conversation authority?
+    #:
+    #: T085, Ryan: "scheduled should not be its own mode". `scheduled` remains
+    #: the read-only FLOOR that `unattended()` degrades to -- it is a mechanism,
+    #: not a mode -- but shift+tab and the settings dropdown must not offer it.
+    #:
+    #: 🔴 A FLAG ON THE PROFILE, NOT A SECOND TUPLE OF NAMES. `SELECTABLE_
+    #: PROFILES` is derived from this, so a profile added later declares its own
+    #: visibility next to its own behaviour and there is nothing to keep in
+    #: agreement. Same reason PROFILE_NAMES is derived from PROFILES.
+    selectable: bool = True
 
 
 @dataclass(frozen=True)
@@ -152,6 +163,9 @@ SCHEDULED_PROFILE = ToolProfile(
     allow=frozenset({READ_ONLY, SELF_STORE}),
     confirm=frozenset(),
     summary="read-only tools only",
+    # NOT user-selectable since T085 -- the floor, not a mode. See
+    # ToolProfile.selectable.
+    selectable=False,
 )
 
 #: Everything, unattended, no questions. The point of the row: Ryan killed his
@@ -205,6 +219,23 @@ PROFILES = {
 
 #: Derived, never hand-written. `tuple` so it stays immutable and ordered.
 PROFILE_NAMES = tuple(PROFILES)
+
+def selectable_profile_names() -> tuple[str, ...]:
+    """The levels a human may CHOOSE -- shift+tab and the settings dropdown.
+
+    Derived from `ToolProfile.selectable`, so this can never disagree with the
+    profiles themselves: `scheduled` is absent by DECLARATION, not by omission.
+
+    🔴 A FUNCTION, NOT A MODULE CONSTANT, AND I SHIPPED THE CONSTANT FIRST.
+    `settings_screen.tool_profile_choices` already carried this exact warning
+    -- "a constant is computed once at import and a test cannot then add a
+    profile and watch it appear, which is the property that makes the drift
+    impossible rather than merely fixed" -- and I introduced a constant one
+    module away and broke three of its tests. Same shape as the class list in
+    side_panel: the rule was written down, in a file I had read, about the very
+    thing I was doing.
+    """
+    return tuple(name for name, p in PROFILES.items() if p.selectable)
 
 
 def unattended(profile_name: str) -> str:
@@ -260,6 +291,12 @@ def cycle(profile_name: str) -> str:
     Ryan's order, from his own screenshots of Claude Code:
     autonomous -> interactive -> scheduled -> autonomous.
 
+    Since T085 it walks `SELECTABLE_PROFILE_NAMES`, not every profile: Ryan
+    ruled that "scheduled should not be its own mode", so the cycle is
+    autonomous <-> interactive and the floor is unreachable from the keyboard.
+    That set is DERIVED from `ToolProfile.selectable`, so removing a level from
+    the cycle is one flag on the profile rather than an edit here.
+
     `PROFILES` is ordered by authority ASCENDING, so descending is that same
     order stepped backwards -- the direction is expressed ONCE here rather
     than as a second hand-written tuple that has to agree with `PROFILES`.
@@ -273,10 +310,15 @@ def cycle(profile_name: str) -> str:
     contradicted `unattended()`, which sends unknown DOWN. Corrupt settings
     plus one keypress should not be a route to full authority.
     """
-    if profile_name not in PROFILE_NAMES:
-        return SCHEDULED
-    i = PROFILE_NAMES.index(profile_name)
-    return PROFILE_NAMES[(i - 1) % len(PROFILE_NAMES)]
+    order = selectable_profile_names()
+    if profile_name not in order:
+        # Includes `scheduled` itself, which is no longer selectable: someone
+        # arriving on it (an old settings.json, or the floor written back by an
+        # earlier build) cycles INTO the selectable set rather than being stuck
+        # outside it. Lands on the narrowest selectable level, never the widest.
+        return order[0]
+    i = order.index(profile_name)
+    return order[(i - 1) % len(order)]
 
 
 def rule_key(tool_name: str, capabilities: Iterable[str]) -> str:

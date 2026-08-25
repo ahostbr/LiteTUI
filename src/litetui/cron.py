@@ -32,6 +32,7 @@ from datetime import datetime
 from textual import work
 
 from litetui import paths
+from litetui import textfmt
 from litetui import scheduler as sched_mod
 
 
@@ -154,7 +155,10 @@ class CronService:
 
         nxt = cron.next_after(datetime.now())
         when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"
-        self._app._system(f"/cron: added {job.id} — next fire {when}\n  {prompt}")
+        self._app._system(
+            f"/cron: added {job.id} — next fire {when}\n  {prompt}\n"
+            f"  {textfmt.SCHEDULED_AUTO_NOTE}"
+        )
 
     def list_jobs(self) -> None:
         if not self.jobs:

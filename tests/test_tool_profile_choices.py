@@ -42,20 +42,24 @@ def test_the_original_labels_are_still_word_for_word():
     """
     labels = dict((v, k) for k, v in tool_profile_choices())
     assert labels[INTERACTIVE] == "interactive — inspect freely, confirm sensitive actions"
-    assert labels[SCHEDULED] == "scheduled — read-only tools only"
+    # T085 removed `scheduled` from the dropdown ("scheduled should not be its
+    # own mode"); it survives as the floor `unattended()` degrades to, so its
+    # summary still exists on the profile and simply is not offered.
+    assert SCHEDULED not in labels, "the floor is offered as a mode again"
 
 
 def test_the_dropdown_is_ordered_by_ascending_authority():
     """The order is a human-facing decision, not insertion order.
 
-    scheduled (read-only) → interactive (asks) → autonomous (everything). The
-    list reads as a scale of trust and the widest option sits visibly at the
-    end. Insertion order would have put autonomous beside interactive, which
-    hides that it is the extreme.
+    interactive (asks) → autonomous (everything). The list reads as a scale of
+    trust and the widest option sits visibly at the end.
+
+    ⚠️ `scheduled` USED TO LEAD THIS LIST. T085 removed it from the dropdown
+    ("scheduled should not be its own mode"); it remains the floor that
+    `unattended()` degrades to, so the ordering principle is unchanged and the
+    scale is simply shorter.
     """
-    assert [v for _l, v in tool_profile_choices()] == [
-        SCHEDULED, INTERACTIVE, AUTONOMOUS
-    ]
+    assert [v for _l, v in tool_profile_choices()] == [INTERACTIVE, AUTONOMOUS]
 
 
 def test_no_label_renders_a_double_separator():
@@ -72,14 +76,21 @@ def test_a_new_profile_appears_without_touching_the_screen(monkeypatch):
     This is the drift that used to be silent, and it is why the choices are a
     function rather than a module constant computed once at import.
     """
-    extra = replace(PROFILES[SCHEDULED], name="probeprofile", summary="a test profile")
+    # selectable=True stated EXPLICITLY, because the base being copied here is
+    # the floor and T085 made the floor non-selectable. Without it this probe
+    # tests "an unselectable profile stays hidden", which is a different claim.
+    extra = replace(PROFILES[SCHEDULED], name="probeprofile",
+                    summary="a test profile", selectable=True)
     patched = dict(PROFILES)
     patched["probeprofile"] = extra
     monkeypatch.setattr(tool_policy, "PROFILES", patched)
     monkeypatch.setattr(tool_policy, "PROFILE_NAMES", tuple(patched))
 
     labels = dict((v, k) for k, v in tool_profile_choices())
-    assert "probeprofile" in labels, "a profile the engine knows was not offered"
+    assert "probeprofile" in labels, (
+        "a SELECTABLE profile the engine knows was not offered — note the probe "
+        "profile must set selectable=True (the default) to appear at all"
+    )
     assert labels["probeprofile"] == "probeprofile — a test profile"
 
 
@@ -93,7 +104,10 @@ def test_every_offered_value_is_a_real_profile():
 
 def test_no_profile_is_left_out_of_the_dropdown():
     offered = {value for _label, value in tool_profile_choices()}
-    assert offered == set(PROFILES), "a profile exists that nobody can select"
+    assert offered == {n for n, p in PROFILES.items() if p.selectable}, (
+        "the dropdown and ToolProfile.selectable disagree"
+    )
+    assert SCHEDULED not in offered, "the floor is selectable again"
 
 
 def test_profile_names_is_derived_from_profiles_not_hand_written():
@@ -112,7 +126,7 @@ def test_every_profile_explains_itself():
 def test_a_profile_with_no_summary_still_renders_as_something(monkeypatch):
     """Degradation, not a crash or a bare em dash. A profile someone adds in a
     hurry must still be selectable."""
-    bare = replace(PROFILES[SCHEDULED], name="bare", summary="")
+    bare = replace(PROFILES[SCHEDULED], name="bare", summary="", selectable=True)
     patched = dict(PROFILES)
     patched["bare"] = bare
     monkeypatch.setattr(tool_policy, "PROFILES", patched)

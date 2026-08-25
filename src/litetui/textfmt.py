@@ -238,6 +238,23 @@ def is_reliable_rate_sample(prompt_tokens, first_token_s, floor: float = 0.25) -
             and first_token_s is not None and first_token_s >= floor)
 
 
+#: Shown once when a cron job or loop is CREATED. T085, Ryan asked for a
+#: "light warning when setting that it must run auto for this reason".
+#:
+#: 🔴 IT STATES THE MECHANISM, NOT THE RULE. "Scheduled tasks run in auto mode"
+#: is a fact the reader can do nothing with; the REASON is the whole point and
+#: is what he asked for. Someone who knows WHY can predict the behaviour of a
+#: case nobody wrote down -- that is the difference between a rule and a
+#: mechanism.
+#:
+#: ⚠️ LIGHT. One sentence, lower-case, no banner and no confirmation step. It
+#: explains; it does not warn twice or ask.
+SCHEDULED_AUTO_NOTE = (
+    "runs in auto mode — it fires when you may not be at the keyboard, and a "
+    "mode that stops to ask would wait instead of running"
+)
+
+
 def profile_text(profile_name: str | None) -> str:
     """Pure: the authority-level field, one format for every surface -- the
     same arrangement `tps_text` has, and for the same reason.

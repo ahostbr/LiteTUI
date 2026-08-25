@@ -99,7 +99,12 @@ def tool_profile_choices() -> list[tuple[str, str]]:
             else name,
             name,
         )
-        for name in tool_policy.PROFILE_NAMES
+        # SELECTABLE, not every profile: T085 took `scheduled` out of the
+        # user-facing set ("scheduled should not be its own mode") while
+        # keeping it as the floor `unattended()` degrades to. Derived from
+        # `ToolProfile.selectable`, so this dropdown and shift+tab read the
+        # SAME source and cannot offer different sets.
+        for name in tool_policy.selectable_profile_names()
     ]
 
 DIALOG_STYLE_CHOICES = [
