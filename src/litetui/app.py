@@ -529,7 +529,7 @@ class LiteTUI(App):
     #picker-box {
         width: 78;
         max-width: 100%;
-        max-height: 80%;
+        max-height: 100%;
         height: auto;
         padding: 1 2;
         background: $surface;

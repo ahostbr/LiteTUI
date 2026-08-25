@@ -140,6 +140,94 @@ async def test_sidebar_content_is_not_wider_than_the_panel(name, factory, select
         ctrl.resolve(None)
 
 
+@pytest.mark.parametrize("name,factory,selector", DIALOGS, ids=[d[0] for d in DIALOGS])
+@pytest.mark.parametrize("style", ["sidebar", "modal"])
+@pytest.mark.asyncio
+async def test_no_child_is_clipped_by_its_own_container(style, name, factory, selector) -> None:
+    """🔴 THE GAP SILVERBOLT FOUND IN THIS VERY FILE, AN HOUR AFTER I WROTE IT.
+
+    Everything above asserts the BOX and the PANEL: right size, right place,
+    fits its host. **A container can be all three and still cut off its last
+    child.** 72 tests passed over exactly that — his swap button's label row and
+    bottom border did not paint, and nothing here could see it, because nothing
+    compared a CHILD against its PARENT's content area.
+
+    The cause was `max-height: 80%` on `#picker-box`, a percentage whose base
+    was an auto-height parent sized by that same box. Textual settled on a
+    content height of 10 for children needing 14 and simply cut the overflow.
+
+    This walks every container in the dialog and requires each child's region to
+    be inside its parent's `content_region`. It is the general form: it does not
+    know about swap buttons, and it fails for ANY last-child clip in ANY of the
+    four dialogs, in either host.
+    """
+    a = make_app()
+    async with a.run_test(size=(100, 32)) as pilot:
+        ctrl = DialogController(a, factory, style, "right")
+        a.run_worker(ctrl.open(), name="dlg")
+        if style == "sidebar":
+            await settle_until(pilot, lambda: a.screen.query(SidePanel))
+            root = a.screen.query_one(SidePanel).body
+        else:
+            await settle_until(pilot, lambda: _box(a.screen, selector).region.height > 0)
+            root = _box(a.screen, selector)
+        await settle_until(pilot, lambda: root.region.height > 0)
+        for _ in range(4):
+            await pilot.pause()
+
+        offenders = []
+        stack = [root]
+        while stack:
+            parent = stack.pop()
+            pr = parent.content_region
+            for child in parent.children:
+                cr = child.region
+                if cr.height and not (
+                    cr.y >= pr.y and cr.y + cr.height <= pr.y + pr.height
+                ):
+                    offenders.append(
+                        f"{type(child).__name__}(id={child.id}) rows "
+                        f"{cr.y}..{cr.y + cr.height - 1} outside "
+                        f"{type(parent).__name__} content rows "
+                        f"{pr.y}..{pr.y + pr.height - 1}"
+                    )
+                stack.append(child)
+
+        assert not offenders, (
+            f"{name} [{style}]: CHILD CLIPPED BY ITS CONTAINER — the container "
+            f"can still be the right size and in the right place:\n  "
+            + "\n  ".join(offenders)
+        )
+        ctrl.resolve(None)
+
+
+@pytest.mark.parametrize("h", [24, 32, 50])
+@pytest.mark.asyncio
+async def test_the_picker_cap_still_caps_a_long_list(h) -> None:
+    """The cap was MOVED, so it has to be re-proved where it now lives.
+
+    `max-height: 80%` exists so a long convo list cannot outgrow the screen.
+    Deleting it would also have cleared the clipping bug — which is exactly why
+    it was moved to `PickerBody` instead. A relocated guard that is never
+    re-tested is a deleted guard with a comment on it.
+    """
+    a = make_app()
+    long_rows = [(f"id-{i}", f"a fairly long conversation label number {i}")
+                 for i in range(60)]
+    async with a.run_test(size=(100, h)) as pilot:
+        a.push_screen(PickerScreen("Select", long_rows))
+        await settle_until(pilot, lambda: a.screen.query("#picker-box"))
+        box = a.screen.query_one("#picker-box")
+        await settle_until(pilot, lambda: box.region.height > 0)
+        for _ in range(4):
+            await pilot.pause()
+
+        assert box.region.height <= h, (
+            f"box is {box.region.height} rows on a {h}-row screen — the cap is "
+            "not capping"
+        )
+
+
 @pytest.mark.parametrize(
     "name,screen_factory,selector",
     [

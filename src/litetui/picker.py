@@ -31,20 +31,41 @@ DEFAULT_HINT = "↑↓ move · Enter or click to select · Esc to cancel"
 class PickerBody(Widget):
     """The list content, host-agnostic. Exits through `close_dialog`."""
 
-    # 🔴 `width: auto` IS WHAT RE-CENTRES THE MODAL, AND IT IS NOT COSMETIC.
+    # 🔴 THIS BODY IS THE ONE NODE WITH A DEFINITE HEIGHT, AND EVERYTHING ELSE
+    # IS RELATIVE TO IT. THAT IS THE WHOLE FIX.
     #
-    # `align: center middle` lives on PickerScreen and centres the screen's
-    # CHILD. That child used to be `#picker-box` (width 78) and is now this
-    # body, because the conversion put a level between them. A body with no
-    # width rule defaults to FULL WIDTH, so the screen "centred" something
-    # already spanning the screen and `#picker-box` sat hard against the left
-    # edge — the off-centre dialog in Ryan's screenshot.
+    # `#picker-box` used to be a DIRECT child of PickerScreen, so its
+    # `max-height: 80%` resolved against the screen and the screen's
+    # `align: center middle` centred it. The conversion inserted this body
+    # between them and BOTH of those broke:
     #
-    # `auto` shrinks the body to its box, so the screen centres what it was
-    # always meant to centre. The panel overrides this to 100% (SidePanel's
-    # DEFAULT_CSS) because filling is right there and shrinking is not.
+    #   centring -> the screen now centres THIS body, not the box
+    #   the cap  -> 80% now resolved against a parent that is `height: auto`,
+    #               i.e. sized BY the very box it was meant to constrain
+    #
+    # A percentage whose base is derived from the child it constrains has no
+    # fixed point. Textual settled on a content height of 10 for children
+    # needing 14 and cut the overflow: SilverBolt's swap button lost its label
+    # row and bottom border, while the identical widget painted correctly in the
+    # sidebar — where the panel forces this body to a definite 100%.
+    #
+    # ⚠️ MOVING THE CAP BETWEEN LEVELS DOES NOT FIX IT. Measured, three ways:
+    # on the box, the modal clips; on this body at `height: auto`, the body caps
+    # itself and the BOX overflows it (fails on a 24-row screen); at `height:
+    # 100%`, the sidebar clips instead. While every level is `auto` the cap only
+    # relocates the clip.
+    #
+    # So: ONE definite height here, taken off the SCREEN, and the box caps at
+    # 100% OF THIS. The box stays `height: auto`, so a three-row picker is still
+    # a small dialog — making it fill would have been a visible UX change
+    # smuggled in as a bug fix — and `align` does the centring that `width:
+    # auto` had been standing in for.
+    #
+    # In a sidebar, SidePanel's DEFAULT_CSS overrides this to 100%, so the box
+    # caps at the panel height instead. Verified against SilverBolt's own tree:
+    # shortfall 0 in BOTH hosts with the swap button present.
     DEFAULT_CSS = """
-    PickerBody { width: auto; height: auto; layout: vertical; }
+    PickerBody { width: 100%; height: 80%; align: center middle; layout: vertical; }
     """
 
     def __init__(self, title: str, rows: list[tuple[str, str]],
