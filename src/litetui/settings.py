@@ -40,7 +40,7 @@ from pathlib import Path
 
 from litetui import skills as skills_mod  # for DEFAULT_EXTRA_ROOTS only
 from typing import Any, Literal
-from litetui.tool_policy import INTERACTIVE
+from litetui.tool_policy import AUTONOMOUS
 
 SETTINGS_FILENAME = "settings.json"
 
@@ -130,9 +130,29 @@ class Settings:
     #: "[stopped — reached N tool iterations in one turn]".
     tool_iterations: int = 48
     tools_enabled: bool = True
-    #: Authority profile for ordinary human conversation turns. The host,
-    #: never the model, applies this at each tool call.
-    tool_policy_profile: str = INTERACTIVE
+    #: Authority profile for EVERY turn -- typed, inbox-woken, cron and loop
+    #: alike (Ryan: "cron and loops run at same set profile level my ruling").
+    #: The host, never the model, applies this at each tool call. Cycled live
+    #: with shift+tab; the footer always names the level in force.
+    #:
+    #: 🔴 THE DEFAULT IS `autonomous`, AND THAT IS A RULING, NOT AN OVERSIGHT.
+    #: Ryan was asked as an explicit either/or -- degrade unattended turns to
+    #: read-only, or default to auto -- and answered "b default to auto",
+    #: modelled on Claude Code, whose own default mode is called `auto`. The
+    #: permissiveness was stated in the option he chose from: a user who never
+    #: opens Settings gets workspace_write on an unattended turn.
+    #:
+    #: ⚠️ `autonomous` IS SAFE TO RUN UNATTENDED FOR A REASON THAT IS EASY TO
+    #: BREAK: its `confirm` set is EMPTY, so `evaluate` never constructs a
+    #: modal for it. That is what keeps an unattended turn from blocking on a
+    #: human who is not there -- not the profile's name. A profile that both
+    #: ran unattended and could confirm would hang the turn forever.
+    #:
+    #: 📌 An explicitly chosen `interactive` still meets unattended turns, and
+    #: those still go through `tool_policy.unattended()`, which degrades a
+    #: confirm-based level to the read-only floor. The default moved; that
+    #: guard did not become unnecessary.
+    tool_policy_profile: str = AUTONOMOUS
     #: The human's standing answers to the approval modal, keyed by
     #: `tool_policy.rule_key` -- "<tool>:<sorted,capabilities>", NOT the tool
     #: name alone. Written by the modal's "Always allow" button.

@@ -98,6 +98,13 @@ class _ToolCallStream:
 def _app(answer, iterations: int = 3):
     """A LiteTUI whose one tool needs confirmation, answered with `answer`."""
     a = app_mod.LiteTUI()
+    # Same reason as test_tool_approval: this file is ABOUT the deny path,
+    # which only exists under a confirm profile. T084's default never asks.
+    a.settings.tool_policy_profile = app_mod.tool_policy.INTERACTIVE
+    # BOTH, because `_active_tool_profile` is stamped from settings at
+    # CONSTRUCTION and `_execute_tool` reads that, not the settings field.
+    # Setting only the settings value leaves the door on the old profile.
+    a._active_tool_profile = app_mod.tool_policy.INTERACTIVE
     a.settings = Settings(
         tools_enabled=True,
         tool_iterations=iterations,

@@ -350,11 +350,20 @@ class SettingsScreen(ModalScreen[Settings | None]):
                             "turn]'. Raise it for long agent runs.",
                         )
                         yield from self._select_row(
-                            "tool_policy_profile", "Conversation tool authority",
+                            "tool_policy_profile", "Tool authority",
                             tool_profile_choices(),
-                            "Host-enforced. Interactive turns ask before writes, process "
-                            "execution, desktop control, or other sensitive effects. "
-                            "Scheduled is read-only and never opens an unattended prompt.",
+                            # RENAMED from "Conversation tool authority": it governs
+                            # EVERY turn now -- typed, inbox-woken, cron and loop alike
+                            # (Ryan: "cron and loops run at same set profile level").
+                            # A control naming a narrower scope than it governs is the
+                            # same defect as T084, pointing the other way.
+                            "Host-enforced, on every turn: what you type, mail from other "
+                            "agents, and cron or loop jobs. Shift+Tab cycles it live and "
+                            "the footer always shows the level in force. Interactive asks "
+                            "before writes, process execution, desktop control or other "
+                            "sensitive effects; scheduled is read-only. A turn nobody is "
+                            "watching never opens a prompt -- interactive falls back to "
+                            "read-only there rather than waiting for an answer.",
                         )
                         yield from self._text_row(
                             "tool_always_allow", "Never ask again for",

@@ -235,9 +235,18 @@ class Job:
     run_count: int = 0
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     label: str = ""
-    #: Unattended work defaults to the narrow host profile. This is stored per
-    #: job so an explicit human override is durable rather than ambient app
-    #: state that silently changes every automation at once.
+    #: 🔴 NO LONGER CONSULTED WHEN THE JOB FIRES -- A DEAD KNOB PENDING REMOVAL.
+    #: It used to be the durable per-job authority, deliberately immune to a
+    #: change of app setting. Ryan ruled otherwise ("cron and loops run at same
+    #: set profile level"), so `app._fire_job` now reads
+    #: `settings.tool_policy_profile` through `tool_policy.unattended()` and
+    #: ignores this field entirely.
+    #:
+    #: Kept only because it still round-trips through save/load and a test
+    #: asserts that. Removing it is safe whenever someone wants to -- `load`
+    #: filters to `__dataclass_fields__`, so old job files with the key still
+    #: parse -- but it is a schema change and did not belong in the authority
+    #: fix that killed it.
     tool_profile: str = SCHEDULED
     #: ``cron`` keeps the historical path. ``loop`` is a fixed cadence owned
     #: by one conversation and is polled by the SAME monitor.
