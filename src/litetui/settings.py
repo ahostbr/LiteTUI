@@ -79,6 +79,13 @@ class Settings:
     #: spawn. Default is LiteSuite's own single-model server. An attached
     #: server belongs to whoever started it: we chat through it and refuse to
     #: manage its models.
+    #:
+    #: 8088 STAYS, and 7470 is deliberately NOT here. 8088 is where older
+    #: LiteSuite installs still serve, so removing it would strand them. 7470
+    #: is our own port, reached earlier in the attach order — a LiteSuite
+    #: router there is recognised by `router.json`, not by this list, and
+    #: adding it would shadow that check with a blind attach that could never
+    #: tell a live owner from our own crashed orphan.
     llama_attach_hosts: list[str] = field(
         default_factory=lambda: ["http://localhost:8088"]
     )

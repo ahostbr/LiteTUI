@@ -85,6 +85,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from litetui import paths
+from litetui import router_record
 from litetui import ttyguard
 
 # ── Where the engine lives (LiteSuite's Model Hub install) ───────────────────
@@ -288,6 +289,19 @@ def _gguf_architecture(p: Path) -> str | None:
     return None
 
 
+def _port_of(host: str) -> int | None:
+    """The port from a `http://host:port` base url, or `None`.
+
+    The record is per-PORT, so a record about 7470 says nothing about a
+    session pointed at 8088. Comparing the whole host string instead would
+    fail on `localhost` vs `127.0.0.1`, which are the same server.
+    """
+    try:
+        return int(host.rsplit(":", 1)[-1])
+    except ValueError:
+        return None
+
+
 def _skip_gguf(p: Path) -> bool:
     name = p.name.lower()
     if "mmproj" in name:
@@ -301,7 +315,14 @@ def _skip_gguf(p: Path) -> bool:
         return True
     arch = _gguf_architecture(p)
     if arch is not None:
-        if arch.lower() in _NON_CHAT_ARCHS:
+        lowered = arch.lower()
+        # MEASURED on this box, 2026-08-26: sesame-csm ships two >10 MB ggufs
+        # whose header says `llama-csm`, not `csm`. Exact match let BOTH into
+        # /model, where the router would spend its 300 s trying to serve a
+        # speech codec as an LLM — the very cost this filter exists to avoid.
+        # An architecture is hyphen-joined, so a NON-CHAT SEGMENT condemns the
+        # whole id: `llama-csm` is a csm, whatever it is bolted to.
+        if lowered in _NON_CHAT_ARCHS or set(lowered.split("-")) & _NON_CHAT_ARCHS:
             return True
         # Some non-LLM ggufs put a whole SENTENCE in the field (kyutai-mimi:
         # "this model cannot be used as LLM, use it via --model-vocoder…").
@@ -477,6 +498,10 @@ class LlamaCppBackend:
         self._settings = settings
         self._host = settings.llama_host.rstrip("/")
         self._attached_host: str | None = None
+        #: Who owns the server we attached to, from `router.json`. `None` for
+        #: a foreign server that wrote no record — which is exactly how a
+        #: hand-started llama-server is recognised.
+        self._attached_owner: str | None = None
         self._owned: _Owned | None = None
         self._rows: list[ModelRow] = []
         self._shape: str | None = None      # probed per connect, see _probe_shape
@@ -492,6 +517,11 @@ class LlamaCppBackend:
     @property
     def attached(self) -> bool:
         return self._attached_host is not None
+
+    @property
+    def attached_owner(self) -> str | None:
+        """The owning app's name, or `None` when nobody claimed the router."""
+        return self._attached_owner
 
     @property
     def single_model(self) -> bool:
@@ -568,6 +598,7 @@ class LlamaCppBackend:
         # BEFORE anything is probed.
         self._shape = None
         self._attached_host = None
+        self._attached_owner = None
         if self._owned is not None and _healthy(self._host):
             self._shape = _SHAPE_ROUTER      # we only ever spawn a router
             return "ok"
@@ -582,10 +613,28 @@ class LlamaCppBackend:
             # as attached" — the code and the comment disagreed, and the
             # code won, which is the attach half of D12.
             #
+            # 🔴 A LIVE OWNERSHIP RECORD SETTLES IT BEFORE ANY GUESSING.
+            # Both apps default to 7470 and both know how to spawn a router
+            # here, so "a router on our own port" is no longer evidence of
+            # anything. If `router.json` names a live owner that is not us,
+            # the server is THEIRS: attach, and never regenerate the ini or
+            # restart it. Without that, LiteTUI would restart LiteSuite's
+            # router out from under its GUI.
+            record = router_record.read()
+            if (
+                record is not None
+                and not record.is_mine
+                and record.port == _port_of(self._host)
+                and router_record.is_live(record)
+            ):
+                self._attached_host = self._host
+                self._attached_owner = record.owner
+                return f"attached {self._host} (owner: {record.owner})"
+
             # A ROUTER on our own port is plausibly our own orphan (a crashed
             # LiteTUI leaves one), so it stays manageable — attaching would
             # lock the user out of loading anything until they killed it by
-            # hand.
+            # hand. A DEAD record lands here too: stale, ignored.
             if self._probe_shape() == _SHAPE_SINGLE:
                 self._attached_host = self._host
             return "ok"
@@ -638,7 +687,24 @@ class LlamaCppBackend:
             if _healthy(self._host):
                 self._owned = _Owned(proc, log_path, log_file)
                 self._attached_host = None
+                self._attached_owner = None
                 self._shape = _SHAPE_ROUTER
+                # 🔴 CLAIM ONLY WHAT IS ACTUALLY SERVING. The record is written
+                # AFTER /health passes, never at popen time: a record naming a
+                # process that is still starting — or that dies in the next
+                # second — would make the other app attach to nothing and see
+                # no models at all. A failed spawn writes nothing.
+                try:
+                    router_record.write(
+                        pid=proc.pid,
+                        port=_port_of(self._host) or int(port),
+                        ini=str(ini),
+                        build_tag=installed_build(),
+                    )
+                except OSError:
+                    # A router we cannot announce still works for US. Losing
+                    # the record costs coexistence, not the session.
+                    pass
                 # Whatever way the app exits, OUR server dies with it — an
                 # orphaned worker is a silent multi-GB VRAM leak. shutdown()
                 # is idempotent, so a normal exit path calling it too is fine.
@@ -671,6 +737,10 @@ class LlamaCppBackend:
             if proc.poll() is None:
                 self._kill_tree(proc)
         finally:
+            # Retract our claim before dropping the handle. `remove_if_mine`
+            # checks the pid AND the owner, so a record another app wrote in
+            # the meantime survives us.
+            router_record.remove_if_mine(proc.pid)
             try:
                 self._owned.log_file.close()
             except OSError:
@@ -865,8 +935,34 @@ class LlamaCppBackend:
             return
         await asyncio.to_thread(self._load_sync, key)
 
+    def _owner_label(self) -> str:
+        """Who to name in a refusal. The record when there is one, and a
+        careful "another app" when there is not — a foreign server started by
+        hand writes no record, and blaming LiteSuite for it would send the
+        user to the wrong window."""
+        if self._attached_owner == "litesuite":
+            return "LiteSuite"
+        if self._attached_owner:
+            return self._attached_owner
+        return "another app"
+
     def _refuse_if_attached(self, verb: str) -> None:
         if not self.attached:
+            return
+        # 🔴 AN ADOPTED ROUTER IS SHARED, NOT OFF LIMITS — BUT ONLY ONE THAT
+        # SOMEBODY SIGNED FOR. Hot-loading a model a cooperating app's router
+        # already has in its preset is exactly what the route is for, and both
+        # apps see the result: that is the coexistence the record buys.
+        #
+        # ⚠️ THE RECORD IS THE PERMISSION, NOT THE SHAPE. My first cut keyed
+        # this on "is it a router" alone, which silently granted management
+        # over ANY foreign router — including one started by hand that nobody
+        # vouched for — and `test_attached_refuses_management` caught it.
+        # A router with no record stays off limits, as it always was.
+        #
+        # What stays refused even for a cooperating owner is rewriting the ini
+        # or restarting the process: that file belongs to whoever spawned it.
+        if self._probe_shape() == _SHAPE_ROUTER and self._attached_owner is not None:
             return
         if self._probe_shape() == _SHAPE_SINGLE:
             # Say WHY, and say it before the request goes out: /models/load
@@ -880,8 +976,9 @@ class LlamaCppBackend:
                 "I'll run my own router."
             )
         raise BackendError(
-            f"cannot {verb}: LiteSuite owns the server at {self.host()} — "
-            "switch models in its Model Hub, or stop it and I'll run my own."
+            f"cannot {verb}: {self._owner_label()} owns the server at "
+            f"{self.host()} — switch models there, or stop it and I'll run "
+            "my own."
         )
 
     def _load_sync(self, key: str) -> None:
@@ -953,6 +1050,16 @@ class LlamaCppBackend:
         self._load_sync(key)
 
     def _regen_ini(self) -> None:
+        # 🔴 THE INI BELONGS TO WHOEVER SPAWNED THE ROUTER. Regenerating it
+        # while attached would rewrite another app's preset and then restart
+        # its process — the precise accident `router.json` exists to prevent.
+        # Loads are allowed on an adopted router; this is not a load.
+        if self.attached:
+            raise BackendError(
+                f"cannot rebuild the model preset: {self._owner_label()} owns "
+                f"the server at {self.host()} and its preset is its own. Add "
+                "the model there, or stop that server and I'll run my own."
+            )
         rows = scan_models(self._settings)
         write_preset_ini(rows, self._settings)
         # The router reads the preset at startup; a changed world needs a

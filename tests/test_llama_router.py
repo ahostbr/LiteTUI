@@ -201,7 +201,15 @@ def test_attached_refuses_management(stub, tmp_path):
     for coro in (b.load("m1"), b.unload("m1"), b.apply_load_settings("m1", {"ctx": 1})):
         with pytest.raises(BackendError) as exc:
             _run(coro)
-        assert "LiteSuite owns" in str(exc.value)
+        # ⚠️ THE WORDING CHANGED, THE RULE DID NOT. This used to assert
+        # "LiteSuite owns" — a guess baked into the message, right often
+        # enough to survive and wrong for every hand-started llama-server.
+        # The owner is now read from `router.json`, and this stub wrote no
+        # record, so it is honestly "another app". A record-less router is
+        # still off limits exactly as before: coexistence is granted by a
+        # signed claim, never by the shape of the server.
+        assert "another app owns" in str(exc.value)
+        assert "LiteSuite" not in str(exc.value)
         assert stub.host in str(exc.value)
 
 
