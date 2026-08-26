@@ -301,7 +301,14 @@ def _skip_gguf(p: Path) -> bool:
         return True
     arch = _gguf_architecture(p)
     if arch is not None:
-        if arch.lower() in _NON_CHAT_ARCHS:
+        lowered = arch.lower()
+        # MEASURED on this box, 2026-08-26: sesame-csm ships two >10 MB ggufs
+        # whose header says `llama-csm`, not `csm`. Exact match let BOTH into
+        # /model, where the router would spend its 300 s trying to serve a
+        # speech codec as an LLM — the very cost this filter exists to avoid.
+        # An architecture is hyphen-joined, so a NON-CHAT SEGMENT condemns the
+        # whole id: `llama-csm` is a csm, whatever it is bolted to.
+        if lowered in _NON_CHAT_ARCHS or set(lowered.split("-")) & _NON_CHAT_ARCHS:
             return True
         # Some non-LLM ggufs put a whole SENTENCE in the field (kyutai-mimi:
         # "this model cannot be used as LLM, use it via --model-vocoder…").

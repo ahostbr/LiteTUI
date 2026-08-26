@@ -97,6 +97,24 @@ def test_non_chat_architectures_are_skipped_by_header_not_name(tmp_path):
     assert [r.key for r in rows] == ["chatty"]
 
 
+def test_a_non_chat_segment_condemns_a_compound_architecture(tmp_path):
+    """MEASURED on this box: `~/.litesuite/llm/models/sesame-csm-1b/` holds
+    sesame-csm-backbone.gguf (1266 MB) and sesame-csm-decoder.gguf (611 MB),
+    both reporting `llama-csm`. Exact match on `csm` missed both, so /model
+    offered a speech codec as a chat model.
+
+    The control matters more than the case: `llama` alone MUST survive, or the
+    fix would filter every real chat model on the box.
+    """
+    root = tmp_path / "m"
+    _gguf_with_arch(root / "sesame-csm-backbone.gguf", "llama-csm")
+    _gguf_with_arch(root / "sesame-csm-decoder.gguf", "llama-csm")
+    _gguf_with_arch(root / "real-chat.gguf", "llama")
+    _gguf_with_arch(root / "also-real.gguf", "qwen3moe")
+    rows = llm_backend.scan_models(_settings(root))
+    assert sorted(r.key for r in rows) == ["also-real", "real-chat"]
+
+
 def test_arch_parser_reads_the_header(tmp_path):
     p = _gguf_with_arch(tmp_path / "x.gguf", "gemma3")
     assert llm_backend._gguf_architecture(p) == "gemma3"
