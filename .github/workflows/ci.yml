@@ -107,6 +107,23 @@ jobs:
       # but only because `Docs/Plans/dual-backend/render_html.py` is currently
       # CLEAN. It is tracked source, a pin would silently drop it, and the equal
       # totals hid that. EQUAL TOTALS ARE NOT EQUAL SETS.
+      #
+      # 🪦 AND A BRANCH PROPOSING THE PIN IS RETIRED, NOT PENDING — read this
+      # before anyone revives it. `ci/advisory-scope` (a8c5be7) pins both tools
+      # to LINT_PATHS="src tests tools". It reads ready-to-merge on commit-graph
+      # shape: one clean commit, ahead of main, `git cherry` marks it unique.
+      # The TIMESTAMPS decide it, and they run the other way:
+      #     a8c5be7 (that branch)     2026-08-24 00:05:15 -0400
+      #     e252d84 (this file)       2026-08-24 11:52:03 -0400   ~12h LATER
+      # The paragraph directly above IS the rebuttal, and it is the newer of the
+      # two. Merging a8c5be7 would reverse a later documented ruling AND drop
+      # `Docs/Plans/dual-backend/render_html.py` — still tracked, confirmed with
+      # `git ls-tree -r --name-only main | grep render_html` — out of lint scope.
+      # ⭐ BEING AHEAD OF main DOES NOT MAKE A BRANCH PENDING. `git cherry` proves
+      # a commit's content is unique; it says nothing about which side won. Date
+      # the branch tip against main's last commit TO THE SAME FILE.
+      # Retired 2026-08-29 by Ryan's ruling. The ref is left in place
+      # deliberately — retiring a proposal is not deleting its history.
       - name: ruff (advisory)
         shell: bash
         run: |
