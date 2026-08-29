@@ -1,8 +1,11 @@
 # LiteTUI
 
-A terminal chat client and agent harness for a **local** LLM served by
-[LM Studio](https://lmstudio.ai). Textual TUI, streaming, tool use, vision,
-per-conversation memory, and compaction.
+A terminal chat client and agent harness for **local** LLMs. Textual TUI,
+streaming, tool use, vision, per-conversation memory, and compaction.
+
+**Two engines, one seam** (`src/litetui/llm_backend.py`): [LM Studio](https://lmstudio.ai)'s
+desktop server, or LiteTUI's own `llama-server` from llama.cpp. Switch between
+them mid-conversation with `/backend` — the history survives.
 
 Built against `qwen3.8-27b` on an RTX 5090. Nothing here talks to a hosted API.
 
@@ -11,7 +14,19 @@ uv sync
 run.bat            # or: uv run --locked litetui
 ```
 
-Expects LM Studio's server on `http://localhost:1234/v1` with a model loaded.
+Either engine will do. When both are detected, a one-time picker runs at first
+boot; `/backend` changes the answer later.
+
+| engine | where | notes |
+|---|---|---|
+| `lmstudio` | `http://localhost:1234` | Needs LM Studio's server up. Control (load / **unload** / context length) goes through the official `lmstudio` SDK, not a `lms` shell-out. |
+| `llamacpp` | `http://localhost:7470` | LiteTUI's own `llama-server` in **router mode**: one process, every chat GGUF on the box behind it. Attaches to LiteSuite's server on `:8088` when that is healthy, otherwise spawns its own — detached, console-safe, with a log file, and killed with the app. |
+
+Neither engine loads anything at boot, and the router runs `--models-max 2` so a
+model switch cannot quietly fill 32 GB of VRAM. The router's model list is
+generated: LiteSuite's install dir, LM Studio's dirs, the HuggingFace cache and
+any custom roots, deduplicated, with voice and embedding GGUFs filtered out by
+the file's own `general.architecture` header rather than by guessing from names.
 
 ## What it does
 
@@ -80,6 +95,9 @@ raw history stays on disk behind the marker.
 | `/new` `/clear` | start a new conversation (new folder on disk) |
 | `/system <text>` | set the system prompt |
 | `/model [n]` | show or switch model |
+| `/backend` | switch engine — LM Studio or llama.cpp. The conversation survives |
+| `/load` `/unload` | put a model into memory, or free it |
+| `/modelcfg` | per-model Info / Load / Inference screen (see below) |
 | `/think [level]` | `off · minimal · low · medium · high · xhigh · unset` |
 | `/compact [hint]` | summarise older messages, keep the last 4 |
 | `/convos` | list saved conversations with sizes |
@@ -88,6 +106,20 @@ raw history stays on disk behind the marker.
 
 `Esc` stops the current turn (asks first; `Esc` again forces). `Ctrl+O` paste
 image · `Ctrl+X` clear image · `Ctrl+L` new conversation · `Ctrl+T` tools.
+
+### `/modelcfg` — a control an engine cannot drive is greyed, never hidden
+
+Three tabs per model: **Info**, **Load**, **Inference**. Load covers context
+length, GPU offload, threads, batch sizes, parallel slots, flash attention, KV
+cache quantization, mlock/mmap, RoPE, seed, a draft model for speculative
+decoding, a vision `mmproj`, and the chat template. Inference layers per-model
+sampling over your global `/settings`, plus structured output (a JSON schema)
+and named presets.
+
+The two engines do not expose the same knobs. **A control the active engine
+cannot drive renders greyed with the reason attached** — it is never silently
+absent and never a switch that does nothing. That distinction is the point: a
+missing control is a question, and a fake one is a bug you find much later.
 
 ### `/think` — unset is not off
 
@@ -177,10 +209,18 @@ delivery; the agent's own echo is skipped.
 ## Tests
 
 ```bash
-python test_convos.py     # persistence, tool-pairing safety, helpers
+uv run --locked python tests/run_all.py    # 138 files. THE gate — read its exit code
+uv run --locked pytest -q                  # the 125 pytest-style files only
 ```
 
-No network, no TUI, no LM Studio required.
+**Run `run_all.py`, and believe its exit code rather than a pass count.**
+`tests/` holds two mutually hostile styles: pytest-style files, and script-style
+files whose module body ends in `sys.exit(...)`. A module-level exit fires during
+pytest *collection*, so `pytest -q` cannot collect the script-style half at all —
+it reports a confident green while measuring 125 of 138 files. `run_all.py` runs
+each half with the runner it needs and is the only thing that sees all of them.
+
+No network, no TUI, and neither engine required.
 
 ## Bundled
 
