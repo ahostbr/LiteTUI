@@ -1,10 +1,26 @@
-"""LiteTUI's own themes — the LiteSuite palette, ported.
+"""LiteTUI's own themes — the LiteSuite palette, ported ONCE and now frozen.
 
-THE SOURCE OF TRUTH IS LITESUITE. Every preset here is a port of
-`LiteSuite/apps/web/src/litesuite/lib/themes.ts` (12 presets, including
-Matrix and Lite Suite), mapped token-for-token onto Textual's Theme fields so
-the desktop app and this TUI answer to one palette. Do not invent colors
-here — edit the LiteSuite file and re-port, or the two selectors drift.
+🔴 THIS PALETTE IS INDEPENDENT OF LITESUITE'S. RYAN'S RULING, 2026-08-28:
+*let them diverge.* Every preset here began as a port of
+`LiteSuite/apps/web/src/litesuite/lib/themes.ts` (12 presets, including Matrix
+and Lite Suite), mapped token-for-token onto Textual's Theme fields — but that
+port is now a HISTORICAL FACT, not a live dependency. The values below are
+FROZEN. Do not re-sync them, and **do not treat a LiteSuite theme edit as a
+defect here** — upstream is free to move and so are we.
+
+⚠️ WHAT OCCASIONED THE RULING, so the next reader does not mistake divergence
+for rot: LiteSuite `cb071ea4` collapsed matrix's ladder to four rungs; this
+file keeps two. The concrete difference is `matrix.panel` — **#0D0208 here vs
+#04170A upstream**. That is the intended end state, not a drift to repair.
+
+📌 AND THIS PARAGRAPH IS WHAT REPLACED A TEST. Until 2026-08-28 the sentence
+"do not invent colors here" was enforceable: `test_themes.py` re-extracted
+themes.ts whenever the LiteSuite checkout was present and failed on the first
+mismatched hex. That gate was DELETED with the ruling, because its whole
+premise — one palette, two selectors — is the thing Ryan reversed. A deleted
+gate otherwise leaves a claim with nothing behind it, so the claim changed
+too: the rule is no longer "match upstream", it is "change nothing without a
+reason of your own".
 
 The mapping, chosen once and used for every preset:
 

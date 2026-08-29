@@ -1,21 +1,24 @@
-"""The LiteSuite palette, ported — and the port CANNOT drift from its source.
+"""The ported palette, and the rules it still answers to — upstream is NOT one.
 
-themes.py declares LiteSuite's themes.ts the source of truth. A declaration
-is a wish; the cross-check below is the gate. When the LiteSuite checkout is
-present it re-extracts every preset's tokens and compares them to the port —
-the first hand-edited hex in themes.py fails here with the exact field named.
+⚠️ THIS FILE USED TO HOLD A CROSS-REPO DRIFT GATE and no longer does.
+`test_the_port_matches_the_source_token_for_token` re-extracted LiteSuite's
+themes.ts and failed on the first mismatched hex. It was DELETED 2026-08-28 by
+Ryan's ruling *let them diverge* — the palettes are independent now, LiteSuite
+`cb071ea4` moved matrix upstream, and this port deliberately does not follow.
+See themes.py's own header for the contract that replaced it.
+
+⇒ WHAT REMAINS HERE IS EVERY RULE THAT IS OURS ALONE: the presets exist, they
+are dark, none shadows a Textual builtin, the shade ladder is gray and muted,
+and `amber-ledger`'s success is NOT green. Those never depended on upstream,
+which is why the ruling did not touch them. **A test removed here would now
+lose a rule outright — there is no second gate behind these.**
 """
-import re
-from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from textual.theme import BUILTIN_THEMES
 
 from litetui import themes as themes_mod
 from litetui.app import LiteTUI
-
-LITESUITE_THEMES_TS = Path("C:/Projects/LiteSuite/apps/web/src/litesuite/lib/themes.ts")
 
 EXPECTED = [
     "oscura-midnight", "dusk", "lime", "ocean", "retro", "neo", "forest",
@@ -50,39 +53,6 @@ def test_amber_ledger_ok_is_deliberately_not_green():
     upstream carries a comment begging people not to. This is that comment,
     with teeth."""
     assert themes_mod.LITETUI_THEMES["amber-ledger"].success == "#8b8065"
-
-
-@pytest.mark.skipif(not LITESUITE_THEMES_TS.exists(),
-                    reason="LiteSuite checkout not present on this machine")
-def test_the_port_matches_the_source_token_for_token():
-    """THE DRIFT GATE. Re-extracts themes.ts and compares every mapped field.
-    themes.py says 'do not invent colors here' — this is what makes that
-    sentence enforceable rather than aspirational."""
-    src = LITESUITE_THEMES_TS.read_text(encoding="utf-8")
-    body = src.split("export const THEMES", 1)[1]
-    presets = {}
-    for m in re.finditer(r'id:\s*"([^"]+)"', body):
-        pid = m.group(1)
-        chunk = body[m.start():]
-        nxt = re.search(r'\n\s*id:\s*"', chunk[10:])
-        if nxt:
-            chunk = chunk[:nxt.start() + 10]
-        presets[pid] = dict(re.findall(r'(\w+):\s*"([^"]+)"', chunk))
-
-    mapping = {  # LiteSuite token -> Theme attribute
-        "accent": "primary", "accentBright": "secondary", "void": "background",
-        "panel": "surface", "shelf": "panel", "bone": "foreground",
-        "ok": "success", "danger": "error", "warning": "warning", "info": "accent",
-    }
-    mismatches = []
-    for pid, theme in themes_mod.LITETUI_THEMES.items():
-        assert pid in presets, f"{pid} ported but absent upstream"
-        for ls_tok, attr in mapping.items():
-            want = presets[pid].get(ls_tok)
-            got = getattr(theme, attr)
-            if want is not None and got != want:
-                mismatches.append(f"{pid}.{ls_tok}: port={got} source={want}")
-    assert not mismatches, "PORT DRIFTED FROM themes.ts:\n  " + "\n  ".join(mismatches)
 
 
 # --- persistence -------------------------------------------------------------
