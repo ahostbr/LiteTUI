@@ -45,12 +45,40 @@ fails if this file's top released heading disagrees with it.
   backend (llama router natively; an attached server refuses honestly), so
   GPU generations free the right VRAM on either engine.
 
+### Changed
+
+- **The theme palette is now independent of LiteSuite's**, by Ryan's ruling
+  2026-08-28: *let them diverge*. Every preset began as a token-for-token port
+  of LiteSuite's `themes.ts`, and that port is now a historical fact rather
+  than a live dependency — the values are frozen, and an upstream theme edit
+  is no longer a defect here. The cross-repo drift gate that enforced the old
+  contract is deleted; `themes.py`'s header carries the new one, including the
+  divergence that occasioned it (`matrix.panel` #0D0208 here vs #04170A
+  upstream, LiteSuite `cb071ea4`). Do not re-sync.
+
 ### Fixed
 
 - Setting top_k, min_p, or repeat_penalty in /settings would have crashed
   every request: the OpenAI client's `create()` has typed params and no
   `**kwargs`, and the sampling dict was passed at the top level. Non-native
   sampling fields now ride `extra_body`.
+- **The test suite could read and write the developer's own `settings.json`.**
+  `conftest.py`'s `_never_write_the_live_settings` is a pytest autouse fixture,
+  so it never reached the 13 script-style test files, which run as bare
+  `python tests/x.py` — the same 13 `pytest -q` cannot collect, so CI never saw
+  the consequence either. Four of those boot a real app and so loaded the live
+  file; `test_settings_live.py` drives `/settings` through it, which is the
+  exact route that once reset `tool_iterations` 100 → 48. All four now redirect
+  settings to a sandbox and **assert the redirect took**, via the new
+  `tests/_script_guard.py`. Evidence: the live file's md5 is unchanged across a
+  full `run_all.py` run.
+- The `dialog_style: "sidebar"` path — the shipped dialog mode — had no passing
+  test. Two files asserted the modal path while reading whatever the developer
+  happened to be running, so the suite went red on a correct build. Both now
+  pin the configuration they test.
+- `README.md` told new users to run `python test_convos.py`, a path that has not
+  existed since the runtime moved under `src/` (`ca6fef9`), and never mentioned
+  the llama.cpp backend at all.
 
 ## [0.21.0] — 2026-08-21
 
