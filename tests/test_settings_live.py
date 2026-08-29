@@ -14,6 +14,20 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import _script_guard  # tests/ is sys.path[0] when a file is run as a script
+
+# 🔴 THE HIGHEST-RISK FILE IN THE SCRIPT-STYLE SET, AND IT WAS THE LEAST GUARDED.
+# "live" in this file's name means a real running APP, not the live settings
+# FILE — but it drives `/settings` through that app, which is the exact route
+# `conftest.py`'s docstring records as having reset Ryan's `tool_iterations`
+# 100 -> 48 (`_on_settings_saved` -> `app.py:3452` -> `settings_mod.save(new)`
+# with no root=). conftest's autouse fixture closed that for the pytest half and
+# cannot reach a script-style file. See tests/_script_guard.py.
+_script_guard.pin_first_boot_env()
+_script_guard.redirect_live_settings()
+
+# Deliberately a SECOND import block: the env pin and the settings redirect must
+# run BETWEEN these imports, not before or after them.
 from litetui import app as m
 from litetui import paths
 from litetui import settings as settings_mod

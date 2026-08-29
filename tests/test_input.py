@@ -11,6 +11,22 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import _script_guard  # tests/ is sys.path[0] when a file is run as a script
+
+# 🔴 THIS FILE BOOTS A REAL `LiteTUI()`, WHICH LOADS THE REPO ROOT'S settings.json
+# — the developer's own gitignored config. `conftest.py`'s autouse guard cannot
+# reach a script-style file, so without this the modal/sidebar assertions below
+# read whatever `dialog_style` the human happens to be running. Measured
+# 2026-08-28: they failed 19/22 on Ryan's box (sidebar) and passed 22/22 against
+# the same tree with the value set to modal.
+# The env pin is the OTHER half and it is not optional: an empty sandbox boots
+# the first-boot engine picker, and app.py:3080 makes paste a no-op under any
+# modal — guard alone 15/22, guard + pin 22/22. See tests/_script_guard.py.
+_script_guard.pin_first_boot_env()
+_script_guard.redirect_live_settings()
+
+# Deliberately a SECOND import block: the env pin and the settings redirect must
+# run BETWEEN these imports, not before or after them.
 from litetui import app as m
 from litetui import paths
 

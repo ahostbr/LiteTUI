@@ -11,6 +11,18 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import _script_guard  # tests/ is sys.path[0] when a file is run as a script
+
+# 🔴 THIS FILE BOOTS A REAL `LiteTUI()` (below), which loads the repo root's
+# gitignored settings.json — the developer's own config. `conftest.py`'s autouse
+# guard is a pytest fixture and cannot reach a script-style file. The CONVO_DIR
+# line under this one has always redirected the transcript store; settings were
+# the half nobody redirected. See tests/_script_guard.py.
+_script_guard.pin_first_boot_env()
+_script_guard.redirect_live_settings()
+
+# Deliberately a SECOND import block: the env pin and the settings redirect must
+# run BETWEEN these imports, not before or after them.
 from litetui import app as m
 from litetui import paths
 from litetui import appsvc

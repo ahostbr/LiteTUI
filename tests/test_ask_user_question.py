@@ -20,6 +20,20 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import _script_guard  # tests/ is sys.path[0] when a file is run as a script
+
+# 🔴 `ask_user_question.py:623` branches on `app.settings.dialog_style`, so this
+# file's screen assertions are only meaningful against a KNOWN value. Booting a
+# real app reads the repo root's gitignored settings.json, and `conftest.py`'s
+# autouse guard does not reach a script-style file. Unguarded, the wait_for at
+# :130 timed out on Ryan's box (sidebar) while passing 48/48 at modal — the same
+# tree, the same commit. The env pin keeps the sandboxed boot off the first-boot
+# engine picker. See tests/_script_guard.py.
+_script_guard.pin_first_boot_env()
+_script_guard.redirect_live_settings()
+
+# Deliberately a SECOND import block: the env pin and the settings redirect must
+# run BETWEEN these imports, not before or after them.
 from litetui import app as m
 from litetui import paths
 from litetui import ask_user_question as aq
