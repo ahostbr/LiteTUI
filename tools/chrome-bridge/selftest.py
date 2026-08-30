@@ -253,7 +253,7 @@ def main() -> int:
     c2.close()
     ext2.stop()
 
-    # ---- relay mode: a persistent middle-man owns 7429, scripts attach to 7430
+    # ---- relay mode: a persistent middle-man owns 7461, scripts attach to 7462
     RPORT, RCLIENT = 7540, 7541
     threading.Thread(
         target=Relay(port=RPORT, client_port=RCLIENT, quiet=True).run, daemon=True

@@ -5,8 +5,14 @@ contents, and clicks elements. No `--remote-debugging-port`, no CDP, no MCP serv
 
 ## Why the extension is the client
 
-Python runs the WebSocket **server** on `127.0.0.1:7429`; the extension's service worker
+Python runs the WebSocket **server** on `127.0.0.1:7461`; the extension's service worker
 connects **out** to it and retries forever.
+
+> **Ports moved 7429/7430 → 7461/7462 (2026-08-30.)** LiteSound's python audio engine
+> binds 7429 and its ACE-Step sidecar binds 7430, both claimed months before this tool
+> took them. While LiteSound was running, the extension's dials reached uvicorn instead
+> of the relay. **After editing `extension/background.js` you must reload the unpacked
+> extension at `chrome://extensions`** — the worker keeps the old URL until you do.
 
 That inversion is the whole design. If Python were the client it would need the browser to
 be listening first, so you would need a long-lived daemon. Instead your script is the
@@ -25,7 +31,7 @@ reload actually took effect after editing `extension/`.
 
 ## Kill the idle errors: run the relay
 
-Left alone, the extension dials 7429 every few seconds and Chrome logs
+Left alone, the extension dials 7461 every few seconds and Chrome logs
 `ERR_CONNECTION_REFUSED` each time no script is running. That is not a fault - it is what
 an outbound client does when nobody is home - but it is noisy, and it costs each script up
 to one backoff interval (~5s) before it can start.
@@ -36,9 +42,9 @@ Run a persistent relay and both problems disappear:
 python bridge.py serve
 ```
 
-The relay owns 7429 and holds the extension connection open forever, so there are no
-refusals to log. Scripts need no changes: `Chrome()` tries to bind 7429, finds the relay
-there, and attaches to port 7430 as a client instead. Measured on a real browser:
+The relay owns 7461 and holds the extension connection open forever, so there are no
+refusals to log. Scripts need no changes: `Chrome()` tries to bind 7461, finds the relay
+there, and attaches to port 7462 as a client instead. Measured on a real browser:
 
 | | no relay | relay running |
 |---|---|---|
@@ -60,7 +66,7 @@ python relayctl.py
   --------------------------------------------------------------------
     status   RUNNING  extension v0.3.0  up 14s
     pid      204852
-    ports    7429 extension   7430 scripts
+    ports    7461 extension   7462 scripts
   --------------------------------------------------------------------
     log (relay.out.log)
       [relay] extension connected
@@ -77,9 +83,9 @@ Three states, not two, because "relay up" and "extension attached" fail separate
 | `NO EXTENSION` | relay up, extension has not dialled in yet (transient after a restart) |
 | `STOPPED` | nothing listening |
 
-Liveness is probed by speaking the actual protocol to port 7430, **not** by trusting
+Liveness is probed by speaking the actual protocol to port 7462, **not** by trusting
 `relay.pid` — a stale pidfile and a live relay look identical otherwise. It deliberately
-does not use `Chrome()` for the probe: `Chrome()` binds 7429 when it is free, so a
+does not use `Chrome()` for the probe: `Chrome()` binds 7461 when it is free, so a
 down relay would leave the monitor holding the very port it was checking and reporting
 itself healthy.
 

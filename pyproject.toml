@@ -24,7 +24,7 @@ dependencies = [
     # OpenAI-compat client for BOTH backends; the SDK is control-only.
     "lmstudio>=1.5.0",
     # Chrome-bridge relay (tools/chrome-bridge/bridge.py): WS server on
-    # 127.0.0.1:7429, extension scripts attach via 7430; uses the websockets
+    # 127.0.0.1:7461, extension scripts attach via 7462; uses the websockets
     # asyncio client+server API (floor >=15). Was hand-installed only - a fresh
     # venv built from this file would lack it and the chrome tool dies with an
     # unexplained ModuleNotFoundError.

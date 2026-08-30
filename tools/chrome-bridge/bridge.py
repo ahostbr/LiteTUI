@@ -32,8 +32,12 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.asyncio.server import serve
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 7429  # the extension always dials this one
-DEFAULT_CLIENT_PORT = 7430  # scripts dial this when a relay owns 7429
+# 7461/7462, not 7429/7430: those two belong to LiteSound, which claimed 7429 for
+# its python audio engine on 2026-05-29 (LiteSound 409043f) and 7430 for ACE-Step,
+# ~3 months before this tool took them. Whenever LiteSound's sidecar was up, the
+# extension's reconnect loop landed on uvicorn instead of the relay and got a 404.
+DEFAULT_PORT = 7461  # the extension always dials this one
+DEFAULT_CLIENT_PORT = 7462  # scripts dial this when a relay owns 7461
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHOT_DIR = os.path.join(HERE, "shots")
@@ -258,7 +262,7 @@ class Chrome:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
 
-        # Two ways to reach the extension, chosen by whoever owns port 7429.
+        # Two ways to reach the extension, chosen by whoever owns port 7461.
         #   direct: nothing is listening, so we become the server the extension
         #           dials. Short-lived scripts work with no daemon.
         #   relay:  a `bridge.py serve` already owns it and is holding the
@@ -304,7 +308,7 @@ class Chrome:
                 finally:
                     reader.cancel()
         except OSError as exc:
-            # 7429 was taken but 7430 refused: something else owns the port, or
+            # 7461 was taken but 7462 refused: something else owns the port, or
             # the relay died between our bind attempt and this connect.
             self._error = RuntimeError(
                 "port {} is in use but no relay answered on {} - is another "
@@ -351,7 +355,7 @@ class Chrome:
 class Relay:
     """Persistent middle-man: holds the extension connection open forever.
 
-    Without this, every script binds 7429 itself and the extension spends the
+    Without this, every script binds 7461 itself and the extension spends the
     gaps between scripts being refused - which Chrome logs at the network layer
     once per retry, and which costs each script up to one backoff interval
     before it can start. With a relay running, the extension connects once and

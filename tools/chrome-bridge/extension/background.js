@@ -2,7 +2,9 @@
 // Connects OUT to a Python WebSocket server on localhost and executes commands.
 // The extension is the client so the Python side can be a short-lived script.
 
-const WS_URL = "ws://127.0.0.1:7429";
+// Must match bridge.py DEFAULT_PORT. 7461, not 7429: LiteSound's python audio
+// engine owns 7429 and answered these dials with a 404 for months.
+const WS_URL = "ws://127.0.0.1:7461";
 const RETRY_MIN_MS = 1000;
 // 5s, not 30s: this ceiling is also the worst-case delay before a freshly
 // started script gets a connection, so it trades directly against the whole

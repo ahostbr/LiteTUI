@@ -38,7 +38,7 @@ GREEN, YELLOW, RED, CYAN = "\x1b[32m", "\x1b[33m", "\x1b[31m", "\x1b[36m"
 def probe(timeout: float = 1.5) -> tuple[str, str]:
     """Returns one of: up / no-extension / down, plus a detail string.
 
-    Deliberately NOT bridge.Chrome: that would try to bind 7429 first, and if
+    Deliberately NOT bridge.Chrome: that would try to bind 7461 first, and if
     the relay were down it would silently become the server itself - the tool
     would then report healthy because it had taken the port it was checking.
     """
