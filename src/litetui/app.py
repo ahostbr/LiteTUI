@@ -1259,6 +1259,14 @@ class LiteTUI(App):
                 component="harness",
                 operation="register",
                 status="failed",
+                # The REASON, not just the fact. This event fires once, at
+                # startup, and was the only durable trace of a seat that never
+                # joined the fleet -- but it recorded no error text, so
+                # runtime.jsonl could say registration failed and never why.
+                # The `_system` line below already showed it in the UI, which
+                # is gone the moment the app closes; this is the copy that
+                # survives to be read afterwards.
+                error=(self.seat.error or "unknown"),
             )
             self._system(f"harness seat OFFLINE ({self.seat.error or 'unknown'})")
             return

@@ -41,7 +41,6 @@ import pytest
 from litetui import app as app_mod
 from litetui import harness as harness_mod
 
-CLI_VERB = 3  # [python, "-m", "liteharness.cli", <verb>, ...]
 
 
 class _Transport:
@@ -64,7 +63,24 @@ class _Transport:
 
     @staticmethod
     def _verb(cmd) -> str:
-        return str(cmd[CLI_VERB]) if len(cmd) > CLI_VERB else ""
+        """The liteharness verb — FOUND, not indexed.
+
+        🔴 This was `cmd[3]`, hardcoding `[python, -m, liteharness.cli, verb]`.
+        When harness.py moved to the console script (`[liteharness.exe, verb]`)
+        the index landed on a flag, every `_ids_for` came back empty, and all
+        five tests below failed asserting "nothing ever announced the new id —
+        this is the shipped bug" WHILE THE SHIPPED BUG WAS ABSENT. A locator
+        that mislabels a launcher change as the regression it was written to
+        catch costs more than the coupling it saved: the failure text argues
+        confidently for the wrong diagnosis.
+
+        The verb is the first non-flag token after the launcher, which is true
+        of every shape this has had.
+        """
+        for token in [str(c) for c in cmd][1:]:
+            if not token.startswith("-"):
+                return token
+        return ""
 
     def _ids_for(self, verb: str) -> list[str]:
         out = []

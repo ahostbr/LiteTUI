@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from litetui import ttyguard
 import uuid
@@ -72,9 +73,74 @@ class _Refused:
     stderr = f"refused: {NO_HARNESS_ENV} is set"
 
 
-def _cli(argv: list[str], *, timeout: int):
+class _Unavailable:
+    """What the CLI door hands back when the liteharness launcher is missing.
+
+    A result object rather than a raised exception, for the same reason as
+    `_Refused`: every caller already branches on `returncode`. The stderr names
+    BOTH places that were searched, because "liteharness not installed" sent the
+    last reader looking for a missing package when the package was installed all
+    along — just not where this process could reach it.
+    """
+
+    returncode = 127  # shell convention for command-not-found
+    stdout = ""
+    stderr = (
+        "liteharness launcher not found: no 'liteharness' on PATH and no "
+        f"Scripts/liteharness.exe (or bin/liteharness) under {sys.base_prefix}"
+    )
+
+
+def _liteharness_exe() -> str | None:
+    """Absolute path to the liteharness CONSOLE SCRIPT, or None.
+
+    🔴 WHY NOT `[sys.executable, "-m", "liteharness.cli"]`, WHICH THIS REPLACED.
+    `sys.executable` is the LOCKED PROJECT VENV (run.bat: `uv run --locked`),
+    and `liteharness` is deliberately NOT in it — run.bat's header records why
+    the two environments must not couple, and pyproject pins this venv for the
+    app and its test gate, not for the fleet CLI. So every call in this module
+    ran `<.venv python> -m liteharness.cli` against an interpreter that answers
+    `No module named 'liteharness'`. Measured 2026-08-30 in this very venv.
+
+    The consequence was not "the harness CLI is unavailable", which would be
+    fine — LiteTUI runs unharnessed by design. It was that registration failed
+    at startup, silently and exactly once, so the seat never joined the fleet:
+    its inbox `new/` never drained and the footer reported a seat that did not
+    exist. THIS MODULE'S OWN DOCSTRING ALREADY KNEW: `_cli` below notes that
+    discover was inert "because the locked venv has no `liteharness` installed"
+    and files that under lucky accidents propping up a guard. The same fact was
+    the live defect one paragraph away, read as a test-isolation detail.
+
+    Resolution order, and why two of them:
+      1. `shutil.which` — the normal answer, and the one that keeps working if
+         liteharness is ever installed somewhere else on PATH.
+      2. `sys.base_prefix`/Scripts — because a venv puts ITS OWN Scripts first
+         on PATH, so `which` can be shadowed by exactly the environment that
+         caused this bug. base_prefix points at the interpreter the venv was
+         built FROM, which is where a `pip install --user`-style console script
+         actually lands.
+
+    None rather than a guess: a wrong path would fail inside the subprocess with
+    a WinError the caller reports as an unrelated crash.
+    """
+    found = shutil.which("liteharness")
+    if found:
+        return found
+    base = Path(sys.base_prefix)
+    for candidate in (base / "Scripts" / "liteharness.exe", base / "bin" / "liteharness"):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _cli(args: list[str], *, timeout: int):
     """THE ONE DOOR to the liteharness CLI. Every subprocess in this module
     goes through here, so the disabled-path check lives in ONE place.
+
+    `args` starts at the VERB (`["register", "--agent-id", ...]`); the door
+    prepends the launcher. Callers do not name an interpreter — that is the
+    whole point, and it is why the resolution above cannot be bypassed by a
+    call site written later.
 
     WHY A DOOR AND NOT FIVE GUARDS. `harness_disabled()` used to gate exactly
     two of this module's five live-state surfaces -- register and heartbeat,
@@ -96,7 +162,10 @@ def _cli(argv: list[str], *, timeout: int):
     """
     if harness_disabled():
         return _Refused()
-    return ttyguard.run(argv, timeout=timeout)
+    exe = _liteharness_exe()
+    if exe is None:
+        return _Unavailable()
+    return ttyguard.run([exe, *args], timeout=timeout)
 
 
 def new_agent_id() -> str:
@@ -178,7 +247,7 @@ class Seat:
         invisible: a heartbeat that omitted --session-pid would refresh the
         timestamp while quietly clearing the field that decides ghost-vs-live.
         """
-        return [sys.executable, "-m", "liteharness.cli", "register",
+        return ["register",
                 "--agent-id", self.agent_id,
                 "--cli", self.cli,
                 "--model", self.model,
@@ -280,8 +349,7 @@ class Seat:
             return
         try:
             _cli(
-                [sys.executable, "-m", "liteharness.cli", "deregister",
-                 "--agent-id", self.agent_id],
+                ["deregister", "--agent-id", self.agent_id],
                 timeout=15,
             )
         except Exception:
@@ -409,7 +477,7 @@ class Seat:
                 # fall through into the message body — combined with --body-file that
                 # is "both given" -> exit 1. Every send would fail for it.
                 r = _cli(
-                    [sys.executable, "-m", "liteharness.cli", "send", to,
+                    ["send", to,
                      "--body-file", str(tmp), "--from", self.agent_id],
                     timeout=30,
                 )
@@ -480,10 +548,7 @@ def discover() -> str:
     paint over the TUI.
     """
     try:
-        r = _cli(
-            [sys.executable, "-m", "liteharness.cli", "discover"],
-            timeout=30,
-        )
+        r = _cli(["discover"], timeout=30)
         out = (r.stdout or r.stderr or "").strip()
         return out or "(discover returned nothing)"
     except FileNotFoundError:
