@@ -535,6 +535,15 @@ def classify_studio(args: Mapping[str, object], _workspace: Path) -> Iterable[st
     return (NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION)
 
 
+def classify_listen(args: Mapping[str, object], _workspace: Path) -> Iterable[str]:
+    action = str(args.get("action") or "").lower()
+    if action == "status":
+        return (READ_ONLY,)
+    # A real listen launches llama-server and suspends the agent's own seat —
+    # visible machine changes, same class as studio's generate actions.
+    return (NETWORK, PROCESS_EXECUTION)
+
+
 def classify_harness(args: Mapping[str, object], _workspace: Path) -> Iterable[str]:
     action = str(args.get("action") or "").lower()
     if action in {"whoami", "discover", "check"}:
@@ -571,6 +580,11 @@ STUDIO_POLICY = ToolPolicy(
     frozenset({READ_ONLY}),
     "Inspect or generate with local studio applications",
     classify_args=classify_studio,
+)
+LISTEN_POLICY = ToolPolicy(
+    frozenset({READ_ONLY}),
+    "Listen to audio with the local Qwen2-Audio model",
+    classify_args=classify_listen,
 )
 HARNESS_POLICY = ToolPolicy(
     frozenset({READ_ONLY}),

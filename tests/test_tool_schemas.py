@@ -44,6 +44,7 @@ def _registered() -> dict[str, dict]:
     from litetui.chrome_tool import CHROME_TOOL_SPEC
     from litetui import file_tools as ft
     from litetui.harness import HARNESS_TOOL_SPEC
+    from litetui.listen_tool import LISTEN_TOOL_SPEC
     from litetui.pccontrol_tool import PCCONTROL_TOOL_SPEC
     from litetui.plugins import core_tools as ct
     from litetui.plugins.view_image import VIEW_IMAGE_TOOL_SPEC
@@ -52,7 +53,8 @@ def _registered() -> dict[str, dict]:
 
     specs = [
         ASK_USER_QUESTION_TOOL_SPEC, CHROME_TOOL_SPEC, HARNESS_TOOL_SPEC,
-        PCCONTROL_TOOL_SPEC, VIEW_IMAGE_TOOL_SPEC, SKILL_TOOL_SPEC,
+        LISTEN_TOOL_SPEC, PCCONTROL_TOOL_SPEC, VIEW_IMAGE_TOOL_SPEC,
+        SKILL_TOOL_SPEC,
         STUDIO_TOOL_SPEC, ct.BASH_SPEC, ct.READ_SPEC, ct.WRITE_SPEC,
         ct.WEB_FETCH_SPEC, ct.powershell_spec(),
         ft.GREP_TOOL_SPEC, ft.EDIT_TOOL_SPEC,

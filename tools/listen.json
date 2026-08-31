@@ -1,0 +1,39 @@
+{
+  "type": "function",
+  "function": {
+    "name": "listen",
+    "description": "Listen to audio with a LOCAL Qwen2-Audio model — no cloud, runs on this machine's GPU. Gives you ears: describe sounds, transcribe speech, characterize music.\naction=status: readiness report (server binary, model files, your seat state) — cheap, never touches the seat; run it first if unsure.\naction=file: listen to an existing audio file (needs `path`; any format ffmpeg reads).\naction=record: capture `seconds` from the microphone (`device` optional — default is the first Direct Show input; list names with `ffmpeg -f dshow -list_devices 1 -i dummy`).\nquestion: what to ask about the audio (default: describe exactly what is heard). Keep it specific.\nEach real listen SUSPENDS your own LM Studio model, runs Qwen2-Audio through a standalone llama-server on port 8090, and restores you at the same context — expect ~2-3 min per call and a slow first token afterwards. Silence is detected up front (peak < -60 dB) and reported WITHOUT any seat swap.\nTRUST its descriptions of speech/music content (speech transcription measured word-perfect). DO NOT trust exact numbers it reports: pitch/tempo/frequency are hallucinated — a pure 440Hz sine came back as '120 bpm'. For precise frequency or loudness analysis use ffmpeg instead of asking.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "status",
+            "file",
+            "record"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "file: path to an existing audio file (wav/mp3/m4a/ogg...)"
+        },
+        "seconds": {
+          "type": "number",
+          "description": "record: how many seconds to capture from the microphone"
+        },
+        "device": {
+          "type": "string",
+          "description": "record: Direct Show mic name (default: first found)"
+        },
+        "question": {
+          "type": "string",
+          "description": "what to ask about the audio"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  }
+}
