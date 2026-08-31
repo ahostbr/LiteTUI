@@ -32,9 +32,11 @@ dependencies = [
 ]
 
 [project.scripts]
-# `app:main` is real — src/app.py:5265. It resolves once the package actually
-# builds, which is what [build-system] above now provides.
-litetui = "litetui.app:main"
+# `cli:main` is a thin launcher (src/litetui/cli.py): it checks argv for
+# --version/-V BEFORE importing app, so the probe never pays Textual's cold-start.
+# The heavy path still lands on litetui.app.LiteTUI().run(), as before. It resolves
+# once the package actually builds — which is what [build-system] above provides.
+litetui = "litetui.cli:main"
 
 [dependency-groups]
 # The tooling the gates need, declared rather than assumed present. The project
