@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "studio",
-    "description": "Generate media with the LOCAL Lite studio apps — no API keys, no cloud, runs on this machine's GPU.\napp=image (LiteImage): actions status | generate (prompt, width/height/steps optional) | models | cancel. Generation is synchronous — the reply carries the saved file path.\napp=sound (LiteSound): actions status | generate (mode = music|song|sfx|ambient; prompt and/or lyrics; duration seconds) | job (job_id) | jobs | cancel (job_id) | gallery | backends. Generation is ASYNC: generate returns a job_id — poll with action=job until it reports done, then the file path is in the result. Do not spam polls; every few seconds is plenty.\napp=model (LiteModeler, prompt-to-3D): actions status | config | generate (prompt) | families — delegated to the `lst` CLI.\nimage and sound need their app RUNNING (status says). If one is not running, tell the human to open it — do not retry blind.\nVRAM: on generate actions this tool SUSPENDS your own model in LM Studio (the GPU is needed for the generation), runs the job to completion, then reloads you at the same context config. You will not notice the gap — but your FIRST reply afterwards re-reads the whole conversation (KV cache is gone), so expect a slow first token and say so if the human wonders. Sound generation is therefore handled to completion INSIDE the call — no polling needed when it returns.",
+    "description": "Generate media with the LOCAL Lite studio apps — no API keys, no cloud, runs on this machine's GPU.\napp=image (LiteImage): actions status | generate | models | load_model (file_path) | unload_model | config | cancel. Generation is synchronous — the reply carries the saved file path. Generate params: prompt + any of width/height/steps/guidance/negative_prompt/seed/sampler/scheduler/batch/lora_dir/init_image_path/strength/clip_skip/output_path/save_to_gallery. guidance defaults to 3.5 (the LiteImage UI value for flux1-dev; the raw API default of 7.5 overdrives it) — pass explicitly for other model families.\napp=sound (LiteSound): actions status | generate (mode = music|song|sfx|ambient; prompt and/or lyrics; duration seconds) | job (job_id) | jobs | cancel (job_id) | gallery | backends. Generation is ASYNC: generate returns a job_id — poll with action=job until it reports done, then the file path is in the result. Do not spam polls; every few seconds is plenty.\napp=model (LiteModeler, prompt-to-3D): actions status | config | generate (prompt) | families — delegated to the `lst` CLI.\nimage and sound need their app RUNNING (status says). If one is not running, tell the human to open it — do not retry blind. NEVER call LiteImage's HTTP API directly for GPU work: this tool suspends your own LM Studio model first (shared 5090 VRAM) and restores it after; a raw POST would OOM.\nVRAM: on generate/load_model actions this tool SUSPENDS your own model in LM Studio, runs the job to completion, then reloads you at the same context config. You will not notice the gap — but your FIRST reply afterwards re-reads the whole conversation (KV cache is gone), so expect a slow first token and say so if the human wonders. Sound generation is therefore handled to completion INSIDE the call — no polling needed when it returns.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -37,13 +37,88 @@
           "description": "sound: job to poll/cancel"
         },
         "width": {
-          "type": "number"
+          "type": "number",
+          "description": "image: pixels, multiple of 8, 256-1024"
         },
         "height": {
-          "type": "number"
+          "type": "number",
+          "description": "image: pixels, multiple of 8, 256-1024"
         },
         "steps": {
-          "type": "number"
+          "type": "number",
+          "description": "image: 1-50 (default 20)"
+        },
+        "guidance": {
+          "type": "number",
+          "description": "image: CFG scale, default 3.5"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "description": "image: what to avoid"
+        },
+        "seed": {
+          "type": "number",
+          "description": "image: -1 = random"
+        },
+        "sampler": {
+          "type": "string",
+          "enum": [
+            "euler",
+            "euler_a",
+            "heun",
+            "dpm2",
+            "dpm++2s_a",
+            "dpm++2m",
+            "dpm++2mv2",
+            "ipndm",
+            "ipndm_v",
+            "lcm"
+          ],
+          "description": "image: sampling method (default euler)"
+        },
+        "scheduler": {
+          "type": "string",
+          "enum": [
+            "default",
+            "discrete",
+            "karras",
+            "exponential",
+            "ays",
+            "gits"
+          ],
+          "description": "image: sigma scheduler (default 'default')"
+        },
+        "batch": {
+          "type": "number",
+          "description": "image: images per call (default 1)"
+        },
+        "lora_dir": {
+          "type": "string",
+          "description": "image: LoRA search dir override; tag with <lora:name> in prompt"
+        },
+        "init_image_path": {
+          "type": "string",
+          "description": "image: enables img2img (with strength)"
+        },
+        "strength": {
+          "type": "number",
+          "description": "image: img2img influence 0.0-1.0"
+        },
+        "clip_skip": {
+          "type": "number",
+          "description": "image: CLIP skip layers"
+        },
+        "output_path": {
+          "type": "string",
+          "description": "image: copy result to this path"
+        },
+        "save_to_gallery": {
+          "type": "boolean",
+          "description": "image: insert into the LiteImage gallery DB"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "image load_model: checkpoint path (from action=models)"
         }
       },
       "required": [

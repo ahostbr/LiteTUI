@@ -168,7 +168,10 @@ def test_image_generate_posts_prompt_and_optionals(monkeypatch):
                            "prompt": "a fox", "width": 1024, "steps": 20})
 
     assert calls["url"].endswith("/generate")
-    assert calls["body"] == {"prompt": "a fox", "width": 1024, "steps": 20}
+    # guidance_scale is pinned to LiteImage's UI default (3.5) when the
+    # caller passes no explicit `guidance` — see _image() in studio_tool.py.
+    assert calls["body"] == {"prompt": "a fox", "width": 1024, "steps": 20,
+                             "guidance_scale": 3.5}
     assert calls["timeout"] == studio_tool.IMAGE_GEN_TIMEOUT, (
         "image generation is synchronous — a quick timeout would kill real runs"
     )

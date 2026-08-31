@@ -76,25 +76,68 @@ def _not_running(app: str, url: str, err: Exception) -> str:
 
 # -- image ---------------------------------------------------------------
 
+#: tool arg name -> LiteImage API field. Omitted args fall back to the API's
+#: own defaults — EXCEPT guidance_scale, which is pinned in generate below.
+_IMAGE_PASSTHROUGH = {
+    "width": "width",
+    "height": "height",
+    "steps": "steps",
+    "guidance": "guidance_scale",
+    "negative_prompt": "negative_prompt",
+    "seed": "seed",
+    "sampler": "sampling_method",
+    "scheduler": "scheduler",
+    "batch": "batch_count",
+    "lora_dir": "lora_dir",
+    "init_image_path": "init_image_path",
+    "strength": "strength",
+    "clip_skip": "clip_skip",
+    "output_path": "output_path",
+}
+
+
 def _image(action: str, args: dict) -> str:
     try:
         if action == "status":
             return _fmt(_http("GET", f"{IMAGE_URL}/status", timeout=3))
         if action == "models":
             return _fmt(_http("GET", f"{IMAGE_URL}/models", timeout=30))
+        if action == "config":
+            return _fmt(_http("GET", f"{IMAGE_URL}/config", timeout=10))
         if action == "cancel":
             return _fmt(_http("POST", f"{IMAGE_URL}/cancel", body={}))
+        if action == "load_model":
+            file_path = (args.get("file_path") or "").strip()
+            if not file_path:
+                return ("Error: 'file_path' is required for image load_model. "
+                        "Use action=models to list available checkpoints.")
+            # Loading a big GGUF takes real time — same budget as generation.
+            return _fmt(_http("POST", f"{IMAGE_URL}/load_model",
+                              body={"file_path": file_path}, timeout=300))
+        if action == "unload_model":
+            return _fmt(_http("POST", f"{IMAGE_URL}/unload_model", body={}))
         if action == "generate":
             prompt = (args.get("prompt") or "").strip()
             if not prompt:
                 return "Error: 'prompt' is required for image generate."
             body = {"prompt": prompt}
-            for key in ("width", "height", "steps"):
-                if args.get(key) is not None:
-                    body[key] = args[key]
+            for arg_key, api_key in _IMAGE_PASSTHROUGH.items():
+                if args.get(arg_key) is not None:
+                    body[api_key] = args[arg_key]
+            # The API's own guidance default (7.5) does NOT match LiteImage's
+            # UI default (3.5), and for flux1-dev the overdriven CFG produced
+            # blurry/overprocessed results while the UI was fine with 3.5
+            # (Ryan, 2026-08-29: "the issue is the settings you're using").
+            # Pin the tool default to the UI value; an explicit `guidance` arg
+            # overrides it for other model families.
+            if "guidance_scale" not in body:
+                body["guidance_scale"] = 3.5
+            if args.get("save_to_gallery") is True:
+                body["save_to_gallery"] = True
             return _fmt(_http("POST", f"{IMAGE_URL}/generate", body,
                               timeout=IMAGE_GEN_TIMEOUT))
-        return f"Error: unknown image action {action!r} (status, generate, models, cancel)"
+        return (f"Error: unknown image action {action!r} "
+                "(status, generate, models, load_model, unload_model, config, cancel)")
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         return _not_running("LiteImage", IMAGE_URL, e)
 
@@ -191,8 +234,10 @@ def _model(action: str, args: dict) -> str:
 # -- entry ---------------------------------------------------------------
 
 #: Actions that light up the GPU. Everything else (status, job, gallery,
-#: models, config...) is a lookup and never touches the seat.
-_GPU_ACTIONS = {"generate"}
+#: models, config...) is a lookup and never touches the seat. load_model
+#: joins generate: loading a big GGUF needs the VRAM the seat occupies, so it
+#: suspends first like any generation.
+_GPU_ACTIONS = {"generate", "load_model"}
 
 
 def _generate_suspended(app: str, action: str, args: dict, seat_model: str,
