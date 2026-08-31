@@ -1,0 +1,33 @@
+{
+  "type": "function",
+  "function": {
+    "name": "edit",
+    "description": "Exact old_string -> new_string replacement in one existing file. The file must have been read (via the read tool) since its last change, and old_string must occur exactly once unless replace_all=true — ambiguity is an error, never a guess. Use write for creating new files; edit only modifies existing ones.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to the file to modify"
+        },
+        "old_string": {
+          "type": "string",
+          "description": "Exact text to find (must be non-empty and unique unless replace_all)"
+        },
+        "new_string": {
+          "type": "string",
+          "description": "Replacement text (empty string deletes the span)"
+        },
+        "replace_all": {
+          "type": "boolean",
+          "description": "Replace every occurrence instead of requiring exactly one"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ]
+    }
+  }
+}

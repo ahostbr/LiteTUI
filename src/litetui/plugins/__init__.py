@@ -48,6 +48,7 @@ PROMPT_ORDER = {
 # assumption, so the ordering is kept until someone proves it free.
 PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.core_tools",
+    "litetui.plugins.file_tools",
     "litetui.plugins.runtime_log_plugin",
     "litetui.plugins.view_image",
     "litetui.plugins.pccontrol",

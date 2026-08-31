@@ -16,6 +16,7 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
+from litetui import file_state
 from litetui import ttyguard
 from litetui.fmt import fmt_dur
 from litetui.plugins import PluginManifest
@@ -261,6 +262,7 @@ def tool_read(args: dict) -> str:
         note = f"\n\n[truncated at {TOOL_MAX_LINES} lines / {TOOL_MAX_BYTES // 1024}KB. Use offset={end + 1} to continue.]"
     elif end < total:
         note = f"\n\n[{total - end} more lines in file. Use offset={end + 1} to continue.]"
+    file_state.record_read(p)  # feed edit's guard: serving this read counts as having seen the file
     return chunk + note
 
 
@@ -278,6 +280,7 @@ def tool_write(args: dict) -> str:
         p.write_text(content, encoding="utf-8")
     except Exception as e:
         return f"[error] write failed: {type(e).__name__}: {e}"
+    file_state.record_read(p)  # feed edit's guard: the model just wrote every byte
     return f"Wrote {len(content)} chars to {p}"
 
 

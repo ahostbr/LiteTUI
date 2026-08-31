@@ -1,0 +1,36 @@
+{
+  "type": "function",
+  "function": {
+    "name": "grep",
+    "description": "Search files with ripgrep (regex, Rust syntax). Returns structured file:line:text matches in content mode (default) or just matching paths in files mode. Respects .gitignore and skips hidden/binary files by default. A no-match result is NOT an error.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression to search for (Rust regex syntax)"
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search (default: current working directory)"
+        },
+        "glob": {
+          "type": "string",
+          "description": "Glob filter for which files to search, e.g. '*.py'"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["content", "files"],
+          "description": "content = file:line:text matches (default); files = matching paths only"
+        },
+        "max_results": {
+          "type": "number",
+          "description": "Hard cap on result lines before truncation (default 200, max 1000)"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  }
+}
