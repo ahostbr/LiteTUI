@@ -142,10 +142,11 @@ class TurnEngine:
         # reasoning_effort rides extra_body so the value lands in the JSON
         # verbatim: the client types it as a fixed Literal, and two of LM
         # Studio's six ("none", "xhigh") are not in it.
-        if thinking_level:
-            extra["reasoning_effort"] = (
-                "none" if thinking_level == "off" else thinking_level
-            )
+        # The per-model Thinking Level (/modelcfg Inference tab) arrives here
+        # already merged into extra; blank there means inherit the global.
+        level = extra.pop("reasoning_effort", None) or thinking_level
+        if level:
+            extra["reasoning_effort"] = "none" if level == "off" else level
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
@@ -156,7 +157,8 @@ class TurnEngine:
         model_id: str | None,
         messages: list[dict],
         max_tokens: int,
-        thinking_level: str,
+        thinking_level: str | None,
+        request_overrides: dict | None = None,
         tools_enabled: bool,
         tools: list[dict] | None = None,
     ) -> dict:
@@ -171,17 +173,23 @@ class TurnEngine:
         reasons at ITS OWN default anyway. See the host's
         `_warn_reasoning_ignored`, which detects that in band.
         """
+        # The per-model Thinking Level wins over the compact global; blank
+        # there means inherit it — same rule as a chat turn.
+        level = (request_overrides or {}).get("reasoning_effort") or thinking_level
+        # Symmetric with the chat arm: an absent level must leave the server's
+        # own default in charge, not send a null. 'off' is this app's word;
+        # the wire says 'none'.
+        extra_body: dict = {}
+        if level:
+            extra_body["reasoning_effort"] = "none" if level == "off" else level
         kwargs: dict = {
             "model": model_id or "local-model",
             "messages": messages,
             "stream": True,
             "max_tokens": max_tokens,
-            "extra_body": {
-                "reasoning_effort": (
-                    "none" if thinking_level == "off" else thinking_level
-                )
-            },
         }
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         if tools is not None:
             # Passed so STEP 1 of COMPACT_PROMPT can actually happen. Without
             # them the instruction to persist is theatre.

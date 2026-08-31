@@ -170,8 +170,9 @@ def test_a_compaction_sends_NO_stream_options_unlike_a_chat_turn():
 
 
 def test_a_compaction_sends_no_sampling_overrides():
-    """A compaction is not a creative turn; it takes the server's defaults.
-    There is no request_overrides parameter at all, by design."""
+    """A compaction is not a creative turn; it takes the server's defaults
+    for SAMPLING. The per-model dict rides in only to carry the thinking
+    level — sampling knobs are not read from it here."""
     k = _compact()
     assert "temperature" not in k and "top_p" not in k
 
@@ -179,6 +180,44 @@ def test_a_compaction_sends_no_sampling_overrides():
 def test_the_compaction_thinking_level_is_its_own_setting():
     assert _compact(thinking_level="off")["extra_body"]["reasoning_effort"] == "none"
     assert _compact(thinking_level="xhigh")["extra_body"]["reasoning_effort"] == "xhigh"
+
+
+# ── per-model thinking level (/modelcfg Inference tab) ───────────────
+
+
+def test_a_per_model_thinking_level_wins_over_the_global_one():
+    """The /modelcfg row arrives merged into request_overrides; it must beat
+    the global level for this model, not sit beside it."""
+    k = _chat(thinking_level="xhigh", request_overrides={"reasoning_effort": "low"})
+    assert k["extra_body"]["reasoning_effort"] == "low"
+
+
+def test_a_per_model_off_is_sent_as_none_like_the_global_one():
+    """Same wire vocabulary either way: 'off' is this app's word, LM Studio
+    accepts 'none'. A per-model off must not leak the raw word."""
+    k = _chat(thinking_level="medium", request_overrides={"reasoning_effort": "off"})
+    assert k["extra_body"]["reasoning_effort"] == "none"
+
+
+def test_a_blank_per_model_inherits_the_global_level():
+    """Blank is stored as ABSENT (the screen pops it), so no key in the
+    overrides dict IS the blank — and the global level must come through."""
+    k = _chat(thinking_level="xhigh", request_overrides={"temperature": 0.5})
+    assert k["extra_body"]["reasoning_effort"] == "xhigh"
+
+
+def test_compaction_honours_the_per_model_thinking_level_too():
+    """The semantic loss Ryan actually hit: compact 'low' silently becoming a
+    model's xhigh default. A per-model off must reach the compaction request."""
+    k = _compact(request_overrides={"reasoning_effort": "off"})
+    assert k["extra_body"]["reasoning_effort"] == "none"
+
+
+def test_compaction_with_no_level_sends_no_extra_body_either():
+    """Symmetric with the chat arm (test_no_thinking_level_sends_no_extra_body_at_all):
+    an absent level must leave the server's own default in charge, not send a null.
+    The compact arm used to always write it -- this pins the guard."""
+    assert "extra_body" not in _compact(thinking_level=None)
 
 
 def test_tools_ride_along_so_step_1_of_the_compact_prompt_can_happen():

@@ -204,15 +204,21 @@ _LOAD_FIELDS: list[tuple] = [
 #: Inference tab rows (override keys). Blank = inherit the global /settings
 #: value; the placeholder SHOWS what is inherited so blank is never a mystery.
 _INFER_FIELDS: list[tuple] = [
-    ("temperature", "Temperature", "float"),
-    ("top_p", "Top P Sampling", "float"),
-    ("top_k", "Top K Sampling", "int"),
-    ("min_p", "Min P Sampling", "float"),
-    ("repeat_penalty", "Repeat Penalty", "float"),
-    ("presence_penalty", "Presence Penalty", "float"),
-    ("frequency_penalty", "Frequency Penalty", "float"),
-    ("max_tokens", "Limit Response Length (tokens)", "int"),
-    ("stop", "Stop Strings (comma-separated)", "text"),
+    ("temperature", "Temperature", "float", None),
+    ("top_p", "Top P Sampling", "float", None),
+    ("top_k", "Top K Sampling", "int", None),
+    ("min_p", "Min P Sampling", "float", None),
+    ("repeat_penalty", "Repeat Penalty", "float", None),
+    ("presence_penalty", "Presence Penalty", "float", None),
+    ("frequency_penalty", "Frequency Penalty", "float", None),
+    ("max_tokens", "Limit Response Length (tokens)", "int", None),
+    ("stop", "Stop Strings (comma-separated)", "text", None),
+    # Per-model thinking level: wins over the global /think for this
+    # model, blank = inherit it. A request-time knob that rides
+    # extra_body — works on BOTH backends, unlike the Load tab which is
+    # llama.cpp's flag world.
+    ("reasoning_effort", "Thinking Level (per-model)", "select",
+     ["off", "minimal", "low", "medium", "high", "xhigh"]),
 ]
 
 #: LM Studio panel rows with NO llama-server equivalent — rendered as honest
@@ -324,8 +330,12 @@ class ModelConfigScreen(ModalScreen[None]):
                             "request, no reload needed.",
                             classes="set-help",
                         )
-                        for key, label, kind in _INFER_FIELDS:
+                        for row in _INFER_FIELDS:
+                            key, label, kind = row[0], row[1], row[2]
+                            choices = row[3] if len(row) > 3 else None
                             inherited = getattr(app.settings, key, None)
+                            blank_label = "server default"
+                            note = ""
                             if key == "stop":
                                 inherited = ",".join(app.settings.stop) or None
                             if key == "max_tokens":
@@ -333,10 +343,22 @@ class ModelConfigScreen(ModalScreen[None]):
                                     app.settings.max_tokens_tools
                                     if app.tools_enabled else app.settings.max_tokens_chat
                                 )
+                            if key == "reasoning_effort":
+                                # Inherits the GLOBAL thinking level and applies to
+                                # chat AND compaction — not a server default.
+                                inherited = app.thinking_level or None
+                                blank_label = (
+                                    f"inherit global ({app.thinking_level})"
+                                    if app.thinking_level else "inherit global (unset)"
+                                )
+                                note = ("applies to chat + compaction; off sends none "
+                                       "(no reasoning trace)")
                             yield from self._field_rows(
                                 "inf", key, label, kind,
-                                f"inherited: {inherited}" if inherited is not None else "server default",
+                                choices if choices is not None else
+                                    (f"inherited: {inherited}" if inherited is not None else "server default"),
                                 infer_cfg.get(key),
+                                note=note, blank_label=blank_label,
                             )
                         if "jinja" in flags and on_llama:
                             yield from self._field_rows(
@@ -373,17 +395,18 @@ class ModelConfigScreen(ModalScreen[None]):
                         )
 
     def _field_rows(self, prefix: str, key: str, label: str, kind: str, extra,
-                    current, disabled: bool = False, note: str = ""):
+                    current, disabled: bool = False, note: str = "",
+                    blank_label: str = "server default"):
         wid = f"{prefix}-{key}"
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             if kind == "tri":
-                choices = [("server default", ""), ("on", "true"), ("off", "false")]
+                choices = [(blank_label, ""), ("on", "true"), ("off", "false")]
                 value = "" if current is None else ("true" if current else "false")
                 yield Select(choices, value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "select":
-                choices = [("server default", "")] + [(c, c) for c in extra]
+                choices = [(blank_label, "")] + [(c, c) for c in extra]
                 value = current if current in (extra or []) else ""
                 yield Select(choices, value=value, id=wid,
                              allow_blank=False, disabled=disabled)

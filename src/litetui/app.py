@@ -4270,6 +4270,7 @@ class LiteTUI(App):
                     messages=ask,
                     max_tokens=self.settings.compact_max_tokens,
                     thinking_level=self.settings.compact_thinking_level,
+                    request_overrides=self.backend.request_overrides(self.model_id),
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                 )
