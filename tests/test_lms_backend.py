@@ -14,6 +14,7 @@ import types
 import pytest
 
 from litetui import llm_backend
+from litetui import runtime_log
 from litetui.llm_backend import BackendError, LMStudioBackend
 from litetui.settings import Settings
 
@@ -109,11 +110,18 @@ def test_model_info_ceiling_vs_window(monkeypatch):
 
 
 def test_errors_name_the_host(monkeypatch):
+    """The host must still be identifiable — T137 moved it out of the
+    user-facing line (no URLs, rule b) and into the error sink."""
     def boom(url, body=None, timeout=10):
         raise OSError("connection refused")
 
+    seen = []
     monkeypatch.setattr(llm_backend, "_http_json", boom)
+    monkeypatch.setattr(runtime_log, "record_error", lambda event, **kw: seen.append(kw))
     b = _backend()
     with pytest.raises(BackendError) as exc:
         asyncio.run(b.list_models())
-    assert "http://localhost:1234" in str(exc.value)
+    # Plain words in chat — no URL.
+    assert "http://localhost:1234" not in str(exc.value)
+    # The host rides in the sink's detail, where raw detail belongs.
+    assert any("http://localhost:1234" in d.get("detail", "") for d in seen)

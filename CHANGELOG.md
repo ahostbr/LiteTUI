@@ -18,6 +18,41 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-09-01
+
+Hotfix release: the wheel actually launches from PyPI, and errors speak
+plain words.
+
+### Fixed
+
+- **The wheel ships its data (T135).** First launch from a PyPI install
+  crashed at import time: `schemas/*.json` and `prompts/*.md` lived
+  outside the package and were never packaged. Both trees now live inside
+  `litetui/`, are declared in `[tool.setuptools.package-data]` and
+  MANIFEST.in, and resolve via `importlib.resources` (with a legacy
+  fallback for repo runs). A new CI gate (`tools/wheel_import_gate.py`)
+  builds the wheel, verifies it contains every schema and prompt on disk,
+  installs it into a scratch venv, and imports plus loads everything
+  there — so this class of breakage fails in CI, not at someone's first
+  launch.
+- **Errors speak plain words (T137).** Every user-facing error line that
+  used to carry a URL, a WinError code, or an exception repr now says what
+  seems wrong and what to do — LM Studio closing mid-turn reads "LM Studio
+  Seems Closed. Switch Backends Or Start LM Studio." The raw detail (host
+  tried, full traceback, spawned-server log tails) goes to a NEW second
+  sink, `.logs/runtime-errors.log` beside `runtime.jsonl`, via
+  `runtime_log.record_error(...)`. The metadata sanitizer has always
+  rejected raw text, so until now that detail went nowhere. Sites: backend
+  connect / no-models / context-length / turn-open / mid-stream /
+  compact-fail / settings-save / resume / harness seat (app.py), every
+  BackendError message at source (llm_backend.py), listen server
+  spawn/exit/inference, studio not-running, glassbox bind.
+
+### Changed
+
+- **Splash tagline** is "local-only coding agent", not "local-first chat"
+  (T136).
+
 ## [0.22.0] — 2026-08-31
 
 First published release (PyPI).

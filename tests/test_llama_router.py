@@ -15,6 +15,7 @@ import pytest
 
 from litetui import llm_backend
 from litetui import paths
+from litetui import runtime_log
 from litetui.llm_backend import BackendError, LlamaCppBackend
 from litetui.settings import Settings
 
@@ -210,7 +211,9 @@ def test_attached_refuses_management(stub, tmp_path):
         # signed claim, never by the shape of the server.
         assert "another app owns" in str(exc.value)
         assert "LiteSuite" not in str(exc.value)
-        assert stub.host in str(exc.value)
+        # T137: no URL in the user-facing line — which host was tried rides in
+        # the error sink.
+        assert stub.host not in str(exc.value)
 
 
 def test_load_error_body_is_surfaced(stub, tmp_path):
@@ -263,10 +266,19 @@ def test_load_fails_fast_when_the_worker_dies_at_argv(stub, tmp_path, monkeypatc
         "has been removed. use --spec-draft-n-max\n",
         encoding="utf-8",
     )
+    seen = []
+    monkeypatch.setattr(runtime_log, "record_error", lambda event, **kw: seen.append(kw))
     b = _backend(stub, tmp_path)
     with pytest.raises(BackendError) as exc:
         _run(b.load("m1"))
-    assert "--draft-max" in str(exc.value), "the error must name the bad argument"
+    msg = str(exc.value)
+    # T137: the raw log line (naming --draft-max) lands in the error sink, not
+    # the user-facing line; the line names the model and points at OUR OWN log.
+    assert "--draft-max" not in msg
+    assert "m1" in msg
+    assert "litetui-llama-server.log" in msg
+    assert any("--draft-max" in d.get("detail", "") for d in seen), \
+        "the bad argument must still be identifiable — now via the sink"
 
 
 def test_seat_cycle_on_router(stub, tmp_path):
@@ -291,4 +303,7 @@ def test_seat_refusal_when_attached(stub, tmp_path):
     stub.add("seat", state="loaded")
     assert b.seat_snapshot("seat") is None, "an unmanageable seat must read as not-suspendable"
     err = b.seat_suspend({"identifier": "seat"})
-    assert err and "LiteSuite owns" in err
+    # T137 wording: the owner is read from router.json (this stub wrote none),
+    # so it is honestly "another app" — never a baked-in LiteSuite guess.
+    assert err and "another app owns" in err
+    assert "LiteSuite" not in err

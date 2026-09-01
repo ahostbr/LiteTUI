@@ -33,6 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from litetui import runtime_log
 from litetui.plugins import PluginManifest
 
 PLUGIN_ID = "glassbox"
@@ -182,7 +183,15 @@ class Server:
             self._httpd = ThreadingHTTPServer((HOST, port), _Handler)
         except OSError as e:
             self._httpd = None
-            return f"[error] cannot bind {HOST}:{port} — {e}"
+            # T137: the raw WinError (usually 10048 — port busy) goes to the
+            # sink; the line names what seems wrong and what to do.
+            runtime_log.record_error(
+                "glassbox_bind_failed",
+                detail=f"bind {HOST}:{port}: {type(e).__name__}: {e}",
+                exc=e,
+            )
+            return ("[error] could not start the glassbox server — its port is "
+                    "probably busy. Close whatever holds it and retry.")
         self.port = port
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="glassbox-sse", daemon=True

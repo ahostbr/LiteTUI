@@ -226,7 +226,10 @@ def test_management_is_refused_and_never_reaches_the_404_routes(single):
         with pytest.raises(BackendError) as exc:
             _run(coro)
         msg = str(exc.value)
-        assert single.host in msg, "the error names the server it is about"
+        # T137: no URL in the user-facing line — the situation (one model, no
+        # switch route) is what must be named; which host was tried rides in
+        # the error sink.
+        assert single.host not in msg
         assert "one model" in msg, f"say WHY it cannot be done — got {msg!r}"
     assert len([r for r in single.requests if r[0] == "POST"]) == before, \
         "no request may be sent to a route that does not exist"

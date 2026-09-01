@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.request
 
+from litetui import runtime_log
 from litetui import seat_guard
 from litetui import ttyguard
 from litetui import tool_schemas
@@ -67,10 +68,16 @@ def _fmt(result: dict) -> str:
 
 
 def _not_running(app: str, url: str, err: Exception) -> str:
+    # T137: no URL or class name in the line a human reads — which address was
+    # tried and what raised go to the error sink.
+    runtime_log.record_error(
+        "studio_app_not_running",
+        detail=f"{app} at {url}: {type(err).__name__}: {err}",
+        exc=err,
+    )
     return (
-        f"[{app} not available] no answer at {url} ({err.__class__.__name__}). "
-        f"The {app} desktop app must be RUNNING for this — ask the human to "
-        f"open it, then retry."
+        f"[{app} not available] The {app} desktop app must be RUNNING for this — "
+        f"ask the human to open it, then retry."
     )
 
 

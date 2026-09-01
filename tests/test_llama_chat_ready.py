@@ -278,7 +278,10 @@ def test_a_model_the_server_does_not_have_is_named(router):
     with pytest.raises(BackendError) as exc:
         _run(b.ensure_chat_ready("ghost"))
     msg = str(exc.value)
-    assert "ghost" in msg and router.host in msg
+    # T137: the model name stays (it is the action); the host URL no longer
+    # rides in the user-facing line — it goes to the error sink.
+    assert "ghost" in msg
+    assert router.host not in msg
     assert "not loaded" not in msg, \
         "'absent' and 'cold' are different problems with different fixes"
 

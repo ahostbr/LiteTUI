@@ -301,6 +301,82 @@ TOOLS_DISABLED_PROMPT = (
 )
 
 
+# ── T137: plain-words error surface ────────────────────────────────
+# The user-facing line names WHAT seems wrong and WHAT to do, in one or two
+# sentences. No URLs, no WinError codes, no exception reprs — the raw detail
+# goes beside it into runtime_log.record_error (runtime-errors.log), never
+# into chat. These helpers are the ONLY place that decides what a backend
+# failure says out loud; every site in this file routes through them.
+
+
+def _connection_family(exc: BaseException) -> bool:
+    """True when the exception chain is a dead or unreachable server, not a
+    protocol or content error.
+
+    Two passes, deliberately ordered:
+      1. DEFINITIVE — walk __cause__/__context__ (and URLError.reason, which
+         holds the OS error as an attribute rather than a cause) looking for
+         ConnectionError/TimeoutError subclasses. This is what catches the
+         BackendError-wrapped-URLError case, because llm_backend raises with
+         `from e`. A SUPPRESSED context (`raise ... from None`) is never
+         walked: it is hidden on purpose — our own wait_for bound expiring
+         behind a 'still loading' refusal must not read as a dead server.
+      2. TEXTUAL — openai.APIConnectionError may carry no OS-level cause at
+         all (its message can be a bare "Connection error."), so sniff the
+         text of NON-BackendError exceptions only: a cleaned backend message
+         that merely mentions "timeout" must never be misread as a dead
+         server.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if isinstance(cur, (ConnectionError, TimeoutError)):
+            return True
+        reason = getattr(cur, "reason", None)   # URLError wraps the OS error here
+        if isinstance(reason, BaseException):
+            stack.append(reason)
+        # Walk the DECLARED cause always; the implicit context only when
+        # it was not suppressed. `raise ... from None` hides its context on
+        # purpose (e.g. wait_for's TimeoutError behind our own bound), and a
+        # hidden context is an implementation detail, not this failure's why.
+        if cur.__cause__ is not None:
+            stack.append(cur.__cause__)
+        elif not cur.__suppress_context__ and cur.__context__ is not None:
+            stack.append(cur.__context__)
+    if not isinstance(exc, llm_backend.BackendError):
+        text = str(exc).lower()
+        needles = ("winerror 10061", "refused", "timed out", "timeout",
+                   "connection error")
+        return any(needle in text for needle in needles)
+    return False
+
+
+def _plain_backend_error(e: BaseException, backend_name: str | None = None) -> str:
+    """The words the user reads when a backend call fails.
+
+    Order matters and is deliberate:
+      1. connection family FIRST — llm_backend wraps URLError into a
+         BackendError `from e`, so checking BackendError first would hide the
+         "server seems closed" copy behind the wrapper's message;
+      2. BackendError — its message was cleaned at source (T137);
+      3. anything else gets one plain sentence, never a repr.
+    """
+    if _connection_family(e):
+        if backend_name == "lmstudio":
+            return "LM Studio Seems Closed. Switch Backends Or Start LM Studio."
+        if backend_name == "llamacpp":
+            return ("The llama.cpp server seems closed — start it, or switch "
+                    "backends (/backend).")
+        return "The model server seems closed — start it, or check /backend."
+    if isinstance(e, llm_backend.BackendError):
+        return str(e)
+    return "Something went wrong talking to the model server."
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -1259,16 +1335,17 @@ class LiteTUI(App):
                 component="harness",
                 operation="register",
                 status="failed",
-                # The REASON, not just the fact. This event fires once, at
-                # startup, and was the only durable trace of a seat that never
-                # joined the fleet -- but it recorded no error text, so
-                # runtime.jsonl could say registration failed and never why.
-                # The `_system` line below already showed it in the UI, which
-                # is gone the moment the app closes; this is the copy that
-                # survives to be read afterwards.
-                error=(self.seat.error or "unknown"),
             )
-            self._system(f"harness seat OFFLINE ({self.seat.error or 'unknown'})")
+            # The REASON, not just the fact. This event fires once, at startup,
+            # and is the only durable trace of a seat that never joined the
+            # fleet. It used to ride in the metadata log as `error=` — but the
+            # sanitizer rejects any string with spaces, so that call was ALWAYS
+            # silently dropped; record_error is where raw text actually lands.
+            runtime_log.record_error(
+                "harness_registration_failed",
+                detail=self.seat.error or "unknown",
+            )
+            self._system("harness seat OFFLINE — the agent fleet is unreachable.")
             return
         try:
             # A beat every HEARTBEAT_EVERY polls, not every poll: refreshing
@@ -1769,9 +1846,15 @@ class LiteTUI(App):
                 operation="rebind",
                 status="failed",
             )
+            # The repr above (seat.error) is the detail carrier now — it lands
+            # in the error sink, not chat.
+            runtime_log.record_error(
+                "harness_rebind_failed",
+                detail=seat.error or "unknown",
+            )
             # Loud, once. An unregistered seat that says nothing is precisely
             # the state that hid this defect for its whole life.
-            self._system(f"harness seat could not rebind ({seat.error or 'unknown'})")
+            self._system("harness seat could not rebind — the agent fleet is unreachable.")
 
     def _materialise_convo(self) -> None:
         """Create the staged conversation on disk. Idempotent.
@@ -1993,7 +2076,14 @@ class LiteTUI(App):
         try:
             meta, msgs = ConversationRepository.read(path)
         except OSError as e:
-            self._system(f"Could not read {path.name}: {type(e).__name__}: {e}")
+            # The file name stays (it IS the action); the raw OS error goes to
+            # the sink, never into chat.
+            runtime_log.record_error(
+                "resume_read_failed",
+                detail=f"{path}: {type(e).__name__}: {e}",
+                exc=e,
+            )
+            self._system(f"Could not read {path.name} — the file seems locked or unreadable.")
             return
         if not msgs:
             self._system(f"{path.name} holds no messages — not resuming.")
@@ -2247,11 +2337,20 @@ class LiteTUI(App):
                     self._system(f"{len(self.available_models)} models available — /models to list, /model <n> to switch")
             else:
                 self.sub_title = "No model loaded"
-                self._system(
-                    "No chat model available from "
-                    f"{'LM Studio' if self.backend.name == 'lmstudio' else 'llama.cpp'}"
-                    f" at {self.backend.host()}"
-                )
+                # No URL here: a bare address tells a human nothing to DO. Name
+                # the action instead; which host was tried is in the log if it
+                # ever matters (no models means none on that server).
+                if self.backend.name == "lmstudio":
+                    self._system(
+                        "No chat model available from LM Studio — download one "
+                        "in LM Studio's Model Manager."
+                    )
+                else:
+                    self._system(
+                        "No chat model available from llama.cpp — add a folder "
+                        "of GGUF files in /settings, or download one in "
+                        "LiteSuite's Model Hub."
+                    )
         except Exception as e:
             runtime_log.record(
                 "backend_connect_failed",
@@ -2261,13 +2360,17 @@ class LiteTUI(App):
                 operation="connect",
                 error_type=type(e).__name__,
             )
+            # Raw detail (the host we actually tried + the exception) lands in
+            # the sink; chat gets plain words. The old line named the host so a
+            # reader could blame it — T137 keeps that fact for debugging, out of
+            # chat, where a URL tells nobody what to do.
+            runtime_log.record_error(
+                "backend_connect_failed",
+                detail=f"connect to {self.backend.host()}: {type(e).__name__}: {e}",
+                exc=e,
+            )
             self.sub_title = "Disconnected"
-            # The one that rots silently: it kept naming localhost after the
-            # client could be pointed elsewhere, so the error blamed the wrong host.
-            # Name the host we ACTUALLY tried — the backend knows it; with two
-            # engines, settings.lm_host would blame the wrong SERVER, not just
-            # the wrong hostname.
-            self._system(f"Could not connect to {self.backend.host()} — {e}")
+            self._system(_plain_backend_error(e, self.backend.name))
 
     _connect = connect          # arrival alias (PLAN §2b)
 
@@ -2446,12 +2549,17 @@ class LiteTUI(App):
             # `lms load` shell-out), llama.cpp via its router.
             await self.backend.load(self.model_id, ctx=want)
         except llm_backend.BackendError as e:
-            # The backend's message already names its host/path — report the
-            # server's own words, never a generic failure.
+            # Cleaned at source (T137): the message is already plain words —
+            # report it, never a generic failure.
             self._system(str(e))
             return
         except Exception as e:
-            self._system(f"Could not set context length: {type(e).__name__}: {e}")
+            runtime_log.record_error(
+                "context_length_failed",
+                detail=f"load {self.model_id} ctx={want}: {type(e).__name__}: {e}",
+                exc=e,
+            )
+            self._system("Could not set the context length — something went wrong while loading the model.")
             return
         # Re-read rather than assume: the request is what we asked for, the
         # readout is what we got, and the server may clamp to what fits in VRAM.
@@ -3138,7 +3246,12 @@ class LiteTUI(App):
                 "Pillow required: pip install Pillow", severity="error", timeout=5
             )
         except Exception as e:
-            self.notify(f"Paste failed: {e}", severity="error", timeout=3)
+            runtime_log.record_error(
+                "image_paste_failed",
+                detail=f"{type(e).__name__}: {e}",
+                exc=e,
+            )
+            self.notify("Paste failed — the clipboard did not hold a readable image.", severity="error", timeout=3)
 
     # ── Modal callbacks ──────────────────────────────────────────
 
@@ -3691,9 +3804,17 @@ class LiteTUI(App):
                     operation="stream",
                     error_type=type(e).__name__,
                 )
+                # The raw exception goes to the sink; the bubble gets plain
+                # words — a mid-turn LM Studio close is THE case this copy was
+                # written for.
+                runtime_log.record_error(
+                    "turn_stream_failed",
+                    detail=f"{type(e).__name__}: {e}",
+                    exc=e,
+                )
                 self._elapsed.stop_body()
                 self._thinking_done()
-                widget.body.content = Text(f"Error: {e}", style="bold red")
+                widget.body.content = Text(_plain_backend_error(e, self.backend.name), style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
                 return
@@ -3814,9 +3935,16 @@ class LiteTUI(App):
                     operation="stream",
                     error_type=type(e).__name__,
                 )
+                # Mid-turn close is the common case here: LM Studio dies while
+                # streaming. Sink gets the raw exception, bubble gets plain words.
+                runtime_log.record_error(
+                    "turn_stream_failed",
+                    detail=f"{type(e).__name__}: {e}",
+                    exc=e,
+                )
                 self._elapsed.stop_body()
                 self._thinking_done()
-                widget.body.content = Text(f"Error: {e}", style="bold red")
+                widget.body.content = Text(_plain_backend_error(e, self.backend.name), style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
                 return
@@ -4366,8 +4494,17 @@ class LiteTUI(App):
                 self._scroll_down(only_if_following=True)
         except Exception as e:
             self._autocompact_failed_at = self.ctx_used
-            card.fail(f"failed \u2014 conversation unchanged \u00b7 {type(e).__name__}: {e}")
-            self._system(f"Compact failed — conversation unchanged.\n{type(e).__name__}: {e}")
+            # The repr goes to the sink; card and chat get plain words. A
+            # BackendError's message IS already plain words (cleaned at source)
+            # — that is the WHY ('m1' is not loaded — /load m1 first...), and a
+            # compaction that refuses without saying why reads as a hang.
+            runtime_log.record_error(
+                "compact_failed",
+                detail=f"{type(e).__name__}: {e}",
+                exc=e,
+            )
+            card.fail("failed \u2014 conversation unchanged")
+            self._system(f"Compact failed — conversation unchanged.\n{_plain_backend_error(e, self.backend.name)}")
             return
 
         if not summary:
@@ -4479,7 +4616,14 @@ class LiteTUI(App):
         try:
             path = settings_mod.save(new)
         except OSError as e:
-            self._system(f"Settings applied for this session but NOT saved: {e}")
+            # The raw OS error (WinError + path) goes to the sink; chat gets
+            # what happened, in plain words.
+            runtime_log.record_error(
+                "settings_save_failed",
+                detail=f"{type(e).__name__}: {e}",
+                exc=e,
+            )
+            self._system("Settings applied for this session but NOT saved — the settings file could not be written.")
             path = None
 
         # Loading weights is EXPLICIT and only on an actual change. This is the
@@ -4561,7 +4705,12 @@ class LiteTUI(App):
             # drill, not by inspection.
             data = json.loads(handoff.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as e:
-            self._system(f"/mark: unreadable handoff: {e}")
+            runtime_log.record_error(
+                "mark_handoff_unreadable",
+                detail=f"{handoff}: {type(e).__name__}: {e}",
+                exc=e,
+            )
+            self._system("/mark: the handoff file could not be read.")
             return
         if data.get("cancelled"):
             self._system("/mark: cancelled.")

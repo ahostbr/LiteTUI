@@ -44,6 +44,7 @@ import urllib.request
 from pathlib import Path
 
 from litetui import paths
+from litetui import runtime_log
 from litetui import seat_guard
 from litetui import tool_schemas
 from litetui import ttyguard
@@ -244,14 +245,28 @@ def _start_server() -> tuple[subprocess.Popen | None, str]:
                               stdout=logf, stderr=subprocess.STDOUT)
     except OSError as e:
         logf.close()
-        return None, f"[listen] could not start llama-server: {e}"
+        # T137: the raw OS error (usually a busy port) goes to the sink; the
+        # line names what seems wrong and what to do.
+        runtime_log.record_error(
+            "listen_server_spawn_failed",
+            detail=f"{type(e).__name__}: {e}",
+            exc=e,
+        )
+        return None, ("[listen] could not start the audio server — its port may "
+                      "be busy. Close any other program using it and retry.")
 
     deadline = t0 + START_TIMEOUT
     while time.time() < deadline:
         if proc.poll() is not None:
             logf.close()
-            return None, (f"[listen] llama-server exited early "
-                          f"(code {proc.returncode}): {_log_tail()}")
+            # The raw exit code + server log tail go to the sink; a log tail in
+            # chat is this class of error, so the line stays plain.
+            runtime_log.record_error(
+                "listen_server_early_exit",
+                detail=f"code {proc.returncode}: {_log_tail()}",
+            )
+            return None, ("[listen] the audio server stopped right after starting — "
+                          "its port may be busy. Close any other program using it and retry.")
         try:
             with urllib.request.urlopen(HEALTH, timeout=3) as resp:
                 if resp.status == 200:
@@ -266,8 +281,12 @@ def _start_server() -> tuple[subprocess.Popen | None, str]:
     except OSError:
         pass
     logf.close()
-    return None, (f"[listen] llama-server did not become healthy within "
-                  f"{START_TIMEOUT}s: {_log_tail()}")
+    runtime_log.record_error(
+        "listen_server_unhealthy",
+        detail=f"no health after {START_TIMEOUT}s: {_log_tail()}",
+    )
+    return None, ("[listen] the audio server did not become ready within "
+                  f"{START_TIMEOUT}s — try again.")
 
 
 def _stop_server(proc: subprocess.Popen | None) -> None:
@@ -308,22 +327,38 @@ def _ask(wav: Path, question: str) -> tuple[str | None, str]:
         with urllib.request.urlopen(req, timeout=INFER_TIMEOUT) as resp:
             text = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
-        # The body is the whole game — it names what the server rejected.
+        # The body names what the server rejected — but raw detail belongs in
+        # the sink (T137), so the line keeps only the status and a plain word.
         detail = ""
         try:
             detail = e.read().decode("utf-8", errors="replace")[:2000]
         except OSError:
             pass
-        return None, (f"[listen] HTTP {e.code} from llama-server: "
-                      f"{detail or '(empty body)'}\n[server log tail] {_log_tail()}")
+        runtime_log.record_error(
+            "listen_http_rejected",
+            detail=f"HTTP {e.code}: {detail or '(empty body)'}\n[server log tail] {_log_tail()}",
+        )
+        return None, (f"[listen] the audio server rejected the request (HTTP {e.code}) — "
+                      "try again.")
     except (urllib.error.URLError, OSError) as e:
-        return None, (f"[listen] no answer from the audio server "
-                      f"({e.__class__.__name__}): {_log_tail()}")
+        # Server died mid-request: raw exception + log tail to the sink; the
+        # line says what seems wrong and what to do (T137).
+        runtime_log.record_error(
+            "listen_server_unreachable",
+            detail=f"{type(e).__name__}: {e}\n[server log tail] {_log_tail()}",
+            exc=e,
+        )
+        return None, ("[listen] the audio server went away mid-request — it may have "
+                      "been closed or run out of memory. Try again.")
     try:
         data = json.loads(text)
         answer = data["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError):
-        return None, f"[listen] unexpected API response shape: {text[:500]}"
+        runtime_log.record_error(
+            "listen_bad_response",
+            detail=f"response shape: {text[:2000]}",
+        )
+        return None, "[listen] the audio server answered in an unexpected shape — try again."
     print(f"[listen] answered in {time.time()-t0:.0f}s")
     return answer, ""
 

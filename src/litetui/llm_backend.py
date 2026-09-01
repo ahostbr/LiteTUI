@@ -86,6 +86,7 @@ from pathlib import Path
 
 from litetui import paths
 from litetui import router_record
+from litetui import runtime_log
 from litetui import ttyguard
 
 # ── Where the engine lives (LiteSuite's Model Hub install) ───────────────────
@@ -103,11 +104,15 @@ LOAD_TIMEOUT_S = 300
 
 
 class BackendError(RuntimeError):
-    """Raised with a message that ALREADY names the host/path it is about.
+    """Raised with a message phrased for a HUMAN, in plain words.
 
-    The app renders these in-band. Naming the actual target inside the
-    backend is what keeps the app.py:2364 lesson (never blame a host we did
-    not try) true for three hosts instead of one.
+    The app renders these in-band (chat surface), so T137's rules apply at
+    the SOURCE: no URLs, no WinError codes, no exception reprs — what seems
+    wrong and what to do, in one or two sentences. Hosts, raw exceptions and
+    log tails go to runtime_log.record_error beside the raise; a LOCAL file
+    path stays when it is itself the action (the engine's own log, an install
+    location). Naming which backend failed still keeps the app.py:2364 lesson
+    (never blame a host we did not try) true for three hosts instead of one.
     """
 
 
@@ -583,8 +588,12 @@ class LlamaCppBackend:
         try:
             got = _http_json(f"{self.host()}/props", timeout=5)
         except Exception as e:
+            runtime_log.record_error(
+                "llama.props_failed", detail=f"{self.host()}/props — {e}",
+                site="llm_backend")
             raise BackendError(
-                f"could not read {self.host()}/props — {e}") from e
+                "the llama.cpp server did not answer its status check — wait a "
+                "moment and try again.") from e
         return got if isinstance(got, dict) else {}
 
     # -- lifecycle --------------------------------------------------------
@@ -717,8 +726,13 @@ class LlamaCppBackend:
         tail = _log_tail(log_path)
         self._kill_tree(proc)
         log_file.close()
+        runtime_log.record_error(
+            "llama.spawn_failed",
+            detail=f"failed to become healthy on {self._host}\n{tail}",
+            site="llm_backend")
         raise BackendError(
-            f"llama-server failed to become healthy on {self._host} — {tail}"
+            "the llama.cpp engine did not become ready in time — see "
+            f"{paths.LLAMA_DIR / 'litetui-llama-server.log'} for why, then try again."
         )
 
     def shutdown(self) -> None:
@@ -788,7 +802,12 @@ class LlamaCppBackend:
         try:
             data = _http_json(f"{self.host()}/models")
         except Exception as e:
-            raise BackendError(f"could not list models from {self.host()} — {e}") from e
+            runtime_log.record_error(
+                "llama.list_failed", detail=f"{self.host()}/models — {e}",
+                site="llm_backend")
+            raise BackendError(
+                "could not read the model list from the llama.cpp server — wait a "
+                "moment and try again.") from e
         return {m["id"]: m for m in data.get("data", [])}
 
     def _single_state(self) -> tuple[str, dict] | None:
@@ -903,7 +922,7 @@ class LlamaCppBackend:
         info = self._server_models().get(key)
         if info is None:
             raise BackendError(
-                f"{key!r} is not on the server at {self.host()} — "
+                f"{key!r} is not on the llama.cpp server — "
                 "/models to see what is, /model to switch."
             )
         deadline = time.monotonic() + LOAD_TIMEOUT_S
@@ -969,16 +988,15 @@ class LlamaCppBackend:
             # is 404 here, and "load refused — File Not Found" would blame
             # the model for a property of the server.
             raise BackendError(
-                f"cannot {verb}: {self.host()} is serving one model and cannot "
+                f"cannot {verb}: that server is serving one model and cannot "
                 "switch — it was started with a single -m <gguf>, so it has no "
                 "load or unload route at all. Change the model where that "
                 "server was started (LiteSuite's Model Hub), or stop it and "
                 "I'll run my own router."
             )
         raise BackendError(
-            f"cannot {verb}: {self._owner_label()} owns the server at "
-            f"{self.host()} — switch models there, or stop it and I'll run "
-            "my own."
+            f"cannot {verb}: {self._owner_label()} owns that server — switch "
+            "models there, or stop it and I'll run my own."
         )
 
     def _load_sync(self, key: str) -> None:
@@ -989,10 +1007,17 @@ class LlamaCppBackend:
         try:
             _http_json(f"{self.host()}/models/load", {"model": key}, timeout=30)
         except urllib.error.HTTPError as e:
+            runtime_log.record_error(
+                "llama.load_refused", detail=f"{self.host()}/models/load — {_body(e)}",
+                site="llm_backend")
             raise BackendError(
-                f"load {key!r} refused by {self.host()} — {_body(e)}") from e
+                f"the llama.cpp server refused to load {key!r} — /models to see what it has.") from e
         except Exception as e:
-            raise BackendError(f"load {key!r} failed against {self.host()} — {e}") from e
+            runtime_log.record_error(
+                "llama.load_failed", detail=f"{self.host()}/models/load — {e}",
+                site="llm_backend")
+            raise BackendError(
+                f"could not load {key!r} on the llama.cpp server — try again in a moment.") from e
         # {"success": true} means STARTED (spike fact). Poll until loaded —
         # returning early hands the chat stream a 503.
         deadline = time.monotonic() + LOAD_TIMEOUT_S
@@ -1011,9 +1036,12 @@ class LlamaCppBackend:
             # Our own log has the truth the router won't tell — read it.
             argv_err = _worker_argv_error()
             if argv_err:
+                runtime_log.record_error(
+                    "llama.worker_argv", detail=f"load {key!r}:\n{argv_err}",
+                    site="llm_backend")
                 raise BackendError(
-                    f"load {key!r}: the worker died parsing its arguments — "
-                    f"{argv_err}"
+                    f"could not start {key!r} on the llama.cpp server — see "
+                    f"{paths.LLAMA_DIR / 'litetui-llama-server.log'} for why."
                 )
             time.sleep(1.0)
         raise BackendError(f"load {key!r} did not finish within {LOAD_TIMEOUT_S}s")
@@ -1026,7 +1054,10 @@ class LlamaCppBackend:
         try:
             _http_json(f"{self.host()}/models/unload", {"model": key}, timeout=60)
         except Exception as e:
-            raise BackendError(f"unload {key!r} failed against {self.host()} — {e}") from e
+            runtime_log.record_error(
+                "llama.unload_failed", detail=f"{self.host()}/models/unload — {e}",
+                site="llm_backend")
+            raise BackendError(f"could not unload {key!r} on the llama.cpp server — try again in a moment.") from e
 
     async def apply_load_settings(self, key: str, cfg: dict) -> None:
         await asyncio.to_thread(self._apply_sync, key, cfg)
@@ -1057,8 +1088,8 @@ class LlamaCppBackend:
         if self.attached:
             raise BackendError(
                 f"cannot rebuild the model preset: {self._owner_label()} owns "
-                f"the server at {self.host()} and its preset is its own. Add "
-                "the model there, or stop that server and I'll run my own."
+                "that server and its preset belongs to it. Add the model "
+                "there, or stop that server and I'll run my own."
             )
         rows = scan_models(self._settings)
         write_preset_ini(rows, self._settings)
@@ -1098,8 +1129,8 @@ class LlamaCppBackend:
 
     def seat_suspend(self, rec: dict) -> str | None:
         if self.attached:
-            return (f"suspend unsupported: LiteSuite owns the server at "
-                    f"{self.host()} — free VRAM from its Model Hub instead")
+            return (f"suspend unsupported: {self._owner_label()} owns that "
+                    "server — free VRAM from its own model manager instead")
         try:
             self._unload_sync(rec["identifier"])
         except BackendError as e:
@@ -1187,7 +1218,11 @@ class LMStudioBackend:
         try:
             data = _http_json(f"{self._host}/api/v0/models", timeout=5)
         except Exception as e:
-            raise BackendError(f"could not reach LM Studio at {self._host} — {e}") from e
+            runtime_log.record_error(
+                "lmstudio.list_failed", detail=f"{self._host}/api/v0/models — {e}",
+                site="llm_backend")
+            raise BackendError(
+                "could not read the model list from LM Studio — try again in a moment.") from e
         if isinstance(data, list):
             return data
         return data.get("models") or data.get("data") or []
@@ -1246,7 +1281,7 @@ class LMStudioBackend:
                 "no model is selected — /model to pick one before sending.")
         if key not in {m.get("id") for m in self._native_models()}:
             raise BackendError(
-                f"{key!r} is not downloaded in LM Studio at {self._host} — "
+                f"{key!r} is not downloaded in LM Studio — "
                 "/models to see what is, /model to switch."
             )
 
@@ -1259,8 +1294,10 @@ class LMStudioBackend:
             try:
                 lms.llm(key, config=config)
             except Exception as e:
-                raise BackendError(
-                    f"LM Studio load of {key!r} failed at {self._host} — {e}") from e
+                runtime_log.record_error(
+                    "lmstudio.load_failed", detail=f"load of {key!r} at {self._host} — {e}",
+                    site="llm_backend")
+                raise BackendError(f"could not load {key!r} in LM Studio — try again in a moment.") from e
         await asyncio.to_thread(_load)
 
     async def unload(self, key: str) -> None:
@@ -1269,8 +1306,10 @@ class LMStudioBackend:
             try:
                 lms.llm(key).unload()
             except Exception as e:
-                raise BackendError(
-                    f"LM Studio unload of {key!r} failed at {self._host} — {e}") from e
+                runtime_log.record_error(
+                    "lmstudio.unload_failed", detail=f"unload of {key!r} at {self._host} — {e}",
+                    site="llm_backend")
+                raise BackendError(f"could not unload {key!r} in LM Studio — try again in a moment.") from e
         await asyncio.to_thread(_unload)
 
     async def apply_load_settings(self, key: str, cfg: dict) -> None:
@@ -1389,7 +1428,12 @@ def split_request_kwargs(overrides: dict) -> tuple[dict, dict, dict | None]:
             try:
                 schema = json.loads(v) if isinstance(v, str) else v
             except ValueError as e:
-                raise BackendError(f"structured-output schema is not valid JSON — {e}") from e
+                runtime_log.record_error(
+                    "settings.bad_schema", detail=f"json_schema: {e}",
+                    site="llm_backend")
+                raise BackendError(
+                    "the structured-output schema in your model settings is not valid "
+                    "JSON — fix it in the Inference tab.") from e
             response_format = {
                 "type": "json_schema",
                 "json_schema": {"name": "litetui_schema", "schema": schema},
