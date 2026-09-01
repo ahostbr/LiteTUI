@@ -18,6 +18,10 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-31
+
+First published release (PyPI).
+
 ### Added
 
 - **Dual-backend model control.** Two engines behind one seam
