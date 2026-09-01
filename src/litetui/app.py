@@ -7,6 +7,7 @@ import json
 import os
 import re
 import statistics
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -1019,8 +1020,12 @@ class LiteTUI(App):
     # keeps showing the last measurement while idle rather than blanking.
     tps: reactive[float | None] = reactive(None)
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **app_kwargs):
+        # Forwarded verbatim to textual.App — today only ansi_color rides this
+        # (the legacy-conhost fallback both launchers pass; see
+        # wants_ansi_fallback). A named-parameter copy here would drift from
+        # Textual's own signature.
+        super().__init__(**app_kwargs)
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
         self.conversation: list[dict] = []
@@ -4770,8 +4775,31 @@ class LiteTUI(App):
         self._handle_command("/clear")
 
 
+def wants_ansi_fallback() -> bool:
+    """True on a legacy Windows console (plain conhost) that cannot take
+    truecolor VT output — there the theme's darks quantize into bright 16-color
+    bands around the composer and header. ``ansi_color=True`` makes Textual
+    emit the console's own ANSI palette instead, which renders coherently.
+
+    Windows Terminal, ConPTY panes, and any console where VT+truecolor probing
+    succeeds return False, so nothing changes on a modern terminal. Measured
+    2026-09-01: a directly spawned conhost on Win11 26200 reports vt=False
+    truecolor=False (rich get_windows_console_features), and litetui 0.22.1
+    rendered the broken scheme there (sandbox 0057 guest cmd, Ryan's sighting).
+    """
+    if sys.platform != "win32" or os.environ.get("WT_SESSION"):
+        return False
+    try:
+        from rich._windows import get_windows_console_features
+
+        features = get_windows_console_features()
+        return not (features.vt and features.truecolor)
+    except Exception:
+        return False
+
+
 def main():
-    LiteTUI().run()
+    LiteTUI(ansi_color=wants_ansi_fallback()).run()
 
 
 if __name__ == "__main__":

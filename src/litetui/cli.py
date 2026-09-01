@@ -26,9 +26,9 @@ def main() -> None:
         print(f"litetui {__version__}")
         return
 
-    from litetui.app import LiteTUI  # heavy — deferred past the probe
+    from litetui.app import LiteTUI, wants_ansi_fallback  # heavy — deferred past the probe
 
-    LiteTUI().run()
+    LiteTUI(ansi_color=wants_ansi_fallback()).run()
 
 
 if __name__ == "__main__":
