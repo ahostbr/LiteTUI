@@ -72,6 +72,13 @@ package-dir = { "" = "src" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# T135: the wheel must SHIP its data. Without this table setuptools ships only
+# .py files, and an installed litetui crashes on first launch — harness.py's
+# module-level tool_schemas.load("harness") hits a FileNotFoundError because
+# tools/*.json was never in the zip (the repo-root fallback is not there either).
+litetui = ["schemas/*.json", "prompts/*.md"]
+
 [tool.setuptools.dynamic]
 version = { attr = "litetui.version.__version__" }
 

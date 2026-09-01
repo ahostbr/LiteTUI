@@ -1,0 +1,5 @@
+# T135: the sdist must carry the same data the wheel does. The schema and
+# prompt files ship INSIDE litetui/ now (src/litetui/schemas, src/litelitui/prompts);
+# package-data covers the wheel, this table keeps the sdist honest too.
+recursive-include src/litetui/schemas *.json
+recursive-include src/litetui/prompts *.md

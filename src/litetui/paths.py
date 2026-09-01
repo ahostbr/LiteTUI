@@ -1,8 +1,8 @@
 """The path anchors — ONE owner for where the data lives.
 
 src/litetui/ is TWO levels below the repo root, where the DATA lives — .convos,
-settings.json, skills/, systemprompt.md. Anchoring too shallow silently re-homes
-every store inside the package; test_paths.py proves the anchor by resolution.
+settings.json, skills/. Anchoring too shallow silently re-homes every store
+inside the package; test_paths.py proves the anchor by resolution.
 
 🔴 THE DEPTH IS COUNTED BY HAND AND IT HAS ALREADY BEEN WRONG ONCE. When this
 module moved from src/paths.py to src/litetui/paths.py, `parent.parent` kept
@@ -18,11 +18,26 @@ themselves; that is true of plugins/ and false of those five. Consolidating them
 onto this ROOT would delete the whole class, and is deliberately NOT done in a
 rename commit.
 Plugins import these; they never compute ROOT themselves.
+
+PROMPTS_DIR (T135): authored prompt text now SHIPS inside the package —
+src/litelitui/prompts/ — because an installed wheel has no repo root to read
+from. The anchor below prefers the repo-root copy only while one still exists
+(a stale checkout); a fresh dev tree and an installed wheel both resolve to the
+package directory, where the files live (see pyproject package-data).
 """
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-PROMPTS_DIR = ROOT / "prompts"
+
+# ── Prompt text: ships inside the package (T135) ────────────────
+_PKG_PROMPTS = Path(__file__).resolve().parent / "prompts"
+_REPO_PROMPTS = ROOT / "prompts"
+#: Repo-root copy wins only while it still carries the base prompt — a stale
+#: checkout. Fresh trees and installed wheels both resolve to _PKG_PROMPTS,
+#: where the files ship (see pyproject package-data).
+PROMPTS_DIR = (
+    _REPO_PROMPTS if (_REPO_PROMPTS / "systemprompt.md").is_file() else _PKG_PROMPTS
+)
 SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
 #: The tools section of the system prompt. Lived as a string constant in
 #: app.py until 2026-08-22 -- authored prompt text belongs on disk beside the

@@ -72,6 +72,18 @@ jobs:
       - name: pytest (locked runtime)
         run: uv run --locked pytest -q
 
+      # T135 (2026-08-30): the wheel must be INSTALLABLE, not just importable in a
+      # dev checkout. 0.22.0 shipped data (schemas, prompts) that only existed at
+      # the repo root, so first launch from PyPI died with FileNotFoundError — and
+      # every pre-publish proof missed it because `litetui --version` skips the
+      # heavy import where the crash lives. This step builds the wheel, installs
+      # it into a scratch venv, and runs that heavy import there. It is a STEP of
+      # this job on purpose: branch protection requires THIS JOB, so the gate
+      # blocks without anyone remembering to tick another box. Needs network for
+      # pip (the runner has it) and `uv` (installed above).
+      - name: wheel import gate (T135)
+        run: uv run --locked python tools/wheel_import_gate.py
+
   lint:
     # ADVISORY BY RULING. This job reports and must never block. If you find
     # yourself wanting to make it required, that is a conversation with Ryan,

@@ -1,4 +1,4 @@
-"""Tool schemas live in `tools/`, one JSON file per tool.
+"""Tool schemas live in ``litetui/schemas/``, one JSON file per tool.
 
 Ryan, 2026-08-22: "extract all the tool schemas out of the app and get them into
 separated schema files per tool ... the tools folder is where it should live."
@@ -10,6 +10,27 @@ thing in the project to edit and the easiest to describe wrongly somewhere else:
 prompts/tools.md spent months claiming FOUR tools while eleven were offered,
 because the prose was a SECOND COPY of a fact the schemas already carried. One
 file per tool, read at registration, is the shape where that cannot recur.
+
+🔴 T135 (2026-08-30): THE FILES MOVED INTO THE PACKAGE, and the reader stopped
+counting directories. The old ``schema_dir()`` was ``paths.ROOT / "tools"`` —
+the repo root, derived as two ``Path(__file__).parent`` hops above this module.
+In a dev checkout that is true; in an installed wheel the package sits in
+site-packages, so the same arithmetic lands OUTSIDE the install and first
+launch from PyPI died with::
+
+    FileNotFoundError ...\\Lib\\tools\\harness.json
+
+Every pre-publish proof missed it because ``litetui --version`` takes a fast
+path that skips exactly this import (cli.py defers app past the probe) — a
+probe engineered around the heavy path cannot certify the heavy path. The gate
+that now catches this class is tools/wheel_import_gate.py: build the wheel,
+install it into a scratch venv, and run the HEAVY import there.
+
+Resolution order, deliberately package-first: the shipped copy is what an
+installed user gets, so it wins; the repo-root ``tools/`` layout remains as a
+fallback for consumers that still write schemas there (and for a dev checkout
+mid-move). Both locations are searched by ``available()`` too — a file with no
+tool rots in EITHER home.
 
 TEMPLATING, and why it exists for exactly one field. `powershell`'s description
 names the interpreter that was actually found — pwsh or powershell, whichever is
@@ -24,20 +45,57 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from importlib.resources import files as _pkg_files
 from pathlib import Path
 
 from litetui import paths
 
-SCHEMA_DIR_NAME = "tools"
+#: The package subfolder that ships the schemas (see schemas/__init__.py).
+SCHEMA_PACKAGE = "litetui.schemas"
+#: The legacy repo-root layout, kept as a fallback location only.
+LEGACY_DIR_NAME = "tools"
 
 
-def schema_dir() -> Path:
-    return Path(paths.ROOT) / SCHEMA_DIR_NAME
+def _package_dir():
+    """The in-package schema folder as a Traversable, or None if absent."""
+    try:
+        return _pkg_files(SCHEMA_PACKAGE)
+    except ModuleNotFoundError:
+        return None
+
+
+def _legacy_dir() -> Path:
+    return Path(paths.ROOT) / LEGACY_DIR_NAME
 
 
 @lru_cache(maxsize=None)
 def _read(name: str) -> str:
-    return (schema_dir() / f"{name}.json").read_text(encoding="utf-8")
+    """The stored text of one schema file, package-first, legacy second."""
+    pkg = _package_dir()
+    if pkg is not None:
+        ref = pkg.joinpath(f"{name}.json")
+        try:
+            if ref.is_file():
+                return ref.read_text(encoding="utf-8")
+        except OSError:
+            pass  # unreadable in-package copy — fall through to the legacy home
+    legacy = _legacy_dir() / f"{name}.json"
+    if legacy.is_file():
+        return legacy.read_text(encoding="utf-8")
+    raise FileNotFoundError(
+        f"tool schema {name!r} not found in {SCHEMA_PACKAGE}/ or "
+        f"{_legacy_dir()} — the wheel is missing its package data, or the "
+        f"file was deleted from both homes"
+    )
+
+
+def raw(name: str) -> str:
+    """The schema file's text AS STORED, placeholders unfilled.
+
+    The drift gate uses this to prove powershell.json still carries ``{exe}``
+    on disk — a check that must read the file, not the templated spec.
+    """
+    return _read(name)
 
 
 def load(name: str, **fmt: str) -> dict:
@@ -83,9 +141,20 @@ def _sub(text: str, fmt: dict[str, str]) -> str:
 
 
 def available() -> set[str]:
-    """Every tool that has a schema file. Used by the drift gate, which
-    asserts this set and the set of REGISTERED tools are the same in both
-    directions — a file with no tool rots, and a tool with no file is a
-    schema that went back into the source."""
-    d = schema_dir()
-    return {p.stem for p in d.glob("*.json")} if d.is_dir() else set()
+    """Every tool that has a schema file, in EITHER home. Used by the drift
+    gate, which asserts this set and the set of REGISTERED tools are the same
+    in both directions — a file with no tool rots (in whichever folder it
+    hides), and a tool with no file is a schema that went back into the source."""
+    names: set[str] = set()
+    pkg = _package_dir()
+    if pkg is not None:
+        try:
+            for entry in pkg.iterdir():
+                if entry.name.endswith(".json"):
+                    names.add(entry.name[: -len(".json")])
+        except OSError:
+            pass
+    legacy = _legacy_dir()
+    if legacy.is_dir():
+        names.update(p.stem for p in legacy.glob("*.json"))
+    return names

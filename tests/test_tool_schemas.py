@@ -121,7 +121,7 @@ def test_a_missing_schema_raises_rather_than_returning_a_stub() -> None:
 def test_the_powershell_schema_is_templated_on_disk() -> None:
     """The file must stay machine-independent. If someone regenerates it on a
     box with pwsh and commits the resolved name, it is wrong everywhere else."""
-    raw = (tool_schemas.schema_dir() / "powershell.json").read_text(encoding="utf-8")
+    raw = tool_schemas.raw("powershell")
     assert "{exe}" in raw, "the placeholder was baked out — the file is now box-specific"
 
 

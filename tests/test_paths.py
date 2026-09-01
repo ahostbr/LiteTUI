@@ -25,7 +25,8 @@ def test_root_still_points_at_the_repo_root():
     )
     # And the root is recognizably THE root: the stores anchor here.
     assert (paths.ROOT / "src" / "litetui" / "app.py").is_file()
-    assert (paths.ROOT / "prompts").is_dir()
+    # prompts/ moved INTO the package in T135 — the root marker is pyproject.toml now.
+    assert (paths.ROOT / "pyproject.toml").is_file()
 
 
 def test_app_defines_no_second_anchor():
