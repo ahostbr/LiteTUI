@@ -18,6 +18,22 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.22.2] — 2026-09-01
+
+Rendering hotfix: legacy consoles get a coherent scheme instead of broken
+truecolor.
+
+### Fixed
+
+- **Legacy conhost renders the console's own palette.** In a plain Windows
+  console (conhost — no Windows Terminal), truecolor output quantized into
+  bright 16-color bands around the header and composer. Both launchers now
+  probe the console at startup (`wants_ansi_fallback()`) and run Textual with
+  `ansi_color=True` when VT/truecolor is unavailable, so the UI adopts the
+  console's ANSI palette. Windows Terminal and ConPTY panes are unchanged.
+- `LiteTUI.__init__` forwards keyword arguments to `textual.App` instead of
+  swallowing them.
+
 ## [0.22.1] — 2026-09-01
 
 Hotfix release: the wheel actually launches from PyPI, and errors speak
