@@ -44,6 +44,8 @@ fails if this file's top released heading disagrees with it.
 - The studio tool's seat suspend/resume now routes through the active
   backend (llama router natively; an attached server refuses honestly), so
   GPU generations free the right VRAM on either engine.
+- **grep + edit tools** (`25e7262`) — ripgrep-via-argv search and guarded exact-byte edits. _draft · Ryan-copy pending_
+- **listen tool** (`20aa2e4`) — audio perception via local Qwen2-Audio, one seat-swap per listen (banked from EvenCurve). _draft · Ryan-copy pending_
 
 ### Changed
 
@@ -58,6 +60,7 @@ fails if this file's top released heading disagrees with it.
 
 ### Fixed
 
+- **studio image-tool extension** (`6b207e3`) — full image-param passthrough (width/height/steps/guidance/negative_prompt/seed/sampler/batch/img2img) with guidance pinned to LiteImage's 3.5; banked together with its stale-test fix. _draft · Ryan-copy pending_
 - Setting top_k, min_p, or repeat_penalty in /settings would have crashed
   every request: the OpenAI client's `create()` has typed params and no
   `**kwargs`, and the sampling dict was passed at the top level. Non-native
