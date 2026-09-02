@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 from litetui import mcp_client
-from litetui.mcp_client import MCPError, MCPServer
+from litetui.mcp_client import HTTPMCPServer, MCPError, MCPServer
 
 # Generous next to the 0.1s timeouts under test: the assertion is "bounded at
 # all", not "bounded to the millisecond". A machine under load must not turn a
@@ -245,3 +245,66 @@ def test_the_read_no_longer_blocks_on_the_CALLERS_thread():
             assert node.func.attr != "readline", (
                 "_read_until still performs the blocking read on the caller's thread"
             )
+
+
+# ── the same bound on the HTTP transport ────────────────────────────────
+# The module docstring promises "a hung server must degrade to one failed tool
+# call, never a frozen UI" for BOTH transports; this pins it over a real
+# socket. Default timeouts are bound at def-time (timeout=CALL_TIMEOUT), so an
+# explicit timeout is how the budget gets in -- the same move as the stdio
+# tests' srv._request(..., timeout=0.1).
+
+def _slow_http_server(delay: float):
+    """A JSON-RPC endpoint that answers the handshake instantly but sleeps
+    `delay` seconds inside tools/call -- alive and silent, over a real socket."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Slow(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                m = json.loads(self.rfile.read(n).decode("utf-8"))
+                mid, meth = m.get("id"), m.get("method")
+                if meth == "tools/call":
+                    time.sleep(delay)
+                result = {"protocolVersion": "2025-06-18", "capabilities": {},
+                          "serverInfo": {"name": "slow", "version": "1"}}
+                if meth == "tools/list":
+                    result = {"tools": []}
+                body = json.dumps({"jsonrpc": "2.0", "id": mid,
+                                   "result": result}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass  # the client timed out and hung up; nothing left to serve
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+def test_an_HTTP_server_that_hangs_inside_tools_call_times_out_instead_of_blocking():
+    """A hung endpoint degrades to one failed tool call -- the stdio bound has
+    an HTTP twin."""
+    httpd = _slow_http_server(30.0)
+    try:
+        srv = HTTPMCPServer("slow", {"url": f"http://127.0.0.1:{httpd.server_address[1]}/mcp"},
+                            Path("."), io.StringIO())
+        srv.start()  # handshake is instant; only tools/call hangs
+        finished, box, _ = _in_budget(
+            lambda: srv._request("tools/call", {"name": "x", "arguments": {}}, timeout=0.5)
+        )
+        assert finished, (
+            f"the HTTP call never returned within {BUDGET}s against a declared 0.5s "
+            "timeout -- the request is still blocking the caller"
+        )
+        assert isinstance(box.get("exc"), MCPError), f"expected MCPError, got {box!r}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

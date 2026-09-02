@@ -167,13 +167,20 @@ exactly like one that was never written.
 
 ## MCP
 
-A standard `mcp.json` in the repo root:
+A standard `mcp.json` in the repo root; `.mcp.json` (the Claude Code project
+convention) is read too when present, with `mcp.json` winning a name collision:
 
 ```json
 { "mcpServers": {
-    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "litesuite-tools": { "type": "http", "url": "http://localhost:7423/mcp" }
 } }
 ```
+
+An entry with a `url` and no `command` is reached over plain-JSON HTTP POST —
+one request per call, the response body IS the JSON-RPC reply (the stateless
+variant of MCP streamable-HTTP; what LiteSuite's `/mcp` endpoint implements).
+Everything else is spawned as a stdio child.
 
 Each server's tools are registered as `mcp__<server>__<tool>` and dispatched
 like any other tool, so the agent loop has no MCP-specific branch. `disabled:

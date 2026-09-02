@@ -9,8 +9,10 @@ import os
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
@@ -140,6 +142,119 @@ try:
 finally:
     mgr.stop_all()
 chk("stop_all terminated the child", mgr.servers["fake"].proc.poll() is not None)
+
+# ─────────────────────── MCP over HTTP ──────────────────────────────────
+print("\n=== MCP: a real HTTP endpoint, real JSON-RPC over POST ===")
+
+
+class _HttpMcpHandler(BaseHTTPRequestHandler):
+    """The HTTP twin of the stdio fake above: same two tools, same error
+    tool -- plus LiteSuite's 202-empty-body notification ack and a /bad path
+    that answers 200 with non-JSON to pin response validation."""
+
+    def log_message(self, *a):
+        pass  # keep test output clean
+
+    def do_POST(self):
+        if self.path == "/bad":
+            body = b"<html>not json</html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        n = int(self.headers.get("Content-Length", 0))
+        m = json.loads(self.rfile.read(n).decode("utf-8"))
+        mid, meth = m.get("id"), m.get("method")
+        self.server.seen.append(meth)
+
+        def reply(obj=None, code=200):
+            body = b"" if obj is None else json.dumps(obj).encode("utf-8")
+            self.send_response(code)
+            if body:
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        if meth == "initialize":
+            reply({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "serverInfo": {"name": "httpfake", "version": "1"}}})
+        elif meth == "notifications/initialized":
+            reply(None, code=202)  # LiteSuite's ack: 2xx with an empty body
+        elif meth == "tools/list":
+            reply({"jsonrpc": "2.0", "id": mid, "result": {"tools": [
+                {"name": "echo", "description": "Echo text back",
+                 "inputSchema": {"type": "object",
+                                 "properties": {"text": {"type": "string"}},
+                                 "required": ["text"]}},
+                {"name": "boom", "description": "Always errors",
+                 "inputSchema": {"type": "object", "properties": {}}}]}})
+        elif meth == "tools/call":
+            p = m.get("params") or {}
+            if p.get("name") == "boom":
+                reply({"jsonrpc": "2.0", "id": mid,
+                       "error": {"code": -32000, "message": "kaboom"}})
+            else:
+                txt = (p.get("arguments") or {}).get("text", "")
+                reply({"jsonrpc": "2.0", "id": mid, "result": {"content": [
+                    {"type": "text", "text": "echo: " + txt},
+                    {"type": "image", "data": "xxx"}]}})
+        else:
+            reply({"jsonrpc": "2.0", "id": mid,
+                   "error": {"code": -32601, "message": f"unknown {meth}"}})
+
+
+httpd = ThreadingHTTPServer(("127.0.0.1", 0), _HttpMcpHandler)
+httpd.seen = []
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+hurl = "http://127.0.0.1:%d/mcp" % httpd.server_address[1]
+
+hroot = Path(tempfile.mkdtemp(prefix="litetui-mcphttp-"))
+(hroot / ".mcp.json").write_text(json.dumps({"mcpServers": {
+    "httpfake": {"type": "http", "url": hurl},
+    "dead": {"type": "http", "url": "http://127.0.0.1:9/mcp"},
+    "badjson": {"type": "http", "url": hurl.replace("/mcp", "/bad")},
+}}), encoding="utf-8")
+
+hm = mcp_client.MCPManager(hroot)
+hm.load()
+try:
+    chk("an HTTP server starts from a DOTFILE-only root", "httpfake" in hm.servers)
+    chk("a dead endpoint is recorded, not swallowed", bool(hm.failures.get("dead")))
+    chk("...and does NOT take down the others", "httpfake" in hm.servers and "dead" in hm.failures)
+    chk("the handshake sent notifications/initialized (202-acked)",
+        "notifications/initialized" in httpd.seen)
+    chk("tools/list came back over POST", len(hm.servers["httpfake"].tools) == 2)
+    chk("a non-JSON 2xx body is a recorded failure, not a crash",
+        bool(hm.failures.get("badjson")) and "non-JSON" in hm.failures["badjson"])
+
+    hdisp = hm.dispatch()
+    hout = hdisp["mcp__httpfake__echo"]({"text": "over the wire"})
+    chk("a real tools/call round-trips over HTTP", "echo: over the wire" in hout)
+    chk("a non-text content block is named, not dropped (HTTP)", "image" in hout)
+    herr = hdisp["mcp__httpfake__boom"]({})
+    chk("a server-side JSON-RPC error becomes a tool error string", herr.startswith("[error]"))
+
+    # Collision precedence: mcp.json beats .mcp.json for the same name. If
+    # the dotfile won, this entry would be the LIVE url and start fine -- so
+    # ending up in failures proves the native file's dead url was used.
+    (hroot / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "httpfake": {"type": "http", "url": "http://127.0.0.1:9/mcp"}}}), encoding="utf-8")
+    hm2 = mcp_client.MCPManager(hroot)
+    hm2.load()
+    try:
+        chk("on a name collision mcp.json wins over .mcp.json",
+            "httpfake" in hm2.failures and "httpfake" not in hm2.servers)
+    finally:
+        hm2.stop_all()
+finally:
+    hm.stop_all()
+    httpd.shutdown()
+    httpd.server_close()
 
 print("\n=== MCP: no mcp.json is a no-op, not an error ===")
 empty_root = Path(tempfile.mkdtemp(prefix="litetui-nomcp-"))

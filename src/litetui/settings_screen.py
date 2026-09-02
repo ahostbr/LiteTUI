@@ -484,7 +484,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
                         )
                         yield from self._switch_row(
                             "mcp_enabled", "MCP servers",
-                            "Start the servers declared in mcp.json.",
+                            "Start the servers declared in mcp.json / .mcp.json.",
                         )
                         if self._mcp_servers:
                             disabled = set(self._start.mcp_disabled_servers)
@@ -497,7 +497,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
                                         yield Label(name, classes="set-label-inline")
                         else:
                             yield Static(
-                                "  No mcp.json servers discovered.", classes="set-help"
+                                "  No MCP servers discovered (looked for mcp.json and .mcp.json).", classes="set-help"
                             )
 
                         # ── Interface ────────────────────────────────────────────────

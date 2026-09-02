@@ -1,13 +1,22 @@
-"""MCP over stdio — reads a standard `mcp.json` from the repo root.
+"""MCP servers — stdio child processes AND plain-JSON HTTP endpoints.
+
+Reads `mcp.json` from the repo root, falling back to `.mcp.json` (the Claude
+Code project convention) when present:
 
 ```json
 { "mcpServers": {
-    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "litesuite-tools": { "type": "http", "url": "http://localhost:7423/mcp" }
 } }
 ```
 
-Each server's tools are registered as `mcp__<server>__<tool>` and dispatched
-like any other tool, so the agent loop needs no MCP-specific branch.
+A server entry with a `url` is reached over HTTP POST — the stateless,
+plain-JSON variant of MCP streamable-HTTP: one POST per request, and the
+response body IS the JSON-RPC reply (no SSE framing). That is what LiteSuite's
+/mcp endpoint implements. Everything else is spawned as a stdio child. Both
+transports expose the same interface, so each server's tools are registered as
+`mcp__<server>__<tool>` and dispatched like any other tool — the agent loop
+needs no MCP-specific branch.
 
 🔴 THE STDERR RULE IS LOAD-BEARING, NOT HYGIENE. An MCP server is a long-running
 child process, and a child that inherits this process's console sprays its
@@ -29,15 +38,23 @@ import queue
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from litetui import runtime_log, ttyguard
 from pathlib import Path
 
-MCP_CONFIG_NAME = "mcp.json"
 MCP_LOG_NAME = "mcp.log"
 INIT_TIMEOUT = 30.0
 CALL_TIMEOUT = 120.0
 MAX_RESULT_CHARS = 50_000
 PROTOCOL_VERSION = "2025-06-18"
+
+#: Config files scanned at the repo root, in precedence order. `mcp.json`
+#: is LiteTUI-native; `.mcp.json` is the Claude Code project convention and
+#: is read when present so a repo that already ships one (e.g. to register
+#: this app's own bridge for Claude sessions) gets it for free. On a name
+#: collision the EARLIER file wins — see read_server_configs.
+MCP_CONFIG_NAMES = ("mcp.json", ".mcp.json")
 
 
 class MCPError(RuntimeError):
@@ -266,6 +283,120 @@ class MCPServer:
                 pass
 
 
+class HTTPMCPServer:
+    """One remote MCP server reached over plain-JSON HTTP POST.
+
+    The stateless variant of MCP streamable-HTTP: every request is one POST,
+    and the response body IS the JSON-RPC reply — no SSE framing, no session
+    id, stdlib urllib only. That is what LiteSuite's /mcp endpoint implements
+    (a one-shot CLI per call under the hood), so a dead or hung server degrades
+    to failed tool calls exactly like the stdio transport: every wait below is
+    bounded by `timeout`, and nothing here blocks without a deadline.
+
+    Interface parity with MCPServer is deliberate, not incidental: MCPManager,
+    app.py's disabled-server path (which calls srv.stop()) and the dispatch
+    table all treat both transports identically. There is no process to kill —
+    stop() exists so that code stays transport-blind.
+    """
+
+    def __init__(self, name: str, cfg: dict, cwd: Path, log_handle):
+        self.name = name
+        self.cfg = cfg
+        self.cwd = cwd
+        self._log = log_handle
+        self.url = str(cfg.get("url") or "").strip()
+        #: Extra headers (e.g. Authorization) merged over the defaults. The
+        #: bridge endpoint is auth-exempt on loopback, so this is usually empty.
+        self.headers = {str(k): str(v) for k, v in (cfg.get("headers") or {}).items()}
+        self.tools: list[dict] = []
+        self.error: str | None = None
+        self.proc = None  # interface parity with MCPServer; there is no process
+        self._lock = threading.Lock()
+        self._id = 0
+
+    def _post(self, payload: dict, timeout: float) -> dict:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        headers.update(self.headers)
+        req = urllib.request.Request(self.url, data=data, method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read()
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read(400).decode("utf-8", "replace")
+            except Exception:
+                pass
+            raise MCPError(f"HTTP {e.code} from {self.url}: {detail[:200]}")
+        except (urllib.error.URLError, OSError) as e:
+            reason = getattr(e, "reason", None) or str(e)
+            raise MCPError(f"cannot reach {self.url}: {reason}")
+        if not body:
+            # A 2xx with no body is a valid notification ack (LiteSuite answers
+            # notifications/* with 202 and an empty payload).
+            return {}
+        try:
+            msg = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            raise MCPError(f"non-JSON response from {self.url} ({len(body)} bytes)")
+        if not isinstance(msg, dict) or "jsonrpc" not in msg:
+            raise MCPError(f"response is not a JSON-RPC message from {self.url}")
+        return msg
+
+    def _request(self, method: str, params: dict | None = None, timeout: float = CALL_TIMEOUT) -> dict:
+        # The lock serializes requests per server — the same bound the stdio
+        # transport gets from call() holding self._lock.
+        with self._lock:
+            self._id += 1
+            rid = self._id
+            msg = self._post(
+                {"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}},
+                timeout,
+            )
+        if "error" in msg:
+            err = msg["error"]
+            raise MCPError(f"{err.get('code')}: {err.get('message')}")
+        return msg.get("result", {})
+
+    def _notify(self, method: str) -> None:
+        """Best-effort by design: a notification that fails must not sink the
+        handshake. A server that rejects notifications/initialized is still
+        usable for tools/call — log and move on, the same degrade-don't-freeze
+        rule as the stdio reader."""
+        try:
+            self._post({"jsonrpc": "2.0", "method": method, "params": {}}, INIT_TIMEOUT)
+        except Exception as e:
+            if self._log is not None:
+                self._log.write(f"[{self.name}] notification {method} failed: {e}\n")
+                self._log.flush()
+
+    def start(self) -> None:
+        if not self.url:
+            raise MCPError("no `url` in config")
+        # BEFORE any tool call can wait on it, like the stdio handshake: a dead
+        # endpoint fails at BOOT (recorded by MCPManager), not first use.
+        self._request(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "LiteTUI", "version": "1.0"},
+            },
+            timeout=INIT_TIMEOUT,
+        )
+        self._notify("notifications/initialized")
+        self.tools = list(self._request("tools/list", None, INIT_TIMEOUT).get("tools") or [])
+
+    def call(self, tool: str, args: dict) -> str:
+        result = self._request("tools/call", {"name": tool, "arguments": args})
+        return _flatten_content(result)
+
+    def stop(self) -> None:
+        # No process to kill. Present for interface parity — app.py's
+        # disabled-server path calls it on whatever transport came back.
+        pass
+
 def _flatten_content(result: dict) -> str:
     """MCP content blocks -> text. Non-text blocks are NAMED, never dropped."""
     if not isinstance(result, dict):
@@ -296,21 +427,26 @@ def _flatten_content(result: dict) -> str:
     return text or "(empty result)"
 
 
-class MCPManager:
-    """Loads mcp.json, starts each server, exposes specs + a dispatch map."""
+def config_files(root: Path) -> list[Path]:
+    """Existing MCP config files at the repo root, in precedence order."""
+    return [root / n for n in MCP_CONFIG_NAMES if (root / n).is_file()]
 
-    def __init__(self, root: Path):
-        self.root = root
-        self.servers: dict[str, MCPServer] = {}
-        self.failures: dict[str, str] = {}
-        self._log_handle = None
 
-    def load(self) -> None:
-        cfg_path = self.root / MCP_CONFIG_NAME
-        if not cfg_path.is_file():
-            return
+def read_server_configs(cfg_paths: list[Path]) -> tuple[dict[str, dict], dict[str, str]]:
+    """Merge mcpServers from every existing config file.
+
+    Returns (servers, errors): servers keyed by name with the EARLIER file
+    winning a collision — mcp.json is LiteTUI-native and stays authoritative
+    over the Claude-Code dotfile that happens to share the repo root; errors
+    keyed by FILE NAME so an unreadable config shows up in /settings rather
+    than vanishing. A file whose top level is not the expected shape is
+    skipped, like an empty one: there is nothing to start from it.
+    """
+    merged: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    for p in cfg_paths:
         try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            data = json.loads(p.read_text(encoding="utf-8"))
         except Exception as e:
             runtime_log.record(
                 "mcp_config_failed",
@@ -319,16 +455,44 @@ class MCPManager:
                 operation="config_load",
                 error_type=type(e).__name__,
             )
-            self.failures["mcp.json"] = f"unreadable: {e}"
+            errors[p.name] = f"unreadable: {e}"
+            continue
+        block = data.get("mcpServers") or data.get("servers") or {}
+        if not isinstance(block, dict):
+            continue
+        for name, sc in block.items():
+            merged.setdefault(name, sc)
+    return merged, errors
+
+class MCPManager:
+    """Loads mcp.json / .mcp.json (see config_files), starts each server —
+stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.servers: dict[str, "MCPServer | HTTPMCPServer"] = {}
+        self.failures: dict[str, str] = {}
+        self._log_handle = None
+
+    def load(self) -> None:
+        cfg_paths = config_files(self.root)
+        if not cfg_paths:
             return
-        servers = cfg.get("mcpServers") or cfg.get("servers") or {}
-        if not isinstance(servers, dict) or not servers:
+        servers, file_errors = read_server_configs(cfg_paths)
+        self.failures.update(file_errors)
+        if not servers:
             return
         self._log_handle = open(self.root / MCP_LOG_NAME, "a", encoding="utf-8", errors="replace")
         for name, sc in servers.items():
             if not isinstance(sc, dict) or sc.get("disabled"):
                 continue
-            srv = MCPServer(name, sc, self.root, self._log_handle)
+            # Transport by shape: a `url` without a `command` is an HTTP
+            # endpoint (Claude Code's `"type": "http"` entries carry it);
+            # everything else is spawned as a stdio child.
+            if sc.get("url") and not sc.get("command"):
+                srv = HTTPMCPServer(name, sc, self.root, self._log_handle)
+            else:
+                srv = MCPServer(name, sc, self.root, self._log_handle)
             try:
                 srv.start()
                 self.servers[name] = srv

@@ -11,7 +11,7 @@ from litetui.plugins import PluginManifest
 
 
 def mcp_server_names(app) -> list[str]:
-    """Server names from mcp.json, for the per-server toggles.
+    """Server names from mcp.json / .mcp.json, for the per-server toggles.
 
     Returns [] rather than raising when MCP is absent or unreadable: a
     settings screen that cannot open because an optional config file is
@@ -31,13 +31,13 @@ def mcp_server_names(app) -> list[str]:
         mgr = getattr(app, "mcp", None)
         if mgr is not None and getattr(mgr, "servers", None):
             return sorted(mgr.servers.keys())
-        import json as _json
-        cfg = paths.ROOT / "mcp.json"
-        if cfg.exists():
-            data = _json.loads(cfg.read_text(encoding="utf-8"))
-            servers = data.get("mcpServers") or data.get("servers") or {}
-            if isinstance(servers, dict):
-                return sorted(servers.keys())
+        from litetui.mcp_client import config_files, read_server_configs
+        # Same discovery as MCPManager.load(): mcp.json AND .mcp.json,
+        # merged with the earlier file winning a collision. A toggle list
+        # that missed one of the two files would leave its servers
+        # un-toggleable from /settings.
+        servers, _errors = read_server_configs(config_files(paths.ROOT))
+        return sorted(servers.keys())
     except Exception:
         pass
     return []
