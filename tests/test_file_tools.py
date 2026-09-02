@@ -177,6 +177,63 @@ def test_edit_reports_occurrence_count(workdir):
     assert "2" in out  # the count is part of the contract, not a nicety
 
 
+def test_edit_lf_old_string_matches_a_crlf_file(tmp_path):
+    """T147, the defect as measured: read shows the model LF endings, so the
+    old_string it types is LF — while this file is CRLF. Exact match finds nothing;
+    the normalized path must find the span and write back in the file's own ending.
+    Whole-file byte equality IS the 'byte-for-byte outside the span' proof: every
+    untouched line keeps its original \r\n."""
+    from litetui import file_tools
+    p = tmp_path / "crlf.txt"
+    before = b"alpha\r\nbeta line\r\ngamma\r\n"
+    p.write_bytes(before)
+    file_state.record_read(p)
+    out = file_tools.tool_edit({
+        "path": str(p),
+        "old_string": "alpha\nbeta line",       # LF endings, as the model types them
+        "new_string": "ALPHA\nBETA LINE v2"})
+    assert not out.startswith("[error]"), out
+    after = p.read_bytes()
+    assert after == b"ALPHA\r\nBETA LINE v2\r\ngamma\r\n", after
+    assert b"\n" not in after.replace(b"\r\n", b""), "a bare LF leaked into a CRLF file"
+
+
+def test_edit_lf_file_never_enters_the_normalization_path(tmp_path):
+    """A pure-LF file contains no CRLF, so the exact-match path is the only one —
+    behaviour must be byte-identical to pre-T147: LF in, LF out (no \r introduced),
+    and a CRLF-spelled old_string still finds nothing, because there are no CRLFs in
+    the file to normalize against."""
+    from litetui import file_tools
+    p = tmp_path / "lf.txt"
+    p.write_bytes(b"one\ntwo\nthree\n")
+    file_state.record_read(p)
+    out = file_tools.tool_edit({"path": str(p), "old_string": "two", "new_string": "TWO"})
+    assert not out.startswith("[error]"), out
+    assert p.read_bytes() == b"one\nTWO\nthree\n"
+    out2 = file_tools.tool_edit(
+        {"path": str(p), "old_string": "one\r\ntwo", "new_string": "x"})
+    assert out2.startswith("[error]") and "not found" in out2.lower(), out2
+
+
+def test_edit_refuses_a_mixed_ending_file_instead_of_reencoding(tmp_path):
+    """MIXED endings: the normalized path CAN find the span, but writing back would
+    re-encode every bare-LF line the edit never touched — a silent history rewrite.
+    Refuse with both counts; the file comes back byte-identical."""
+    from litetui import file_tools
+    p = tmp_path / "mixed.txt"
+    before = b"crlf one\r\ncrlf two\r\nbare lf line\nlast crlf\r\n"   # 3 CRLF, 1 bare LF
+    p.write_bytes(before)
+    file_state.record_read(p)
+    out = file_tools.tool_edit({
+        "path": str(p),
+        "old_string": "crlf one\ncrlf two",     # matches in normalized space... 
+        "new_string": "CHANGED"})
+    assert out.startswith("[error]"), f"mixed endings must be refused: {out}"
+    assert "MIXED" in out, "the refusal must name the condition"
+    assert "3 CRLF" in out and "1 bare LF" in out, \
+        "both counts are the point — they tell the model what to normalize"
+    assert p.read_bytes() == before, "a refused edit writes nothing"
+
 # ── edit: the uniqueness check ──────────────────────────────────────────────
 
 def test_edit_ambiguous_old_string_errors_with_the_count(workdir):

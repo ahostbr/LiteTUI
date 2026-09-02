@@ -152,14 +152,39 @@ def tool_edit(args: dict) -> str:
         return f"[error] {p.name} is not valid UTF-8 (byte {e.start}) — edit works on text files only"
 
     count = text.count(old)
+    normalized = False
+    bare_lf = 0
+    if count == 0 and "\r\n" in text:
+        # \U0001F534 THE MODEL TYPES WHAT `read` SHOWS IT — LF ENDINGS. A CRLF file therefore
+        # never exact-matches an old_string the model composed from what it was shown (T147,
+        # measured 2026-09-01: a full session of edits against this repo's pure-CRLF files
+        # died with "old_string not found" while every string WAS in the file). Retry the
+        # match in normalized LF space; the write-back below restores the file's own ending.
+        base = text.replace("\r\n", "\n")
+        old_s, new_s = old.replace("\r\n", "\n"), new.replace("\r\n", "\n")
+        bare_lf = text.replace("\r\n", "").count("\n")
+        normalized = True
+    else:
+        base, old_s, new_s = text, old, new
+
+    count = base.count(old_s)
     if count == 0:
         return f"[error] old_string not found in {p.name}"
     if count > 1 and not replace_all:
         return (f"[error] old_string occurs {count} times in {p.name} — "
                 "make it unique (include surrounding lines) or pass replace_all=true")
 
-    new_text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
-    out_bytes = new_text.encode("utf-8")
+    new_text = base.replace(old_s, new_s) if replace_all else base.replace(old_s, new_s, 1)
+    # Write back in the file's own ending. The normalized path only exists for CRLF files:
+    # a uniformly-CRLF one (no bare LF anywhere) converts the whole result to CRLF; MIXED
+    # endings are refused with both counts — converting would re-encode every bare-LF line
+    # the edit did not touch, a silent history rewrite no one asked for. Exact-match edits
+    # never reach this: their bytes pass through as-is.
+    if normalized and bare_lf:
+        return (f"[error] {p.name} has MIXED line endings "
+                f"({text.count(chr(13) + chr(10))} CRLF, {bare_lf} bare LF) — edit will not "
+                "re-encode lines the edit did not touch; normalize the file to one ending first")
+    out_bytes = (new_text.replace("\n", "\r\n") if normalized else new_text).encode("utf-8")
 
     # Atomic: write a sibling temp file then os.replace over the target. A
     # crash mid-write leaves either the old or the new content, never a tear.
