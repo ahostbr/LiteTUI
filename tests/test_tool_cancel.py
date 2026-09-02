@@ -66,6 +66,8 @@ _SRC = Path(__file__).resolve().parent.parent / "src" / "litetui"
 # plugin, kill_tree in the envelope. A gate reads the source that HOLDS its subject.
 CORE_TOOLS_SRC = (_SRC / "plugins" / "core_tools.py").read_text(encoding="utf-8")
 TTYGUARD_SRC = (_SRC / "ttyguard.py").read_text(encoding="utf-8")
+# app.py holds action_cancel_tool — the guard under test in this file.
+APP_SRC = (_SRC / "app.py").read_text(encoding="utf-8")
 
 
 # ── the instrument ───────────────────────────────────────────────────────────
@@ -349,6 +351,114 @@ def test_action_with_nothing_running_is_an_honest_no_op():
     assert ttyguard.CANCELLABLE["cancelled"] is False   # nothing armed
 
 
+
+# --- the stuck state: shell dead, tree still holding the pipe -----------
+def test_cancel_works_when_the_shell_died_but_the_tree_holds_the_pipe(tmp_path):
+    """THE BUG AS REPORTED. With shell=True the direct child is cmd.exe; it can
+    exit while a grandchild it spawned still holds the stdout/stderr pipes, so
+    communicate() stays blocked and proc.poll() says the child is DEAD. The old
+    guard (`proc is None or proc.poll() is not None`) answered "No cancellable
+    tool is running" about a call that WAS running — with the button visible for
+    it, because the ticker keys on the slot, not poll(). This arm builds exactly
+    that state and proves cancel still reaches the tree.
+
+    The probe spawns a sleeper that INHERITS stdout (no redirect), announces the
+    SLEEPER's pid — its own, atomically — then exits. cmd.exe follows it out; the
+    sleeper alone keeps the pipe open. A pidfile written by _probe would race: it
+    first holds the probe's own pid, and a late reader could pin the wrong process.
+    """
+    name = f"CANCELSTUCK_{uuid.uuid4().hex[:12]}"
+    script = tmp_path / f"{name}.py"
+    pidfile = tmp_path / f"{name}.pid"   # holds the SLEEPER's pid, not the probe's
+    script.write_text(
+        "import os, subprocess, sys\n"
+        f"_pf = {str(pidfile)!r}\n"
+        "_s = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
+        "open(_pf + '.tmp', 'w').write(str(_s.pid))\n"
+        "os.replace(_pf + '.tmp', _pf)\n",
+        encoding="utf-8",
+    )
+    th, box = _run_bash_in_thread(
+        {"command": f'"{sys.executable}" "{script}"', "timeout": 240})
+
+    assert _wait(lambda: ttyguard.CANCELLABLE["proc"] is not None), \
+        "tool_bash never populated the cancellable slot"
+    proc = ttyguard.CANCELLABLE["proc"]
+    shell = _Pinned(proc.pid)
+    sleeper = _pinned_probe(pidfile)
+    try:
+        assert sleeper.pid != proc.pid, \
+            "no intermediate shell — the grandchild trap did not reproduce"
+
+        # THE stuck state, asserted instead of assumed: child dead (poll() non-None),
+        # slot still populated, thread still blocked in communicate(). If any one of
+        # these fails to hold, the scenario under test never formed and every later
+        # assertion would pass vacuously.
+        assert _wait(
+            lambda: proc.poll() is not None and ttyguard.CANCELLABLE["proc"] is not None), (
+            "stuck state never formed — cmd.exe died but something unblocked "
+            "communicate, so the grandchild trap did not reproduce"
+        )
+        assert th.is_alive(), \
+            "tool_bash returned without a cancel — the pipe was not held"
+        assert not sleeper.exited(), "sleeper died before it could hold the pipe"
+
+        notes = []
+        calls = []
+        killed_box: dict = {}
+
+        def cancel_tree(pid, proc_arg=None):
+            """The exact core of _cancel_tool_tree minus the notifies — same
+            pattern as the tree arm above, and it must pass proc, not just pid.
+            """
+            killed_box["v"] = ttyguard.kill_tree(pid, proc_arg)
+            ttyguard.CANCELLABLE["kill_confirmed"] = killed_box["v"]
+            calls.append((pid, proc_arg))
+
+        ns = SimpleNamespace(
+            notify=lambda msg, timeout=0: notes.append(msg), _cancel_tool_tree=cancel_tree)
+        LiteTUI.action_cancel_tool(ns)
+
+        assert not any("No cancellable tool" in n for n in notes), \
+            f"the guard read child liveness again — the bug this fix removed: {notes}"
+        assert ttyguard.CANCELLABLE["cancelled"] is True, "cancel was not armed"
+        assert calls and calls[0] == (proc.pid, proc), \
+            "the kill did not receive pid AND the Popen object"
+
+        th.join(timeout=60)
+        assert not th.is_alive(), "tool_bash did not return after the kill"
+        assert box["result"].startswith("[cancelled by user after"), box["result"]
+        assert killed_box.get("v") is True, (
+            "kill_tree could not CONFIRM the tree is gone — no caller may describe "
+            "that as success"
+        )
+        assert _wait(lambda: sleeper.exited()), \
+            "the pipe-holder survived — communicate could never have unblocked"
+    finally:
+        _reap(sleeper, shell)
+
+
+def test_a_dead_child_in_the_slot_does_not_block_cancel():
+    """REGRESSION PIN for the removed `proc.poll() is not None` clause. A dead
+    Popen in the slot is exactly what the old guard rejected with "No cancellable
+    tool is running" — about a call it was supposed to cancel. The contract this
+    pins: the SLOT is the in-flight signal, whatever is in it gets cancelled.
+    Fails under the pre-fix code; that is its whole job.
+    """
+    notes = []
+    calls = []
+    ns = SimpleNamespace(
+        notify=lambda msg, timeout=0: notes.append(msg),
+        _cancel_tool_tree=lambda pid, proc=None: calls.append((pid, proc)))
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait(timeout=30)   # poll() is now non-None — the old guard's trigger
+    ttyguard.CANCELLABLE["proc"] = dead
+    LiteTUI.action_cancel_tool(ns)
+    assert not any("No cancellable tool" in n for n in notes), \
+        f"child liveness is back in the guard: {notes}"
+    assert ttyguard.CANCELLABLE["cancelled"] is True, "cancel was not armed"
+    assert calls and calls[0][0] == dead.pid and calls[0][1] is dead
+
 # --- the instrument's own gate -----------------------------------------------
 def test_the_pin_can_tell_a_live_process_from_a_dead_one():
     """The control that stops this file's speed from being a lie. An
@@ -426,3 +536,25 @@ def test_the_kill_is_a_tree_kill():
     ):
         assert any(flag in argv for argv in argvs), \
             f"taskkill lost {flag}: {why}"
+
+
+def test_the_guard_never_reads_child_liveness():
+    """AST gate on the guard itself: zero .poll() calls in action_cancel_tool's
+    body. The defect this file's new arms pin was exactly that clause — a liveness
+    read inside a guard whose only job is "is a call in flight". A string grep
+    would pass with the clause commented out; the AST counts calls, and comments
+    are not calls.
+    """
+    tree = ast.parse(APP_SRC)
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and n.name == "action_cancel_tool"), None)
+    assert fn is not None, "app.action_cancel_tool is gone"
+    polls = [node for node in ast.walk(fn)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "poll"]
+    assert not polls, (
+        f"{len(polls)} .poll() call(s) in action_cancel_tool — child liveness is "
+        "back in the guard; the slot alone decides"
+    )

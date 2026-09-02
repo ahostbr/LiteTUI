@@ -185,6 +185,13 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # The call is OVER; _bash_timeout_result only formats what happened.
+        # Clear the slot BEFORE that formatting — it runs its own kill_tree
+        # (up to KILL_TREE_TIMEOUT_S) plus a 10s drain, long enough for a human
+        # to press cancel on a tool that already ended. Slot cleared, that press
+        # is an honest no-op; slot populated, it would arm "cancelled" and
+        # dispatch a second kill racing this one's.
+        ttyguard.CANCELLABLE["proc"] = None
         return _bash_timeout_result(proc, timeout)
     finally:
         ttyguard.CANCELLABLE["proc"] = None

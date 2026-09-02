@@ -2940,9 +2940,12 @@ class LiteTUI(App):
                 or self._thinking_live is not None
                 or card_live
             )
-            # The cancel button tracks the PROCESS, not the tool bubble: only
-            # a live subprocess is cancellable, and a button shown for a tool
-            # with nothing to kill would be a control that does nothing.
+            # The cancel button tracks the SLOT, not the tool bubble — and not
+            # child liveness: a populated slot means communicate() may still be
+            # blocked, including with the direct child already dead and a
+            # grandchild holding the pipes (the state action_cancel_tool's old
+            # poll() guard refused to cancel). A button shown for a tool with
+            # nothing in flight would be a control that does nothing.
             try:
                 live = ttyguard.CANCELLABLE["proc"] is not None
                 for btn in self.query(CancelToolButton):
@@ -3299,7 +3302,19 @@ class LiteTUI(App):
         result the model can react to. Esc (action_stop_turn) stays what it
         is: stop the whole turn. Two different verbs, deliberately."""
         proc = ttyguard.CANCELLABLE["proc"]
-        if proc is None or proc.poll() is not None:
+        # 🔴 THE GUARD IS "A CALL IS IN FLIGHT", NEVER CHILD LIVENESS. This
+        # used to also require `proc.poll() is None` — and that clause was the
+        # bug, not a guard against it: with shell=True the direct child
+        # (cmd.exe) can exit while a grandchild it spawned still holds the
+        # stdout/stderr pipes. communicate() then stays blocked, the turn is
+        # stuck, and cancel answered "No cancellable tool is running" about a
+        # tool that WAS running — with the button above even visible for it,
+        # because the ticker keys on the slot, not poll(). The slot IS the
+        # in-flight signal: _run_shell populates it at spawn and clears it only
+        # once the call has ended (including before its timeout result formats),
+        # so a populated slot means communicate() may still be blocked and
+        # there is something to kill.
+        if proc is None:
             self.notify("No cancellable tool is running", timeout=2)
             return
         # Set on THIS thread, before the kill is dispatched: _run_shell reads
