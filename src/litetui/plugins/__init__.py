@@ -59,6 +59,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.skills_plugin",
     "litetui.plugins.harness_plugin",
     "litetui.plugins.mcp_plugin",
+    "litetui.plugins.mcp_manage",
     "litetui.plugins.themes_plugin",
     "litetui.plugins.mark_plugin",
     "litetui.plugins.misc",

@@ -2066,6 +2066,23 @@ class LiteTUI(App):
         """
         return self._mcp_dispatch
 
+    def rebuild_mcp_dispatch(self) -> None:
+        """Re-cache the MCP dispatch map after a server starts or stops.
+
+        🔴 THIS IS THE ONE STALE THING, AND ONLY THIS ONE. `mcp_plugin` registers
+        MCP as a DYNAMIC provider whose specs callable is `lambda: app.mcp.tool_specs()`
+        -- evaluated per turn, so a newly connected server's tools reach the model
+        by themselves. Its dispatch callable is `lambda name: app.mcp_dispatch.get(name)`,
+        which reads THIS cache, built once in __init__. So without this call a
+        connect would advertise tools the loop cannot route: the model sees the
+        schema, calls it, and gets "unknown tool" -- a failure that reads as a
+        bad model rather than a stale map.
+
+        Cheap and idempotent, so every lifecycle verb calls it unconditionally
+        rather than trying to work out whether the set actually changed.
+        """
+        self._mcp_dispatch = self.mcp.dispatch()
+
     # ── conversation store ───────────────────────────────────────────
     # Implementations live in litetui.conversation.ConversationRepository.
     # The aliases that carried `read`, `fmt_size`, `label` and `list_all`
