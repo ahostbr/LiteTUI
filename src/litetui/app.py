@@ -689,9 +689,19 @@ class LiteTUI(App):
         margin-bottom: 0;
     }
 
+    /* 🔴 padding-left MATCHES `.set-help` AND `.set-label-inline`, WHICH IS THE
+       WHOLE POINT. A row is Label / Input / help-Static stacked in one
+       Vertical; the help text carries `padding-left: 1`, an Input's own border
+       puts its text at column 1, and a switch row's label is `.set-label-inline`
+       which is also 1. The bold label was the ONLY member at column 0, so every
+       heading in Settings hung one cell to the left of the control and the
+       sentence describing it — visible as a ragged left edge down the whole
+       panel once you see it. Ryan, 2026-09-03, from a screenshot: "thats a bug,
+       how the settings are offset". */
     .set-label {
         color: $text;
         text-style: bold;
+        padding-left: 1;
     }
 
     .set-label-inline {
