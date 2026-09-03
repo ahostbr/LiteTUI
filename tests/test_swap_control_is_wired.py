@@ -30,6 +30,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from textual.widgets import Input, OptionList
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
@@ -41,6 +42,8 @@ from litetui.loop_list import LoopListBody
 from litetui.mcp_list import MCPListBody
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.picker import PickerBody, PickerScreen
+from litetui.settings import Settings
+from litetui.settings_screen import SettingsBody, SettingsScreen
 from litetui.scheduler import Job
 from litetui.plugins.scheduler_ui import (
     CalendarBody, CalendarScreen, DayBody, DayScreen, JobBody, JobScreen,
@@ -114,6 +117,8 @@ def _pairs():
          lambda: JobScreen(None, "0 9 * * *")),
         ("model_config",
          lambda: ModelConfigBody("a-model"), lambda: ModelConfigScreen("a-model")),
+        ("settings",
+         lambda: SettingsBody(Settings()), lambda: SettingsScreen(Settings())),
     ]
 
 
@@ -350,6 +355,171 @@ async def test_the_control_is_shown_wherever_it_can_act(name, body, modal):
         await settle_until(pilot, lambda: bool(a2.screen.query(SwapButton)))
         btn = a2.screen.query_one(SwapButton)
         assert btn.display is True, f"{name}: hidden on a ROUTED MODAL, where it works"
+
+
+# ── the swap CARRIES what you typed ─────────────────────────────────────────
+
+#: (name, body factory, edit(body) -> None, read(body) -> value, what it means)
+#: One editable thing per body that declares `get_state`. Deliberately the
+#: field a user would be MID-EDIT on when they reach for the swap control,
+#: because that is when losing it costs something.
+def _next_month(d):
+    return (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+
+
+def _stateful():
+    states, done, box = _question(), threading.Event(), []
+
+    def _set_input(sel, value):
+        def edit(body):
+            body.query_one(sel, Input).value = value
+        return edit
+
+    def _get_input(sel):
+        def read(body):
+            return body.query_one(sel, Input).value
+        return read
+
+    return [
+        ("job", lambda: JobBody(None, "0 9 * * *"),
+         _set_input("#job-prompt", "half-written prompt"),
+         _get_input("#job-prompt"), "half-written prompt"),
+        ("job_label", lambda: JobBody(None, "0 9 * * *"),
+         _set_input("#job-label", "typed then swapped"),
+         _get_input("#job-label"), "typed then swapped"),
+        # Read the FIELD, not `body.value`: a typed-but-unsubmitted hex is
+        # exactly the state `get_state` prefers ("the box is the escape hatch,
+        # and a hatch that loses what you typed is a decoy"), and `body.value`
+        # is derived from the grid until a repaint.
+        ("colorpicker", lambda: ColorPickerBody("#808080", [], "primary"),
+         _set_input("#cp-hex", "#c9a24d"),
+         _get_input("#cp-hex"), "#c9a24d"),
+        ("model_config", lambda: ModelConfigBody("a-model"),
+         _set_input("#ld-ctx", "8192"),
+         _get_input("#ld-ctx"), "8192"),
+        ("settings", lambda: SettingsBody(Settings()),
+         _set_input("#f-llama_host", "http://127.0.0.1:9999"),
+         _get_input("#f-llama_host"), "http://127.0.0.1:9999"),
+        # Not a typed field — the MONTH you paged to. Found by the census arm
+        # below, which is the point of pairing a walk with the round-trip.
+        ("calendar", lambda: CalendarBody(JOBS),
+         lambda b: b.action_next_month(),
+         lambda b: (b._year, b._month),
+         _next_month(date.today())),
+        ("day", lambda: DayBody(JOBS, A_DAY),
+         lambda b: setattr(b.query_one("#day-list", OptionList), "highlighted", 1),
+         lambda b: b.query_one("#day-list", OptionList).highlighted, 1),
+    ]
+
+
+STATEFUL = _stateful()
+
+
+@pytest.mark.parametrize("name,body,edit,read,expected", STATEFUL,
+                         ids=[r[0] for r in STATEFUL])
+@pytest.mark.asyncio
+async def test_the_swap_carries_what_you_typed(name, body, edit, read, expected):
+    """🔴 EDIT, PRESS THE CONTROL, LOOK FOR THE EDIT — in that order.
+
+    `DialogController._mount_view`'s comment describes the failure this is the
+    arm for: "everything the user had typed, silently gone, with no error
+    anywhere". Five bodies gained `get_state`/`set_state` during T232 and NONE
+    of them was proved to round-trip; a carry that is written and never
+    exercised is indistinguishable from one that is not written at all.
+
+    ⚠️ THE EDIT IS MADE THROUGH THE WIDGET AND READ BACK THROUGH THE WIDGET, so
+    a `get_state` that returns the right dict while `set_state` drops it on the
+    floor still fails here. Asserting on the controller's `_state` would pass in
+    that case, which is the assertion satisfiable by the wrong answer.
+    """
+    a = make_app()
+    async with a.run_test(size=(120, 40)) as pilot:
+        ctrl = DialogController(a, body, "sidebar", "right")
+        a.run_worker(ctrl.open(), name="dlg")
+        await settle_until(pilot, lambda: bool(a.screen.query(SidePanel)))
+        panel = a.screen.query_one(SidePanel)
+        await settle_until(pilot, lambda: bool(panel.body.children))
+        for _ in range(4):
+            await pilot.pause()
+
+        edit(panel.body)
+        await pilot.pause()
+        assert read(panel.body) == expected, (
+            f"{name}: the edit did not take even BEFORE the swap — this arm "
+            "would prove nothing"
+        )
+
+        panel.query_one(SwapButton).press()
+        await settle_until(pilot, lambda: ctrl.style == "modal")
+        assert ctrl.pending, f"{name}: the press ANSWERED the dialog"
+        await settle_until(pilot, lambda: bool(a.screen.query(SwapButton)))
+        for _ in range(6):
+            await pilot.pause()
+
+        rebuilt = ctrl._view.body
+        assert read(rebuilt) == expected, (
+            f"{name}: THE SWAP ATE THE EDIT — the rebuilt dialog shows "
+            f"{read(rebuilt)!r} instead of {expected!r}, fully populated and "
+            "silently wrong"
+        )
+        ctrl.resolve(None)
+
+
+def test_every_body_that_can_lose_an_edit_declares_get_state():
+    """The census half: a NEW dialog body must not quietly skip the carry.
+
+    Walks the package for `Widget` subclasses that a dialog host mounts (they
+    are the ones yielding a `SwapButton`) and requires each to declare
+    `get_state` unless it is listed here as genuinely stateless. A body that
+    holds an Input and no `get_state` is an edit waiting to be eaten.
+    """
+    import ast
+
+    pkg = ROOT / "src" / "litetui"
+    #: Bodies with nothing a user can type into or scroll to. Each one is a
+    #: claim that can be checked by opening the file, not a mute exemption.
+    STATELESS = {
+        "ConfirmStopBody",      # two buttons, no field
+        "ToolApprovalBody",     # buttons and a rendered command
+        "DemoDialogBody",       # the spike's own body; carries its own state
+        "ToolListBody",         # a list panel, rebuilt from the app each time
+        "LoopListBody",
+        "MCPListBody",
+        "AskUserQuestionBody",  # carries its answers in QuestionState, not here
+    }
+    def _yields_the_control(cls_node) -> bool:
+        """🔴 THE DETECTOR ASKS FOR A `yield SwapButton(...)`, NOT FOR THE TEXT.
+
+        A substring search over the class source matched `LiteTUI` (its CSS
+        mentions the class), `SwapButton` itself, and any file with a comment
+        about it — three false positives on the first run, which is the
+        "a text gate counts the prose ABOUT the thing" shape. Walking for a
+        Yield whose value is a Call to the NAME is the structural question.
+        """
+        for n in ast.walk(cls_node):
+            if isinstance(n, ast.Yield) and isinstance(n.value, ast.Call):
+                fn = n.value.func
+                if isinstance(fn, ast.Name) and fn.id == "SwapButton":
+                    return True
+        return False
+
+    missing = []
+    for path in sorted(pkg.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "SwapButton(" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.ClassDef) or not _yields_the_control(node):
+                continue
+            names = {n.name for n in node.body if isinstance(n, ast.FunctionDef)}
+            if "get_state" in names or node.name in STATELESS:
+                continue
+            missing.append(f"{path.relative_to(pkg).as_posix()}::{node.name}")
+    assert missing == [], (
+        "these dialog bodies offer a swap control and declare no `get_state`, "
+        "so a swap silently rebuilds them from their constructor arguments:\n  "
+        + "\n  ".join(missing)
+    )
 
 
 # ── the census: one owner for the press ─────────────────────────────────────

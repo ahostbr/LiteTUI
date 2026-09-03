@@ -42,6 +42,8 @@ from litetui.picker import PickerBody, PickerScreen
 from litetui.scheduler import Job
 from litetui.plugins.scheduler_ui import CalendarBody, DayBody, JobBody
 from litetui.plugins.model_switch import ModelConfigBody
+from litetui.settings import Settings
+from litetui.settings_screen import SettingsBody
 from litetui.plugins.help_plugin import HelpBody
 from litetui.side_panel import DialogController, SidePanel
 from litetui.tool_approval import ToolApprovalBody
@@ -98,6 +100,7 @@ DIALOGS = [
     ("day", lambda: DayBody(JOBS, A_DAY), "#day-box"),
     ("job", lambda: JobBody(None, "0 9 * * *"), "#job-box"),
     ("model_config", lambda: ModelConfigBody("a-model"), "#set-box"),
+    ("settings", lambda: SettingsBody(Settings()), "#set-box"),
 ]
 
 

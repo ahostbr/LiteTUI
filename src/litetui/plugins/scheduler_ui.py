@@ -455,6 +455,27 @@ class CalendarBody(Widget):
 
     # -- actions ----------------------------------------------------------
 
+    # -- state carry across a live host swap --------------------------------
+
+    def get_state(self) -> dict:
+        """The MONTH BEING VIEWED, which is the only state this body holds.
+
+        Found by the census arm rather than by thinking about it: a swap
+        rebuilt the calendar from its constructor, which starts on
+        `date.today()`. Someone who paged forward to March and then docked the
+        month would land back on this month with no indication anything moved —
+        and a calendar is the one dialog where "which month am I looking at" is
+        the whole question.
+        """
+        return {"year": self._year, "month": self._month}
+
+    def set_state(self, state: dict) -> None:
+        year, month = state.get("year"), state.get("month")
+        if not year or not month:
+            return
+        self._year, self._month = year, month
+        self._paint()
+
     def action_prev_month(self) -> None:
         self._year, self._month = calview.step_month(self._year, self._month, -1)
         self._paint()
@@ -492,6 +513,27 @@ class CalendarScreen(ModalScreen[None]):
 
     def _body(self) -> "CalendarBody":
         return self.query_one(CalendarBody)
+
+    # -- state carry across a live host swap --------------------------------
+
+    def get_state(self) -> dict:
+        """The MONTH BEING VIEWED, which is the only state this body holds.
+
+        Found by the census arm rather than by thinking about it: a swap
+        rebuilt the calendar from its constructor, which starts on
+        `date.today()`. Someone who paged forward to March and then docked the
+        month would land back on this month with no indication anything moved —
+        and a calendar is the one dialog where "which month am I looking at" is
+        the whole question.
+        """
+        return {"year": self._year, "month": self._month}
+
+    def set_state(self, state: dict) -> None:
+        year, month = state.get("year"), state.get("month")
+        if not year or not month:
+            return
+        self._year, self._month = year, month
+        self._paint()
 
     def action_prev_month(self) -> None:
         self._body().action_prev_month()

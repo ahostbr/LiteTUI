@@ -4,8 +4,11 @@ The Settings dataclass, its persistence, and the apply-mapping
 (_on_settings_saved with its deferred-list doctrine) stay app-owned:
 single owner of a fact many plugins read. This is the door to the screen.
 """
+from functools import partial
+
 from litetui import paths
-from litetui.settings_screen import SettingsScreen
+from litetui.settings_screen import SettingsBody, SettingsScreen
+from litetui.side_panel import present_dialog
 
 from litetui.plugins import PluginManifest
 
@@ -44,12 +47,15 @@ def mcp_server_names(app) -> list[str]:
 
 
 def _cmd_settings(app, name: str, arg: str) -> None:
-    app.push_screen(
-        SettingsScreen(
-            app.settings,
-            models=app.available_models,
-            mcp_servers=mcp_server_names(app),
-        ),
+    # Both factories from ONE set of arguments — `picker.pick`'s reason: two
+    # built at two places are two chances for the sidebar and the modal to show
+    # different settings.
+    models = app.available_models
+    servers = mcp_server_names(app)
+    present_dialog(
+        app,
+        partial(SettingsBody, app.settings, models, servers),
+        partial(SettingsScreen, app.settings, models, servers),
         app._on_settings_saved,
     )
 

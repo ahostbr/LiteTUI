@@ -30,6 +30,19 @@ from litetui.colorpicker import (
 from litetui.settings import Settings
 from litetui.settings_screen import SettingsScreen
 
+
+def _settings_body(app_or_screen):
+    """The settings BODY — where `_collect`, `on_click` and the controls live.
+
+    They moved out of `SettingsScreen` so a `SidePanel` can mount the same
+    widget (T232). `query_one` still reaches descendants from the screen; it is
+    the DIRECT method access that had to follow the logic.
+    """
+    from litetui.settings_screen import SettingsBody
+    node = getattr(app_or_screen, "screen", app_or_screen)
+    return node.query_one(SettingsBody)
+
+
 SETTINGS_SRC = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "settings_screen.py"
                 ).read_text(encoding="utf-8")
 
@@ -200,7 +213,7 @@ async def test_picker_opens_with_the_fields_current_value():
             def stop(self):
                 pass
 
-        screen.on_click(_Ev())
+        _settings_body(screen).on_click(_Ev())
         for _ in range(6):
             await pilot.pause()
 

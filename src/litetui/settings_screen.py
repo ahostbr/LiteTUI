@@ -33,6 +33,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Input,
@@ -47,7 +48,7 @@ from textual.widgets import (
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
-from litetui.side_panel import present_dialog
+from litetui.side_panel import SwapButton, close_dialog, present_dialog
 # THE MODULE, not the names. `from ... import PROFILES` binds at import
 # time, which would make the "derivation" a snapshot: a profile added
 # later would not appear, and the test proving it appears could only pass
@@ -134,13 +135,30 @@ def _num_or_none(raw: str, cast) -> Any:
     return cast(raw)
 
 
-class SettingsScreen(ModalScreen[Settings | None]):
-    """Returns the new Settings on save, or None on cancel."""
+#: Declared once and installed on both the body and its screen; see
+#: `scheduler_ui._CAL_KEYS`. `escape` is on the screen only — `SidePanel`
+#: already binds it to cancel the dialog.
+_SET_KEYS = [Binding("ctrl+s", "save", "Save", show=False)]
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=False),
-        Binding("ctrl+s", "save", "Save", show=False),
-    ]
+
+class SettingsBody(Widget):
+    """Every knob, grouped and scrollable — host-agnostic.
+
+    Exits through `close_dialog`, so the ANSWER is unchanged in both hosts: the
+    new `Settings` on save, `None` on cancel, and a fresh `Settings()` from
+    Restore defaults. `app._on_settings_saved` is the only consumer and it does
+    not learn that a second host exists.
+
+    `height: 100%` and `#set-box` keeps its own `height: 88%`: that box is
+    SHARED with the model panel, so a body that is exactly the screen leaves the
+    percentage meaning what it always meant. See ModelConfigBody.
+    """
+
+    DEFAULT_CSS = """
+    SettingsBody { width: 100%; height: 100%; align: center middle; layout: vertical; }
+    """
+
+    BINDINGS = list(_SET_KEYS)
 
     def __init__(self, current: Settings, models: list[str] | None = None,
                  mcp_servers: list[str] | None = None):
@@ -589,6 +607,9 @@ class SettingsScreen(ModalScreen[Settings | None]):
                 yield Button("Save", variant="primary", id="set-save")
                 yield Button("Cancel", id="set-cancel")
                 yield Button("Restore defaults", variant="warning", id="set-defaults")
+                # `.inline` — three buttons already share this row, and
+                # SwapButton's own `width: 100%` would take all of it.
+                yield SwapButton(classes="inline")
 
     # ── Actions ──────────────────────────────────────────────────────────────
 
@@ -778,16 +799,47 @@ class SettingsScreen(ModalScreen[Settings | None]):
             out.theme_name = ct_name
         return out
 
+    # ── state carry across a live host swap ─────────────────────────────────
+
+    def get_state(self) -> dict:
+        """Every editable control, by id, walked from the DOM.
+
+        🔴 THIS PANEL IS THIRTY-ODD CONTROLS AND A THEME CREATOR. A swap that
+        rebuilt it from `self._start` would silently discard every edit made
+        before the swap — and the rebuilt panel looks completely normal, just
+        populated with the values you were changing away from.
+
+        Derived from the DOM rather than from `fields(Settings)` because the
+        panel also carries controls that are NOT settings fields: the theme
+        creator's `ct-*` token inputs and `ct-name`, which `_collect` reads
+        separately. A list keyed on the dataclass would drop exactly those.
+        """
+        out: dict = {}
+        for w in list(self.query(Input)) + list(self.query(Select)) + list(self.query(Switch)):
+            if w.id:
+                out[w.id] = w.value
+        return out
+
+    def set_state(self, state: dict) -> None:
+        for wid, value in (state or {}).items():
+            found = self.query(f"#{wid}")
+            if not found:
+                continue          # a control this host does not render
+            try:
+                found.first().value = value
+            except Exception:
+                continue          # a Select whose options no longer hold it
+
     def action_save(self) -> None:
         try:
             new = self._collect()
         except ValueError as e:
             self.query_one("#set-error", Static).update(f"[b]Cannot save[/b] — {e}")
             return
-        self.dismiss(new)
+        close_dialog(self, new)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        close_dialog(self, None)
 
     @on(Button.Pressed, "#set-save")
     def _save(self) -> None:
@@ -799,4 +851,33 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
     @on(Button.Pressed, "#set-defaults")
     def _defaults(self) -> None:
-        self.dismiss(Settings())
+        close_dialog(self, Settings())
+
+
+class SettingsScreen(ModalScreen[Settings | None]):
+    """The settings panel, as a modal. Returns the new Settings, or None.
+
+    NOT replaced by `_ModalHost`: `app.py`'s centering rule names this class
+    (`ConfirmStop, PickerScreen, HelpScreen, SettingsScreen, ...`) and several
+    tests push it directly and assert on it. Bindings stay here as well as on
+    the body — a ModalScreen is what has focus on the modal path — and their
+    actions delegate down, so there is one implementation of each.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False), *_SET_KEYS]
+
+    def __init__(self, current: Settings, models: list[str] | None = None,
+                 mcp_servers: list[str] | None = None):
+        super().__init__()
+        self._start = current
+        self._models = models or []
+        self._mcp_servers = mcp_servers or []
+
+    def compose(self) -> ComposeResult:
+        yield SettingsBody(self._start, self._models, self._mcp_servers)
+
+    def action_save(self) -> None:
+        self.query_one(SettingsBody).action_save()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

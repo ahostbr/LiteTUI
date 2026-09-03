@@ -28,6 +28,19 @@ from pathlib import Path as _Path
 from litetui import app as _app_mod
 from litetui import paths
 
+
+def _settings_body(app_or_screen):
+    """The settings BODY — where `_collect`, `on_click` and the controls live.
+
+    They moved out of `SettingsScreen` so a `SidePanel` can mount the same
+    widget (T232). `query_one` still reaches descendants from the screen; it is
+    the DIRECT method access that had to follow the logic.
+    """
+    from litetui.settings_screen import SettingsBody
+    node = getattr(app_or_screen, "screen", app_or_screen)
+    return node.query_one(SettingsBody)
+
+
 paths.CONVO_DIR = _Path(tempfile.mkdtemp(prefix="convos-settings-unit-"))
 
 
@@ -347,7 +360,7 @@ async def test_collect_refuses_a_partial_save_instead_of_skipping():
         screen.query_one("#f-tool_iterations").remove()
         await pilot.pause()
         with pytest.raises(ValueError, match="no control found for"):
-            screen._collect()
+            _settings_body(screen)._collect()
 
 
 @pytest.mark.asyncio
