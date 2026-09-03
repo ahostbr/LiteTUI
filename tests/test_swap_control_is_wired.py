@@ -46,6 +46,7 @@ from litetui.plugins.scheduler_ui import (
     CalendarBody, CalendarScreen, DayBody, DayScreen, JobBody, JobScreen,
 )
 from litetui.plugins.help_plugin import HelpBody, HelpScreen
+from litetui.plugins.model_switch import ModelConfigBody, ModelConfigScreen
 from litetui.side_panel import (
     DialogController, SidePanel, SwapButton, close_dialog, present_dialog,
     show_dialog,
@@ -111,6 +112,8 @@ def _pairs():
         ("job",
          lambda: JobBody(None, "0 9 * * *"),
          lambda: JobScreen(None, "0 9 * * *")),
+        ("model_config",
+         lambda: ModelConfigBody("a-model"), lambda: ModelConfigScreen("a-model")),
     ]
 
 

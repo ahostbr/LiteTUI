@@ -655,8 +655,13 @@ class LiteTUI(App):
 
     /* ── Settings ─────────────────────────────────────────── */
 
+    /* `max-width` binds only in the 60-column sidebar strip; the modal keeps a
+       flat 92. `height: 88%` STAYS HERE: this box is shared by the model panel
+       and /settings, and both bodies are `height: 100%`, i.e. transparent to
+       the percentage. See #help-box for the case where it has to move. */
     #set-box {
         width: 92;
+        max-width: 100%;
         height: 88%;
         padding: 1 2;
         background: $surface;
@@ -677,8 +682,19 @@ class LiteTUI(App):
        reachable. A settings panel that outgrows the terminal and cannot
        scroll hides exactly the options nobody has tried yet. */
     /* One scroll per TAB PANE now, not one for the whole panel. Each section
-       is its own short surface, so nothing pushes another off the bottom. */
-    #set-tabs {
+       is its own short surface, so nothing pushes another off the bottom.
+
+       `#mc-tabs` is the model panel. It copied /settings' layout — same
+       #set-box, same TabPane + .set-scroll shape — and NOT this line, so its
+       TabbedContent took its natural height and overflowed the box at every
+       terminal height. Measured on the pre-conversion tree (02c8fe1, clean),
+       modal path, walking children against their parent's content region:
+           h=24  TabbedContent#mc-tabs rows 5..21 vs Vertical content 2..18
+           h=32  rows 5..28 vs 2..25
+           h=50  rows 5..44 vs 2..41
+       Pre-existing and shipped; surfaced because the swap control was then the
+       child that fell off the bottom. */
+    #set-tabs, #mc-tabs {
         height: 1fr;
     }
 
@@ -688,7 +704,7 @@ class LiteTUI(App):
         padding-right: 1;
     }
 
-    #set-tabs Tabs {
+    #set-tabs Tabs, #mc-tabs Tabs {
         background: $surface;
     }
 

@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import json
 import shutil
+from functools import partial
 from pathlib import Path
 
 from textual.binding import Binding
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Input, Label, Select, Static, TabbedContent, TabPane
 
 from litetui import llm_backend
@@ -31,6 +33,7 @@ from litetui import paths  # noqa: F401 — path anchors come from ONE home (plu
 from litetui import settings as settings_mod
 from litetui.picker import pick
 from litetui.plugins import PluginManifest
+from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 
 # ── /model /models /reconnect (bodies verbatim, rows now source-tagged) ──────
@@ -277,19 +280,33 @@ _NA_ON_LLAMA = (
 )
 
 
-class ModelConfigScreen(ModalScreen[None]):
+#: Declared once and installed on both the body and its screen; see
+#: `scheduler_ui`'s `_CAL_KEYS` for why. `escape` is on the screen only —
+#: `SidePanel` already binds it to cancel the dialog.
+_MC_KEYS = [Binding("ctrl+s", "apply", "Apply", show=False)]
+
+
+class ModelConfigBody(Widget):
     """Info / Load / Inference for ONE model — LM Studio's panel, in the TUI.
 
     Unknown keys already present in the stored dicts are PRESERVED verbatim
     on save (forward compatibility: a newer LiteTUI's setting must survive a
     round-trip through an older screen, silent data loss being the one
     forbidden outcome).
+
+    🔴 `height: 100%` AND `#set-box` KEEPS ITS OWN `height: 88%`. That box is
+    SHARED with `SettingsScreen`, which is not converted yet, so moving the
+    percentage up here — the shape /help used — would have silently shortened
+    the settings panel to 88% of 88%. A body that is exactly the screen is
+    TRANSPARENT to every percentage inside it, which is the safer half of the
+    rule and the one to reach for when a box has more than one owner.
     """
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=False),
-        Binding("ctrl+s", "apply", "Apply", show=False),
-    ]
+    DEFAULT_CSS = """
+    ModelConfigBody { width: 100%; height: 100%; align: center middle; layout: vertical; }
+    """
+
+    BINDINGS = list(_MC_KEYS)
 
     def __init__(self, key: str) -> None:
         super().__init__()
@@ -469,6 +486,10 @@ class ModelConfigScreen(ModalScreen[None]):
                             placeholder="save current Load+Inference as preset — type a name, Ctrl+S",
                             id="mc-preset-name",
                         )
+            # Outside the tabs, on its own line: this dialog has no button row
+            # to sit in, and a control inside one TabPane would vanish when the
+            # user changed tab — visible on Info, gone on Load.
+            yield SwapButton()
 
     def _field_rows(self, prefix: str, key: str, label: str, kind: str, extra,
                     current, disabled: bool = False, note: str = "",
@@ -493,6 +514,38 @@ class ModelConfigScreen(ModalScreen[None]):
                             id=wid, disabled=disabled, classes="set-input")
             if note:
                 yield Static(note, classes="set-help")
+
+    # -- state carry across a live host swap --------------------------------
+
+    def get_state(self) -> dict:
+        """Every editable control, by id.
+
+        🔴 DERIVED FROM THE DOM, NOT FROM A LIST OF FIELDS. The ids come from
+        `_field_rows` (`ld-*`, `inf-*`) and three fixed ones, and `_LOAD_FIELDS`
+        / `_INFER_FIELDS` are ALREADY the source for those — but which of them
+        actually render depends on the backend, the installed build's flag
+        census, and the model row. A hand-kept second list would silently drop
+        whatever the census hid, and "the field you could not see is the field
+        that emptied" is exactly the failure a swap must not produce.
+        """
+        out: dict = {}
+        for w in self.query(Input):
+            if w.id:
+                out[w.id] = w.value
+        for w in self.query(Select):
+            if w.id:
+                out[w.id] = w.value
+        return out
+
+    def set_state(self, state: dict) -> None:
+        for wid, value in (state or {}).items():
+            found = self.query(f"#{wid}")
+            if not found:
+                continue          # a control this host does not render
+            try:
+                found.first().value = value
+            except Exception:
+                continue          # a Select whose options no longer hold it
 
     # -- collect / apply ---------------------------------------------------
 
@@ -600,7 +653,26 @@ class ModelConfigScreen(ModalScreen[None]):
             app.run_worker(_apply_lms(), group="modelctl", exclusive=True)
 
         app.system_message(f"Saved model config for {key}")
-        self.dismiss(None)
+        close_dialog(self, None)
+
+    def action_cancel(self) -> None:
+        close_dialog(self, None)
+
+
+class ModelConfigScreen(ModalScreen[None]):
+    """The model panel, as a modal. The content lives in `ModelConfigBody`."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False), *_MC_KEYS]
+
+    def __init__(self, key: str) -> None:
+        super().__init__()
+        self._key = key
+
+    def compose(self) -> ComposeResult:
+        yield ModelConfigBody(self._key)
+
+    def action_apply(self) -> None:
+        self.query_one(ModelConfigBody).action_apply()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -611,7 +683,8 @@ def _cmd_modelcfg(app, name: str, arg: str) -> None:
     if not target:
         app.system_message("No model selected — /model first, or /modelcfg <name>")
         return
-    app.push_screen(ModelConfigScreen(target))
+    present_dialog(app, partial(ModelConfigBody, target),
+                   partial(ModelConfigScreen, target))
 
 
 # ── First-boot engine picker ─────────────────────────────────────────────────
