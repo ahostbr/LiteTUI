@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _settle import settle_until
 from litetui import app as m
 from litetui.dialog_demo import DemoDialogBody
 from litetui.settings import Settings
@@ -39,9 +40,33 @@ def make_app():
 
 
 async def _open(a, pilot, side):
+    """Open the panel and WAIT FOR IT TO HAVE OCCUPIED SPACE.
+
+    🔴 `ctrl.open()` RUNS IN A WORKER, so one bare `pilot.pause()` is a guess
+    about when the panel exists AND when the split has been applied to the
+    chat's width. T235's failure is what a lost guess looks like:
+
+        left took 0 cols, right took 39
+
+    — a reading taken before the left panel had mounted, which then reads as
+    "the two edges have different box metrics". The panel existing is not
+    enough either: `split` is a layout property, so the chat's width changes a
+    frame later than the mount.
+
+    ⚠️ BOUNDED, AND NOT ASSERTED HERE. If the panel genuinely never takes space
+    the loop exhausts and the caller's own assertion fires with its own message
+    (`_settle.settle_until`'s rule). Waiting changes WHEN the width is read,
+    never WHETHER the two edges have to agree.
+
+    ⬜ UNLIKE the autoscroll member, THIS FAILURE WAS NOT REPRODUCED: 8 runs at
+    load x2.17..x3.60 were all green. So this settle is the mechanism applied by
+    analogy, not a fix verified against a failing case, and it is written down
+    that way rather than claimed as proven.
+    """
     ctrl = DialogController(a, DemoDialogBody, "sidebar", side)
     a.run_worker(ctrl.open(), name="dlg")
-    await pilot.pause()
+    await settle_until(pilot, lambda: bool(a.screen.query(SidePanel)))
+    await settle_until(pilot, lambda: a.screen.query_one(SidePanel).outer_size.width > 0)
     return ctrl
 
 

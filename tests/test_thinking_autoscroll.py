@@ -33,6 +33,51 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 
 
+async def _settled_at_the_bottom(a, pilot, log, n: int = 25) -> bool:
+    """Wait until the app's OWN deferred scroll has landed on a settled layout.
+
+    🔴 THE RACE THIS CLOSES, TRACED RATHER THAN GUESSED. `_fill_and_stream`
+    mounts the assistant bubble plus a ThinkingBlock and then schedules
+    `call_after_refresh(a._scroll_down)`. One bare `pilot.pause()` is not enough
+    for that deferred call under load, and the test's next act — the READER
+    scrolling up — then races it. Traced in-process at 32 busy workers,
+    10 of 16 iterations reproduced, in TWO signatures with ONE cause:
+
+        A (late override)   after block+deferred  scroll_y=17  max=26
+                            after scroll_up to 9  scroll_y=28  max=28
+            the deferred `_scroll_down` landed AFTER `scroll_to` and undid it.
+
+        B (stale anchor)    after block+deferred  scroll_y=23  max=28
+                            after scroll_up to 15 scroll_y=15  max=28
+                            after burst           scroll_y=37  max=37
+            the deferred call had NOT run, so `_follow_anchor` was still 17
+            from the previous scroll; `_still_following` asks
+            `scroll_y >= anchor - 2`, and 15 >= 15 is TRUE, so the burst
+            followed a reader who had genuinely moved away.
+
+    Both are the same fact: the test acted on a frame where the app had not
+    finished its own scroll. So wait for two things together — `max_scroll_y`
+    has STOPPED MOVING (the layout settled) and the app's anchor is AT that
+    bottom (its deferred scroll ran after the growth, not before).
+
+    ⚠️ THIS MUST NOT MAKE THE ASSERTION UNFAILABLE — `_settle.settle_until`'s
+    rule. The wait is BOUNDED and its result is not asserted: if the product
+    genuinely yanks the reader, the loop still exits and the caller's original
+    assertion fires with its original message. Waiting changes WHEN the test
+    acts, never WHETHER the app has to be right.
+    """
+    last = None
+    for _ in range(n):
+        await pilot.pause()
+        now = log.max_scroll_y
+        anchored = (a._follow_anchor is not None
+                    and a._follow_anchor >= now - 2)
+        if anchored and now == last:
+            return True
+        last = now
+    return False
+
+
 def make_app():
     a = m.LiteTUI()
     a.available_models = ["a-model"]
@@ -62,9 +107,14 @@ async def _fill_and_stream(a, pilot, *, scroll_up_by: int = 0):
     widget.thinking = block
     widget.mount(block, before=widget.body)
     a.call_after_refresh(a._scroll_down)
-    await pilot.pause()
+    # NOT `await pilot.pause()`: one frame is a guess about a deferred call and
+    # a still-growing layout, and it loses 10 times in 16 under load. See
+    # `_settled_at_the_bottom` for the two traced signatures.
+    await _settled_at_the_bottom(a, pilot, log)
 
     if scroll_up_by:
+        # Computed from the SETTLED scroll_y, for the same reason: a target
+        # derived from a stale position aims at the wrong row.
         log.scroll_to(y=max(0, log.scroll_y - scroll_up_by), animate=False)
         await pilot.pause()
 
