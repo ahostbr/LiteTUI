@@ -99,16 +99,35 @@ def _never_write_the_live_settings(tmp_path, monkeypatch):
 #     INTERNALERROR>     sys.exit(0 if all(ok) else 1)
 #     no tests collected
 #
-# ZERO tests, for the whole repository, from an INTERNALERROR. 18 of the 47
-# files in here are standalone scripts: the module body IS the test, it prints
+# ZERO tests, for the whole repository, from an INTERNALERROR. Some of the files
+# in here are standalone scripts: the module body IS the test, it prints
 # "N/M passed", and the last line exits the process. pytest imports every file
 # it collects, so importing one of those runs it and calls sys.exit() *inside
-# the collector*. 13 files do this. Ignoring one only hands the crash to the
-# next.
+# the collector*. Ignoring one only hands the crash to the next.
 #
 # The scripts are not broken -- they run and they assert when invoked directly,
 # which is how the suite has always been run. What was broken is that the
-# STANDARD entry point could not reach the 29 files that ARE pytest tests.
+# STANDARD entry point could not reach the files that ARE pytest tests.
+#
+# 🔴 NO COUNTS IN THIS COMMENT, DELIBERATELY. It used to say "18 of the 47
+# files", "13 files do this" and "the 29 files that ARE pytest tests". On
+# 2026-09-03 the real numbers were 12 ignored of 147, and nobody had noticed --
+# the DERIVATION below was correct the whole time and only the prose rotted.
+# Fresh counts here would just restart that clock, so the numbers live in a
+# command instead:
+#
+#   python -c "import pathlib; ps=list(pathlib.Path('tests').glob('test_*.py')); \
+#     s=[p for p in ps if 'def test_' not in p.read_text(encoding='utf-8',errors='ignore')]; \
+#     print(len(s),'ignored of',len(ps))"
+#
+# ⚠️ AND THIS RULE IS NOT THE ONLY PARTITION ON THIS BOX. tests/run_all.py's
+# `classify()` asks a STRICTER question -- an AST module-level exit OR no
+# module-level `def test_*` -- and gets a different set. They disagree on
+# test_ttyguard.py, which has test functions AND an exit; that exit sits under
+# `if __name__ == "__main__"`, so pytest importing it is harmless, and the file
+# is covered by whichever entry point ran. Two rules, no gap. run_all's is the
+# authority for "which runner", and tools/changed_tests.py imports it rather
+# than carrying a third copy.
 #
 # ⚠️ WRAPPING THE LAST LINE IN `if __name__ == "__main__"` DOES NOT FIX THIS.
 # The assertions in a script-style file execute at module level ABOVE that

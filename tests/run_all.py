@@ -150,8 +150,15 @@ def main() -> int:
         # line saying no tests ran. Both look benign. The exit code is the only
         # honest signal, which is why it is interpreted by name below rather
         # than compared to zero in passing.
+        # `--durations=25` costs nothing and is the only way anyone finds out
+        # WHERE the half hour goes. Without it every run reports one number and
+        # a fix has to be aimed by guess; with it the tail is on screen every
+        # time. Measured 2026-09-03: the top ten were all ~9s and nearly
+        # identical to each other, which is the signature of a fixed per-test
+        # cost (app boot / teardown), not of ten slow tests.
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", *[str(p) for p in pyt]],
+            [sys.executable, "-m", "pytest", "-q", "--durations=25",
+             *[str(p) for p in pyt]],
             cwd=str(ROOT),
         )
         # pytest's documented exit codes. NO_TESTS (5) and INTERNAL (3) are
