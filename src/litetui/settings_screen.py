@@ -25,6 +25,7 @@ DESIGN NOTES
 from __future__ import annotations
 
 from dataclasses import fields, replace
+from functools import partial
 from typing import Any
 
 from textual import on
@@ -44,8 +45,9 @@ from textual.widgets import (
 )
 
 from litetui import settings as settings_mod
-from litetui.colorpicker import ColorPickerScreen
+from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
+from litetui.side_panel import present_dialog
 # THE MODULE, not the names. `from ... import PROFILES` binds at import
 # time, which would make the "derivation" a snapshot: a profile added
 # later would not appear, and the test proving it appears could only pass
@@ -648,9 +650,12 @@ class SettingsScreen(ModalScreen[Settings | None]):
             if hexv:
                 box.value = hexv
 
-        self.app.push_screen(
-            ColorPickerScreen(initial=box.value.strip() or "#808080",
-                              presets=presets, token_name=tok),
+        # Both factories from ONE set of arguments -- `picker.pick`'s reason.
+        initial = box.value.strip() or "#808080"
+        present_dialog(
+            self.app,
+            partial(ColorPickerBody, initial, presets, tok),
+            partial(ColorPickerScreen, initial, presets, tok),
             _picked,
         )
 

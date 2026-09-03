@@ -553,11 +553,25 @@ class LiteTUI(App):
         align: center middle;
     }
 
+    /* `max-width` binds only in the sidebar strip; the modal is unchanged at a
+       flat 54. See #picker-box for the mid-word clip this prevents.
+
+       `overflow-y: auto` for the reason #job-box already carries it: the
+       column is title 1 + field 12 + hue 1 + row 3 + the swap control 4 = 21
+       rows of content, and a 24-row terminal offers 20. MEASURED, both hosts:
+       "SwapButton(id=dialog-swap) rows 22..24 outside Vertical content rows
+       2..21". Without this the control is the child that falls off the bottom
+       -- the swap button clipping out of existence is precisely the defect
+       T222 was written for, arriving by a different route. Scrolling keeps it
+       REACHABLE rather than trimming the field to make arithmetic work. */
     #cp-box {
         width: 54;
+        max-width: 100%;
+        max-height: 100%;
         background: $surface;
         border: solid $primary;
         padding: 1 2;
+        overflow-y: auto;
     }
 
     #cp-title {

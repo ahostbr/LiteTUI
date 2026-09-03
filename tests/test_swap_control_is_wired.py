@@ -38,6 +38,7 @@ from litetui.ask_user_question import (
 )
 from litetui.loop_list import LoopListBody
 from litetui.mcp_list import MCPListBody
+from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.picker import PickerBody, PickerScreen
 from litetui.plugins.help_plugin import HelpBody, HelpScreen
 from litetui.side_panel import (
@@ -92,6 +93,9 @@ def _pairs():
         # ── T232: the seven screens that had no body/sidebar split at all ────
         ("help",
          lambda: HelpBody(HELP_TEXT), lambda: HelpScreen(HELP_TEXT)),
+        ("colorpicker",
+         lambda: ColorPickerBody("#808080", [], "primary"),
+         lambda: ColorPickerScreen("#808080", [], "primary")),
     ]
 
 

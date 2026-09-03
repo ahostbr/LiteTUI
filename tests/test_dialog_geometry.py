@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 from litetui import ask_user_question as aq
 from litetui import tool_policy
+from litetui.colorpicker import ColorPickerBody
 from litetui.picker import PickerBody, PickerScreen
 from litetui.plugins.help_plugin import HelpBody
 from litetui.side_panel import DialogController, SidePanel
@@ -85,6 +86,7 @@ DIALOGS = [
     ("ask_user_question", _auq_body, None),
     # ── T232: the seven screens that had no body/sidebar split at all ────────
     ("help", lambda: HelpBody(HELP_TEXT), "#help-box"),
+    ("colorpicker", lambda: ColorPickerBody("#808080", [], "primary"), "#cp-box"),
 ]
 
 
