@@ -31,6 +31,11 @@ EXPECTED_EVENTS = {
     "mcp_reader_failed",
     "mcp_config_failed",
     "mcp_server_start_failed",
+    # T218: a per-server disconnect can fail on its own now that stopping ONE
+    # server is a user-reachable act rather than something that only happened
+    # while tearing the app down. Silent would be wrong for the same reason
+    # start is not silent: the tool simply stops appearing.
+    "mcp_server_stop_failed",
     "mcp_tool_failed",
     "plugin_observer_failed",
     "plugin_finalizer_failed",
@@ -40,6 +45,13 @@ EXPECTED_EVENTS = {
     "scheduler_tick_failed",
     "backend_connect_failed",
     "turn_stream_failed",
+    # NOT MINE — landed in 7de4655 (SilverBolt, T217). Recorded here because
+    # this gate is one scalar plus one set: there is no edit that accounts for
+    # T218's producer and leaves this one unaccounted, so a green that excludes
+    # it is unreachable. Sentinel ruled (A) on exactly that question.
+    # WARNING: it is also the only dotted name among the eighteen; every other
+    # event is underscore-only, so a grep of this log now needs two patterns.
+    "llama.router_record_kept_foreign",
 }
 PROHIBITED = {
     "prompt",
@@ -75,7 +87,18 @@ def _producer_calls() -> list[ast.Call]:
 
 def test_exactly_the_approved_producers_exist_and_no_body_key_is_present() -> None:
     calls = _producer_calls()
-    assert len(calls) == 16
+    # 16 -> 18. Two producers, one per seat, neither of which updated this gate:
+    #   llama.router_record_kept_foreign  llm_backend.py  7de4655  T217
+    #   mcp_server_stop_failed            mcp_client.py   T218
+    # Measured over HEAD's blobs, decoded as utf-8 explicitly:
+    #   git ls-tree -r --name-only HEAD src/litetui, then ast.walk each
+    #   `git show HEAD:<f>` for runtime_log.record -> 17 at 7de4655, 18 here.
+    # WARNING: the first run of that probe LIED WITH A CONFIDENT NUMBER. Shelled
+    # in TEXT mode, Windows decoded the blobs as cp1252, ~25 files raised
+    # UnicodeDecodeError inside subprocess reader threads, and the script still
+    # printed "count = 1" and a verdict. A crashing check reporting as a clean
+    # measurement is why the bytes+utf-8 form is the one quoted above.
+    assert len(calls) == 18
     events = {
         call.args[0].value
         for call in calls

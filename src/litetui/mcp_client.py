@@ -464,6 +464,78 @@ def read_server_configs(cfg_paths: list[Path]) -> tuple[dict[str, dict], dict[st
             merged.setdefault(name, sc)
     return merged, errors
 
+#: The file `add` and `remove` write. `.mcp.json` and not `mcp.json`: it is the
+#: Claude Code project convention, it is the one this repo already ships, and
+#: keeping writes to a single well-known name means a hand-edited `mcp.json`
+#: is never rewritten by a tool the user did not point at it.
+WRITE_CONFIG_NAME = ".mcp.json"
+
+
+def _load_doc(path) -> dict:
+    """The whole JSON document, or {} when there is nothing usable yet.
+
+    The WHOLE document, because a config file may carry keys this app has never
+    heard of — another tool's settings sharing the file. Read-modify-write on
+    the parsed doc preserves them; regenerating from `mcpServers` alone would
+    silently delete them.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_doc(path, doc: dict) -> None:
+    """Write via a temp file in the same directory, then os.replace.
+
+    os.replace is atomic on both platforms, so a reader never observes a
+    half-written config — including this app's own reader, which runs on a
+    different thread than a dialog's Save. A torn config is not a cosmetic
+    problem here: read_server_configs treats an unparseable file as an ERROR
+    for every server in it, so one bad write would disconnect everything.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def shadowing_file(root, name: str):
+    """The higher-precedence file that already declares `name`, if any.
+
+    read_server_configs gives the EARLIER file the win, so writing a name into
+    `.mcp.json` that `mcp.json` already declares produces a write that is real
+    on disk and invisible in the app. Refusing with the offending path is the
+    only honest outcome: silently succeeding would be the worst of the three.
+    """
+    for cand in MCP_CONFIG_NAMES:
+        if cand == WRITE_CONFIG_NAME:
+            break
+        p = root / cand
+        if p.is_file() and name in (_load_doc(p).get("mcpServers") or {}):
+            return p
+    return None
+
+
+def validate_entry(cfg: dict) -> str | None:
+    """None if the entry is startable, else why not.
+
+    Mirrors the ONE rule `_build` dispatches on — a `url` without a `command`
+    is HTTP, anything else is a stdio spawn — so a config that validates here
+    cannot fail to classify there. An entry with neither is the case worth
+    catching: it parses as JSON, reads as a server, and can never start.
+    """
+    if not isinstance(cfg, dict):
+        return "entry must be a JSON object"
+    if not (cfg.get("command") or cfg.get("url")):
+        return "entry needs a `command` (stdio) or a `url` (http)"
+    if cfg.get("args") is not None and not isinstance(cfg.get("args"), list):
+        return "`args` must be a list"
+    if cfg.get("env") is not None and not isinstance(cfg.get("env"), dict):
+        return "`env` must be an object"
+    return None
+
+
 class MCPManager:
     """Loads mcp.json / .mcp.json (see config_files), starts each server —
 stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
@@ -472,44 +544,168 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         self.root = root
         self.servers: dict[str, "MCPServer | HTTPMCPServer"] = {}
         self.failures: dict[str, str] = {}
+        #: What the config FILES declare, name -> raw entry. Distinct from
+        #: `servers`, which is what is RUNNING. A management surface has to be
+        #: able to name a server that exists and is stopped — before this split
+        #: the only record of a stopped server was its absence, and absence
+        #: cannot be listed, reconnected or removed.
+        self.configs: dict[str, dict] = {}
         self._log_handle = None
 
-    def load(self) -> None:
+    # ── plumbing ────────────────────────────────────────────────────────────
+    def _log(self):
+        """The shared mcp.log handle, opened on first use.
+
+        Lazy because `load()` used to open it only when there was at least one
+        server to start; connect() can now be the first thing that runs, and a
+        boot with no config must still not create the file.
+        """
+        if self._log_handle is None:
+            self._log_handle = open(
+                self.root / MCP_LOG_NAME, "a", encoding="utf-8", errors="replace"
+            )
+        return self._log_handle
+
+    def _build(self, name: str, sc: dict) -> "MCPServer | HTTPMCPServer":
+        """Transport by SHAPE — a `url` without a `command` is HTTP.
+
+        Extracted from load() unchanged so that connect() and load() cannot
+        drift into disagreeing about what a config entry means.
+        """
+        if sc.get("url") and not sc.get("command"):
+            return HTTPMCPServer(name, sc, self.root, self._log())
+        return MCPServer(name, sc, self.root, self._log())
+
+    def reload_configs(self) -> dict[str, dict]:
+        """Re-read the config files into `configs`. Running servers untouched.
+
+        Deliberately does NOT reconcile: re-reading the file and acting on what
+        changed are different decisions, and a reader that also restarted
+        things would make `/mcp list` a mutating command.
+        """
         cfg_paths = config_files(self.root)
-        if not cfg_paths:
-            return
         servers, file_errors = read_server_configs(cfg_paths)
+        self.configs = servers
         self.failures.update(file_errors)
-        if not servers:
-            return
-        self._log_handle = open(self.root / MCP_LOG_NAME, "a", encoding="utf-8", errors="replace")
-        for name, sc in servers.items():
+        return servers
+
+    def load(self) -> None:
+        """Boot: read the configs and start everything not marked disabled."""
+        self.reload_configs()
+        for name, sc in self.configs.items():
             if not isinstance(sc, dict) or sc.get("disabled"):
                 continue
-            # Transport by shape: a `url` without a `command` is an HTTP
-            # endpoint (Claude Code's `"type": "http"` entries carry it);
-            # everything else is spawned as a stdio child.
-            if sc.get("url") and not sc.get("command"):
-                srv = HTTPMCPServer(name, sc, self.root, self._log_handle)
+            self.connect(name)
+
+    # ── lifecycle ───────────────────────────────────────────────────────────
+    def connect(self, name: str) -> str | None:
+        """Start ONE server from its config. Returns None, or the error text.
+
+        An error is RETURNED rather than raised because every caller — boot,
+        the /mcp command, the dialog — wants to carry on with the others and
+        show what went wrong. One bad server must not cost the rest, and must
+        not be silent either: a tool that never appears is indistinguishable
+        from one the model simply chose not to call.
+        """
+        sc = self.configs.get(name)
+        if not isinstance(sc, dict):
+            return f"no server named {name!r} in {' / '.join(MCP_CONFIG_NAMES)}"
+        if name in self.servers:
+            return None                       # already connected; idempotent
+        srv = self._build(name, sc)
+        try:
+            srv.start()
+        except Exception as e:
+            runtime_log.record(
+                "mcp_server_start_failed",
+                site="mcp.manager.connect",
+                component="mcp",
+                server=name,
+                operation="start",
+                error_type=type(e).__name__,
+            )
+            self.failures[name] = f"{type(e).__name__}: {e}"
+            srv.stop()
+            return self.failures[name]
+        self.servers[name] = srv
+        self.failures.pop(name, None)          # a success clears the old error
+        return None
+
+    def disconnect(self, name: str) -> bool:
+        """Stop ONE server and forget it. It stays in `configs`.
+
+        Returns whether anything was running. Runtime-only by design: the file
+        still declares the server, so this does not survive a restart. Making
+        it persist is `mcp_disabled_servers`' job, and conflating the two would
+        mean a transient disconnect quietly rewrote the user's config.
+        """
+        srv = self.servers.pop(name, None)
+        if srv is None:
+            return False
+        try:
+            srv.stop()
+        except Exception as e:
+            runtime_log.record(
+                "mcp_server_stop_failed",
+                site="mcp.manager.disconnect",
+                component="mcp",
+                server=name,
+                operation="stop",
+                error_type=type(e).__name__,
+            )
+        return True
+
+    def reconnect(self, name: str) -> str | None:
+        """Stop, then start from a FRESH object. Returns None, or the error.
+
+        🔴 A NEW OBJECT, NEVER srv.start() ON THE STOPPED ONE. Both transports
+        carry per-connection state that stop() does not reset — the stdio one
+        holds a dead Popen, a finished reader thread, a frame queue and the
+        `_pending` map; restarting in place would hand the new process the old
+        one's leftovers. Rebuilding also re-reads nothing, so a config edit
+        needs reload_configs() first, which /mcp does.
+        """
+        self.disconnect(name)
+        return self.connect(name)
+
+    def describe(self) -> list[dict]:
+        """One row per server the CONFIGS declare, plus any orphan running one.
+
+        The union matters: a server removed from the file while still running
+        must remain visible, or the UI offers no way to stop the thing the user
+        can see in their process list.
+        """
+        names = list(self.configs) + [n for n in self.servers if n not in self.configs]
+        rows = []
+        for name in names:
+            sc = self.configs.get(name) or {}
+            srv = self.servers.get(name)
+            declared = name in self.configs
+            # ORPHAN OUTRANKS CONNECTED, and that ordering is the point: a
+            # running server the file no longer declares IS connected, so the
+            # obvious `if srv: "connected"` is true and useless — it hides the
+            # one fact the user needs, which is that a restart will not bring
+            # this back. Naming the state is the only way the row can say so.
+            if srv is not None:
+                state = "connected" if declared else "orphan"
+            elif name in self.failures:
+                state = "failed"
+            elif sc.get("disabled"):
+                state = "disabled"
             else:
-                srv = MCPServer(name, sc, self.root, self._log_handle)
-            try:
-                srv.start()
-                self.servers[name] = srv
-            except Exception as e:
-                runtime_log.record(
-                    "mcp_server_start_failed",
-                    site="mcp.manager.load",
-                    component="mcp",
-                    server=name,
-                    operation="start",
-                    error_type=type(e).__name__,
-                )
-                # One bad server must not cost the others, and must not be
-                # silent: a tool that never appears looks like one the model
-                # simply chose not to use.
-                self.failures[name] = f"{type(e).__name__}: {e}"
-                srv.stop()
+                state = "stopped"
+            http = bool(sc.get("url") and not sc.get("command"))
+            rows.append(
+                {
+                    "name": name,
+                    "transport": "http" if http else "stdio",
+                    "target": sc.get("url") or sc.get("command") or "",
+                    "state": state,
+                    "tools": len(srv.tools) if srv is not None else 0,
+                    "error": self.failures.get(name),
+                }
+            )
+        return rows
 
     def tool_specs(self) -> list[dict]:
         specs: list[dict] = []
@@ -564,6 +760,65 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         for n, err in self.failures.items():
             bits.append(f"{n}:FAILED")
         return " · ".join(bits)
+
+    # ── config-mutating verbs ───────────────────────────────────────────────
+    def add(self, name: str, cfg: dict, *, connect: bool = True) -> str | None:
+        """Declare a server in .mcp.json and (by default) start it now.
+
+        Returns None, or the reason it did not happen. Validation runs BEFORE
+        the write so a rejected entry never reaches disk — the alternative is a
+        file that has to be hand-repaired after a typo in a dialog.
+        """
+        name = (name or "").strip()
+        if not name:
+            return "a server needs a name"
+        bad = validate_entry(cfg)
+        if bad:
+            return bad
+        self.reload_configs()
+        # ⚠️ THE SHADOW CHECK RUNS FIRST, and the order is the whole value of
+        # the message. `configs` is the MERGE of both files, so a name living
+        # in mcp.json also satisfies "already declared" — and that generic
+        # answer ("remove it first") sends the user to a `remove` that will
+        # itself refuse, because /mcp does not write mcp.json. Two refusals and
+        # no way forward. Naming the shadowing file is the only actionable one.
+        shadow = shadowing_file(self.root, name)
+        if shadow is not None:
+            return (
+                f"{shadow.name} already declares {name!r} and wins on precedence; "
+                f"a write to {WRITE_CONFIG_NAME} would never be read"
+            )
+        if name in self.configs:
+            return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
+        path = self.root / WRITE_CONFIG_NAME
+        doc = _load_doc(path)
+        doc.setdefault("mcpServers", {})[name] = cfg
+        _save_doc(path, doc)
+        self.reload_configs()
+        return self.connect(name) if connect else None
+
+    def remove(self, name: str) -> str | None:
+        """Stop it and delete its entry from .mcp.json. Returns None, or why not.
+
+        Stops FIRST: deleting the declaration of a running server would leave a
+        process with no config behind it, which describe() can only report as
+        an orphan. Doing it in this order means `remove` has no such aftermath.
+        """
+        path = self.root / WRITE_CONFIG_NAME
+        doc = _load_doc(path)
+        block = doc.get("mcpServers") or {}
+        if name not in block:
+            other = shadowing_file(self.root, name)
+            if other is not None:
+                return f"{name!r} is declared in {other.name}, which /mcp does not write"
+            return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
+        self.disconnect(name)
+        del block[name]
+        doc["mcpServers"] = block
+        _save_doc(path, doc)
+        self.reload_configs()
+        self.failures.pop(name, None)
+        return None
 
     def stop_all(self) -> None:
         for s in self.servers.values():
