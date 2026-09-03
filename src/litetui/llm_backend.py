@@ -394,9 +394,65 @@ def scan_models(settings) -> list[ModelRow]:
     return rows
 
 
+def sibling_mmproj(model_path: str | Path | None) -> tuple[str | None, list[str]]:
+    """The projector to pair with a model, and every candidate beside it.
+
+    🔴 EXACTLY ONE, IN THE MODEL'S OWN DIRECTORY. Returns `(resolved, found)`;
+    `resolved` is None unless `found` has length 1.
+
+    WHY THIS EXISTS. `_skip_gguf` drops every `*mmproj*.gguf` from model
+    discovery — correct, they are not chat models — and nothing then paired one
+    back up. LM Studio does. Measured over ~/.lmstudio/models on 2026-09-03:
+    NINE projectors, EIGHT with exactly one non-mmproj model in the same
+    directory, and exactly ONE paired (by hand, in settings.json). The model
+    loaded for a vision capture had its projector sitting beside it the whole
+    time:
+
+        unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf   the model
+        unsloth/Qwen3.8-27B-GGUF/mmproj-F16.gguf              never paired
+
+    ⚠️ "EXACTLY ONE" IS A RULE ABOUT WHAT CANNOT BE DECIDED, NOT A FACT ABOUT
+    THIS BOX — AND I CLAIMED THE OPPOSITE ONCE. My first measurement printed
+    `parent.name` and showed two projectors under "Qwen3.8-27B-GGUF", which I
+    reported as one directory holding two. It is TWO DIRECTORIES sharing a
+    basename: `lmstudio-community/Qwen3.8-27B-GGUF` and
+    `unsloth/Qwen3.8-27B-GGUF`, one projector and one model each. Re-derived by
+    FULL PATH: nine directories hold a projector, ALL NINE hold exactly one,
+    eight have exactly one model beside them, and one (`ggml-org/gemma-4-E2B-it-GGUF`)
+    has none. Zero ambiguous directories today.
+
+    The rule stands anyway, because the cost is asymmetric: a wrong projector
+    does not fail loudly, it silently changes what the model can see. Two
+    candidates cannot be ordered by ownership, so the answer is no guess and a
+    caller that says why.
+
+    📌 THE DIRECTORY, NOT A SEARCH. `mmproj_candidates` scans every root and
+    returns a flat list — useful for a picker, useless for pairing, because the
+    nearest projector by sort order is not the right one by ownership.
+    """
+    if model_path is None:
+        return None, []
+    try:
+        parent = Path(model_path).parent
+        found = sorted(
+            str(p) for p in parent.glob("*.gguf") if "mmproj" in p.name.lower()
+        )
+    except OSError:
+        return None, []
+    return (found[0] if len(found) == 1 else None), found
+
+
 def mmproj_candidates(settings) -> list[str]:
     """Projector files for the Load tab's vision picker — the files the
-    model scan deliberately skips."""
+    model scan deliberately skips.
+
+    ⚠️ CALLED BY NO PRODUCTION CODE as of 2026-09-03 —
+    `grep -rn "mmproj_candidates" src/litetui` returns only this definition, and
+    the "picker" its name promises is a plain text field. Kept because
+    `tests/test_llama_discovery.py` pins it and a flat candidate list is what a
+    real picker would want; NOT used for pairing — see `sibling_mmproj` for why
+    a global list is the wrong instrument for that.
+    """
     out: list[str] = []
     for root, _source in _scan_roots(settings):
         out.extend(str(p) for p in sorted(root.rglob("*.gguf")) if "mmproj" in p.name.lower())
@@ -429,6 +485,25 @@ def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -
         lines.append(f"[{row.key}]")
         lines.append(f"model = {Path(row.path).as_posix()}")
         cfg = settings.llama_load_settings.get(row.key, {})
+        # 🔴 AUTO-PAIR A SIBLING PROJECTOR, ONLY WHEN THE KEY IS ABSENT.
+        #
+        # Absent is the honest test for "the user has not chosen", because
+        # `_collect_group` POPS a cleared text field rather than storing a null
+        # (model_switch.py: `if not raw: out.pop(key, None)`). Verified against
+        # the live settings.json on 2026-09-03: of five models with load
+        # settings, two carry an explicit mmproj path and three have NO KEY —
+        # `grep -c '"mmproj": null'` returns 0. So an explicit path always wins
+        # and this only fills a gap nobody has filled.
+        #
+        # ⚠️ CONSEQUENCE, STATED RATHER THAN DISCOVERED LATER: there is
+        # currently NO WAY TO SAY "vision-capable model, no projector". Clearing
+        # the field removes the key, which is exactly what re-enables the guess.
+        # A sentinel would need a place in the schema and a control that offers
+        # it; that is a follow-up, not something to invent here.
+        if "mmproj" not in cfg:
+            auto, _found = sibling_mmproj(row.path)
+            if auto:
+                cfg = {**cfg, "mmproj": auto}
         for k in sorted(cfg):
             v = cfg[k]
             if v is None:

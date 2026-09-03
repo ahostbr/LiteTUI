@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 from textual.binding import Binding
 from textual.app import ComposeResult
@@ -127,6 +128,49 @@ def _cmd_backend(app, name: str, arg: str) -> None:
 
 # ── /load /unload ────────────────────────────────────────────────────────────
 
+def _row_for(app, key: str):
+    """The discovered row for `key`, or None. Errors are not this caller's."""
+    try:
+        for row in llm_backend.scan_models(app.settings):
+            if row.key == key:
+                return row
+    except Exception:
+        pass
+    return None
+
+
+def _say_projector(app, key: str) -> None:
+    """Name the projector a load resolved — or say why it resolved none.
+
+    🔴 ANNOUNCED, NOT SILENT (Ryan's ruling, 2026-09-03, relayed by Sentinel).
+    A guess that changes a model's MODALITIES must not be invisible: with a
+    projector the model can read images, and without one it answers as if the
+    image were not there. Both outcomes look identical at the prompt, which is
+    exactly why the quiet version of this feature would be worse than none.
+
+    Says nothing when the user set the path themselves — that is not a guess,
+    and a line per load about a setting they typed is noise.
+    """
+    row = _row_for(app, key)
+    if row is None or row.path is None:
+        return
+    cfg = (app.settings.llama_load_settings or {}).get(key, {})
+    if "mmproj" in cfg:
+        return                      # explicit: their choice, not our guess
+    auto, found = llm_backend.sibling_mmproj(row.path)
+    if auto:
+        app.system_message(f"vision: paired {Path(auto).name} (found beside the model)")
+    elif len(found) > 1:
+        # ⚠️ THE COUNT IS THE REASON, so it is IN the line. "No projector" alone
+        # sends someone to look for a missing file; this sends them to the one
+        # decision that resolves it.
+        app.system_message(
+            f"vision: {len(found)} projectors beside this model — none paired, "
+            f"text only. Set one in /modelcfg → Load → Vision projector: "
+            + ", ".join(Path(f).name for f in found)
+        )
+
+
 def _cmd_load(app, name: str, arg: str) -> None:
     target = arg.strip() or app.model_id
     if not target:
@@ -141,6 +185,7 @@ def _cmd_load(app, name: str, arg: str) -> None:
             app.system_message(str(e))
             return
         app.system_message(f"Loaded: {target}")
+        _say_projector(app, target)
         if target == app.model_id:
             app.fetch_context_window()
         else:
@@ -258,6 +303,16 @@ class ModelConfigScreen(ModalScreen[None]):
     def _infer_cfg(self) -> dict:
         return dict(self.app.settings.model_infer_overrides.get(self._key, {}))
 
+    def _sibling_projector(self) -> tuple[str | None, list[str]]:
+        """The projector auto-pairing would use for THIS model, and all found.
+
+        Reads `app.model_rows`, which the app already holds — not a fresh scan.
+        A directory walk inside `compose()` would put a filesystem crawl on the
+        path that draws the panel, and this screen opens from a keypress.
+        """
+        row = self.app.model_rows.get(self._key)
+        return llm_backend.sibling_mmproj(getattr(row, "path", None))
+
     def compose(self) -> ComposeResult:
         app = self.app
         on_llama = app.backend.name == "llamacpp"
@@ -305,19 +360,40 @@ class ModelConfigScreen(ModalScreen[None]):
                                 "here (applied through the SDK).",
                                 classes="set-help",
                             )
+                        auto_mmproj, mmproj_found = self._sibling_projector()
                         for key, label, kind, extra in _LOAD_FIELDS:
                             editable = on_llama or key == "ctx"
                             flag = llm_backend.FLAG_FOR.get(key, "")
                             missing = bool(flags) and flag not in flags
+                            note = (
+                                f"n/a in installed build ({llm_backend.installed_build()})"
+                                if missing else
+                                ("" if editable else "LM Studio manages this")
+                            )
+                            if key == "mmproj" and not missing and editable:
+                                # 🔴 THE PLACEHOLDER IS THE RESOLVED DEFAULT, not
+                                # the word "off". "off" was a lie the moment
+                                # auto-pairing existed: blank now MEANS the
+                                # sibling below, and a field whose empty state
+                                # does something has to say what.
+                                if auto_mmproj:
+                                    extra = f"auto: {Path(auto_mmproj).name}"
+                                    note = note or (
+                                        "blank uses the projector found beside the "
+                                        "model; type a path to override"
+                                    )
+                                elif len(mmproj_found) > 1:
+                                    extra = f"{len(mmproj_found)} beside the model — none auto"
+                                    note = note or (
+                                        "two or more projectors share this directory, "
+                                        "so none is guessed: "
+                                        + ", ".join(Path(f).name for f in mmproj_found)
+                                    )
                             yield from self._field_rows(
                                 "ld", key, label, kind, extra,
                                 load_cfg.get(key),
                                 disabled=(not editable) or missing,
-                                note=(
-                                    f"n/a in installed build ({llm_backend.installed_build()})"
-                                    if missing else
-                                    ("" if editable else "LM Studio manages this")
-                                ),
+                                note=note,
                             )
                         for label, why in _NA_ON_LLAMA:
                             yield Static(f"{label}: {why}", classes="set-help")
