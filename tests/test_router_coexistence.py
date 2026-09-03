@@ -108,6 +108,34 @@ def test_CONTROL_a_record_about_a_DIFFERENT_port_says_nothing_about_ours(
     assert backend.attached is False
 
 
+def test_CONTROL_our_OWN_dead_record_is_stale_TOO_and_leaves_the_router_manageable(
+    _record_in_a_tmp_home, monkeypatch
+):
+    """⬜ T217 — THE ONE CASE THE FIVE CONTROLS ABOVE DID NOT COVER.
+
+    They pin live-foreign (attach), live-own (manageable), DEAD-FOREIGN
+    (ignored), no record, and another port. An OWN record naming a DEAD pid
+    was the hole: it is what a hard-killed LiteTUI leaves behind, and it is
+    the case the T217 reader change is about — liveness is now decided first
+    and a dead record is discarded outright rather than surviving as a weaker
+    claim for later code to re-check.
+
+    ⚠️ THIS IS A PIN, NOT A KILL. It passed before the change as well, because
+    the old conjunction reached the same verdict by a different route
+    (`not is_mine` was already false for our own record). Reordering a
+    conjunction cannot change its value, so nothing here can distinguish the
+    two implementations — what this arm defends is the OUTCOME against a future
+    edit that reads `record` after the guard and forgets that a dead one is not
+    a claim.
+    """
+    _write(_record_in_a_tmp_home, owner="litetui", pid=0x7FFFFFFF)
+    backend = _backend(monkeypatch)
+
+    assert backend._ensure_running_sync() == "ok"
+    assert backend.attached is False
+    assert backend.attached_owner is None
+
+
 def test_a_foreign_SINGLE_model_server_still_attaches_without_a_record(monkeypatch):
     # Unchanged behaviour, asserted so the new branch cannot swallow it: we
     # only ever spawn routers, so a single-model server here is definitively

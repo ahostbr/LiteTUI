@@ -171,15 +171,45 @@ def write(
     owner: str = OWNER_SELF,
     build_tag: str | None = None,
     path: Path | None = None,
-) -> Path:
+) -> Path | None:
     """Claim ownership of the router at `port`, atomically.
 
     tmp + `os.replace` IN THE SAME DIRECTORY, because the other app may read
     this file at any moment and a half-written record is indistinguishable
     from a corrupt one. `os.replace` is atomic on Windows and POSIX alike; a
     cross-directory move would not be.
+
+    🔴 RETURNS `None` — WITHOUT WRITING — WHEN THE FILE ALREADY HOLDS A LIVE
+    FOREIGN CLAIM ON A DIFFERENT PORT (T217). There is ONE record for a path
+    that is deliberately not configurable, so two routers on two ports cannot
+    both be recorded: whoever wrote last erased the other's claim, and the
+    erased app then looked UNOWNED to everybody. The next app to start would
+    see a healthy router with no record, decide it was a plausible orphan of
+    its own, and restart somebody's live server — which is the exact accident
+    this module exists to prevent, reintroduced by the bookkeeping meant to
+    prevent it.
+
+    ⭐ THE REFUSAL IS NOT A FAILURE, AND THE SPAWN STILL STANDS. Our router is
+    up on our port either way; all we lose is the announcement. That is why
+    this returns None rather than raising — the caller logs it and carries on,
+    exactly as it already does for an unwritable file.
+
+    ⬜ WHY "DIFFERENT PORT" IS PART OF THE CONDITION. A live foreign claim on
+    OUR port cannot be reached from here: `_ensure_running_sync` would have
+    attached to their router and never spawned. Refusing that case too would
+    only add an untestable branch, and a same-port foreign record we DID reach
+    is stale bookkeeping about the port we are now serving, so ours is the
+    truer answer.
     """
     p = record_path() if path is None else path
+    existing = read(p)
+    if (
+        existing is not None
+        and existing.owner != owner
+        and existing.port != port
+        and is_live(existing)
+    ):
+        return None
     p.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {
         "version": RECORD_VERSION,

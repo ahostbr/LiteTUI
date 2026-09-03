@@ -158,3 +158,104 @@ def test_the_default_path_is_the_one_both_apps_agreed_on():
     # where the record lives would each read an empty answer and conclude the
     # other was not there.
     assert rr.record_path().parts[-3:] == (".litesuite", "llm", "router.json")
+
+
+# -- T217: one file, two ports ------------------------------------------------
+#
+# 🔴 THE RECORD PATH IS DELIBERATELY NOT CONFIGURABLE, so there is exactly ONE
+# record for however many routers are running. `write` used to overwrite
+# unconditionally, so an app spawning on a second port ERASED the live owner's
+# claim on the first — and an erased claim does not read as "someone else owns
+# it", it reads as UNOWNED. The next app to start then sees a healthy router
+# with no record, decides it is a plausible orphan of its own, and restarts a
+# live server. The bookkeeping that exists to prevent that accident was causing
+# it.
+#
+# ⬜ THE PORT TERM IS WHAT KEEPS THE REFUSAL HONEST. A live foreign claim on OUR
+# port is unreachable from `write` — `_ensure_running_sync` attaches to their
+# router and never spawns — so the refusal is scoped to a DIFFERENT port, and
+# the arms below pin each term of the condition separately.
+
+
+def test_a_live_foreign_claim_on_another_port_SURVIVES_our_write(tmp_path):
+    """The one that was broken: our write must not erase their claim."""
+    p = _rec(tmp_path, owner="litesuite", pid=os.getpid(), port=7470)
+
+    result = rr.write(pid=4242, port=7471, ini="ours.ini", path=p)
+
+    assert result is None, "write reported success while refusing"
+    kept = rr.read(p)
+    assert kept is not None
+    # Every field theirs, not merely the owner: a partial overwrite would leave
+    # a record naming their app and our pid, which is worse than either.
+    assert (kept.owner, kept.pid, kept.port) == ("litesuite", os.getpid(), 7470)
+    assert kept.ini == "C:/Users/x/.litesuite/llm/models.ini"
+
+
+def test_a_DEAD_foreign_claim_on_another_port_is_overwritten(tmp_path):
+    """⬜ CONTROL: staleness must not lock the record forever.
+
+    Without this, "never touch a foreign record" would pass the arm above and
+    leave a crashed LiteSuite's record owning the file until someone deleted it
+    by hand — so LiteTUI could never announce a router again.
+    """
+    # 0x7FFFFFFF is the never-assigned pid this file already uses for "dead".
+    p = _rec(tmp_path, owner="litesuite", pid=0x7FFFFFFF, port=7470)
+
+    result = rr.write(pid=4242, port=7471, ini="ours.ini", path=p)
+
+    assert result == p
+    got = rr.read(p)
+    assert got is not None
+    assert (got.owner, got.pid, got.port) == ("litetui", 4242, 7471)
+
+
+def test_our_OWN_live_claim_on_another_port_is_overwritten(tmp_path):
+    """⬜ CONTROL: the owner term, not just liveness.
+
+    A LiteTUI record for a port we have just moved off is ours to replace —
+    refusing here would strand our own claim on a port nothing is serving.
+    Uses our own live pid, so only the OWNER differs from the arm above.
+    """
+    p = _rec(tmp_path, owner="litetui", pid=os.getpid(), port=7470)
+
+    result = rr.write(pid=4242, port=7471, ini="ours.ini", path=p)
+
+    assert result == p
+    got = rr.read(p)
+    assert got is not None
+    assert (got.owner, got.pid, got.port) == ("litetui", 4242, 7471)
+
+
+def test_a_live_foreign_claim_on_the_SAME_port_is_still_overwritten(tmp_path):
+    """⬜ CONTROL: the port term.
+
+    Reaching `write` at all means we spawned, which means we did not attach,
+    which means their claim on this port is stale bookkeeping about a port we
+    are now serving. Pinned because widening the refusal to "any live foreign
+    record" would silently stop LiteTUI ever announcing a router on the shared
+    port — the failure would look like coexistence working.
+    """
+    p = _rec(tmp_path, owner="litesuite", pid=os.getpid(), port=7470)
+
+    result = rr.write(pid=4242, port=7470, ini="ours.ini", path=p)
+
+    assert result == p
+    got = rr.read(p)
+    assert got is not None
+    assert (got.owner, got.pid, got.port) == ("litetui", 4242, 7470)
+
+
+def test_a_write_into_an_EMPTY_directory_still_returns_the_path(tmp_path):
+    """⬜ CONTROL: no record is not a refusal.
+
+    The happy path reads the file first now, and `read` returns None for both
+    "absent" and "corrupt" — neither may be mistaken for a live foreign claim.
+    """
+    p = tmp_path / "nested" / "router.json"
+    assert rr.write(pid=4242, port=7470, ini="ours.ini", path=p) == p
+    first = rr.read(p)
+    assert first is not None and first.pid == 4242
+
+    p.write_text("{ truncated", encoding="utf-8")
+    assert rr.write(pid=99, port=7470, ini="ours.ini", path=p) == p

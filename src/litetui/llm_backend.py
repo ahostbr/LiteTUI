@@ -629,12 +629,27 @@ class LlamaCppBackend:
             # the server is THEIRS: attach, and never regenerate the ini or
             # restart it. Without that, LiteTUI would restart LiteSuite's
             # router out from under its GUI.
+            # 🔴 LIVENESS IS EVALUATED BEFORE OWNERSHIP (T217), and the record
+            # is DISCARDED when the process it names is gone. A dead record is
+            # not a weaker claim, it is not a claim — so it must not survive
+            # this line to be consulted by anything added below it later.
+            #
+            # ⚠️ HONEST ABOUT WHAT THIS DID AND DID NOT CHANGE: reordering the
+            # terms of the old `and` chain changed NO outcome, because a
+            # conjunction's value does not depend on its order and `record` was
+            # not read after it. What is new is the `record = None`, which turns
+            # "dead" into an absence for every later reader instead of relying
+            # on each one to re-check. The two CONTROLs in
+            # tests/test_router_coexistence.py already pin the outcomes; there
+            # is no arm that can tell the reordering itself apart, and one that
+            # claimed to would be measuring nothing.
             record = router_record.read()
+            if record is not None and not router_record.is_live(record):
+                record = None
             if (
                 record is not None
                 and not record.is_mine
                 and record.port == _port_of(self._host)
-                and router_record.is_live(record)
             ):
                 self._attached_host = self._host
                 self._attached_owner = record.owner
@@ -704,12 +719,31 @@ class LlamaCppBackend:
                 # second — would make the other app attach to nothing and see
                 # no models at all. A failed spawn writes nothing.
                 try:
-                    router_record.write(
+                    claimed = router_record.write(
                         pid=proc.pid,
                         port=_port_of(self._host) or int(port),
                         ini=str(ini),
                         build_tag=installed_build(),
                     )
+                    if claimed is None:
+                        # 🔴 REFUSED, NOT FAILED (T217). Someone else's LIVE
+                        # claim on another port is in the file, and there is
+                        # only one file — overwriting it would erase their
+                        # ownership, and an erased claim reads as UNOWNED, so
+                        # the next app to start would restart their live
+                        # router. Our own spawn stands; we simply go
+                        # unannounced, which costs coexistence for US and
+                        # nothing for them. Logged because it is otherwise
+                        # invisible: the router works and no record names it.
+                        runtime_log.record(
+                            "llama.router_record_kept_foreign",
+                            detail=(
+                                f"our router is up on {self._host} but "
+                                "router.json holds a live foreign claim on "
+                                "another port — left it theirs"
+                            ),
+                            site="llm_backend",
+                        )
                 except OSError:
                     # A router we cannot announce still works for US. Losing
                     # the record costs coexistence, not the session.
