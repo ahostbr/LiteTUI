@@ -26,7 +26,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Input, Static
 
 from litetui.mcp_client import WRITE_CONFIG_NAME
-from litetui.side_panel import close_dialog, request_swap
+from litetui.side_panel import SwapButton, close_dialog
 
 #: What a state means, in the words a user needs rather than the enum's.
 STATE_NOTE = {
@@ -139,7 +139,7 @@ class MCPListBody(Widget):
         yield Static("", id="mcp-status", markup=False)
         with Horizontal(id="mcp-buttons"):
             yield Button("Close", variant="primary", id="mcp-close")
-            yield Button("Sidebar / popup", id="mcp-swap")
+            yield SwapButton(classes="inline")
 
     # ── the swap contract ────────────────────────────────────────────────
     def get_state(self) -> dict:
@@ -251,7 +251,3 @@ class MCPListBody(Widget):
     @on(Button.Pressed, "#mcp-close")
     def _close(self) -> None:
         close_dialog(self, None)
-
-    @on(Button.Pressed, "#mcp-swap")
-    def _swap(self) -> None:
-        request_swap(self)

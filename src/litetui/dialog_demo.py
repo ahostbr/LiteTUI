@@ -21,7 +21,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Button, Input, Static
 
-from litetui.side_panel import SwapButton, close_dialog, request_swap
+from litetui.side_panel import SwapButton, close_dialog
 
 # A realistic width-stress payload: unwrapped, monospace, and wider than 60
 # columns on purpose. Whether this wraps, truncates or forces a horizontal
@@ -72,7 +72,10 @@ class DemoDialogBody(Widget):
         yield Input(placeholder="note (type here, then swap)", id="demo-note")
         # THE SHARED CONTROL, keeping this id so the CSS above and the T075
         # relabel test keep binding to it. The label logic moved into
-        # SwapButton — it is not duplicated here any more.
+        # SwapButton — and in T222 so did the PRESS. The private
+        # `@on(Button.Pressed, "#demo-swap")` that used to sit below was one of
+        # four such copies, and the four REAL dialogs were the bodies that never
+        # got one: this demo swapped, and they did not. See SwapButton._swap.
         yield SwapButton(id="demo-swap")
         with Horizontal(id="demo-buttons"):
             yield Button("Allow", variant="primary", id="demo-allow")
@@ -112,10 +115,6 @@ class DemoDialogBody(Widget):
                 pass
 
     # ── exits ────────────────────────────────────────────────────────────────
-    @on(Button.Pressed, "#demo-swap")
-    def _swap(self) -> None:
-        request_swap(self)
-
     @on(Button.Pressed, "#demo-allow")
     def _allow(self) -> None:
         close_dialog(self, "allow")

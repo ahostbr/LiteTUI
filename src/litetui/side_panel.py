@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable
 
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
@@ -57,6 +58,72 @@ from textual.widgets import Button
 #: work — the state simply does not carry — so a body is never *required* to
 #: implement them, but anything with input in it should.
 BodyFactory = Callable[[], Widget]
+
+
+class _SwapRequested:
+    """A THIRD OUTCOME FOR A DIALOG THAT HAD TWO: "change host", never "answer".
+
+    🔴 WHY THE OBVIOUS FIX IS THE WRONG ONE. `present_dialog`'s modal branch
+    pushes the ORIGINAL `ModalScreen`, which carries no `DialogController` — so
+    the swap control had nothing to ask, and on that branch it was a NO-OP for
+    the whole life of this feature. Giving that screen a controller would fix it
+    and would also change what the modal IS: same-class `isinstance`, the CSS
+    keyed by class name, and the two tests that bind to both. That branch's
+    docstring exists to defend exactly that.
+
+    So the screen keeps its identity and its EXIT becomes tri-state. It is
+    dismissed with this value, and the ROUTER that pushed it — the only code that
+    still holds the body factory and the caller's callback — re-opens the same
+    dialog on the sidebar host. The caller is never handed this value and is
+    never told a swap happened, because it is still waiting.
+
+    ⚠️ FALSY ON PURPOSE, AND NOTHING RELIES ON IT. `_execute_tool` reads
+    `if not answer:` and `_on_stop_answer` reads `if not stop:`; both routers
+    intercept the sentinel before either can see it, and there is one arm per
+    consumer proving it. The falsiness is what happens IF an interception is ever
+    removed: deny the tool and keep the turn, rather than approve something
+    nobody decided on.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:          # pragma: no cover — debugging aid
+        return "<SWAP>"
+
+
+SWAP = _SwapRequested()
+
+
+def _mark_swap_host(screen):
+    """Tag a screen whose dismissal a router is watching for `SWAP`.
+
+    Without the tag, `request_swap` cannot tell a screen a ROUTER pushed from one
+    a CALLER pushed itself — and dismissing the second kind with the sentinel
+    would hand a value nobody expects to somebody else's `push_screen` callback.
+    """
+    screen._litetui_swap_host = True
+    return screen
+
+
+def _is_swap_host(screen) -> bool:
+    return bool(getattr(screen, "_litetui_swap_host", False))
+
+
+def _screen_of(widget: Widget):
+    """`Widget.screen` RAISES when the node is detached — it never returns None.
+
+    A helper because `getattr(widget, "screen", None)` LOOKS like the guard and
+    is not one: the property raises rather than being absent, so the getattr
+    default never fires and the exception escapes. `_ViewMixin` carries the same
+    note one class down, having learned it the same way.
+    """
+    try:
+        return widget.screen
+    except Exception:
+        return None
 
 
 class DialogController:
@@ -592,22 +659,78 @@ class SwapButton(Button):
     #: ⇒ The same scoping that was the bug is the fix, used the right way round.
     #: It also keeps this control out of the four bodies' stylesheets entirely,
     #: so adding the button needs ONE line per body and no CSS edit at all.
+    #: `.inline` is for a body that puts the control in a Horizontal beside its
+    #: other buttons — the three list panels. Without it the `width: 100%` above
+    #: takes the whole row and squeezes "Close" to nothing: the rule that is
+    #: right for a control on its own line is wrong for one in a row, and the
+    #: control owns both for the same reason it owns the first.
     DEFAULT_CSS = """
     SwapButton { width: 100%; margin: 0 0 1 0; }
+    SwapButton.inline { width: auto; margin: 0 1 0 0; }
     """
 
     DEFAULT_ID = "dialog-swap"
 
-    def __init__(self, id: str | None = None) -> None:
-        super().__init__("", id=id or self.DEFAULT_ID)
+    def __init__(self, id: str | None = None, *, classes: str | None = None) -> None:
+        # `classes` is passed through for `.inline` — a body that puts the
+        # control in a Horizontal beside its other buttons. Without the
+        # passthrough the class is silently unavailable and the only way to get
+        # the narrow variant is a private button again, which is the thing this
+        # class exists to stop.
+        super().__init__("", id=id or self.DEFAULT_ID, classes=classes)
 
     def on_mount(self) -> None:
         self.relabel()
 
+    @on(Button.Pressed)
+    def _swap(self, event: Button.Pressed) -> None:
+        """🔴 THE CONTROL OWNS ITS OWN PRESS — AND IT DID NOT, UNTIL T222.
+
+        The press was wired by each BODY instead: a private
+        `@on(Button.Pressed, "#<its-own-id>") -> request_swap(self)` in
+        dialog_demo, tool_list, loop_list and mcp_list — and in NONE of the four
+        real dialogs (ConfirmStop, Picker, ToolApproval, AskUserQuestion), which
+        yield this control and wire nothing. Pressing it there did nothing at
+        all, in EITHER host, including the sidebar where the controller exists.
+
+            git log --oneline -S"request_swap" -- src/litetui/widgets.py \\
+                src/litetui/picker.py src/litetui/tool_approval.py \\
+                src/litetui/ask_user_question.py          -> EMPTY
+            git log --oneline -S"Button.Pressed" -- src/litetui/side_panel.py
+                                                      -> EMPTY
+
+        Never wired in those four, at any sha — not unwired by a later commit.
+
+        A handler each body must copy is one chance per body to be the body that
+        forgot, which is the argument the DEFAULT_CSS note above already makes,
+        lost the same way. Owning the press makes the count one.
+
+        ⚠️ `event.stop()` IS NOT TIDINESS. Bodies handle `Button.Pressed` to
+        ANSWER the dialog. A swap that kept bubbling could be read by one of them
+        as an answer — silently allowing or denying a tool call nobody decided
+        on, which is the single failure this whole module is built to prevent.
+        """
+        event.stop()
+        request_swap(self)
+
     def relabel(self) -> None:
-        """Label for where pressing it TAKES you, which depends on where it is."""
+        """Label for where pressing it TAKES you — and HIDE it where it cannot go.
+
+        📌 THIS IS `swappable()`'s CALLER, AND IT HAD NONE. That method's own
+        docstring says "callers use this to decide whether to offer the control
+        at all, rather than offering it and hoping", and
+        `grep -rn "swappable()" src/litetui` returned only its definition. A
+        promise documented and not kept reads, to the next author, exactly like
+        one that is kept.
+
+        Both routers mark their screens now, so the hidden case is narrow and
+        real: a body inside a plain `ModalScreen` that no router pushed —
+        `ask_user_question`'s `loop is None` fallback, or a future bare
+        `push_screen` — where the control genuinely cannot act.
+        """
         in_sidebar = any(isinstance(n, SidePanel) for n in self.ancestors_with_self)
         self.label = "Open as modal" if in_sidebar else "Dock to side"
+        self.display = self.swappable()
 
     def swappable(self) -> bool:
         """Would pressing this actually do anything HERE?
@@ -619,17 +742,39 @@ class SwapButton(Button):
         that way has NO controller and a swap there is a no-op.
 
         A button that is visible, pressable and inert is the defect class this
-        whole day has been spent clearing. Callers use this to decide whether to
-        offer the control at all, rather than offering it and hoping.
+        whole day has been spent clearing. `relabel()` calls this to decide
+        whether to offer the control at all, rather than offering it and hoping.
+
+        ⇒ AND THE ANSWER CHANGED IN T222. A screen a ROUTER pushed can now swap
+        WITHOUT a controller, by being dismissed with `SWAP` — see
+        `_SwapRequested`. So "no controller" no longer means "inert"; only "no
+        controller AND no router watching this screen's exit" does.
         """
-        return _controller_for(self) is not None
+        if _controller_for(self) is not None:
+            return True
+        screen = _screen_of(self)
+        return screen is not None and _is_swap_host(screen)
 
 
 def request_swap(widget: Widget) -> None:
-    """Swap the host under `widget` without answering the dialog."""
+    """Swap the host under `widget` without answering the dialog.
+
+    Two hosts, two mechanisms, one invariant: NEITHER answers the dialog. With a
+    controller the view is rebuilt underneath the future. Without one — a screen
+    a router pushed — the screen's DISMISSAL is the only channel back to the code
+    that still knows the body factory and the caller's callback, so the swap
+    travels as `SWAP` and that router re-opens on the other host.
+
+    A screen nobody routed is left alone: dismissing it with a sentinel would
+    hand a value its own caller never asked for.
+    """
     ctrl = _controller_for(widget)
     if ctrl is not None:
         ctrl.app.call_next(ctrl.swap)
+        return
+    screen = _screen_of(widget)
+    if screen is not None and _is_swap_host(screen):
+        screen.dismiss(SWAP)
 
 
 def present_dialog(app, body_factory: BodyFactory, modal_factory, callback=None) -> None:
@@ -650,8 +795,22 @@ def present_dialog(app, body_factory: BodyFactory, modal_factory, callback=None)
     if getattr(app.settings, "dialog_style", "modal") == "sidebar":
         open_dialog(app, body_factory, callback,
                     style="sidebar", side=app.settings.dialog_side)
-    else:
-        app.push_screen(modal_factory(), callback)
+        return
+
+    def _answered(result: Any) -> None:
+        # 🔴 THE SWAP IS INTERCEPTED HERE AND THE CALLBACK NEVER SEES IT. This is
+        # what makes the sentinel's falsiness a backstop rather than the
+        # mechanism. The contract is not "a swap answers with something
+        # harmless" — it is that a swap DOES NOT ANSWER. Esc resolves with None
+        # and the callback FIRES; a swap does not reach it at all.
+        if isinstance(result, _SwapRequested):
+            open_dialog(app, body_factory, callback,
+                        style="sidebar", side=app.settings.dialog_side)
+            return
+        if callback is not None:
+            callback(result)
+
+    app.push_screen(_mark_swap_host(modal_factory()), _answered)
 
 
 def open_dialog(app, body_factory: BodyFactory, callback=None, *,
@@ -705,7 +864,16 @@ async def show_dialog(app, body_factory: BodyFactory, *, style: str | None = Non
         # THE ORIGINAL SCREEN, awaited exactly as before. Same reason as
         # present_dialog's modal branch: a real dialog's own DEFAULT_CSS is
         # SCOPED TO ITS CLASS, so routing it through `_ModalHost` renders it
-        # unstyled and changes what the modal IS. No controller here, so no
-        # swap — which matches: the modal branch never had one.
-        return await app.push_screen_wait(modal_factory())
+        # unstyled and changes what the modal IS.
+        #
+        # ⇒ A SWAP ARRIVES AS THE DISMISSAL VALUE, AND THIS FRAME DOES NOT
+        # UNWIND FOR IT. It falls through to the controller below on the sidebar
+        # host, so the AWAITING caller — `_execute_tool`, whose very next line is
+        # `if not answer:` and treats falsy as DENY-and-stop-the-turn — cannot
+        # observe the sentinel: there is no return between here and a real
+        # answer.
+        result = await app.push_screen_wait(_mark_swap_host(modal_factory()))
+        if not isinstance(result, _SwapRequested):
+            return result
+        style = "sidebar"
     return await DialogController(app, body_factory, style, side, trap_focus).open()

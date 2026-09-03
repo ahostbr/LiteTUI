@@ -34,7 +34,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Label, Static, Switch
 
 from litetui import settings as settings_mod
-from litetui.side_panel import close_dialog, request_swap
+from litetui.side_panel import SwapButton, close_dialog
 
 
 def tool_rows(app) -> list[dict]:
@@ -134,7 +134,7 @@ class ToolListBody(Widget):
             )
         with Horizontal(id="tl-buttons"):
             yield Button("Close", variant="primary", id="tl-close")
-            yield Button("Sidebar / popup", id="tl-swap")
+            yield SwapButton(classes="inline")
 
     # ── the swap contract ────────────────────────────────────────────────
 
@@ -199,7 +199,3 @@ class ToolListBody(Widget):
     @on(Button.Pressed, "#tl-close")
     def _close(self) -> None:
         close_dialog(self, None)
-
-    @on(Button.Pressed, "#tl-swap")
-    def _swap(self) -> None:
-        request_swap(self)

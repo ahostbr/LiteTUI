@@ -29,7 +29,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Label, Static, Switch
 
 from litetui.goal_loop import _loop_jobs, remove_loop, set_loop_enabled
-from litetui.side_panel import close_dialog, request_swap
+from litetui.side_panel import SwapButton, close_dialog
 
 
 def loop_rows(app) -> list[dict]:
@@ -105,7 +105,7 @@ class LoopListBody(Widget):
                              classes="ll-prompt", markup=False)
         with Horizontal(id="ll-buttons"):
             yield Button("Close", variant="primary", id="ll-close")
-            yield Button("Sidebar / popup", id="ll-swap")
+            yield SwapButton(classes="inline")
 
     # ── the swap contract ────────────────────────────────────────────────
 
@@ -165,7 +165,3 @@ class LoopListBody(Widget):
     @on(Button.Pressed, "#ll-close")
     def _close(self) -> None:
         close_dialog(self, None)
-
-    @on(Button.Pressed, "#ll-swap")
-    def _swap(self) -> None:
-        request_swap(self)

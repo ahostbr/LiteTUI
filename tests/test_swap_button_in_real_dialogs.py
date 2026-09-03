@@ -10,12 +10,20 @@ fifth dialog joins these assertions by being added to one list — it cannot be
 "the one nobody swept", which is precisely how the swap button and the
 DEFAULT_CSS scoping bug both reached Ryan.
 
-⚠️ AND `swappable()` IS ASSERTED IN BOTH DIRECTIONS, because the honest answer
-differs per host. `request_swap` needs a DialogController; only SidePanel and
-_ModalHost carry one (`grep -rn 'self\\.controller\\s*=' src/litetui/*.py`
-returns exactly two lines). `present_dialog`'s modal branch deliberately pushes
-the ORIGINAL ModalScreen, which has none — so on that path a swap is a no-op and
-the button must SAY SO rather than sit there pressable and inert.
+⚠️ THE PARAGRAPH THAT USED TO BE HERE WAS WRONG, AND IT WAS WRONG CONFIDENTLY.
+It said `present_dialog`'s modal branch has no DialogController "so on that path
+a swap is a no-op and the button must SAY SO rather than sit there pressable and
+inert". The premise was true; the conclusion was never reached. Nothing consulted
+`swappable()`, so the button said nothing — and nothing in this file ever PRESSED
+it, in either host, which is how all four dialogs shipped with the control wired
+to no handler at all. T222 gave the press to the control and gave a routed modal
+a third exit, so a screen a router pushed can now dock without a controller.
+
+🔴 EVERY SWAP ASSERTION IN THIS FILE STILL CALLS `request_swap` DIRECTLY. That is
+exactly what made the defect invisible here, and it is left that way so the
+distinction stays visible: these arms test the MECHANISM. The arms that press the
+CONTROL are in tests/test_swap_control_is_wired.py. Adding another `request_swap`
+arm here does not cover the button.
 """
 from __future__ import annotations
 
@@ -30,7 +38,9 @@ from _settle import settle_until
 from litetui import app as m
 from litetui.ask_user_question import AskUserQuestionBody, QuestionState
 from litetui.picker import PickerBody, PickerScreen
-from litetui.side_panel import DialogController, SidePanel, SwapButton
+from litetui.side_panel import (
+    DialogController, SidePanel, SwapButton, present_dialog,
+)
 from litetui.tool_approval import ToolApprovalBody
 from litetui.tool_policy import INTERACTIVE, WORKSPACE_WRITE, PolicyDecision
 from litetui.widgets import ConfirmStop, ConfirmStopBody
@@ -128,38 +138,60 @@ async def test_a_swap_does_NOT_answer_the_dialog(name, factory):
 #: That branch is deliberate (its docstring defends the identity two tests bind
 #: to), and it is the branch Ryan is on: `dialog_style` defaults to "modal".
 REAL_MODALS = [
-    ("confirm_stop", ConfirmStop),
-    ("picker", lambda: PickerScreen("Pick a model", [("a", "model-a")])),
+    ("confirm_stop", ConfirmStopBody, ConfirmStop),
+    ("picker",
+     lambda: PickerBody("Pick a model", [("a", "model-a")]),
+     lambda: PickerScreen("Pick a model", [("a", "model-a")])),
 ]
 
 
-@pytest.mark.parametrize("name,factory", REAL_MODALS, ids=[n for n, _ in REAL_MODALS])
+@pytest.mark.parametrize("name,body,modal", REAL_MODALS,
+                         ids=[n for n, _, _ in REAL_MODALS])
 @pytest.mark.asyncio
-async def test_on_the_modal_path_the_control_says_it_CANNOT_swap(name, factory):
-    """🔴 THE OTHER DIRECTION, AND IT IS THE ONE THAT NEARLY SHIPPED A DEAD BUTTON.
+async def test_the_modal_path_can_swap_ONLY_when_a_router_pushed_it(name, body, modal):
+    """🔴 THIS TEST USED TO ASSERT THE OPPOSITE, AND ITS PREMISE WAS THE BUG.
 
-    `present_dialog` pushes the original ModalScreen, which carries no
-    DialogController — so `request_swap` there is a NO-OP. A button that is
-    visible, pressable and inert is the defect class this codebase spent the day
-    clearing, so the control reports the truth instead of pretending.
+    It was `test_on_the_modal_path_the_control_says_it_CANNOT_swap`. It pushed
+    the screen ITSELF, asserted `swappable() is False`, and called that "the
+    branch Ryan is on". Ryan's branch goes through `present_dialog`, which is not
+    what it tested — and `swappable()` had no callers, so "the control says so"
+    was a method returning False to nobody. Precise, passing, and about a
+    situation the app does not produce.
 
-    ⚠️ THE DEMO COULD NOT HAVE CAUGHT THIS: dialog_demo always runs under a
-    controller, so T075's swap has never executed this path.
+    THE REAL DISCRIMINATOR IS WHO PUSHED THE SCREEN. A router marks the screen it
+    pushes and watches its dismissal for `SWAP`; a screen a caller pushed itself
+    is left alone, because dismissing that one with a sentinel would hand a value
+    its own caller never asked for. Both halves are asserted here — a green on
+    the "cannot" half alone is also what you get from never adding the feature.
     """
     a = make_app()
+    a.settings.dialog_style = "modal"
     async with a.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = factory()
-        a.push_screen(screen)
+        # ROUTED: present_dialog pushes it, so it can dock.
+        present_dialog(a, body, modal, None)
         appeared = await settle_until(pilot, lambda: bool(a.screen.query(SwapButton)))
-        assert appeared, f"{name}: no swap control on the modal path"
+        assert appeared, f"{name}: no swap control on the routed modal path"
 
         btn = a.screen.query_one(SwapButton)
         assert str(btn.label) == "Dock to side", (
             f"{name}: a modal dialog should offer the SIDEBAR as its destination"
         )
-        assert btn.swappable() is False, (
-            f"{name}: claims it can swap, but this path has no controller"
+        assert btn.swappable() is True, (
+            f"{name}: a routed modal must be able to dock — the router is watching"
+        )
+        a.screen.dismiss(None)
+        await pilot.pause()
+
+        # BARE: nobody is watching this one's exit, so the control must not act.
+        screen = modal()
+        a.push_screen(screen)
+        await settle_until(pilot, lambda: bool(a.screen.query(SwapButton)))
+        bare = a.screen.query_one(SwapButton)
+        assert bare.swappable() is False, (
+            f"{name}: claims it can swap, but no router pushed this screen"
+        )
+        assert bare.display is False, (
+            f"{name}: an inert swap control is still being offered"
         )
         screen.dismiss(None)
         await pilot.pause()

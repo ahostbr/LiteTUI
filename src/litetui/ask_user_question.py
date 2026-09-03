@@ -58,7 +58,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 from functools import partial
-from litetui.side_panel import SwapButton, close_dialog, open_dialog
+from litetui.side_panel import SwapButton, close_dialog, present_dialog
 from litetui import tool_schemas
 
 from rich.text import Text
@@ -620,7 +620,6 @@ def run(args: dict, app: App | None) -> str:
     # Those two look identical from the host's side and are opposite, which is
     # why the polling loop is carried across UNCHANGED rather than collapsed
     # into an await on the dialog's result.
-    sidebar = getattr(app.settings, "dialog_style", "modal") == "sidebar"
 
     def _open() -> None:
         if loop is None:
@@ -641,17 +640,17 @@ def run(args: dict, app: App | None) -> str:
             # also starts the widget's message pump, so the mount has to happen
             # inside `app._context()` for exactly the same reason.
             with app._context():
-                if sidebar:
-                    open_dialog(
-                        app,
-                        partial(AskUserQuestionBody, states, done, result_box),
-                        style="sidebar",
-                        side=app.settings.dialog_side,
-                    )
-                else:
-                    app.push_screen(
-                        AskUserQuestionScreen(states, done, result_box)
-                    )
+                # T222: this used to branch on `sidebar` itself and push the
+                # bare screen on the modal side — which is the branch
+                # `present_dialog` IS, minus the swap. Opened as a modal there
+                # was no way back to the sidebar: the screen carried no
+                # controller and nothing watched its exit. Routing it here gives
+                # the control both directions without changing either host.
+                present_dialog(
+                    app,
+                    partial(AskUserQuestionBody, states, done, result_box),
+                    partial(AskUserQuestionScreen, states, done, result_box),
+                )
 
         # .result() returns once the push is processed on the loop. It bounds
         # THE PUSH, not the answer — the answer is bounded by `done` below.
