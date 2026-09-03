@@ -1137,19 +1137,28 @@ class LiteTUI(App):
         # `[]`, not `{}` — discover() returns a LIST, and load() iterates its
         # argument expecting Skill objects. A dict would yield keys.
         self.skills, self.skills_cached_at = appsvc.load_skills(self, )
+        # 🔴 READ THE CONFIGS HERE; DIAL OUT LATER. A CONSTRUCTOR MUST NOT BLOCK
+        # ON A SOCKET.
+        #
+        # This used to call `self.mcp.load()`, which connects every declared
+        # server inline. `.mcp.json` declares an HTTP server on localhost:7423
+        # (LiteSuite's bridge), and when LiteSuite is not running the POST waits
+        # to be REFUSED. Measured 2026-09-03, three direct timings of that exact
+        # request: 4.033s / 4.051s / 4.105s, "[WinError 10061] the target
+        # machine actively refused it" — the Windows dual-stack localhost path
+        # (::1 then 127.0.0.1, with retries), not a timeout anyone configured.
+        #
+        # So EVERY LiteTUI launch with LiteSuite down paid ~4 seconds before its
+        # first frame, and every test that built an app paid it too: constructing
+        # one cost 4316.7 ms against 47.5 ms for the whole Textual `run_test()`
+        # boot and teardown. The compositor was never the cost.
+        #
+        # `reload_configs()` is the file read only — no network — so /settings,
+        # `describe()` and the /mcp dialog still list what is DECLARED from the
+        # first frame. Only the CONNECT moves, into `_mcp_connect` after mount.
         self.mcp = mcp_client.MCPManager(paths.ROOT)
         if self.settings.mcp_enabled:
-            self.mcp.load()
-            # Per-server opt-out. Stopping AFTER load rather than filtering the
-            # config keeps mcp.json the single source of what EXISTS, so a
-            # disabled server still appears in /settings to be re-enabled.
-            for name in list(self.settings.mcp_disabled_servers):
-                srv = self.mcp.servers.pop(name, None)
-                if srv is not None:
-                    try:
-                        srv.stop()
-                    except Exception:
-                        pass
+            self.mcp.reload_configs()
         self._mcp_dispatch = self.mcp.dispatch()
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
@@ -1284,6 +1293,55 @@ class LiteTUI(App):
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
         plugins_mod.activate_plugins(self, self.plugins, self._plugin_manifests)
+        # MCP servers connect AFTER the first frame. See __init__ for why.
+        if self.settings.mcp_enabled and self.mcp.configs:
+            self._mcp_connect()
+
+    @work(exclusive=True, group="mcp")
+    async def _mcp_connect(self) -> None:
+        """Connect the declared MCP servers, off the startup path.
+
+        🔴 EVERY CONNECT RUNS IN A THREAD. `MCPServer.start` does a blocking
+        HTTP POST or spawns a process; awaiting it on the event loop would move
+        the four-second stall from "before the first frame" to "the UI is up and
+        frozen", which is worse, not better — the same wait with a screen that
+        now looks alive.
+
+        📌 A REFUSED SERVER IS ANNOUNCED, NOT SWALLOWED. `connect()` returns the
+        error text rather than raising (that is its documented contract), so
+        nothing upstream would ever have seen it. A tool that simply never
+        appears is indistinguishable from one the model chose not to call, which
+        is the failure mode this whole surface exists to remove.
+        """
+        disabled = set(self.settings.mcp_disabled_servers or ())
+        failed: list[str] = []
+        connected: list[str] = []
+        for name, sc in list(self.mcp.configs.items()):
+            # The denylist is applied by NOT DIALLING, where it used to connect
+            # and then stop. mcp.json stays the single source of what EXISTS —
+            # `configs` still holds these, so /settings can re-enable them — but
+            # a server the user switched off no longer costs a round trip to
+            # find that out.
+            if name in disabled or not isinstance(sc, dict) or sc.get("disabled"):
+                continue
+            err = await asyncio.to_thread(self.mcp.connect, name)
+            (failed if err else connected).append(f"{name}: {err}" if err else name)
+
+        if connected:
+            # 🔴 THE ONE STALE THING AFTER A CONNECT. Specs are re-read per turn;
+            # the DISPATCH map is cached. Without this the model is offered tools
+            # the loop cannot route. See rebuild_mcp_dispatch.
+            self.rebuild_mcp_dispatch()
+            self._update_header()
+            # `system_message`, not the `_system` alias: the alias is bound at
+            # class level (`_system = system_message`), so a caller who replaces
+            # the PUBLIC method on an instance — which is how a test watches
+            # what the app says — never sees a line posted through the private
+            # name. Found exactly that way; the announce arm read an empty list
+            # while the line was being printed.
+            self.system_message(f"mcp: {', '.join(connected)}")
+        for line in failed:
+            self.system_message(f"[!] mcp {line}")
 
     @work(exclusive=True, group="inbox")
     async def _inbox_monitor(self) -> None:
@@ -1303,7 +1361,9 @@ class LiteTUI(App):
                 f"harness seat online · {self.seat.name} · {self.seat.agent_id[:8]}"
             )
             # The harness tool just joined the offer — repaint the
-            # derived tool count. (The one late tool; MCP loads in __init__.)
+            # derived tool count. (No longer the ONLY late tool — MCP moved off
+            # the constructor in T239 and repaints the same header when its
+            # servers land. Both arrive after the first frame, independently.)
             self._update_header()
             # The model cannot see the UI line above, and the system prompt was
             # built before registration finished. Without this it holds fleet

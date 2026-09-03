@@ -77,6 +77,16 @@ def dials(monkeypatch):
     therefore the one today's defect went through. A guard missing the second
     could not fail for the reason it was written.
     """
+    return _poison(monkeypatch, raw=True)
+
+
+@pytest.fixture
+def http_dials(monkeypatch):
+    """As `dials`, but leaves RAW `socket.connect` alone. See its use below."""
+    return _poison(monkeypatch, raw=False)
+
+
+def _poison(monkeypatch, *, raw: bool) -> list[str]:
     seen: list[str] = []
 
     def _connect(self, address, *a, **kw):
@@ -87,7 +97,8 @@ def dials(monkeypatch):
         seen.append(f"create_connection({address!r})")
         raise _DialledOut(seen[-1])
 
-    monkeypatch.setattr(socket.socket, "connect", _connect)
+    if raw:
+        monkeypatch.setattr(socket.socket, "connect", _connect)
     monkeypatch.setattr(socket, "create_connection", _create_connection)
     return seen
 
@@ -103,6 +114,62 @@ def test_constructing_the_app_opens_no_socket(dials):
         "the recorded attempt shows it happened. If a new server or probe needs "
         "to run at startup it belongs behind an explicit call the tests can "
         "decline; see conftest.py's _never_dial_out_from_a_constructor."
+    )
+
+
+@pytest.mark.asyncio
+async def test_MOUNTING_the_app_opens_no_socket_either(http_dials):
+    """🔴 CONSTRUCTION WAS NEVER THE WHOLE SURFACE, AND THIS ARM IS WHY.
+
+    The first version of this file tested `LiteTUI()` only. T239 then moved the
+    boot connect off the constructor into an `on_mount` worker — the right fix
+    for the app — and every mounted test app started dialling again, ~4s each,
+    while this file stayed green because construction really was clean. The
+    suite slid from 5:32 back past ten minutes and announced it as a tool
+    timeout rather than a failure.
+
+    A guard scoped to one lifecycle phase certifies that phase, not the app. So
+    the subject here is the whole startup: build it, MOUNT it, let the workers
+    run, and assert nothing dialled.
+
+    🔴 IT USES `http_dials`, NOT `dials`, AND NOT OUT OF CONVENIENCE.
+    Windows' ProactorEventLoop builds its own wakeup pipe with a real
+    `socket.socket.connect` to 127.0.0.1. Poisoning that breaks the event loop
+    itself before any app code runs — "AttributeError: 'ProactorEventLoop'
+    object has no attribute '_ssock'" — so the arm would be reporting asyncio's
+    dial, not the app's. `create_connection` stays poisoned: it is the door
+    urllib and every http client here go through, and therefore the one the real
+    defect used.
+
+    ⇒ LIMIT, STATED RATHER THAN HIDDEN: a RAW-socket dial from app code would be
+    missed at mount. The construction arm above still catches that, and nothing
+    in this codebase opens a raw socket at startup today.
+    """
+    from _settle import settle_until
+
+    dials = http_dials
+    a = m.LiteTUI()
+    a.available_models = ["a-model"]
+    a.model_id = "a-model"
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    # 📌 THE SERVER IS DECLARED HERE, BY THIS TEST, ON PURPOSE. conftest gives
+    # the test world NO mcp configs, so the boot worker would otherwise never
+    # run and this arm would pass by having nothing to do — the exact shape of
+    # green it exists to rule out. Declaring one makes the worker run over a
+    # server that looks perfectly real to it, so the assertion below is about
+    # the chokepoint holding, not about there being nothing to hold.
+    a.mcp.configs = {"probe": {"url": "http://127.0.0.1:7423/mcp", "type": "http"}}
+    async with a.run_test(size=(120, 40)) as pilot:
+        # Give the post-mount workers real frames to run in; a pass taken before
+        # they start would be a pass about nothing.
+        await settle_until(pilot, lambda: bool(dials))
+
+    assert dials == [], (
+        f"the app reached the network after mount: {dials}\n\n"
+        "The boot connect moved to a worker in T239. It still must not dial "
+        "during tests — see conftest.py's _never_dial_out_from_a_constructor, "
+        "which stubs MCPManager.connect for exactly this."
     )
 
 

@@ -132,10 +132,45 @@ def _never_dial_out_from_a_constructor(request, monkeypatch):
         return
     from litetui import mcp_client
 
-    def _configs_only(self) -> None:
-        self.reload_configs()
+    def _no_servers(self) -> dict:
+        # 🔴 THE TEST WORLD DECLARES NO MCP SERVERS, and that is a CORRECTION to
+        # the reasoning in 561e1d8. That commit kept `reload_configs()` so the
+        # /mcp dialog would still have rows — but every test that reads
+        # `mcp.configs` or `describe()` is one of the four MARKED files, and each
+        # builds its own configs under tmp_path. Nothing unmarked needs the
+        # repo's real .mcp.json, and depending on it means the suite's inputs
+        # change the day somebody adds a server to that file.
+        #
+        # It also removes a mount-time side effect that reached two unrelated
+        # tests: with configs present, T239's boot worker runs in every mounted
+        # app, the stub below reports the server as unreachable, and the app
+        # posts a system line into the chat — correct behaviour, in a world that
+        # should have had nothing to report. test_skill_autocomplete and
+        # test_slash_autocomplete_commands both failed on that line; measured by
+        # running them at 561e1d8 (17 passed, three times) and against T239 with
+        # the announce disabled (17 passed, twice).
+        self.configs = {}
+        return self.configs
 
-    monkeypatch.setattr(mcp_client.MCPManager, "load", _configs_only)
+    def _refuse(self, name: str) -> str:
+        return "not connected: the test suite does not dial out"
+
+    monkeypatch.setattr(mcp_client.MCPManager, "load", lambda self: None)
+    monkeypatch.setattr(mcp_client.MCPManager, "reload_configs", _no_servers)
+    # 🔴 BOTH DOORS, AND THE SECOND ONE WAS ADDED AFTER IT BIT.
+    #
+    # Stubbing `load` alone was correct for exactly one commit. T239 then moved
+    # the boot connect OFF the constructor into an `on_mount` worker that calls
+    # `connect()` DIRECTLY — so every mounted app started dialling again, at ~4s
+    # per test, and the guard test stayed green because it only ever measured
+    # CONSTRUCTION. The suite went from 5:32 back past 10 minutes and the first
+    # symptom was a tool timeout, not a failure.
+    #
+    # A chokepoint that names one CALLER is a chokepoint for that caller. This
+    # one names the thing that actually touches the network, so any future path
+    # to it — boot, /mcp connect, a reconnect on resume — is covered by having
+    # been written, not by being remembered.
+    monkeypatch.setattr(mcp_client.MCPManager, "connect", _refuse)
 
 
 def pytest_configure(config):

@@ -131,10 +131,20 @@ async def test_disconnect_stops_the_real_server_and_the_row_updates(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_connect_starts_it_again_from_the_same_dialog(monkeypatch, tmp_path):
+    # ⚠️ THE DISCONNECT MOVED INSIDE `run_test`, AND ONLY THE SETUP CHANGED.
+    # It used to run before mounting, which was equivalent while the boot
+    # connect happened in `LiteTUI.__init__`. T239 moved that connect to an
+    # `on_mount` worker, so a server disconnected BEFORE the mount is simply
+    # reconnected by boot — correctly: boot connects what is declared and not
+    # denied. The subject of this test is "connect starts it again from the
+    # dialog"; how the row got to `stopped` is setup, and this is now the
+    # honest way to express "the user disconnected it".
     app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
-    app.mcp.disconnect("web")
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
+        app.mcp.disconnect("web")
+        await body._rerender()
+        await _settle(pilot)
         assert body._rows[0]["state"] == "stopped"
 
         body.query_one("#mcp-act-0-connect").press()
