@@ -28,6 +28,20 @@ from litetui import paths
 from litetui import scheduler as sched_mod
 
 
+def _cal(a):
+    """The calendar's BODY — where the hit-map and the month state live.
+
+    They moved out of `CalendarScreen` so a `SidePanel` can mount the same
+    widget (T232). Reaching through `a.screen` still works for `query_one`,
+    which searches descendants; it is the direct attribute access that had to
+    follow the state. Written as a helper rather than repeated, so the day the
+    calendar is DOCKED in these tests there is one line to change.
+    """
+    from litetui.plugins.scheduler_ui import CalendarBody
+    return a.screen.query_one(CalendarBody)
+
+
+
 @pytest.fixture(autouse=True)
 def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "ROOT", tmp_path)
@@ -80,7 +94,7 @@ def test_the_day_popup_is_centred():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
             _assert_centred(a, "#day-box", "DayScreen")
     _run(body())
@@ -92,7 +106,7 @@ def test_the_job_editor_is_centred():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
             a.screen.action_new_job()
             await pilot.pause()

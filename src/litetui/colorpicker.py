@@ -287,10 +287,15 @@ class ColorPickerBody(Widget):
     _paint_tries: int = 4
 
     def _repaint(self) -> None:
-        if not self.is_mounted:
-            return
+        # ⚠️ THE LIVENESS CHECK GUARDS THE DEFERRED RE-ENTRY, NOT THE ENTRY.
+        # `self.is_mounted` is False inside a widget's own `on_mount` (measured
+        # on DayBody: children present, query matching, is_mounted False), so a
+        # check at the top of a paint method silently skips the first paint.
+        # This one is reached through `call_after_refresh` today and would not
+        # have shown it -- it is written the safe way round anyway, because the
+        # next caller is what makes the difference and it is not here yet.
         if not self.query("#cp-field"):
-            if self._paint_tries > 0:
+            if self._paint_tries > 0 and self.is_mounted:
                 self._paint_tries -= 1
                 self.call_after_refresh(self._repaint)
             return

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,10 @@ from litetui.loop_list import LoopListBody
 from litetui.mcp_list import MCPListBody
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.picker import PickerBody, PickerScreen
+from litetui.scheduler import Job
+from litetui.plugins.scheduler_ui import (
+    CalendarBody, CalendarScreen, DayBody, DayScreen, JobBody, JobScreen,
+)
 from litetui.plugins.help_plugin import HelpBody, HelpScreen
 from litetui.side_panel import (
     DialogController, SidePanel, SwapButton, close_dialog, present_dialog,
@@ -53,6 +58,9 @@ from litetui.widgets import ConfirmStop, ConfirmStopBody
 ROOT = Path(__file__).resolve().parent.parent
 
 HELP_TEXT = "a line of help" + chr(10) + "and another"
+
+A_DAY = date(2026, 8, 17)
+JOBS = [Job(prompt="say hi", schedule="0 9 * * 1-5", label="morning")]
 
 
 def _decision():
@@ -96,6 +104,13 @@ def _pairs():
         ("colorpicker",
          lambda: ColorPickerBody("#808080", [], "primary"),
          lambda: ColorPickerScreen("#808080", [], "primary")),
+        ("calendar",
+         lambda: CalendarBody(JOBS), lambda: CalendarScreen(JOBS)),
+        ("day",
+         lambda: DayBody(JOBS, A_DAY), lambda: DayScreen(JOBS, A_DAY)),
+        ("job",
+         lambda: JobBody(None, "0 9 * * *"),
+         lambda: JobScreen(None, "0 9 * * *")),
     ]
 
 

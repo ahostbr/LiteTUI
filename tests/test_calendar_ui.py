@@ -32,6 +32,20 @@ from litetui import calendar_view as cv
 from litetui import scheduler as sched_mod
 
 
+def _cal(a):
+    """The calendar's BODY — where the hit-map and the month state live.
+
+    They moved out of `CalendarScreen` so a `SidePanel` can mount the same
+    widget (T232). Reaching through `a.screen` still works for `query_one`,
+    which searches descendants; it is the direct attribute access that had to
+    follow the state. Written as a helper rather than repeated, so the day the
+    calendar is DOCKED in these tests there is one line to change.
+    """
+    from litetui.plugins.scheduler_ui import CalendarBody
+    return a.screen.query_one(CalendarBody)
+
+
+
 @pytest.fixture(autouse=True)
 def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
     """Redirect the job store away from the repo.
@@ -84,7 +98,7 @@ def test_the_map_and_the_paint_agree_on_every_day():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            scr = a.screen
+            scr = _cal(a)
             plain = str(scr.query_one("#cal-grid", m.Static).render())
             lines = plain.split("\n")
 
@@ -106,7 +120,7 @@ def test_dead_space_resolves_to_no_day():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            scr = a.screen
+            scr = _cal(a)
 
             assert scr._day_at(0, 0) is None, "the title row is not a day"
             assert scr._day_at(0, 1) is None, "the day-name row is not a day"
@@ -135,7 +149,7 @@ def test_clicking_a_day_opens_that_day():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            scr = a.screen
+            scr = _cal(a)
             x, y = _locate_day(scr, 15)
 
             plain = str(scr.query_one("#cal-grid", m.Static).render())
@@ -171,7 +185,7 @@ def test_clicking_a_side_pane_job_opens_its_editor():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            scr = a.screen
+            scr = _cal(a)
 
             y = scr._side_rows.index(target.id)
             assert scr._job_at(y) == target.id
@@ -210,7 +224,7 @@ def test_the_day_popup_lists_the_right_jobs_in_time_order():
             await pilot.pause()
             # 2026-08-21 is a Friday; navigate the screen to August 2026 so
             # the test does not depend on the wall clock's month.
-            scr = a.screen
+            scr = _cal(a)
             scr._year, scr._month = 2026, 8
             scr._paint()
             scr.open_day(21)
@@ -234,7 +248,7 @@ def test_an_empty_day_offers_creation_not_a_dead_end():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
 
             day = a.screen
@@ -254,7 +268,7 @@ def test_a_broken_job_appears_in_the_day_popup_and_is_reachable():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
 
             ol = a.screen.query_one("#day-list", OptionList)
@@ -274,7 +288,7 @@ def test_editing_a_job_saves_persists_and_repaints_the_month(tmp_path):
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            cal = a.screen
+            cal = _cal(a)
             # Pinned, and to a MONDAY. The first draft opened day 15 of the
             # wall-clock month -- and 2026-08-15 is a Saturday, where a
             # weekday-only job correctly does not appear, so Enter landed on
@@ -304,7 +318,10 @@ def test_editing_a_job_saves_persists_and_repaints_the_month(tmp_path):
             assert isinstance(a.screen, DayScreen)
             a.screen.action_close()
             await pilot.pause()
-            assert a.screen is cal
+            # The SAME calendar body, not merely a calendar: closing the day
+            # popup must return to the instance that holds the month state, not
+            # rebuild one that would silently reopen on the current month.
+            assert _cal(a) is cal
             plain = str(cal.query_one("#cal-grid", m.Static).render())
             assert "morning" in plain, "the month kept painting the old label"
     _run(body())
@@ -317,7 +334,7 @@ def test_an_invalid_schedule_cannot_be_saved_and_names_the_field(tmp_path):
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
@@ -344,7 +361,7 @@ def test_an_empty_prompt_cannot_be_saved():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
             a.screen.action_new_job()
             await pilot.pause()
@@ -364,7 +381,7 @@ def test_creating_from_a_day_prefills_that_day_and_lands_everywhere(tmp_path):
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            cal = a.screen
+            cal = _cal(a)
             cal._year, cal._month = 2026, 8
             cal._paint()
             cal.open_day(15)
@@ -410,7 +427,7 @@ def test_deleting_takes_two_clicks_and_then_really_deletes(tmp_path):
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
@@ -443,7 +460,7 @@ def test_a_new_job_editor_has_no_delete_button():
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
             a.screen.action_new_job()
             await pilot.pause()
@@ -460,7 +477,7 @@ def test_escape_cancels_without_touching_anything(tmp_path):
         async with a.run_test(size=SIZE) as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            a.screen.open_day(15)
+            _cal(a).open_day(15)
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()

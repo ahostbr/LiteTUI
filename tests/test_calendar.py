@@ -21,6 +21,18 @@ from litetui import scheduler as sched_mod
 from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
 
 
+def _cal(a):
+    """The calendar's BODY — where the hit-map and the month state live.
+
+    They moved out of `CalendarScreen` so a `SidePanel` can mount the same
+    widget (T232). `a.screen.query_one` still reaches descendants; it is the
+    DIRECT attribute access that had to follow the state.
+    """
+    from litetui.plugins.scheduler_ui import CalendarBody
+    return a.screen.query_one(CalendarBody)
+
+
+
 def job(prompt="p", schedule="@daily", **kw):
     return sched_mod.Job(prompt=prompt, schedule=schedule, **kw)
 
@@ -309,7 +321,7 @@ def test_paging_months_changes_what_is_drawn_and_returns():
         async with a.run_test() as pilot:
             a._handle_command("/calendar")
             await pilot.pause()
-            screen = a.screen
+            screen = _cal(a)
             start = (screen._year, screen._month)
 
             screen.action_next_month()

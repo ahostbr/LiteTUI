@@ -5,9 +5,14 @@ queued-delivery funnel it feeds) stays app-owned; this plugin owns the
 command surfaces, the palette rows, and WHEN the monitor starts. The
 screens live in plugins.scheduler_ui, moved whole.
 """
+from functools import partial
+
 from litetui import cron as cron_mod
 from litetui.plugins import PluginManifest
-from litetui.plugins.scheduler_ui import CalendarScreen, JobScreen, _apply_job_edit
+from litetui.plugins.scheduler_ui import (
+    CalendarBody, CalendarScreen, JobBody, JobScreen, _apply_job_edit,
+)
+from litetui.side_panel import present_dialog
 
 
 def _cmd_cron(app, name: str, arg: str) -> None:
@@ -15,14 +20,20 @@ def _cmd_cron(app, name: str, arg: str) -> None:
 
 
 def _cmd_calendar(app, name: str, arg: str) -> None:
-    app.push_screen(CalendarScreen(app.jobs))
+    present_dialog(app, partial(CalendarBody, app.jobs),
+                   partial(CalendarScreen, app.jobs))
+
+
+NEW_JOB_PREFILL = "0 9 * * *"
 
 
 def _palette_new_job(app) -> None:
     """Create a job from the command palette — no day picked, so the
     builder opens on a sensible daily default instead of a date."""
-    app.push_screen(
-        JobScreen(None, prefill_schedule="0 9 * * *"),
+    present_dialog(
+        app,
+        partial(JobBody, None, NEW_JOB_PREFILL),
+        partial(JobScreen, None, NEW_JOB_PREFILL),
         lambda result: _apply_job_edit(app.jobs, None, result),
     )
 

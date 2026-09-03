@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,8 @@ from litetui import ask_user_question as aq
 from litetui import tool_policy
 from litetui.colorpicker import ColorPickerBody
 from litetui.picker import PickerBody, PickerScreen
+from litetui.scheduler import Job
+from litetui.plugins.scheduler_ui import CalendarBody, DayBody, JobBody
 from litetui.plugins.help_plugin import HelpBody
 from litetui.side_panel import DialogController, SidePanel
 from litetui.tool_approval import ToolApprovalBody
@@ -48,6 +51,9 @@ from _settle import settle_until
 ROWS = [(f"id-{i}", f"LiteTUI entry number {i} with a long label") for i in range(12)]
 
 HELP_TEXT = (chr(10)).join(f"/cmd-{i}   a line of help text number {i}" for i in range(40))
+
+A_DAY = date(2026, 8, 17)
+JOBS = [Job(prompt="say hi", schedule="0 9 * * 1-5", label="morning")]
 
 
 def make_app():
@@ -87,6 +93,9 @@ DIALOGS = [
     # ── T232: the seven screens that had no body/sidebar split at all ────────
     ("help", lambda: HelpBody(HELP_TEXT), "#help-box"),
     ("colorpicker", lambda: ColorPickerBody("#808080", [], "primary"), "#cp-box"),
+    ("calendar", lambda: CalendarBody(JOBS), "#cal-box"),
+    ("day", lambda: DayBody(JOBS, A_DAY), "#day-box"),
+    ("job", lambda: JobBody(None, "0 9 * * *"), "#job-box"),
 ]
 
 

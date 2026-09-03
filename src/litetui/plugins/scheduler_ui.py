@@ -7,6 +7,7 @@ selector includes them, and the POSITION gate proves it.
 """
 from datetime import date
 from datetime import datetime
+from functools import partial
 from textual import events
 from textual import on
 from textual.app import ComposeResult
@@ -14,6 +15,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.containers import Vertical
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button
 from textual.widgets import Input
 from textual.widgets import OptionList
@@ -27,7 +29,29 @@ from litetui import schedule_builder as sb_mod
 from litetui.ticker import NumberTicker
 from rich.text import Text
 from litetui import paths
+from litetui.side_panel import SwapButton, close_dialog, present_dialog
 from litetui.tool_policy import INTERACTIVE, SCHEDULED
+
+
+def _owner(widget, method: str):
+    """The nearest ancestor that answers to `method`, or None.
+
+    🔴 `self.screen` WAS THE COUPLING THAT WOULD HAVE BROKEN SILENTLY. Both
+    click forwarders read `screen = self.screen; if isinstance(screen,
+    CalendarScreen)` -- true while the grid lived inside its own ModalScreen and
+    FALSE the moment the same widget is mounted in a `SidePanel`, where
+    `self.screen` is the app's main screen. No exception, no red test: clicking
+    a day in a docked calendar would simply do nothing, which is this repo's
+    dead-control class arriving through a conversion.
+
+    Asking for the nearest ancestor that can ANSWER is host-agnostic by
+    construction, and it is the same shape `side_panel._controller_for` already
+    uses to find a controller.
+    """
+    for node in widget.ancestors_with_self:
+        if hasattr(node, method):
+            return node
+    return None
 
 
 def _theme_palette(app) -> dict:
@@ -67,27 +91,46 @@ def _theme_palette(app) -> dict:
 class _CalendarGrid(Static):
     """The month grid, and nothing else — except that it forwards clicks.
 
-    The widget stays a drawing; the SCREEN owns the hit-map, because the
-    screen is what painted the drawing. Coordinates are widget-relative,
-    which is exactly what the map is keyed in.
+    The widget stays a drawing; the BODY owns the hit-map, because the body is
+    what painted the drawing. Coordinates are widget-relative, which is exactly
+    what the map is keyed in.
     """
 
     def on_click(self, event: events.Click) -> None:
-        screen = self.screen
-        if isinstance(screen, CalendarScreen):
-            screen.grid_clicked(event.x, event.y)
+        owner = _owner(self, "grid_clicked")
+        if owner is not None:
+            owner.grid_clicked(event.x, event.y)
 
 
 class _CalendarSide(Static):
     """The side pane. A click on a job's three lines opens its editor."""
 
     def on_click(self, event: events.Click) -> None:
-        screen = self.screen
-        if isinstance(screen, CalendarScreen):
-            screen.side_clicked(event.y)
+        owner = _owner(self, "side_clicked")
+        if owner is not None:
+            owner.side_clicked(event.y)
 
 
-class CalendarScreen(ModalScreen[None]):
+#: The keys each dialog answers to, declared ONCE and installed on both the body
+#: and its screen. A ModalScreen is what has focus on the modal path; the body is
+#: what a SidePanel mounts. Two lists would be two dialogs.
+#:
+#: `escape` is deliberately absent from every one of these: `SidePanel` binds it
+#: to cancel, and a second binding for the same key one level down is a coin toss
+#: over which fires. Each screen below adds its own, exactly as it always had.
+_CAL_KEYS = [
+    Binding("q", "close", "Close", show=False),
+    Binding("left,h", "prev_month", "Prev", show=False),
+    Binding("right,l", "next_month", "Next", show=False),
+    Binding("t", "today", "Today", show=False),
+]
+_DAY_KEYS = [
+    Binding("q", "close", "Close", show=False),
+    Binding("n", "new_job", "New job", show=False),
+]
+
+
+class CalendarBody(Widget):
     """A month of cron jobs, drawn the way calcure draws a month.
 
     The layout maths are calcure's: cell width is the pane divided by seven,
@@ -101,13 +144,21 @@ class CalendarScreen(ModalScreen[None]):
     grid a layout problem; this keeps it a drawing problem, which is what it is.
     """
 
-    BINDINGS = [
-        Binding("escape", "close", "Close", show=False),
-        Binding("q", "close", "Close", show=False),
-        Binding("left,h", "prev_month", "Prev", show=False),
-        Binding("right,l", "next_month", "Next", show=False),
-        Binding("t", "today", "Today", show=False),
-    ]
+    #: The 96%/92% moved UP from `#cal-box`, which was a DIRECT child of the
+    #: screen and so resolved those against it. Re-based on an auto-sized body
+    #: they would derive from the very box they constrain -- PickerBody's
+    #: fixed-point problem. The box is now 100% of this, so the modal renders at
+    #: exactly the size it always did.
+    DEFAULT_CSS = """
+    CalendarBody { width: 96%; height: 92%; align: center middle; layout: vertical; }
+    """
+
+    BINDINGS = list(_CAL_KEYS)
+
+    #: Bounded re-defers while waiting for compose; see `_ViewMixin._settle`.
+    #: A body's `on_mount` can fire before its own children exist, and `_paint`
+    #: is three `query_one` calls deep.
+    _paint_tries: int = 4
 
     def __init__(self, jobs: list):
         super().__init__()
@@ -127,6 +178,9 @@ class CalendarScreen(ModalScreen[None]):
                 yield _CalendarGrid(id="cal-grid")
                 yield _CalendarSide(id="cal-side")
             yield Static(id="cal-hints")
+            # `#cal-body` is `height: 1fr`, so the control costs the grid four
+            # rows rather than pushing anything off the bottom.
+            yield SwapButton()
 
     def on_mount(self) -> None:
         self._paint()
@@ -141,6 +195,21 @@ class CalendarScreen(ModalScreen[None]):
         return _theme_palette(self.app)
 
     def _paint(self) -> None:
+        # 🔴 `self.is_mounted` IS FALSE INSIDE A WIDGET'S OWN `on_mount`.
+        # MEASURED: DayBody's handler fires with `len(self.children) == 1` and
+        # `query("#day-list")` already matching, while `is_mounted` is still
+        # False. An `if not self.is_mounted: return` at the top of this method
+        # therefore SILENTLY SKIPPED THE FIRST PAINT — the day list stayed at 0
+        # options, Enter selected nothing, and focus still landed on the list
+        # (Textual's own auto-focus), so the dialog looked ready and was empty.
+        # A guard that returns quietly is the failure class this repo keeps
+        # naming, so the liveness check now guards only the DEFERRED re-entry,
+        # where a callback really can land after teardown.
+        if not self.query("#cal-grid"):
+            if self._paint_tries > 0 and self.is_mounted:
+                self._paint_tries -= 1
+                self.call_after_refresh(self._paint)
+            return
         self.query_one("#cal-grid", Static).update(self._grid_text())
         self.query_one("#cal-side", Static).update(self._side_text())
         self.query_one("#cal-hints", Static).update(self._hints_text())
@@ -355,13 +424,23 @@ class CalendarScreen(ModalScreen[None]):
         job = next((j for j in self._jobs if j.id == job_id), None)
         if job is None:
             return
-        self.app.push_screen(
-            JobScreen(job), lambda result, job=job: self._job_edited(job, result)
+        # 🔴 THE INNER DIALOGS ARE ROUTED TOO, OR THE CHAIN IS HALF-CONVERTED.
+        # A docked calendar whose job editor still arrives as a bare modal is a
+        # setting that stops applying one click in, which reads as the setting
+        # not working rather than as a screen that was missed.
+        present_dialog(
+            self.app,
+            partial(JobBody, job),
+            partial(JobScreen, job),
+            lambda result, job=job: self._job_edited(job, result),
         )
 
     def open_day(self, day: int) -> None:
-        self.app.push_screen(
-            DayScreen(self._jobs, date(self._year, self._month, day)),
+        when = date(self._year, self._month, day)
+        present_dialog(
+            self.app,
+            partial(DayBody, self._jobs, when),
+            partial(DayScreen, self._jobs, when),
             self._refresh_after,
         )
 
@@ -388,6 +467,40 @@ class CalendarScreen(ModalScreen[None]):
         today = date.today()
         self._year, self._month = today.year, today.month
         self._paint()
+
+    def action_close(self) -> None:
+        close_dialog(self, None)
+
+
+class CalendarScreen(ModalScreen[None]):
+    """The month, as a modal. The content lives in `CalendarBody`.
+
+    NOT replaced by `_ModalHost`: `app.py`'s centering rule names this class,
+    and `test_scheduler_ui`-style assertions bind to it. Bindings stay here as
+    well as on the body — a ModalScreen is what has focus on the modal path —
+    and their actions delegate down, so there is one implementation of each.
+    """
+
+    BINDINGS = [Binding("escape", "close", "Close", show=False), *_CAL_KEYS]
+
+    def __init__(self, jobs: list):
+        super().__init__()
+        self._jobs = jobs
+
+    def compose(self) -> ComposeResult:
+        yield CalendarBody(self._jobs)
+
+    def _body(self) -> "CalendarBody":
+        return self.query_one(CalendarBody)
+
+    def action_prev_month(self) -> None:
+        self._body().action_prev_month()
+
+    def action_next_month(self) -> None:
+        self._body().action_next_month()
+
+    def action_today(self) -> None:
+        self._body().action_today()
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -425,7 +538,7 @@ def _apply_job_edit(jobs: list, job, result) -> bool:
     return True
 
 
-class DayScreen(ModalScreen[None]):
+class DayBody(Widget):
     """One day of the calendar: its jobs, each a row you can open.
 
     The list is an OptionList because that is this app's picker idiom
@@ -435,11 +548,22 @@ class DayScreen(ModalScreen[None]):
     gesture the calendar exists for.
     """
 
-    BINDINGS = [
-        Binding("escape", "close", "Close", show=False),
-        Binding("q", "close", "Close", show=False),
-        Binding("n", "new_job", "New job", show=False),
-    ]
+    #: 🔴 AN AUTO-HEIGHT BOX KEEPS ITS OWN CAP; ONLY A DEFINITE ONE MOVES UP.
+    #: `#day-box` is `height: auto; max-height: 80%`, so the honest conversion
+    #: is a body that is exactly the screen — `height: 100%` — leaving the 80%
+    #: resolving against the same number it always did. Moving the 80% up here
+    #: instead compounds TWO centring roundings and visibly de-centres the box:
+    #: measured on the job editor, "3 rows above, 5 below" on a 48-row screen,
+    #: which `test_modal_centering` caught at a tolerance of 1.
+    #:
+    #: This is NOT in tension with PickerBody's note. What has no fixed point is
+    #: a percentage resolved against an AUTO parent sized by the very box it
+    #: constrains; a `height: 100%` body is definite, so the base is the screen.
+    DEFAULT_CSS = """
+    DayBody { width: 100%; height: 100%; align: center middle; layout: vertical; }
+    """
+
+    BINDINGS = list(_DAY_KEYS)
 
     def __init__(self, jobs: list, day):
         super().__init__()
@@ -456,8 +580,21 @@ class DayScreen(ModalScreen[None]):
             yield Static(title, id="day-title")
             yield OptionList(id="day-list")
             yield Static("enter/click edit · n new · esc close", id="day-hint")
+            yield SwapButton()
+
+    #: Bounded re-defers while waiting for compose; see `_ViewMixin._settle`.
+    _mount_tries: int = 4
 
     def on_mount(self) -> None:
+        self._first_paint()
+
+    def _first_paint(self) -> None:
+        # See CalendarBody._paint: is_mounted is False in on_mount.
+        if not self.query("#day-list"):
+            if self._mount_tries > 0 and self.is_mounted:
+                self._mount_tries -= 1
+                self.call_after_refresh(self._first_paint)
+            return
         self._refresh()
         self.query_one("#day-list", OptionList).focus()
 
@@ -476,6 +613,8 @@ class DayScreen(ModalScreen[None]):
         )
 
     def _refresh(self) -> None:
+        if not self.query("#day-list"):
+            return
         pal = _theme_palette(self.app)
         by_id = {j.id: j for j in self._jobs}
         ol = self.query_one("#day-list", OptionList)
@@ -514,6 +653,22 @@ class DayScreen(ModalScreen[None]):
         )
         ol.highlighted = first
 
+    # -- state carry across a live host swap --------------------------------
+    def get_state(self) -> dict:
+        """The HIGHLIGHTED ROW, for PickerBody's reason: a list rebuilt at row 0
+        silently relocates the selection the user had arrowed to, and Enter then
+        opens a different job."""
+        return {"highlighted": self.query_one("#day-list", OptionList).highlighted}
+
+    def set_state(self, state: dict) -> None:
+        hi = state.get("highlighted")
+        if hi is None:
+            return
+        ol = self.query_one("#day-list", OptionList)
+        if 0 <= hi < ol.option_count:
+            ol.highlighted = hi
+            ol.focus()
+
     @on(OptionList.OptionSelected, "#day-list")
     def _selected(self, event: OptionList.OptionSelected) -> None:
         oid = event.option.id
@@ -522,8 +677,11 @@ class DayScreen(ModalScreen[None]):
             return
         job = next((j for j in self._jobs if j.id == oid), None)
         if job is not None:
-            self.app.push_screen(
-                JobScreen(job), lambda result, job=job: self._job_closed(job, result)
+            present_dialog(
+                self.app,
+                partial(JobBody, job),
+                partial(JobScreen, job),
+                lambda result, job=job: self._job_closed(job, result),
             )
 
     def action_new_job(self) -> None:
@@ -533,8 +691,10 @@ class DayScreen(ModalScreen[None]):
         # the guard against the surprise (a 09:00 already past today shows
         # next YEAR, visibly, before saving).
         prefill = f"0 9 {self.day.day} {self.day.month} *"
-        self.app.push_screen(
-            JobScreen(None, prefill_schedule=prefill),
+        present_dialog(
+            self.app,
+            partial(JobBody, None, prefill),
+            partial(JobScreen, None, prefill),
             lambda result: self._job_closed(None, result),
         )
 
@@ -543,17 +703,43 @@ class DayScreen(ModalScreen[None]):
             self._refresh()
 
     def action_close(self) -> None:
+        close_dialog(self, None)
+
+
+class DayScreen(ModalScreen[None]):
+    """One day, as a modal. The content lives in `DayBody`."""
+
+    BINDINGS = [Binding("escape", "close", "Close", show=False), *_DAY_KEYS]
+
+    def __init__(self, jobs: list, day):
+        super().__init__()
+        self._jobs = jobs
+        self.day = day
+
+    def compose(self) -> ComposeResult:
+        yield DayBody(self._jobs, self.day)
+
+    def action_new_job(self) -> None:
+        self.query_one(DayBody).action_new_job()
+
+    def action_close(self) -> None:
         self.dismiss(None)
 
 
-class JobScreen(ModalScreen):
+class JobBody(Widget):
     """Edit one cron job, or create one. The form is the whole contract:
     dismisses with None (cancel), ("save", fields), or ("delete",) — the
     caller applies it through _apply_job_edit, never here, so every mutation
     goes through one door no matter which screen opened the editor.
     """
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    #: `height: 100%` and the box keeps its own `max-height: 90%` — see
+    #: DayBody for why an auto-height box does NOT hand its cap upward. The box
+    #: also keeps `overflow-y: auto`: this is the tallest form in the app and
+    #: the Save button must scroll into reach rather than clip out of existence.
+    DEFAULT_CSS = """
+    JobBody { width: 100%; height: 100%; align: center middle; layout: vertical; }
+    """
 
     #: Which param widgets each preset shows. Everything else hides —
     #: including the raw cron field, which only Custom reveals.
@@ -638,8 +824,23 @@ class JobScreen(ModalScreen):
                 yield Button("Cancel", id="job-cancel")
                 if j is not None:
                     yield Button("Delete", variant="error", id="job-delete")
+                # `.inline` — this row already holds two or three buttons, and
+                # SwapButton's own `width: 100%` would take all of it.
+                yield SwapButton(classes="inline")
+
+    #: Bounded re-defers while waiting for compose; see `_ViewMixin._settle`.
+    _mount_tries: int = 4
 
     def on_mount(self) -> None:
+        self._first_paint()
+
+    def _first_paint(self) -> None:
+        # See CalendarBody._paint: is_mounted is False in on_mount.
+        if not self.query("#job-preset"):
+            if self._mount_tries > 0 and self.is_mounted:
+                self._mount_tries -= 1
+                self.call_after_refresh(self._first_paint)
+            return
         self._sync_params()
         self._preview()
         self.query_one("#job-prompt", Input).focus()
@@ -741,6 +942,62 @@ class JobScreen(ModalScreen):
         status.update(Text(f"next: {when}{note}", style=pal["muted"]))
         return True
 
+    # -- state carry across a live host swap --------------------------------
+
+    #: Every control the form reads on save, by id, with the accessor that
+    #: reaches its value. Derived from `_try_save` + `_regen` rather than
+    #: hand-listed a second time: a control missing from THIS map is a field
+    #: that silently empties on a swap, and a hand-kept second list is how the
+    #: two disagree. The preset Select is included because `_sync_params` keys
+    #: every other widget's visibility off it.
+    _STATE_IDS = (
+        "job-prompt", "job-schedule", "job-label",       # Inputs
+        "job-preset", "job-weekday", "job-month", "job-tool-profile",   # Selects
+        "job-enabled", "job-newconvo",                   # Switches
+        "job-hour", "job-minute", "job-day", "job-n",    # NumberTickers
+    )
+
+    def get_state(self) -> dict:
+        """Carry the WHOLE form, because a swap must not eat an unsaved edit.
+
+        🔴 THIS DIALOG HAD NO `get_state` AND IT IS THE BIGGEST FORM IN THE APP.
+        `DialogController._mount_view` names the failure exactly — "everything
+        the user had typed, silently gone, with no error anywhere" — and a job
+        editor rebuilt from the stored job looks completely normal afterwards:
+        the fields are populated, just with the OLD values. There is nothing on
+        screen to tell you an edit was dropped.
+        """
+        out: dict = {}
+        for wid in self._STATE_IDS:
+            found = self.query(f"#{wid}")
+            if found:
+                out[wid] = found.first().value
+        out["_delete_armed"] = self._delete_armed
+        return out
+
+    def set_state(self, state: dict) -> None:
+        if not state:
+            return
+        for wid in self._STATE_IDS:
+            if wid not in state:
+                continue
+            found = self.query(f"#{wid}")
+            if not found:
+                continue
+            try:
+                found.first().value = state[wid]
+            except Exception:
+                # A value the rebuilt control will not accept (a Select whose
+                # options changed with the preset) is dropped rather than
+                # raising: losing one field is bad, losing the dialog is worse.
+                continue
+        self._preset = self.query_one("#job-preset", Select).value
+        self._delete_armed = bool(state.get("_delete_armed"))
+        if self._delete_armed and self.query("#job-delete"):
+            self.query_one("#job-delete", Button).label = "Really delete?"
+        self._sync_params()
+        self._preview()
+
     # -- exits --------------------------------------------------------------
 
     def _try_save(self) -> None:
@@ -754,7 +1011,7 @@ class JobScreen(ModalScreen):
             return
         if not self._preview():
             return          # the status line already names the broken field
-        self.dismiss(("save", {
+        close_dialog(self, ("save", {
             "prompt": prompt,
             "schedule": self.query_one("#job-schedule", Input).value.strip(),
             "label": self.query_one("#job-label", Input).value.strip(),
@@ -775,10 +1032,10 @@ class JobScreen(ModalScreen):
 
     @on(Button.Pressed, "#job-cancel")
     def _cancel(self, _event) -> None:
-        self.dismiss(None)
+        close_dialog(self, None)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        close_dialog(self, None)
 
     @on(Button.Pressed, "#job-delete")
     def _delete(self, _event) -> None:
@@ -788,4 +1045,26 @@ class JobScreen(ModalScreen):
             self._delete_armed = True
             self.query_one("#job-delete", Button).label = "Really delete?"
             return
-        self.dismiss(("delete",))
+        close_dialog(self, ("delete",))
+
+
+class JobScreen(ModalScreen):
+    """The job editor, as a modal. The content lives in `JobBody`.
+
+    Dismisses with None (cancel), ("save", fields) or ("delete",) — unchanged.
+    `_apply_job_edit` is still the only door from a UI edit to the store, on
+    both hosts, because `close_dialog` returns the same tuple either way.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, job=None, prefill_schedule: str = ""):
+        super().__init__()
+        self._job = job
+        self._prefill = prefill_schedule
+
+    def compose(self) -> ComposeResult:
+        yield JobBody(self._job, self._prefill)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

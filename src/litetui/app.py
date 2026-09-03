@@ -799,9 +799,11 @@ class LiteTUI(App):
     /* The calendar. Wide and airy on purpose: calcure's month breathes, and
        a cramped grid is just a list with extra steps. The side pane is a
        fixed column so the seven day-cells divide a stable width. */
+    /* The 96%/92% moved UP to CalendarBody; this box is 100% of that, so the
+       modal is the size it always was. See #help-box for the re-basing rule. */
     #cal-box {
-        width: 96%;
-        height: 92%;
+        width: 100%;
+        height: 100%;
         padding: 1 2;
         background: $surface;
         border: thick $primary;
@@ -830,8 +832,12 @@ class LiteTUI(App):
         padding: 0 1;
     }
 
+    /* `max-height` stays HERE at 80%: DayBody is `height: 100%`, so this
+       resolves against the same number it always did and there is one centring
+       step, not two. `max-width` binds only in the 60-column sidebar strip. */
     #day-box {
         width: 82;
+        max-width: 100%;
         height: auto;
         max-height: 80%;
         padding: 1 2;
@@ -855,8 +861,11 @@ class LiteTUI(App):
         color: $text-muted;
     }
 
+    /* `max-height` stays HERE at 90%; see #day-box. `overflow-y: auto` below
+       is unchanged and now also carries the swap control into reach. */
     #job-box {
         width: 82;
+        max-width: 100%;
         height: auto;
         max-height: 90%;
         padding: 1 2;
