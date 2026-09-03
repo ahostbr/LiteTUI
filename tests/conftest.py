@@ -90,6 +90,61 @@ def _never_write_the_live_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_mod, "settings_path", redirected)
 
 
+# 🔴 THE SUITE MUST NOT DIAL OUT. THIS WAS 4.0 SECONDS PER CONSTRUCTED APP.
+#
+# Measured 2026-09-03, tests/_probe_floor.py, 12 reps per arm:
+#
+#   noop (pytest overhead only)               ~0.0 ms
+#   LiteTUI() constructed, never started    4316.7 ms
+#   full `async with app.run_test()`        4364.2 ms
+#
+# So `run_test()` — the compositor boot and teardown everyone assumed was the
+# cost — is 47.5 ms, ONE PERCENT. The 4.3 s is the constructor, and cProfile puts
+# 4.038 s of it in one place:
+#
+#   app.py __init__ -> mcp_client.load -> connect -> start -> _post -> urlopen
+#
+# `.mcp.json` at the repo root declares `litesuite-tools` at
+# http://localhost:7423/mcp. LiteSuite is usually DOWN while the suite runs, so
+# every constructed app POSTs there and waits to be refused. Timed directly three
+# times: 4.033 s / 4.051 s / 4.105 s, "[WinError 10061] the target machine
+# actively refused it" — the Windows dual-stack localhost path (::1 then
+# 127.0.0.1, with retries), not a timeout anyone chose.
+#
+# ⚠️ AND SLOWNESS IS THE SECOND PROBLEM. With 7423 down the manager connects
+# nothing and `tool_specs()` carries no MCP tools; with LiteSuite UP the same
+# constructor reaches a real server and the tool set is DIFFERENT — and
+# test_tools_registered.py and test_tool_schemas.py assert on that set. The
+# suite's answer would depend on whether another app happens to be running.
+# That is the same family as the three incidents above, one axis over: a test
+# must not depend on a service being up, and must not touch the network at all.
+#
+# 📌 CONFIGS ARE STILL READ. The replacement calls `reload_configs()` and stops
+# short of `connect()`, so the manager still knows what is DECLARED — `describe()`
+# and the /mcp dialog still have rows to show. A blanket no-op would have been
+# easier and would have quietly changed what those surfaces see.
+#
+# Tests that are ABOUT mcp opt out with `pytestmark = pytest.mark.real_mcp_load`
+# and drive `load()` against their own tmp configs.
+@pytest.fixture(autouse=True)
+def _never_dial_out_from_a_constructor(request, monkeypatch):
+    if "real_mcp_load" in request.keywords:
+        return
+    from litetui import mcp_client
+
+    def _configs_only(self) -> None:
+        self.reload_configs()
+
+    monkeypatch.setattr(mcp_client.MCPManager, "load", _configs_only)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_mcp_load: this test drives MCPManager.load itself; do not stub it",
+    )
+
+
 # =============================================================================
 # SCRIPT-STYLE FILES ARE NOT PYTEST MODULES, AND IMPORTING ONE KILLS THE RUN.
 #

@@ -23,6 +23,11 @@ import pytest
 
 from litetui.mcp_client import MCPManager, validate_entry
 
+#: This file drives MCPManager.load itself against its own tmp configs, so
+#: the conftest stub that keeps every OTHER test off the network must not
+#: apply here. See tests/conftest.py::_never_dial_out_from_a_constructor.
+pytestmark = pytest.mark.real_mcp_load
+
 
 class StubServer:
     def __init__(self, name, cfg, cwd, log_handle, fail=False):
