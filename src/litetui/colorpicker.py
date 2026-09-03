@@ -158,6 +158,80 @@ def render_hue_bar(sel_h: float, width: int | None = None) -> Text:
     return out
 
 
+class _SVField(Static):
+    """The saturation/value field — AND THE THING THE ARROW KEYS DRIVE, so it is
+    what takes focus.
+
+    🔴 FOUR OF THE PICKER'S SEVEN KEYS WERE DEAD AND THIS IS WHY. Textual focuses
+    the first focusable widget when a screen mounts. Until now the ONLY focusable
+    thing in this dialog was `Input#cp-hex`, and an `Input` handles
+    left/right/pageup/pagedown itself, so those four never reached
+    `action_nudge`. Measured at 7b42eee with a pilot, modal path:
+
+        focused on mount   Input#cp-hex
+        right              #808080 -> #808080     the Input ate it
+        up                 #808080 -> #8b8b8b     reached action_nudge
+        pageup             #8b8b8b -> #8b8b8b     the Input ate it
+
+    Only `enter` worked, because only `enter` was `priority`. The hint label has
+    been promising "arrows/PgUp/PgDn" the whole time.
+
+    ⚠️ THE OTHER CANDIDATE FIX WAS MEASURED AND REJECTED, NOT ARGUED AWAY.
+    Making the four bindings `priority=True` and taking them off the Input does
+    make them fire — and it takes the HEX BOX'S CURSOR KEYS WITH IT. Minimal
+    Textual 8.0.2 app, an Input focused with the caret at column 3:
+
+        priority right   cursor 3 -> 3   binding fired=1     <- the box is stuck
+        plain    left    cursor 3 -> 2   binding fired=0     <- control
+        priority pageup                  binding fired=1
+
+    A priority binding preempts the focused widget by design, so option (B)
+    would trade four dead keys for a hex field you cannot move the caret in —
+    and that field is the picker's documented escape hatch ("the box is the
+    escape hatch, and a hatch that loses what you typed is a decoy").
+
+    ⇒ So the FIELD becomes focusable and owns the keys. Focus starts here
+    because this widget is first in the DOM; Tab or a click reaches the hex box,
+    where the same arrows go back to being cursor movement. Both work, neither
+    is stolen, and where the arrows apply is visible from the focus tint.
+    """
+
+    can_focus = True
+
+    #: `tint`, NOT a border. The focus has to be VISIBLE — a focusable widget
+    #: that looks identical focused and unfocused is a dialog where the keys
+    #: work and nobody can tell which surface they are aimed at. But a border
+    #: would take two columns and two rows off a drawing whose width is now
+    #: measured and whose click map is derived from it (see `clamp_width`), so
+    #: the indicator must not change the box. `tint` overlays without resizing.
+    DEFAULT_CSS = """
+    _SVField:focus { tint: $accent 10%; }
+    """
+
+    BINDINGS = [
+        Binding("up", "nudge('up')", "Lighter", show=False),
+        Binding("down", "nudge('down')", "Darker", show=False),
+        Binding("left", "nudge('left')", "Less saturated", show=False),
+        Binding("right", "nudge('right')", "More saturated", show=False),
+        Binding("pageup", "nudge('hue_up')", "Hue +", show=False),
+        Binding("pagedown", "nudge('hue_down')", "Hue -", show=False),
+    ]
+
+    def _picker(self):
+        """The body that owns the colour. Walks ancestors rather than reading
+        `self.screen`, so this works in a modal AND in a `SidePanel` — the
+        coupling that would otherwise go inert with no exception."""
+        for node in self.ancestors_with_self:
+            if isinstance(node, ColorPickerBody):
+                return node
+        return None
+
+    def action_nudge(self, direction: str) -> None:
+        picker = self._picker()
+        if picker is not None:
+            picker.action_nudge(direction)
+
+
 #: The keys the picker answers to, declared once and installed on BOTH the body
 #: and the screen. A ModalScreen is what has focus on the modal path; the body is
 #: what a `SidePanel` mounts. One list means the two hosts cannot drift apart on
@@ -236,7 +310,7 @@ class ColorPickerBody(Widget):
         the modal answer, and the right one to start from.
         """
         try:
-            return clamp_width(self.query_one("#cp-field", Static).content_size.width)
+            return clamp_width(self.query_one("#cp-field", _SVField).content_size.width)
         except Exception:
             return GRID_W
 
@@ -247,7 +321,7 @@ class ColorPickerBody(Widget):
                 f"Pick {self._token}" if self._token else "Pick a color",
                 id="cp-title",
             )
-            yield Static(render_sv_field(self._h, self._s, self._v), id="cp-field")
+            yield _SVField(render_sv_field(self._h, self._s, self._v), id="cp-field")
             yield Static(render_hue_bar(self._h), id="cp-hue")
             if self._presets:
                 row = Text()
@@ -258,7 +332,10 @@ class ColorPickerBody(Widget):
             with Horizontal(id="cp-row"):
                 yield Static(Text("      ", Style(bgcolor=self.value)), id="cp-swatch")
                 yield Input(value=self.value, id="cp-hex")
-                yield Label("Enter = use · Esc = cancel · arrows/PgUp/PgDn", id="cp-hint")
+                # The hint names WHERE the keys apply now that they work.
+                # "arrows/PgUp/PgDn" alone was true of no focus state at all.
+                yield Label("Enter = use · Esc = cancel · arrows on the field · "
+                            "Tab for hex", id="cp-hint")
             # On its own line, NOT in `#cp-row`: the box is 54 columns and that
             # row already holds an 8-column swatch, a 12-column hex field and
             # the hint. An `.inline` button there would take the hint's space,
@@ -301,7 +378,7 @@ class ColorPickerBody(Widget):
             return
         w = self._avail_width()
         self._painted_w = w
-        self.query_one("#cp-field", Static).update(
+        self.query_one("#cp-field", _SVField).update(
             render_sv_field(self._h, self._s, self._v, w))
         self.query_one("#cp-hue", Static).update(render_hue_bar(self._h, w))
         self.query_one("#cp-swatch", Static).update(Text("      ", Style(bgcolor=self.value)))
