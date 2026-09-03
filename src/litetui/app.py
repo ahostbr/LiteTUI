@@ -907,9 +907,16 @@ class LiteTUI(App):
         margin-right: 2;
     }
 
+    /* The 80% moved UP to HelpBody, which is now what stands between this box
+       and the screen; a percentage resolved against an auto-height parent that
+       is itself sized BY this box has no fixed point (see PickerBody). 100% of
+       a body that is 80% of the screen is the same height the modal always had.
+       `max-width` binds only in the 60-column sidebar strip, where a flat 88
+       clips mid-word. */
     #help-box {
         width: 88;
-        height: 80%;
+        max-width: 100%;
+        height: 100%;
         padding: 1 2;
         background: $surface;
         border: thick $primary;

@@ -39,6 +39,7 @@ from litetui.ask_user_question import (
 from litetui.loop_list import LoopListBody
 from litetui.mcp_list import MCPListBody
 from litetui.picker import PickerBody, PickerScreen
+from litetui.plugins.help_plugin import HelpBody, HelpScreen
 from litetui.side_panel import (
     DialogController, SidePanel, SwapButton, close_dialog, present_dialog,
     show_dialog,
@@ -49,6 +50,8 @@ from litetui.tool_policy import INTERACTIVE, WORKSPACE_WRITE, PolicyDecision
 from litetui.widgets import ConfirmStop, ConfirmStopBody
 
 ROOT = Path(__file__).resolve().parent.parent
+
+HELP_TEXT = "a line of help" + chr(10) + "and another"
 
 
 def _decision():
@@ -86,6 +89,9 @@ def _pairs():
         ("ask_user_question",
          lambda: AskUserQuestionBody(states, done, box),
          lambda: AskUserQuestionScreen(states, done, box)),
+        # ── T232: the seven screens that had no body/sidebar split at all ────
+        ("help",
+         lambda: HelpBody(HELP_TEXT), lambda: HelpScreen(HELP_TEXT)),
     ]
 
 

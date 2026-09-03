@@ -4,23 +4,47 @@ HelpScreen moved here with its command: one owner for the help surface.
 The app's CSS still styles #help-box and friends — Textual styles by
 selector at runtime, so the class's home does not matter to the skin.
 """
+from functools import partial
+
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button, Static
 
 from litetui import paths
 from litetui.settings import THINKING_LEVELS
 from litetui.plugins import PluginManifest
+from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 
-class HelpScreen(ModalScreen[None]):
-    """Scrollable, dismissable help. Same content as /help, readable."""
+class HelpBody(Widget):
+    """The help content, host-agnostic. Exits through `close_dialog`.
+
+    THE PERCENTAGE MOVES UP A LEVEL; THE BOX DOES NOT KEEP IT. `#help-box` was
+    a DIRECT child of `HelpScreen` at `height: 80%`, so its base was the screen.
+    Inserting this body between them re-bases that 80% on whatever this widget
+    is -- and at `height: auto` the base would be derived from the very box it
+    constrains, which is the fixed-point-less shape PickerBody's comment
+    measured (content settled at 10 rows for children needing 14).
+
+    So the 80% lives HERE, taken off the screen exactly as before, and the box
+    caps at 100% OF THIS. Same rendered height on the modal path; in a sidebar
+    `SidePanel`'s `> *` rule overrides this to the panel's full height, which is
+    what a strip wants.
+    """
+
+    DEFAULT_CSS = """
+    HelpBody { width: auto; height: 80%; align: center middle; layout: vertical; }
+    """
 
     BINDINGS = [
-        Binding("escape", "close", "Close", show=False),
+        # `q` closes. NOT `escape`: `SidePanel` already binds escape to cancel
+        # the dialog, and a second binding for the same key one level down is a
+        # coin toss over which fires. On the modal path the screen below carries
+        # both, exactly as it always did.
         Binding("q", "close", "Close", show=False),
     ]
 
@@ -35,18 +59,66 @@ class HelpScreen(ModalScreen[None]):
                 yield Static(self._body, id="help-body")
             with Horizontal(id="help-buttons"):
                 yield Button("Close", variant="primary", id="help-close")
+                # `.inline` because it shares a row with Close -- SwapButton's
+                # own `width: 100%` would take the whole row otherwise.
+                yield SwapButton(classes="inline")
+
+    # -- state carry across a live host swap --------------------------------
+    def get_state(self) -> dict:
+        """Carry the SCROLL POSITION across a swap.
+
+        Help is one long scroll, and the reason to dock it is usually to read it
+        beside the chat. Rebuilding at the top would send the reader back to
+        line one at the exact moment they asked for a better view of line 200.
+        """
+        return {"scroll_y": self.query_one("#help-scroll", VerticalScroll).scroll_y}
+
+    def set_state(self, state: dict) -> None:
+        y = state.get("scroll_y")
+        if y:
+            self.query_one("#help-scroll", VerticalScroll).scroll_to(y=y, animate=False)
+
+    def action_close(self) -> None:
+        close_dialog(self, None)
+
+    @on(Button.Pressed, "#help-close")
+    def _close(self, event: Button.Pressed) -> None:
+        event.stop()
+        close_dialog(self, None)
+
+
+class HelpScreen(ModalScreen[None]):
+    """Scrollable, dismissable help. Same content as /help, readable.
+
+    NOT replaced by `_ModalHost`: `app.py`'s centering rule names this class
+    (`ConfirmStop, PickerScreen, HelpScreen, SettingsScreen, ...`), so routing
+    the modal path through the generic host would change what the modal IS.
+    Bindings stay here as well as on the body -- a ModalScreen is what has focus
+    when the dialog opens as a modal.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=False),
+        Binding("q", "close", "Close", show=False),
+    ]
+
+    def __init__(self, body: str):
+        super().__init__()
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        yield HelpBody(self._body)
 
     def action_close(self) -> None:
         self.dismiss(None)
 
-    @on(Button.Pressed, "#help-close")
-    def _close(self) -> None:
-        self.dismiss(None)
-
 
 def _cmd_help(app, name: str, arg: str) -> None:
-    # Scrollable modal with a Close button; the text is unchanged.
-    app.push_screen(HelpScreen(
+    # Scrollable dialog with a Close button; the text is unchanged. Both
+    # factories are built from ONE string here rather than passed twice --
+    # `picker.pick`'s reason: two factories built at two places are two chances
+    # for the sidebar and the modal to show different help.
+    text = (
         "/settings        open the settings panel (every knob, scrollable)\n"
         "/skills [name]   list discovered skills, or show one as the model sees it\n"
         "/new /clear      start a new conversation (new file on disk)\n"
@@ -77,7 +149,8 @@ def _cmd_help(app, name: str, arg: str) -> None:
         f"       soul.md, handoff.md and {paths.MEMORIES_DIR}/ — the agent is told\n"
         "       its own path in the system prompt and manages them itself\n"
         "footer: live context usage — ctx used / window"
-    ))
+    )
+    present_dialog(app, partial(HelpBody, text), partial(HelpScreen, text))
 
 
 def _register(ctx) -> None:

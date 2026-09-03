@@ -37,6 +37,7 @@ from litetui import app as m
 from litetui import ask_user_question as aq
 from litetui import tool_policy
 from litetui.picker import PickerBody, PickerScreen
+from litetui.plugins.help_plugin import HelpBody
 from litetui.side_panel import DialogController, SidePanel
 from litetui.tool_approval import ToolApprovalBody
 from litetui.widgets import ConfirmStop, ConfirmStopBody
@@ -44,6 +45,8 @@ from litetui.widgets import ConfirmStop, ConfirmStopBody
 from _settle import settle_until
 
 ROWS = [(f"id-{i}", f"LiteTUI entry number {i} with a long label") for i in range(12)]
+
+HELP_TEXT = (chr(10)).join(f"/cmd-{i}   a line of help text number {i}" for i in range(40))
 
 
 def make_app():
@@ -80,6 +83,8 @@ DIALOGS = [
     ("confirm_stop", ConfirmStopBody, "#confirm-box"),
     ("tool_approval", lambda: ToolApprovalBody("bash", {"command": "echo hi"}, _decision()), None),
     ("ask_user_question", _auq_body, None),
+    # ── T232: the seven screens that had no body/sidebar split at all ────────
+    ("help", lambda: HelpBody(HELP_TEXT), "#help-box"),
 ]
 
 
@@ -206,9 +211,26 @@ async def test_no_child_is_clipped_by_its_own_container(
         while stack:
             parent = stack.pop()
             pr = parent.content_region
+            # 🔴 A CHILD OF A SCROLLING PARENT IS REACHABLE, NOT CLIPPED — and
+            # this file's own note said this ruling was owed the moment a
+            # scrollable dialog was added. /help IS one: `#help-scroll` is a
+            # `VerticalScroll` whose content is a 40-line reference, so
+            # "taller than the viewport" is what the widget is FOR. Asserting
+            # containment there would demand that help never exceed one screen,
+            # which is the opposite of the feature.
+            #
+            # ⚠️ THIS RELAXES THE GATE, SO IT NEEDS ITS OWN CONTROL. The three
+            # `strict=True` xfails above are it: picker, tool_approval and
+            # ask_user_question must STILL clip at 24 rows, and pytest turns an
+            # XPASS into a failure — so an exemption wide enough to swallow
+            # those turns this file red rather than green. `#job-box` carries
+            # `overflow-y: auto` for exactly the reason named here (the Save
+            # button scrolls into reach), so the semantics match the CSS that
+            # was already written.
+            scrolls = bool(getattr(parent, "allow_vertical_scroll", False))
             for child in parent.children:
                 cr = child.region
-                if cr.height and not (
+                if cr.height and not scrolls and not (
                     cr.y >= pr.y and cr.y + cr.height <= pr.y + pr.height
                 ):
                     offenders.append(
