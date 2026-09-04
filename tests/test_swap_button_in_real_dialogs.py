@@ -27,6 +27,7 @@ arm here does not cover the button.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 from pathlib import Path
@@ -38,6 +39,7 @@ from _settle import settle_until
 from litetui import app as m
 from litetui.ask_user_question import AskUserQuestionBody, QuestionState
 from litetui.picker import PickerBody, PickerScreen
+from litetui.plugins.scheduler_ui import JobBody
 from litetui.side_panel import (
     DialogController, SidePanel, SwapButton, present_dialog,
 )
@@ -224,3 +226,90 @@ def test_the_swap_control_is_not_a_second_copy_of_the_demos():
     assert 'Button("Open as modal"' not in src, (
         "a private swap button came back to the demo"
     )
+
+
+# ── T252: a swap that arrives while the previous one is still mounting ───────
+
+@pytest.mark.parametrize("ticks", list(range(0, 8)))
+@pytest.mark.asyncio
+async def test_a_swap_arriving_mid_mount_does_not_crash(ticks):
+    """🔴 THE CRASH IS IN THE VIEW BEING TORN DOWN, NOT THE ONE BEING BUILT.
+
+    `_mount_view`'s modal branch did not await its push (`side_panel.py:184`)
+    while its sidebar sibling one line up DID (`:180`), so `swap()` returned
+    while `_ModalHost` had not entered `_compose`. A second swap 1-2 event-loop
+    ticks later pruned that half-composed subtree: `App._prune` marks
+    `_pruning` across `walk_children` (app.py:4302), `Widget.mount` then EARLY
+    RETURNS SILENTLY on `_pruning` (widget.py:1424-1425) so the `Select` never
+    gets its children, and `_pre_process` dispatches `events.Mount()`
+    UNCONDITIONALLY anyway (message_pump.py:591) -> `Select._on_mount`
+    (_select.py:623) -> `query_one(SelectOverlay)` -> NoMatches -> the app dies.
+
+    ⬜ A USER CANNOT REACH THIS, AND THE ARM SAYS SO SO NOBODY RE-INFLATES THE
+    SEVERITY FROM THE STACK TRACE. Measured by pressing the real control with
+    the button RE-QUERIED FROM THE LIVE VIEW each time (an earlier probe held a
+    stale handle and reported the opposite): at every gap >= 1 tick the count is
+    `pressed=1` — THE SECOND PRESS NEVER HAPPENS, because the new view's
+    SwapButton has not composed yet. The window is strictly BEFORE the control
+    exists. So this is reachable only from a programmatic `ctrl.swap()`, which
+    is why the arm drives the controller directly and lives in THIS file — the
+    header's rule: these arms test the MECHANISM, the ones that press the
+    control are in test_swap_control_is_wired.py.
+
+    ⚠️ `assert ctrl.pending` IS NOT WHAT CATCHES THIS. It PASSES ON A DEAD APP:
+    `_handle_exception` stores the error and sets `_return_code = 1`
+    (app.py:3190-3203) but the block body keeps running, so the remaining ticks,
+    this assertion, `resolve()` and the `wait_for` all complete normally. The
+    crash surfaces at `__aexit__`, where `run_test`'s finally re-raises
+    `app._exception` (app.py:2137-2145) — which is why `pending` is asserted
+    INSIDE the block (outside it would never execute) and why nothing here
+    reaches into `app._exception` by hand.
+
+    ⚠️ THE TICKS ARE `asyncio.sleep(0)`, NOT `pilot.pause()`, AND THAT IS
+    LOAD-BEARING. `sleep(0)` yields to the scheduler exactly once.
+    `pilot.pause()` waits for the app to go idle and the screen to settle,
+    draining many turns — it would step straight OVER the window and this arm
+    would be GREEN on broken code.
+
+    🔴 IT IS A RANGE AND NOT THE EXACT WINDOW, BECAUSE THE WINDOW MOVES WITH THE
+    HARNESS. Measured here, deterministically (5/5 each): before the fix
+    k = 2, 3, 4 CRASH and k = 0, 1, 5..11 are clean. The thinker who found this
+    measured the window at k = 1, 2 in a slightly different setup — so pinning
+    either pair would have made the arm SILENTLY VACUOUS on the other machine:
+    `[1, 2]` here would test one dead tick and one live one and miss k = 3 and
+    k = 4 entirely. 0..7 brackets both with margin, costs ~6 s, and fails if the
+    window ever moves within it.
+
+    ⬜ NEGATIVE CONTROL, with the fix applied: k = 0..39 — ten times the widest
+    observed window — passed 40/40. The fix CLOSES the window; it does not move
+    it. Re-run that sweep, not just this arm, if `_mount_view` is ever touched.
+
+    ⚠️ TWO WAYS TO ACCIDENTALLY BLIND THIS ARM, both worth knowing before you
+    edit it. Do NOT wrap the block in `pytest.raises` — the fix must make it not
+    raise at all, so a `raises` would invert the gate and pass on the broken
+    code. And `_handle_exception` keeps only the FIRST exception
+    (`app.py:3201`, `if self._exception is None`), so ANY earlier app error in
+    this test would occupy that slot and mask the crash entirely: keep this
+    app clean and do nothing else in the block.
+    """
+    a = make_app()
+    async with a.run_test(size=(120, 40)) as pilot:
+        ctrl = DialogController(a, lambda: JobBody(None, "0 9 * * *"),
+                                "sidebar", "right")
+        task = asyncio.create_task(ctrl.open())
+        await pilot.pause()                    # the sidebar view is up and composed
+
+        await ctrl.swap()                      # -> modal
+        for _ in range(ticks):
+            await asyncio.sleep(0)             # land inside the mount window
+        await ctrl.swap()                      # prunes a half-composed subtree
+
+        # Not padding: the crash happens in the pruned widget's OWN message task,
+        # which has to be scheduled after `swap()` returns. Without this the app
+        # dies during teardown instead — still caught, with a less legible stack.
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        assert ctrl.pending, "a swap resolved the future"
+        ctrl.resolve(None)
+        await asyncio.wait_for(task, 3)

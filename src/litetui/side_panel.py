@@ -180,8 +180,22 @@ class DialogController:
             await self.app.screen.mount(view)
         else:
             view = _ModalHost(self, body)
+            # 🔴 AWAITED, LIKE ITS SIBLING ABOVE — AND THAT ASYMMETRY WAS T252.
+            # Un-awaited, `_mount_view` returned while `_ModalHost` had not
+            # entered `_compose`. A second swap 2-4 ticks later pruned that
+            # half-composed subtree: `App._prune` marks `_pruning` across
+            # `walk_children` (app.py:4302), `Widget.mount` then EARLY RETURNS
+            # SILENTLY on `_pruning` (widget.py:1424-1425) so a `Select` never
+            # got its children, and `_pre_process` dispatched `events.Mount()`
+            # unconditionally anyway (message_pump.py:591) -> `Select._on_mount`
+            # -> `query_one(SelectOverlay)` -> NoMatches -> the app died.
+            #
+            # ⚠️ THIS MAKES THE ASSIGNMENT ORDER ABOVE MORE LOAD-BEARING, NOT
+            # LESS: the body is live and interactive for LONGER while this
+            # suspends, so `self._view = view` must stay before the await for
+            # exactly the reason the comment at the top of this method gives.
             self._view = view
-            self.app.push_screen(view)
+            await self.app.push_screen(view)
 
     async def swap(self) -> None:
         """Change style IN PLACE. Must not touch the future."""
