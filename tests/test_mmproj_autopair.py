@@ -34,7 +34,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import llm_backend
-from litetui.llm_backend import ModelRow, sibling_mmproj, write_preset_ini
+from litetui.llm_backend import (
+    NO_PROJECTOR, ModelRow, is_no_projector, sibling_mmproj, write_preset_ini,
+)
 
 
 def _gguf(p: Path, size: int = 20 * 1024 * 1024) -> Path:
@@ -221,3 +223,171 @@ def test_a_model_with_no_projector_says_nothing(tmp_path, monkeypatch):
     app, model_switch = _app_with(monkeypatch, rows)
     model_switch._say_projector(app, "m")
     assert app.said == [], f"a text-only model produced vision noise: {app.said}"
+
+
+# ── T245: an EXPLICIT "no projector", distinct from an absent key ────────────
+#
+# 🔴 THE WHOLE FEATURE IS THE DISTINCTION, so every arm below is paired with the
+# ABSENT case it must not collapse into. T231 had two answers — absent (guess)
+# and a path (theirs); clearing the field removed the key, which is exactly what
+# re-enabled the guess, so there was no way to load a vision model text-only ON
+# PURPOSE. These arms fail if `none` ever starts behaving like absent, and the
+# absent arms above fail if it goes the other way.
+
+
+def test_the_sentinel_recogniser_accepts_what_a_human_types_and_nothing_else():
+    """One spelling, compared the way a typed field arrives.
+
+    Case and surrounding space are a human's, not a decision — but a SET of
+    spellings would be several chances for the field's help line and the parser
+    to disagree about which the product means.
+    """
+    assert is_no_projector(NO_PROJECTOR)
+    assert is_no_projector("  NONE  ")
+    assert is_no_projector("None")
+    assert not is_no_projector("")
+    assert not is_no_projector(None)
+    assert not is_no_projector("off"), "a second spelling is a second contract"
+    assert not is_no_projector("/models/v/mmproj-F16.gguf")
+
+
+def test_an_explicit_none_writes_NO_projector_even_with_a_sibling(tmp_path, monkeypatch):
+    """🔴 THE CASE THAT DID NOT EXIST BEFORE: a projector IS sitting beside the
+    model, and the ini must still carry none.
+
+    The sibling is the discriminator. Without it this arm would also pass on the
+    old code, which wrote nothing simply because there was nothing to write.
+    """
+    monkeypatch.setattr(llm_backend, "installed_flags", lambda: frozenset())
+    monkeypatch.setattr(llm_backend, "installed_build", lambda: "test")
+    model = _gguf(tmp_path / "v" / "Model-Q4.gguf")
+    _gguf(tmp_path / "v" / "mmproj-F16.gguf")          # the guess this refuses
+    dest = write_preset_ini(
+        [ModelRow(key="model-q4", path=str(model), source="custom")],
+        _Settings({"model-q4": {"mmproj": NO_PROJECTOR}}),
+        dest=tmp_path / "out.ini",
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert "mmproj" not in text, (
+        "the ini carries a projector for a model told explicitly to have none:\n"
+        + text
+    )
+    assert "model = " in text, "the model itself stopped being written"
+
+
+def test_the_sentinel_is_DROPPED_not_emitted_as_a_filename(tmp_path, monkeypatch):
+    """`mmproj = none` would reach llama.cpp as a PATH and fail at load with a
+    message about a missing file — the opposite of the user's intent, and a
+    failure they would read as a bug in the picker."""
+    monkeypatch.setattr(llm_backend, "installed_flags", lambda: frozenset())
+    monkeypatch.setattr(llm_backend, "installed_build", lambda: "test")
+    model = _gguf(tmp_path / "v" / "Model-Q4.gguf")
+    dest = write_preset_ini(
+        [ModelRow(key="model-q4", path=str(model), source="custom")],
+        _Settings({"model-q4": {"mmproj": NO_PROJECTOR}}),
+        dest=tmp_path / "out.ini",
+    )
+    assert "none" not in dest.read_text(encoding="utf-8").lower()
+
+
+def test_an_explicit_path_still_WINS_over_the_sentinel_logic(tmp_path, monkeypatch):
+    """T231's contract, re-proved on the branch that now sits beside it."""
+    monkeypatch.setattr(llm_backend, "installed_flags", lambda: frozenset())
+    monkeypatch.setattr(llm_backend, "installed_build", lambda: "test")
+    model = _gguf(tmp_path / "v" / "Model-Q4.gguf")
+    chosen = _gguf(tmp_path / "elsewhere" / "mmproj-CHOSEN.gguf")
+    dest = write_preset_ini(
+        [ModelRow(key="model-q4", path=str(model), source="custom")],
+        _Settings({"model-q4": {"mmproj": str(chosen)}}),
+        dest=tmp_path / "out.ini",
+    )
+    assert f"mmproj = {chosen}" in dest.read_text(encoding="utf-8")
+
+
+def test_loading_with_none_SAYS_SO(tmp_path, monkeypatch):
+    """⬜ THE ONE EXPLICIT SETTING THAT STILL SPEAKS.
+
+    Every other typed value is silent, for the reason
+    `test_an_explicit_choice_is_NOT_announced` gives. This one is not, because
+    "a vision model is loading TEXT-ONLY" is the same modality change the
+    auto-pair line exists for, seen from the other side: if the guess must not
+    be silent, neither must the refusal of it.
+    """
+    model = _gguf(tmp_path / "v" / "Model-Q4.gguf")
+    _gguf(tmp_path / "v" / "mmproj-F16.gguf")
+    rows = [ModelRow(key="m", path=str(model), source="custom")]
+    app, model_switch = _app_with(monkeypatch, rows, {"m": {"mmproj": NO_PROJECTOR}})
+    model_switch._say_projector(app, "m")
+    joined = " ".join(app.said)
+    assert "none" in joined.lower(), joined
+    assert "your choice" in joined.lower(), joined
+    assert "mmproj-F16.gguf" not in joined, (
+        "the sibling was named for a model told to have no projector: " + joined
+    )
+
+
+def test_an_absent_key_STILL_auto_pairs_and_still_announces(tmp_path, monkeypatch):
+    """The other polarity, and the arm that makes the pair a distinction.
+
+    "none means text only" is also satisfied by a change that killed auto-pairing
+    outright — which would silently revert T231 while every arm about `none`
+    stayed green.
+    """
+    monkeypatch.setattr(llm_backend, "installed_flags", lambda: frozenset())
+    monkeypatch.setattr(llm_backend, "installed_build", lambda: "test")
+    model = _gguf(tmp_path / "v" / "Model-Q4.gguf")
+    proj = _gguf(tmp_path / "v" / "mmproj-F16.gguf")
+    dest = write_preset_ini(
+        [ModelRow(key="model-q4", path=str(model), source="custom")],
+        _Settings({"model-q4": {"ctx": 4096}}),        # a cfg WITHOUT mmproj
+        dest=tmp_path / "out.ini",
+    )
+    assert f"mmproj = {proj}" in dest.read_text(encoding="utf-8")
+
+    rows = [ModelRow(key="m", path=str(model), source="custom")]
+    app, model_switch = _app_with(monkeypatch, rows, {"m": {"ctx": 4096}})
+    model_switch._say_projector(app, "m")
+    assert any("mmproj-F16.gguf" in s for s in app.said), app.said
+
+
+def test_none_ROUND_TRIPS_through_the_settings_the_panel_writes(tmp_path, monkeypatch):
+    """🔴 THE SENTINEL IS ONLY REAL IF IT SURVIVES A SAVE.
+
+    `_collect_group` POPS an EMPTY field and stores a non-empty one verbatim, so
+    "none" persists as a stored value while "" vanishes — which is precisely the
+    distinction this feature is. Driven through the real `_collect_group` rather
+    than by writing the dict by hand, because a hand-written dict would prove the
+    reader and never the WRITER, and the writer is the half that can drop it.
+    """
+    import asyncio
+
+    from litetui import app as m
+    from litetui.plugins.model_switch import ModelConfigBody, ModelConfigScreen
+    from textual.widgets import Input
+
+    async def body():
+        a = m.LiteTUI()
+        a.available_models = ["m"]
+        a.model_id = "m"
+        a._connect = lambda: None
+        a._fetch_ctx_window = lambda: None
+        async with a.run_test(size=(120, 40)) as pilot:
+            a.push_screen(ModelConfigScreen("m"))
+            for _ in range(8):
+                await pilot.pause()
+            panel = a.screen.query_one(ModelConfigBody)
+            field = panel.query_one("#ld-mmproj", Input)
+            field.value = NO_PROJECTOR
+            await pilot.pause()
+            out = panel._collect_group("ld", [("mmproj", "", "text")], {})
+            assert out.get("mmproj") == NO_PROJECTOR, out
+
+            field.value = ""
+            await pilot.pause()
+            out = panel._collect_group("ld", [("mmproj", "", "text")], {"mmproj": "x"})
+            assert "mmproj" not in out, (
+                "clearing the field must REMOVE the key — that is what makes "
+                f"absent and none different answers: {out}"
+            )
+
+    asyncio.run(body())

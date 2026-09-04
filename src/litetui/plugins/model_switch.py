@@ -158,6 +158,14 @@ def _say_projector(app, key: str) -> None:
     if row is None or row.path is None:
         return
     cfg = (app.settings.llama_load_settings or {}).get(key, {})
+    if llm_backend.is_no_projector(cfg.get("mmproj")):
+        # ⬜ THE ONE EXPLICIT SETTING THAT STILL SPEAKS. Everything else the
+        # user typed is their own and a line per load would be noise — but
+        # "this vision model is loading TEXT-ONLY" is the same modality change
+        # the auto-pair announcement exists for, seen from the other side. If
+        # the guess must not be silent, neither must the refusal of it.
+        app.system_message("vision: none (your choice)")
+        return
     if "mmproj" in cfg:
         return                      # explicit: their choice, not our guess
     auto, found = llm_backend.sibling_mmproj(row.path)
@@ -245,7 +253,7 @@ _LOAD_FIELDS: list[tuple] = [
     ("draft_max", "Max draft tokens", "int", "16"),
     ("draft_min", "Min draft tokens", "int", "0"),
     ("draft_p_min", "Draft probability", "float", "0.75"),
-    ("mmproj", "Vision projector (mmproj path)", "text", "off"),
+    ("mmproj", "Vision projector (mmproj path, or \"none\")", "text", "off"),
     ("chat_template_file", "Chat template file", "text", "model's own"),
 ]
 
@@ -356,10 +364,18 @@ class ModelConfigBody(Widget):
                             for extra in row.extra_paths:
                                 yield Static(f"Also at: {extra}", classes="set-help")
                             if row.modalities:
-                                yield Static(
-                                    f"Modalities: {', '.join(row.modalities)}",
-                                    classes="set-help",
-                                )
+                                mods = ", ".join(row.modalities)
+                                # 🔴 DECLARED vs EFFECTIVE. `row.modalities` is
+                                # what the model ARCHITECTURE reports; with the
+                                # projector explicitly off it cannot act on an
+                                # image whatever it declares, and a panel that
+                                # says "text, image" beside a setting that
+                                # forbids images is a panel that lies.
+                                if llm_backend.is_no_projector(
+                                        load_cfg.get("mmproj")):
+                                    mods += "  ->  text only (projector: none)"
+                                yield Static(f"Modalities: {mods}",
+                                             classes="set-help")
                             yield Static(
                                 "Loaded" if row.loaded else "Not loaded (its ctx "
                                 "number, if shown, is a ceiling — not a window)",
@@ -387,7 +403,19 @@ class ModelConfigBody(Widget):
                                 if missing else
                                 ("" if editable else "LM Studio manages this")
                             )
-                            if key == "mmproj" and not missing and editable:
+                            if (key == "mmproj" and not missing and editable
+                                    and llm_backend.is_no_projector(
+                                        load_cfg.get("mmproj"))):
+                                # The field already SHOWS "none" (it renders the
+                                # stored value), so the placeholder never
+                                # appears — but the help line must not go on
+                                # describing an auto-pair that this model has
+                                # been told not to do.
+                                note = note or (
+                                    "text only by your choice; clear the field "
+                                    "to go back to pairing the sibling"
+                                )
+                            elif key == "mmproj" and not missing and editable:
                                 # 🔴 THE PLACEHOLDER IS THE RESOLVED DEFAULT, not
                                 # the word "off". "off" was a lie the moment
                                 # auto-pairing existed: blank now MEANS the

@@ -394,6 +394,30 @@ def scan_models(settings) -> list[ModelRow]:
     return rows
 
 
+#: THE ONE SPELLING OF "vision-capable model, deliberately WITHOUT a projector".
+#:
+#: 🔴 ABSENT AND NONE ARE DIFFERENT ANSWERS TO DIFFERENT QUESTIONS, and T231
+#: only had the first. `_collect_group` POPS a cleared text field, so ABSENT
+#: means "the user has not chosen" and the auto-pair guess correctly applies.
+#: There was no way to say "I HAVE chosen, and the answer is nothing" — clearing
+#: the field was exactly what re-enabled the guess. Ryan ruled this in on
+#: 2026-09-03; the note in `write_preset_ini` that predicted it is replaced by
+#: the thing itself.
+#:
+#: ⬜ ONE SPELLING, NOT A SET. Accepting "none"/"off"/"no"/"-" would be four
+#: chances for the field's help text and the parser to disagree about which the
+#: product means, and the help line names exactly what the parser accepts.
+#: Compared case-insensitively and stripped, because a typed field is typed by a
+#: human; not compared against a path, because a projector is always given as an
+#: absolute path and `none` is not one.
+NO_PROJECTOR = "none"
+
+
+def is_no_projector(value) -> bool:
+    """Is this stored `mmproj` the explicit "none", rather than a path?"""
+    return isinstance(value, str) and value.strip().lower() == NO_PROJECTOR
+
+
 def sibling_mmproj(model_path: str | Path | None) -> tuple[str | None, list[str]]:
     """The projector to pair with a model, and every candidate beside it.
 
@@ -495,12 +519,17 @@ def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -
         # `grep -c '"mmproj": null'` returns 0. So an explicit path always wins
         # and this only fills a gap nobody has filled.
         #
-        # ⚠️ CONSEQUENCE, STATED RATHER THAN DISCOVERED LATER: there is
-        # currently NO WAY TO SAY "vision-capable model, no projector". Clearing
-        # the field removes the key, which is exactly what re-enables the guess.
-        # A sentinel would need a place in the schema and a control that offers
-        # it; that is a follow-up, not something to invent here.
-        if "mmproj" not in cfg:
+        # THREE ANSWERS, NOT TWO (T245, ruled in by Ryan 2026-09-03 — the
+        # follow-up the previous version of this comment predicted):
+        #   absent          -> the user has not chosen; auto-pair the sibling
+        #   NO_PROJECTOR    -> they HAVE chosen, and the answer is nothing
+        #   a path          -> their path, always wins
+        # The sentinel is DROPPED here rather than emitted: `mmproj = none`
+        # would reach llama.cpp as a filename and fail at load with a message
+        # about a missing file, which is the opposite of the user's intent.
+        if is_no_projector(cfg.get("mmproj")):
+            cfg = {k: v for k, v in cfg.items() if k != "mmproj"}
+        elif "mmproj" not in cfg:
             auto, _found = sibling_mmproj(row.path)
             if auto:
                 cfg = {**cfg, "mmproj": auto}
