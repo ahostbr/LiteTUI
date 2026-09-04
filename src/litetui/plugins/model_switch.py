@@ -294,6 +294,61 @@ _NA_ON_LLAMA = (
 _MC_KEYS = [Binding("ctrl+s", "apply", "Apply", show=False)]
 
 
+#: Upper bound on a typed context length. A TYPO GUARD, NOT A VRAM MODEL — and
+#: the distinction is the whole design, so it is stated rather than implied.
+#:
+#: 🔴 A PER-MODEL MAXIMUM IS NOT AVAILABLE HERE. `ModelRow` carries no such
+#: field, and the only real ceiling in the codebase — LM Studio's
+#: `max_context_length`, read in `_model_info_sync` — lives behind a backend
+#: round-trip that has no business inside a keypress handler. So this rejects
+#: values that are ORDERS OF MAGNITUDE wrong (the walk's 819,250,000 is out by a
+#: factor of ~780) and does not pretend to know what this model can hold.
+#: Claiming "the max is 1048576" would be a number the code cannot stand behind.
+#: 2**20 is chosen because no GGUF trains anywhere near it, so the guard cannot
+#: reject a real setting — the failure it prevents is a mistyped digit, which is
+#: exactly how it happened.
+CTX_TYPO_CEILING = 1 << 20
+CTX_FLOOR = 512
+
+
+def validate_load_cfg(cfg: dict) -> None:
+    """Raise `ValueError` naming the field and the reason, or return.
+
+    ⚠️ `_collect_group` WAS NEVER GOING TO CATCH THIS. Its only numeric check is
+    `int(raw)`, and "819250000" IS a valid int; its message ("is not a valid
+    number") is true of the cases it catches and silent about the case that
+    matters — a number that parses and is absurd. This runs AFTER it, on the
+    assembled cfg, because that is the last point before the value reaches
+    `settings_mod.save` and a model reload.
+    """
+    ctx = cfg.get("ctx")
+    if ctx is not None:
+        if not isinstance(ctx, int) or isinstance(ctx, bool):
+            raise ValueError(f"ctx: {ctx!r} is not a whole number")
+        if not (CTX_FLOOR <= ctx <= CTX_TYPO_CEILING):
+            raise ValueError(
+                f"ctx: {ctx:,} is not a plausible context length "
+                f"(expected {CTX_FLOOR:,}–{CTX_TYPO_CEILING:,}). "
+                "This is a typo guard, not your model's real maximum — "
+                "a value inside the range can still be more than the GPU holds."
+            )
+
+    mmproj = cfg.get("mmproj")
+    if mmproj is not None and not llm_backend.is_no_projector(mmproj):
+        # 🔴 SAY WHICH CHECK FAILED, BOTH OF THEM. The walk's value was
+        # "none" typed in FRONT of a path: it is neither the T245 sentinel
+        # (an exact, stripped, case-insensitive match) NOR a file that exists.
+        # Naming only one sends the reader to check the wrong thing.
+        try:
+            exists = Path(str(mmproj)).is_file()
+        except OSError:
+            exists = False
+        if not exists:
+            raise ValueError(
+                f"mmproj: {mmproj!r} is neither \"none\" nor a file that exists"
+            )
+
+
 class ModelConfigBody(Widget):
     """Info / Load / Inference for ONE model — LM Studio's panel, in the TUI.
 
@@ -514,6 +569,14 @@ class ModelConfigBody(Widget):
                             placeholder="save current Load+Inference as preset — type a name, Ctrl+S",
                             id="mc-preset-name",
                         )
+            # 🔴 OUTSIDE THE TABS, LIKE THE SWAP CONTROL AND FOR A SHARPER
+            # REASON: a refusal about a field on the Load tab has to be readable
+            # while you are LOOKING at that tab, and a Static inside one TabPane
+            # is gone the moment you change tab. Empty until something fails.
+            # (`#set-error` in settings_screen.py:605 carries a comment about
+            # being yielded unconditionally so `query_one` always finds it —
+            # same reason here.)
+            yield Static("", id="mc-error")
             # Outside the tabs, on its own line: this dialog has no button row
             # to sit in, and a control inside one TabPane would vanish when the
             # user changed tab — visible on Info, gone on Load.
@@ -627,7 +690,15 @@ class ModelConfigBody(Widget):
                 infer_cfg["json_schema"] = schema_text
             else:
                 infer_cfg.pop("json_schema", None)
+            validate_load_cfg(load_cfg)
         except ValueError as e:
+            # 🔴 THE PANEL STAYS OPEN AND SAYS WHY, RATHER THAN CLOSING AND
+            # WHISPERING INTO THE CHAT. A refused save that dismissed the dialog
+            # would cost the user every other field they had edited, and the
+            # reason would be one line up in a transcript they are not looking
+            # at. `system_message` is kept as well: the chat is where a user
+            # scrolls back to ask "what did I do".
+            self._say_error(f"Cannot apply — {e}")
             app.system_message(f"Not applied — {e}")
             return
 
@@ -665,6 +736,14 @@ class ModelConfigBody(Widget):
                     app.system_message(str(e))
                     return
                 app.system_message(f"{key}: load settings applied")
+                # ⬜ REFRESH THE ROWS, OR THE INFO TAB LIES ABOUT WHAT JUST
+                # HAPPENED. Seen on the walk: Info read "Not loaded" while the
+                # router reported the model loaded, because `app.model_rows` is
+                # only rebuilt by `connect()` and nothing here called it —
+                # `fetch_context_window()` updates the WINDOW, not the `loaded`
+                # marker the Info tab reads. `_cmd_load`'s worker already does
+                # this for the same reason (see `_go`).
+                app.connect()
                 if key == app.model_id:
                     app.fetch_context_window()
             app.run_worker(_apply(), group="modelctl", exclusive=True)
@@ -682,6 +761,14 @@ class ModelConfigBody(Widget):
 
         app.system_message(f"Saved model config for {key}")
         close_dialog(self, None)
+
+    def _say_error(self, text: str) -> None:
+        """Put a refusal where the person can see it. Never raises: a panel that
+        crashed while reporting a validation error would be worse than the
+        unvalidated save this exists to prevent."""
+        found = self.query("#mc-error")
+        if found:
+            found.first().update(text)
 
     def action_cancel(self) -> None:
         close_dialog(self, None)
