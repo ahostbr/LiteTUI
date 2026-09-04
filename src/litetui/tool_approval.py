@@ -188,13 +188,18 @@ class ToolApprovalBody(Vertical):
 
     def compose(self) -> ComposeResult:
         caps = " · ".join(sorted(self.decision.capabilities))
-        yield Static(f"Allow `{self.tool_name}`?", id="tool-approval-title")
+        yield Static(
+            f"Allow `{self.tool_name}`?", markup=False, id="tool-approval-title"
+        )
         yield Static(
             f"profile: {self.decision.profile}  ·  authority: {caps}\n"
             f"{self.decision.reason}",
+            markup=False,
             id="tool-approval-meta",
         )
-        yield Static(approval_preview(self.args), id="tool-approval-args")
+        yield Static(
+            approval_preview(self.args), markup=False, id="tool-approval-args"
+        )
         # Say what "always" actually covers.  The stored rule is keyed by
         # tool AND authority, so it is much narrower than the button label
         # suggests on its own -- and a human who reads "Always allow" as
@@ -202,6 +207,7 @@ class ToolApprovalBody(Vertical):
         yield Static(
             f"Always = `{self.tool_name}` at this authority ({caps}); "
             "a wider request asks again.",
+            markup=False,
             id="tool-approval-hint",
         )
         yield SwapButton()

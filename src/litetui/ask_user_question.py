@@ -379,13 +379,14 @@ class AskUserQuestionBody(Vertical):
                 # _refresh_steps() only maintains it on later jumps.
                 lab = Static(
                     q.label,
+                    markup=False,
                     id=f"auq-lab-{i}",
                     classes="auq-step-label active" if i == self._active
                     else "auq-step-label",
                 )
                 yield box
                 yield lab
-        yield Static(self._states[0].question, id="auq-question")
+        yield Static(self._states[0].question, markup=False, id="auq-question")
         with Vertical(id="auq-bodies"):
             for i, q in enumerate(self._states):
                 classes = "auq-qbody active" if i == self._active else "auq-qbody"
@@ -394,6 +395,7 @@ class AskUserQuestionBody(Vertical):
                         # id = auq-opt-<qi>-<j> (dataset is gone in 8.x)
                         row = Static(
                             self._row_text(opt, False),
+                            markup=False,
                             id=f"auq-opt-{i}-{j}",
                             classes="auq-row",
                         )
@@ -410,7 +412,7 @@ class AskUserQuestionBody(Vertical):
         with Horizontal(id="auq-actions"):
             yield Button("Chat about this", id="auq-chat")
             yield Button("Submit", variant="primary", id="auq-submit")
-        yield Static(FOOTER_HINT, id="auq-hint")
+        yield Static(FOOTER_HINT, markup=False, id="auq-hint")
 
     async def on_mount(self) -> None:
         self._refresh_steps()
