@@ -4188,6 +4188,16 @@ class LiteTUI(App):
                 # context on noise the model cannot use. Then re-assert the
                 # terminal modes a child may have changed (sanitize.py: why).
                 result = sanitize.strip_escapes(result)
+                # T219. The same argument the block above makes about escape
+                # bytes applies to SECRETS, and this is the point that already
+                # sees every tool result: on 2026-09-03 an env listing through
+                # `bash` put LITESUITE_JWT_SECRET and OPENAI_API_KEY verbatim
+                # into the transcript, the model's context and a screenshot.
+                # AFTER the strip, so a value wearing escape bytes is matched as
+                # the text it actually is. Before the display AND before the
+                # model — the same string serves both, and a secret on screen is
+                # a secret in the screenshot.
+                result = sanitize.redact_secrets(result)
                 sanitize.reset_terminal_modes()
                 if msg is not None:
                     msg.set_result(result, ok)
