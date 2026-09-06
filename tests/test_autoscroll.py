@@ -187,8 +187,25 @@ class FakeText:
 
 
 def _thinking_block(scroll):
-    tb = app_mod.ThinkingBlock.__new__(app_mod.ThinkingBlock)
-    tb._buffer = ""
+    """A REAL ThinkingBlock with only its two view objects replaced.
+
+    🔴 THIS USED `__new__` AND HAND-SET THREE FIELDS, AND THAT IS WHY IT BROKE.
+    `59df1c4` ("freeze the header readout when thinking ends") gave `append()` a
+    token counter — `self._toks += 1`, initialised correctly in `__init__` — and
+    the hand-built instance had never run `__init__`, so it had no `_toks` and
+    every arm here died with AttributeError at widgets.py:269. The production
+    change was right; the double was frozen at the shape the class had when
+    somebody typed it out.
+        A DOUBLE ASSEMBLED FIELD BY FIELD IS A SNAPSHOT OF THE CLASS ON THE DAY
+        IT WAS WRITTEN, AND NOTHING TELLS IT THE CLASS MOVED.
+
+    ⬜ `ThinkingBlock()` CONSTRUCTS FINE OUTSIDE A RUNNING APP — measured, no
+    mounting or event loop needed — so running the real `__init__` costs
+    nothing and makes the whole class of failure impossible: a field added
+    there is present here the moment it exists. Only `text` and `scroll` are
+    swapped, because those are the view objects these arms exist to fake.
+    """
+    tb = app_mod.ThinkingBlock()
     tb.text = FakeText()
     tb.scroll = scroll
     return tb
