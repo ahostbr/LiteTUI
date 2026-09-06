@@ -3055,7 +3055,9 @@ class LiteTUI(App):
             return
         self._thinking_live = None
         t.finalize()
-        t.reset_header()
+        # Freeze, don't reset — the readout (time · tokens · avg tok/s) stays
+        # on the header for every turn instead of being wiped to a label.
+        t.freeze_header()
 
     async def _elapsed_repaint(self) -> None:
         # Repaint the in-flight bubble and any running tool calls ~4x/sec.

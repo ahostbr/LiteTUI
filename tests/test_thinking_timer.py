@@ -83,6 +83,8 @@ def _bare_block():
     with a live timer."""
     b = ThinkingBlock.__new__(ThinkingBlock)
     b._t0 = time.monotonic()
+    b._toks = 0
+    b._frozen = None
     b._marker = MARKER_OPEN
     return b
 
@@ -116,17 +118,79 @@ def test_repaint_header_degrades_without_tps():
     assert "0.0 tok/s" not in hdr.content, hdr.content
 
 
+# --- freeze_header: the readout survives the end of thinking ------------------
+def test_freeze_header_keeps_time_tokens_and_avg():
+    """The bug fix (Ryan): a finished block keeps total time + thinking tokens
+    + avg tok/s instead of resetting to a bare label. Same string as live,
+    just frozen - and the rate is that phase's own math: tokens / time."""
+    b = _bare_block()
+    b._t0 = time.monotonic() - 4.2
+    b._toks = 250
+    hdr = _FakeHeader()
+    b.query_one = lambda w: hdr
+    b.freeze_header()
+    assert "4.2s" in hdr.content, hdr.content
+    assert "250 tok" in hdr.content, hdr.content
+    assert f"{250 / 4.2:.1f} tok/s" in hdr.content, hdr.content
+
+
+def test_freeze_header_stops_the_timer():
+    b = _bare_block()
+    b._toks = 3
+    hdr = _FakeHeader()
+    b.query_one = lambda w: hdr
+    b.freeze_header()
+    assert b._t0 is None, "the timer must be off"
+
+
+def test_freeze_header_without_tokens_degrades_to_elapsed():
+    """No tokens -> no tok field and no rate; a rendered zero would be the
+    same lie about a number that does not exist."""
+    b = _bare_block()
+    b._toks = 0
+    hdr = _FakeHeader()
+    b.query_one = lambda w: hdr
+    b.freeze_header()
+    assert "tok/s" not in hdr.content, hdr.content
+    assert "0 tok" not in hdr.content, hdr.content
+
+
+def test_freeze_header_unstamped_is_a_noop():
+    b = _bare_block()
+    b._t0 = None  # the guard: a block that never stamped t0 freezes nothing
+    hdr = _FakeHeader()
+    b.query_one = lambda w: hdr
+    b.freeze_header()
+    assert hdr.content == "" and b._frozen is None
+
+
+def test_set_expanded_keeps_the_frozen_readout():
+    """Clicking a finished block toggles the marker without wiping the stats -
+    the old set_expanded rewrote the header to a bare label on every click."""
+    b = _bare_block()
+    b._t0 = time.monotonic() - 2.0
+    b._toks = 40
+    hdr = _FakeHeader()
+    b.query_one = lambda w: hdr
+    b.add_class = lambda c: None
+    b.remove_class = lambda c: None
+    b.freeze_header()
+    b.set_expanded(False)
+    assert hdr.content.startswith(f"{MARKER_COLLAPSED} Thinking"), hdr.content
+    assert "40 tok" in hdr.content, hdr.content
+
+
 # --- the stop control ---------------------------------------------------------
 class _FakeThinking:
     def __init__(self):
         self.finalized = False
-        self.header_reset = False
+        self.header_frozen = False
 
     def finalize(self):
         self.finalized = True
 
-    def reset_header(self):
-        self.header_reset = True
+    def freeze_header(self):
+        self.header_frozen = True
 
 
 class _FakeApp:
@@ -147,7 +211,7 @@ def test_thinking_done_stops_the_timer():
     a._thinking_done()
     assert a._thinking_live is None, "the gate must be off"
     assert (a._thinking_live is not None) is False
-    assert t.finalized and t.header_reset
+    assert t.finalized and t.header_frozen
 
 
 def test_thinking_done_is_idempotent():
@@ -158,7 +222,7 @@ def test_thinking_done_is_idempotent():
     a._thinking_done()
     a._thinking_done()
     assert a._thinking_live is None
-    assert t.finalized and t.header_reset
+    assert t.finalized and t.header_frozen
 
 
 def test_thinking_done_without_a_live_block_is_a_noop():

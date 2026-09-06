@@ -238,6 +238,8 @@ class ThinkingBlock(Vertical):
         # reasoning token, so construction IS the trace's start:
         # stamp it here rather than having the app reach in.
         self._t0: float | None = time.monotonic()
+        self._toks = 0                 # appended tokens; freeze_header's own count
+        self._frozen: tuple | None = None   # (elapsed, tokens, avg) once done
         self._marker = "\u25be"      # expand glyph, kept in sync by set_expanded
         self.text = Static("", id="thinking-text")
         self.scroll = VerticalScroll(self.text, classes="thinking-body")
@@ -257,10 +259,14 @@ class ThinkingBlock(Vertical):
             self.remove_class("expanded")
         marker = "\u25be" if value else "\u25b8"
         self._marker = marker
-        self.query_one(ThinkingHeader).content = f"{marker} Thinking"
+        # A finished block keeps its readout across toggles (Ryan): the frozen
+        # stats re-render with the new marker instead of being wiped to a label.
+        text = self._frozen_text(marker) or f"{marker} Thinking"
+        self.query_one(ThinkingHeader).content = text
 
     def append(self, token: str) -> None:
         self._buffer += token
+        self._toks += 1
         # This never scrolled the VerticalScroll it owns, so the trace grew
         # below the fold with the viewport pinned at the top. Measure BEFORE
         # the content grows: afterwards we are no longer at the bottom by
@@ -282,7 +288,7 @@ class ThinkingBlock(Vertical):
     #
     # The block stamps its own t0 at construction (see __init__), the
     # app feeds it one repaint tick (repaint_header, with the app's
-    # own tps value) and stops it (reset_header, inside
+    # own tps value) and freezes it (freeze_header, inside
     # _thinking_done). The strings are pure (thinking_header_text),
     # so they are testable without a live app; the tps number is the
     # app's single reactive, never a second one.
@@ -313,6 +319,37 @@ class ThinkingBlock(Vertical):
             # the block's children exist. A pre-compose reset is a true no-op:
             # compose() renders the header with exactly this text anyway.
             pass
+
+    def _frozen_text(self, marker: str) -> str | None:
+        """The finished readout with `marker` applied, or None while live.
+        Rendered through thinking_header_text on a synthetic (0.0, elapsed)
+        pair — the function only ever uses now - t0, so the string is exactly
+        the live one, just re-marked for the toggle."""
+        if self._frozen is None:
+            return None
+        elapsed, tokens, avg = self._frozen
+        return thinking_header_text(marker, 0.0, elapsed, avg, tokens)
+
+    def freeze_header(self) -> None:
+        """The trace stopped streaming: keep the readout instead of throwing it away.
+        One final repaint with `now` pinned to this moment — elapsed is exactly
+        the thinking duration, and the rate is that phase's own tokens / time
+        (Ryan: total time, thinking tokens, avg tok/s). Same string as live, just
+        frozen; stops the timer like reset_header. The app calls it once inside
+        _thinking_done; a pre-compose freeze keeps its numbers for set_expanded."""
+        if self._t0 is None:
+            return
+        elapsed = time.monotonic() - self._t0
+        tokens = self._toks or None
+        avg = (tokens / elapsed) if (tokens and elapsed > 0) else None
+        self._frozen = (elapsed, tokens, avg)
+        try:
+            self.query_one(ThinkingHeader).content = self._frozen_text(self._marker)
+        except Exception:
+            # Not composed yet — same no-op class as reset_header's guard. The
+            # numbers are kept either way; the next toggle paints them.
+            pass
+        self._t0 = None
 
 
 def _mark_delivered(item: dict) -> None:
@@ -478,7 +515,9 @@ class CompactionCard(Vertical):
     def thinking_done(self) -> None:
         if self.thinking is not None:
             self.thinking.finalize()
-            self.thinking.reset_header()
+            # freeze, don't reset — the card's path never ticks _tps, so the
+            # block's own count is the only source for its stats.
+            self.thinking.freeze_header()
 
     def add_tool(self, msg: "ToolMessage") -> None:
         self.mount(msg, before=self.status)
