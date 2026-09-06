@@ -67,6 +67,79 @@ def strip_escapes(text: str) -> str:
     return _SEQUENCES.sub("", text)
 
 
+#: What replaces a secret's value. The KEY is always left visible: a tool result
+#: that silently loses a line teaches nobody anything, and the model still needs
+#: to know the variable was set.
+REDACTED_MARKER = "[redacted]"
+
+#: The keywords that mark a name as a secret's name.
+#:
+#: 🔴 THE KEYWORD MUST TERMINATE THE NAME, and that is not a style choice.
+#: Derived from every secret-shaped variable actually present in this machine's
+#: environment (names only): CLAUDE_CODE_MESSAGING_TOKEN, LITESUITE_JWT_SECRET,
+#: OPENAI_API_KEY, OPENCLAW_GATEWAY_TOKEN, STITCH_API_KEY. All five END with the
+#: keyword.
+#:
+#: ⚠️ A "contains TOKEN" RULE WOULD SHRED THIS APP'S OWN OUTPUT. LiteTUI is full
+#: of token ACCOUNTING — 32 uses of `prompt_tokens`, 29 of `max_tokens`, 16 of
+#: `max_tokens_tools`, 8 of `completion_tokens`, 4 of `first_token_s`. Anchoring
+#: at the end excludes every one: TOKENS is not TOKEN, and `first_token_s` ends
+#: in `_s`.
+#:     A REDACTOR THAT EATS THE TOKEN COUNTERS IS WORSE THAN NONE — IT CORRUPTS
+#:     EVERY TURN INSTEAD OF LEAKING ON THE RARE ONE.
+#: `KEY` alone is deliberately absent: `key=value` is ordinary output everywhere.
+_SECRET_KEYWORDS = (
+    r"SECRET|TOKEN|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY"
+    r"|PASSWORD|PASSWD|CREDENTIALS?|AUTH"
+)
+
+#: A name whose final component is one of those keywords.
+_SECRET_NAME = rf"[A-Za-z0-9_.-]*(?:{_SECRET_KEYWORDS})"
+
+#: `NAME=value` / `NAME: value` — env listings, .env files, yaml, ini, prose.
+#: The value runs to end of line: an env value may contain anything, and the
+#: alternative (stopping at the first space) leaks the tail of every secret
+#: containing one.
+_ASSIGNMENT = re.compile(
+    rf"(?P<key>(?<![A-Za-z0-9_.-]){_SECRET_NAME})(?P<sep>\s*[:=]\s*)(?P<val>[^\r\n]+)",
+    re.IGNORECASE,
+)
+
+#: `"name": "value"` — the JSON form, kept separate because the value is
+#: delimited by quotes rather than by the line, and redacting to end of line
+#: would swallow the rest of the object.
+_JSON_PAIR = re.compile(
+    rf"(?P<key>\"{_SECRET_NAME}\"\s*:\s*)(?P<q>\")(?P<val>[^\"]*)(?P=q)",
+    re.IGNORECASE,
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace the VALUES of secret-named variables, keeping their names.
+
+    🔴 THE ONE PATH EVERY TOOL RESULT CROSSES SAW ONLY ESCAPE BYTES. On
+    2026-09-03 an env listing through the `bash` tool put `LITESUITE_JWT_SECRET`
+    and `OPENAI_API_KEY` verbatim into the transcript, the model's context and a
+    screenshot; the keys were rotated by hand. `strip_escapes` was already
+    applied at that exact point and had no reason to look at the payload.
+
+    ⬜ ANCHORED TO NAMES, NOT TO ENTROPY. A free-floating high-entropy sweep was
+    considered and rejected: ordinary output here is full of git shas, hashes and
+    base64, and redacting those makes every tool result unreadable — the failure
+    would be constant where the leak is rare.
+
+    ⚠️ NOT A SECURITY BOUNDARY, AND MUST NOT BE SOLD AS ONE. It catches the
+    shapes a secret takes when a tool prints an environment: `NAME=value`,
+    `NAME: value`, and `"name": "value"`. A secret that arrives with no name
+    beside it — a bare key pasted into a file, a base64 blob — passes through
+    untouched, and nothing here can tell it from data.
+    """
+    if not text:
+        return text
+    text = _JSON_PAIR.sub(lambda m: f'{m.group("key")}"{REDACTED_MARKER}"', text)
+    return _ASSIGNMENT.sub(lambda m: f'{m.group("key")}{m.group("sep")}{REDACTED_MARKER}', text)
+
+
 #: The exact mode set Textual's Windows driver enables — measured from
 #: .venv/Lib/site-packages/textual/drivers/windows_driver.py,
 #: _enable_mouse_support (SET_VT200, SET_ANY_EVENT, SET_VT200_HIGHLIGHT,
