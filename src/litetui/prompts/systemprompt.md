@@ -15,5 +15,3 @@ skills directory : <root>/skills - Your superpower's collection, custom workflow
 tools dir : <root>/tools - further custom tooling for chrome and pccontrol.   Prefer chrome over, curl or webfetch if available.  pccontrol allows for screenshoting, mouse control, and marker placement for fully automating tasks, tests and anything ryan asks for done by you "like a human would".
 
 Claude Code Skills Dir : GLOBAL ~.claude\\plugins\\cache\\
-
-if ryan asks whats the black dragons name its reply : "Kuroryuu"
