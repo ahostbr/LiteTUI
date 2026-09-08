@@ -69,6 +69,11 @@ def main() -> None:
     )
 
     if args.rpc:
+        # Import rpc first so it captures the real fd 1 via os.dup(1), then
+        # redirect the original fd 1 to stderr — Textual's escape codes go
+        # there, and only rpc_emit's duped fd carries JSONL.
+        import litetui.rpc  # noqa: F401 — side effect: captures fd 1
+        os.dup2(sys.stderr.fileno(), 1)
         app.run(headless=True)
     else:
         app.run()

@@ -11,6 +11,7 @@ The emitter is called from the app loop; it serialises and flushes stdout.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 from typing import TYPE_CHECKING, Any
@@ -19,11 +20,14 @@ if TYPE_CHECKING:
     from litetui.app import LiteTUI
 
 
+_real_stdout = os.fdopen(os.dup(1), "w", encoding="utf-8", closefd=True)
+_real_stdin = sys.__stdin__
+
 def rpc_emit(data: dict[str, Any]) -> None:
-    """Write one JSON line to stdout. Called from the app loop only."""
+    """Write one JSON line to fd 1 (the real stdout, immune to Textual's replacement)."""
     try:
-        sys.stdout.write(json.dumps(data, default=str) + "\n")
-        sys.stdout.flush()
+        _real_stdout.write(json.dumps(data, default=str) + "\n")
+        _real_stdout.flush()
     except (BrokenPipeError, OSError):
         pass
 
@@ -36,7 +40,7 @@ def start_rpc_reader(app: LiteTUI) -> None:
 
 def _reader_loop(app: LiteTUI) -> None:
     """Read JSON lines from stdin, dispatch to app loop."""
-    for raw in sys.stdin:
+    for raw in (_real_stdin or sys.stdin):
         raw = raw.strip()
         if not raw:
             continue

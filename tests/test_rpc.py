@@ -27,7 +27,7 @@ def router_up() -> bool:
 
 
 SKIP_REASON = f"llama-server router at {ROUTER_URL} is not responding"
-pytestmark = pytest.mark.skipif(not router_up(), reason=SKIP_REASON)
+_needs_router = pytest.mark.skipif(not router_up(), reason=SKIP_REASON)
 
 
 class RpcSession:
@@ -110,6 +110,7 @@ def session(tmp_path):
     s.close()
 
 
+@_needs_router
 class TestRpcTurn:
     def test_ready_event(self, session: RpcSession):
         ready = session.wait_ready()
@@ -198,6 +199,67 @@ class TestRpcTurn:
         assert "unknown" in resp.get("error", "").lower()
 
 
+class TestStdoutPurity:
+    """T519: fd 1 in --rpc mode carries ONLY valid JSONL — no Textual escape codes."""
+
+    def test_every_stdout_line_is_json_no_esc(self, tmp_path):
+        """Start --rpc, collect raw stdout bytes, assert no ESC and all lines parse as JSON."""
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "litetui.cli", "--rpc"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(tmp_path),
+        )
+        try:
+            # Read raw stdout in a thread so we can timeout
+            import threading
+            raw_bytes = bytearray()
+            def reader():
+                assert proc.stdout
+                while True:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    raw_bytes.extend(chunk)
+            t = threading.Thread(target=reader, daemon=True)
+            t.start()
+            t.join(timeout=20)
+
+            # Shut down
+            try:
+                assert proc.stdin
+                proc.stdin.write(b'{"type":"shutdown","id":"fin"}\n')
+                proc.stdin.flush()
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+                proc.wait()
+
+            raw = raw_bytes.decode("utf-8", errors="replace")
+            lines = [l for l in raw.split("\n") if l.strip()]
+            assert len(lines) >= 1, "should have at least the ready event"
+
+            bad: list[str] = []
+            for line in lines:
+                if "\x1b" in line:
+                    bad.append(f"ESC in: {line[:80]}")
+                try:
+                    json.loads(line)
+                except json.JSONDecodeError:
+                    bad.append(f"non-JSON: {line[:80]}")
+            assert bad == [], f"stdout lines must be clean JSON: {bad}"
+
+            # The ready event must be present
+            events = [json.loads(l) for l in lines]
+            ready = next((e for e in events if e.get("type") == "ready"), None)
+            assert ready is not None, "ready event should be in stdout"
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+@_needs_router
 class TestArgv:
     def test_prompt_argv(self, tmp_path):
         """GP3: --prompt submits the first turn."""
