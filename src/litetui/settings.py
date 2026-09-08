@@ -139,6 +139,10 @@ class Settings:
     #: T517 — a FOREGROUND tool call still running after this many seconds is moved
     #: to a background task on its own (the result arrives later as a message). 0 = never.
     tool_auto_background_s: int = 30
+    #: T531 — max_tokens cap for the subagent tool's child completion. The loaded
+    #: model pool is SHARED across live slots; a child with a huge budget starves
+    #: the parent's next turn of KV cache.
+    subagent_max_tokens: int = 20000
     tools_enabled: bool = True
     #: Authority profile for EVERY turn -- typed, inbox-woken, cron and loop
     #: alike (Ryan: "cron and loops run at same set profile level my ruling").
