@@ -25,7 +25,7 @@ def one(i: int, go: threading.Event) -> None:
     body = json.dumps({
         "model": MODEL,
         "messages": [{"role": "user", "content": PROMPT}],
-        "max_tokens": 400,
+        "max_tokens": int(__import__("os").environ.get("T531_MAX_TOKENS", "400")),
         "temperature": 0.7,
         "stream": True,
         "stream_options": {"include_usage": True},
