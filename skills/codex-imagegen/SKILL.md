@@ -23,9 +23,12 @@ Stdlib-only Python: `C:\Projects\LiteTUI\skills\codex-imagegen\codex_image.py`.
    `--image` routes to the edit shape automatically: `responses` gets inline
    `input_image` content parts; `images` goes to `/images/edits`.
 
-3. **Typed endpoint** (OpenAI-style JSON, model gpt-image-2):
+3. **Typed endpoint** (OpenAI-style JSON, ChatGPT Images 2.5): `gpt-image-2.5-flare`
+   by default (fast; beats gpt-image-2 at half the latency), `gpt-image-2.5-sunburst`
+   when `--image` refs make it an edit (editing precision). `--quality` and `--size`
+   pass through on this backend only:
    ```
-   python codex_image.py "..." --backend images [--model gpt-image-2]
+   python codex_image.py "..." --backend images [--quality xhigh|max] [--size 1536x1024]
    ```
 
 4. **Token only**: `python codex_image.py --refresh-only` — refreshes the
@@ -46,7 +49,12 @@ Stdlib-only Python: `C:\Projects\LiteTUI\skills\codex-imagegen\codex_image.py`.
 - **Both edit paths work**: fox reference → watercolor restyle kept the exact pose
   and composition on both backends — the model genuinely sees the reference.
 - **Model gotcha**: `gpt-5.4` returns HTTP 400 on this account; use gpt-5.5 (responses)
-  or gpt-image-2 (images). Available models: `~/.codex/models_cache.json`.
+  or a gpt-image id (images). Available models: `~/.codex/models_cache.json`.
+- **Images 2.5 (measured 2026-09-08, T525)**: the bridge accepts `gpt-image-2.5-flare`
+  (27.6 s) and `gpt-image-2.5-sunburst` (33.1 s) on `/images/generations`, and a
+  `model` field on the `responses` image_generation tool (accepted; whether it is
+  honoured is unproven — the reply names no model). Quality tiers `xhigh`/`max` and
+  custom `WIDTHxHEIGHT` sizes are new with 2.5.
 
 ## Troubleshooting
 
