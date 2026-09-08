@@ -172,6 +172,19 @@ def new_agent_id() -> str:
     return str(uuid.uuid4())
 
 
+def process_agent_id() -> str:
+    """One stable id per process — uuid5 from hostname + pid.
+
+    T507-T5: the seat id was random (uuid4) at construction, then rebound to
+    uuid5(convo_id) per new conversation. Each rebind left the previous id as a
+    ghost. Measured: LiteTUI/BurntPath/BrightDuct = 3 ghosts of pid 133252.
+    Fix: one id per process, every conversation reuses it.
+    """
+    import platform
+    key = f"litetui:process:{platform.node()}:{os.getpid()}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+
+
 def agent_id_for_convo(convo_id: str) -> str:
     """The seat id for a conversation — the SAME id every time it is resumed.
 
