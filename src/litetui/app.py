@@ -1366,6 +1366,11 @@ class LiteTUI(App):
         # T507-T1: apply CLI args after connection is up.
         if self._cli_initial_model or self._first_prompt or self._cli_system_prompt:
             self._apply_cli_args()
+        # T507-T2: start the RPC bridge in headless mode.
+        if self._rpc:
+            from litetui import rpc as rpc_mod
+            rpc_mod.start_rpc_reader(self)
+            self._rpc_emit_ready()
 
     @work(exclusive=True, group="mcp")
     async def _mcp_connect(self) -> None:
@@ -2613,6 +2618,29 @@ class LiteTUI(App):
             self._system(_plain_backend_error(e, self.backend.name))
 
     _connect = connect          # arrival alias (PLAN §2b)
+
+    def _rpc_emit(self, data: dict) -> None:
+        """Emit one JSON event on stdout (no-op outside --rpc)."""
+        if not self._rpc:
+            return
+        from litetui.rpc import rpc_emit
+        rpc_emit(data)
+
+    @work(exclusive=True, group="cli-args-ready")
+    async def _rpc_emit_ready(self) -> None:
+        """Emit the ready event once the model list is available."""
+        for _ in range(20):
+            if self.available_models:
+                break
+            await asyncio.sleep(0.5)
+        from litetui.version import __version__
+        self._rpc_emit({
+            "type": "ready",
+            "version": __version__,
+            "model": self.model_id or None,
+            "cwd": os.getcwd(),
+            "tool_profile": str(getattr(self, "_active_tool_profile", None)),
+        })
 
     @work(exclusive=True, group="cli-args")
     async def _apply_cli_args(self) -> None:
