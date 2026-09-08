@@ -86,7 +86,8 @@ class Task:
 
 def label_of(tool: str, args: dict) -> str:
     """What the task is, in one short line: the command's first line, trimmed."""
-    cmd = str((args or {}).get("command") or "").strip().splitlines()
+    raw = (args or {}).get("command") or (args or {}).get("prompt") or ""
+    cmd = str(raw).strip().splitlines()
     head = cmd[0] if cmd else ""
     return (head[:60] + "…") if len(head) > 60 else head
 
