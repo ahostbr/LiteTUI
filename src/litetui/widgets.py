@@ -140,29 +140,66 @@ class SkillAutocomplete(Vertical):
 
 
 class PromptInput(Input):
-    """The message box. Steals a few keys ONLY while the picker is open.
-
-    Tab, up and down all belong to Input normally, so they are intercepted
-    here and released the moment the list is hidden -- a widget that keeps a
-    key it does not need is how tab-to-focus silently disappears.
+    """The message box. Steals a few keys ONLY while the picker is open,
+    and provides up/down history recall when it is closed.
     """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._hist_idx: int = -1
+        self._draft: str = ""
+
+    def push_history(self, text: str) -> None:
+        if text and (not self._history or self._history[-1] != text):
+            self._history.append(text)
+        self._hist_idx = -1
+        self._draft = ""
 
     def on_key(self, event) -> None:
         ac = getattr(self.app, "_skill_ac", None)
-        if ac is None or not ac.display:
+        picker_open = ac is not None and ac.display
+
+        if picker_open:
+            if event.key == "tab":
+                self.app.accept_skill_completion()
+            elif event.key == "down":
+                ac.move(1)
+            elif event.key == "up":
+                ac.move(-1)
+            elif event.key == "escape":
+                ac.dismiss_list()
+            else:
+                return
+            event.prevent_default()
+            event.stop()
             return
-        if event.key == "tab":
-            self.app.accept_skill_completion()
-        elif event.key == "down":
-            ac.move(1)
-        elif event.key == "up":
-            ac.move(-1)
-        elif event.key == "escape":
-            ac.dismiss_list()
-        else:
+
+        if not self._history:
             return
-        event.prevent_default()
-        event.stop()
+
+        if event.key == "up":
+            if self._hist_idx == -1:
+                self._draft = self.value
+                self._hist_idx = len(self._history) - 1
+            elif self._hist_idx > 0:
+                self._hist_idx -= 1
+            else:
+                return
+            self.value = self._history[self._hist_idx]
+            self.cursor_position = len(self.value)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "down" and self._hist_idx != -1:
+            if self._hist_idx < len(self._history) - 1:
+                self._hist_idx += 1
+                self.value = self._history[self._hist_idx]
+            else:
+                self._hist_idx = -1
+                self.value = self._draft
+            self.cursor_position = len(self.value)
+            event.prevent_default()
+            event.stop()
 
 
 class ChatMessage(Static):

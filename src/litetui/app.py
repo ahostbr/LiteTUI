@@ -3809,6 +3809,11 @@ class LiteTUI(App):
         if not text and not self.pending_image:
             return
 
+        try:
+            self.query_one("#message-input", PromptInput).push_history(text)
+        except Exception:
+            pass
+
         if text.startswith("/"):
             self._handle_command(text)
             return
