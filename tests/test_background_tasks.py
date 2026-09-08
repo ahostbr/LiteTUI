@@ -58,3 +58,14 @@ def test_tail_says_running_for_a_live_task_and_reads_the_log_after(tmp_path):
     tasks_mod.finish(t, "l1\nl2\nl3", True, tmp_path)
     assert tasks_mod.tail_text(t, tmp_path, lines=2) == "l2\nl3"
     assert tasks_mod.tail_text(None, tmp_path) == "no such task"
+
+
+def test_to_row_never_copies_the_live_child():
+    # logs/crash-9-8-2026.txt: `asdict` deep-copied the parked Popen (a
+    # _thread.lock inside) and the whole chat worker died. A lock stands in.
+    import threading
+    t = tasks_mod.new_task("bash", {"command": "sleep 900"}, "c1")
+    t.proc = threading.Lock()
+    row = t.to_row()
+    assert "proc" not in row and row["id"] == t.id and row["state"] == tasks_mod.RUNNING
+    json.dumps(row)

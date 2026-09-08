@@ -32,7 +32,7 @@ import os
 import tempfile
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 #: Set by the runner around the tool call; `core_tools._run_shell` reads it to
@@ -71,9 +71,10 @@ class Task:
     proc: object = field(default=None, repr=False, compare=False)
 
     def to_row(self) -> dict:
-        d = asdict(self)
-        d.pop("proc", None)
-        return d
+        # Never `asdict` here: it deep-copies every field first, and the live
+        # child (a Popen holding a _thread.lock) cannot be copied — that was the
+        # crash in logs/crash-9-8-2026.txt. Every other field is a scalar.
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "proc"}
 
     @property
     def seconds(self) -> float:
