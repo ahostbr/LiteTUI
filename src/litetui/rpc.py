@@ -96,11 +96,67 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         level = cmd.get("level")
         app.thinking_level = level if level != "off" else None
         _respond(cmd_id, ok=True, result={"level": app.thinking_level})
+    elif cmd_type == "set_settings":
+        patch = cmd.get("patch", {})
+        if "thinking_level" in patch:
+            app.thinking_level = patch["thinking_level"] if patch["thinking_level"] != "off" else None
+        if "model" in patch:
+            if patch["model"] in app.available_models:
+                app.model_id = patch["model"]
+        _respond(cmd_id, ok=True, result={
+            "thinking_level": app.thinking_level,
+            "model": app.model_id,
+        })
+    elif cmd_type == "list_commands":
+        cmds = []
+        seen = set()
+        for token, entry in app.plugins.commands.items():
+            if token in seen:
+                continue
+            seen.add(token)
+            # headless_ok: commands that push a screen cannot run headless
+            handler_src = getattr(entry.handler, "__qualname__", "") + str(getattr(entry.handler, "__code__", ""))
+            headless_ok = "push_screen" not in handler_src and "present_dialog" not in handler_src
+            cmds.append({"command": token, "help": entry.help, "headless_ok": headless_ok})
+        _respond(cmd_id, ok=True, result=cmds)
+    elif cmd_type == "run_command":
+        line = cmd.get("line", "").strip()
+        if not line:
+            _respond(cmd_id, ok=False, error="empty command")
+            return
+        # Check headless_ok
+        parts = line.split(maxsplit=1)
+        name = parts[0].lower()
+        entry = app.plugins.commands.get(name)
+        if entry is not None:
+            handler_src = getattr(entry.handler, "__qualname__", "") + str(getattr(entry.handler, "__code__", ""))
+            if "push_screen" in handler_src or "present_dialog" in handler_src:
+                _respond(cmd_id, ok=False, error="needs terminal", needs="terminal")
+                return
+        try:
+            app._handle_command(line)
+            _respond(cmd_id, ok=True, result={"ran": line})
+        except Exception as e:
+            _respond(cmd_id, ok=False, error=str(e))
+    elif cmd_type.startswith("jobs."):
+        _handle_jobs(app, cmd_type, cmd, cmd_id)
+    elif cmd_type.startswith("tasks."):
+        _handle_tasks(app, cmd_type, cmd, cmd_id)
+    elif cmd_type == "list_skills":
+        skills = [{"name": s.name, "description": getattr(s, "description", "")} for s in app.skills]
+        _respond(cmd_id, ok=True, result=skills)
+    elif cmd_type == "use_skill":
+        name = cmd.get("name", "")
+        try:
+            app._handle_command(f"/skills {name}")
+            _respond(cmd_id, ok=True, result={"ok": True})
+        except Exception as e:
+            _respond(cmd_id, ok=False, error=str(e))
     else:
         _respond(cmd_id, ok=False, error=f"unknown command: {cmd_type}")
 
 
-def _respond(cmd_id: Any, *, ok: bool, result: Any = None, error: str | None = None) -> None:
+def _respond(cmd_id: Any, *, ok: bool, result: Any = None, error: str | None = None, needs: str | None = None) -> None:
     resp: dict[str, Any] = {"type": "response", "ok": ok}
     if cmd_id is not None:
         resp["id"] = cmd_id
@@ -108,4 +164,53 @@ def _respond(cmd_id: Any, *, ok: bool, result: Any = None, error: str | None = N
         resp["result"] = result
     else:
         resp["error"] = error
+    if needs:
+        resp["needs"] = needs
     rpc_emit(resp)
+
+
+def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) -> None:
+    """Route jobs.list/create/update/delete to the scheduler."""
+    try:
+        from litetui import scheduler
+        from litetui import paths
+        verb = cmd_type.split(".", 1)[1] if "." in cmd_type else ""
+        if verb == "list":
+            jobs = scheduler.load(paths.ROOT)
+            _respond(cmd_id, ok=True, result=[j.__dict__ for j in jobs])
+        elif verb == "create":
+            jobs = scheduler.load(paths.ROOT)
+            job = scheduler.Job(**{k: v for k, v in cmd.items() if k not in ("type", "id")})
+            jobs.append(job)
+            scheduler.save(paths.ROOT, jobs)
+            _respond(cmd_id, ok=True, result=job.__dict__)
+        elif verb == "delete":
+            job_id = cmd.get("job_id", "")
+            jobs = scheduler.load(paths.ROOT)
+            jobs = [j for j in jobs if getattr(j, "id", None) != job_id]
+            scheduler.save(paths.ROOT, jobs)
+            _respond(cmd_id, ok=True, result={"deleted": job_id})
+        else:
+            _respond(cmd_id, ok=False, error=f"unknown jobs verb: {verb}")
+    except Exception as e:
+        _respond(cmd_id, ok=False, error=str(e))
+
+
+def _handle_tasks(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) -> None:
+    """Route tasks.list/kill/tail to T499 background tasks."""
+    verb = cmd_type.split(".", 1)[1] if "." in cmd_type else ""
+    try:
+        if verb == "list":
+            rows = [{"id": k, **v} for k, v in app.bg_tasks.items()]
+            _respond(cmd_id, ok=True, result=rows)
+        elif verb == "kill":
+            task_id = cmd.get("task_id", "")
+            if task_id in app.bg_tasks:
+                app.bg_tasks[task_id]["status"] = "killed"
+                _respond(cmd_id, ok=True, result={"killed": task_id})
+            else:
+                _respond(cmd_id, ok=False, error=f"no such task: {task_id}")
+        else:
+            _respond(cmd_id, ok=False, error=f"unknown tasks verb: {verb}")
+    except Exception as e:
+        _respond(cmd_id, ok=False, error=str(e))
