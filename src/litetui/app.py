@@ -1809,12 +1809,27 @@ class LiteTUI(App):
         # once, at fire time — and the door is still the one call below: the
         # awaitable is built once and either awaited now or handed to a
         # worker that awaits it. `tools/tool_door_gate.py` counts that call.
-        background = isinstance(args, dict) and bool(args.pop("background", False))
+        # Only a tool whose schema declares `background` may leave the turn (T517,
+        # Ryan: "not everything should be backgroundable"): the flag on any other
+        # tool is dropped, and the auto-promotion below never applies to it.
+        may_bg = tasks_mod.backgroundable(name)
+        background = may_bg and isinstance(args, dict) and bool(args.pop("background", False))
+        if isinstance(args, dict):
+            args.pop("background", None)
         aw = asyncio.to_thread(fn, args)
         if background:
             return self._start_background(name, args, aw), True
+        # AUTO-PROMOTION (T517, Ryan: "the calls are still blocked is it off by
+        # default or something ?"): the model almost never asks for background,
+        # so a call still running after the settings threshold becomes a
+        # background task on its own — the same future, handed over, never a
+        # second start. 0 turns it off.
+        limit = int(getattr(self.settings, "tool_auto_background_s", 0) or 0) if may_bg else 0
+        done, fut = await tasks_mod.wait_or_promote(aw, limit)
+        if not done:
+            return self._start_background(name, args, fut, promoted_after=limit), True
         try:
-            return str(await aw), True
+            return str(fut.result()), True
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}", False
 
@@ -1826,8 +1841,13 @@ class LiteTUI(App):
     # mid-turn, flushed after, wakes the agent unattended. Why the result
     # cannot be a late role:"tool" message is in tasks.py's docstring.
 
-    def _start_background(self, name: str, args: dict, aw) -> str:
+    def _start_background(self, name: str, args: dict, aw, promoted_after: float | None = None) -> str:
         task = tasks_mod.new_task(name, args, getattr(self, "convo_id", ""))
+        if promoted_after:
+            # The call began in the FOREGROUND, so its child (a shell) sits in the
+            # cancel slot, not on a task. It is the task's now — `/tasks kill` needs
+            # the handle, and the cancel button must not reach a backgrounded child.
+            task.proc, ttyguard.CANCELLABLE["proc"] = ttyguard.CANCELLABLE.get("proc"), None
         self.bg_tasks[task.id] = task
         self._save_background()
         runtime_log.record("task.started", task_id=task.id, tool=name, label=task.label)
@@ -1837,7 +1857,7 @@ class LiteTUI(App):
             self._run_background(task, aw),
             name=task.id, group="tasks", exclusive=False, exit_on_error=False,
         )
-        return tasks_mod.start_text(task, paths.ROOT)
+        return tasks_mod.start_text(task, paths.ROOT, promoted_after=promoted_after)
 
     async def _run_background(self, task, aw) -> None:
         # Set in THIS task's context before the door runs: asyncio.to_thread

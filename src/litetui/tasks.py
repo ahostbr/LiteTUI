@@ -26,7 +26,9 @@ wake text are testable without a terminal.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import functools
 import json
 import os
 import tempfile
@@ -103,11 +105,54 @@ def log_path(task: Task, root: Path | str) -> Path:
     return Path(root).joinpath(*LOG_DIR) / f"{task.id}.log"
 
 
-def start_text(task: Task, root: Path | str) -> str:
+@functools.lru_cache(maxsize=None)
+def backgroundable(tool: str) -> bool:
+    """May this tool run in the background at all?
+
+    Ryan (2026-09-08 13:3x): "not everything should be backgroundable ... only
+    what makes sense" — the rule is the SCHEMA: a tool qualifies only if its own
+    JSON declares a `background` property (bash, powershell). read/edit/grep are
+    instant, ask_user_question waits on the human by design, chrome and pccontrol
+    are single steps, studio image generation SUSPENDS the agent's own model while
+    it runs (a backgrounded generate would leave the next turn without a model),
+    studio sound is already a job. The same gate covers the explicit flag and the
+    auto-promotion, so nothing can be backgrounded that was never declared.
+    """
+    try:
+        from litetui import tool_schemas
+        spec = tool_schemas.load(tool)
+    except Exception:
+        return False
+    props = ((spec.get("function") or {}).get("parameters") or {}).get("properties") or {}
+    return "background" in props
+
+
+async def wait_or_promote(aw, seconds: float):
+    """Await `aw` for up to `seconds`.
+
+    (True, future) when it finished in time; (False, future) when it is still
+    running — the caller hands the future to a background task (T517: Ryan,
+    "the calls are still blocked is it off by default or something ?"). The
+    future is the SAME awaitable either way: nothing is started twice.
+    """
+    fut = asyncio.ensure_future(aw)
+    if seconds <= 0:
+        await asyncio.wait({fut})
+        return True, fut
+    done, _ = await asyncio.wait({fut}, timeout=seconds)
+    return bool(done), fut
+
+
+def start_text(task: Task, root: Path | str, promoted_after: float | None = None) -> str:
     """What the MODEL gets back immediately — the tool result of a background call."""
     rel = Path(*LOG_DIR) / f"{task.id}.log"
+    head = (
+        f"[task {task.id} started · {task.tool} · {task.label}]\n" if not promoted_after else
+        f"[task {task.id} · {task.tool} · {task.label} — still running after {promoted_after:g}s, "
+        f"moved to the background; its own timeout still applies]\n"
+    )
     return (
-        f"[task {task.id} started · {task.tool} · {task.label}]\n"
+        head +
         f"Running in the background. Its output arrives later as a message tagged "
         f"[inbox from task]; the full output will be at {rel.as_posix()} "
         f"(read it with the read tool). Continue with other work, or end the turn "

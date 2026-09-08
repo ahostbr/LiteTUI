@@ -69,3 +69,41 @@ def test_to_row_never_copies_the_live_child():
     row = t.to_row()
     assert "proc" not in row and row["id"] == t.id and row["state"] == tasks_mod.RUNNING
     json.dumps(row)
+
+
+def test_wait_or_promote_promotes_a_slow_call_and_keeps_a_fast_one():
+    # T517: a foreground call past the threshold is handed over as the SAME future.
+    import asyncio
+
+    async def slow():
+        await asyncio.sleep(0.3)
+        return "late"
+
+    async def fast():
+        return "quick"
+
+    async def main():
+        done, fut = await tasks_mod.wait_or_promote(slow(), 0.05)
+        assert not done and not fut.done()
+        assert await fut == "late"          # still the same work, finishing later
+        done, fut = await tasks_mod.wait_or_promote(fast(), 1.0)
+        assert done and fut.result() == "quick"
+        done, fut = await tasks_mod.wait_or_promote(fast(), 0)   # 0 = never promote
+        assert done and fut.result() == "quick"
+
+    asyncio.run(main())
+
+
+def test_start_text_names_the_promotion(tmp_path):
+    t = tasks_mod.new_task("bash", {"command": "sleep 900"}, "c1")
+    assert "still running after 30s" in tasks_mod.start_text(t, tmp_path, promoted_after=30)
+    assert "started" in tasks_mod.start_text(t, tmp_path)
+
+
+def test_only_a_schema_that_declares_background_is_backgroundable():
+    # Ryan: "not everything should be backgroundable ... only what makes sense".
+    assert tasks_mod.backgroundable("bash") and tasks_mod.backgroundable("powershell")
+    for tool in ("read", "edit", "grep", "write", "ask_user_question", "chrome",
+                 "pccontrol", "studio", "web_fetch", "skill", "view_image", "listen", "harness"):
+        assert not tasks_mod.backgroundable(tool), tool
+    assert not tasks_mod.backgroundable("no-such-tool")
