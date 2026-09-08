@@ -18,6 +18,7 @@ from pathlib import Path
 
 from litetui import file_state
 from litetui import ttyguard
+from litetui import tasks as tasks_mod
 from litetui.fmt import fmt_dur
 from litetui.plugins import PluginManifest
 from litetui import tool_schemas
@@ -178,10 +179,18 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
         )
     except OSError as e:
         return f"[error] {type(e).__name__}: {e}"
-    ttyguard.CANCELLABLE["proc"], ttyguard.CANCELLABLE["cancelled"] = proc, False
-    # Reset beside "cancelled": a False left over from a PREVIOUS command
-    # would attach its warning to this one's result.
-    ttyguard.CANCELLABLE["kill_confirmed"] = True
+    # A BACKGROUND call (T499) parks its child on the TASK, never on the one
+    # foreground cancel slot: two shells overlap now, and the cancel button
+    # must keep pointing at the one the turn is waiting on. `/tasks kill`
+    # reaches this child through the task.
+    task = tasks_mod.CURRENT.get()
+    if task is not None:
+        task.proc = proc
+    else:
+        ttyguard.CANCELLABLE["proc"], ttyguard.CANCELLABLE["cancelled"] = proc, False
+        # Reset beside "cancelled": a False left over from a PREVIOUS command
+        # would attach its warning to this one's result.
+        ttyguard.CANCELLABLE["kill_confirmed"] = True
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -191,11 +200,13 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
         # to press cancel on a tool that already ended. Slot cleared, that press
         # is an honest no-op; slot populated, it would arm "cancelled" and
         # dispatch a second kill racing this one's.
-        ttyguard.CANCELLABLE["proc"] = None
+        if task is None:
+            ttyguard.CANCELLABLE["proc"] = None
         return _bash_timeout_result(proc, timeout)
     finally:
-        ttyguard.CANCELLABLE["proc"] = None
-    if ttyguard.CANCELLABLE["cancelled"]:
+        if task is None:
+            ttyguard.CANCELLABLE["proc"] = None
+    if task is None and ttyguard.CANCELLABLE["cancelled"]:
         ttyguard.CANCELLABLE["cancelled"] = False
         return _bash_cancelled_result(out, err, t0)
     return _bash_completed_result(out, err, proc.returncode)

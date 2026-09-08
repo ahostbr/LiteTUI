@@ -24,6 +24,7 @@ from litetui.side_panel import present_dialog, show_dialog
 
 from litetui import llm_backend
 from litetui import paths
+from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
 from litetui import runtime_log
 from litetui.conversation import (
@@ -1144,6 +1145,8 @@ class LiteTUI(App):
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
         self._pending_input: list = []
+        # Background tool tasks (T499). Rows still running at boot come back LOST.
+        self.bg_tasks: dict = tasks_mod.load(paths.ROOT)
         #: Host authority for the turn currently consuming tools. Human turns
         #: start from settings; cron/inbox turns explicitly replace it with a
         #: narrower profile. The model never writes this field.
@@ -1779,10 +1782,88 @@ class LiteTUI(App):
                 return tool_denied("by-user", name=name), False
             if answer.remember:
                 self._remember_tool_rule(name, decision.capabilities)
+        # BACKGROUND (T499): the model asked not to wait. Authorization above
+        # is identical — the profile decision and any CONFIRM are taken HERE,
+        # once, at fire time — and the door is still the one call below: the
+        # awaitable is built once and either awaited now or handed to a
+        # worker that awaits it. `tools/tool_door_gate.py` counts that call.
+        background = isinstance(args, dict) and bool(args.pop("background", False))
+        aw = asyncio.to_thread(fn, args)
+        if background:
+            return self._start_background(name, args, aw), True
         try:
-            return str(await asyncio.to_thread(fn, args)), True
+            return str(await aw), True
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}", False
+
+    # ── background tasks (T499) ──────────────────────────────────────────
+    #
+    # A tool call the turn does not wait for. Input -> do work -> output,
+    # with the output arriving as INPUT NOBODY TYPED — so it is delivered
+    # down `_deliver_inbox`, the funnel mail and cron already use: held
+    # mid-turn, flushed after, wakes the agent unattended. Why the result
+    # cannot be a late role:"tool" message is in tasks.py's docstring.
+
+    def _start_background(self, name: str, args: dict, aw) -> str:
+        task = tasks_mod.new_task(name, args, getattr(self, "convo_id", ""))
+        self.bg_tasks[task.id] = task
+        self._save_background()
+        runtime_log.record("task.started", task_id=task.id, tool=name, label=task.label)
+        # Its own group, NOT "chat": `_stream` is exclusive in "chat", and a
+        # worker started there would cancel the turn that started it.
+        self.run_worker(
+            self._run_background(task, aw),
+            name=task.id, group="tasks", exclusive=False, exit_on_error=False,
+        )
+        return tasks_mod.start_text(task, paths.ROOT)
+
+    async def _run_background(self, task, aw) -> None:
+        # Set in THIS task's context before the door runs: asyncio.to_thread
+        # copies the context when it executes, so `_run_shell` sees the task
+        # and parks the child on it instead of the foreground cancel slot.
+        tasks_mod.CURRENT.set(task)
+        try:
+            result, ok = str(await aw), True
+        except Exception as e:
+            result, ok = f"[error] {type(e).__name__}: {e}", False
+        text = tasks_mod.finish(task, result, ok, paths.ROOT)
+        self._save_background()
+        runtime_log.record(
+            "task." + task.state, task_id=task.id, tool=task.tool,
+            seconds=round(task.seconds, 1),
+        )
+        self._deliver_inbox({"from": "task", "priority": "normal", "body": text})
+
+    def _save_background(self) -> None:
+        try:
+            tasks_mod.save(self.bg_tasks.values(), paths.ROOT)
+        except OSError:
+            pass  # an unwritable store must not stop the task
+
+    def _kill_background(self, task_id: str) -> None:
+        task = self.bg_tasks.get(task_id)
+        if task is None:
+            self._system(f"no task {task_id}")
+            return
+        if task.state != tasks_mod.RUNNING or task.proc is None:
+            self._system(f"{task_id} is {task.state}; nothing to kill")
+            return
+        task.state = tasks_mod.KILLED
+        self.notify(f"Killing {task_id}…", timeout=2)
+        self._kill_background_tree(task)
+
+    @work(thread=True, group="cancel")
+    def _kill_background_tree(self, task) -> None:
+        """Off the UI thread, like `_cancel_tool_tree`: kill_tree can block for seconds."""
+        proc = task.proc
+        killed = ttyguard.kill_tree(proc.pid, proc)
+        msg = (
+            f"{task.id} killed" if killed
+            else f"{task.id}: kill could not be confirmed — the process may still be running"
+        )
+        self.call_from_thread(
+            self.notify, msg, timeout=4, severity="information" if killed else "warning",
+        )
 
     def _remember_tool_rule(self, name: str, capabilities: frozenset[str]) -> None:
         """Record "always allow" so the same question is not asked twice.
