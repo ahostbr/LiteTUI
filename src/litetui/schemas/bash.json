@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "bash",
-    "description": "Execute a shell command in the current working directory (bash on Unix, cmd.exe on Windows). ON WINDOWS, PREFER THE `powershell` TOOL \u2014 this one runs cmd.exe, where sleep, grep, sed and input redirection are all unavailable. Returns stdout and stderr, truncated to the last 2000 lines or 50KB. Non-zero exit codes are reported. Optionally provide a timeout in seconds (default 120). Pass background=true to fire and forget a long command; its result comes back later as a message. A call still running after 30 seconds is moved to the background automatically (same delivery) — pass a timeout long enough for the work; it still applies to a backgrounded call.",
+    "description": "Execute a shell command in the current working directory (bash on Unix; {shell_note}). {windows_hint} Returns stdout and stderr, truncated to the last 2000 lines or 50KB. Non-zero exit codes are reported. Optionally provide a timeout in seconds (default 120). Pass background=true to fire and forget a long command; its result comes back later as a message. A call still running after 30 seconds is moved to the background automatically (same delivery) — pass a timeout long enough for the work; it still applies to a backgrounded call.",
     "parameters": {
       "type": "object",
       "properties": {

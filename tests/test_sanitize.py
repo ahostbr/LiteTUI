@@ -26,7 +26,8 @@ def chk(label, cond):
 
 
 print("=== the fixture actually emitted escapes (real subprocess, real capture) ===")
-raw = tool_bash({"command": f"{sys.executable} {Path(__file__).parent / '_emit_escapes.py'}"})
+# Quoted: under a real bash (T530) an unquoted C:\dirile loses its backslashes.
+raw = tool_bash({"command": f'"{sys.executable}" "{Path(__file__).parent / "_emit_escapes.py"}"'})
 chk("capture produced ESC bytes (fixture is not a tautology)", "\x1b" in raw)
 
 print("\n=== the real captured bytes come out clean ===")

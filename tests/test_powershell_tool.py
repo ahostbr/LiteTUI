@@ -102,9 +102,14 @@ def test_both_descriptions_point_windows_at_powershell() -> None:
     ps = ct.powershell_spec()["function"]["description"].lower()
     bash = ct.BASH_SPEC["function"]["description"].lower()
     assert "prefer" in ps and "bash" in ps, "the PS tool does not claim precedence"
-    assert "powershell" in bash and "prefer" in bash, (
-        "bash does not point Windows users at the PowerShell tool"
-    )
+    # T530: with a real bash on the box the tool IS bash and the description
+    # names it; the "prefer powershell" pointer is the cmd.exe-only wording.
+    # Either way it must still name the powershell tool.
+    assert "powershell" in bash, "bash does not mention the PowerShell tool"
+    if ct.bash_exe() is None:
+        assert "prefer" in bash, "bash (cmd.exe) does not point Windows users at PowerShell"
+    else:
+        assert ct.bash_exe().lower() in bash, "bash does not name the shell it runs"
 
 
 def test_powershell_is_offered_before_bash() -> None:
