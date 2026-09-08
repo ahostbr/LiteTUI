@@ -1,7 +1,7 @@
 """T507-T6 — RPC behavioral tests.
 
 Spawns `litetui --rpc` and drives it through JSONL stdin/stdout.
-Skips when the llama-server router at :7470 is not answering.
+Skips when no model server is answering on the configured backend.
 """
 from __future__ import annotations
 
@@ -15,19 +15,30 @@ from pathlib import Path
 import pytest
 import urllib.request
 
-ROUTER_URL = "http://127.0.0.1:7470/models"
+from litetui import settings as settings_mod
 
 
-def router_up() -> bool:
+def _probe_url() -> str:
+    """Return the models endpoint for the configured backend."""
+    s = settings_mod.load()
+    if s.backend == "lmstudio":
+        return f"{s.lm_host.rstrip('/')}/v1/models"
+    return f"{s.llama_host.rstrip('/')}/models"
+
+
+BACKEND_URL = _probe_url()
+
+
+def backend_up() -> bool:
     try:
-        urllib.request.urlopen(ROUTER_URL, timeout=3)
+        urllib.request.urlopen(BACKEND_URL, timeout=3)
         return True
     except Exception:
         return False
 
 
-SKIP_REASON = f"llama-server router at {ROUTER_URL} is not responding"
-_needs_router = pytest.mark.skipif(not router_up(), reason=SKIP_REASON)
+SKIP_REASON = f"model server at {BACKEND_URL} is not responding"
+_needs_backend = pytest.mark.skipif(not backend_up(), reason=SKIP_REASON)
 
 
 class RpcSession:
@@ -110,7 +121,7 @@ def session(tmp_path):
     s.close()
 
 
-@_needs_router
+@_needs_backend
 class TestRpcTurn:
     def test_ready_event(self, session: RpcSession):
         ready = session.wait_ready()
@@ -259,7 +270,7 @@ class TestStdoutPurity:
             proc.wait()
 
 
-@_needs_router
+@_needs_backend
 class TestArgv:
     def test_prompt_argv(self, tmp_path):
         """GP3: --prompt submits the first turn."""
