@@ -1721,12 +1721,8 @@ class LiteTUI(App):
         return self.plugins.dispatch_for(name)
 
     async def _execute_tool(self, name: str, args: dict) -> tuple[str, bool]:
-        """The one host authorization door before any tool side effect.
-
-        Metadata lives in the registry; the active turn profile lives in the
-        host. A denial returns an ordinary tool result so the model can adapt
-        without an exception tearing the tool-call pairing apart.
-        """
+        """The one host authorization door before any tool side effect."""
+        self._rpc_emit({"type": "tool_call", "name": name, "args": args})
         # THE TOGGLE IS ENFORCED HERE, BEFORE RESOLUTION, so a disabled tool
         # cannot run even if another branch is added above the policy gate.
         # ok=False because nothing executed — callers use that flag to record
@@ -4034,6 +4030,7 @@ class LiteTUI(App):
         # also the right moment — LM Studio JIT-loads on the previous turn's
         # first request, so by now the real window exists to be read.
         self._resync_ctx_if_stale()
+        self._rpc_emit({"type": "turn_start", "model": self.model_id, "thinking_level": self.thinking_level})
         compact_due = False
         stopped_early = False
         for _iteration in range(self.settings.tool_iterations):
@@ -4108,9 +4105,6 @@ class LiteTUI(App):
                     operation="stream",
                     error_type=type(e).__name__,
                 )
-                # The raw exception goes to the sink; the bubble gets plain
-                # words — a mid-turn LM Studio close is THE case this copy was
-                # written for.
                 runtime_log.record_error(
                     "turn_stream_failed",
                     detail=f"{type(e).__name__}: {e}",
@@ -4121,6 +4115,7 @@ class LiteTUI(App):
                 widget.body.content = Text(_plain_backend_error(e, self.backend.name), style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
+                self._rpc_emit({"type": "turn_end", "stopReason": "error", "error": _plain_backend_error(e, self.backend.name)})
                 return
 
             try:
@@ -4159,6 +4154,7 @@ class LiteTUI(App):
                             self.tps = rate
                         self._glassbox_rate("thinking")
                         reasoning += token
+                        self._rpc_emit({"type": "reasoning_delta", "text": token})
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
                             self._thinking_live = thinking
@@ -4193,6 +4189,7 @@ class LiteTUI(App):
                         self._thinking_done()
                         self._elapsed.stop_body()
                         text_full += delta.content
+                        self._rpc_emit({"type": "text_delta", "text": delta.content})
                         widget.body.content = Text(text_full + " \u258c")
                         self._scroll_down(only_if_following=True)
                     if self._stop_requested:
@@ -4302,6 +4299,7 @@ class LiteTUI(App):
                 # KILLED rather than finished, so the post-compaction wake ping
                 # does not tell the model to resume what the user just stopped.
                 self._turn_abandoned = True
+                self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
                 self.call_after_refresh(self._maybe_autocompact)
                 return
 
@@ -4309,6 +4307,7 @@ class LiteTUI(App):
                 # Turn is over. Check the window AFTER this worker exits:
                 # _compact shares group="chat" and would cancel us mid-frame.
                 await self.plugins.finalize_turn()
+                self._rpc_emit({"type": "turn_end", "stopReason": "stop"})
                 self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
                 return  # plain answer — agent loop done
@@ -4411,6 +4410,7 @@ class LiteTUI(App):
                 if pct is not None
                 else "[pausing to compact between tool iterations]"
             )
+            self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
             self.call_after_refresh(self._maybe_autocompact)
             return
 
@@ -4421,8 +4421,10 @@ class LiteTUI(App):
             # line only has to avoid claiming a cap was reached.
             self._system(self._stop_reason or "[stopped by you]")
             self._turn_abandoned = True
+            self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
             return
 
+        self._rpc_emit({"type": "turn_end", "stopReason": "tools_cap"})
         self._system(
             f"[stopped \u2014 reached {self.settings.tool_iterations} tool iterations in one turn — raise it in /settings]"
         )
