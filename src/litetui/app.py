@@ -1077,12 +1077,24 @@ class LiteTUI(App):
     # keeps showing the last measurement while idle rather than blanking.
     tps: reactive[float | None] = reactive(None)
 
-    def __init__(self, **app_kwargs):
-        # Forwarded verbatim to textual.App — today only ansi_color rides this
-        # (the legacy-conhost fallback both launchers pass; see
-        # wants_ansi_fallback). A named-parameter copy here would drift from
-        # Textual's own signature.
+    def __init__(
+        self,
+        *,
+        rpc: bool = False,
+        first_prompt: str | None = None,
+        system_prompt: str | None = None,
+        initial_model: str | None = None,
+        tool_profile: str | None = None,
+        convo_id: str | None = None,
+        **app_kwargs,
+    ):
         super().__init__(**app_kwargs)
+        self._rpc = rpc
+        self._first_prompt = first_prompt
+        self._cli_system_prompt = system_prompt
+        self._cli_initial_model = initial_model
+        self._cli_tool_profile = tool_profile
+        self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
         self.conversation: list[dict] = []
@@ -1151,6 +1163,12 @@ class LiteTUI(App):
         #: start from settings; cron/inbox turns explicitly replace it with a
         #: narrower profile. The model never writes this field.
         self._active_tool_profile = self.settings.tool_policy_profile
+        # T507-T1: CLI overrides, applied in on_mount after _connect.
+        if self._cli_tool_profile:
+            from litetui import tool_policy
+            profile_map = {"autonomous": tool_policy.AUTONOMOUS, "interactive": tool_policy.INTERACTIVE, "scheduled": tool_policy.SCHEDULED}
+            if self._cli_tool_profile in profile_map:
+                self._active_tool_profile = profile_map[self._cli_tool_profile]
         #: Cron jobs, loaded once at construction. A scheduled prompt is an
         #: INPUT nobody typed, so it rides the same held/flushed path as inbox
         #: mail rather than growing a second delivery route.
@@ -1345,6 +1363,9 @@ class LiteTUI(App):
         # MCP servers connect AFTER the first frame. See __init__ for why.
         if self.settings.mcp_enabled and self.mcp.configs:
             self._mcp_connect()
+        # T507-T1: apply CLI args after connection is up.
+        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt:
+            self._apply_cli_args()
 
     @work(exclusive=True, group="mcp")
     async def _mcp_connect(self) -> None:
@@ -2592,6 +2613,25 @@ class LiteTUI(App):
             self._system(_plain_backend_error(e, self.backend.name))
 
     _connect = connect          # arrival alias (PLAN §2b)
+
+    @work(exclusive=True, group="cli-args")
+    async def _apply_cli_args(self) -> None:
+        """T507-T1: apply --model, --system-prompt, --prompt after connect."""
+        # Wait for connect to populate available_models (up to 10s).
+        for _ in range(20):
+            if self.available_models:
+                break
+            await asyncio.sleep(0.5)
+        if self._cli_initial_model:
+            if self._cli_initial_model in self.available_models:
+                self.model_id = self._cli_initial_model
+            else:
+                self._system(f"[cli] --model {self._cli_initial_model!r} not available")
+        if self._cli_system_prompt:
+            self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
+        if self._first_prompt:
+            await self._ensure_chat_ready(timeout=15.0)
+            self._submit_text(self._first_prompt, alt_chord=False)
 
     # ── Context window readout (footer) ───────────────────────
 

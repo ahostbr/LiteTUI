@@ -13,22 +13,65 @@ number itself must stay cheap.
 
 from __future__ import annotations
 
+import argparse
+import os
 import sys
 
 
 def main() -> None:
     # Fast path for probes: --version / -V print and exit before app.py (and its
-    # Textual import) is ever loaded. Cold-start matters — this is the first thing
-    # a stranger's shell runs after `uv pip install litetui`.
+    # Textual import) is ever loaded.
     if any(a in ("--version", "-V") for a in sys.argv[1:]):
-        from litetui.version import __version__  # cheap by design (see version.py)
+        from litetui.version import __version__
 
         print(f"litetui {__version__}")
         return
 
-    from litetui.app import LiteTUI, wants_ansi_fallback  # heavy — deferred past the probe
+    parser = argparse.ArgumentParser(
+        prog="litetui",
+        description="LiteTUI — a terminal interface for local LLMs",
+        add_help=False,
+    )
+    parser.add_argument("--version", "-V", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--rpc", action="store_true", help="headless JSONL-over-stdio mode")
+    parser.add_argument("--model", type=str, default=None, help="model slug to select on start")
+    parser.add_argument("--prompt", type=str, default=None, help="first turn to submit once ready")
+    parser.add_argument("--system-prompt", type=str, default=None, help="prepend a system message")
+    parser.add_argument("--cwd", type=str, default=None, help="change working directory before start")
+    parser.add_argument(
+        "--tool-profile",
+        type=str,
+        default=None,
+        choices=["autonomous", "interactive", "scheduled"],
+        help="tool policy profile (default: autonomous when --rpc, else settings)",
+    )
+    parser.add_argument("--convo", type=str, default=None, help="resume a conversation by id")
 
-    LiteTUI(ansi_color=wants_ansi_fallback()).run()
+    args, remaining = parser.parse_known_args()
+
+    if args.cwd:
+        os.chdir(args.cwd)
+
+    from litetui.app import LiteTUI, wants_ansi_fallback
+
+    app_kwargs: dict = {}
+    if not args.rpc:
+        app_kwargs["ansi_color"] = wants_ansi_fallback()
+
+    app = LiteTUI(
+        rpc=args.rpc,
+        first_prompt=args.prompt,
+        system_prompt=args.system_prompt,
+        initial_model=args.model,
+        tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
+        convo_id=args.convo,
+        **app_kwargs,
+    )
+
+    if args.rpc:
+        app.run(headless=True)
+    else:
+        app.run()
 
 
 if __name__ == "__main__":
