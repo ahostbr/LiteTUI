@@ -4216,6 +4216,10 @@ class LiteTUI(App):
                 widget.body.content = Text(_plain_backend_error(e, self.backend.name), style="bold red")
                 widget.border_title = "Error"
                 self._scroll_down()
+                # T526: the open-failure branch above emits this; this branch
+                # did not, so an rpc client (LiteSuite's LiteTuiAdapter) that
+                # saw turn_start waited forever on a mid-stream 400.
+                self._rpc_emit({"type": "turn_end", "stopReason": "error", "error": _plain_backend_error(e, self.backend.name)})
                 return
 
             self._elapsed.stop_body()
