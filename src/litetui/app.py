@@ -2373,8 +2373,14 @@ class LiteTUI(App):
         else:
             mode = "no tools"
         level = self.thinking_level or "default"
+        model_levels = getattr(self, "_model_thinking_levels", None)
         if self.backend.name == "lmstudio" and level not in ("off", "default"):
-            think = f"think:on ({level} on llama.cpp)"
+            if model_levels and level in model_levels:
+                think = f"think:{level}"
+            elif model_levels and level not in model_levels:
+                think = f"think:on ({level} kept for llama.cpp)"
+            else:
+                think = f"think:on ({level} on llama.cpp)"
         else:
             think = f"think:{level}"
         cwd = str(Path.cwd())
