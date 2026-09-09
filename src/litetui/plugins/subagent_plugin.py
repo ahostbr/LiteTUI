@@ -2,7 +2,10 @@
 
 No tools, no parent history — the child sees only its own prompt (and an
 optional system message). The loaded model pool is SHARED across live slots,
-so the settings cap (subagent_max_tokens, default 20k) is the ceiling.
+so the ceiling is the app's own thinking-safe budget, settings.compact_max_tokens
+(Ryan 2026-09-08 21:0x: "litetui already has a think token budget set reuse
+that for subagents its the same model running") — the knob the tool-result
+summariser side call reuses too, never a third literal.
 
 Thinking is OFF by default (reasoning_effort "none" on the wire, same as the
 app's own "off" level). Pass think=true when chain-of-thought is wanted.
@@ -54,7 +57,7 @@ def _make_runner(app):
         model = (args.get("model") or "").strip() or getattr(app, "model_id", None) or "local-model"
         think = bool(args.get("think", False))
         file_paths = args.get("files") or []
-        cap = getattr(getattr(app, "settings", None), "subagent_max_tokens", 20000) or 20000
+        cap = getattr(getattr(app, "settings", None), "compact_max_tokens", 12288) or 12288
         max_tokens = min(int(args.get("max_tokens") or cap), cap)
 
         user_content = prompt

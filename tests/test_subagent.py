@@ -61,7 +61,7 @@ class TestRunner:
             model_id=model,
             settings=SimpleNamespace(
                 lm_host=host,
-                subagent_max_tokens=20000,
+                compact_max_tokens=12288,
             ),
         )
 
@@ -75,7 +75,7 @@ class TestRunner:
     def test_max_tokens_capped(self):
         from litetui.plugins.subagent_plugin import _make_runner
         app = self._make_app()
-        app.settings.subagent_max_tokens = 5000
+        app.settings.compact_max_tokens = 5000
 
         captured = {}
 

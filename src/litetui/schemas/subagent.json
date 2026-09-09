@@ -2,38 +2,38 @@
   "type": "function",
   "function": {
     "name": "subagent",
-    "description": "Fire a ONE-SHOT chat completion in its own LM Studio slot — no tools, no parent history. Use it for summaries, translations, classifications, or any task you can express as a single prompt/response. The child shares the loaded model pool; thinking is OFF by default so tokens go to content. Pass file paths in `files` — never paste file bodies into `prompt` (the prompt is streamed live and a large body freezes the UI for seconds). Pass background=true for tasks you do not need to wait on; the result arrives later as a message tagged [inbox from task].",
+    "description": "Delegate a self-contained, single-prompt job to a child model that runs in its OWN LM Studio slot, in parallel with you. Use it whenever a step is prompt -> response with no tools needed: summarise or analyse a file or a long tool result, translate, classify, extract, draft a section, answer a question from given material. The child has NO tools and NO conversation history: everything it needs goes in `prompt` (the instruction) and `files` (paths it reads itself). Canonical call: {\"prompt\": \"Summarise this README in 3 bullets.\", \"files\": [\"README.md\"], \"background\": true}. Rules: (1) never read a file yourself only to hand its text over, and never paste file or tool output into `prompt` -- pass the path in `files` (the prompt is streamed token by token and a pasted body stalls you for seconds); (2) use background=true and keep working: the call returns a task id at once, the result arrives later as a message tagged [inbox from task], and the full text is in output/tasks/<id>.log (read it with the read tool); (3) leave max_tokens, think, model and system unset unless you have a specific reason. Not for: edits, shell commands, anything that needs tools or your conversation context -- do those yourself.",
     "parameters": {
       "type": "object",
       "properties": {
         "prompt": {
           "type": "string",
-          "description": "The user-role message for the child completion"
-        },
-        "system": {
-          "type": "string",
-          "description": "Optional system prompt for the child completion"
-        },
-        "max_tokens": {
-          "type": "integer",
-          "description": "Response budget for the child (default: subagent_max_tokens setting, capped at that value)"
-        },
-        "model": {
-          "type": "string",
-          "description": "Model id to use for the child; omit to use the parent's current model"
+          "description": "The instruction for the child, as one message: what to produce, in what shape and length. Refer to attached files by name; never include their text here."
         },
         "files": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "File paths to read and append to the prompt as fenced blocks. Pass paths here — never paste file content into prompt."
-        },
-        "think": {
-          "type": "boolean",
-          "description": "true = allow reasoning (chain-of-thought). Default false: reasoning is suppressed so the full budget goes to content."
+          "description": "Paths (absolute, or relative to the working directory) the TOOL reads and appends to the prompt as fenced blocks headed by the path. This is how the child gets file content; a missing path is an error, not a silent skip."
         },
         "background": {
           "type": "boolean",
-          "description": "true = do not wait: returns at once with a task id while the completion runs. Its output arrives later as a message tagged [inbox from task], and the full output is at output/tasks/<id>.log (read it with the read tool)."
+          "description": "true (recommended): return at once with a task id while the child runs in parallel; continue with other work. The output arrives later as a message tagged [inbox from task] and is kept at output/tasks/<id>.log. false: wait for the answer inline."
+        },
+        "system": {
+          "type": "string",
+          "description": "Optional system prompt for the child. Leave unset unless the job needs a persona or strict output format."
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Leave unset. The default is the app's compact_max_tokens budget, the same model's thinking-safe budget; a small value here starves the answer."
+        },
+        "think": {
+          "type": "boolean",
+          "description": "Leave unset (false): the child answers without chain-of-thought so its budget goes to content. true only for a job that genuinely needs multi-step reasoning."
+        },
+        "model": {
+          "type": "string",
+          "description": "Leave unset to use your current model. A model id from /models only when a different loaded model is clearly better for the job."
         }
       },
       "required": [
