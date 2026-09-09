@@ -95,6 +95,7 @@ from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import tool_policy
 from litetui.turn_engine import TurnEngine
+from litetui import thinking_probe
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
 from litetui.tool_approval import ToolApprovalBody, ToolApprovalScreen
@@ -1115,6 +1116,9 @@ class LiteTUI(App):
         self.thinking_level: str | None = self.settings.thinking_level
         # One warning per session: this is a config truth, not a per-turn event.
         self._reasoning_ignored_warned = False
+        # T540: the levels this model actually supports (from probe or seed).
+        # None = not yet probed; a list = the effective set.
+        self._model_thinking_levels: list[str] | None = None
         # Images staged by view_image during a tool round, drained into a
         # role:"user" turn once the round's tool results are appended.
         self._pending_tool_images: list[tuple[str, str]] = []
@@ -2369,8 +2373,14 @@ class LiteTUI(App):
         else:
             mode = "no tools"
         level = self.thinking_level or "default"
+        model_levels = getattr(self, "_model_thinking_levels", None)
         if self.backend.name == "lmstudio" and level not in ("off", "default"):
-            think = f"think:on ({level} on llama.cpp)"
+            if model_levels and level in model_levels:
+                think = f"think:{level}"
+            elif model_levels and level not in model_levels:
+                think = f"think:on ({level} kept for llama.cpp)"
+            else:
+                think = f"think:on ({level} on llama.cpp)"
         else:
             think = f"think:{level}"
         cwd = str(Path.cwd())
@@ -2546,6 +2556,8 @@ class LiteTUI(App):
                 # model_switch.py), so nothing is lost by staying quiet.
                 if len(self.available_models) > 1:
                     self._system(f"{len(self.available_models)} models available — /models to list, /model <n> to switch")
+                if self.backend.name == "lmstudio":
+                    self._probe_thinking()
             else:
                 self.sub_title = "No model loaded"
                 # No URL here: a bare address tells a human nothing to DO. Name
@@ -3276,6 +3288,18 @@ class LiteTUI(App):
             "least thinking this model actually supports."
         )
 
+    @work(thread=True, group="thinking-probe", exclusive=True)
+    def _probe_thinking(self) -> None:
+        """T540: discover the real thinking levels for the current model."""
+        model = self.model_id
+        if not model:
+            return
+        host = self.settings.lm_host
+        seed = getattr(self.settings, "lmstudio_graded_thinking_models", ())
+        levels = thinking_probe.get_effective_levels(host, model, seed)
+        self._model_thinking_levels = levels
+        self._update_header()
+
     def _still_following(self, log) -> bool:
         """Has the READER moved, or has the CONTENT moved?
 
@@ -3531,10 +3555,14 @@ class LiteTUI(App):
         if not model_id or model_id == self.model_id:
             return
         self.model_id = model_id
+        self._model_thinking_levels = None
+        thinking_probe.clear_cache(model_id)
         self._update_header()
         self._fetch_ctx_window()
         self._system(f"Switched to: {self.model_id}")
         self._apply_context_length()
+        if self.backend.name == "lmstudio":
+            self._probe_thinking()
 
     # ⚠️ `_on_` IS NOT A "HIDDEN FROM TEXTUAL" PREFIX. MessagePump dispatch does
     # `cls.__dict__.get(f"_{method_name}") or cls.__dict__.get(method_name)` —

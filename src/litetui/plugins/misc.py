@@ -25,6 +25,10 @@ def _cmd_think(app, name: str, arg: str) -> None:
             "\nunset means the field is not sent at all — LM Studio then "
             "applies its OWN default, which is xhigh. 'unset' is not 'off'."
         )
+        model_levels = getattr(app, "_model_thinking_levels", None)
+        if model_levels:
+            levels_str = ", ".join(model_levels)
+            note += f"\nThis model supports: {levels_str}"
         app.system_message(
             f"Thinking level: {current}\n"
             f"Levels: {', '.join(THINKING_LEVELS)}, or 'unset'\n"
@@ -40,12 +44,20 @@ def _cmd_think(app, name: str, arg: str) -> None:
         wire = "none" if app.thinking_level == "off" else app.thinking_level
         msg = f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})"
         backend = getattr(getattr(app, "backend", None), "name", "")
+        model_levels = getattr(app, "_model_thinking_levels", None)
         if backend == "lmstudio" and app.thinking_level not in ("off", None):
-            msg += (
-                "\nOn the LM Studio backend, graded levels are on/off only — "
-                "your level is saved and will apply when you switch to llama.cpp. "
-                "'off' is the only real reduction here."
-            )
+            if model_levels and app.thinking_level not in model_levels:
+                msg += (
+                    f"\nThis model does not support {app.thinking_level!r} — "
+                    f"supported levels: {', '.join(model_levels)}. "
+                    "The level is saved and will apply on llama.cpp."
+                )
+            elif not model_levels:
+                msg += (
+                    "\nOn the LM Studio backend, graded levels are on/off only — "
+                    "your level is saved and will apply when you switch to llama.cpp. "
+                    "'off' is the only real reduction here."
+                )
         app.system_message(msg)
     else:
         app.system_message(
