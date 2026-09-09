@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "subagent",
-    "description": "Fire a ONE-SHOT chat completion in its own LM Studio slot — no tools, no parent history. Use it for summaries, translations, classifications, or any task you can express as a single prompt/response. The child shares the loaded model pool, so keep max_tokens modest (default capped by settings). Pass background=true for tasks you do not need to wait on; the result arrives later as a message tagged [inbox from task].",
+    "description": "Fire a ONE-SHOT chat completion in its own LM Studio slot — no tools, no parent history. Use it for summaries, translations, classifications, or any task you can express as a single prompt/response. The child shares the loaded model pool; reasoning is suppressed by default (reasoning_effort low) so tokens go to content. Pass think=true when chain-of-thought is needed. Pass background=true for tasks you do not need to wait on; the result arrives later as a message tagged [inbox from task].",
     "parameters": {
       "type": "object",
       "properties": {
@@ -16,11 +16,15 @@
         },
         "max_tokens": {
           "type": "integer",
-          "description": "Response budget for the child (default: subagent_max_tokens setting, typically 20000)"
+          "description": "Response budget for the child (default: subagent_max_tokens setting, capped at that value)"
         },
         "model": {
           "type": "string",
           "description": "Model id to use for the child; omit to use the parent's current model"
+        },
+        "think": {
+          "type": "boolean",
+          "description": "true = allow reasoning (chain-of-thought). Default false: reasoning is suppressed so the full budget goes to content."
         },
         "background": {
           "type": "boolean",

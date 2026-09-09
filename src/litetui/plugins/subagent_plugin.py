@@ -27,6 +27,7 @@ def _make_runner(app):
             return "[error] prompt is required"
         system = (args.get("system") or "").strip() or None
         model = (args.get("model") or "").strip() or getattr(app, "model_id", None) or "local-model"
+        think = bool(args.get("think", False))
         cap = getattr(getattr(app, "settings", None), "subagent_max_tokens", 20000) or 20000
         max_tokens = min(int(args.get("max_tokens") or cap), cap)
 
@@ -37,12 +38,15 @@ def _make_runner(app):
 
         host = getattr(getattr(app, "settings", None), "lm_host", "http://localhost:1234")
         url = f"{host.rstrip('/')}/v1/chat/completions"
-        body = json.dumps({
+        payload: dict = {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
             "stream": False,
-        }).encode()
+        }
+        if not think:
+            payload["extra_body"] = {"reasoning_effort": "low"}
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(
             url, data=body,
             headers={"Content-Type": "application/json"},
@@ -55,10 +59,23 @@ def _make_runner(app):
             return f"[error] {type(e).__name__}: {e}"
 
         choice = (data.get("choices") or [{}])[0]
-        text = (choice.get("message") or {}).get("content") or ""
+        msg = choice.get("message") or {}
+        text = (msg.get("content") or "").strip()
+        reasoning = (msg.get("reasoning_content") or "").strip()
         usage = data.get("usage") or {}
         tokens = usage.get("completion_tokens", "?")
-        return f"{text.strip()}\n\n[subagent · {tokens} tokens · model {model}]"
+
+        if not text and reasoning:
+            tail = reasoning[-2000:] if len(reasoning) > 2000 else reasoning
+            return (
+                f"[subagent · {tokens} tokens · model {model} · "
+                f"WARNING: all tokens went to reasoning, content empty — "
+                f"retry with think=false or a higher max_tokens]\n\n"
+                f"Reasoning tail:\n{tail}"
+            )
+        if not text:
+            return f"[subagent · {tokens} tokens · model {model} · empty response]"
+        return f"{text}\n\n[subagent · {tokens} tokens · model {model}]"
 
     return tool_subagent
 
