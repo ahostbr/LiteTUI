@@ -554,6 +554,49 @@ def format_message(msg: dict) -> str:
 HARNESS_TOOL_SPEC = tool_schemas.load("harness")
 
 
+AGENTS_DIR = Path.home() / ".liteharness" / "agents"
+
+
+def resolve_agent(token: str) -> tuple[str | None, str]:
+    """Resolve a name or id prefix to a full agent id.
+
+    Returns (full_id, error_message). On success error_message is empty.
+    On failure full_id is None and the error says why.
+    """
+    if not AGENTS_DIR.is_dir():
+        return None, "agent registry not found"
+    agents: list[tuple[str, str]] = []
+    for f in AGENTS_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            aid = data.get("agent_id") or f.stem
+            name = data.get("name") or ""
+            agents.append((aid, name))
+        except Exception:
+            continue
+    if not agents:
+        return None, "no agents registered"
+    # exact id
+    for aid, name in agents:
+        if aid == token:
+            return aid, ""
+    # exact name (case-insensitive)
+    by_name = [(aid, n) for aid, n in agents if n.lower() == token.lower()]
+    if len(by_name) == 1:
+        return by_name[0][0], ""
+    if len(by_name) > 1:
+        ids = ", ".join(a for a, _ in by_name)
+        return None, f"ambiguous name {token!r} matches {len(by_name)} agents: {ids}. Use discover to get the full id."
+    # unique id prefix
+    by_prefix = [(aid, n) for aid, n in agents if aid.startswith(token)]
+    if len(by_prefix) == 1:
+        return by_prefix[0][0], ""
+    if len(by_prefix) > 1:
+        candidates = ", ".join(f"{a[:8]} ({n})" for a, n in by_prefix)
+        return None, f"ambiguous prefix {token!r} matches {len(by_prefix)} agents: {candidates}. Use discover to get the full id."
+    return None, f"no agent matches {token!r}. Use discover to list online agents."
+
+
 def discover() -> str:
     """Who is online, as the CLI reports it.
 
@@ -599,14 +642,16 @@ def run(seat, args: dict) -> str:
         return "\n\n".join(format_message(m) for m in msgs)
 
     if action == "send":
-        to = str(args.get("to") or "").strip()
+        to_raw = str(args.get("to") or "").strip()
         body = str(args.get("body") or "")
-        if not to:
+        if not to_raw:
             return "[error] send: `to` is required — get an agent id from discover"
         if not body.strip():
             return "[error] send: `body` is required"
+        to, err = resolve_agent(to_raw)
+        if to is None:
+            return f"[error] send: {err}"
         if to == seat.agent_id:
-            # watch_inbox drops from == to by design, so this could never arrive.
             return (
                 "[error] send: that is your OWN id. The watcher drops self-addressed "
                 "mail, so it would be silently discarded rather than delivered."
