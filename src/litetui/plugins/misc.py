@@ -38,7 +38,15 @@ def _cmd_think(app, name: str, arg: str) -> None:
         app.thinking_level = arg.lower()
         app.update_header()
         wire = "none" if app.thinking_level == "off" else app.thinking_level
-        app.system_message(f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})")
+        msg = f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})"
+        backend = getattr(getattr(app, "backend", None), "name", "")
+        if backend == "lmstudio" and app.thinking_level not in ("off", None):
+            msg += (
+                "\nOn the LM Studio backend, graded levels are on/off only — "
+                "your level is saved and will apply when you switch to llama.cpp. "
+                "'off' is the only real reduction here."
+            )
+        app.system_message(msg)
     else:
         app.system_message(
             f"Unknown level: {arg}\nValid: {', '.join(THINKING_LEVELS)}, unset"

@@ -39,6 +39,26 @@ from __future__ import annotations
 from litetui import llm_backend
 
 
+def _resolve_reasoning_effort(level: str | None, backend_name: str) -> str | None:
+    """Wire value for reasoning_effort given the user's level and the backend.
+
+    llamacpp: verbatim ("none" for off, the graded level otherwise).
+    lmstudio: binary — "none" for off, OMIT (None) for any graded level.
+    LM Studio silently drops graded values on models without a reasoning-level
+    mapping and the model then reasons at the server default (measured T539).
+    Omitting is byte-identical to what a dropped graded level produces anyway,
+    so the collapse changes no wire behaviour — it only stops the app claiming
+    a level it is not getting.
+    """
+    if not level:
+        return None
+    if level == "off":
+        return "none"
+    if backend_name == "lmstudio":
+        return None
+    return level
+
+
 class TurnEngine:
     """Pure turn decisions. No widgets, no Textual, no network, no disk."""
 
@@ -92,6 +112,11 @@ class TurnEngine:
     # ── request assembly ─────────────────────────────────────────────────
 
     @staticmethod
+    def resolve_reasoning_effort(level: str | None, backend_name: str) -> str | None:
+        """Public alias for tests."""
+        return _resolve_reasoning_effort(level, backend_name)
+
+    @staticmethod
     def chat_request(
         *,
         model_id: str | None,
@@ -102,6 +127,7 @@ class TurnEngine:
         request_overrides: dict,
         thinking_level: str | None,
         tools: list[dict] | None = None,
+        backend_name: str = "",
     ) -> dict:
         """The request a normal streamed turn sends."""
         kwargs: dict = {
@@ -145,8 +171,9 @@ class TurnEngine:
         # The per-model Thinking Level (/modelcfg Inference tab) arrives here
         # already merged into extra; blank there means inherit the global.
         level = extra.pop("reasoning_effort", None) or thinking_level
-        if level:
-            extra["reasoning_effort"] = "none" if level == "off" else level
+        wire = _resolve_reasoning_effort(level, backend_name)
+        if wire:
+            extra["reasoning_effort"] = wire
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
@@ -161,6 +188,7 @@ class TurnEngine:
         request_overrides: dict | None = None,
         tools_enabled: bool,
         tools: list[dict] | None = None,
+        backend_name: str = "",
     ) -> dict:
         """The request a compaction turn sends.
 
@@ -176,12 +204,10 @@ class TurnEngine:
         # The per-model Thinking Level wins over the compact global; blank
         # there means inherit it — same rule as a chat turn.
         level = (request_overrides or {}).get("reasoning_effort") or thinking_level
-        # Symmetric with the chat arm: an absent level must leave the server's
-        # own default in charge, not send a null. 'off' is this app's word;
-        # the wire says 'none'.
         extra_body: dict = {}
-        if level:
-            extra_body["reasoning_effort"] = "none" if level == "off" else level
+        wire = _resolve_reasoning_effort(level, backend_name)
+        if wire:
+            extra_body["reasoning_effort"] = wire
         kwargs: dict = {
             "model": model_id or "local-model",
             "messages": messages,
