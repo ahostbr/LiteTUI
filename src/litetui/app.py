@@ -2368,15 +2368,17 @@ class LiteTUI(App):
             mode = f"tools:{len(self._all_tools())}"
         else:
             mode = "no tools"
-        think = self.thinking_level or "default"
+        level = self.thinking_level or "default"
+        if self.backend.name == "lmstudio" and level not in ("off", "default"):
+            think = f"think:on ({level} on llama.cpp)"
+        else:
+            think = f"think:{level}"
         cwd = str(Path.cwd())
         home = str(Path.home())
         if cwd.startswith(home):
             cwd = "~" + cwd[len(home):]
-        # Which ENGINE is serving is now a real question \u2014 two backends can
-        # hold two different models resident. Named, not inferred.
         engine = "llama.cpp" if self.backend.name == "llamacpp" else "LM Studio"
-        parts = [p for p in (engine, self.model_id, mode, f"think:{think}", cwd) if p]
+        parts = [p for p in (engine, self.model_id, mode, think, cwd) if p]
         self.sub_title = " \u00b7 ".join(parts)
         # The footer carries the thinking level too, and it only refreshed on a
         # context update -- so /think changed the header instantly and left the
@@ -4073,6 +4075,7 @@ class LiteTUI(App):
                 request_overrides=self.backend.request_overrides(self.model_id),
                 thinking_level=self.thinking_level,
                 tools=self._all_tools(),  # advertised even when OFF — see turn_engine
+                backend_name=self.backend.name,
             )
 
             self._tps.start()
@@ -4708,6 +4711,7 @@ class LiteTUI(App):
                     request_overrides=self.backend.request_overrides(self.model_id),
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
+                    backend_name=self.backend.name,
                 )
 
                 stream = await self.client.chat.completions.create(**kwargs)
