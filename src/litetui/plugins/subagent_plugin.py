@@ -48,7 +48,8 @@ def _make_runner(app):
             "stream": False,
         }
         if not think:
-            payload["extra_body"] = {"reasoning_effort": "none"}
+            payload["reasoning_effort"] = "none"
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         body = json.dumps(payload).encode()
         req = urllib.request.Request(
             url, data=body,

@@ -191,7 +191,7 @@ class TestRunner:
         assert "all tokens went to reasoning" in result
         assert "I think therefore I am" in result
 
-    def test_think_false_sends_reasoning_effort_none(self):
+    def test_think_false_sends_reasoning_off_toplevel(self):
         from litetui.plugins.subagent_plugin import _make_runner
         app = self._make_app()
         captured = {}
@@ -204,9 +204,10 @@ class TestRunner:
         with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
             run({"prompt": "hello"})
 
-        assert captured["body"].get("extra_body", {}).get("reasoning_effort") == "none"
+        assert captured["body"]["reasoning_effort"] == "none"
+        assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
 
-    def test_think_true_omits_reasoning_effort(self):
+    def test_think_true_omits_reasoning_keys(self):
         from litetui.plugins.subagent_plugin import _make_runner
         app = self._make_app()
         captured = {}
@@ -219,4 +220,5 @@ class TestRunner:
         with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
             run({"prompt": "hello", "think": True})
 
-        assert "extra_body" not in captured["body"]
+        assert "reasoning_effort" not in captured["body"]
+        assert "chat_template_kwargs" not in captured["body"]
