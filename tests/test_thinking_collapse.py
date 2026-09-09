@@ -92,3 +92,53 @@ class TestCompactRequest:
             backend_name="llamacpp",
         )
         assert kwargs["extra_body"]["reasoning_effort"] == "low"
+
+
+class TestOfficialModelCarveOut:
+    """T539-A: the collapse is right for LM Studio in general and WRONG for the
+    official build, where the graded levels demonstrably work (measured
+    2026-09-08: four distinct behaviours vs byte-identical on the NVFP4 quant).
+    """
+
+    OFFICIAL = ["qwen/qwen3.8-27b"]
+
+    def test_allowlisted_model_keeps_the_graded_level(self):
+        for lvl in ("minimal", "low", "medium", "high", "xhigh"):
+            assert TurnEngine.resolve_reasoning_effort(
+                lvl, "lmstudio", "qwen/qwen3.8-27b", self.OFFICIAL
+            ) == lvl
+
+    def test_other_lmstudio_models_still_collapse(self):
+        for lvl in ("minimal", "low", "medium", "high", "xhigh"):
+            assert TurnEngine.resolve_reasoning_effort(
+                lvl, "lmstudio", "qwen3.8-27b-nvfp4-mtp", self.OFFICIAL
+            ) is None
+
+    def test_match_is_exact_not_substring(self):
+        # "qwen3.8-27b-nvfp4-mtp" CONTAINS "qwen3.8-27b" -- a substring rule
+        # would allowlist the one model measured to drop every graded level.
+        assert TurnEngine.resolve_reasoning_effort(
+            "xhigh", "lmstudio", "qwen3.8-27b-nvfp4-mtp", ["qwen3.8-27b"]
+        ) is None
+
+    def test_match_is_case_insensitive(self):
+        assert TurnEngine.resolve_reasoning_effort(
+            "medium", "lmstudio", "QWEN/Qwen3.8-27B", self.OFFICIAL
+        ) == "medium"
+
+    def test_off_is_still_none_on_the_allowlisted_model(self):
+        # `none` is honoured there too (measured 0 reasoning chars), and the
+        # carve-out must not turn "off" into a graded level.
+        assert TurnEngine.resolve_reasoning_effort(
+            "off", "lmstudio", "qwen/qwen3.8-27b", self.OFFICIAL
+        ) == "none"
+
+    def test_empty_allowlist_is_the_shipped_collapse(self):
+        assert TurnEngine.resolve_reasoning_effort(
+            "xhigh", "lmstudio", "qwen/qwen3.8-27b", []
+        ) is None
+
+    def test_llamacpp_ignores_the_allowlist_entirely(self):
+        assert TurnEngine.resolve_reasoning_effort(
+            "xhigh", "llamacpp", "anything-at-all", []
+        ) == "xhigh"

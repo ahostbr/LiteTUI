@@ -39,24 +39,52 @@ from __future__ import annotations
 from litetui import llm_backend
 
 
-def _resolve_reasoning_effort(level: str | None, backend_name: str) -> str | None:
-    """Wire value for reasoning_effort given the user's level and the backend.
+def _resolve_reasoning_effort(
+    level: str | None,
+    backend_name: str,
+    model_id: str | None = None,
+    graded_models: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """Wire value for reasoning_effort given the user's level, backend and model.
 
     llamacpp: verbatim ("none" for off, the graded level otherwise).
-    lmstudio: binary — "none" for off, OMIT (None) for any graded level.
-    LM Studio silently drops graded values on models without a reasoning-level
-    mapping and the model then reasons at the server default (measured T539).
-    Omitting is byte-identical to what a dropped graded level produces anyway,
-    so the collapse changes no wire behaviour — it only stops the app claiming
-    a level it is not getting.
+    lmstudio: binary — "none" for off, OMIT (None) for any graded level —
+    EXCEPT for a model named in `graded_models`, which gets the level verbatim.
+
+    Why the exception exists, measured 2026-09-08 on this box (one prompt,
+    temperature 0, two runs, identical both times):
+
+      qwen3.8-27b-nvfp4-mtp (esatapedico)   minimal/low/medium/high/xhigh all
+        BYTE-IDENTICAL to sending no field at all -> every graded level dropped.
+      qwen/qwen3.8-27b (lmstudio-community) none 0 reasoning chars / minimal 247
+        / low 247 / medium 303 / high 221 / xhigh 221 -> FOUR distinct behaviours.
+        LM Studio snaps the two values this model does not carry onto the ones it
+        does (minimal->low, high->xhigh) instead of dropping them; its Custom
+        Fields > Reasoning Effort offers exactly Low / Medium / Extra High.
+
+    So the collapse is right for LM Studio in general and WRONG for the official
+    build, where it would destroy graded control that demonstrably works. The set
+    is a SETTING (`lmstudio_graded_thinking_models`) rather than a constant
+    because which models are official is Ryan's knowledge, not a field the API
+    exposes: /api/v0/models was enumerated over all 16 local models and the
+    `capabilities` array only ever contains "tool_use" — nothing anywhere
+    advertises a reasoning capability, so this cannot be derived at runtime
+    without probing.
+
+    Match is EXACT (case-insensitive), never substring: "qwen3.8-27b-nvfp4-mtp"
+    contains "qwen3.8-27b", so a substring rule would allowlist the very model
+    that drops every level.
     """
     if not level:
         return None
     if level == "off":
         return "none"
-    if backend_name == "lmstudio":
-        return None
-    return level
+    if backend_name != "lmstudio":
+        return level
+    want = (model_id or "").strip().lower()
+    if want and any(want == m.strip().lower() for m in graded_models):
+        return level
+    return None
 
 
 class TurnEngine:
@@ -112,9 +140,14 @@ class TurnEngine:
     # ── request assembly ─────────────────────────────────────────────────
 
     @staticmethod
-    def resolve_reasoning_effort(level: str | None, backend_name: str) -> str | None:
+    def resolve_reasoning_effort(
+        level: str | None,
+        backend_name: str,
+        model_id: str | None = None,
+        graded_models: tuple[str, ...] | list[str] = (),
+    ) -> str | None:
         """Public alias for tests."""
-        return _resolve_reasoning_effort(level, backend_name)
+        return _resolve_reasoning_effort(level, backend_name, model_id, graded_models)
 
     @staticmethod
     def chat_request(
@@ -128,6 +161,7 @@ class TurnEngine:
         thinking_level: str | None,
         tools: list[dict] | None = None,
         backend_name: str = "",
+        graded_thinking_models: tuple[str, ...] | list[str] = (),
     ) -> dict:
         """The request a normal streamed turn sends."""
         kwargs: dict = {
@@ -171,7 +205,9 @@ class TurnEngine:
         # The per-model Thinking Level (/modelcfg Inference tab) arrives here
         # already merged into extra; blank there means inherit the global.
         level = extra.pop("reasoning_effort", None) or thinking_level
-        wire = _resolve_reasoning_effort(level, backend_name)
+        wire = _resolve_reasoning_effort(
+            level, backend_name, model_id, graded_thinking_models
+        )
         if wire:
             extra["reasoning_effort"] = wire
         if extra:
@@ -189,6 +225,7 @@ class TurnEngine:
         tools_enabled: bool,
         tools: list[dict] | None = None,
         backend_name: str = "",
+        graded_thinking_models: tuple[str, ...] | list[str] = (),
     ) -> dict:
         """The request a compaction turn sends.
 
@@ -205,7 +242,9 @@ class TurnEngine:
         # there means inherit it — same rule as a chat turn.
         level = (request_overrides or {}).get("reasoning_effort") or thinking_level
         extra_body: dict = {}
-        wire = _resolve_reasoning_effort(level, backend_name)
+        wire = _resolve_reasoning_effort(
+            level, backend_name, model_id, graded_thinking_models
+        )
         if wire:
             extra_body["reasoning_effort"] = wire
         kwargs: dict = {

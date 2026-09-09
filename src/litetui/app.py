@@ -4076,6 +4076,7 @@ class LiteTUI(App):
                 thinking_level=self.thinking_level,
                 tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                 backend_name=self.backend.name,
+                graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
             )
 
             self._tps.start()
@@ -4712,6 +4713,7 @@ class LiteTUI(App):
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
+                    graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                 )
 
                 stream = await self.client.chat.completions.create(**kwargs)

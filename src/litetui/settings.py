@@ -118,6 +118,29 @@ class Settings:
     #: Response budget with tools off.
     max_tokens_chat: int = 4096
     thinking_level: ThinkingLevel = "medium"
+    #: LM Studio model ids whose GRADED thinking levels are real (T539-A).
+    #:
+    #: On the LM Studio backend a graded reasoning_effort is silently dropped
+    #: for a model that carries no reasoning-level mapping -- the request
+    #: returns 200 and the model reasons at the server default -- so the app
+    #: collapses graded levels to on/off there (turn_engine._resolve_reasoning_
+    #: effort). Measured 2026-09-08: on qwen3.8-27b-nvfp4-mtp all five graded
+    #: values were BYTE-IDENTICAL to sending no field; on qwen/qwen3.8-27b they
+    #: produced four distinct behaviours (none/low/medium/xhigh, with minimal
+    #: snapped to low and high to xhigh by LM Studio itself).
+    #:
+    #: This list is the exception, and it is a SETTING because which build is
+    #: official is the human's knowledge: /api/v0/models exposes no reasoning
+    #: capability on ANY of the 16 local models, so it cannot be derived.
+    #: Ids are matched EXACTLY (case-insensitive) -- never as substrings, since
+    #: "qwen3.8-27b-nvfp4-mtp" contains "qwen3.8-27b" and would be allowlisted
+    #: by a substring rule. That means an id here must be the id LM Studio
+    #: serves the model under: `lms load <key>` with no --identifier uses the
+    #: key itself, a custom --identifier replaces it.
+    #: Irrelevant on the llamacpp backend, where every level is sent verbatim.
+    lmstudio_graded_thinking_models: list[str] = field(
+        default_factory=lambda: ["qwen/qwen3.8-27b"]
+    )
 
     # LM Studio sampling flags. None = omit the field entirely and let the
     # server use its own default — NOT the same as sending a zero.
