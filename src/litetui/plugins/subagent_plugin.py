@@ -2,8 +2,10 @@
 
 No tools, no parent history — the child sees only its own prompt (and an
 optional system message). The loaded model pool is SHARED across live slots,
-so the settings cap (subagent_max_tokens, default 20k) keeps the child from
-starving the parent's next turn of KV cache.
+so the settings cap (subagent_max_tokens, default 20k) is the ceiling.
+
+Thinking is OFF by default (reasoning_effort "none" on the wire, same as the
+app's own "off" level). Pass think=true when chain-of-thought is wanted.
 
 Backgroundable (tasks.backgroundable reads the schema's `background` prop),
 so it rides the same T499/T517 path as bash: explicit flag or auto-promotion.
@@ -13,6 +15,7 @@ from __future__ import annotations
 import json
 import urllib.request
 
+from litetui import tasks as tasks_mod
 from litetui import tool_schemas
 from litetui.plugins import PluginManifest
 from litetui.tool_policy import NETWORK_READ_POLICY
@@ -45,7 +48,7 @@ def _make_runner(app):
             "stream": False,
         }
         if not think:
-            payload["extra_body"] = {"reasoning_effort": "low"}
+            payload["extra_body"] = {"reasoning_effort": "none"}
         body = json.dumps(payload).encode()
         req = urllib.request.Request(
             url, data=body,
@@ -63,19 +66,24 @@ def _make_runner(app):
         text = (msg.get("content") or "").strip()
         reasoning = (msg.get("reasoning_content") or "").strip()
         usage = data.get("usage") or {}
-        tokens = usage.get("completion_tokens", "?")
+        tokens = usage.get("completion_tokens")
+        tok_display = tokens if tokens is not None else "?"
+
+        task = tasks_mod.CURRENT.get(None)
+        if task is not None and tokens is not None:
+            task.tokens = tokens
 
         if not text and reasoning:
             tail = reasoning[-2000:] if len(reasoning) > 2000 else reasoning
             return (
-                f"[subagent · {tokens} tokens · model {model} · "
+                f"[subagent · {tok_display} tokens · model {model} · "
                 f"WARNING: all tokens went to reasoning, content empty — "
                 f"retry with think=false or a higher max_tokens]\n\n"
                 f"Reasoning tail:\n{tail}"
             )
         if not text:
-            return f"[subagent · {tokens} tokens · model {model} · empty response]"
-        return f"{text}\n\n[subagent · {tokens} tokens · model {model}]"
+            return f"[subagent · {tok_display} tokens · model {model} · empty response]"
+        return f"{text}\n\n[subagent · {tok_display} tokens · model {model}]"
 
     return tool_subagent
 

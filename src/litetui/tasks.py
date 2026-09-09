@@ -69,6 +69,8 @@ class Task:
     ended: float | None = None
     ok: bool | None = None
     log: str = ""  # relative to the root; empty until finished
+    #: Completion tokens used (subagent calls); None for non-LLM tasks.
+    tokens: int | None = None
     #: The live child, for `/tasks kill`. Not persisted, not compared.
     proc: object = field(default=None, repr=False, compare=False)
 
@@ -214,7 +216,8 @@ def render_list(tasks) -> str:
         return "no background tasks"
     out = []
     for t in rows[:20]:
-        out.append(f"{t.id}  {t.state:<7} {t.seconds:6.0f} s  {t.tool}  {t.label}")
+        tok = f"  {t.tokens} tok" if t.tokens is not None else ""
+        out.append(f"{t.id}  {t.state:<7} {t.seconds:6.0f} s{tok}  {t.tool}  {t.label}")
     return "\n".join(out)
 
 

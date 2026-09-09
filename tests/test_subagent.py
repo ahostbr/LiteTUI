@@ -137,6 +137,28 @@ class TestRunner:
         assert len(captured["messages"]) == 1
         assert captured["messages"][0]["role"] == "user"
 
+    def test_tokens_logged_to_task_ledger(self):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app()
+        task = tasks_mod.Task(
+            id="t-test", tool="subagent", label="test",
+            convo_id="", started=0.0,
+        )
+        assert task.tokens is None
+
+        def fake_urlopen(req, timeout=None):
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 77}})
+
+        run = _make_runner(app)
+        tok = tasks_mod.CURRENT.set(task)
+        try:
+            with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+                run({"prompt": "hello"})
+        finally:
+            tasks_mod.CURRENT.reset(tok)
+
+        assert task.tokens == 77
+
     def test_network_error_returns_error(self):
         from litetui.plugins.subagent_plugin import _make_runner
         app = self._make_app()
@@ -169,7 +191,7 @@ class TestRunner:
         assert "all tokens went to reasoning" in result
         assert "I think therefore I am" in result
 
-    def test_think_false_sends_reasoning_effort(self):
+    def test_think_false_sends_reasoning_effort_none(self):
         from litetui.plugins.subagent_plugin import _make_runner
         app = self._make_app()
         captured = {}
@@ -182,7 +204,7 @@ class TestRunner:
         with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
             run({"prompt": "hello"})
 
-        assert captured["body"].get("extra_body", {}).get("reasoning_effort") == "low"
+        assert captured["body"].get("extra_body", {}).get("reasoning_effort") == "none"
 
     def test_think_true_omits_reasoning_effort(self):
         from litetui.plugins.subagent_plugin import _make_runner
