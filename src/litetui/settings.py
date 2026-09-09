@@ -139,6 +139,12 @@ class Settings:
     #: T517 — a FOREGROUND tool call still running after this many seconds is moved
     #: to a background task on its own (the result arrives later as a message). 0 = never.
     tool_auto_background_s: int = 30
+    #: T538 — the model the subagent tool sends its child to when the call names
+    #: none. None = the parent's own model. Ryan 2026-09-08 21:4x: "run it with
+    #: the 27b using the 2B Q4 as its subagents" — a small model loaded beside
+    #: the big one has its own LM Studio slots, so summaries and extractions run
+    #: there without touching the parent's pool.
+    subagent_model: str | None = None
     tools_enabled: bool = True
     #: Authority profile for EVERY turn -- typed, inbox-woken, cron and loop
     #: alike (Ryan: "cron and loops run at same set profile level my ruling").

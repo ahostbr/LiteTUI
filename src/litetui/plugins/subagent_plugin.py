@@ -54,7 +54,12 @@ def _make_runner(app):
         if not prompt:
             return "[error] prompt is required"
         system = (args.get("system") or "").strip() or None
-        model = (args.get("model") or "").strip() or getattr(app, "model_id", None) or "local-model"
+        model = (
+            (args.get("model") or "").strip()
+            or getattr(getattr(app, "settings", None), "subagent_model", None)
+            or getattr(app, "model_id", None)
+            or "local-model"
+        )
         think = bool(args.get("think", False))
         file_paths = args.get("files") or []
         cap = getattr(getattr(app, "settings", None), "compact_max_tokens", 12288) or 12288

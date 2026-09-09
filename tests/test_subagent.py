@@ -276,3 +276,36 @@ class TestRunner:
 
         assert "reasoning_effort" not in captured["body"]
         assert "chat_template_kwargs" not in captured["body"]
+
+    def test_subagent_model_setting_is_the_default_child(self):
+        # T538: the child goes to settings.subagent_model when the call names none.
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app(model="big-parent")
+        app.settings.subagent_model = "small-child"
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 1}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            run({"prompt": "hello"})
+
+        assert captured["body"]["model"] == "small-child"
+
+    def test_explicit_model_beats_the_setting(self):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app(model="big-parent")
+        app.settings.subagent_model = "small-child"
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 1}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            run({"prompt": "hello", "model": "named-one"})
+
+        assert captured["body"]["model"] == "named-one"

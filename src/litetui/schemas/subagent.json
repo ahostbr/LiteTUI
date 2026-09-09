@@ -33,7 +33,7 @@
         },
         "model": {
           "type": "string",
-          "description": "Leave unset to use your current model. A model id from /models only when a different loaded model is clearly better for the job."
+          "description": "Leave unset: the child goes to the subagent_model setting when one is configured (a small model loaded beside yours), otherwise to your current model. Name a model id from /models only when a specific loaded model is clearly better for the job."
         }
       },
       "required": [
