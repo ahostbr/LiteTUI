@@ -7,6 +7,9 @@ so the settings cap (subagent_max_tokens, default 20k) is the ceiling.
 Thinking is OFF by default (reasoning_effort "none" on the wire, same as the
 app's own "off" level). Pass think=true when chain-of-thought is wanted.
 
+Files are read by the PLUGIN (not the model) and appended as fenced blocks —
+the prompt stays short and the tool_call renders instantly.
+
 Backgroundable (tasks.backgroundable reads the schema's `background` prop),
 so it rides the same T499/T517 path as bash: explicit flag or auto-promotion.
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from pathlib import Path
 
 from litetui import tasks as tasks_mod
 from litetui import tool_schemas
@@ -21,6 +25,24 @@ from litetui.plugins import PluginManifest
 from litetui.tool_policy import NETWORK_READ_POLICY
 
 SPEC = tool_schemas.load("subagent")
+
+FILE_CAP = 50_000
+
+
+def _read_files(paths: list) -> str:
+    blocks = []
+    for raw in paths:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if len(text) > FILE_CAP:
+                text = text[:FILE_CAP] + f"\n[... truncated at {FILE_CAP} chars ...]"
+            blocks.append(f"--- {p.name} ---\n{text}")
+        except Exception as e:
+            blocks.append(f"--- {raw} ---\n[error reading file: {type(e).__name__}: {e}]")
+    return "\n\n".join(blocks)
 
 
 def _make_runner(app):
@@ -31,13 +53,18 @@ def _make_runner(app):
         system = (args.get("system") or "").strip() or None
         model = (args.get("model") or "").strip() or getattr(app, "model_id", None) or "local-model"
         think = bool(args.get("think", False))
+        file_paths = args.get("files") or []
         cap = getattr(getattr(app, "settings", None), "subagent_max_tokens", 20000) or 20000
         max_tokens = min(int(args.get("max_tokens") or cap), cap)
+
+        user_content = prompt
+        if file_paths:
+            user_content = f"{prompt}\n\n{_read_files(file_paths)}"
 
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": user_content})
 
         host = getattr(getattr(app, "settings", None), "lm_host", "http://localhost:1234")
         url = f"{host.rstrip('/')}/v1/chat/completions"

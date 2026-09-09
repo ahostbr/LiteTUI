@@ -191,6 +191,60 @@ class TestRunner:
         assert "all tokens went to reasoning" in result
         assert "I think therefore I am" in result
 
+    def test_files_appended_to_prompt(self, tmp_path):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app()
+        f = tmp_path / "readme.md"
+        f.write_text("# Hello World", encoding="utf-8")
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 1}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            run({"prompt": "summarise this", "files": [str(f)]})
+
+        content = captured["body"]["messages"][-1]["content"]
+        assert "summarise this" in content
+        assert "# Hello World" in content
+        assert "readme.md" in content
+
+    def test_missing_file_named_error(self, tmp_path):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app()
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 1}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            run({"prompt": "summarise", "files": [str(tmp_path / "nope.txt")]})
+
+        content = captured["body"]["messages"][-1]["content"]
+        assert "[error reading file:" in content
+
+    def test_large_file_truncated(self, tmp_path):
+        from litetui.plugins.subagent_plugin import _make_runner, FILE_CAP
+        app = self._make_app()
+        f = tmp_path / "big.txt"
+        f.write_text("x" * (FILE_CAP + 1000), encoding="utf-8")
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 1}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            run({"prompt": "summarise", "files": [str(f)]})
+
+        content = captured["body"]["messages"][-1]["content"]
+        assert "truncated" in content
+
     def test_think_false_sends_reasoning_off_toplevel(self):
         from litetui.plugins.subagent_plugin import _make_runner
         app = self._make_app()

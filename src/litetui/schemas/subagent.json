@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "subagent",
-    "description": "Fire a ONE-SHOT chat completion in its own LM Studio slot — no tools, no parent history. Use it for summaries, translations, classifications, or any task you can express as a single prompt/response. The child shares the loaded model pool; reasoning is suppressed by default (reasoning_effort low) so tokens go to content. Pass think=true when chain-of-thought is needed. Pass background=true for tasks you do not need to wait on; the result arrives later as a message tagged [inbox from task].",
+    "description": "Fire a ONE-SHOT chat completion in its own LM Studio slot — no tools, no parent history. Use it for summaries, translations, classifications, or any task you can express as a single prompt/response. The child shares the loaded model pool; thinking is OFF by default so tokens go to content. Pass file paths in `files` — never paste file bodies into `prompt` (the prompt is streamed live and a large body freezes the UI for seconds). Pass background=true for tasks you do not need to wait on; the result arrives later as a message tagged [inbox from task].",
     "parameters": {
       "type": "object",
       "properties": {
@@ -21,6 +21,11 @@
         "model": {
           "type": "string",
           "description": "Model id to use for the child; omit to use the parent's current model"
+        },
+        "files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "File paths to read and append to the prompt as fenced blocks. Pass paths here — never paste file content into prompt."
         },
         "think": {
           "type": "boolean",
