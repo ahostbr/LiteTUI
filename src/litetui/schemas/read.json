@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "read",
-    "description": "Read the contents of a text file (relative or absolute path). Output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files and continue with offset when truncated.",
+    "description": "Read the contents of a text file (relative or absolute path). Output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files and continue with offset when truncated. To summarise, analyse or review a file rather than work on its text, do not read it here: pass its path to the subagent tool instead.",
     "parameters": {
       "type": "object",
       "properties": {
