@@ -2615,10 +2615,24 @@ class LiteTUI(App):
                 break
             await asyncio.sleep(0.5)
         if self._cli_initial_model:
-            if self._cli_initial_model in self.available_models:
-                self.model_id = self._cli_initial_model
+            want = self._cli_initial_model
+            loaded = {r.key for r in self.model_rows.values() if r.loaded}
+            if want in loaded:
+                self.model_id = want
+                self._update_header()
+                self._fetch_ctx_window()
+            elif want in self.available_models:
+                self._system(
+                    f"[cli] --model {want!r} is downloaded but NOT loaded — "
+                    f"load it first in LM Studio or use /model. "
+                    f"Using {self.model_id!r}."
+                )
             else:
-                self._system(f"[cli] --model {self._cli_initial_model!r} not available")
+                self._system(
+                    f"[cli] --model {want!r} not found — "
+                    f"loaded: {', '.join(sorted(loaded)) or '(none)'}. "
+                    f"Using {self.model_id!r}."
+                )
         if self._cli_system_prompt:
             self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
         if self._first_prompt:
