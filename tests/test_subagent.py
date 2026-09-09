@@ -32,6 +32,7 @@ class TestSchema:
         assert "system" in props
         assert "max_tokens" in props
         assert "model" in props
+        assert "think" in props
         assert "background" in props
 
     def test_prompt_required(self):
@@ -149,3 +150,51 @@ class TestRunner:
 
         assert "[error]" in result
         assert "ConnectionRefusedError" in result
+
+    def test_reasoning_only_returns_warning_with_tail(self):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app()
+
+        def fake_urlopen(req, timeout=None):
+            return _FakeResp({
+                "choices": [{"message": {"content": "", "reasoning_content": "I think therefore I am"}}],
+                "usage": {"completion_tokens": 400},
+            })
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            result = run({"prompt": "hello"})
+
+        assert "WARNING" in result
+        assert "all tokens went to reasoning" in result
+        assert "I think therefore I am" in result
+
+    def test_think_false_sends_reasoning_effort(self):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app()
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 1}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            run({"prompt": "hello"})
+
+        assert captured["body"].get("extra_body", {}).get("reasoning_effort") == "low"
+
+    def test_think_true_omits_reasoning_effort(self):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app()
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 1}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            run({"prompt": "hello", "think": True})
+
+        assert "extra_body" not in captured["body"]
