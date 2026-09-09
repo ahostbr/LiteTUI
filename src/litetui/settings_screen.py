@@ -267,6 +267,22 @@ class SettingsBody(Widget):
                             "Scheme + host + port, no trailing path.",
                             placeholder="http://localhost:1234",
                         )
+                        yield from self._text_row(
+                            "subagent_model", "Subagent model",
+                            "Which model the subagent tool's children go to. Blank = the "
+                            "same model you are talking to. A small model loaded beside "
+                            "the big one answers in its own slot, in parallel.",
+                            placeholder="e.g. minicpm5-2b-q4",
+                        )
+                        yield from self._text_row(
+                            "lmstudio_graded_thinking_models",
+                            "Graded thinking works on (LM Studio)",
+                            "Comma-separated model ids. On LM Studio a graded level is "
+                            "silently DROPPED by a model with no reasoning-level mapping, "
+                            "so levels collapse to on/off except for the ids listed here. "
+                            "Matched exactly — use the id LM Studio serves the model under.",
+                            placeholder="qwen/qwen3.8-27b",
+                        )
 
                         # ── Backend (engine selection) ───────────────────────
                         yield from self._select_row(
@@ -373,6 +389,13 @@ class SettingsBody(Widget):
                             "tool_iterations", "Tool iterations per turn",
                             "The cap behind '[stopped — reached N tool iterations in one "
                             "turn]'. Raise it for long agent runs.",
+                        )
+                        yield from self._text_row(
+                            "tool_auto_background_s", "Auto-background after (seconds)",
+                            "A foreground bash/powershell call still running after this "
+                            "moves to a background task and the turn carries on; its "
+                            "result arrives later as an inbox message. 0 = never.",
+                            placeholder="30",
                         )
                         yield from self._select_row(
                             "tool_policy_profile", "Tool authority",
@@ -736,6 +759,13 @@ class SettingsBody(Widget):
                     setattr(out, name, int(raw.strip()))
                 elif "float" in t:
                     setattr(out, name, float(raw.strip()))
+                elif "None" in t and "str" in t:
+                    # An optional string: blank means UNSET, not the empty
+                    # string. subagent_model is read as `settings.subagent_model
+                    # or app.model_id`, so "" happens to work — but a later
+                    # optional field read with `is None` would not, and the
+                    # difference must not depend on the reader.
+                    setattr(out, name, raw.strip() or None)
                 else:
                     setattr(out, name, raw.strip())
             except ValueError:
