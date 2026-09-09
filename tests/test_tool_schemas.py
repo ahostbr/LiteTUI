@@ -47,6 +47,7 @@ def _registered() -> dict[str, dict]:
     from litetui.listen_tool import LISTEN_TOOL_SPEC
     from litetui.pccontrol_tool import PCCONTROL_TOOL_SPEC
     from litetui.plugins import core_tools as ct
+    from litetui.plugins import subagent_plugin
     from litetui.plugins.view_image import VIEW_IMAGE_TOOL_SPEC
     from litetui.skills import SKILL_TOOL_SPEC
     from litetui.studio_tool import STUDIO_TOOL_SPEC
@@ -58,6 +59,7 @@ def _registered() -> dict[str, dict]:
         STUDIO_TOOL_SPEC, ct.BASH_SPEC, ct.READ_SPEC, ct.WRITE_SPEC,
         ct.WEB_FETCH_SPEC, ct.powershell_spec(),
         ft.GREP_TOOL_SPEC, ft.EDIT_TOOL_SPEC,
+        subagent_plugin.SPEC,
     ]
     return {s["function"]["name"]: s for s in specs}
 
