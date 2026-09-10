@@ -72,6 +72,35 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             return
         app._submit_text(str(message), alt_chord=False)
         _respond(cmd_id, ok=True, result={"turn": "accepted"})
+    elif cmd_type == "answer":
+        # The other half of `user_input_requested` (T558-A). The tool call is
+        # parked on a worker thread waiting for exactly this.
+        #
+        # AN UNKNOWN ID IS AN ERROR, NOT A NO-OP. The two ways to get here with a
+        # stale id are a late answer to a call that already moved on and a typo
+        # in the id, and both leave the host believing it answered a question
+        # that is still waiting. Saying so is what lets the host tell them apart
+        # from a delivery that worked.
+        from litetui import ask_user_question as auq_mod
+
+        ask_id = str(cmd.get("id") or "")
+        if not ask_id:
+            _respond(cmd_id, ok=False, error="answer needs the `id` of the ask it answers")
+            return
+        ok = auq_mod.resolve_over_rpc(
+            app,
+            ask_id,
+            str(cmd.get("action") or "submit"),
+            cmd.get("answers"),
+        )
+        if ok:
+            _respond(cmd_id, ok=True, result={"answered": ask_id})
+        else:
+            _respond(
+                cmd_id,
+                ok=False,
+                error=f"no ask is waiting on id {ask_id!r} (already answered, or never asked)",
+            )
     elif cmd_type == "abort":
         app.action_stop_turn()
         _respond(cmd_id, ok=True, result={"stopped": True})

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from uuid import uuid4
 from dataclasses import dataclass, field
 from typing import Any
 from functools import partial
@@ -587,6 +588,109 @@ class AskUserQuestionBody(Vertical):
 
 # ── Tool entry point ───────────────────────────────────────────────
 
+#: What the tool returns when nobody ever answered. EXPLICIT, and never an empty
+#: or partial answer set: the model must be able to tell "asked and unanswered"
+#: from "asked and told nothing", and a caller that cannot tell those apart will
+#: proceed as though silence were consent.
+UNANSWERED_EXITED = (
+    "[ask_user_question] UNANSWERED - LiteTUI exited before the question was "
+    "answered. No answers were given; do not assume any option."
+)
+UNANSWERED_NO_HOST = (
+    "[ask_user_question] UNANSWERED - the host closed the question without an "
+    "answer. No answers were given; do not assume any option."
+)
+
+
+def _ask_registry(app: App) -> dict:
+    """Pending over-the-wire asks for THIS app, keyed by ask id.
+
+    On the app INSTANCE, not a module global. This module's own history is why:
+    the old `set_app()` module-global was the one impure hook in the tool set,
+    and two apps in one process (the test suite's normal state) crossed wires
+    through it. A shared registry would have exactly that hazard again.
+    """
+    reg = getattr(app, "_rpc_pending_asks", None)
+    if reg is None:
+        reg = {}
+        app._rpc_pending_asks = reg
+    return reg
+
+
+def resolve_over_rpc(app: App, ask_id: str, action: str, answers: object) -> bool:
+    """Answer a pending wire ask. False when the id is unknown or already done.
+
+    Called from the rpc dispatch thread; the tool call is parked on the Event
+    this sets.
+    """
+    entry = _ask_registry(app).get(ask_id)
+    if entry is None:
+        return False
+    done, result_box, states = entry
+    if done.is_set():
+        # A SECOND answer is refused rather than applied. The tool call has
+        # already moved on, so a late write into result_box reaches nobody while
+        # reporting success to whoever sent it.
+        return False
+
+    # A short or malformed answers list is not a reason to fail the call: those
+    # questions simply read as unanswered, which _serialize already states per
+    # question. Failing here would strand the tool call instead.
+    if isinstance(answers, list):
+        for i, state in enumerate(states):
+            if i >= len(answers):
+                break
+            a = answers[i]
+            if not isinstance(a, dict):
+                continue
+            picked = a.get("selected")
+            if isinstance(picked, list):
+                state.selected = {
+                    j for j in picked
+                    if isinstance(j, int) and 0 <= j < len(state.options)
+                }
+            note = a.get("note")
+            if isinstance(note, str):
+                state.note = note
+
+    act = action if action in ("submit", "chat", "cancel") else "submit"
+    result_box.append({"action": act, "questions": [s.to_dict() for s in states]})
+    done.set()
+    return True
+
+
+def _run_over_rpc(states: list[QuestionState], app: App) -> str:
+    """The headless path: put the question ON THE WIRE and wait for an answer.
+
+    THIS EXISTS BECAUSE THE WIDGET PATH DEADLOCKS HERE. Under `--rpc` the app is
+    headless, so pushing a screen puts the question where nobody can answer it
+    and the tool call waits out the whole session. Reproduced in
+    tests/test_ask_over_rpc_hangs.py BEFORE this was written.
+
+    The polling loop is the same shape as the widget path below, for the same
+    reason: `done` is never set when nobody answers, so the `is_running` check is
+    the only thing that ever releases this thread.
+    """
+    ask_id = "ask-" + uuid4().hex[:12]
+    done = threading.Event()
+    result_box: list[dict] = []
+    _ask_registry(app)[ask_id] = (done, result_box, states)
+    try:
+        app._rpc_emit({
+            "type": "user_input_requested",
+            "id": ask_id,
+            "questions": [s.to_dict() for s in states],
+        })
+        while not done.wait(timeout=5):
+            if not getattr(app, "is_running", True):
+                return UNANSWERED_EXITED
+        if not result_box:
+            return UNANSWERED_NO_HOST
+        return _serialize(result_box[0])
+    finally:
+        _ask_registry(app).pop(ask_id, None)
+
+
 def run(args: dict, app: App | None) -> str:
     """Dispatch the `ask_user_question` tool. Never raises — every path returns text.
 
@@ -604,6 +708,11 @@ def run(args: dict, app: App | None) -> str:
             "[error] ask_user_question: no running LiteTUI app to render the "
             "question widget"
         )
+
+    # Headless: the widget has nobody to render to. Route to the wire rather
+    # than pushing a screen into the dark and waiting out the session.
+    if getattr(app, "_rpc", False):
+        return _run_over_rpc(states, app)
 
     done = threading.Event()
     result_box: list[dict] = []
