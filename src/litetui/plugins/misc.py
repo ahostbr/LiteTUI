@@ -5,6 +5,9 @@ Also owns the Tools palette row, which used to be a Toggle-agent-tools row and
 is now the tool LIST (`/tools`, T076) — the toggle itself stayed on Ctrl+T,
 because every tools-off refusal names that key to the user and to the model.
 """
+from functools import partial
+
+from litetui.picker import pick
 from litetui.settings import THINKING_LEVELS
 
 from litetui.plugins import PluginManifest
@@ -18,51 +21,124 @@ def _cmd_clear_screen(app, name: str, arg: str) -> None:
     )
 
 
-def _cmd_think(app, name: str, arg: str) -> None:
-    if not arg:
-        current = app.thinking_level or "unset"
-        note = (
-            "\nunset means the field is not sent at all — LM Studio then "
-            "applies its OWN default, which is xhigh. 'unset' is not 'off'."
-        )
-        model_levels = getattr(app, "_model_thinking_levels", None)
-        if model_levels:
-            levels_str = ", ".join(model_levels)
-            note += f"\nThis model supports: {levels_str}"
-        app.system_message(
-            f"Thinking level: {current}\n"
-            f"Levels: {', '.join(THINKING_LEVELS)}, or 'unset'\n"
-            f"Usage: /think <level>{note}"
-        )
-    elif arg.lower() in ("unset", "default", "server"):
+#: What "no level" is called in the picker and in `/think unset`. The field is
+#: then not sent at all, which is NOT the same as sending "off".
+UNSET = "unset"
+
+
+def _apply_thinking_level(app, level: str) -> None:
+    """Set the level and say what that means. ONE body, two callers.
+
+    🔴 THE PICKER AND `/think <level>` MUST NOT BE TWO IMPLEMENTATIONS. Everything
+    below the assignment is caveat: which backend silently ignores graded levels,
+    which levels this model actually advertises, what `off` sends on the wire. A
+    second copy for the picker would be a second place for those to rot, and the
+    way it would show up is a user picking a level from a menu and being told
+    less than a user who typed it.
+    """
+    if level == UNSET:
         app.thinking_level = None
         app.update_header()
         app.system_message("Thinking level unset — LM Studio's default (xhigh) applies.")
+        return
+
+    app.thinking_level = level
+    app.update_header()
+    wire = "none" if app.thinking_level == "off" else app.thinking_level
+    msg = f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})"
+    backend = getattr(getattr(app, "backend", None), "name", "")
+    model_levels = getattr(app, "_model_thinking_levels", None)
+    if backend == "lmstudio" and app.thinking_level not in ("off", None):
+        if model_levels and app.thinking_level not in model_levels:
+            msg += (
+                f"\nThis model does not support {app.thinking_level!r} — "
+                f"supported levels: {', '.join(model_levels)}. "
+                "The level is saved and will apply on llama.cpp."
+            )
+        elif not model_levels:
+            msg += (
+                "\nOn the LM Studio backend, graded levels are on/off only — "
+                "your level is saved and will apply when you switch to llama.cpp. "
+                "'off' is the only real reduction here."
+            )
+    app.system_message(msg)
+
+
+def _thinking_rows(app) -> list[tuple[str, str]]:
+    """The levels to offer, this model's own list first when it has one.
+
+    ⬜ A MODEL'S LIST IS ALWAYS A SUBSET OF `THINKING_LEVELS` — `thinking_probe`
+    builds it from `GRADED_LEVELS` plus "off" — so the picker can never offer a
+    value that `/think <level>` would reject. That is asserted in the tests
+    rather than assumed here, because it is a property of the probe and the
+    probe is free to change.
+    """
+    model_levels = getattr(app, "_model_thinking_levels", None)
+    levels = list(model_levels) if model_levels else list(THINKING_LEVELS)
+    rows = [(lv, _level_label(app, lv)) for lv in levels]
+    rows.append((UNSET, "unset  · the field is not sent — LM Studio applies xhigh"))
+    return rows
+
+
+def _level_label(app, level: str) -> str:
+    if level == "off":
+        return "off  · sends reasoning_effort='none'"
+    model_levels = getattr(app, "_model_thinking_levels", None)
+    if model_levels and level not in model_levels:
+        return f"{level}  · not supported by this model"
+    return level
+
+
+def _on_thinking_picked(app, level: str | None) -> None:
+    # Esc resolves with None and the callback still fires — see picker.pick.
+    if level is None:
+        return
+    _apply_thinking_level(app, level)
+
+
+def _cmd_think(app, name: str, arg: str) -> None:
+    if not arg:
+        if getattr(app, "_rpc", False):
+            # 🔴 NO SCREEN OVER RPC (T558-A). A dialog pushed here would wait for
+            # a keyboard that is not attached, and the caller — a model, not a
+            # person — would hang holding a turn that can never complete. The
+            # text output IS the answer on this transport, and there is an arm
+            # for it because the failure is invisible from the TUI side.
+            _print_thinking_levels(app)
+            return
+        pick(
+            app,
+            "Thinking level",
+            _thinking_rows(app),
+            partial(_on_thinking_picked, app),
+            current=app.thinking_level or UNSET,
+        )
+    elif arg.lower() in (UNSET, "default", "server"):
+        _apply_thinking_level(app, UNSET)
     elif arg.lower() in THINKING_LEVELS:
-        app.thinking_level = arg.lower()
-        app.update_header()
-        wire = "none" if app.thinking_level == "off" else app.thinking_level
-        msg = f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})"
-        backend = getattr(getattr(app, "backend", None), "name", "")
-        model_levels = getattr(app, "_model_thinking_levels", None)
-        if backend == "lmstudio" and app.thinking_level not in ("off", None):
-            if model_levels and app.thinking_level not in model_levels:
-                msg += (
-                    f"\nThis model does not support {app.thinking_level!r} — "
-                    f"supported levels: {', '.join(model_levels)}. "
-                    "The level is saved and will apply on llama.cpp."
-                )
-            elif not model_levels:
-                msg += (
-                    "\nOn the LM Studio backend, graded levels are on/off only — "
-                    "your level is saved and will apply when you switch to llama.cpp. "
-                    "'off' is the only real reduction here."
-                )
-        app.system_message(msg)
+        _apply_thinking_level(app, arg.lower())
     else:
         app.system_message(
             f"Unknown level: {arg}\nValid: {', '.join(THINKING_LEVELS)}, unset"
         )
+
+
+def _print_thinking_levels(app) -> None:
+    """The pre-T569 text listing, kept verbatim for the RPC transport."""
+    current = app.thinking_level or UNSET
+    note = (
+        "\nunset means the field is not sent at all — LM Studio then "
+        "applies its OWN default, which is xhigh. 'unset' is not 'off'."
+    )
+    model_levels = getattr(app, "_model_thinking_levels", None)
+    if model_levels:
+        levels_str = ", ".join(model_levels)
+        note += f"\nThis model supports: {levels_str}"
+    app.system_message(
+        f"Thinking level: {current}\n"
+        f"Levels: {', '.join(THINKING_LEVELS)}, or 'unset'\n"
+        f"Usage: /think <level>{note}"
+    )
 
 
 def _cmd_quit(app, name: str, arg: str) -> None:

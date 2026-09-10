@@ -16,6 +16,7 @@ visibly disabled — the settings screen's doctrine, inherited whole.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import shutil
 from functools import partial
@@ -191,14 +192,8 @@ def _say_projector(app, key: str) -> None:
         )
 
 
-def _cmd_load(app, name: str, arg: str) -> None:
-    if getattr(app.backend, "remote", False):
-        app.system_message("Remote models need no loading. Select one with /model.")
-        return
-    target = arg.strip() or app.model_id
-    if not target:
-        app.system_message("No model selected — /model first, or /load <name>")
-        return
+def _start_load(app, target: str) -> None:
+    """Load `target`. ONE body for the typed name and the picked one."""
 
     async def _go() -> None:
         app.system_message(f"Loading {target}…")
@@ -215,6 +210,82 @@ def _cmd_load(app, name: str, arg: str) -> None:
             app.connect()   # refresh the rows' loaded markers
 
     app.run_worker(_go(), group="modelctl", exclusive=True)
+
+
+def _load_rows(app, first: list[str] | None = None) -> list[tuple[str, str]]:
+    """The same rows `/model` shows, optionally with some floated to the top.
+
+    `_row_label` already carries the loaded marker, so the picker and `/model`
+    cannot disagree about which model is resident — that label is the one place
+    it is decided.
+    """
+    order = list(app.available_models)
+    for m in reversed(first or []):
+        if m in order:
+            order.remove(m)
+            order.insert(0, m)
+    return [(m, _row_label(app, m)) for m in order]
+
+
+def _on_load_picked(app, model_id: str | None) -> None:
+    # Esc resolves with None and the callback still fires — see picker.pick.
+    if model_id is None:
+        return
+    _start_load(app, model_id)
+
+
+def _cmd_load(app, name: str, arg: str) -> None:
+    if getattr(app.backend, "remote", False):
+        app.system_message("Remote models need no loading. Select one with /model.")
+        return
+
+    typed = arg.strip()
+    interactive = not getattr(app, "_rpc", False) and bool(app.available_models)
+
+    if not typed:
+        # 🔴 RYAN, 2026-09-10 19:4x: "/load should show the model selector so the
+        # user can select the modal to load not rely on them to type it
+        # perfectly." No-arg used to silently load whatever `/model` had
+        # selected, which is the one outcome a user asking for a menu does not
+        # want — it acts without showing them the choice they came for.
+        if interactive:
+            pick(
+                app,
+                "Load a model",
+                _load_rows(app),
+                partial(_on_load_picked, app),
+                current=app.model_id,
+            )
+            return
+        target = app.model_id
+        if not target:
+            app.system_message("No model selected — /model first, or /load <name>")
+            return
+        _start_load(app, target)
+        return
+
+    # A typed name that is not a known model is a TYPO far more often than it is
+    # a model the discovery missed — which is the whole reason this card exists.
+    # Opening the picker with the near matches on top answers the question the
+    # error line only restated.
+    #
+    # ⚠️ GATED ON `app.available_models` BEING NON-EMPTY. With no discovered
+    # models there is nothing to compare against and nothing to show, and
+    # refusing the load would break `/load <name>` for anyone whose backend
+    # lists nothing — a strictly worse failure than the typo it guards.
+    if interactive and typed not in app.available_models:
+        near = difflib.get_close_matches(typed, app.available_models, n=5, cutoff=0.4)
+        app.system_message(f"No model named {typed!r} — pick one:")
+        pick(
+            app,
+            "Load a model",
+            _load_rows(app, first=near),
+            partial(_on_load_picked, app),
+            current=app.model_id,
+        )
+        return
+
+    _start_load(app, typed)
 
 
 def _cmd_unload(app, name: str, arg: str) -> None:
