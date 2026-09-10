@@ -269,19 +269,51 @@ def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) 
 
 
 def _handle_tasks(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) -> None:
-    """Route tasks.list/kill/tail to T499 background tasks."""
+    """Route tasks.list/kill/tail to T499 background tasks.
+
+    🔴 `app.bg_tasks` HOLDS `tasks.Task` DATACLASSES, NOT DICTS (T571). This
+    handler was written against a mapping — `{"id": k, **v}` and
+    `v["status"] = "killed"` — so every call raised, the `except` below turned
+    the raise into a polite rpc error, and `tasks.list` answered
+    `"'Task' object is not a mapping"` for the life of the verb. Nothing
+    crashed, nothing was logged, and a caller reads that failure as "no tasks"
+    or "not supported yet". The catch-all is what made it survive: it is kept,
+    because an unexpected raise here must not take the reader thread down, but
+    it is no longer the only thing standing between a shape error and a caller.
+    """
     verb = cmd_type.split(".", 1)[1] if "." in cmd_type else ""
     try:
         if verb == "list":
-            rows = [{"id": k, **v} for k, v in app.bg_tasks.items()]
-            _respond(cmd_id, ok=True, result=rows)
+            # `to_row` is the serialiser the STORE already uses: same field set
+            # on the wire and on disk, and it is what excludes the live `proc`
+            # (a Popen holding a _thread.lock — deep-copying one was a crash).
+            _respond(cmd_id, ok=True, result=[t.to_row() for t in app.bg_tasks.values()])
         elif verb == "kill":
             task_id = cmd.get("task_id", "")
-            if task_id in app.bg_tasks:
-                app.bg_tasks[task_id]["status"] = "killed"
+            # THE APP'S OWN BODY, the one `/tasks kill` calls: it checks the
+            # state and takes the process TREE down. Re-deciding here would be a
+            # kill that reports success and leaves the child running.
+            reason = app._kill_background(task_id)
+            if reason is None:
                 _respond(cmd_id, ok=True, result={"killed": task_id})
             else:
+                _respond(cmd_id, ok=False, error=reason)
+        elif verb == "tail":
+            # Promised by this docstring since it was written, and absent: the
+            # verb answered "unknown tasks verb". `tail_text` is the same body
+            # `/tasks tail` uses, including its refusal to read a RUNNING task's
+            # log — which does not exist until `finish` writes it.
+            task_id = cmd.get("task_id", "")
+            task = app.bg_tasks.get(task_id)
+            if task is None:
                 _respond(cmd_id, ok=False, error=f"no such task: {task_id}")
+            else:
+                from litetui import paths
+                from litetui import tasks as tasks_mod
+
+                _respond(cmd_id, ok=True, result={
+                    "id": task_id, "tail": tasks_mod.tail_text(task, paths.ROOT),
+                })
         else:
             _respond(cmd_id, ok=False, error=f"unknown tasks verb: {verb}")
     except Exception as e:
