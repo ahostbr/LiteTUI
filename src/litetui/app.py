@@ -2808,9 +2808,23 @@ class LiteTUI(App):
         if chip == "authority":
             self.action_cycle_tool_profile()
         elif chip == "think":
-            from litetui.plugins.misc import _cmd_think
+            # 🔴 THE REGISTRY, NOT AN IMPORT. `from litetui.plugins.misc import
+            # _cmd_think` reached the right body and re-accreted the monolith:
+            # app.py owns the substrate and nothing below it, and
+            # test_plugin_dogfood.py gates exactly that spelling. It went red at
+            # 6b25437 and I did not see it, because the guard for a change in
+            # app.py lives in a file named after plugins. `_handle_command` is
+            # the door the keyboard already uses, so this is the same one body
+            # by a route that cannot invert the layering.
+            self._handle_command("/think")
+        elif chip == "bg":
+            from litetui.task_screens import open_background
 
-            _cmd_think(self, "think", "")
+            open_background(self)
+        elif chip == "agents":
+            from litetui.task_screens import open_subagents
+
+            open_subagents(self)
 
     @property
     def ctx_label_text(self) -> Text:
