@@ -56,6 +56,9 @@ LOST = "lost"
 
 HEAD_CHARS = 1500
 TAIL_CHARS = 2500
+#: The store is rewritten on every task transition, so an unbounded prompt is
+#: paid for repeatedly. A panel shows a dozen lines; this is generous of that.
+PROMPT_CAP = 4000
 
 
 @dataclass
@@ -71,6 +74,12 @@ class Task:
     log: str = ""  # relative to the root; empty until finished
     #: Completion tokens used (subagent calls); None for non-LLM tasks.
     tokens: int | None = None
+    #: What was actually asked, bounded. `label` is the first line cut to 60
+    #: chars — enough for a list ROW, and not enough to answer "what did I send
+    #: it?", which is the first thing T570's subagent panel has to show. Kept on
+    #: the row rather than re-derived because `args` is gone by then: the runner
+    #: hands the awaitable to the task and never stores the call.
+    prompt: str = ""
     #: The live child, for `/tasks kill`. Not persisted, not compared.
     proc: object = field(default=None, repr=False, compare=False)
 
@@ -94,6 +103,15 @@ def label_of(tool: str, args: dict) -> str:
     return (head[:60] + "…") if len(head) > 60 else head
 
 
+def prompt_of(args: dict) -> str:
+    """The whole request, capped — same two keys as `label_of`, in the same
+    order, so the row and the panel can never disagree about which field of a
+    tool call is "what was asked"."""
+    raw = (args or {}).get("command") or (args or {}).get("prompt") or ""
+    text = str(raw).strip()
+    return (text[:PROMPT_CAP] + "…") if len(text) > PROMPT_CAP else text
+
+
 def new_task(tool: str, args: dict, convo_id: str) -> Task:
     return Task(
         id="t-" + uuid.uuid4().hex[:6],
@@ -101,6 +119,7 @@ def new_task(tool: str, args: dict, convo_id: str) -> Task:
         label=label_of(tool, args),
         convo_id=convo_id or "",
         started=time.time(),
+        prompt=prompt_of(args),
     )
 
 
@@ -208,6 +227,34 @@ def tail_text(task: Task | None, root: Path | str, lines: int = 40) -> str:
     except OSError:
         return f"{task.id}: no log on disk"
     return "\n".join(rows[-lines:]) or "(empty)"
+
+
+#: The tool whose Task rows ARE subagents. Everything else backgroundable is a
+#: "background process" — the two footer chips and the two modals split on this
+#: one name, so it lives here rather than being spelled in four places.
+SUBAGENT_TOOL = "subagent"
+
+
+def live(tasks) -> list:
+    """Running tasks, newest first. Never the finished or LOST ones."""
+    return sorted(
+        (t for t in tasks if t.state == RUNNING),
+        key=lambda t: t.started,
+        reverse=True,
+    )
+
+
+def split_live(tasks) -> tuple[list, list]:
+    """(subagents, background processes), both running, both newest first.
+
+    🔴 ONE PREDICATE, TWO CHIPS. A task is a subagent or it is a background
+    process; deriving that twice is how a row eventually shows up in both
+    counts or in neither, and neither mistake is visible in a number.
+    """
+    rows = live(tasks)
+    subs = [t for t in rows if t.tool == SUBAGENT_TOOL]
+    bg = [t for t in rows if t.tool != SUBAGENT_TOOL]
+    return subs, bg
 
 
 def render_list(tasks) -> str:
