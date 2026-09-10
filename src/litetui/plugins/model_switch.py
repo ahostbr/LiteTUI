@@ -29,6 +29,7 @@ from textual.widget import Widget
 from textual.widgets import Input, Label, Select, Static, TabbedContent, TabPane
 
 from litetui import llm_backend
+from litetui import model_transport
 from litetui import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
 from litetui import settings as settings_mod
 from litetui.picker import pick
@@ -42,7 +43,8 @@ def _row_label(app, m: str) -> str:
     row = app.model_rows.get(m)
     tag = ""
     if row is not None:
-        tag = f"  · {row.source}" + ("  · loaded" if row.loaded else "")
+        status = "ready" if getattr(getattr(app, "backend", None), "remote", False) else "loaded"
+        tag = f"  · {row.source}" + (f"  · {status}" if row.loaded else "")
     return ("▸ " if m == app.model_id else "  ") + m + tag
 
 
@@ -86,11 +88,15 @@ def _cmd_reconnect(app, name: str, arg: str) -> None:
 # ── /backend ─────────────────────────────────────────────────────────────────
 
 def _switch_backend(app, choice: str) -> None:
+    if getattr(app, "_chat_running", lambda: False)():
+        app.system_message("Finish or stop the current turn before switching backends.")
+        return
     if choice == app.backend.name:
         app.system_message(f"Already on {choice}")
         return
     s = app.settings
     s.backend = choice
+    s.backend_chosen = True
     settings_mod.save(s)
     # Deliberately NOT shutting the old engine down: a mid-session flip that
     # evicted the resident model would make flipping back cost a full reload.
@@ -99,6 +105,8 @@ def _switch_backend(app, choice: str) -> None:
     # The conversation is NOT touched — history survives an engine switch;
     # only the endpoint and the model list change.
     app.model_id = ""
+    app.available_models = []
+    app.model_rows = {}
     app.update_header()
     app.system_message(f"Backend → {choice}; reconnecting…")
     app.connect()
@@ -106,11 +114,11 @@ def _switch_backend(app, choice: str) -> None:
 
 def _cmd_backend(app, name: str, arg: str) -> None:
     choice = arg.strip().lower()
-    if choice in ("lmstudio", "llamacpp"):
+    if choice in ("lmstudio", "llamacpp", *model_transport.OAUTH_PROVIDERS):
         _switch_backend(app, choice)
         return
     if choice:
-        app.system_message(f"Unknown backend {choice!r} — lmstudio or llamacpp")
+        app.system_message(f"Unknown backend {choice!r} — lmstudio, llamacpp or codex")
         return
     lms_mark = "installed" if shutil.which("lms") else "not detected"
     llama_mark = (
@@ -120,6 +128,7 @@ def _cmd_backend(app, name: str, arg: str) -> None:
     rows = [
         ("lmstudio", f"LM Studio desktop  · {lms_mark}"),
         ("llamacpp", f"llama.cpp (our engine)  · {llama_mark}"),
+        ("codex", f"Codex subscription  · {model_transport.auth_status('codex')}"),
     ]
 
     def _picked(choice: str | None) -> None:
@@ -183,6 +192,9 @@ def _say_projector(app, key: str) -> None:
 
 
 def _cmd_load(app, name: str, arg: str) -> None:
+    if getattr(app.backend, "remote", False):
+        app.system_message("Remote models need no loading. Select one with /model.")
+        return
     target = arg.strip() or app.model_id
     if not target:
         app.system_message("No model selected — /model first, or /load <name>")
@@ -206,6 +218,9 @@ def _cmd_load(app, name: str, arg: str) -> None:
 
 
 def _cmd_unload(app, name: str, arg: str) -> None:
+    if getattr(app.backend, "remote", False):
+        app.system_message("Remote models do not occupy local model memory.")
+        return
     target = arg.strip() or app.model_id
     if not target:
         app.system_message("No model selected — /unload <name>")
@@ -794,6 +809,22 @@ class ModelConfigScreen(ModalScreen[None]):
 
 
 def _cmd_modelcfg(app, name: str, arg: str) -> None:
+    if getattr(app.backend, "remote", False):
+        target = arg.strip() or app.model_id
+        levels = app.backend.reasoning_levels(target)
+        if not levels:
+            app.system_message("Select an available Codex model with /model first.")
+            return
+        def selected(level):
+            if level:
+                app.settings.model_infer_overrides.setdefault(target, {})["reasoning_effort"] = level
+                settings_mod.save(app.settings)
+                if target == app.model_id:
+                    app.thinking_level = level
+                    app.update_header()
+        pick(app, "Codex reasoning effort (response limits are provider-managed)",
+             [(level, level) for level in levels], selected, current=app.thinking_level)
+        return
     target = arg.strip() or app.model_id
     if not target:
         app.system_message("No model selected — /model first, or /modelcfg <name>")
@@ -811,6 +842,8 @@ def _activate(app) -> None:
     answer). Detection is deliberately offline-cheap: an exe on disk and a
     CLI on PATH — no network probes on the boot path."""
     s = app.settings
+    if s.backend in model_transport.OAUTH_PROVIDERS:
+        return
     if s.backend_chosen:
         return
     if settings_mod.source_of("backend"):
@@ -868,7 +901,7 @@ def _register(ctx) -> None:
     ctx.command(
         ("/backend",), _cmd_backend,
         palette="Switch backend",
-        help="Which program actually runs the model — LM Studio or llama.cpp.",
+        help="Choose LM Studio, llama.cpp, or a Codex subscription.",
         group="backend",
         order=50,
     )

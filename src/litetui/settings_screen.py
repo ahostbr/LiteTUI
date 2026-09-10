@@ -288,7 +288,8 @@ class SettingsBody(Widget):
                         yield from self._select_row(
                             "backend", "Engine",
                             [("LM Studio desktop", "lmstudio"),
-                             ("llama.cpp (our own llama-server)", "llamacpp")],
+                             ("llama.cpp (our own llama-server)", "llamacpp"),
+                             ("Codex (OAuth subscription)", "codex")],
                             "Which engine serves the chat. /backend switches "
                             "live; this is the boot default.",
                         )
