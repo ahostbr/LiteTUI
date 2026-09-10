@@ -2473,18 +2473,33 @@ class LiteTUI(App):
         message appended on entry would still be sitting in context afterwards,
         telling the model to refuse to build long after the user asked it to.
         """
-        self._plan_mode = not self._plan_mode
+        self.set_plan_mode(not self._plan_mode)
+
+    def set_plan_mode(self, on: bool, *, announce: bool = True) -> bool:
+        """Plan mode to an EXPLICIT value. True when it actually changed.
+
+        The key toggles; the wire sets (T558-B). Both land here so ONE place
+        knows what entering and leaving the mode involves. The conversation
+        rebuild is the part that is easy to write twice and get subtly
+        different, and the second copy is the one that forgets it.
+        """
+        on = bool(on)
+        if on == self._plan_mode:
+            return False
+        self._plan_mode = on
         if self.conversation and self.conversation[0].get("role") == "system":
             self.conversation[0]["content"] = self._system_prompt_text()
             self._edit(0, "plan mode toggled")  # one message, not the whole list
-        if self._plan_mode:
-            self._system(
-                "Plan mode ON — ls-plan-w-quizmaster, questions through "
-                "ask_user_question, no building. Ctrl+P to leave."
-            )
-        else:
-            self._system("Plan mode OFF — Ctrl+P to re-enter")
+        if announce:
+            if self._plan_mode:
+                self._system(
+                    "Plan mode ON — ls-plan-w-quizmaster, questions through "
+                    "ask_user_question, no building. Ctrl+P to leave."
+                )
+            else:
+                self._system("Plan mode OFF — Ctrl+P to re-enter")
         self._update_header()
+        return True
 
     def action_cycle_tool_profile(self) -> None:
         """shift+tab: one step down the authority scale, wrapping.
@@ -2512,9 +2527,27 @@ class LiteTUI(App):
             # keeps Tab from walking out of a pending approval -- the app
             # binding is priority, so nothing else would stop it.
             return
-        nxt = tool_policy.cycle(self.settings.tool_policy_profile)
-        self.settings.tool_policy_profile = nxt
-        self._active_tool_profile = nxt
+        self.set_tool_profile(tool_policy.cycle(self.settings.tool_policy_profile))
+
+    def set_tool_profile(self, profile: str, *, announce: bool = True) -> bool:
+        """Authority to an EXPLICIT profile. False when the name is unknown.
+
+        shift+tab cycles; the wire sets (T558-B). One body, so the two cannot
+        drift — and in particular so the wire cannot forget
+        `_active_tool_profile`, which is the field `_execute_tool` actually
+        reads. Setting only the SETTING would move the footer and the saved
+        value while tools kept running under the old authority: the readout
+        would be lying at exactly the moment someone is using it to restrict
+        something.
+
+        An unknown name is REFUSED, never coerced. Storing a profile that
+        resolves to nothing leaves the app with no policy at all, which is a
+        worse answer than the caller being told no.
+        """
+        if profile not in tool_policy.PROFILES:
+            return False
+        self.settings.tool_policy_profile = profile
+        self._active_tool_profile = profile
         try:
             settings_mod.save(self.settings)
         except OSError:
@@ -2522,7 +2555,11 @@ class LiteTUI(App):
             # half-success is the disagreement this persistence exists to end.
             self._system("could not save the authority level — this session only")
         self._refresh_ctx_label()
-        self._system(f"{profile_text(nxt)} — {tool_policy.PROFILES[nxt].summary}")
+        if announce:
+            self._system(
+                f"{profile_text(profile)} — {tool_policy.PROFILES[profile].summary}"
+            )
+        return True
 
     # ── Connection ───────────────────────────────────────────────
 

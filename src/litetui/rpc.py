@@ -70,8 +70,47 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         if not message:
             _respond(cmd_id, ok=False, error="empty message")
             return
+        # T558-B: `tool_profile` on the prompt was DEAD - the host had been
+        # sending it on every turn since the adapter was written and nothing
+        # here ever read it, so authority was whatever the spawn flag said and
+        # a mid-session change did nothing until restart. Applied through the
+        # SAME setter shift+tab uses, so there is one path and not two.
+        profile = cmd.get("tool_profile")
+        if isinstance(profile, str) and profile:
+            if not app.set_tool_profile(profile, announce=False):
+                # Refused rather than ignored: a caller that named a profile
+                # this build does not have is asking for authority it will not
+                # get, and a silent turn under the OLD authority is the wrong
+                # kind of surprise.
+                _respond(cmd_id, ok=False, error=f"unknown tool profile {profile!r}")
+                return
         app._submit_text(str(message), alt_chord=False)
         _respond(cmd_id, ok=True, result={"turn": "accepted"})
+    elif cmd_type == "set":
+        # T558-B. Authority and plan mode, mid-session, through the SAME setters
+        # Ctrl+P and shift+tab use. Both fields optional; an empty `set` is a
+        # no-op rather than an error, so a host can send whichever it knows.
+        changed: dict[str, Any] = {}
+        profile = cmd.get("profile")
+        if isinstance(profile, str) and profile:
+            if not app.set_tool_profile(profile):
+                _respond(cmd_id, ok=False, error=f"unknown tool profile {profile!r}")
+                return
+            changed["profile"] = profile
+        mode = cmd.get("mode")
+        if isinstance(mode, str) and mode:
+            if mode not in ("plan", "normal", "default"):
+                _respond(cmd_id, ok=False, error=f"unknown mode {mode!r} (plan|normal)")
+                return
+            app.set_plan_mode(mode == "plan")
+            changed["mode"] = mode
+        # The ACK carries what is now in force, not what was asked for. A host
+        # that sent nothing recognisable gets an empty dict and can tell.
+        _respond(cmd_id, ok=True, result={
+            "changed": changed,
+            "tool_policy_profile": str(getattr(app, "_active_tool_profile", None)),
+            "plan_mode": bool(getattr(app, "_plan_mode", False)),
+        })
     elif cmd_type == "answer":
         # The other half of `user_input_requested` (T558-A). The tool call is
         # parked on a worker thread waiting for exactly this.
