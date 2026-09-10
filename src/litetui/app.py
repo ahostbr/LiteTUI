@@ -1071,6 +1071,7 @@ class LiteTUI(App):
         # above, which has no legacy encoding and needed the ctrl+j alias.
         Binding("shift+tab", "cycle_tool_profile", "Authority",
                 priority=True, show=False),
+        Binding("ctrl+p", "toggle_plan_mode", "Plan", priority=True, show=False),
     ]
 
     pending_image: reactive[str | None] = reactive(None)
@@ -1087,6 +1088,7 @@ class LiteTUI(App):
         system_prompt: str | None = None,
         initial_model: str | None = None,
         tool_profile: str | None = None,
+        plan_mode: bool = False,
         convo_id: str | None = None,
         **app_kwargs,
     ):
@@ -1096,6 +1098,11 @@ class LiteTUI(App):
         self._cli_system_prompt = system_prompt
         self._cli_initial_model = initial_model
         self._cli_tool_profile = tool_profile
+        # T558 plan mode. SESSION-ONLY, deliberately not persisted to settings:
+        # a mode that survives a restart is a mode you forget you are in, and
+        # this one silently refuses to build. Authority persists because it is a
+        # standing permission; this is a posture for the work in front of you.
+        self._plan_mode = bool(plan_mode)
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
@@ -1260,6 +1267,14 @@ class LiteTUI(App):
             ).strip(),
             enabled=lambda: paths.SYSTEM_PROMPT_FILE.exists(),
         )
+        # T558. Gated on the mode, so LEAVING plan mode drops the instruction —
+        # the composition is rebuilt through the same single builder the tools
+        # toggle uses, and an absent section leaves nothing behind.
+        self.plugins.add_prompt_section(
+            "host", _ord["PLAN"],
+            lambda: "\n" + paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n",
+            enabled=lambda: self._plan_mode and paths.PLAN_PROMPT_FILE.exists(),
+        )
         self.plugins.add_prompt_section(
             "host", _ord["MEMORY"],
             lambda: memory_prompt(self.convo_id, self.convo_dir),
@@ -1355,10 +1370,16 @@ class LiteTUI(App):
         # else: the section simply does not render, and the model is handed
         # tools with no instructions. Say it once, at the only moment anyone is
         # looking at a fresh screen.
-        for label, f in (
+        _checks = [
             ("system prompt", paths.SYSTEM_PROMPT_FILE),
             ("tools prompt", paths.TOOLS_PROMPT_FILE),
-        ):
+        ]
+        # Only worth saying when the mode is on: an absent file nobody is using
+        # is not a fault, and a startup warning for it trains people to ignore
+        # the two above, which always matter.
+        if self._plan_mode:
+            _checks.append(("plan prompt", paths.PLAN_PROMPT_FILE))
+        for label, f in _checks:
             if not f.exists():
                 self._system(f"[!] {label} missing: {f}\n    That section is absent from the model's context.")
         self._connect()
@@ -2443,6 +2464,28 @@ class LiteTUI(App):
         self._system(f"Tools {state} — Ctrl+T to toggle")
         self._update_header()
 
+    def action_toggle_plan_mode(self) -> None:
+        """ctrl+p: plan mode on or off (T558).
+
+        The instruction is not appended to the conversation — it is a PROMPT
+        SECTION gated on the mode, rebuilt here through the same single builder
+        Ctrl+T uses. That is what makes leaving the mode actually leave it: a
+        message appended on entry would still be sitting in context afterwards,
+        telling the model to refuse to build long after the user asked it to.
+        """
+        self._plan_mode = not self._plan_mode
+        if self.conversation and self.conversation[0].get("role") == "system":
+            self.conversation[0]["content"] = self._system_prompt_text()
+            self._edit(0, "plan mode toggled")  # one message, not the whole list
+        if self._plan_mode:
+            self._system(
+                "Plan mode ON — ls-plan-w-quizmaster, questions through "
+                "ask_user_question, no building. Ctrl+P to leave."
+            )
+        else:
+            self._system("Plan mode OFF — Ctrl+P to re-enter")
+        self._update_header()
+
     def action_cycle_tool_profile(self) -> None:
         """shift+tab: one step down the authority scale, wrapping.
 
@@ -2697,6 +2740,13 @@ class LiteTUI(App):
         if level:
             add(level, "#7d8799" if tool_policy.stops_you(
                 self._active_tool_profile) else "#7aa2f7")
+
+        # PLAN MODE, beside Authority and unhideable for the same reason (T558):
+        # it changes what the model will agree to do, so a mode you cannot see
+        # is a refusal you cannot explain. Absent when off — an "off" chip would
+        # occupy the footer permanently to say nothing.
+        if getattr(self, "_plan_mode", False):
+            add("plan", "bold #bb9af7")
 
         # Identity, but only when the seat actually holds it. An unregistered
         # seat displaying a name it does not own is worse than showing nothing:

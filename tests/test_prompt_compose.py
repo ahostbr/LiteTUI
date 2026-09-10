@@ -46,6 +46,12 @@ def _reference(a) -> str:
         if unresolved:
             raise ValueError(f"reference found unresolved placeholders: {unresolved}")
         base = base.strip()
+    # T558: plan mode rides slot 5, between BASE and MEMORY. Built here
+    # INDEPENDENTLY of the app, like every other arm of this reference.
+    if getattr(a, "_plan_mode", False) and paths.PLAN_PROMPT_FILE.exists():
+        base = (
+            base + "\n" + paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
+        ).strip()
     if a.convo_dir is not None:
         base = (base + m.memory_prompt(a.convo_id, a.convo_dir)).strip()
     if a.tools_enabled:
@@ -89,8 +95,11 @@ def _fake_skills():
 @pytest.mark.parametrize("tools_on", [True, False])
 @pytest.mark.parametrize("with_skills", [True, False])
 @pytest.mark.parametrize("with_store", [True, False])
-def test_composition_matches_the_reference_fold(tools_on, with_skills, with_store, tmp_path):
-    a = m.LiteTUI()
+@pytest.mark.parametrize("plan_on", [True, False])
+def test_composition_matches_the_reference_fold(
+    tools_on, with_skills, with_store, plan_on, tmp_path
+):
+    a = m.LiteTUI(plan_mode=plan_on)
     a.tools_enabled = tools_on
     a.skills = _fake_skills() if with_skills else []
     if with_store:

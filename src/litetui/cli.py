@@ -45,6 +45,13 @@ def main() -> None:
         choices=["autonomous", "interactive", "scheduled"],
         help="tool policy profile (default: autonomous when --rpc, else settings)",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=["normal", "plan"],
+        help="plan: load ls-plan-w-quizmaster and ask through ask_user_question (T558)",
+    )
     parser.add_argument("--convo", type=str, default=None, help="resume a conversation by id")
 
     args, remaining = parser.parse_known_args()
@@ -64,6 +71,7 @@ def main() -> None:
         system_prompt=args.system_prompt,
         initial_model=args.model,
         tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
+        plan_mode=args.mode == "plan",
         convo_id=args.convo,
         **app_kwargs,
     )

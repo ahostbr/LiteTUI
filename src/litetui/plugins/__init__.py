@@ -36,6 +36,7 @@ from litetui.tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
 # neighbours.
 PROMPT_ORDER = {
     "BASE": 0,          # prompts/systemprompt.md (host)
+    "PLAN": 5,          # prompts/plan-mode.md, gated on plan mode (host, T558)
     "MEMORY": 10,       # the store block (host)
     "TOOLS": 20,        # TOOLS_PROMPT, gated on tools_enabled (host)
     "DEFERRED_TOOLS": 25,  # names of tools whose schemas load on demand (tool_search plugin)
