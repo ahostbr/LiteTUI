@@ -23,6 +23,7 @@ from litetui import side_panel
 from litetui.side_panel import present_dialog, show_dialog
 
 from litetui import llm_backend
+from litetui import model_transport
 from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
@@ -1677,7 +1678,7 @@ class LiteTUI(App):
                 break
         summary = ""
         try:
-            resp = await self.client.chat.completions.create(
+            resp = await model_transport.for_app(self).create(
                 model=self.model_id or "local-model",
                 messages=[{
                     "role": "user",
@@ -2387,7 +2388,7 @@ class LiteTUI(App):
         home = str(Path.home())
         if cwd.startswith(home):
             cwd = "~" + cwd[len(home):]
-        engine = "llama.cpp" if self.backend.name == "llamacpp" else "LM Studio"
+        engine = {"llamacpp": "llama.cpp", "codex": "Codex OAuth"}.get(self.backend.name, "LM Studio")
         parts = [p for p in (engine, self.model_id, mode, think, cwd) if p]
         self.sub_title = " \u00b7 ".join(parts)
         # The footer carries the thinking level too, and it only refreshed on a
@@ -2804,6 +2805,8 @@ class LiteTUI(App):
         _fetch_ctx_window fills from a separate worker and may still be the
         PREVIOUS model's number at this moment.
         """
+        if getattr(getattr(self, "backend", None), "remote", False):
+            return
         want = self.settings.default_context_length
         if not want or not self.model_id:
             return
@@ -4085,6 +4088,7 @@ class LiteTUI(App):
             text_full = ""
             reasoning = ""
             tool_acc: dict[int, dict] = {}
+            provider_metadata = None
             tool_msgs: dict[int, ToolMessage] = {}
 
             request_messages = self._request_messages()
@@ -4115,7 +4119,7 @@ class LiteTUI(App):
                 # No timeout here — the user is watching and asked for this
                 # turn, so a model that is loading is worth waiting out.
                 await self._ensure_chat_ready()
-                stream = await self.client.chat.completions.create(**kwargs)
+                stream = await model_transport.for_app(self).create(**kwargs)
             except Exception as e:
                 runtime_log.record(
                     "turn_stream_failed",
@@ -4139,6 +4143,7 @@ class LiteTUI(App):
 
             try:
                 async for chunk in stream:
+                    provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
                     if u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
@@ -4272,6 +4277,9 @@ class LiteTUI(App):
                 # saw turn_start waited forever on a mid-stream 400.
                 self._rpc_emit({"type": "turn_end", "stopReason": "error", "error": _plain_backend_error(e, self.backend.name)})
                 return
+            finally:
+                if isinstance(stream, model_transport.ResponseStream):
+                    await stream.close()
 
             self._elapsed.stop_body()
             # Final render of this turn's bubble. _thinking_done
@@ -4295,6 +4303,8 @@ class LiteTUI(App):
             # model keeps full context across the loop.
             if text_full or tool_acc:
                 message: dict = {"role": "assistant", "content": text_full or None}
+                if provider_metadata:
+                    message["provider_metadata"] = provider_metadata
                 if reasoning:
                     # Echo the trace back so the model keeps reasoning context.
                     message["reasoning_content"] = reasoning
@@ -4721,6 +4731,7 @@ class LiteTUI(App):
         # writing files and nothing reaches disk.
         summary = ""
         writes: list[str] = []
+        stream = None
         try:
             # ONCE, before the first round — the answer cannot change midway
             # through a compaction, and asking per round would multiply the
@@ -4744,7 +4755,8 @@ class LiteTUI(App):
                     graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                 )
 
-                stream = await self.client.chat.completions.create(**kwargs)
+                stream = await model_transport.for_app(self).create(**kwargs)
+                provider_metadata = None
                 text_full = ""
                 tool_acc: dict = {}
                 tool_msgs: dict = {}
@@ -4752,6 +4764,7 @@ class LiteTUI(App):
                 # compaction card speaks the same grammar as a normal turn
                 # because it reuses the same chunk shapes and widgets.
                 async for chunk in stream:
+                    provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -4795,6 +4808,7 @@ class LiteTUI(App):
                 # feed the results back, go round again.
                 ask.append({
                     "role": "assistant",
+                    **({"provider_metadata": provider_metadata} if provider_metadata else {}),
                     "content": text_full or None,
                     "tool_calls": [
                         {
@@ -4847,6 +4861,9 @@ class LiteTUI(App):
             card.fail("failed \u2014 conversation unchanged")
             self._system(f"Compact failed — conversation unchanged.\n{_plain_backend_error(e, self.backend.name)}")
             return
+        finally:
+            if isinstance(stream, model_transport.ResponseStream):
+                await stream.close()
 
         if not summary:
             card.fail("failed \u2014 no summary produced \u00b7 conversation unchanged")

@@ -1635,6 +1635,11 @@ def llama_available() -> bool:
 
 def make_backend(settings):
     """THE factory. app.py calls this once at boot and again on /backend."""
+    if settings.backend == "codex":
+        from litetui.oauth_backend import OAuthBackend
+        return OAuthBackend(settings)
     if settings.backend == "llamacpp":
         return LlamaCppBackend(settings)
+    if settings.backend != "lmstudio":
+        raise BackendError("That backend is unavailable. Choose lmstudio, llamacpp, or codex; no fallback was used.")
     return LMStudioBackend(settings)

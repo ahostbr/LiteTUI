@@ -18,12 +18,11 @@ so it rides the same T499/T517 path as bash: explicit flag or auto-promotion.
 """
 from __future__ import annotations
 
-import json
 import urllib.request
 from pathlib import Path
 
+from litetui import model_transport, tool_schemas
 from litetui import tasks as tasks_mod
-from litetui import tool_schemas
 from litetui.plugins import PluginManifest
 from litetui.tool_policy import NETWORK_READ_POLICY
 
@@ -74,8 +73,6 @@ def _make_runner(app):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": user_content})
 
-        host = getattr(getattr(app, "settings", None), "lm_host", "http://localhost:1234")
-        url = f"{host.rstrip('/')}/v1/chat/completions"
         payload: dict = {
             "model": model,
             "messages": messages,
@@ -85,21 +82,16 @@ def _make_runner(app):
         if not think:
             payload["reasoning_effort"] = "none"
             payload["chat_template_kwargs"] = {"enable_thinking": False}
-        body = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(req, timeout=600) as resp:
-                data = json.loads(resp.read())
+            data = model_transport.complete_sidecall(app, payload, opener=urllib.request.urlopen)
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         text = (msg.get("content") or "").strip()
+        if getattr(getattr(app, "backend", None), "remote", False) and not think:
+            text = "[Codex uses its minimum supported reasoning effort]\n" + text if text else text
         reasoning = (msg.get("reasoning_content") or "").strip()
         usage = data.get("usage") or {}
         tokens = usage.get("completion_tokens")
