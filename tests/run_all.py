@@ -129,6 +129,25 @@ def main() -> int:
     # the same way — see the encoding= below.)
     os.environ.setdefault("PYTHONUTF8", "1")
 
+    # 🔴 AND THE ONE conftest DOES THAT THIS DID NOT: src/ ON THE PATH.
+    #
+    # conftest.py inserts `<repo>/src` into sys.path so `import litetui` resolves
+    # for the pytest half. The script-style files never import conftest, and a
+    # bare `python tests/x.py` has only the repo root on the path — so on any
+    # checkout where the package is not separately installed, EIGHT of them died
+    # with `ModuleNotFoundError: No module named 'litetui'` before running a
+    # single check.
+    #
+    # It looked like a repo failure and was an ENVIRONMENT one: the same files
+    # pass under `uv run` in the primary clone, where the project IS installed,
+    # which is why this survived — the runner was only ever used where it
+    # happened to work. Set here rather than in each script: this function
+    # already owns "what the script half needs that conftest gives the other".
+    _src = str(ROOT / "src")
+    _existing = os.environ.get("PYTHONPATH", "")
+    if _src not in _existing.split(os.pathsep):
+        os.environ["PYTHONPATH"] = _src + (os.pathsep + _existing if _existing else "")
+
     pyt, scr = classify()
 
     print(f"pytest-style: {len(pyt)}   script-style: {len(scr)}\n")
