@@ -2800,6 +2800,22 @@ class LiteTUI(App):
         if s.footer_show_thinking:
             add(f"think:{self.thinking_level or 'default'}", "#5c6370")
 
+        # T570 — WHAT IS RUNNING WITHOUT ME. Ryan: "sub agents and background
+        # process should show in the footer".
+        #
+        # ABSENT AT ZERO, never "bg:0". An idle session is the common case and a
+        # permanent pair of zeros costs width to say nothing; a chip appearing is
+        # itself the signal that something started.
+        # getattr, like `_active_tool_profile` and `_plan_mode` above: the footer
+        # is built by things that are not a whole app (the FakeApp in
+        # tests/test_footer.py is one), and a readout that CRASHES because a
+        # registry has not been constructed is worse than one that shows nothing.
+        subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
+        if s.footer_show_bg and bg:
+            add(f"bg:{len(bg)}", "#7aa2f7")
+        if s.footer_show_subagents and subs:
+            add(f"agents:{len(subs)}", "#bb9af7")
+
         if s.footer_show_convo and self.convo_id:
             add(self.convo_id[:8], "#5c6370")
 

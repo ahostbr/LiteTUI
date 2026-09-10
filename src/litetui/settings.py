@@ -346,6 +346,12 @@ class Settings:
     #: already being computed to choose the colour and then discarded.
     footer_show_seat: bool = True
     footer_show_thinking: bool = True
+    #: Live background tasks and live subagents, as counts (T570). Hideable like
+    #: every other footer field; ON by default because Ryan asked for them to be
+    #: visible, and a count of zero renders as ABSENCE rather than "bg:0" so an
+    #: idle session pays no width for them.
+    footer_show_bg: bool = True
+    footer_show_subagents: bool = True
     footer_show_convo: bool = True
     footer_show_context: bool = True
     footer_show_context_pct: bool = True

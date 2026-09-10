@@ -210,6 +210,34 @@ def tail_text(task: Task | None, root: Path | str, lines: int = 40) -> str:
     return "\n".join(rows[-lines:]) or "(empty)"
 
 
+#: The tool whose Task rows ARE subagents. Everything else backgroundable is a
+#: "background process" — the two footer chips and the two modals split on this
+#: one name, so it lives here rather than being spelled in four places.
+SUBAGENT_TOOL = "subagent"
+
+
+def live(tasks) -> list:
+    """Running tasks, newest first. Never the finished or LOST ones."""
+    return sorted(
+        (t for t in tasks if t.state == RUNNING),
+        key=lambda t: t.started,
+        reverse=True,
+    )
+
+
+def split_live(tasks) -> tuple[list, list]:
+    """(subagents, background processes), both running, both newest first.
+
+    🔴 ONE PREDICATE, TWO CHIPS. A task is a subagent or it is a background
+    process; deriving that twice is how a row eventually shows up in both
+    counts or in neither, and neither mistake is visible in a number.
+    """
+    rows = live(tasks)
+    subs = [t for t in rows if t.tool == SUBAGENT_TOOL]
+    bg = [t for t in rows if t.tool != SUBAGENT_TOOL]
+    return subs, bg
+
+
 def render_list(tasks) -> str:
     rows = sorted(tasks, key=lambda t: t.started, reverse=True)
     if not rows:
