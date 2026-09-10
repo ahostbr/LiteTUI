@@ -70,6 +70,15 @@ async def test_every_tool_the_prompt_NAMES_actually_exists() -> None:
             for t in a._all_tools()
             if isinstance(t, dict)
         }
+        # Deferred tools (7b6640f) EXIST without being loaded: their schemas sit
+        # behind `tool_search` and dispatch activates them on first call, so the
+        # prompt may still name one. What this gate must catch is a tool that is
+        # GONE, and a deferred tool is not gone.
+        offered |= {
+            t.get("function", {}).get("name")
+            for t in a.plugins.deferred_specs()
+            if isinstance(t, dict)
+        }
         offered.discard(None)
 
     text = _prompt()
