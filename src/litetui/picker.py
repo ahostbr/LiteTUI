@@ -173,4 +173,8 @@ def pick(app, title: str, rows: list[tuple[str, str]], callback,
         partial(PickerBody, title, rows, current, hint),
         partial(PickerScreen, title, rows, current, hint),
         callback,
+        # The title is the only HUMAN name a picker has — `_dialog_name` would
+        # answer "PickerScreen" for all of them, and a headless refusal that
+        # cannot say WHICH picker it refused is barely better than silence.
+        what=title,
     )

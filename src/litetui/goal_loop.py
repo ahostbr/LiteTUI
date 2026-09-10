@@ -407,6 +407,18 @@ def loop_command(app: Any, arg: str) -> None:
         # BARE /loop OPENS THE PANEL (T074). `/loop list` still prints text, so
         # anything reading that form keeps working — the GUI takes the bare
         # invocation only, which is where a human lands and a script does not.
+        #
+        # 🔴 EXCEPT HEADLESS, WHERE THE TEXT FORM IS THE ANSWER (T572). A screen
+        # over `--rpc` waits on a keyboard that is not attached and the caller —
+        # a model — hangs holding a turn that can never finish. `open_dialog`
+        # would refuse this anyway, but a GENERIC refusal is the wrong answer
+        # where a specific one exists: `/loop list` has printed this exact
+        # information since this function was written, so the headless branch
+        # gives that instead of "not available here". Same shape as T558-A's
+        # `/think`, and the reason that fix chose a text listing over a refusal.
+        if getattr(app, "_rpc", False):
+            loop_command(app, "list")
+            return
         from litetui.loop_list import LoopListBody
         from litetui.side_panel import open_dialog
 

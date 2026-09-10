@@ -791,7 +791,46 @@ def request_swap(widget: Widget) -> None:
         screen.dismiss(SWAP)
 
 
-def present_dialog(app, body_factory: BodyFactory, modal_factory, callback=None) -> None:
+def _dialog_name(factory, fallback: str = "This dialog") -> str:
+    """A name for a body/modal factory, including a `functools.partial` of one."""
+    fn = getattr(factory, "func", factory)
+    return getattr(fn, "__name__", None) or fallback
+
+
+def refuse_over_rpc(app, what: str) -> bool:
+    """True when this session is headless and the dialog must NOT be opened.
+
+    🔴 THE GUARD LIVES IN THE DOORS, NOT IN THE COMMANDS (T572). T558-A measured
+    the failure on `/think` and fixed that one command; the mechanism was never
+    specific to it. A screen pushed over `--rpc` waits on a keyboard that is not
+    attached, and the caller — a model, not a person — hangs holding a turn that
+    can never finish. Twelve commands reach a dialog through `present_dialog` or
+    `open_dialog`; a per-command list is wrong the day someone adds the
+    thirteenth, and wrong SILENTLY, because the symptom is a hang in another
+    process.
+
+    ⚠️ IT REFUSES, IT DOES NOT ANSWER. The callback is not called with None:
+    `present_dialog`'s contract already distinguishes "Esc, answered with None"
+    from "swapped, did not answer", and a fabricated None here would be read by
+    a caller as the human having cancelled.
+
+    ⚠️ AND IT SAYS SO OUT LOUD. Silence is indistinguishable from a command that
+    did nothing, which is the state this replaces.
+    """
+    if not getattr(app, "_rpc", False):
+        return False
+    app.system_message(
+        f"{what} is a keyboard dialog, and this session is headless (--rpc). It "
+        f"was NOT opened: a screen here waits on a keyboard that is not attached "
+        f"and the turn could never finish. Most commands take the same choice as "
+        f"an argument instead — `/think high`, `/model <id>`, `/loop list`. "
+        f"`/help` lists them."
+    )
+    return True
+
+
+def present_dialog(app, body_factory: BodyFactory, modal_factory, callback=None,
+                   what: str = "") -> None:
     """Sidebar when the setting says so; otherwise THE ORIGINAL MODAL SCREEN.
 
     ⚠️ THE MODAL BRANCH DELIBERATELY DOES NOT GO THROUGH THIS MODULE. It calls
@@ -806,6 +845,12 @@ def present_dialog(app, body_factory: BodyFactory, modal_factory, callback=None)
     have caught it — but only after the claim "this only adds a sidebar" had
     already been written down.
     """
+    # BOTH BRANCHES, because only the modal half pushes from here — the sidebar
+    # half delegates to `open_dialog`, which carries the same guard. Checked
+    # before the fork so the answer cannot depend on a setting nobody sets for a
+    # headless child.
+    if refuse_over_rpc(app, what or _dialog_name(modal_factory)):
+        return
     if getattr(app.settings, "dialog_style", "modal") == "sidebar":
         open_dialog(app, body_factory, callback,
                     style="sidebar", side=app.settings.dialog_side)
@@ -851,6 +896,9 @@ def open_dialog(app, body_factory: BodyFactory, callback=None, *,
     should be using `show_dialog`, and handing back an awaitable here would make
     two ways to do the same thing look interchangeable when they are not.
     """
+    if refuse_over_rpc(app, _dialog_name(body_factory)):
+        return
+
     async def _run() -> None:
         result = await show_dialog(app, body_factory, style=style, side=side,
                                    trap_focus=trap_focus)
