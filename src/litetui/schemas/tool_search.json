@@ -1,0 +1,17 @@
+{
+  "type": "function",
+  "function": {
+    "name": "tool_search",
+    "description": "Load the schema of a deferred tool so you can call it. Deferred tools are listed BY NAME ONLY in the system prompt (the 'Deferred tools' section) — their full descriptions and parameters are not in your context until you load them here. Query forms: `select:name,name` loads exactly those names; any other text is keywords matched against tool names and descriptions (up to 8 best matches). Every match is returned in full and becomes callable from your next turn on. Do not guess a deferred tool's parameters; load it first.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "`select:mcp__litesuite-tools__tasks` for exact names, or keywords such as `kanban task board` or `screenshot`"
+        }
+      },
+      "required": ["query"]
+    }
+  }
+}

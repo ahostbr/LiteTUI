@@ -2,18 +2,20 @@
   "type": "function",
   "function": {
     "name": "skill",
-    "description": "Load the full instructions for a named skill. The system prompt lists only each skill's name and one-line description; call this to read the actual procedure before following it.",
+    "description": "Search for a skill, or load one. The system prompt lists skills BY NAME ONLY. Pass `find` with keywords to get the matching skills and their one-line descriptions; pass `name` to load that skill's full instructions. Read the instructions before following a skill.",
     "parameters": {
       "type": "object",
       "properties": {
         "name": {
           "type": "string",
-          "description": "Skill name from the Skills list"
+          "description": "Skill name from the Skills list — loads its full instructions"
+        },
+        "find": {
+          "type": "string",
+          "description": "Keywords to search skill names and descriptions, e.g. `screenshot`, `plan quiz`"
         }
       },
-      "required": [
-        "name"
-      ]
+      "required": []
     }
   }
 }

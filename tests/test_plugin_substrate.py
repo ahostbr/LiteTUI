@@ -201,3 +201,72 @@ def test_registries_are_isolated_instances():
     _ctx(r1, "p").tool(_spec("only-in-r1"), lambda a: "")
     assert r2.dispatch_for("only-in-r1") is None
     assert not r2.tools and not r2.status
+
+
+# ── deferred tools (2026-09-10, Claude Code's shape) ────────────────────────
+
+
+def test_a_bare_registry_defers_nothing():
+    # CONTROL for every test below: the offer is unchanged until a plugin
+    # turns deferral on — that is what keeps every older caller and test green.
+    reg = PluginRegistry()
+    _ctx(reg, "p").tool(_spec("studio"), lambda a: "S")
+    _ctx(reg, "mcp").dynamic_tools(lambda: [_spec("mcp__x__t1")], lambda n: None)
+    assert [s["function"]["name"] for s in reg.tool_specs()] == ["studio", "mcp__x__t1"]
+    assert reg.deferred_specs() == []
+
+
+def test_deferral_withholds_the_offer_but_never_the_dispatch():
+    reg = PluginRegistry()
+    _ctx(reg, "p").tool(_spec("studio"), lambda a: "S")
+    _ctx(reg, "p").tool(_spec("read"), lambda a: "R")
+    _ctx(reg, "mcp").dynamic_tools(
+        lambda: [_spec("mcp__x__t1"), _spec("mcp__x__t2")],
+        lambda n: (lambda a: "M") if n == "mcp__x__t1" else None,
+    )
+    reg.deferred_static = frozenset({"studio"})
+    reg.defer_dynamic = True
+    assert [s["function"]["name"] for s in reg.tool_specs()] == ["read"]
+    assert [s["function"]["name"] for s in reg.deferred_specs()] == ["studio", "mcp__x__t1", "mcp__x__t2"]
+    # dispatch is ungated, and dispatching ACTIVATES: the schema rides next time
+    assert reg.dispatch_for("mcp__x__t1")({}) == "M"
+    assert [s["function"]["name"] for s in reg.tool_specs()] == ["read", "mcp__x__t1"]
+
+
+def test_search_loads_by_keyword_and_by_select_and_activates():
+    reg = PluginRegistry()
+    def spec(n, d):
+        return {"type": "function", "function": {"name": n, "description": d}}
+
+    _ctx(reg, "mcp").dynamic_tools(
+        lambda: [
+            spec("mcp__ls__tasks", "Kanban task board: claim, move, complete"),
+            spec("mcp__ls__inbox", "Inter-agent maildir messaging"),
+            spec("mcp__ls__pattern", "Collective memory of task outcomes"),
+        ],
+        lambda n: None,
+    )
+    reg.defer_dynamic = True
+    hits = reg.search_tools("kanban board")
+    assert [h["function"]["name"] for h in hits] == ["mcp__ls__tasks"], "both words hit only tasks"
+    assert [s["function"]["name"] for s in reg.tool_specs()] == ["mcp__ls__tasks"], "a hit is activated"
+    # 'task' is in tasks AND pattern — but tasks is already ACTIVATED, so the
+    # search pool (deferred only) yields pattern alone. A loaded tool is not
+    # searched again; it is already in the offer.
+    assert [h["function"]["name"] for h in reg.search_tools("task")] == ["mcp__ls__pattern"]
+    assert reg.search_tools("select:mcp__ls__inbox")[0]["function"]["name"] == "mcp__ls__inbox"
+    assert reg.search_tools("zzz-nothing") == []
+    assert reg.deferred_specs() == [], "everything loaded; nothing left withheld"
+
+
+def test_the_deferred_block_is_names_only_grouped_by_server():
+    from litetui.plugins import deferred_tools_block
+
+    specs = [_spec("mcp__ls__tasks"), _spec("mcp__ls__inbox"), _spec("studio"), _spec("mcp__vibe__call")]
+    block = deferred_tools_block(specs)
+    assert "## Deferred tools" in block and "4 more tool(s)" in block
+    assert "- mcp__ls__<tool>: inbox, tasks" in block
+    assert "- mcp__vibe__<tool>: call" in block
+    assert "- built-in: studio" in block
+    assert "description" not in block, "names only — the description is what the search loads"
+    assert deferred_tools_block([]) == ""

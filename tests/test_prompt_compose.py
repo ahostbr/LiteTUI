@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import app as m  # noqa: E402
 from litetui import paths  # noqa: E402
+from litetui import plugins as plugins_mod
 from litetui import skills as skills_mod  # noqa: E402
 
 
@@ -54,6 +55,11 @@ def _reference(a) -> str:
         base = (
             base + "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
         ).strip()
+        # 2026-09-10: deferred tools (tool_search plugin) ride between the tools
+        # prompt and the skills index as a names-only list — slot 25.
+        deferred = a.plugins.deferred_specs()
+        if deferred:
+            base = (base + plugins_mod.deferred_tools_block(deferred)).strip()
         if a.skills:
             base = (base + skills_mod.index_block(a.skills)).strip()
     else:

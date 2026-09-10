@@ -254,7 +254,13 @@ def _register(ctx) -> None:
     )
     ctx.tool(
         skills_mod.SKILL_TOOL_SPEC,
-        lambda args: skills_mod.load(app.skills, args.get("name", "")),
+        # `find` searches (the descriptions the names-only index dropped);
+        # `name` loads. A call with both searches — it is the cheaper answer.
+        lambda args: (
+            skills_mod.find(app.skills, args["find"])
+            if args.get("find")
+            else skills_mod.load(app.skills, args.get("name", ""))
+        ),
         gate=lambda: bool(app.skills),
         policy=READ_POLICY,
     )

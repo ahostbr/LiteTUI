@@ -318,20 +318,48 @@ def read_cache(root: Path) -> tuple[list[Skill], float] | None:
 
 
 def index_block(skills: list[Skill]) -> str:
-    """The pointer list that rides in the system prompt. Empty when none."""
+    """The NAMES-ONLY index that rides in the system prompt. Empty when none.
+
+    Names only (Ryan 2026-09-10 12:5x: "send index only of the skills for sure if
+    its that much thats nutz"): with the plugin libraries mounted, the old
+    name-plus-description form was ~19,400 chars ≈ 4,800 tokens on EVERY turn.
+    Descriptions come back on demand through `skill` with `find`.
+    """
     if not skills:
         return ""
+    by_source: dict[str, list[str]] = {}
+    for s in skills:
+        by_source.setdefault(s.source, []).append(s.name)
     lines = [
         "",
         "## Skills",
         "",
-        f"{len(skills)} skill(s) are available. These are INDEX LINES ONLY — call the",
-        "`skill` tool with the name to load the full instructions before acting on one.",
+        f"{len(skills)} skill(s) are available — NAMES ONLY. Call `skill` with `find: <keywords>`",
+        "to see what the matching skills do, and `skill` with `name` to load one's full",
+        "instructions before acting on it.",
         "",
     ]
-    for s in skills:
-        lines.append(f"- `{s.name}` — {s.description}" if s.description else f"- `{s.name}`")
+    for source, names in by_source.items():
+        lines.append(f"- {source}: {', '.join(names)}")
     return "\n".join(lines) + "\n"
+
+
+def find(skills: list[Skill], query: str) -> str:
+    """Skills whose name or description carries the query's words, ranked by
+    how many words hit — the descriptions the index no longer carries."""
+    words = "".join(c if c.isalnum() else " " for c in (query or "").lower()).split()
+    if not words:
+        return "[error] skill find: keywords are required"
+    scored = []
+    for s in skills:
+        hay = (s.name + " " + s.description).lower()
+        n = sum(1 for w in words if w in hay)
+        if n:
+            scored.append((-n, s.name, s))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    if not scored:
+        return f"no skill matches {query!r}. Names: " + (", ".join(s.name for s in skills) or "(none)")
+    return "\n".join(f"- `{s.name}` ({s.source}) — {s.description}" for _, _, s in scored[:12])
 
 
 def load(skills: list[Skill], name: str) -> str:

@@ -38,6 +38,7 @@ PROMPT_ORDER = {
     "BASE": 0,          # prompts/systemprompt.md (host)
     "MEMORY": 10,       # the store block (host)
     "TOOLS": 20,        # TOOLS_PROMPT, gated on tools_enabled (host)
+    "DEFERRED_TOOLS": 25,  # names of tools whose schemas load on demand (tool_search plugin)
     "SKILLS_INDEX": 30, # skills index, gated on tools_enabled + skills (skills plugin)
 }
 
@@ -60,6 +61,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.harness_plugin",
     "litetui.plugins.mcp_plugin",
     "litetui.plugins.mcp_manage",
+    "litetui.plugins.tool_search",   # turns deferral on; after every tool provider
     "litetui.plugins.themes_plugin",
     "litetui.plugins.mark_plugin",
     "litetui.plugins.misc",
@@ -196,6 +198,34 @@ class PaletteRow:
     tag: str = ""
 
 
+def deferred_tools_block(specs: list[dict]) -> str:
+    """The NAMES-ONLY index of withheld tools that rides in the system prompt
+    (Claude Code lists its deferred tools the same way). Pure, so the prompt
+    test's reference fold can call it too. Empty when nothing is deferred."""
+    if not specs:
+        return ""
+    groups: dict[str, list[str]] = {}
+    for s in specs:
+        name = s["function"]["name"]
+        if name.startswith("mcp__") and name.count("__") >= 2:
+            _, server, tool = name.split("__", 2)
+            groups.setdefault(f"mcp__{server}__<tool>", []).append(tool)
+        else:
+            groups.setdefault("built-in", []).append(name)
+    lines = [
+        "",
+        "## Deferred tools",
+        "",
+        f"{len(specs)} more tool(s) exist but their schemas are NOT loaded. Call `tool_search`",
+        "with keywords (or `select:<full name>`) to load one, then call it by its full name.",
+        "Names only:",
+        "",
+    ]
+    for group, names in groups.items():
+        lines.append(f"- {group}: {', '.join(sorted(names))}")
+    return "\n".join(lines) + "\n"
+
+
 @dataclass(frozen=True)
 class PromptSection:
     owner: str
@@ -227,6 +257,17 @@ class PluginRegistry:
         #: switched off. Defaults to "nothing disabled", so every bare registry
         #: — which is what the tests build — behaves exactly as before.
         self.tools_disabled: Callable[[], frozenset[str]] = frozenset
+        #: DEFERRED TOOLS — Claude Code's shape (Ryan 2026-09-10 12:5x: "lazy load
+        #: ... same way claude does it"). A deferred tool stays DISPATCHABLE, but
+        #: its schema is withheld from `tool_specs()` until `search_tools()` loads
+        #: it (or it is dispatched by name, which counts as the model knowing it).
+        #: Measured on qwen3.5-9b: the 41 MCP schemas cost 9,125 prompt tokens per
+        #: request and the four heaviest built-ins another ~2,600. Bare registries
+        #: defer NOTHING, so every existing caller and test sees the old offer;
+        #: the tool_search plugin is what turns this on for the app.
+        self.deferred_static: frozenset[str] = frozenset()
+        self.defer_dynamic: bool = False
+        self.activated: set[str] = set()
 
     # ── registration (called via PluginContext, owner pre-bound) ──────────
 
@@ -311,26 +352,73 @@ class PluginRegistry:
         in the denylist must be honoured wherever it came from. A denylist that
         silently ignores half its entries is worse than not having one.
         """
+        return self._offerable(deferred=False)
+
+    def _is_deferred(self, name: str, dynamic: bool) -> bool:
+        if name in self.activated:
+            return False
+        return self.defer_dynamic if dynamic else name in self.deferred_static
+
+    def _offerable(self, deferred: bool) -> list[dict]:
+        """The gated, not-switched-off specs — split by whether they are
+        currently withheld. `tool_specs()` is the advertised half;
+        `deferred_specs()` the half the model must load first."""
         off = self.tools_disabled()
         specs = [
             e.spec for e in self.tools
             if (e.gate is None or e.gate()) and e.name not in off
+            and self._is_deferred(e.name, False) is deferred
         ]
         for d in self.dynamic:
             specs.extend(
-                s for s in d.specs_fn() if s["function"]["name"] not in off
+                s for s in d.specs_fn()
+                if s["function"]["name"] not in off
+                and self._is_deferred(s["function"]["name"], True) is deferred
             )
         return specs
 
+    def deferred_specs(self) -> list[dict]:
+        """Every offerable spec `tool_specs()` is withholding right now."""
+        return self._offerable(deferred=True)
+
+    def search_tools(self, query: str) -> list[dict]:
+        """Load deferred schemas. `select:a,b` names them exactly; any other
+        text is keywords matched against name + description, ranked by how many
+        words hit (ties broken by name), at most 8. Every hit is ACTIVATED —
+        advertised from the next request on — and returned in full."""
+        q = (query or "").strip()
+        pool = self.deferred_specs()
+        if q.lower().startswith("select:"):
+            wanted = {w.strip().lower() for w in q[7:].split(",") if w.strip()}
+            hits = [s for s in pool if s["function"]["name"].lower() in wanted]
+        else:
+            words = "".join(c if c.isalnum() else " " for c in q.lower()).split()
+            scored = []
+            for s in pool:
+                f = s["function"]
+                hay = (f["name"] + " " + str(f.get("description", ""))).lower()
+                n = sum(1 for w in words if w in hay)
+                if n:
+                    scored.append((-n, f["name"], s))
+            scored.sort(key=lambda t: (t[0], t[1]))
+            hits = [s for _, _, s in scored[:8]]
+        for s in hits:
+            self.activated.add(s["function"]["name"])
+        return hits
+
     def dispatch_for(self, name: str):
         """Static first, then dynamic providers. Gates deliberately NOT
-        consulted here — dispatch has never been gated, only the offer is."""
+        consulted here — dispatch has never been gated, only the offer is.
+        A dispatched name is ACTIVATED: a deferred tool the model called from
+        memory rides the next request's schemas, so its arguments stay right."""
         entry = self._tool_by_name.get(name)
         if entry is not None:
+            self.activated.add(name)
             return entry.run
         for d in self.dynamic:
             fn = d.dispatch_fn(name)
             if fn is not None:
+                self.activated.add(name)
                 return fn
         return None
 
