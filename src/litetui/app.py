@@ -1103,6 +1103,14 @@ class LiteTUI(App):
         # this one silently refuses to build. Authority persists because it is a
         # standing permission; this is a posture for the work in front of you.
         self._plan_mode = bool(plan_mode)
+        # T570 — which footer chip the keyboard is on, by ID and never by index.
+        #
+        # An INDEX would be wrong the moment the list changes under it, which it
+        # does on its own: `bg` and `agents` appear and vanish as work starts and
+        # finishes. Index 2 quietly becomes a different chip and the next Enter
+        # opens something the user was not pointing at. An id that is no longer
+        # in the list simply drops the selection, which is visible.
+        self._footer_nav: str | None = None
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
@@ -2736,6 +2744,74 @@ class LiteTUI(App):
 
     # ── Context window readout (footer) ───────────────────────
 
+    def footer_nav_items(self) -> list[str]:
+        """The navigable chips, in the order the footer draws them.
+
+        🔴 BUILT FROM WHAT IS ACTUALLY VISIBLE, not from a fixed list. `bg` and
+        `agents` are absent at zero and either can be hidden in /settings, so a
+        fixed list would let Left/Right land on a chip that is not on screen —
+        movement with no feedback, and then an Enter that opens something the
+        user cannot see they selected.
+
+        One source for the renderer and the key handler, for the same reason the
+        counts have one source: two lists that agree today disagree the first
+        time one of them learns about a new chip.
+        """
+        s = self.settings
+        subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
+        items = ["authority"]  # never hidden — see the note in ctx_label_text
+        if s.footer_show_thinking:
+            items.append("think")
+        if s.footer_show_bg and bg:
+            items.append("bg")
+        if s.footer_show_subagents and subs:
+            items.append("agents")
+        return items
+
+    def footer_nav_move(self, delta: int) -> None:
+        """Left/Right along the visible chips. Wraps, like the authority cycle."""
+        items = self.footer_nav_items()
+        if not items:
+            self._footer_nav = None
+            return
+        if self._footer_nav not in items:
+            # Selection was on a chip that has since gone (a task finished).
+            # Land on an end rather than guessing where it "would have been".
+            self._footer_nav = items[0] if delta > 0 else items[-1]
+        else:
+            i = items.index(self._footer_nav)
+            self._footer_nav = items[(i + delta) % len(items)]
+        self._refresh_ctx_label()
+
+    def footer_nav_enter(self) -> None:
+        """Down from the input: take the footer, on the first visible chip."""
+        items = self.footer_nav_items()
+        if not items:
+            return
+        self._footer_nav = items[0]
+        self._refresh_ctx_label()
+
+    def footer_nav_leave(self) -> None:
+        self._footer_nav = None
+        self._refresh_ctx_label()
+
+    def footer_nav_activate(self) -> None:
+        """Enter on the selected chip.
+
+        Each arm CALLS the one body that already owns its behaviour rather than
+        repeating it: the authority cycle is shift+tab's, the thinking picker is
+        `/think` with no argument (T569), which carries its own no-screen-over-rpc
+        guard. A second implementation here would be a second place for those to
+        rot, and the picker's guard is the kind that fails by HANGING.
+        """
+        chip = self._footer_nav
+        if chip == "authority":
+            self.action_cycle_tool_profile()
+        elif chip == "think":
+            from litetui.plugins.misc import _cmd_think
+
+            _cmd_think(self, "think", "")
+
     @property
     def ctx_label_text(self) -> Text:
         """The footer: who I am, how hard I am thinking, which conversation,
@@ -2756,10 +2832,16 @@ class LiteTUI(App):
         sep = "  \u00b7  "
         t = Text()
 
-        def add(chunk: str, style: str) -> None:
+        # T570 — the selected chip, if the keyboard has taken the footer. Applied
+        # by `add` so EVERY chip gets it for free: a per-chip opt-in is how one
+        # of them ends up navigable but never highlighted, which reads as the
+        # arrow key having done nothing.
+        nav = getattr(self, "_footer_nav", None)
+
+        def add(chunk: str, style: str, chip: str | None = None) -> None:
             if t.plain:
                 t.append(sep, "#5c6370")
-            t.append(chunk, style)
+            t.append(chunk, "reverse bold" if (chip and chip == nav) else style)
 
         # THE AUTHORITY LEVEL, FIRST AND WITHOUT A TOGGLE. Ryan asked for it
         # ("ALSO show this in the footer") after being denied a write while
@@ -2776,7 +2858,7 @@ class LiteTUI(App):
         level = profile_text(getattr(self, "_active_tool_profile", None))
         if level:
             add(level, "#7d8799" if tool_policy.stops_you(
-                self._active_tool_profile) else "#7aa2f7")
+                self._active_tool_profile) else "#7aa2f7", chip="authority")
 
         # PLAN MODE, beside Authority and unhideable for the same reason (T558):
         # it changes what the model will agree to do, so a mode you cannot see
@@ -2798,7 +2880,7 @@ class LiteTUI(App):
                 add("no seat", "#5c6370")
 
         if s.footer_show_thinking:
-            add(f"think:{self.thinking_level or 'default'}", "#5c6370")
+            add(f"think:{self.thinking_level or 'default'}", "#5c6370", chip="think")
 
         # T570 — WHAT IS RUNNING WITHOUT ME. Ryan: "sub agents and background
         # process should show in the footer".
@@ -2812,9 +2894,9 @@ class LiteTUI(App):
         # registry has not been constructed is worse than one that shows nothing.
         subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
         if s.footer_show_bg and bg:
-            add(f"bg:{len(bg)}", "#7aa2f7")
+            add(f"bg:{len(bg)}", "#7aa2f7", chip="bg")
         if s.footer_show_subagents and subs:
-            add(f"agents:{len(subs)}", "#bb9af7")
+            add(f"agents:{len(subs)}", "#bb9af7", chip="agents")
 
         if s.footer_show_convo and self.convo_id:
             add(self.convo_id[:8], "#5c6370")

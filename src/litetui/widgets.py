@@ -175,6 +175,39 @@ class PromptInput(Input):
             event.stop()
             return
 
+        # T570 — THE FOOTER HAS THE KEYBOARD. Checked before history, because
+        # while the footer is selected these keys mean something else entirely
+        # and falling through would edit the draft the user cannot see.
+        app = self.app
+        if getattr(app, "_footer_nav", None) is not None:
+            if event.key == "left":
+                app.footer_nav_move(-1)
+            elif event.key == "right":
+                app.footer_nav_move(1)
+            elif event.key == "enter":
+                app.footer_nav_activate()
+            elif event.key in ("escape", "up"):
+                # Up leaves as well as Escape: the footer is BELOW the input, so
+                # "back up to where I was typing" is the direction the hand
+                # already means.
+                app.footer_nav_leave()
+            else:
+                return
+            event.prevent_default()
+            event.stop()
+            return
+
+        # Down with nothing newer in history is the hook: it did nothing at all
+        # before, so taking it costs no existing behaviour. With history open
+        # (`_hist_idx != -1`) Down still walks FORWARD through it and only the
+        # last press — the one that would restore the draft — is unchanged.
+        if event.key == "down" and self._hist_idx == -1 and hasattr(app, "footer_nav_enter"):
+            app.footer_nav_enter()
+            if getattr(app, "_footer_nav", None) is not None:
+                event.prevent_default()
+                event.stop()
+            return
+
         if not self._history:
             return
 
