@@ -1916,17 +1916,30 @@ class LiteTUI(App):
         except OSError:
             pass  # an unwritable store must not stop the task
 
-    def _kill_background(self, task_id: str) -> None:
+    def _kill_background(self, task_id: str) -> str | None:
+        """Kill one background task. Returns None when it was killed, otherwise
+        the reason it was not — same text the chat line carries.
+
+        🔴 THE RETURN EXISTS FOR THE RPC CALLER (T571), and the refusals are the
+        point of it. `--rpc` must answer ok/error, and the two conditions below
+        are the whole difference between a kill and a no-op. A second copy of
+        them on the rpc side would be a kill that reports success and takes
+        nothing down — the process outlives the confirmation. `/tasks kill`
+        ignores the return and behaves exactly as before.
+        """
         task = self.bg_tasks.get(task_id)
         if task is None:
-            self._system(f"no task {task_id}")
-            return
+            reason = f"no task {task_id}"
+            self._system(reason)
+            return reason
         if task.state != tasks_mod.RUNNING or task.proc is None:
-            self._system(f"{task_id} is {task.state}; nothing to kill")
-            return
+            reason = f"{task_id} is {task.state}; nothing to kill"
+            self._system(reason)
+            return reason
         task.state = tasks_mod.KILLED
         self.notify(f"Killing {task_id}…", timeout=2)
         self._kill_background_tree(task)
+        return None
 
     @work(thread=True, group="cancel")
     def _kill_background_tree(self, task) -> None:
