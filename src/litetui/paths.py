@@ -43,6 +43,9 @@ SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
 #: app.py until 2026-08-22 -- authored prompt text belongs on disk beside the
 #: rest of it, where it can be read and edited without a source change.
 TOOLS_PROMPT_FILE = PROMPTS_DIR / "tools.md"
+#: The plan-mode section (T558). Rendered only while plan mode is on, so leaving
+#: the mode drops the instruction rather than leaving a stale one in context.
+PLAN_PROMPT_FILE = PROMPTS_DIR / "plan-mode.md"
 
 # ── Conversation persistence ─────────────────────────────────────
 # .convos/<uuid>/
