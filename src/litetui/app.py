@@ -2870,6 +2870,15 @@ class LiteTUI(App):
             **({"model_note": note} if note else {}),
             "cwd": os.getcwd(),
             "tool_profile": str(getattr(self, "_active_tool_profile", None)),
+            # T647 — WHAT WE WERE ASKED FOR, BESIDE WHAT WE ARE RUNNING AS.
+            # `tool_profile` alone is ambiguous: a child reporting "autonomous"
+            # means EITHER the host passed --tool-profile autonomous OR it passed
+            # nothing and we fell back to our own settings default, which IS
+            # autonomous. Those are a deliberate choice and a fail-open, and they
+            # were indistinguishable on the wire — which is why T577's profile had
+            # to be derived from reading defaults instead of read. null here means
+            # NOBODY ASKED.
+            "tool_profile_requested": getattr(self, "_cli_tool_profile", None) or None,
         })
 
     @work(exclusive=True, group="cli-args")
