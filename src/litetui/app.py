@@ -2258,7 +2258,8 @@ class LiteTUI(App):
         to get an app with no Textual mount. Creating the store only in
         __init__ made the very first setter call explode there, which would
         have turned this refactor into a behaviour change for every caller that
-        does not run the full constructor. Found by tests/test_seat_rebind.py,
+        does not run the full constructor. (Found by tests/test_seat_rebind.py,
+        deleted in T585 with Seat.rebind; the finding outlived the file.)
         8 failures, before this line existed.
         """
         st = self.__dict__.get("_store")
