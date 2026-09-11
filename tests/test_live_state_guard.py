@@ -21,6 +21,7 @@ with the guard, without the guard, and against the unfixed code.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -119,6 +120,114 @@ async def test_the_app_path_is_covered_not_just_the_module(monkeypatch) -> None:
         await pilot.pause()
 
     assert _snapshot(_live_store()) == before
+
+
+# ── what an autouse fixture may leave behind ────────────────────────
+
+# 🔴 THE GUARD ABOVE HAD A COST NOBODY MEASURED, AND IT SHIPPED (T596).
+# `_never_write_the_live_task_store` (conftest.py) redirects the live root into
+# `tmp_path`, and its first version created the destination EAGERLY — `e31e866`.
+# Being autouse, that put a `task-store` directory into EVERY test's tmp_path,
+# including tests that never touch the store. `test_router_record.py`'s
+# `test_the_write_is_atomic_and_leaves_no_tmp` asserts the write leaves exactly
+# `["router.json"]` and got `["router.json", "task-store"]`; `77e03de` moved the
+# mkdir inside `_swap` so it happens ON REDIRECT.
+#
+#     A FIXTURE THAT RUNS FOR EVERY TEST CHANGES THE ENVIRONMENT OF EVERY TEST,
+#     INCLUDING THE ONES IT HAS NOTHING TO DO WITH.
+#
+# ⚠️ AND THE FAILURE LANDED ON A STRANGER. The arm that went red belongs to the
+# router, not to tasks — so the report named a file whose author had changed
+# nothing, which is the most expensive way for this class of defect to be found.
+# Nothing in the tasks guard's own arms could have caught it: they all touch the
+# store, so they all take the redirect, so tmp_path is legitimately non-empty in
+# every one of them. The arm has to be a test that touches NOTHING.
+
+
+def _conftest_source() -> str:
+    return (Path(__file__).resolve().parent / "conftest.py").read_text(encoding="utf-8")
+
+
+def _seeded_by(fixture: str) -> set[str]:
+    """The tmp_path entries this autouse fixture NAMES, read from its source.
+
+    ⬜ PARSED, NOT RETYPED, and that is the whole discipline of the exemption
+    below. A hand-written allow-list is a second copy of a fact the fixture
+    already states, and the two would drift the first time the directory was
+    renamed — leaving an arm that passes while guarding a name nothing creates.
+
+    ⚠️ IT READS NAMES, NOT CREATIONS, AND THE NAME OF THIS FUNCTION OVERSTATED
+    THAT UNTIL THIS LINE. `_never_write_the_live_task_store` MENTIONS
+    `tmp_path / "task-store"` at its body level and creates it only inside
+    `_swap`; this parser cannot tell those apart and does not try. It does not
+    need to: exemption is a deliberate act by a person, and what the parse
+    supplies is only the SPELLING of the entry, so the two cannot drift. What
+    decides whether an entry is allowed is EXEMPT.
+
+    ⚠️ LITERALS ONLY. `_never_write_the_live_settings` builds its path from
+    `settings_mod.SETTINGS_FILENAME`, a constant this cannot resolve, so
+    exempting that fixture would grant NOTHING and the arm would stay red. That
+    is the safe direction — an exemption that cannot be read grants nothing —
+    but it is stated here so the next reader debugs the parser rather than the
+    exemption when it happens.
+    """
+    src = _conftest_source()
+    body = src[src.index(f"def {fixture}(") :]
+    end = body.find("\n@pytest.fixture")
+    if end != -1:
+        body = body[:end]
+    names: set[str] = set()
+    for line in body.splitlines():
+        bare = line.split("#", 1)[0]
+        m = re.search(r'tmp_path\s*/\s*"([^"]+)"', bare)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+# 🔴 EMPTY ON PURPOSE, AND IT IS THE ASSERTION. No autouse fixture in this suite
+# is entitled to seed a directory today — both of them create on demand. A
+# fixture that genuinely needs to (a cache the app cannot create itself, say)
+# gets its NAME added here as a deliberate act, and the entry it is allowed to
+# leave is then read out of its source by `_seeded_by` rather than written twice.
+EXEMPT: tuple[str, ...] = ()
+
+
+def test_a_test_that_touches_nothing_leaves_tmp_path_empty(tmp_path: Path) -> None:
+    """The arm `e31e866` needed and did not have.
+
+    It asks for nothing, does nothing, and asserts the autouse fixtures left it
+    that way. Every other test in this file takes the redirect deliberately, so
+    none of them could ever have noticed.
+    """
+    allowed = {name for fixture in EXEMPT for name in _seeded_by(fixture)}
+    left = sorted(entry.name for entry in tmp_path.iterdir())
+
+    assert [name for name in left if name not in allowed] == [], (
+        f"an autouse fixture seeded {left} into a test that touched nothing. "
+        f"Create on demand instead (see `_swap` in conftest.py), or add the "
+        f"fixture to EXEMPT above if it genuinely must seed. Allowed today: "
+        f"{sorted(allowed) or 'nothing'}"
+    )
+
+
+def test_the_exemption_is_read_from_the_fixture_and_not_retyped() -> None:
+    """⭐ POSITIVE CONTROL FOR THE PARSER, because an EXEMPT tuple that is empty
+    today makes `_seeded_by` unreachable — and an unreachable helper is one
+    nobody finds out is broken until the day it is needed, which is the day
+    somebody is already debugging something else.
+
+    Driven against the real fixture: it DOES name `tmp_path / "task-store"`, in
+    the lazy branch. So the parser can see the name; what makes the arm above
+    pass is that the fixture is not in EXEMPT, not that the name is invisible.
+    """
+    assert _seeded_by("_never_write_the_live_task_store") == {"task-store"}
+
+
+def test_CONTROL_the_parser_reads_nothing_from_a_fixture_that_names_nothing() -> None:
+    """The other half: a name that is not there must not be invented. Without
+    this, `_seeded_by` returning a constant would satisfy the arm above."""
+    assert _seeded_by("_never_dial_out_from_a_constructor") == set()
 
 
 # ── the premise the card got wrong ──────────────────────────────────
