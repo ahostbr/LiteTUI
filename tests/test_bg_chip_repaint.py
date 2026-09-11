@@ -49,19 +49,69 @@ def painted(app) -> str:
     return "".join(str(getattr(lb, "content", "")) for lb in labels)
 
 
+def _painted_or_none(app) -> str | None:
+    """`painted()` without its validity gate: None while the footer has no label.
+
+    That window is REAL and is the whole flake. `ContextFooter.compose`
+    (widgets.py) recomposes -- Textual removes the footer's children and re-runs
+    compose -- so between the removal and the mount there are ZERO `.ctx-label`
+    widgets. `painted()` asserts there is at least one, deliberately, because a
+    measurement of nothing must never read as a pass. Calling it inside a wait
+    loop turns that correct gate into the failure.
+    """
+    labels = list(app.query(".ctx-label"))
+    if not labels:
+        return None
+    return "".join(str(getattr(lb, "content", "")) for lb in labels)
+
+
+async def settle(pilot, app, *, chip: bool, tries: int = 20) -> str:
+    """Pump the message loop until the painted chip agrees, then read it ONCE.
+
+    🔴 THESE ARMS WERE MERGED FLAKY AND THIS IS WHY. Measured on merged main
+    d040e7a, this file ALONE: 1 failure in 8 runs, then 4 across 6 runs, with
+    ALL FOUR arms failing at least once -- the shared wait, not one arm. Not
+    cold-start: cold and warm runs both failed and both passed. Every failure
+    was the same exception, and it was NOT a stale chip --
+
+        AssertionError: the footer label is not composed; the arm would
+        measure nothing
+
+    -- so the arms were landing inside the recompose window described in
+    `_painted_or_none`, one `pilot.pause()` after the change.
+
+    ⚠️ THE FINAL READ IS STILL `painted()`, WITH ITS GATE. Only the polling
+    tolerates an absent label; the value the assertion sees is taken by the
+    strict reader, so a footer that never composes still fails loudly instead of
+    passing on an empty string.
+
+    ⚠️ AND THIS CANNOT MASK THE BUG THE ARMS EXIST FOR. Against the unfixed
+    code nothing repaints the footer at all, the condition never becomes true,
+    and the arm fails after the whole budget -- the delete-equivalent probe in
+    the commit re-runs to prove exactly that.
+    """
+    for _ in range(tries):
+        text = _painted_or_none(app)
+        if text is not None and ("bg:" in text) == chip:
+            break
+        await pilot.pause()
+    return painted(app)
+
+
 @pytest.mark.asyncio
 async def test_the_chip_appears_when_a_task_starts() -> None:
     a = make_app()
     async with a.run_test(size=(120, 30)) as pilot:
-        await pilot.pause()
-        assert "bg:" not in painted(a), "a chip before anything started"
+        assert "bg:" not in await settle(pilot, a, chip=False), (
+            "a chip before anything started"
+        )
 
         task = tasks_mod.new_task("bash", {"command": "sleep 300"}, "c1")
         a.bg_tasks[task.id] = task
         a._save_background()
         await pilot.pause()
 
-        assert "bg:1" in painted(a), (
+        assert "bg:1" in await settle(pilot, a, chip=True), (
             "the footer did not repaint when a task started — the property is "
             "right and the label is stale"
         )
@@ -80,15 +130,14 @@ async def test_the_chip_DROPS_when_the_task_finishes() -> None:
         task = tasks_mod.new_task("bash", {"command": "sleep 300"}, "c1")
         a.bg_tasks[task.id] = task
         a._save_background()
-        await pilot.pause()
-        assert "bg:1" in painted(a)
+        assert "bg:1" in await settle(pilot, a, chip=True)
 
         # It timed out. `finish` is what `_run_background` calls.
         tasks_mod.finish(task, "[error] timeout after 300s", False, tmp_root(a))
         a._save_background()
         await pilot.pause()
 
-        assert "bg:" not in painted(a), (
+        assert "bg:" not in await settle(pilot, a, chip=False), (
             "the footer still shows a background task after it finished — this "
             "is the screenshot: chip says bg:1, panel says 0"
         )
@@ -111,6 +160,8 @@ async def test_the_chip_and_the_panel_read_the_same_answer() -> None:
         # is `_live(self.app)[1]`, and `app` is a read-only Textual property, so
         # the body cannot be pointed at an app without mounting it — the same
         # function is called here instead of faking the widget.
+        await settle(pilot, a, chip=True)
+
         def agree() -> bool:
             chip_says_one = "bg:1" in painted(a)
             panel_rows = len(tasks_mod.split_live(a.bg_tasks.values())[1])
@@ -120,7 +171,7 @@ async def test_the_chip_and_the_panel_read_the_same_answer() -> None:
 
         tasks_mod.finish(task, "done", True, tmp_root(a))
         a._save_background()
-        await pilot.pause()
+        await settle(pilot, a, chip=False)
 
         chip_has_bg = "bg:" in painted(a)
         panel_rows = len(tasks_mod.split_live(a.bg_tasks.values())[1])
@@ -143,12 +194,13 @@ async def test_a_kill_drops_the_chip_too() -> None:
         a._save_background()
         a._kill_background_tree = lambda t: None
         await pilot.pause()
-        assert "bg:1" in painted(a)
+        assert "bg:1" in await settle(pilot, a, chip=True)
 
         a._kill_background(task.id)
-        await pilot.pause()
 
-        assert "bg:" not in painted(a), "the chip survived a kill"
+        assert "bg:" not in await settle(pilot, a, chip=False), (
+            "the chip survived a kill"
+        )
 
 
 def tmp_root(app) -> Path:
