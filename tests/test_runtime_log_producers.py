@@ -27,7 +27,12 @@ PRODUCER_FILES = tuple(sorted((ROOT / "src" / "litetui").rglob("*.py")))
 EXPECTED_EVENTS = {
     "persistence_failure",
     "harness_registration_failed",
-    "harness_rebind_failed",
+    # harness_rebind_failed was here and is GONE ON PURPOSE (f64442b, T5: "one
+    # seat id per process, no ghost identities"; T585 deleted `Seat.rebind` and
+    # tests/test_seat_rebind.py with it -- see app.py:2290). A producer that
+    # disappears is the one change this gate must NOT wave through on sight, so
+    # it was checked before being removed: there is no rebind path left to fail,
+    # which is why nothing records it. Not a silenced error.
     "mcp_reader_failed",
     "mcp_config_failed",
     "mcp_server_start_failed",
@@ -52,6 +57,11 @@ EXPECTED_EVENTS = {
     # WARNING: it is also the only dotted name among the eighteen; every other
     # event is underscore-only, so a grep of this log now needs two patterns.
     "llama.router_record_kept_foreign",
+    # T499 (b541181), background tool calls. The FIRST non-failure producer in
+    # this set, and it is recorded rather than exempted: the gate's subject is
+    # every `runtime_log.record` in the tree, not every failure, and an
+    # exemption for "lifecycle" would be a hole the next producer walks through.
+    "task.started",
 }
 PROHIBITED = {
     "prompt",
@@ -98,13 +108,35 @@ def test_exactly_the_approved_producers_exist_and_no_body_key_is_present() -> No
     # UnicodeDecodeError inside subprocess reader threads, and the script still
     # printed "count = 1" and a verdict. A crashing check reporting as a clean
     # measurement is why the bytes+utf-8 form is the one quoted above.
-    assert len(calls) == 18
+    #
+    # 18 -> 19 (T579). Net of three changes, each traced to its commit rather
+    # than absorbed into one number:
+    #   - harness_rebind_failed  REMOVED  f64442b/T585   -1
+    #   - task.started           ADDED    b541181/T499   +1
+    #   - "task." + task.state   ADDED    b541181/T499   +1
+    # Re-derive with: python -c on ast.walk over
+    #   sorted((ROOT/"src"/"litetui").rglob("*.py")), same predicate as below.
+    assert len(calls) == 19
     events = {
         call.args[0].value
         for call in calls
         if call.args and isinstance(call.args[0], ast.Constant)
     }
     assert events == EXPECTED_EVENTS
+    # \U0001F534 AND THE SET CANNOT SEE EVERY EVENT THIS TREE EMITS. app.py:1959
+    # records `"task." + task.state`, so task.done / task.failed / task.killed
+    # reach the log and NO constant-scanning gate can enumerate them. The count
+    # above sees the CALL; `events` never sees its names. Asserted here as a
+    # known shape rather than left as a silent hole in a gate whose whole claim
+    # is "exactly the approved producers exist".
+    dynamic = [
+        call for call in calls
+        if call.args and not isinstance(call.args[0], ast.Constant)
+    ]
+    assert len(dynamic) == 1, (
+        "a second computed event name appeared; this gate can only count them, "
+        "not name them, so each one needs a behavioural arm of its own"
+    )
     for call in calls:
         keys = {kw.arg for kw in call.keywords}
         assert not keys & PROHIBITED

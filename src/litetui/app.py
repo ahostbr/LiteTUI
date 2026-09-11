@@ -1936,7 +1936,14 @@ class LiteTUI(App):
             task.proc, ttyguard.CANCELLABLE["proc"] = ttyguard.CANCELLABLE.get("proc"), None
         self.bg_tasks[task.id] = task
         self._save_background()
-        runtime_log.record("task.started", task_id=task.id, tool=name, label=task.label)
+        # 🔴 NO `label=` HERE. `tasks.label_of` returns the first 60 characters
+        # of the call's `command` or `prompt` (tasks.py:96), so passing it wrote
+        # the request itself into the ALWAYS-ON runtime log -- the exact thing
+        # `PROHIBITED` in tests/test_runtime_log_producers.py names, and `label`
+        # is in that set by name. The chat line and the Background panel still
+        # show it; the log gets the id and the tool, which is what a log needs to
+        # correlate a failure without carrying what the user typed.
+        runtime_log.record("task.started", task_id=task.id, tool=name)
         # Its own group, NOT "chat": `_stream` is exclusive in "chat", and a
         # worker started there would cancel the turn that started it.
         self.run_worker(
