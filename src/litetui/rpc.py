@@ -57,6 +57,37 @@ def _reader_loop(app: LiteTUI) -> None:
     app.call_from_thread(app.exit)
 
 
+def _target_id(cmd: dict[str, Any], key: str) -> tuple[str, str]:
+    """The id of the thing this command RESOLVES, and which key carried it.
+
+    🔴 TWO MEANINGS SHARED ONE KEY, AND THAT IS WHAT MADE T558 A ONE-LINE
+    BREAK OF TWO FEATURES. `id` is the CORRELATION id -- "reply to me on this" --
+    read at the top of `_dispatch` and echoed by `_respond`. For `answer` and
+    `approve` the same key was ALSO read as the request being resolved. A host
+    that set the envelope id last (LiteTuiAdapter.sendCommand, before
+    a7b904826) therefore retargeted every Answer and every Allow at its own
+    `cmd_N`, and this child refused them correctly -- "no ask is waiting on id
+    'cmd_3'" -- while nothing anywhere said the two ids were the same field.
+        A CORRELATION ID IS UNIQUE PER COMMAND; AN ASK ID IS UNIQUE PER
+        QUESTION. One key cannot be both without making one of them wrong.
+
+    ⬜ THE DEDICATED KEY WINS, AND `id` STILL WORKS. A host that has not been
+    updated sends only `id` and keeps working -- that compatibility is the whole
+    reason this is two landings and not one, because the child must accept the
+    new key BEFORE any host sends it. When both are present and DISAGREE the
+    dedicated key is the answer: that disagreement is precisely the T558
+    clobber, and it is now harmless rather than fatal.
+
+    Returns `(id, key_it_came_from)` so the caller can say which one it read --
+    a host whose envelope is clobbering the target can see that in the reply
+    instead of deducing it from a refusal about an id it never chose.
+    """
+    dedicated = str(cmd.get(key) or "")
+    if dedicated:
+        return dedicated, key
+    return str(cmd.get("id") or ""), "id"
+
+
 def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     """Route a command on the app loop. T4 will expand this table."""
     cmd_type = cmd.get("type", "")
@@ -122,9 +153,13 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         # from a delivery that worked.
         from litetui import ask_user_question as auq_mod
 
-        ask_id = str(cmd.get("id") or "")
+        ask_id, id_key = _target_id(cmd, "ask_id")
         if not ask_id:
-            _respond(cmd_id, ok=False, error="answer needs the `id` of the ask it answers")
+            _respond(
+                cmd_id,
+                ok=False,
+                error="answer needs `ask_id` (or `id`) naming the ask it answers",
+            )
             return
         ok = auq_mod.resolve_over_rpc(
             app,
@@ -133,12 +168,17 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             cmd.get("answers"),
         )
         if ok:
-            _respond(cmd_id, ok=True, result={"answered": ask_id})
+            _respond(cmd_id, ok=True, result={"answered": ask_id, "id_key": id_key})
         else:
+            # NAMES THE KEY IT LOOKED IN. The T558 refusal said "no ask is
+            # waiting on id 'cmd_3'" and was true, correct and useless: the
+            # host never chose cmd_3 as a target, so the message described a
+            # value it could not connect to anything it had done.
             _respond(
                 cmd_id,
                 ok=False,
-                error=f"no ask is waiting on id {ask_id!r} (already answered, or never asked)",
+                error=f"no ask is waiting on {id_key}={ask_id!r} "
+                      "(already answered, or never asked)",
             )
     elif cmd_type == "approve":
         # The other half of `tool_approval_requested` (T577). The turn is
@@ -151,10 +191,11 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         # a tool call which was in fact already denied by timeout.
         from litetui import tool_approval as approval_mod
 
-        approval_id = str(cmd.get("id") or "")
+        approval_id, id_key = _target_id(cmd, "approval_id")
         if not approval_id:
             _respond(cmd_id, ok=False,
-                     error="approve needs the `id` of the request it answers")
+                     error="approve needs `approval_id` (or `id`) naming the request "
+                           "it answers")
             return
         if "allow" not in cmd:
             # NOT defaulted. A missing `allow` could only be guessed, and
@@ -170,11 +211,12 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         )
         if ok:
             _respond(cmd_id, ok=True,
-                     result={"approved": approval_id, "allow": bool(cmd.get("allow"))})
+                     result={"approved": approval_id, "allow": bool(cmd.get("allow")),
+                             "id_key": id_key})
         else:
             _respond(
                 cmd_id, ok=False,
-                error=f"no approval is waiting on id {approval_id!r} "
+                error=f"no approval is waiting on {id_key}={approval_id!r} "
                       "(already answered, or timed out)",
             )
     elif cmd_type == "abort":
