@@ -3134,8 +3134,46 @@ class LiteTUI(App):
         return t
 
 
+    def _rpc_emit_usage(self, used: int | None) -> None:
+        """Tell the host how full the window is. No-op outside `--rpc`.
+
+        🔴 THE NUMBERS EXISTED ALL ALONG AND NEVER LEFT THE PROCESS (T645). The
+        host's meter reads a `thread.token-usage.updated` activity, the codex
+        adapter emits one, and litetui emitted nothing — so every LiteTUI thread
+        showed "Context usage not reported yet" while `ctx_used` sat right here.
+
+        The key spellings are the host's, not ours: `findNumberDeep`
+        (session-logic.ts:206-230) accepts `context_tokens` and
+        `max_context_tokens`, so matching what it already reads costs one
+        docstring instead of a new projection.
+
+        🔴 `max_context_tokens` IS WITHHELD UNLESS `ctx_loaded`. `ctx_max` may be
+        the model's advertised CEILING rather than the window LM Studio actually
+        loaded — the qwen 262,144-vs-8k case — and the ring DIVIDES by it. A
+        ceiling would draw a confident, wrong, near-empty meter; omitting it makes
+        the host return null and the pane keeps saying "not reported yet", which
+        is what it says today and is TRUE. An honest blank beats a wrong number.
+
+        ⚠️ AND NOTHING IS SENT WITH NO `used`. Before the first turn that is None,
+        and reporting 0 would claim an EMPTY window rather than an unmeasured one.
+        """
+        if used is None:
+            return
+        usage: dict = {"context_tokens": used}
+        if self.ctx_max and getattr(self, "ctx_loaded", False):
+            usage["max_context_tokens"] = self.ctx_max
+        # The provider's own accounting rides along when a turn has produced any;
+        # extra keys are harmless because the host looks for the ones it knows.
+        for key, value in (getattr(self, "last_usage", None) or {}).items():
+            if isinstance(value, (int, float)):
+                usage[key] = value
+        self._rpc_emit({"type": "usage", "usage": usage})
+
     def watch_ctx_used(self, value: int | None) -> None:
         self._refresh_ctx_label()
+        # T645: the host's context meter, fed from the same reactive the TUI's
+        # own label reads — so the two can never disagree about the number.
+        self._rpc_emit_usage(value)
         # THE AMBIENT CHANNEL — the brain's base luminance, so a filling window
         # literally brightens it. Silent without ctx_max: "used out of unknown"
         # is not a fraction, and reporting 0.0 would draw an EMPTY window rather
