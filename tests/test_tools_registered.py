@@ -35,9 +35,16 @@ EXPECTED = {
     "read": "file read",
     "write": "file write",
     "web_fetch": "network read",
-    "pccontrol": "desktop control (gated on SCRIPT.exists)",
     "chrome": "browser control (gated on SCRIPT.exists)",
     "ask_user_question": "asks the human — always offered, no precondition",
+}
+
+#: Tools deliberately WITHHELD from the immediate offer by 7b6640f — still
+#: dispatchable, schemas sent only once the model loads them. `pccontrol`
+#: moved here out of EXPECTED, where its absence read as "NOT offered to the
+#: model" and pointed at a broken SCRIPT path instead of at the design.
+DEFERRED = {
+    "pccontrol": "desktop control — deferred, not missing",
 }
 
 
@@ -56,6 +63,17 @@ async def test_every_expected_tool_is_offered():
         await pilot.pause()
         names = {t["function"]["name"] for t in a._all_tools()}
     missing = sorted(n for n in EXPECTED if n not in names)
+    # The deferred set must be absent for the RIGHT reason: declared, not lost.
+    from litetui.plugins import tool_search
+
+    for n in DEFERRED:
+        assert n in tool_search.DEFAULT_DEFERRED, (
+            f"{n} is neither offered nor declared deferred — that is a lost tool"
+        )
+        assert n not in names, (
+            f"{n} is in the immediate offer but still listed as deferred; "
+            "DEFERRED here and DEFAULT_DEFERRED disagree"
+        )
     assert missing == [], (
         "these tools are NOT offered to the model:\n  "
         + "\n  ".join(f"{n} — {EXPECTED[n]}" for n in missing)

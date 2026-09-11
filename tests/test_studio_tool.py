@@ -24,11 +24,34 @@ from litetui import studio_tool
 # wiring — written is not offered, offered is not dispatched
 # --------------------------------------------------------------------------
 
-def test_the_studio_tool_is_offered_to_the_model():
+def test_the_studio_tool_is_DEFERRED_not_absent():
+    """🔴 THIS ARM USED TO ASSERT studio IS IN `_all_tools()`, and read
+    "the spec exists but never reaches the model" when it was not. 7b6640f
+    made that the DESIGN: studio, subagent, listen and pccontrol are deferred
+    — still dispatchable, but their schemas are withheld from the request
+    until the model loads them or calls one by name. The saving was the point
+    of the commit: 21,784 -> 6,081 prompt tokens on the first request.
+
+    ⚠️ SO "NOT IN _all_tools()" IS NOT "UNAVAILABLE", and the old wording
+    would have sent someone looking for a broken registration. The two halves
+    of the real contract are asserted instead: withheld from the immediate
+    offer, and DECLARED as deferred rather than simply missing. Dispatch is
+    covered by test_the_dispatcher_resolves_studio_and_injects_the_seat
+    below, which is what proves deferred still means reachable.
+    """
+    from litetui.plugins import tool_search
+
     a = m.LiteTUI()
     a._connect = lambda: None
     names = [t["function"]["name"] for t in a._all_tools() if "function" in t]
-    assert "studio" in names, "the spec exists but never reaches the model"
+    assert "studio" in tool_search.DEFAULT_DEFERRED, (
+        "studio is not declared deferred, so its absence from the offer is a "
+        "missing registration rather than the deferral design"
+    )
+    assert "studio" not in names, (
+        "studio is in the immediate offer; if the deferral was deliberately "
+        "dropped, remove it from DEFAULT_DEFERRED too so the two agree"
+    )
 
 
 def test_the_dispatcher_resolves_studio_and_injects_the_seat():
