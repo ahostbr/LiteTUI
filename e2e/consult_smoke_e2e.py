@@ -1,8 +1,15 @@
 """One headless LiteTUI child, one prompt, one answer — the shape /consult drives.
 
-SCRIPT-STYLE (module-level sys.exit), like test_footer.py and test_harness_tool.py.
-`tests/run_all.py` picks the runner from that; naming this to pytest would abort
-collection for the whole suite.
+LIVES IN e2e/, NOT tests/, AND THAT IS THE POINT. It starts a real child and
+drives a real model, so it sits behind both gates e2e/conftest.py describes:
+pyproject `testpaths = ["tests"]` never collects it, and LITETUI_E2E=1 is
+required even for `pytest e2e/`. It was first committed to tests/ (95cc492),
+which is exactly the "live LM Studio smoke ran in the default suite" that
+tests/run_all.py records as already fixed once.
+
+SCRIPT-STYLE (module-level sys.exit), like the other e2e/ files: run it
+directly, `python e2e/consult_smoke_e2e.py`. The name avoids `test_*` so no
+pytest run can collect it and abort on the module-level exit.
 
 WHY THIS EXISTS. T584 routes every non-Claude consult through `litetui --rpc`, so
 the skill's extraction step has to quote what the process ACTUALLY emits. This
