@@ -48,6 +48,7 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import harness as harness_mod
+from litetui import app as app_mod
 
 ok = []
 
@@ -147,13 +148,34 @@ finally:
         os.environ[harness_mod.NO_HARNESS_ENV] = _guard
 
 
-print("\n=== the seat id follows the conversation (Ryan, 2026-08-21) ===")
-app_src = (Path(__file__).resolve().parent.parent / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
-chk("the seat id is DERIVED from the conversation, so a resume keeps it",
-    "_sync_seat_identity" in app_src and "agent_id_for_convo" in app_src)
-chk("...and it is synced from BOTH places convo_id changes, not just one",
-    app_src.count("self._sync_seat_identity()") >= 2)
-chk("...and new_agent_id stays a fresh uuid4 -- the no-conversation fallback",
+print("\n=== ONE seat id per process (T507-T5, f64442b) ===")
+# \U0001f534 THIS SECTION USED TO ASSERT THE OPPOSITE, and the reversal is a
+# commit, not a drift. It read "the seat id follows the conversation (Ryan,
+# 2026-08-21)" and grepped app.py for `_sync_seat_identity` and
+# `agent_id_for_convo`. f64442b (T507-T5, 2026-09-08) made the id
+# PROCESS-stable instead -- `process_agent_id()` = uuid5(hostname:pid), and
+# `_sync_seat_identity` is deliberately a no-op -- because rebinding on every
+# conversation change left ghosts on the roster. Its measurement:
+# "LiteTUI/BurntPath/BrightDuct = 3 ghosts of pid 133252".
+#
+# \u26a0\ufe0f SO A RESUME NO LONGER KEEPS THE CONVERSATION'S ID, which is what Ryan
+# asked for on 2026-08-21. It was superseded on measured grounds by a leader,
+# not by him; flagged to the orchestrator rather than quietly rewritten here,
+# because an arm that cites a person is the last place that still remembers
+# what they asked for.
+#
+# And it is asserted by BEHAVIOUR now. The old arms grepped app.py's source
+# text, so they could only ever answer "is this spelling present", not "does
+# this hold" -- `agent_id_for_convo` moved to harness.py and the grep went red
+# while the function was alive and well, which is a false alarm in the same
+# breath as a real one.
+first, second = harness_mod.process_agent_id(), harness_mod.process_agent_id()
+chk("the seat id is stable for the life of the process", first == second)
+chk("...and it is not a fresh random each time (that was the ghost)",
+    harness_mod.new_agent_id() != first)
+chk("...so a conversation change cannot rebind it",
+    app_mod.LiteTUI._sync_seat_identity(object.__new__(app_mod.LiteTUI)) is None)
+chk("...and new_agent_id stays a fresh uuid4 -- still the no-conversation fallback",
     "uuid.uuid4()" in Path(harness_mod.__file__).read_text(encoding="utf-8")
     .split("def new_agent_id", 1)[1].split("def ", 1)[0])
 chk("...and the same conversation resolves to the same seat id",
