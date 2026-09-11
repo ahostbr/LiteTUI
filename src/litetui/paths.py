@@ -25,9 +25,21 @@ from. The anchor below prefers the repo-root copy only while one still exists
 (a stale checkout); a fresh dev tree and an installed wheel both resolve to the
 package directory, where the files live (see pyproject package-data).
 """
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def data_root() -> Path:
+    """Opt-in durable data location; resources/workspace retain their anchors.
+
+    Set before process startup. An unset/empty override preserves the legacy
+    location exactly; resolving ROOT here would change monkeypatched callers.
+    """
+    override = os.environ.get("LITETUI_DATA_ROOT")
+    return Path(override).expanduser().resolve() if override else ROOT
+
 
 # ── Prompt text: ships inside the package (T135) ────────────────
 _PKG_PROMPTS = Path(__file__).resolve().parent / "prompts"
@@ -72,7 +84,7 @@ PLAN_PROMPT_FILE = prompt_file("plan-mode.md")
 #     soul.md       who this agent is; persists across resumes
 #     handoff.md    what is in flight, for whoever picks this up
 #     memories/     the actual notes: i-learned-this.md, uncapped
-CONVO_DIR = ROOT / ".convos"
+CONVO_DIR = data_root() / ".convos"
 MEMORIES_DIR = "memories"
 
 # ── llama.cpp backend working files ──────────────────────────────────

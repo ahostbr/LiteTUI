@@ -16,7 +16,7 @@ def _cmd_tasks(app, name: str, arg: str) -> None:
     elif verb == "kill" and rest:
         app._kill_background(rest)
     elif verb == "tail" and rest:
-        app._system(tasks_mod.tail_text(app.bg_tasks.get(rest), paths.ROOT))
+        app._system(tasks_mod.tail_text(app.bg_tasks.get(rest), paths.data_root()))
     else:
         app._system("usage: /tasks [list | kill <id> | tail <id>]")
 

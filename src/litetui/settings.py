@@ -37,9 +37,9 @@ import json
 import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from typing import Any, Literal
 
 from litetui import skills as skills_mod  # for DEFAULT_EXTRA_ROOTS only
-from typing import Any, Literal
 from litetui.tool_policy import AUTONOMOUS
 
 SETTINGS_FILENAME = "settings.json"
@@ -373,7 +373,9 @@ ENV_OVERRIDES: dict[str, str] = {
 
 
 def settings_path(root: Path | None = None) -> Path:
-    return (root or Path(__file__).resolve().parent.parent.parent) / SETTINGS_FILENAME
+    from litetui.paths import data_root
+
+    return (root if root is not None else data_root()) / SETTINGS_FILENAME
 
 
 def _coerce(name: str, raw: Any, current: Any) -> Any:

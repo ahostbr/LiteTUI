@@ -1202,7 +1202,7 @@ class LiteTUI(App):
         #: chat-template gamble some models refuse, so each gets its own turn.
         self._pending_input: list = []
         # Background tool tasks (T499). Rows still running at boot come back LOST.
-        self.bg_tasks: dict = tasks_mod.load(paths.ROOT)
+        self.bg_tasks: dict = tasks_mod.load(paths.data_root())
         #: Host authority for the turn currently consuming tools. Human turns
         #: start from settings; cron/inbox turns explicitly replace it with a
         #: narrower profile. The model never writes this field.
@@ -1950,7 +1950,7 @@ class LiteTUI(App):
             self._run_background(task, aw),
             name=task.id, group="tasks", exclusive=False, exit_on_error=False,
         )
-        return tasks_mod.start_text(task, paths.ROOT, promoted_after=promoted_after)
+        return tasks_mod.start_text(task, paths.data_root(), promoted_after=promoted_after)
 
     async def _run_background(self, task, aw) -> None:
         # Set in THIS task's context before the door runs: asyncio.to_thread
@@ -1961,7 +1961,7 @@ class LiteTUI(App):
             result, ok = str(await aw), True
         except Exception as e:
             result, ok = f"[error] {type(e).__name__}: {e}", False
-        text = tasks_mod.finish(task, result, ok, paths.ROOT)
+        text = tasks_mod.finish(task, result, ok, paths.data_root())
         self._save_background()
         runtime_log.record(
             "task." + task.state, task_id=task.id, tool=task.tool,
@@ -1995,7 +1995,7 @@ class LiteTUI(App):
         waits sees a stale chip for as long as it waits.
         """
         try:
-            tasks_mod.save(self.bg_tasks.values(), paths.ROOT)
+            tasks_mod.save(self.bg_tasks.values(), paths.data_root())
         except OSError:
             pass  # an unwritable store must not stop the task
         # AFTER the save, and deliberately not inside the try: a store that
