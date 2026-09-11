@@ -140,6 +140,43 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
                 ok=False,
                 error=f"no ask is waiting on id {ask_id!r} (already answered, or never asked)",
             )
+    elif cmd_type == "approve":
+        # The other half of `tool_approval_requested` (T577). The turn is
+        # parked on an asyncio future waiting for exactly this, and this
+        # dispatch already runs on the app loop (`call_from_thread` in
+        # `_reader_loop`), so the future is resolved directly.
+        #
+        # UNKNOWN ID IS AN ERROR, not a no-op -- same reason as `answer`
+        # above. A silent success here means a host that believes it allowed
+        # a tool call which was in fact already denied by timeout.
+        from litetui import tool_approval as approval_mod
+
+        approval_id = str(cmd.get("id") or "")
+        if not approval_id:
+            _respond(cmd_id, ok=False,
+                     error="approve needs the `id` of the request it answers")
+            return
+        if "allow" not in cmd:
+            # NOT defaulted. A missing `allow` could only be guessed, and
+            # both guesses are wrong: defaulting to deny ends someone's turn
+            # on a malformed message, defaulting to allow runs a tool nobody
+            # approved.
+            _respond(cmd_id, ok=False,
+                     error="approve needs `allow`: true or false")
+            return
+        ok = approval_mod.resolve_over_rpc(
+            app, approval_id, bool(cmd.get("allow")),
+            bool(cmd.get("remember", False)),
+        )
+        if ok:
+            _respond(cmd_id, ok=True,
+                     result={"approved": approval_id, "allow": bool(cmd.get("allow"))})
+        else:
+            _respond(
+                cmd_id, ok=False,
+                error=f"no approval is waiting on id {approval_id!r} "
+                      "(already answered, or timed out)",
+            )
     elif cmd_type == "abort":
         app.action_stop_turn()
         _respond(cmd_id, ok=True, result={"stopped": True})

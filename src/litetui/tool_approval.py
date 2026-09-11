@@ -1,7 +1,9 @@
 """The human approval boundary for sensitive tool calls."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from uuid import uuid4
 
 from textual import on
 from textual.app import ComposeResult
@@ -13,6 +15,24 @@ from textual.widgets import Button, Static
 
 from litetui.side_panel import SwapButton, close_dialog
 from litetui.tool_policy import PolicyDecision, approval_preview
+
+#: How long a headless child waits for its host to answer one approval.
+#:
+#: MEASURED, NOT PICKED, and the two candidates were both wrong. The
+#: LiteSuite adapter's COMMAND_TIMEOUT_MS is 60s, but that governs an RPC
+#: COMMAND (request in, response out) and nothing human is on the other end
+#: of one; borrowing it would give a person 60 seconds to read a tool call
+#: and decide. The sibling wire ask, `user_input_requested` (T558-A), waits
+#: FOREVER -- correct for a question that is the whole point of the turn,
+#: wrong here, because a host that never renders the card would hang a
+#: headless child with nothing to show for it.
+#:
+#: 300s is the same budget a background task already gets in this app. It is
+#: EMITTED with the request (`timeout_s`) rather than kept private, so the
+#: host can show a countdown and does not have to guess when its answer
+#: stops being wanted.
+APPROVAL_TIMEOUT_S = 300.0
+
 
 
 @dataclass(frozen=True)
@@ -257,3 +277,81 @@ class ToolApprovalBody(Vertical):
     @on(Button.Pressed, "#tool-approval-deny")
     def _deny(self) -> None:
         close_dialog(self, DENIED)
+
+
+# ── the wire ask (T577) ──────────────────────────────────────────────
+
+
+def _approval_registry(app) -> dict:
+    """Pending wire approvals for THIS app, keyed by id.
+
+    Per app instance, never module level: the suite builds many apps in one
+    process and a shared registry would let one app's answer resolve another's
+    question.
+    """
+    reg = getattr(app, "_approval_waiters", None)
+    if reg is None:
+        reg = {}
+        app._approval_waiters = reg
+    return reg
+
+
+def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False) -> bool:
+    """Answer a pending wire approval. False when the id is unknown or done.
+
+    AN UNKNOWN ID IS AN ERROR AT THE CALLER, NOT A NO-OP HERE -- the same
+    doctrine `ask_user_question.resolve_over_rpc` states: the two ways to reach
+    this with a stale id are a late answer and a typo, and both leave the host
+    believing it approved something that is still waiting, or worse, still
+    waiting on something that already denied and ended the turn.
+    """
+    fut = _approval_registry(app).get(approval_id)
+    if fut is None or fut.done():
+        return False
+    fut.set_result(ALWAYS if (allow and remember) else (ONCE if allow else DENIED))
+    return True
+
+
+async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
+                           *, timeout: float | None = None):
+    """Ask the HOST to approve one tool call. None when nobody answered.
+
+    \U0001f534 NONE AND DENIED ARE DIFFERENT ANSWERS AND THE CALLER MUST NOT MERGE
+    THEM. `DENIED` is a person choosing; `None` is a host that never spoke. They
+    lead to the same refusal -- a call nobody approved does not run -- but NOT to
+    the same transcript line, because "the user refused" tells the model to stop
+    asking and "nobody was listening" tells it something is broken. The old
+    `not answer` contract would have collapsed the two, which is precisely the
+    silent policy change `test_show_dialog_is_left_alone_on_purpose` was written
+    to prevent when this door was still unbuilt.
+
+    Awaited ON THE EVENT LOOP, so the waiter is an asyncio Future. The rpc
+    reader is a thread but dispatches through `app.call_from_thread`
+    (rpc.py `_reader_loop`), so `resolve_over_rpc` already runs on this loop and
+    no cross-thread primitive is needed. `ask_user_question` uses a
+    `threading.Event` because ITS caller runs on a worker thread; copying that
+    here would be cargo cult.
+    """
+    # READ AT CALL TIME, not bound as a default: a module constant captured
+    # in a signature cannot be changed by anything, including an arm that
+    # needs the timeout to be short enough to measure.
+    timeout = APPROVAL_TIMEOUT_S if timeout is None else timeout
+    approval_id = "appr-" + uuid4().hex[:12]
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    _approval_registry(app)[approval_id] = fut
+    try:
+        app._rpc_emit({
+            "type": "tool_approval_requested",
+            "id": approval_id,
+            "tool": name,
+            "input": args,
+            "profile": str(getattr(app, "_active_tool_profile", None)),
+            "why": decision.reason,
+            "timeout_s": timeout,
+        })
+        try:
+            return await asyncio.wait_for(fut, timeout)
+        except (TimeoutError, asyncio.CancelledError):
+            return None
+    finally:
+        _approval_registry(app).pop(approval_id, None)

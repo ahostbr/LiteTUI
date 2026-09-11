@@ -99,6 +99,7 @@ from litetui.turn_engine import TurnEngine
 from litetui import thinking_probe
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
+from litetui import tool_approval
 from litetui.tool_approval import ToolApprovalBody, ToolApprovalScreen
 from litetui import skills as skills_mod
 from litetui import plugins as plugins_mod
@@ -1837,11 +1838,29 @@ class LiteTUI(App):
             # turn is blocked on the answer. It returns the body's value, or
             # None on cancel: the same falsy-on-cancel contract
             # `push_screen_wait` had, so `not answer` below is unchanged.
-            answer = await show_dialog(
-                self,
-                partial(ToolApprovalBody, name, args, decision),
-                modal_factory=partial(ToolApprovalScreen, name, args, decision),
-            )
+            #
+            # T577: A HEADLESS CHILD HAS NO KEYBOARD, SO THE QUESTION GOES TO
+            # ITS HOST. The branch is HERE, at the awaiting caller, and not
+            # inside `show_dialog`: that door is generic and three other
+            # callers use it with no approval semantics at all, so an rpc
+            # branch in there would make every dialog rpc-aware to serve one.
+            # Ryan, 2026-09-10: "i want the approvals to route threw frontier
+            # chat GUI".
+            if self._rpc:
+                answer = await tool_approval.approve_over_rpc(
+                    self, name, args, decision
+                )
+                # None is NOT DENIED. See approve_over_rpc: one is a person
+                # choosing, the other is a host that never spoke, and they
+                # owe the model different sentences.
+                unanswered = answer is None
+            else:
+                answer = await show_dialog(
+                    self,
+                    partial(ToolApprovalBody, name, args, decision),
+                    modal_factory=partial(ToolApprovalScreen, name, args, decision),
+                )
+                unanswered = False
             # `not answer` covers three cases on purpose: DENIED, and None from
             # a screen dismissed without a value, and any future falsy answer.
             # ToolApproval.__bool__ is what keeps this line correct now that the
@@ -1857,6 +1876,16 @@ class LiteTUI(App):
                 # otherwise reports "reached N tool iterations" for ANY early
                 # break — see _stop_reason.
                 self._stop_requested = True
+                if unanswered:
+                    # SAY IT. A timeout that reads as "you denied" would tell
+                    # the model a person refused, and a person who refused is
+                    # a reason to stop asking -- so a broken host would look
+                    # like a settled decision, forever.
+                    self._stop_reason = (
+                        f"[stopped — no host answered the approval for {name} "
+                        f"within {tool_approval.APPROVAL_TIMEOUT_S:.0f}s; denied]"
+                    )
+                    return tool_denied("no-host", name=name), False
                 self._stop_reason = f"[stopped — you denied {name}]"
                 return tool_denied("by-user", name=name), False
             if answer.remember:

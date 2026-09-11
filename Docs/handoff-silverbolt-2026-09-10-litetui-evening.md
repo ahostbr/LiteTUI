@@ -15,7 +15,9 @@ Sentinel's instruction. Every row names a sha, a symbol or a re-runnable query.
 | T580 — the guard rule + the lint debt | main `1a0aa51` | merged, unverified |
 | T581 — the chip repaints when the task set moves | main `9921a48` | merged, unverified · **two of its four arms are NOT pinned by the fix**, see §3 |
 | T583 — my T570 defect, landed by OpenBolt | main `27a201c` | merged, unverified — closes §1 |
-| T582 — a skill body names where it was loaded from | `fix/t582-ls-mark-skill-path` `fe6d2d8` | pushed, NOT merged |
+| T582 — a skill body names where it was loaded from | main `d040e7a` | merged, unverified |
+| T592 — the suite stops writing the live task store | main `28004e6` | merged, unverified · carries the T581 flake fix as its own commit |
+| T577 half 1 — approval over `--rpc` | `fix/t577-approval-over-rpc` `e6decdd` | pushed, NOT merged · **half 2 (LiteSuite) NOT STARTED** |
 
 ## 1. 🔴 A DEFECT I SHIPPED AND MIS-ATTRIBUTED — read this first
 
@@ -146,6 +148,35 @@ proof. The census arm sees only the two spellings that exist today.
 to cwd. Test pollution, not a shipped defect, and NOT in `.gitignore`. Reported,
 not patched — a `.gitignore` line would hide it rather than fix it.
 
+## 3c. T577 — approval over `--rpc`, half 1 of 2
+
+`fix/t577-approval-over-rpc` `e6decdd`, off main 28004e6, pushed, NOT merged.
+Ryan (a-456cfd80): *"i want the approvals to route threw frontier chat GUI"*.
+
+Wire: `tool_approval_requested` out (id, tool, input, profile, why,
+`timeout_s`), `{type:"approve", id, allow, remember?}` in. The branch is at
+`app._execute_tool`'s CONFIRM; `side_panel.show_dialog` is UNTOUCHED — it is
+generic and serves three callers with no approval semantics.
+
+🔴 **`None` AND `DENIED` ARE DIFFERENT ANSWERS.** Both refuse; only one is a
+person. A new `no-host` refusal says the approval went unanswered, because
+`[policy denied by user]` would tell the model someone decided and a broken
+host would look like a settled decision forever.
+
+⬜ **TIMEOUT 300s, MEASURED**: the adapter's `COMMAND_TIMEOUT_MS` (60s) governs
+an RPC command with no human on it; `user_input_requested` waits forever. It
+rides on the wire so the host can show a countdown, and is read at CALL time.
+
+⚠️ **NOT DONE, NOT CLAIMED**: the pilot arm driving a REAL `litetui --rpc`
+CHILD PROCESS. The arms use a real `LiteTUI` object with `_rpc` set (T558-A's
+own precedent, test_ask_over_rpc.py:183), so they prove the object routes to
+the wire, not that a spawned child does. It belongs with half 2.
+
+**HALF 2, NOT STARTED** — LiteSuite `feat/t577-approval-card` off
+`origin/develop`: `LiteTuiAdapter.ts` forwards the request as an activity;
+Frontier Chat ALREADY has an approval flow for claudeAgent tool permissions —
+REUSE that component, do not fork it. The click sends `approve` back.
+
 ## 4. Laws this evening paid for, each with its measurement
 
 1. **A measurement of what ARRIVES is not a measurement of what was SENT.**
@@ -173,6 +204,6 @@ not patched — a `.gitignore` line would hide it rather than fix it.
 2. Keep id `1ccbc1d5-e16b-4022-b42e-8aa9659028c6`; arm ONE watcher with the
    explicit `--agent-id` form, never `watch-auto`.
 3. Report "back" to `2dc57f3e-a914-4d1e-b414-36db80e3006a` by **inbox**.
-4. T582 awaits merge (§3b). T577 (tool approval over `--rpc` routed to the
+4. T577 half 2 is the live card (§3c). T582/T592 are merged. T577 (tool approval over `--rpc` routed to the
    host — the door left unguarded on purpose in T572) waits on Ryan's priority.
    T570 and T569 are the ONLY things Ryan has verified end to end.
