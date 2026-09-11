@@ -20,7 +20,6 @@ from pathlib import Path
 
 from litetui import paths, runtime_log
 
-
 TRANSCRIPT_NAME = "convo.jsonl"
 
 CONVO_SEED_FILES = {
@@ -80,15 +79,15 @@ class ConversationRepository:
     def read(path: Path) -> tuple[dict, list[dict]]:
         meta: dict = {}
         msgs: list[dict] = []
-        with path.open(encoding="utf-8") as f:
+        with path.open("rb") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # tolerate a torn final line from a hard kill
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue  # a torn record may also end inside a UTF-8 character
                 kind = rec.get("type")
                 if kind == "meta":
                     meta = rec
@@ -281,8 +280,16 @@ class ConversationRepository:
             return
         try:
             self.convo_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.convo_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+            payload = (json.dumps(rec, ensure_ascii=False, default=str) + "\n").encode("utf-8")
+            with self.convo_path.open("a+b") as f:
+                # Never overwrite crash evidence. A missing newline must not
+                # concatenate the next successful record onto the torn one.
+                f.seek(0, 2)
+                if f.tell():
+                    f.seek(-1, 2)
+                    if f.read(1) != b"\n":
+                        payload = b"\n" + payload
+                f.write(payload)
         except OSError as e:
             # Surface it once. A persistence layer that fails silently is worse
             # than none at all: you find out at /resume, when it is too late.
