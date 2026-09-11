@@ -52,13 +52,13 @@ def add_tasks(a, *tools):
 def test_only_chips_that_are_on_screen_are_navigable():
     a = make_app()
     # Nothing running: bg and agents are not drawn, so they are not reachable.
-    assert a.footer_nav_items() == ["authority", "think"]
+    assert a.footer_nav_items() == ["authority", "plan", "think"]
 
     add_tasks(a, "bash")
-    assert a.footer_nav_items() == ["authority", "think", "bg"]
+    assert a.footer_nav_items() == ["authority", "plan", "think", "bg"]
 
     add_tasks(a, "subagent")
-    assert a.footer_nav_items() == ["authority", "think", "bg", "agents"]
+    assert a.footer_nav_items() == ["authority", "plan", "think", "bg", "agents"]
 
 
 def test_a_hidden_chip_is_not_navigable():
@@ -66,7 +66,7 @@ def test_a_hidden_chip_is_not_navigable():
     add_tasks(a, "bash", "subagent")
     a.settings.footer_show_thinking = False
     a.settings.footer_show_bg = False
-    assert a.footer_nav_items() == ["authority", "agents"]
+    assert a.footer_nav_items() == ["authority", "plan", "agents"]
 
 
 # ── moving ─────────────────────────────────────────────────────────────────
@@ -81,6 +81,8 @@ def test_down_takes_the_footer_at_the_first_chip():
 def test_left_and_right_wrap():
     a = make_app()
     a.footer_nav_enter()
+    a.footer_nav_move(1)
+    assert a._footer_nav == "plan"      # T573: plan sits between authority and think
     a.footer_nav_move(1)
     assert a._footer_nav == "think"
     a.footer_nav_move(1)
@@ -99,8 +101,8 @@ def test_a_selected_chip_that_VANISHES_does_not_hand_the_next_key_to_a_stranger(
     a = make_app()
     add_tasks(a, "bash")
     a.footer_nav_enter()
-    a.footer_nav_move(1)
-    a.footer_nav_move(1)
+    for _ in range(3):                  # authority -> plan -> think -> bg (T573)
+        a.footer_nav_move(1)
     assert a._footer_nav == "bg"
 
     a.bg_tasks.clear()  # the process ended on its own
@@ -166,6 +168,7 @@ def test_enter_on_think_runs_THE_SAME_command_typing_it_runs(monkeypatch):
 
     a.footer_nav_enter()
     a.footer_nav_move(1)
+    a.footer_nav_move(1)                # authority -> plan -> think (T573)
     assert a._footer_nav == "think"
     a.footer_nav_activate()
     assert seen == ["/think"]
@@ -189,6 +192,7 @@ async def test_enter_on_think_really_reaches_the_picker() -> None:
         a.settings.dialog_style = "modal"
         a.footer_nav_enter()
         a.footer_nav_move(1)
+        a.footer_nav_move(1)            # authority -> plan -> think (T573)
         assert a._footer_nav == "think"
         a.footer_nav_activate()
         # `a.screen.query`, never `a.query`: App.query does not search the
@@ -197,3 +201,56 @@ async def test_enter_on_think_really_reaches_the_picker() -> None:
         assert await settle_until(
             pilot, lambda: isinstance(a.screen, PickerScreen) or bool(a.screen.query(PickerScreen))
         ), "Enter on the think chip opened no picker"
+
+
+# ── plan (T573 piece 2) ────────────────────────────────────────────────────
+
+def test_plan_is_navigable_whether_the_mode_is_on_or_off():
+    """A chip reachable only while the mode is ON is a switch with no OFF
+    position — you could leave plan mode from the footer and never enter it
+    there. Ryan asked for a toggle, so it is drawn in both states."""
+    a = make_app()
+    assert "plan" in a.footer_nav_items()
+    a._plan_mode = True
+    assert "plan" in a.footer_nav_items()
+
+
+def test_the_plan_chip_says_which_way_it_is_set():
+    a = make_app()
+    assert "plan:off" in a.ctx_label_text.plain
+    a._plan_mode = True
+    assert "plan:on" in a.ctx_label_text.plain
+
+
+def test_enter_on_the_plan_chip_toggles_the_mode():
+    """Through `action_toggle_plan_mode`, the same body Ctrl+P runs — the
+    conversation rebuild lives in `set_plan_mode` and a second copy here is the
+    one that would forget it."""
+    a = make_app()
+    a._system = lambda *args, **kwargs: None
+    a.footer_nav_enter()
+    a._footer_nav = "plan"
+    before = a._plan_mode
+    a.footer_nav_activate()
+    assert a._plan_mode is not before, "Enter on the plan chip did not toggle"
+    a.footer_nav_activate()
+    assert a._plan_mode is before, "a second Enter did not toggle back"
+
+
+def test_the_navigable_list_is_the_order_the_footer_draws():
+    """The list and the renderer must agree, or Left/Right walks a sequence the
+    user cannot see. Asserted by reading the drawn label, not by restating the
+    list — a second copy of the order is the thing that drifts."""
+    a = make_app()
+    drawn = a.ctx_label_text.plain
+    positions = []
+    for chip in a.footer_nav_items():
+        needle = {"authority": None, "plan": "plan:", "think": "think:"}.get(chip)
+        if needle is None:
+            continue
+        assert needle in drawn, f"{chip} is navigable but not drawn"
+        positions.append(drawn.index(needle))
+    assert positions == sorted(positions), (
+        f"navigable order {a.footer_nav_items()} does not match the drawn order "
+        f"in {drawn!r}"
+    )

@@ -171,6 +171,36 @@ def _cmd_tools(app, name: str, arg: str) -> None:
     open_dialog(app, ToolListBody)
 
 
+def _cmd_plan(app, name: str, arg: str) -> None:
+    """/plan — plan mode, from the keyboard or the palette (T573 piece 3).
+
+    Ryan asked for this door alongside Ctrl+P and the footer chip (liteask
+    a-5d6c1ca0). All three run `set_plan_mode`, which is where entering and
+    leaving the mode is actually defined — the prompt section is rebuilt there
+    and a second copy of that is the one that forgets it.
+
+    BARE `/plan` TOGGLES, and says which way it landed because `set_plan_mode`
+    announces. That is deliberate: the palette row invokes this with no
+    argument, and a row that only REPORTS would be a control that does nothing —
+    the same defect the footer chip had when it was drawn only while the mode
+    was already on. The state is never hidden either way; the chip shows it
+    permanently since piece 2.
+
+    `/plan on` and `/plan off` SET rather than toggle, so a script or a second
+    invocation cannot flip you into the state you were trying to leave.
+    `set_plan_mode` returns False and announces nothing when the value is
+    already what you asked for.
+    """
+    want = (arg or "").strip().lower()
+    if want in ("on", "off"):
+        app.set_plan_mode(want == "on")
+        return
+    if want:
+        app._system(f"/plan takes no argument, or on/off — not {want!r}")
+        return
+    app.action_toggle_plan_mode()
+
+
 def _cmd_keys(app, name: str, arg: str) -> None:
     """/keys TOGGLES the help panel.
 
@@ -264,6 +294,13 @@ def _register(ctx) -> None:
         help="Every tool, with a checkbox each, and one switch for all of them.",
         group="tools",
         order=10,
+    )
+    ctx.command(
+        ("/plan",), _cmd_plan,
+        palette="Plan mode",
+        help="Plan first, build after. It asks questions instead of writing code.",
+        group="backend",
+        order=75,          # beside Thinking level, which is the other how-it-works row
     )
     ctx.command(
         ("/keys",), _cmd_keys,

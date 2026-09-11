@@ -381,6 +381,16 @@ def _plain_backend_error(e: BaseException, backend_name: str | None = None) -> s
     return "Something went wrong talking to the model server."
 
 
+def key_label(key: str) -> str:
+    """A Textual key name as a human reads it: "ctrl+p" -> "Ctrl+P"."""
+    if not key:
+        return ""
+    return "+".join(
+        part.capitalize() if len(part) > 1 else part.upper()
+        for part in key.split("+")
+    )
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -547,6 +557,19 @@ class LiteTUI(App):
         dock: right;
         padding-right: 1;
         background: $footer-background;
+    }
+
+    /* The palette's only door (T573). WITHOUT `dock` THIS IS A ZERO-WIDTH
+       WIDGET: Footer gives an undocked child no space, so the button
+       mounted, rendered, reported visible=True display=True, and measured
+       Size(0, 0) -- its on_click worked when called directly and could
+       never be reached by an actual click. Docked, it sizes to content. */
+    .palette-button {
+        dock: right;
+        width: auto;
+        padding: 0 2 0 1;
+        background: $footer-background;
+        text-style: bold;
     }
 
     /* Every modal centres in the window. SettingsScreen was missing from this
@@ -2485,6 +2508,20 @@ class LiteTUI(App):
         self._system(f"Tools {state} — Ctrl+T to toggle")
         self._update_header()
 
+    @classmethod
+    def binding_key(cls, action: str) -> str:
+        """The key currently bound to `action`, or "" if nothing is.
+
+        One place asks the binding table what a chord is, so prose about a key
+        cannot drift from the key. Returning "" rather than raising is
+        deliberate: an action may legitimately have no chord, and a missing
+        binding must not take down the message that mentions it.
+        """
+        for binding in cls.BINDINGS:
+            if getattr(binding, "action", None) == action:
+                return getattr(binding, "key", "") or ""
+        return ""
+
     def action_toggle_plan_mode(self) -> None:
         """ctrl+p: plan mode on or off (T558).
 
@@ -2512,13 +2549,23 @@ class LiteTUI(App):
             self.conversation[0]["content"] = self._system_prompt_text()
             self._edit(0, "plan mode toggled")  # one message, not the whole list
         if announce:
+            # 🔴 THE KEY IS READ FROM THE BINDING, NEVER TYPED HERE (T573).
+            # These two lines carried "Ctrl+P" as a literal while the binding
+            # lived in BINDINGS, so moving the key would leave the app telling
+            # the user to press something that no longer does anything -- in
+            # the one message they are guaranteed to read. `key_label` returns
+            # "" when the action has no binding at all, and the clause composes
+            # out, so a keyless plan mode announces cleanly too.
+            chord = key_label(self.binding_key("toggle_plan_mode"))
+            leave = f" {chord} to leave." if chord else ""
+            re_enter = f" — {chord} to re-enter" if chord else ""
             if self._plan_mode:
                 self._system(
                     "Plan mode ON — ls-plan-w-quizmaster, questions through "
-                    "ask_user_question, no building. Ctrl+P to leave."
+                    f"ask_user_question, no building.{leave}"
                 )
             else:
-                self._system("Plan mode OFF — Ctrl+P to re-enter")
+                self._system(f"Plan mode OFF{re_enter}")
         self._update_header()
         return True
 
@@ -2773,6 +2820,10 @@ class LiteTUI(App):
         s = self.settings
         subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
         items = ["authority"]  # never hidden — see the note in ctx_label_text
+        # PLAN SITS WHERE IT IS DRAWN, second. This list and the renderer are
+        # the same order on purpose: Left/Right that walks a different sequence
+        # from the one on screen is movement the user cannot follow.
+        items.append("plan")
         if s.footer_show_thinking:
             items.append("think")
         if s.footer_show_bg and bg:
@@ -2820,6 +2871,12 @@ class LiteTUI(App):
         chip = self._footer_nav
         if chip == "authority":
             self.action_cycle_tool_profile()
+        elif chip == "plan":
+            # The SAME body Ctrl+P runs, for the reason the note above gives:
+            # `set_plan_mode` is where entering and leaving the mode is defined
+            # (the conversation rebuild especially), and a second copy here is
+            # the one that would forget it.
+            self.action_toggle_plan_mode()
         elif chip == "think":
             # 🔴 THE REGISTRY, NOT AN IMPORT. `from litetui.plugins.misc import
             # _cmd_think` reached the right body and re-accreted the monolith:
@@ -2889,10 +2946,19 @@ class LiteTUI(App):
 
         # PLAN MODE, beside Authority and unhideable for the same reason (T558):
         # it changes what the model will agree to do, so a mode you cannot see
-        # is a refusal you cannot explain. Absent when off — an "off" chip would
-        # occupy the footer permanently to say nothing.
-        if getattr(self, "_plan_mode", False):
-            add("plan", "bold #bb9af7")
+        # is a refusal you cannot explain.
+        #
+        # 🔴 IT USED TO BE ABSENT WHEN OFF, and this note used to say an "off"
+        # chip "would occupy the footer permanently to say nothing". That is
+        # reversed deliberately — Ryan, liteask a-5d6c1ca0: "make sure plan mode
+        # is toggelable via the footer ... once the user navs to the footer with
+        # the arrow keys pressing enter should toggle plan mode". A chip you can
+        # only reach while the mode is already ON is a switch with no OFF
+        # position: you could leave plan mode from the footer and never enter it
+        # there. Drawing it off is what makes it a control rather than a readout.
+        plan_on = bool(getattr(self, "_plan_mode", False))
+        add("plan:on" if plan_on else "plan:off",
+            "bold #bb9af7" if plan_on else "#5c6370", chip="plan")
 
         # Identity, but only when the seat actually holds it. An unregistered
         # seat displaying a name it does not own is worse than showing nothing:
