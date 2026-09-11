@@ -1934,10 +1934,38 @@ class LiteTUI(App):
         self._deliver_inbox({"from": "task", "priority": "normal", "body": text})
 
     def _save_background(self) -> None:
+        """The task set MOVED: persist it, and repaint the footer.
+
+        🔴 THE REPAINT IS HERE BECAUSE THIS IS THE ONE PLACE EVERY TRANSITION
+        ALREADY PASSES THROUGH — start, finish and kill. `ctx_label_text` is a
+        PROPERTY: it recomputes correctly on every call, so the chip was never
+        wrong, it was never ASKED. `_start_background` and `_run_background`
+        both move `bg_tasks` and neither had any reason to touch the footer, so
+        the label kept whatever it was painted with the last time something
+        unrelated refreshed it — which is why Ryan's screenshot (2026-09-10
+        20:5x) showed `bg:1` beside a Background panel reading 0 after a 300s
+        timeout finished. The panel was right: its `sync()` rebuilds on the
+        membership change. The chip had simply not been repainted since.
+
+        ⚠️ THE PANEL AND THE CHIP WERE ALREADY ONE SOURCE (`tasks.split_live`),
+        so this is not a second reader being reconciled — adding one would have
+        been the wrong fix. What was missing is that a background task finishing
+        is the only state change in this app with NO user action attached to
+        hang a repaint on.
+
+        ⬜ A FINISHING TASK CANNOT WAIT FOR THE NEXT UNRELATED REFRESH, which is
+        what made this look intermittent: a seat that keeps typing repaints the
+        footer constantly and never sees it; a seat that fires a long task and
+        waits sees a stale chip for as long as it waits.
+        """
         try:
             tasks_mod.save(self.bg_tasks.values(), paths.ROOT)
         except OSError:
             pass  # an unwritable store must not stop the task
+        # AFTER the save, and deliberately not inside the try: a store that
+        # cannot be written is a reason to keep going, not a reason to leave the
+        # footer lying about what is running.
+        self._refresh_ctx_label()
 
     def _kill_background(self, task_id: str) -> str | None:
         """Kill one background task. Returns None when it was killed, otherwise
@@ -1960,6 +1988,13 @@ class LiteTUI(App):
             self._system(reason)
             return reason
         task.state = tasks_mod.KILLED
+        # 🔴 THE THIRD TRANSITION, AND IT WAS NOT PERSISTED EITHER. A kill moved
+        # the state in memory only: the store still said `running`, so
+        # `tasks.load` marked it LOST at the next boot rather than KILLED — a
+        # task reported as "gone with the app" when it was deliberately stopped.
+        # The same call now also repaints the footer, which is what takes the
+        # chip down; see `_save_background`.
+        self._save_background()
         self.notify(f"Killing {task_id}…", timeout=2)
         self._kill_background_tree(task)
         return None

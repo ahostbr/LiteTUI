@@ -68,7 +68,29 @@ writer and caught it, so the negative is a measurement.
 Probes: `scratchpad/probe_t580_writes.py`, `_bare.py`, `_control.py`,
 `_selfcheck.py`.
 
-## 3. T581 — QUEUED, NOT STARTED
+## 3. T581 — FIXED on `fix/t581-bg-chip-panel` `063d64d`, pushed, NOT merged
+
+CONFIRMED, and it was not two sources. `_save_background()` — the one place
+every transition already passes through — now also calls `_refresh_ctx_label()`.
+The chip was never wrong, it was never ASKED: `ctx_label_text` is a property
+that recomputes on call, and nothing called it when `bg_tasks` moved.
+
+⬜ **WHY IT LOOKED INTERMITTENT** (`widgets.py:808-818`): the footer RECOMPOSES
+and its compose re-reads the property, so any unrelated activity silently
+corrects the chip. Only a seat that fires a long task and then WAITS ever sees
+it — the 300s timeout in Ryan's screenshot.
+
+🔴 **A SECOND, OLDER DEFECT FOUND BY THE THIRD ARM**: `_kill_background` set
+`KILLED` in memory only, so the store still said `running` and `tasks.load`
+marked it **LOST** at the next boot — a deliberate stop reported as "gone with
+the app". The same `_save_background()` call fixes both halves.
+
+⚠️ **TWO OF THE FOUR ARMS ARE NOT PINNED BY THE FIX** (their probes came back
+green), both for that same recompose reason — `notify()` in the kill path
+triggers one, and once anything recomposes the property and the painted label
+agree. Labelled in the commit body. Do not read four greens as four proofs.
+
+### The original note, kept because it was right
 
 Ryan's screenshot (20:5x): footer reads `bg:1` while the Background panel reads
 `(0) Nothing running in the background`, right after task `t-cc94ad` (a 300s
