@@ -14,7 +14,7 @@ Sentinel's instruction. Every row names a sha, a symbol or a re-runnable query.
 | T558-C — the one runner measures every file | main `a514f1e` | merged, unverified |
 | T580 — the guard rule + the lint debt | main `1a0aa51` | merged, unverified |
 | T581 — the chip repaints when the task set moves | main `9921a48` | merged, unverified · **two of its four arms are NOT pinned by the fix**, see §3 |
-| T583 — my T570 defect, landed by OpenBolt | main `27a201c` | merged, unverified — closes §1 |
+| T583 — my T570 defect, landed by OpenBolt | main `27a201c` | merged · **§1 RED CONFIRMED GONE**: `pytest tests/test_settings_controls.py` → 3 passed on `29a8227` at 23:0x |
 | T582 — a skill body names where it was loaded from | main `d040e7a` | merged, unverified |
 | T592 — the suite stops writing the live task store | main `28004e6` | merged, unverified · carries the T581 flake fix as its own commit |
 | T577 half 1 — approval over `--rpc` | main `3794261` (+ ruff fold `afdb19b`) | merged, unverified |
@@ -24,10 +24,31 @@ Sentinel's instruction. Every row names a sha, a symbol or a re-runnable query.
 | T579 remainder — the last two LiteTUI reds | main `b13bada` | merged, unverified · **one red was hiding a real leak** |
 | T590 — the installed Codex wrapper | 7 installed files, NOT in git | REVIEWING · §3e has every path + stamp · **wake proof moved to Ryan** |
 
-## 1. 🔴 A DEFECT I SHIPPED AND MIS-ATTRIBUTED — read this first
+## 1. 🔴 A DEFECT I SHIPPED AND MIS-ATTRIBUTED — FIXED, read it for the lesson
+
+✅ **THE RED IS GONE FROM MAIN.** `27a201c` (T583, OpenBolt's `e00e75d`) added
+both control rows; `11130ba` (T579 part 1) taught the dead-control detector the
+getattr channel. Re-run to confirm:
+
+```
+.venv/Scripts/python.exe -m pytest tests/test_settings_controls.py -q -p no:cacheprovider
+```
+
+→ **3 passed** (measured 23:0x on `29a8227`, which has `27a201c` as an
+ancestor). `src/litetui/settings_screen.py:611,615` now carry the two rows.
+Sentinel flagged this row as stale in `16eac249`; I re-ran it rather than take
+the report, and he was right.
+
+⚠️ **"cannot save AT ALL" WAS LITERAL — that question is now answered, and the
+answer came from the FIX, not from me.** I left it marked NOT VERIFIED below.
+The commit that repaired it is titled *"the settings screen could not save AT
+ALL — two fields had no control"*. So for the hours between `0d099bc` and
+`27a201c`, merged main could not save settings, and it was Ryan-facing.
+
+### What it was, and why the row stays
 
 `test_settings_controls.py::test_every_settings_field_has_a_control_or_is_exempt`
-fails on **merged main**:
+failed on **merged main**:
 
 ```
 these Settings fields have no control, so the settings screen cannot save
@@ -45,17 +66,14 @@ failing FILE is not one I edited, and the CAUSE is a field I added. **"I did
 not touch that file" does not establish "that failure is not mine."** The
 correction went to OpenBolt as `d5677761` before he started T579.
 
-⬜ **NOT VERIFIED: whether "cannot save AT ALL" is literal.** It is the
-assertion author's wording. If literal, merged main cannot save settings and it
-is Ryan-facing. `test_no_dead_controls.py` and
-`test_settings.py::test_every_field_is_reachable_without_opening_its_tab` also
-name these two fields MIXED with `tool_auto_background_s` (T517, not mine), so
-those two need per-field attribution rather than a blanket call.
-
-**The fix is one of two, both named by the assertion itself**: add a row per
-field in `settings_screen.py`, or add the names to `_collect`'s exempt tuple
-with a comment saying which editor owns them. The footer chips are toggled from
-`/settings`' footer section, so a control row is the honest one.
+✅ **RESOLVED (was: "NOT VERIFIED whether 'cannot save AT ALL' is literal").**
+It was literal — see the top of this section. Of the two fixes the assertion
+itself named, `e00e75d` took the honest one: a control row per field, not an
+exempt-tuple entry. `test_no_dead_controls.py` and
+`test_settings.py::test_every_field_is_reachable_without_opening_its_tab` named
+these two fields MIXED with `tool_auto_background_s` (T517, not mine) — that
+mixing is why a blanket call would have been wrong, and per-field attribution
+is what found the real owner of each.
 
 ## 2. T580, pushed, not merged
 
@@ -309,9 +327,16 @@ invokes is the disruption the card warns about. Awaiting Sentinel's call.
 
 ## 5. How to resume
 
-1. Read this file and §1 first — the shipped defect outranks the queue.
-2. Keep id `1ccbc1d5-e16b-4022-b42e-8aa9659028c6`; arm ONE watcher with the
-   explicit `--agent-id` form, never `watch-auto`.
+1. Read §1 first — not for a red to fix (it is fixed, `27a201c`) but for the
+   mis-attribution that let it ship: "I did not touch that file" is not
+   "that failure is not mine."
+2. Keep id `1ccbc1d5-e16b-4022-b42e-8aa9659028c6`. **COUNT watchers before
+   arming one** — `Get-CimInstance Win32_Process`, filter on `liteharness`,
+   then walk each ParentProcessId up to its `claude.exe` and compare against
+   your own `$PID` chain. A surviving watcher and another seat's look
+   identical in the process list; only the chain tells them apart. Arm one
+   with the explicit `--agent-id` form only if none is yours, never
+   `watch-auto`.
 3. Report "back" to `2dc57f3e-a914-4d1e-b414-36db80e3006a` by **inbox**.
 4. T590 is REVIEWING (§3e) — fixed OUTSIDE git, so the `.bak` stamps are the
    only way back. The live card is T389's command half: the 12 command
