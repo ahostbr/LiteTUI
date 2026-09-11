@@ -29,6 +29,18 @@ model_id` folds None and "" together and only the same-model clause was isolated
 The guard is not cosmetic. `_apply_context_length` reloads the model on the
 llama.cpp backend -- evicting resident weights -- so re-picking the model you
 are already on must do nothing at all.
+
+RED AT main FROM 4558d4e UNTIL T576, AND THE SHAPE IS WORTH KEEPING. That commit
+added a fifth effect to the callback -- `if self.backend.name == "lmstudio":
+self._probe_thinking()` -- and `PickDouble` had no `backend`, so the two arms
+that drive a real switch died on AttributeError while the three that return
+early stayed green. A partially-red file reads as a working file in a suite
+summary; the three passes are what made it survivable.
+    A DOUBLE IS A CLAIM ABOUT WHAT THE SUBJECT TOUCHES, so it goes stale exactly
+    when the subject grows, and nothing links the two.
+The fix is not `backend = SimpleNamespace(name="x")` to quiet the error: that
+would make the arms green while asserting nothing about the branch that broke
+them. Both sides of it are pinned below.
 """
 from types import SimpleNamespace
 
@@ -38,10 +50,32 @@ picked = LiteTUI.on_model_picked
 
 
 class PickDouble(SimpleNamespace):
-    """Records the four effects a real switch is supposed to drive."""
+    """Records the effects a real switch is supposed to drive.
 
-    def __init__(self, model_id="alpha"):
-        super().__init__(model_id=model_id, headers=0, fetches=0, applied=0, said=[])
+    `backend` IS NOT PADDING TO STOP AN AttributeError (T576). `on_model_picked`
+    ends with `if self.backend.name == "lmstudio": self._probe_thinking()`, added
+    by 4558d4e (T540-1) so that switching model on LM Studio re-discovers the new
+    model's real thinking levels. A double that carried a bare `backend` would
+    make the arms green while pinning nothing; the name is a real backend's --
+    `LlamaCppBackend.name == "llamacpp"`, `LMStudioBackend.name == "lmstudio"`
+    (llm_backend.py:604, :1306) -- and both sides of that branch are asserted
+    below.
+
+    llamacpp is the default because the same-model guard exists for it: a
+    re-apply there evicts resident weights. The three arms that were already
+    green keep exactly the behaviour they had.
+    """
+
+    def __init__(self, model_id="alpha", backend="llamacpp"):
+        super().__init__(
+            model_id=model_id,
+            headers=0,
+            fetches=0,
+            applied=0,
+            said=[],
+            probes=0,
+            backend=SimpleNamespace(name=backend),
+        )
 
     def _update_header(self):
         self.headers += 1
@@ -54,6 +88,9 @@ class PickDouble(SimpleNamespace):
 
     def _apply_context_length(self):
         self.applied += 1
+
+    def _probe_thinking(self):
+        self.probes += 1
 
 
 def test_picking_a_new_model_switches_and_drives_all_four_effects():
@@ -95,3 +132,25 @@ def test_repicking_the_current_model_does_not_reload_it():
     picked(d, "alpha")
     assert d.applied == 0
     assert (d.headers, d.fetches, d.said) == (0, 0, [])
+
+
+def test_lmstudio_reprobes_thinking_levels_for_the_model_just_picked():
+    """4558d4e (T540-1): the level set is a property of the MODEL, not the app,
+    so switching model on LM Studio has to go and ask again. `_probe_thinking`
+    is what asks."""
+    d = PickDouble("alpha", backend="lmstudio")
+    picked(d, "beta")
+    assert d.probes == 1
+
+
+def test_a_non_lmstudio_backend_does_not_probe():
+    """The other side of the same branch, and the reason this pair exists rather
+    than one arm: an assertion that only ever sees `probes == 1` is satisfied by
+    deleting the `if` and probing unconditionally, which would put a probe on a
+    backend that cannot answer it."""
+    d = PickDouble("alpha", backend="llamacpp")
+    picked(d, "beta")
+    assert d.probes == 0
+    # and the switch itself still happened -- the guard narrows one effect, not all
+    assert d.model_id == "beta"
+    assert (d.headers, d.fetches, d.applied) == (1, 1, 1)
