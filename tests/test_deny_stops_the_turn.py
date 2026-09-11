@@ -362,3 +362,35 @@ async def test_compaction_denial_stops_batch_without_next_inference(monkeypatch)
     results = [m for m in captured[0] if m.get("role") == "tool"]
     assert [m["tool_call_id"] for m in results] == ["compact-0", "compact-1"]
     assert "not executed" in results[-1]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous_stop", [False, True])
+async def test_explicit_compaction_can_persist_after_a_previous_stop(previous_stop):
+    from test_compaction_ui import _TC, _app, _Chunk, _scripted_create, _seed, _settle
+
+    a = _app(compact_max_tool_iters=3)
+    executed = []
+
+    async def ready(**kwargs):
+        pass
+
+    async def execute(name, args):
+        executed.append(name)
+        return "persisted", True
+
+    a._ensure_chat_ready = ready
+    a._execute_tool = execute
+    create, calls = _scripted_create([
+        [_Chunk(tool_calls=[_TC(0, id="write-note", name="write", arguments='{"path":"memory.md","content":"inert"}')])],
+        [_Chunk(content="summary after persisting")],
+    ])
+    async with a.run_test(size=(120, 40)) as pilot:
+        _seed(a)
+        a.client.chat.completions.create = create
+        if previous_stop:
+            a._on_stop_answer(True)
+        a._compact()
+        await _settle(a, pilot, ticks=15)
+    assert executed == ["write"], f"prior stop={previous_stop}; tool calls={executed}; requests={len(calls)}"
+    assert any("summary after persisting" in str(m.get("content")) for m in a.conversation)
