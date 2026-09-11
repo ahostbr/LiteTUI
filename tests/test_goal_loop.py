@@ -346,3 +346,25 @@ def test_goal_command_persists_then_starts_a_goal_owned_turn(tmp_path: Path) -> 
     assert state is not None and state.status == "active"
     assert f"[goal {state.id}]" in appended[0]["content"]
     assert streamed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("levels", [["medium", "high"], ["low", "medium"]])
+async def test_remote_goal_evaluator_uses_shared_transport(tmp_path, monkeypatch, levels):
+    from litetui import model_transport
+    payload = {
+        "verdict": "met", "reason": "test passed", "evidence": ["17 passed"],
+        "missing_evidence": [], "next_instruction": "",
+    }
+    app, raw = _runtime_app(tmp_path, payload, "pytest: 17 passed")
+    app.model_id = "gpt-test"
+    app.backend = SimpleNamespace(name="codex", remote=True,
+                                  reasoning_levels=lambda model: levels)
+    routed = _FakeCompletions(payload)
+    monkeypatch.setattr(model_transport, "for_app", lambda target: routed)
+    save_goal(tmp_path, GoalState(objective="test it", id="goal-test"))
+    await GoalRuntime(app).on_plain_answer()
+    assert raw.calls == [], "goal evaluator bypassed OAuth transport"
+    assert len(routed.calls) == 1
+    assert routed.calls[0]["extra_body"]["reasoning_effort"] == levels[0]
+    assert load_goal(tmp_path).status == "met"

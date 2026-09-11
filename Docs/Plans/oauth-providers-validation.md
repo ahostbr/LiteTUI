@@ -8,7 +8,7 @@ Worktree: `C:/Projects/.worktrees/litetui-oauth-providers`.
 
 Native Python Codex OAuth inference, provider-scoped reasoning persistence,
 read-only CLI authentication, CLI-cache model capabilities, backend/model UI,
-and shared inference routing for all four callers. Tool execution, background
+and shared inference routing for all five callers, including the /goal evaluator (T616). Tool execution, background
 tasks, prompts, conversation storage, compaction and wake stay in LiteTUI.
 Unknown backends fail rather than silently falling back.
 

@@ -19,8 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from litetui import paths
-from litetui import textfmt, scheduler
+from litetui import paths, scheduler, textfmt
 from litetui.tool_policy import INTERACTIVE, SCHEDULED
 
 GOAL_FILENAME = "goal.json"
@@ -232,12 +231,19 @@ class GoalRuntime:
             return
         try:
             await self.app._ensure_chat_ready()
-            response = await self.app.client.chat.completions.create(
+            from litetui import model_transport
+
+            backend = getattr(self.app, "backend", None)
+            extra = {"reasoning_effort": "low"}
+            if getattr(backend, "remote", False):
+                levels = backend.reasoning_levels(self.app.model_id)
+                extra = {"reasoning_effort": levels[0]} if levels else {}
+            response = await model_transport.for_app(self.app).create(
                 model=self.app.model_id or "local-model",
                 messages=evaluator_messages(state, transcript),
                 stream=False,
                 max_tokens=getattr(self.app.settings, "compact_max_tokens", 2048),
-                extra_body={"reasoning_effort": "low"},
+                extra_body=extra,
             )
             raw = response.choices[0].message.content or ""
             verdict = parse_verdict(raw, transcript)
