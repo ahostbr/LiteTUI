@@ -168,6 +168,19 @@ class Settings:
     #: the big one has its own LM Studio slots, so summaries and extractions run
     #: there without touching the parent's pool.
     subagent_model: str | None = None
+    #: T640 — the model the `llm-tool-summ` fold's throwaway side call goes to.
+    #: None = the model you are talking to, which is what it always did.
+    #:
+    #: 🔴 IT HAD NO SETTING AND THE DEFAULT WAS INVISIBLE. The fold sent
+    #: `model=self.model_id or "local-model"` — the MAIN model — so on Codex
+    #: every folded tool result was a Codex call nobody chose, and on a local
+    #: backend it competed for the big model's own slots. Ryan 2026-09-11 15:1x:
+    #: MiniCPM5-2B is resident and already the subagent default; the fold is the
+    #: other side call and should be pointable at the same small model.
+    #:
+    #: ⚠️ A COLD PICK IS NEVER LOADED TO SATISFY THIS. It falls back to the main
+    #: model with a note — see `model_residency.resolve_side_call_model`.
+    tool_summary_model: str | None = None
     tools_enabled: bool = True
     #: Authority profile for EVERY turn -- typed, inbox-woken, cron and loop
     #: alike (Ryan: "cron and loops run at same set profile level my ruling").

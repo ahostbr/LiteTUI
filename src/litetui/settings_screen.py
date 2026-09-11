@@ -141,6 +141,54 @@ def _num_or_none(raw: str, cast) -> Any:
 _SET_KEYS = [Binding("ctrl+s", "save", "Save", show=False)]
 
 
+def loop_model_choices(
+    models,
+    loaded,
+    remote: bool,
+    sentinel_label: str,
+    current: str | None,
+):
+    """Options for an Agent-loop model picker: (label, value) pairs.
+
+    🔴 IT IS A FUNCTION SO THE LIST CAN BE ASSERTED (T640). Built inline in
+    `compose` the contract would be pinned by nothing, and the one property that
+    matters here — the options are EXACTLY what the backend reports, never a
+    hand-kept list — is the kind that rots silently when a backend gains a model
+    kind nobody updated a literal for.
+
+    ⚠️ AND THE PERSISTED VALUE IS ALWAYS AN OPTION, EVEN WHEN THE SERVER HAS
+    NEVER HEARD OF IT. The Model tab learned this the hard way: Textual REFUSES
+    a `Select` value that is not among its options and the WHOLE PANEL fails to
+    open — and since models are discovered asynchronously, "not in the list yet"
+    is the normal state for the first moment of every launch. A settings screen
+    that cannot open is a worse bug than a stale option.
+
+    Resident first, because on a local backend that is the only set a side call
+    may use without loading something; the rest are shown and MARKED rather than
+    hidden, so a model you have downloaded but not loaded looks different from
+    one you do not have at all.
+    """
+    loaded_set = {m for m in (loaded or ()) if m}
+    everything = [m for m in (models or ()) if m]
+    out = [(sentinel_label, "")]
+    if remote:
+        # A remote backend loads nothing, so residency is not a property it has
+        # and marking everything "not loaded" would be a lie about the engine.
+        out += [(m, m) for m in everything]
+    else:
+        out += [(f"{m}  (loaded)", m) for m in everything if m in loaded_set]
+        out += [
+            (f"{m}  (downloaded, not loaded)", m)
+            for m in everything
+            if m not in loaded_set
+        ]
+    have = {v for _, v in out}
+    if current and current not in have:
+        out.append((f"{current}  (not currently served)", current))
+    return out
+
+
+
 class SettingsBody(Widget):
     """Every knob, grouped and scrollable — host-agnostic.
 
@@ -161,11 +209,17 @@ class SettingsBody(Widget):
     BINDINGS = list(_SET_KEYS)
 
     def __init__(self, current: Settings, models: list[str] | None = None,
-                 mcp_servers: list[str] | None = None):
+                 mcp_servers: list[str] | None = None,
+                 loaded: list[str] | None = None, remote: bool = False):
         super().__init__()
         self._start = current
         self._models = models or []
         self._mcp_servers = mcp_servers or []
+        # T640: which of `models` are resident, and whether residency is even a
+        # property this backend has. Defaulted so every existing construction
+        # (a dozen suites) keeps working and simply shows nothing as loaded.
+        self._loaded = loaded or []
+        self._remote = remote
 
     # ── Builders ─────────────────────────────────────────────────────────────
 
@@ -203,6 +257,25 @@ class SettingsBody(Widget):
             yield Select(
                 choices,
                 value=getattr(self._start, name),
+                id=f"f-{name}",
+                allow_blank=False,
+                disabled=locked is not None,
+            )
+            note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
+            yield Static(note, classes="set-help")
+
+    def _model_pick_row(self, name: str, label: str, sentinel: str, help_text: str):
+        """One picker, two fields (T640) — the subagent's and the fold's."""
+        locked = settings_mod.source_of(name)
+        current = getattr(self._start, name)
+        choices = loop_model_choices(
+            self._models, self._loaded, self._remote, sentinel, current
+        )
+        with Vertical(classes="set-row"):
+            yield Label(label, classes="set-label")
+            yield Select(
+                choices,
+                value=current or "",
                 id=f"f-{name}",
                 allow_blank=False,
                 disabled=locked is not None,
@@ -266,13 +339,6 @@ class SettingsBody(Widget):
                             "lm_host", "LM Studio host",
                             "Scheme + host + port, no trailing path.",
                             placeholder="http://localhost:1234",
-                        )
-                        yield from self._text_row(
-                            "subagent_model", "Subagent model",
-                            "Which model the subagent tool's children go to. Blank = the "
-                            "same model you are talking to. A small model loaded beside "
-                            "the big one answers in its own slot, in parallel.",
-                            placeholder="e.g. minicpm5-2b-q4",
                         )
                         yield from self._text_row(
                             "lmstudio_graded_thinking_models",
@@ -382,6 +448,28 @@ class SettingsBody(Widget):
                 with TabPane("Agent loop", id="tab-agent"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        # T640 — THE TWO SIDE CALLS THE LOOP MAKES, TOGETHER.
+                        # Both send work to a model that is not the one you are
+                        # talking to, and until now one was free text on another
+                        # tab and the other did not exist. Ryan 2026-09-11 15:1x
+                        # runs MiniCPM5-2B resident beside the big model; these
+                        # are the two knobs that point work at it.
+                        yield from self._model_pick_row(
+                            "subagent_model", "Subagent model",
+                            "auto — the model you are talking to",
+                            "Where the subagent tool's children go. A small model "
+                            "loaded beside the big one answers in its own slot, in "
+                            "parallel. Only a LOADED local model can be used — nothing "
+                            "is loaded to satisfy this.",
+                        )
+                        yield from self._model_pick_row(
+                            "tool_summary_model", "Tool-summary model",
+                            "main model — the one you are talking to",
+                            "Where the llm-tool-summ fold sends its throwaway side "
+                            "call. On Codex the main model means every fold is a Codex "
+                            "call; point it at a small local model instead. A pick that "
+                            "is not loaded falls back to the main model and says so.",
+                        )
                         yield from self._switch_row(
                             "tools_enabled", "Tools enabled",
                             "Off = plain chat, no bash/read/write/web_fetch.",
@@ -753,7 +841,13 @@ class SettingsBody(Widget):
                 continue
             if isinstance(widget, Select):
                 val = widget.value
-                if name == "default_model":
+                # T640: was `if name == "default_model"`. Every optional-string
+                # Select means UNSET by its blank option, not "the empty string"
+                # — `default_model` was simply the only one until the two
+                # Agent-loop pickers arrived. A per-field name check is wrong
+                # the day somebody adds the fourth, and wrong SILENTLY: `""`
+                # survives a truthiness read and fails an `is None` one.
+                if "None" in t and "str" in t:
                     setattr(out, name, val or None)
                 else:
                     setattr(out, name, val)
@@ -911,14 +1005,18 @@ class SettingsScreen(ModalScreen[Settings | None]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False), *_SET_KEYS]
 
     def __init__(self, current: Settings, models: list[str] | None = None,
-                 mcp_servers: list[str] | None = None):
+                 mcp_servers: list[str] | None = None,
+                 loaded: list[str] | None = None, remote: bool = False):
         super().__init__()
         self._start = current
         self._models = models or []
         self._mcp_servers = mcp_servers or []
+        self._loaded = loaded or []
+        self._remote = remote
 
     def compose(self) -> ComposeResult:
-        yield SettingsBody(self._start, self._models, self._mcp_servers)
+        yield SettingsBody(self._start, self._models, self._mcp_servers,
+                           self._loaded, self._remote)
 
     def action_save(self) -> None:
         self.query_one(SettingsBody).action_save()

@@ -33,7 +33,12 @@ from pathlib import Path
 from litetui.settings import Settings
 
 SCREEN = Path(__file__).resolve().parents[1] / "src" / "litetui" / "settings_screen.py"
-ROW_HELPERS = {"_text_row", "_switch_row", "_select_row"}
+# T640 added `_model_pick_row`. THIS SET IS THE AUDIT'S ONLY EYES: a builder
+# missing from it makes every field it builds read as UNCONTROLLED, and the
+# audit then reports the T544 regression against working code. The `id=` scan
+# below cannot cover the gap — a helper spells its id `f"f-{name}"`, an
+# f-string, and that branch only sees a literal Constant.
+ROW_HELPERS = {"_text_row", "_switch_row", "_select_row", "_model_pick_row"}
 
 
 def _tree() -> ast.Module:
