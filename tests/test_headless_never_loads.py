@@ -128,3 +128,122 @@ async def test_CONTROL_an_INTERACTIVE_session_still_reaches_the_backend_cold():
         "that breaks the JIT-load D2/D11 asked for"
     )
     assert a.emitted == [], "an interactive session must not emit rpc events"
+
+
+# ── T611: the OTHER doors, found by asking who names a model on the wire ────
+#
+# 🔴 `_ensure_chat_ready` IS NOT THE ONLY PLACE A MODEL ID REACHES LM STUDIO.
+# T594 put the refusal in the chat-ready path; two other paths name a model in
+# an HTTP request and consult nothing:
+#
+#   1. `_probe_thinking`, fired from `connect()` for EVERY lmstudio connect
+#      (app.py:2781) including a `--rpc` child — five `/v1/chat/completions`
+#      or one `/api/v1/chat`, naming `self.model_id`, through urllib and not
+#      through model_transport at all. `connect()` can set `model_id` from the
+#      PERSISTED `settings.default_model` filtered against `available_models`,
+#      which is the DOWNLOADED listing, not the resident one (its own comment
+#      says so) — so a cold slug is reachable with no user turn at all.
+#
+#   2. `subagent_plugin._resolve_model`, whose first line is
+#      `if explicit: return explicit`. T609 made the DEFAULTS resident-only on
+#      local; an explicit `model` argument — written by the parent model, not
+#      by a person — still goes straight to `complete_sidecall`.
+#
+# Both are launch/turn paths that need no keyboard. Each arm below has its
+# positive control, because "nothing was sent" is satisfied by a harness that
+# could never send anything.
+
+def _probe_app(model_id, loaded, *, rpc=True):
+    a = _app(model_id, loaded, rpc=rpc)
+    a.settings = SimpleNamespace(
+        lm_host="http://127.0.0.1:1234",
+        lmstudio_graded_thinking_models=(),
+    )
+    a._model_thinking_levels = None
+    a._update_header = lambda: None
+    return a
+
+
+def _run_probe(monkeypatch, a):
+    """Run the probe body synchronously and record what it asked about."""
+    asked: list[str] = []
+
+    def spy(host, model, seed, **kw):
+        asked.append(model)
+        return ["off", "low"]
+
+    monkeypatch.setattr(app_mod.thinking_probe, "get_effective_levels", spy)
+    app_mod.LiteTUI._probe_thinking.__wrapped__(a)
+    return asked
+
+
+def test_the_thinking_probe_does_NOT_name_a_cold_model_in_an_rpc_child(monkeypatch):
+    """🔴 The launch-time requester. Nothing is resident, so nothing is asked."""
+    a = _probe_app("qwen/a", [])
+    assert _run_probe(monkeypatch, a) == [], (
+        "the thinking probe sent a request naming a model LM Studio would "
+        "JIT-load, from a headless child, with no user turn"
+    )
+
+
+def test_the_thinking_probe_substitutes_the_one_resident_model(monkeypatch):
+    """Same answer `_headless_model_decision` gives everywhere else."""
+    a = _probe_app("qwen/a", ["ektome-b"])
+    assert _run_probe(monkeypatch, a) == ["ektome-b"]
+
+
+def test_CONTROL_the_probe_still_runs_for_a_RESIDENT_model_in_an_rpc_child(monkeypatch):
+    """The positive half: the guard refuses cold ids, not the probe itself."""
+    a = _probe_app("qwen/a", ["qwen/a"])
+    assert _run_probe(monkeypatch, a) == ["qwen/a"]
+
+
+def test_CONTROL_an_INTERACTIVE_session_still_probes_a_cold_model(monkeypatch):
+    """⚠️ D2/D11 again — a person at a keyboard keeps the JIT-load."""
+    a = _probe_app("qwen/a", [], rpc=False)
+    assert _run_probe(monkeypatch, a) == ["qwen/a"], (
+        "the interactive probe stopped reaching LM Studio on a cold model"
+    )
+
+
+# ── the subagent's explicit model argument ─────────────────────────────────
+
+def _subagent_app(current, loaded, *, rpc=True, persisted=None):
+    a = _app(current, loaded, rpc=rpc)
+    a.backend.remote = False
+    a.model_rows = {}
+    a.settings = SimpleNamespace(subagent_model=persisted)
+    return a
+
+
+def test_an_EXPLICIT_subagent_model_that_is_not_resident_is_REFUSED():
+    """🔴 T609 gated the defaults; `if explicit: return explicit` was not gated.
+
+    The argument is written by the parent MODEL mid-turn, not by a person, so
+    "the user picked it" is not true of this path.
+    """
+    from litetui import model_transport
+    from litetui.plugins import subagent_plugin
+
+    a = _subagent_app("qwen/a", ["qwen/a"])
+    with pytest.raises(model_transport.ProviderError) as exc:
+        subagent_plugin._resolve_model(a, "minicpm5-2b")
+    assert "minicpm5-2b" in str(exc.value), exc.value
+
+
+def test_CONTROL_an_EXPLICIT_subagent_model_that_IS_resident_is_used():
+    """The positive half. Without it the arm above passes on a broken refuser."""
+    from litetui.plugins import subagent_plugin
+
+    a = _subagent_app("qwen/a", ["qwen/a", "ektome-b"])
+    assert subagent_plugin._resolve_model(a, "ektome-b") == "ektome-b"
+
+
+def test_CONTROL_an_explicit_model_on_a_REMOTE_backend_is_untouched():
+    """Residency is a LOCAL concept; a remote backend loads nothing."""
+    from litetui.plugins import subagent_plugin
+
+    a = _subagent_app("gpt-6-astra", [])
+    a.backend.remote = True
+    a.backend.models = {"gpt-6-astra": {}, "gpt-6-mini": {}}
+    assert subagent_plugin._resolve_model(a, "gpt-6-mini") == "gpt-6-mini"
