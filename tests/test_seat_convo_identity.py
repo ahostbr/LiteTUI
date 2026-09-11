@@ -11,7 +11,7 @@ a task dispatched to the previous id was never seen by the seat.
 import uuid
 
 from litetui import harness as harness_mod
-from litetui.harness import agent_id_for_convo, new_agent_id
+from litetui.harness import process_agent_id, agent_id_for_convo, new_agent_id
 
 CONVO = "5f8e1a90-2c3b-4d7e-9a10-0badc0ffee11"
 
@@ -109,34 +109,43 @@ def app_with(seat, convo_id):
     return SimpleNamespace(seat=seat, convo_id=convo_id, _system=said.append, said=said)
 
 
-def test_startup_adopts_the_derived_id_without_deregistering():
-    """At boot the seat holds a random id and is not yet registered — there is
-    nothing to retire, so nothing may be retired."""
-    seat = FakeSeat(new_agent_id(), registered=False)
-    sync(app_with(seat, CONVO))
-    assert seat.agent_id == agent_id_for_convo(CONVO)
-    assert seat.deregistered == 0
+# 🔴 THREE ARMS STOOD HERE AND THE CONTRACT THEY TESTED IS GONE (T579).
+# They were: _startup_adopts_the_derived_id_without_deregistering,
+# _switching_conversation_retires_the_stale_row, and
+# _a_failing_deregister_never_blocks_the_resume. All three drove
+# `_sync_seat_identity` and asserted that a conversation change REBOUND the
+# seat to agent_id_for_convo(convo) and retired the old row.
+#
+# f64442b (T507-T5, 2026-09-08) reversed that deliberately: the id is
+# `process_agent_id()` = uuid5(hostname:pid), stable for the life of the
+# process, and `_sync_seat_identity` is now a no-op. Rebinding per
+# conversation is what MADE the ghosts those arms existed to retire —
+# measured in that commit: "LiteTUI/BurntPath/BrightDuct = 3 ghosts of pid
+# 133252". With no rebinding there is no stale row, so there is nothing to
+# retire and no failing retirement to survive.
+#
+# ⚠️ THEY ARE NOT REPLACED ONE FOR ONE, because three ways of checking that
+# a no-op does nothing is not three times the coverage. The single arm below
+# pins the case that used to rebind — a DIFFERENT conversation — and
+# `test_resuming_the_same_conversation_is_a_no_op` already pins the same one.
+# The file keeps its shape as the place this contract is asserted, which is
+# why this is a note and not a deletion: the next person to wonder why the
+# seat id survives /new should find the answer here rather than an absence.
 
 
-def test_switching_conversation_retires_the_stale_row():
-    """THE GHOST FIX. The stale row carries this process's pid, so every
-    liveness check would read it as alive and keep offering it as a delivery
-    target. It has to be retired explicitly."""
-    seat = FakeSeat(agent_id_for_convo(CONVO), registered=True)
-    other = CONVO[:-1] + "2"
-    sync(app_with(seat, other))
-    assert seat.deregistered == 1
-    assert seat.agent_id == agent_id_for_convo(other)
+def test_a_DIFFERENT_conversation_does_not_rebind_or_retire_anything():
+    """The case that used to rebind, now pinned as a no-op (T507-T5).
 
-    # 🔴 THIS ASSERTION USED TO READ `is False`, with the inline comment "the
-    # next heartbeat re-registers it". Both were wrong, and together they made
-    # this test the DEFENDER of the defect: heartbeat() returns immediately
-    # unless `registered`, so the seat stayed dark after every /new and
-    # /resume, and any correct fix would have failed here and looked like the
-    # regression. Retiring the old row is only half a transition — the seat has
-    # to come back under the new id, in the same breath.
+    This is the arm that goes red if anyone reintroduces per-conversation
+    identity — which would bring the ghost rows back with it.
+    """
+    seat = FakeSeat(process_agent_id(), registered=True)
+    before = seat.agent_id
+    sync(app_with(seat, CONVO[:-1] + "4"))
+    assert seat.agent_id == before, "a conversation change rebound the seat id"
+    assert seat.deregistered == 0, "a conversation change retired a row"
+    assert seat.registrations == 0, "a conversation change announced a new id"
     assert seat.registered is True
-    assert seat.registrations == 1, "the new id was never announced"
 
 
 def test_resuming_the_same_conversation_is_a_no_op():
@@ -148,23 +157,6 @@ def test_resuming_the_same_conversation_is_a_no_op():
     assert seat.deregistered == 0
     assert seat.registered is True
     assert seat.agent_id == agent_id_for_convo(CONVO)
-
-
-def test_a_failing_deregister_never_blocks_the_resume():
-    """A roster that keeps a stale row beats a resume that dies.
-
-    Strengthened with the rebind: surviving is no longer enough. If a failed
-    retirement aborted the transition it would trade a ghost row for a seat
-    that never comes back — the strictly worse failure — so the seat must
-    still end up armed under the new id.
-    """
-    seat = FakeSeat(agent_id_for_convo(CONVO), registered=True)
-    seat.deregister = lambda: (_ for _ in ()).throw(OSError("liteharness gone"))
-    app = app_with(seat, CONVO[:-1] + "3")
-    sync(app)
-    assert seat.agent_id == agent_id_for_convo(CONVO[:-1] + "3")
-    assert seat.registered is True, "a failed retirement must not leave the seat dark"
-    assert app.said == [], "nothing failed for the user — do not report one"
 
 
 def test_no_convo_id_yet_leaves_the_seat_alone():
