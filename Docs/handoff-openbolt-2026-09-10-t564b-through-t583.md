@@ -115,3 +115,45 @@ also `[error]`. Deleting that guard used to kill one arm; it now kills three.
 check against a known-bad state and confirm it goes red, every time, before
 believing a pass. On T583 the same rule picked the instrument: the AST arm can
 say the control rows exist, only the live probe can say the screen saves.
+
+## T594 and T584 — added after the doc was first written
+
+| card | where | state |
+| --- | --- | --- |
+| T579 part 2 (3 causes) | LiteTUI `main 14a173f` | merged |
+| T594 headless never loads | LiteTUI `03e572d` -> `main d50f4f5` | merged, UNVERIFIED |
+| T584 piece 1, the skill text | liteharness-oss `main 90410bf` | pushed, UNVERIFIED |
+
+### 🔴 THE VRAM INCIDENT, AND THE RULE THAT CAME OUT OF IT
+
+Six `litetui --rpc` probe children of mine JIT-loaded a second 27B into VRAM beside
+the one Ryan was running. **NEW HARD RULE, all seats:** no model is loaded by any
+path without first confirming none is loaded (`lms ps`) AND explicit approval by
+inbox. It is in `~/.claude/CLAUDE.md` under Hard Rules.
+
+Mechanism, measured: LM Studio JIT-loads whatever a **completion** names. Connect is
+innocent (`_list_sync` is a REST read). `--model` never loads — it refuses an
+unloaded id (app.py:2816-2834). T594 makes a `--rpc` child refuse or substitute so
+it cannot load at all; the interactive path still JIT-loads by design (D2/D11,
+`_chat_ready_sync`), and an arm exists so nobody widens that later.
+
+### T584 — what is left
+
+Piece 1 (SKILL.md) is pushed. **Piece 2 is the smoke, NOT committed:**
+`tests/test_rpc_consult_smoke.py` is UNTRACKED in `.worktrees/openbolt-litetui` —
+written, 7/7 green before the incident, already updated to read the resident model
+and skip when none is loaded. It has NOT been re-run since. Take it from there.
+
+Also still open: `C:/Projects/.claude/consult-config.json` does not exist yet; the
+skill reads it relative to the project root and falls back to the template.
+
+⚠️ UNMEASURED, and the skill says so in its own text: codex over `--rpc` (nobody has
+run one end to end) and llama.cpp (7470 was down, so that row is expected to SKIP).
+
+### The shape that caught me four times in one session
+
+A double is a claim about what the subject touches, so it goes stale exactly when the
+subject grows a dependency, and nothing links the two. T576 `PickDouble`/`backend`;
+T579 two doubles/`_rpc_emit`; T594 every app double/`_rpc` — that last one MINE, an
+hour after I wrote the commit body describing it. The fix each time is `getattr` with
+a default at the reader, or the double taught the attribute and told why.
