@@ -23,7 +23,7 @@ from litetui import side_panel
 from litetui.side_panel import present_dialog, show_dialog
 
 from litetui import llm_backend
-from litetui import model_transport
+from litetui import model_residency, model_transport
 from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
@@ -1731,9 +1731,19 @@ class LiteTUI(App):
                 task = self._flatten(m.get("content"))
                 break
         summary = ""
+        # T640: the fold is a side call and now has its own model. A cold local
+        # pick degrades to the main model rather than loading one, and says so
+        # ONCE — per turn, not per fold, or a misconfiguration would narrate
+        # itself into every tool result the turn produces.
+        fold_model, fold_note = model_residency.resolve_side_call_model(
+            self, getattr(self.settings, "tool_summary_model", None)
+        )
+        if fold_note and fold_note != getattr(self, "_last_fold_note", None):
+            self._last_fold_note = fold_note
+            self._system(f"[llm-tool-summ] {fold_note}")
         try:
             resp = await model_transport.for_app(self).create(
-                model=self.model_id or "local-model",
+                model=fold_model,
                 messages=[{
                     "role": "user",
                     "content": tool_context.summarise_prompt(task, name, raw),

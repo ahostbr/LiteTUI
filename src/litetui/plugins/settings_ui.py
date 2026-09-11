@@ -7,6 +7,7 @@ single owner of a fact many plugins read. This is the door to the screen.
 from functools import partial
 
 from litetui import paths
+from litetui import model_residency
 from litetui.settings_screen import SettingsBody, SettingsScreen
 from litetui.side_panel import present_dialog
 
@@ -52,10 +53,15 @@ def _cmd_settings(app, name: str, arg: str) -> None:
     # different settings.
     models = app.available_models
     servers = mcp_server_names(app)
+    # T640: the Agent-loop pickers mark which models are RESIDENT, which is the
+    # only set a side call may use on a local backend without loading one.
+    # Read here, with the model list, so both factories get one consistent
+    # answer — the same reason `models` is read once above.
+    loaded, remote = model_residency.resident_models(app)
     present_dialog(
         app,
-        partial(SettingsBody, app.settings, models, servers),
-        partial(SettingsScreen, app.settings, models, servers),
+        partial(SettingsBody, app.settings, models, servers, sorted(loaded), remote),
+        partial(SettingsScreen, app.settings, models, servers, sorted(loaded), remote),
         app._on_settings_saved,
     )
 
