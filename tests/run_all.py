@@ -71,6 +71,46 @@ def _exits(tree: ast.AST) -> bool:
     return False
 
 
+def _has_tests(tree: ast.AST) -> bool:
+    """Would pytest find anything to CALL in this module?
+
+    🔴 CLASSES COUNT, AND LEAVING THEM OUT SILENTLY UNMEASURED 83 TESTS.
+    This asked only for a module-level `def test_*` (`tree.body`), so six files
+    whose tests live in `class Test*` — test_input_history, test_rpc,
+    test_send_resolve, test_subagent, test_thinking_collapse,
+    test_thinking_probe — were filed script-style. Run as
+    `python tests/x.py` each one imports, defines its classes, calls nothing,
+    prints nothing and exits 0. The runner then reports `ok`.
+
+    Measured 2026-09-10 at origin/main ccf0229:
+      pytest --collect-only on those six  -> 83 tests collected
+      python tests/test_thinking_probe.py -> no output, exit 0
+
+    ⚠️ AND THE ONE RUNNER MEASURED LESS THAN THE WRONG ONE. `conftest.py`'s
+    `collect_ignore` uses a SUBSTRING check (`"def test_" not in src`) which
+    matches an indented method, so a plain `pytest tests/` collects all six and
+    run_all did not. This file's own docblock claimed "Two rules, no gap"; the
+    gap was exactly here, and the shape of it is the hazard the docblock warns
+    about one paragraph earlier — a pytest-style file run as a script "imports
+    fine and asserts nothing, exiting 0: a silent pass that covers nothing."
+
+    `class Test*` is pytest's own default (`python_classes = Test*`), so this
+    matches what the collector actually does rather than a guess about it.
+    """
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("test_"):
+                return True
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            if any(
+                isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and m.name.startswith("test_")
+                for m in node.body
+            ):
+                return True
+    return False
+
+
 def classify() -> tuple[list[Path], list[Path]]:
     pytest_style, script_style = [], []
     for f in sorted(TESTS.glob("test_*.py")):
@@ -92,11 +132,7 @@ def classify() -> tuple[list[Path], list[Path]]:
         # decision, so the AST cost nothing and was simply not used here.
         try:
             tree = ast.parse(src)
-            has_tests = any(
-                isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and n.name.startswith("test_")
-                for n in tree.body
-            )
+            has_tests = _has_tests(tree)
             exits = _exits(tree)
         except SyntaxError:
             has_tests = False
@@ -128,6 +164,25 @@ def main() -> int:
     # use UTF-8 regardless of the console code page. (The parent side decodes
     # the same way — see the encoding= below.)
     os.environ.setdefault("PYTHONUTF8", "1")
+
+    # 🔴 AND THE ONE conftest DOES THAT THIS DID NOT: src/ ON THE PATH.
+    #
+    # conftest.py inserts `<repo>/src` into sys.path so `import litetui` resolves
+    # for the pytest half. The script-style files never import conftest, and a
+    # bare `python tests/x.py` has only the repo root on the path — so on any
+    # checkout where the package is not separately installed, EIGHT of them died
+    # with `ModuleNotFoundError: No module named 'litetui'` before running a
+    # single check.
+    #
+    # It looked like a repo failure and was an ENVIRONMENT one: the same files
+    # pass under `uv run` in the primary clone, where the project IS installed,
+    # which is why this survived — the runner was only ever used where it
+    # happened to work. Set here rather than in each script: this function
+    # already owns "what the script half needs that conftest gives the other".
+    _src = str(ROOT / "src")
+    _existing = os.environ.get("PYTHONPATH", "")
+    if _src not in _existing.split(os.pathsep):
+        os.environ["PYTHONPATH"] = _src + (os.pathsep + _existing if _existing else "")
 
     pyt, scr = classify()
 
