@@ -115,12 +115,21 @@ def test_the_key_is_bound_at_app_level():
 
 # ── the mode is visible ────────────────────────────────────────────────────
 
-def test_the_footer_names_the_mode_only_while_it_is_on():
+def test_the_footer_names_WHICH_WAY_the_mode_is_set():
+    """🔴 THIS ARM USED TO ASSERT THE CHIP IS ABSENT WHEN OFF, and the
+    reversal is Ryan's, not a loosening: liteask a-5d6c1ca0, "make sure plan
+    mode is toggelable via the footer ... once the user navs to the footer with
+    the arrow keys pressing enter should toggle plan mode". A chip that only
+    exists while the mode is ON cannot be navigated to in order to turn it on —
+    a switch with no OFF position. So the chip is always drawn and now says
+    which way it is set (T573 piece 2).
+    """
     a = make_app(plan=True)
-    assert "plan" in a.ctx_label_text.plain
+    assert "plan:on" in a.ctx_label_text.plain
 
     a._plan_mode = False
-    assert "plan" not in a.ctx_label_text.plain
+    assert "plan:off" in a.ctx_label_text.plain
+    assert "plan:on" not in a.ctx_label_text.plain
 
 
 # ── what the card asked for that was already true ──────────────────────────

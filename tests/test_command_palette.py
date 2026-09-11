@@ -376,10 +376,20 @@ def test_the_palette_button_is_a_button_not_a_bar():
             # width. A single pause is a bet on how loaded the box is, which is
             # the same trap T565 was about -- wait for the value to exist.
             button = a.screen.query_one(PaletteButton)
-            for _ in range(20):
-                await pilot.pause()
-                if 0 < button.region.width < a.size.width:
+            # Two separate questions, and conflating them is what made this arm
+            # flaky: FIRST wait for layout to have happened at all (region is
+            # 0x0 until it has), THEN judge the size. The bound is generous
+            # because the slow case is real -- the first run after an edit
+            # recompiles the module and startup takes measurably longer, which
+            # is how this failed twice while passing 3x on the runs after.
+            for _ in range(200):
+                if button.region.width:
                     break
+                await pilot.pause()
+            assert button.region.width, (
+                "the palette button never got a layout pass, so its size says "
+                "nothing; this is a harness problem, not a width problem"
+            )
             assert 0 < button.region.width < 40, (
                 f"the palette button is {button.region.width} columns wide; "
                 "it should size to its label, not span the footer"

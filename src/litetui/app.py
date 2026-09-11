@@ -2820,6 +2820,10 @@ class LiteTUI(App):
         s = self.settings
         subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
         items = ["authority"]  # never hidden — see the note in ctx_label_text
+        # PLAN SITS WHERE IT IS DRAWN, second. This list and the renderer are
+        # the same order on purpose: Left/Right that walks a different sequence
+        # from the one on screen is movement the user cannot follow.
+        items.append("plan")
         if s.footer_show_thinking:
             items.append("think")
         if s.footer_show_bg and bg:
@@ -2867,6 +2871,12 @@ class LiteTUI(App):
         chip = self._footer_nav
         if chip == "authority":
             self.action_cycle_tool_profile()
+        elif chip == "plan":
+            # The SAME body Ctrl+P runs, for the reason the note above gives:
+            # `set_plan_mode` is where entering and leaving the mode is defined
+            # (the conversation rebuild especially), and a second copy here is
+            # the one that would forget it.
+            self.action_toggle_plan_mode()
         elif chip == "think":
             # 🔴 THE REGISTRY, NOT AN IMPORT. `from litetui.plugins.misc import
             # _cmd_think` reached the right body and re-accreted the monolith:
@@ -2936,10 +2946,19 @@ class LiteTUI(App):
 
         # PLAN MODE, beside Authority and unhideable for the same reason (T558):
         # it changes what the model will agree to do, so a mode you cannot see
-        # is a refusal you cannot explain. Absent when off — an "off" chip would
-        # occupy the footer permanently to say nothing.
-        if getattr(self, "_plan_mode", False):
-            add("plan", "bold #bb9af7")
+        # is a refusal you cannot explain.
+        #
+        # 🔴 IT USED TO BE ABSENT WHEN OFF, and this note used to say an "off"
+        # chip "would occupy the footer permanently to say nothing". That is
+        # reversed deliberately — Ryan, liteask a-5d6c1ca0: "make sure plan mode
+        # is toggelable via the footer ... once the user navs to the footer with
+        # the arrow keys pressing enter should toggle plan mode". A chip you can
+        # only reach while the mode is already ON is a switch with no OFF
+        # position: you could leave plan mode from the footer and never enter it
+        # there. Drawing it off is what makes it a control rather than a readout.
+        plan_on = bool(getattr(self, "_plan_mode", False))
+        add("plan:on" if plan_on else "plan:off",
+            "bold #bb9af7" if plan_on else "#5c6370", chip="plan")
 
         # Identity, but only when the seat actually holds it. An unregistered
         # seat displaying a name it does not own is worse than showing nothing:
