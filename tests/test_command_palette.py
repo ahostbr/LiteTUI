@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 from textual.widgets import Select
 from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
+from litetui.widgets import PaletteButton
+from textual.command import CommandPalette
 from litetui import paths
 from litetui import scheduler as sched_mod
 
@@ -227,11 +229,18 @@ def test_running_the_tools_row_opens_the_list_and_does_NOT_toggle():
 
 
 def test_the_real_palette_reaches_our_rows():
-    """ctrl+p, type, enter — the stock palette UI running OUR provider."""
+    """click the footer button, type, enter — the stock palette UI on OUR rows.
+
+    🔴 THIS DROVE ctrl+p UNTIL T573, AND THE EXPECTATION IS STALE BY RULING,
+    NOT BY ACCIDENT. T558 (9660da1) took ctrl+p for plan mode and the palette
+    lost its only route; Ryan chose which one keeps the key — liteask
+    a-5d6c1ca0, 2026-09-10 21:3x: "Keep plan on Ctrl+P, move the palette —
+    palette via click only". So the door this arm drives moved on purpose.
+    """
     async def body():
         a = make_app()
         async with a.run_test(size=(190, 48)) as pilot:
-            await pilot.press("ctrl+p")
+            await pilot.click(PaletteButton)
             await pilot.pause()
             for ch in "calendar":
                 await pilot.press(ch)
@@ -312,4 +321,67 @@ def test_seat_registration_grows_the_count_by_the_harness_tool():
 
             a._update_header()
             assert f"tools:{after}" in a.sub_title
+    _run(body())
+
+
+# --------------------------------------------------------------------------
+# the key itself
+# --------------------------------------------------------------------------
+
+def test_the_palette_is_reachable_at_all():
+    """The palette has a door. This is the arm the last regression needed.
+
+    ⚠️ IT ASKS THE SCREEN, NOT THE BINDING TABLE. A binding assertion would
+    now be wrong by ruling: ctrl+p SHOULD be plan mode, and the shadow is
+    intentional. What must stay true is that a user can still get to the
+    palette, so this drives the real door and looks at what came up.
+
+    🔴 `a.screen.query(CommandPalette)` RETURNS 0 HERE AND WOULD READ AS A
+    FALSE NEGATIVE. Textual PUSHES the palette as a screen, so it is
+    `a.screen` itself, not a descendant of it — measured, screen_stack reads
+    ['Screen', 'CommandPalette']. The click only SCHEDULES the push, so the
+    state is awaited rather than read on the next line.
+    """
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)) as pilot:
+            await pilot.click(PaletteButton)
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(a.screen, CommandPalette):
+                    break
+            assert isinstance(a.screen, CommandPalette), (
+                "clicking the footer button did not open the palette; the screen "
+                f"stack is {[type(s).__name__ for s in a.screen_stack]}"
+            )
+    _run(body())
+
+
+def test_the_palette_button_is_a_button_not_a_bar():
+    """`width: auto` on .palette-button, pinned.
+
+    Without it `dock: right` alone gives the button the FULL footer width — it
+    still works, because it is composed last and wins the hit test, so every
+    behavioural arm above stays green while a bold 190-column bar sits across
+    the footer. Appearance was the thing no arm here could see, which is
+    exactly how it shipped unnoticed in the label beside it (that one is
+    Region(x=0, width=190) to this day and is NOT changed by this commit).
+    """
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)) as pilot:
+            # ⚠️ GEOMETRY IS AWAITED, NOT READ ON THE NEXT LINE. This arm
+            # failed once inside the full-file run and passed alone: layout had
+            # not settled on the first pause, so it measured the pre-layout
+            # width. A single pause is a bet on how loaded the box is, which is
+            # the same trap T565 was about -- wait for the value to exist.
+            button = a.screen.query_one(PaletteButton)
+            for _ in range(20):
+                await pilot.pause()
+                if 0 < button.region.width < a.size.width:
+                    break
+            assert 0 < button.region.width < 40, (
+                f"the palette button is {button.region.width} columns wide; "
+                "it should size to its label, not span the footer"
+            )
     _run(body())
