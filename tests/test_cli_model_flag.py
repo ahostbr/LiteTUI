@@ -37,7 +37,18 @@ _apply = LiteTUI._apply_cli_args.__wrapped__
 
 
 def _run(app):
-    asyncio.get_event_loop().run_until_complete(_apply(app))
+    # 🔴 `asyncio.get_event_loop()` RAISES HERE ON PYTHON 3.12+ (T579).
+    # It stopped creating a loop implicitly when none is running, so all
+    # five arms in this file died with
+    #     RuntimeError: There is no current event loop in thread 'MainThread'
+    # before touching a line of the code under test. This is not an
+    # artefact of one worktree's interpreter: the call is wrong on every
+    # modern Python, and it would fail the same way in the primary clone
+    # the day that one moves off 3.11.
+    #
+    # `asyncio.run` is this suite's own idiom (ten other call sites) and
+    # it also CLOSES the loop, which the old spelling never did.
+    asyncio.run(_apply(app))
 
 
 def test_flag_picks_loaded_model():
