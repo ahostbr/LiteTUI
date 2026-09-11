@@ -16,11 +16,29 @@ _UNRESOLVED = re.compile(
 
 
 def claude_skill_dir() -> Path:
-    """The global Claude plugin cache, overridable by an explicit environment."""
+    """The plugin skills directory that is ACTUALLY SCANNED, env-overridable.
+
+    T582: this used to answer with the cache ROOT, two levels above any skill.
+    The cache is versioned -- 1.0.15 and 1.0.16 sat side by side on 2026-09-10 --
+    and discovery resolves that glob to its NEWEST match, so naming the root in
+    the system prompt described a directory the loader never reads and invited
+    the reader to go hunting through the versions by hand.
+
+    Delegated to `skills.resolve_roots` rather than re-globbed here: "newest
+    installed wins" is a rule that must have exactly one definition, and a
+    second copy of it would agree today and drift later. Imported inside the
+    function to keep this module free of a package-level cycle.
+    """
     configured = os.environ.get("CLAUDE_SKILL_DIR", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".claude" / "plugins" / "cache"
+    cache = Path.home() / ".claude" / "plugins" / "cache"
+    from litetui import skills as _skills
+
+    for root in _skills.resolve_roots(_skills.DEFAULT_EXTRA_ROOTS):
+        if cache in root.parents:
+            return root
+    return cache
 
 
 def compile_prompt(

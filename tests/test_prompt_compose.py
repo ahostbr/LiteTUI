@@ -22,6 +22,16 @@ from litetui import plugins as plugins_mod
 from litetui import skills as skills_mod  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _pin_skill_dir(monkeypatch, tmp_path_factory):
+    """T582. Both sides read CLAUDE_SKILL_DIR when it is set; unset, the
+    implementation now resolves the newest installed plugin version while this
+    reference still names the cache root. Re-deriving the new rule here would
+    make the reference a second copy of the implementation -- pinning keeps it
+    independent AND stops the gate depending on what is installed locally."""
+    monkeypatch.setenv("CLAUDE_SKILL_DIR", str(tmp_path_factory.mktemp("skilldir")))
+
+
 def _reference(a) -> str:
     # The pre-refactor _system_prompt_text, verbatim. The CONTRACT.
     base = ""

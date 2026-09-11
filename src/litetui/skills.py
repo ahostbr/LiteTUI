@@ -362,6 +362,47 @@ def find(skills: list[Skill], query: str) -> str:
     return "\n".join(f"- `{s.name}` ({s.source}) — {s.description}" for _, _, s in scored[:12])
 
 
+#: How a skill body names the directory it lives in. BOTH spellings are in the
+#: wild and neither is bound by anything until this module does it: the catalog
+#: writes `${CLAUDE_SKILL_DIR}` (ls-local-lens, ls-video-lens, ls-insights-deep,
+#: ls-gen-image-or-video) and the prose form `<this skill's directory>` (ls-mark,
+#: ls-draw, ls-skill-author). `prompt_compiler` resolves the first spelling too,
+#: but only inside an authored PROMPT and only to the cache ROOT -- a skill body
+#: never passes through it, and the root is not the skill's directory anyway.
+SKILL_DIR_PLACEHOLDERS: tuple[str, ...] = (
+    "${CLAUDE_SKILL_DIR}",
+    "<this skill's directory>",
+)
+
+
+def bind_skill_dir(text: str, skill_dir: Path) -> str:
+    """Bind a skill body to the directory it was actually loaded FROM.
+
+    T582. `load()` used to hand back SKILL.md verbatim, so every command line in
+    it pointed at a placeholder nothing resolves. A LiteTUI/Codex seat asked for
+    /ls-mark, read the run line for mark.py, and had only the system prompt's
+    `<root>/skills` line to go on -- which names where the REPO's own skills
+    live, not where this one came from. It guessed
+    `C:/Projects/LiteTUI/skills/ls-mark/mark.py`, missed, and hunted the plugin
+    cache by hand before it could run a one-line tool.
+
+    The directory was never hard to find: it is `s.path.parent`, already in hand
+    at the call site. Claude Code solves this by injecting a base-directory line
+    into the skill it serves; this does the same AND substitutes, so the command
+    is runnable AS PRINTED rather than runnable only if the model performs the
+    substitution correctly.
+
+    Measured 2026-09-10 against the discovered library: 25 skills carry one of
+    these placeholders, 100 occurrences. That is what makes this a LOADER defect
+    rather than a per-skill text defect -- editing the skills would be 25 files
+    changed to work around one missing line here, and the next skill authored
+    would reintroduce it.
+    """
+    for token in SKILL_DIR_PLACEHOLDERS:
+        text = text.replace(token, str(skill_dir))
+    return "Base directory for this skill: " + str(skill_dir) + chr(10) * 2 + text
+
+
 def load(skills: list[Skill], name: str) -> str:
     """Full SKILL.md body for `name`, or a message naming what IS available.
 
@@ -383,6 +424,7 @@ def load(skills: list[Skill], name: str) -> str:
                 text = s.path.read_text(encoding="utf-8", errors="replace")
             except OSError as e:
                 return f"[error] skill {s.name!r} could not be read: {e}"
+            text = bind_skill_dir(text, s.path.parent)
             if len(text) > MAX_SKILL_BYTES:
                 text = text[:MAX_SKILL_BYTES] + "\n\n[truncated]"
             return text

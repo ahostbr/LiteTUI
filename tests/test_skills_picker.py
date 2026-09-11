@@ -74,10 +74,13 @@ class _StubApp:
 
 # ── 1. the slash ─────────────────────────────────────────────────────────────
 def test_a_leading_slash_still_finds_the_skill(tmp_path: Path) -> None:
+    # T582: `load` now prefixes the body with the skill's base directory, so
+    # these assert MEMBERSHIP rather than equality. The arm is about the SLASH;
+    # equality was measuring the header too, and a header is not what it names.
     skills = [_skill(tmp_path, "ls-mark", "MARK BODY")]
-    assert skills_mod.load(skills, "/ls-mark") == "MARK BODY"
-    assert skills_mod.load(skills, "ls-mark") == "MARK BODY", "the bare name still works"
-    assert skills_mod.load(skills, "/LS-MARK") == "MARK BODY", "still case-insensitive"
+    assert "MARK BODY" in skills_mod.load(skills, "/ls-mark")
+    assert "MARK BODY" in skills_mod.load(skills, "ls-mark"), "the bare name still works"
+    assert "MARK BODY" in skills_mod.load(skills, "/LS-MARK"), "still case-insensitive"
 
 
 def test_a_genuinely_absent_skill_still_errors(tmp_path: Path) -> None:

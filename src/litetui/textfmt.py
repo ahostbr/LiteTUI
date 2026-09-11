@@ -44,7 +44,7 @@ def load_prompt(name: str, **variables: object) -> str:
     be a model quietly running without its instructions, which is worse than
     not booting.
     """
-    text = (paths.PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+    text = paths.prompt_file(f"{name}.md").read_text(encoding="utf-8")
     for key, value in variables.items():
         text = text.replace("{" + key + "}", str(value))
     return text
@@ -94,7 +94,7 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
 
 def _tool_denied_sections() -> dict[str, str]:
     """`## key` sections of prompts/tool-denied.md, comments stripped."""
-    text = (paths.PROMPTS_DIR / "tool-denied.md").read_text(encoding="utf-8")
+    text = paths.prompt_file("tool-denied.md").read_text(encoding="utf-8")
     text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     out: dict[str, str] = {}
     key = None
