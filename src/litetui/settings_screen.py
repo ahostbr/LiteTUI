@@ -602,6 +602,19 @@ class SettingsBody(Widget):
                         yield from self._switch_row(
                             "footer_show_thinking", "Thinking level", "e.g. think:medium",
                         )
+                        # T579: these two shipped in T570 (0d099bc) as Settings
+                        # fields with no control, and _collect REFUSES to save a
+                        # partial object -- so EVERY save from this screen failed,
+                        # not just these fields. The refusal was right; the screen
+                        # was incomplete.
+                        yield from self._switch_row(
+                            "footer_show_bg", "Background processes",
+                            "e.g. bg:2 -- absent when nothing is running.",
+                        )
+                        yield from self._switch_row(
+                            "footer_show_subagents", "Subagents",
+                            "e.g. agents:3 -- absent when none are running.",
+                        )
                         yield from self._switch_row(
                             "footer_show_convo", "Conversation id",
                             "First 8 characters of the uuid.",
