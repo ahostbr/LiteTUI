@@ -1,0 +1,200 @@
+"""One headless LiteTUI child, one prompt, one answer — the shape /consult drives.
+
+SCRIPT-STYLE (module-level sys.exit), like test_footer.py and test_harness_tool.py.
+`tests/run_all.py` picks the runner from that; naming this to pytest would abort
+collection for the whole suite.
+
+WHY THIS EXISTS. T584 routes every non-Claude consult through `litetui --rpc`, so
+the skill's extraction step has to quote what the process ACTUALLY emits. This
+file is where that shape is pinned, measured rather than assumed:
+
+    {"type": "ready", "version": ..., "model": ..., "cwd": ..., "tool_profile": ...}
+    {"type": "turn_start", "model": ..., "thinking_level": ...}
+    {"type": "reasoning_delta", "text": "..."}   x N     <-- NOT the answer
+    {"type": "text_delta", "text": "..."}        x N     <-- the answer
+    {"type": "turn_end", "stopReason": "stop"}
+
+🔴 `reasoning_delta` AND `text_delta` BOTH CARRY `.text`. A parser that
+concatenates every `.text` returns the model's chain of thought as the answer —
+in the first measured run the reasoning was 17 deltas and the answer was one.
+The consumer must select on `type`, and this asserts that the two are separable.
+
+🔴 STDIN MUST STAY OPEN UNTIL `turn_end`. Measured: with stdin at /dev/null the
+child exits 0 having emitted NOTHING, because the RPC loop ends before the
+prompt runs — a silent empty answer, which is the worst failure shape for a
+consult panel. And with stdin left open after turn_end it never exits (the first
+run had to be killed at 150 s). So the driver holds stdin open, reads to
+turn_end, then closes it — both halves are asserted below.
+
+SKIPS CLEANLY, BY NAME, when no backend answers. A consult gate that cannot tell
+"the wiring is broken" from "LM Studio is not running" is not a gate.
+
+🔴 AND THE GATE HAS TO COVER *WHICH* BACKEND, NOT JUST WHETHER ONE ANSWERS.
+The first version checked port 1234 and a resident model, then launched a child
+that read `<install>/settings.json` and used whatever THAT said — llama.cpp,
+down, on 2026-09-10 23:0x. Three arms went red about a backend the child was
+never talking to. Two conditions were being conflated: "LM Studio is up" and
+"LiteTUI is pointed at it". The child is now told (LITETUI_BACKEND), so the
+gates above measure the thing the child actually uses.
+"""
+from __future__ import annotations
+
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import urllib.request
+import time
+from pathlib import Path
+
+ok: list[bool] = []
+
+
+def chk(label: str, cond: bool) -> None:
+    ok.append(bool(cond))
+    print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
+
+
+def _listening(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket() as s:
+        s.settimeout(0.4)
+        return s.connect_ex((host, port)) == 0
+
+
+LMSTUDIO_PORT = 1234
+EXE = Path(sys.executable).parent / "litetui.exe"
+
+def _resident_model() -> str | None:
+    """The model LM Studio has loaded RIGHT NOW, or None.
+
+    🔴 READ EVERY RUN, NEVER STORED, AND NEVER A NAME OF OUR CHOOSING.
+    Ryan, 2026-09-10 22:0x, after a probe of mine put a second 27B beside the
+    one he was using: no model is loaded into VRAM without checking first and
+    asking. LM Studio JIT-loads whatever model a COMPLETION names — connect is
+    only a REST read (`_list_sync` -> GET /api/v0/models, llm_backend.py:1357),
+    so the load happens the moment a turn is submitted, not at startup, and
+    nothing in the RPC output marks it: `ready` looks identical either way.
+
+    Naming the already-resident id is therefore necessary AND sufficient: the
+    completion hits a loaded model and loads nothing. `--model` is applied
+    before the first prompt is submitted (both inside `_apply_cli_args`), so
+    it is the lever that decides which model the turn names. Cited by symbol,
+    not line: the T594 merge moved these by ~35 lines and a stale number sent
+    one reader to the wrong function already.
+
+    ⚠️ He switches models during a session, so this is re-read per run rather
+    than captured once.
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{LMSTUDIO_PORT}/api/v0/models", timeout=5
+        ) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    for m in data.get("data", []):
+        if m.get("state") == "loaded" and m.get("id"):
+            return str(m["id"])
+    return None
+
+
+print("=== litetui --rpc, the shape /consult parses (T584) ===")
+
+if not EXE.exists():
+    print(f"SKIP: {EXE} is not installed in this interpreter's Scripts dir")
+    sys.exit(0)
+if not _listening(LMSTUDIO_PORT):
+    print(f"SKIP: nothing is listening on 127.0.0.1:{LMSTUDIO_PORT} "
+          "(LM Studio down) — the wiring is untested, not broken")
+    sys.exit(0)
+
+resident = _resident_model()
+if resident is None:
+    print("SKIP: LM Studio answers but no model is LOADED — a prompt would",
+          "JIT-load one, and this suite does not load models (see the note above)")
+    sys.exit(0)
+print(f"  using the resident model: {resident!r}")
+
+work = Path(tempfile.mkdtemp(prefix="consult-smoke-"))
+child = subprocess.Popen(
+    [str(EXE), "--rpc", "--tool-profile", "scheduled", "--model", resident,
+     "--cwd", str(work), "--prompt", "reply with the single word ok"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    text=True, encoding="utf-8", errors="replace",
+    # 🔴 THE CHILD IS TOLD WHICH BACKEND TO USE. Without this it reads
+    # <install>/settings.json — a file nobody in a consult controls — and
+    # this ran against llama.cpp (down) on 2026-09-10 23:0x while asserting
+    # things about LM Studio: 3 reds that were neither the test's subject
+    # nor a defect. The gates above prove LM STUDIO is up and loaded; only
+    # this makes the child use the thing those gates measured.
+    #
+    # It is also what /consult itself must do. The skill's model entries
+    # carry `"backend": "lmstudio" | "llamacpp" | "codex"` and there is NO
+    # --backend flag (cli.py:36-55) — LITETUI_BACKEND is the only lever
+    # (settings.py:363-372, ENV_OVERRIDES).
+    env={**os.environ, "LITETUI_BACKEND": "lmstudio"},
+)
+
+events: list[dict] = []
+deadline = time.monotonic() + 180
+try:
+    while time.monotonic() < deadline:
+        line = child.stdout.readline()
+        if not line:
+            break
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if events[-1].get("type") == "turn_end":
+            break
+
+    kinds = [e.get("type") for e in events]
+    chk("the child announces itself with a `ready` line", kinds[:1] == ["ready"])
+    chk("`ready` echoes the tool profile it was given",
+        events and events[0].get("tool_profile") == "scheduled")
+    chk("the turn is bracketed by turn_start and turn_end",
+        "turn_start" in kinds and kinds[-1] == "turn_end")
+    # 🔴 BRACKETING ALONE IS SATISFIED BY A FAILED TURN. Measured against a
+    # down backend: turn_start and turn_end both arrived, the arm above went
+    # GREEN, and the turn had produced nothing —
+    #   {"type": "turn_end", "stopReason": "error",
+    #    "error": "Something went wrong talking to the model server."}
+    # An assertion a DIFFERENT failure can satisfy is a test of something
+    # else. The reason belongs in the failure, so read it out.
+    _end = events[-1] if events else {}
+    chk(f"the turn ENDED cleanly (stopReason={_end.get('stopReason')!r}"
+        f"{', ' + repr(_end.get('error')) if _end.get('error') else ''})",
+        _end.get("stopReason") == "stop")
+
+    answer = "".join(e.get("text", "") for e in events if e.get("type") == "text_delta")
+    reasoning = "".join(e.get("text", "") for e in events if e.get("type") == "reasoning_delta")
+    chk("text_delta carries a non-empty answer", answer.strip() != "")
+    chk("the answer is SEPARABLE from the reasoning (different `type`)",
+        "reasoning_delta" not in [k for k in kinds if k == "text_delta"])
+    chk("a parser that took every `.text` would include the reasoning",
+        # not a defect — a warning this file exists to make concrete
+        (reasoning == "") or (answer != answer + reasoning))
+    print(f"      answer={answer.strip()[:60]!r}  reasoning={len(reasoning)} chars")
+
+    # 🔴 THE EXIT HALF. Closing stdin is what ends it; without this the child
+    # outlives the consult and the panel hangs on a process that already
+    # answered.
+    child.stdin.close()
+    try:
+        child.wait(timeout=30)
+        chk("closing stdin ends the child after turn_end", True)
+    except subprocess.TimeoutExpired:
+        chk("closing stdin ends the child after turn_end", False)
+finally:
+    if child.poll() is None:
+        child.kill()
+        child.wait(timeout=10)
+
+print(f"\n{sum(ok)}/{len(ok)} passed")
+sys.exit(0 if all(ok) else 1)
