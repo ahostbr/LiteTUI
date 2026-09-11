@@ -13,8 +13,7 @@ from pathlib import Path
 import pytest
 
 from litetui import app as app_mod
-from litetui import llm_backend
-from litetui import paths
+from litetui import llm_backend, paths
 from litetui.plugins.model_switch import _switch_backend
 from litetui.settings import Settings
 
@@ -24,7 +23,9 @@ paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-backendswitch-"))
 def _app():
     a = app_mod.LiteTUI()
     a.settings = Settings()
-    a._connect = lambda: None
+    # The public connect worker is what backend switching invokes (T627).
+    a.connect = lambda: None
+    a._connect = lambda: None  # legacy startup hook still used at mount
     a._system = lambda *x, **k: None
     a._persist = lambda *x, **k: None
     return a
@@ -90,3 +91,17 @@ def test_base_url_follows_the_backend():
     assert llm_backend.make_backend(s).base_url() == "http://localhost:1234/v1"
     s.backend = "llamacpp"
     assert llm_backend.make_backend(s).base_url() == "http://localhost:7470/v1"
+
+@pytest.fixture(autouse=True)
+def no_backend_start(monkeypatch):
+    """T627: intercept before discovery/probing/launch; name the leaking test."""
+    reached = []
+
+    async def forbidden(self):
+        reached.append(self.name)
+        raise RuntimeError("test attempted real backend startup")
+
+    monkeypatch.setattr(llm_backend.LlamaCppBackend, "ensure_running", forbidden)
+    monkeypatch.setattr(llm_backend.LMStudioBackend, "ensure_running", forbidden)
+    yield
+    assert reached == [], f"real startup boundary reached: {reached}"
