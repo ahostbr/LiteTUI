@@ -50,6 +50,23 @@ class _Refused:
         # ordering is ever inverted, the tools-off refusal starts depending on
         # a field it should not need.
         self.settings = SimpleNamespace(tools_disabled=[])
+        # 🔴 THE EMIT IS RECORDED, NOT SILENCED (T579). 1146f68 (rpc T3)
+        # put `self._rpc_emit({"type": "tool_call", ...})` at app.py:1782,
+        # which the disabled path reaches BEFORE refusing — so the strict
+        # `__getattr__` below turned an intended lifecycle event into
+        # "disabled path reached for '_rpc_emit'". The note above predicted
+        # exactly this shape and called it an inverted ordering; it is not.
+        # An RPC client SHOULD see that a call was attempted and refused,
+        # and a notification is not a dependency the refusal leans on.
+        #
+        # ⚠️ SO IT IS CAPTURED RATHER THAN ALLOWED. A bare no-op would make
+        # the double agree with any future emit, including one that leaked
+        # something it should not; the arm below reads what was sent.
+        self.emitted: list[dict] = []
+
+    def _rpc_emit(self, data):
+        """Record the lifecycle event instead of forbidding it."""
+        self.emitted.append(data)
 
     def _dispatch_for(self, name):          # noqa: D102
         self.looked_up.append(name)
@@ -142,3 +159,22 @@ def test_the_disabled_prompt_says_it_is_refused_and_who_can_enable_it():
     # It must NOT be the full instruction file: offering the tools with the
     # complete how-to while every call is refused is the confusing state.
     assert len(text) < 1000, "this is the short note, not tools.md"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_call_is_still_ANNOUNCED_to_the_rpc_client():
+    """The refusal is silent to the model but not to the wire (T579).
+
+    1146f68 emits `tool_call` at the seam before the tools-off refusal. That
+    is the behaviour this double used to forbid outright, so it was never
+    asserted anywhere — an RPC client watching a headless run would
+    otherwise see a turn where the model called a tool and nothing was ever
+    reported, which reads as a hang rather than a refusal.
+    """
+    app = _Refused(enabled=False)
+    await _run(app, "bash", {"cmd": "echo hi"})
+    assert [e.get("type") for e in app.emitted] == ["tool_call"], (
+        f"expected one tool_call announcement, got {app.emitted}"
+    )
+    assert app.emitted[0].get("name") == "bash"
+    assert app.looked_up == [], "the refusal resolved a tool after all"

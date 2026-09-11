@@ -40,6 +40,9 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=ONCE):
         # `getattr(..., True)`, because a guard whose missing input means
         # "permit" is not a guard.
         tools_enabled=True,
+        # 1146f68 (rpc T3) emits a tool_call at the seam; the double
+        # predates it. Recorded, not swallowed — see test_tools_disabled.
+        _rpc_emit=lambda data: None,
         _active_tool_profile=profile,
         _dispatch_for=lambda _name: run,
         plugins=_Policies(policy),
