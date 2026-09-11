@@ -104,3 +104,57 @@ def test_a_backend_with_no_name_reports_None_rather_than_a_string():
     b = _app()
     b.backend = None
     assert _ready(b)["backend"] is None
+
+
+# ── T647: what the child was ASKED for, beside what it is RUNNING as ─────────
+
+
+def _cli_app(requested, *, settings_default="autonomous"):
+    a = _app()
+    a._cli_tool_profile = requested
+    a._active_tool_profile = requested or settings_default
+    return a
+
+
+def test_ready_reports_the_profile_the_child_is_RUNNING_as():
+    """Unchanged, and pinned because the field already existed and is correct:
+    `_active_tool_profile` holds a plain name on every path."""
+    assert _ready(_cli_app("interactive"))["tool_profile"] == "interactive"
+
+
+def test_ready_ALSO_reports_what_the_host_ASKED_for():
+    """🔴 THE FIELD T577 NEEDED AND DID NOT HAVE.
+
+    With only `tool_profile`, a child reporting "autonomous" is ambiguous: it
+    means EITHER the host passed --tool-profile autonomous OR the host passed
+    nothing and the child fell back to its own settings default, which is
+    autonomous. Those are a deliberate choice and a fail-open, and they were
+    indistinguishable on the wire — so T577's profile had to be DERIVED from
+    reading defaults instead of READ.
+    """
+    assert _ready(_cli_app("interactive"))["tool_profile_requested"] == "interactive"
+
+
+def test_an_ABSENT_flag_reports_null_and_NOT_the_fallback():
+    """🔴 The whole point. null says "nobody asked"; "autonomous" would say
+    "somebody asked for autonomous", and the difference is the audit."""
+    ready = _ready(_cli_app(None))
+
+    assert ready["tool_profile_requested"] is None
+    assert ready["tool_profile"] == "autonomous"  # what it actually runs as
+
+
+def test_a_REQUESTED_profile_that_differs_from_the_active_one_is_visible():
+    """
+    If the two ever disagree — a flag the child did not understand, a later
+    /profile change — the pair says so rather than the reader having to trust
+    that one implies the other.
+    """
+    a = _cli_app("interactive")
+    a._active_tool_profile = "scheduled"
+    ready = _ready(a)
+
+    assert (ready["tool_profile_requested"], ready["tool_profile"]) == (
+        "interactive",
+        "scheduled",
+    )
