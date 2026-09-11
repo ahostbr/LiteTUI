@@ -111,27 +111,40 @@ async def test_denied_modal_and_scheduled_profile_never_execute(tmp_path):
     assert scheduled_screens == [] and called == []
 
 
-def test_the_SET_level_rides_with_queued_and_idle_cron_turns(monkeypatch):
-    """The queued/idle mechanism is unchanged; WHERE the profile comes from is.
+def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypatch):
+    """A scheduled turn resolves to AUTONOMOUS, ignoring both other sources.
 
-    ⚠️ RENAMED FROM `test_cron_profile_rides_...`, because "the cron profile"
-    was `job.tool_profile` and that is no longer consulted. Ryan ruled: "cron
-    and loops run at same set profile level my ruling". The mechanism this
-    test protects -- that the profile reaches BOTH the queued item and
-    `_active_tool_profile` on the idle path -- is worth keeping and is why the
-    body survives nearly intact.
+    ⚠️ RENAMED TWICE NOW, AND THE SECOND RENAME IS THE INTERESTING ONE.
+    It was `test_cron_profile_rides_...` when `job.tool_profile` decided; then
+    `test_the_SET_level_rides_with_queued_and_idle_cron_turns` when Ryan ruled
+    the conversation setting decided. Ryan's ruling of 2026-09-11 removed the
+    choice entirely -- "for a cron it has to run auto because nobody will be
+    there to hitl it" -- so `_fire_job` hardcodes AUTONOMOUS and the SET level
+    no longer rides with anything. The old NAME asserted the old ruling, which
+    is the whole defect T595 names: production was right and the test's title
+    described a policy that had been overturned.
 
-    🔴 THE SETTING IS AUTONOMOUS AND THE JOB IS SCHEDULED, DELIBERATELY. With
-    both set to `scheduled` this test would pass whether the ruling was
-    implemented or not -- it would be asserting a value two sources agree on
-    and could not say which one it came from.
+    🔴 THE SETTING IS DELIBERATELY *NOT* AUTONOMOUS, AND THAT IS THE FIX.
+    The previous version set `settings.tool_policy_profile = AUTONOMOUS` and
+    asserted the delivered profile was AUTONOMOUS -- while `_fire_job`
+    hardcodes AUTONOMOUS. Two sources agreeing on one value, so the assertion
+    could not say which one it came from and would have passed with the
+    hardcode deleted. Its own docstring warned about exactly this shape for a
+    different pair of values, one paragraph above where it then did it:
+        AN ASSERTION SATISFIABLE BY THE WRONG ANSWER IS NOT A MEASUREMENT.
+    Setting the conversation to `interactive` makes the three candidate
+    sources -- the job's field (scheduled), the conversation setting
+    (interactive) and the hardcode (autonomous) -- mutually distinct, so the
+    asserted value names its own origin.
     """
     monkeypatch.setattr(app_mod.sched_mod, "save", lambda *_a, **_k: None)
     job = scheduler.Job(prompt="inspect", schedule="@daily")
     assert job.tool_profile == SCHEDULED, "premise: the job's own answer differs"
 
     settings = Settings()
-    settings.tool_policy_profile = AUTONOMOUS
+    # ASK-FIRST, so a delivered AUTONOMOUS can only have come from the hardcode.
+    settings.tool_policy_profile = INTERACTIVE
+    assert INTERACTIVE != AUTONOMOUS != SCHEDULED, "premise: all three differ"
 
     queued = SimpleNamespace(
         jobs=[job],
@@ -159,6 +172,70 @@ def test_the_SET_level_rides_with_queued_and_idle_cron_turns(monkeypatch):
     app_mod.LiteTUI._fire_job(idle, job)
     assert idle._active_tool_profile == AUTONOMOUS
     assert streamed[-1] == "stream"
+
+
+@pytest.mark.asyncio
+async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(monkeypatch):
+    """The reason the hardcode exists, asserted as behaviour instead of a value.
+
+    🔴 THE ARM ABOVE PINS A STRING; THIS ONE PINS THE CONSEQUENCE. A profile
+    constant travelling correctly is only interesting because of what it stops
+    happening -- Ryan: "for a cron it has to run auto because nobody will be
+    there to hitl it". The failure this guards against is not a wrong label, it
+    is a scheduled job at 3am sitting on a modal nobody will ever answer, which
+    presents as "the automation silently stopped running" and NEVER as an error.
+
+    The pairing is what makes it a measurement:
+      - `test_sensitive_interactive_call_requires_one_host_decision` fires the
+        SAME policy and the SAME tool under INTERACTIVE and gets exactly one
+        ToolApprovalScreen.
+      - this one takes the profile a CRON actually delivered, with the
+        conversation set to ask-first, and gets none.
+    Same tool, same policy, opposite outcome, and the only difference is which
+    profile the scheduled path resolved.
+    """
+    monkeypatch.setattr(app_mod.sched_mod, "save", lambda *_a, **_k: None)
+    job = scheduler.Job(prompt="inspect", schedule="@daily")
+
+    settings = Settings()
+    settings.tool_policy_profile = INTERACTIVE  # the human asked to be asked
+
+    idle = SimpleNamespace(
+        jobs=[job],
+        settings=settings,
+        _chat_running=lambda: False,
+        _user_bubble=lambda *_a, **_k: None,
+        _pending_input=[],
+        _handle_command=lambda _text: None,
+        _append=lambda _msg: None,
+        _stream=lambda: None,
+        _active_tool_profile=INTERACTIVE,
+    )
+    app_mod.LiteTUI._fire_job(idle, job)
+
+    # Not re-derived: whatever the scheduled path put there is what the turn runs
+    # under. Hardcoding AUTONOMOUS here would test this test, not _fire_job.
+    delivered = idle._active_tool_profile
+
+    ran = []
+    host, screens = _host(
+        SHELL_POLICY,
+        lambda args: ran.append(args) or "ran",
+        profile=delivered,
+        # If a modal DID appear this would approve it, so the arm cannot pass by
+        # the tool merely being blocked -- it has to pass by nobody being asked.
+        approve=ONCE,
+    )
+    result, ok = await app_mod.LiteTUI._execute_tool(
+        host, "powershell", {"command": "git status"}
+    )
+
+    assert (result, ok) == ("ran", True)
+    assert ran == [{"command": "git status"}]
+    assert screens == [], (
+        "a scheduled turn stopped to ask for approval; at 3am nobody answers it "
+        "and the job hangs instead of running"
+    )
 
 
 def test_midturn_queue_adopts_the_delivered_items_profile():
