@@ -291,13 +291,13 @@ def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) 
             jobs = scheduler.load(paths.data_root())
             job = scheduler.Job(**{k: v for k, v in cmd.items() if k not in ("type", "id")})
             jobs.append(job)
-            scheduler.save(paths.data_root(), jobs)
+            scheduler.save(jobs, paths.data_root())
             _respond(cmd_id, ok=True, result=job.__dict__)
         elif verb == "delete":
             job_id = cmd.get("job_id", "")
             jobs = scheduler.load(paths.data_root())
             jobs = [j for j in jobs if getattr(j, "id", None) != job_id]
-            scheduler.save(paths.data_root(), jobs)
+            scheduler.save(jobs, paths.data_root())
             _respond(cmd_id, ok=True, result={"deleted": job_id})
         else:
             _respond(cmd_id, ok=False, error=f"unknown jobs verb: {verb}")
