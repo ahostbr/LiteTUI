@@ -7,7 +7,7 @@ streaming, tool use, vision, per-conversation memory, and compaction.
 desktop server, or LiteTUI's own `llama-server` from llama.cpp. Switch between
 them mid-conversation with `/backend` — the history survives.
 
-Built against `qwen3.8-27b` on an RTX 5090. Nothing here talks to a hosted API.
+Originally built against `qwen3.8-27b` on an RTX 5090. LM Studio and llama.cpp run locally; the optional Codex OAuth backend sends inference requests to the hosted Codex service using subscription credentials.
 
 ```bash
 uv sync

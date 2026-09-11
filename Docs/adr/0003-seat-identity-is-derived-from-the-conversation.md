@@ -2,7 +2,9 @@
 
 - **Dates:** rejected design 2026-08-21 · roster measured 2026-08-19 · pid fix 2026-08-20 · retraction 2026-08-23
 - **Code:** `src/litetui/harness.py` — `agent_id_for_convo()`, `register()`, `Seat.rebind()`, `heartbeat()`
-- **Status:** accepted (supersedes the per-process design)
+- **Status:** superseded by [ADR-0004](0004-seat-identity-is-process-stable.md) (T507-T5).
+
+> Historical rationale below, not the current runtime contract. The active seat now uses `process_agent_id()`; `Seat.rebind()` is no longer the switching mechanism.
 
 ## Context
 
@@ -14,7 +16,7 @@ nothing, and a **dispatched task landed in a dead mailbox while `send` exited 0*
 
 Ryan rejected that design on **2026-08-21**.
 
-### What ships instead
+### What shipped at this decision
 
 `agent_id_for_convo()` **derives** the id from the conversation — `uuid5` over
 `"litetui:seat:" + convo_id` (commit `0852dab`). That function's docstring holds the full
