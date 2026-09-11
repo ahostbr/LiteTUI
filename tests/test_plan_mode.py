@@ -151,3 +151,53 @@ def test_the_quizmaster_skill_is_already_discoverable_without_being_installed():
     assert any("liteharness" in r for r in globbed_plugin_roots), (
         "the liteharness plugin library is where ls-plan-w-quizmaster lives"
     )
+
+
+# ── /plan and its palette row (T573 piece 3) ───────────────────────────────
+
+def _plan_app():
+    a = make_app(plan=False)
+    a._system = lambda *args, **kwargs: None
+    return a
+
+
+def test_bare_plan_toggles_rather_than_reporting():
+    """The palette row invokes `/plan` with no argument, so a bare `/plan` that
+    only reported would make that row a control which does nothing — the defect
+    the footer chip had while it was drawn only when the mode was already on."""
+    a = _plan_app()
+    a._handle_command("/plan")
+    assert a._plan_mode is True
+    a._handle_command("/plan")
+    assert a._plan_mode is False
+
+
+def test_plan_on_and_off_SET_rather_than_toggle():
+    """Twice in a row must not flip you back out of the state you asked for."""
+    a = _plan_app()
+    a._handle_command("/plan on")
+    assert a._plan_mode is True
+    a._handle_command("/plan on")
+    assert a._plan_mode is True, "a second /plan on toggled instead of setting"
+    a._handle_command("/plan off")
+    assert a._plan_mode is False
+    a._handle_command("/plan off")
+    assert a._plan_mode is False
+
+
+def test_a_junk_argument_changes_nothing_and_says_so():
+    a = make_app(plan=False)
+    said: list[str] = []
+    a._system = lambda msg, *args, **kwargs: said.append(str(msg))
+    a._handle_command("/plan sideways")
+    assert a._plan_mode is False, "an unrecognised argument changed the mode"
+    assert said and "sideways" in said[-1]
+
+
+def test_the_palette_carries_a_plan_row_that_runs_the_command():
+    """The row is DERIVED from the registry — registering with `palette=` is
+    what creates it, so there is no second table to drift."""
+    a = make_app()
+    entry = a.plugins.commands.get("/plan")
+    assert entry is not None, "/plan is not registered"
+    assert entry.palette, "/plan has no palette row"
