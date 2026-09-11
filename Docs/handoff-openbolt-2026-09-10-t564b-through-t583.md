@@ -260,3 +260,82 @@ Patterns recorded this stretch:
   was never inpainted. Re-pinned in its new shape in `pipeline-batch.unit.test.ts`.
 - **Still open from piece 1:** `C:/Projects/.claude/consult-config.json` does not
   exist; nothing in T584 creates it.
+
+---
+
+## The merge guard, and proof that its five files are instruments
+
+Sentinel's merge guard (2026-09-10 23:0x) runs five cross-cutting files on every
+LiteTUI merge, and seats run them before reporting a branch green:
+`test_settings_controls.py`, `test_plugin_dogfood.py`, `test_tool_policy_wiring.py`,
+`test_live_state_guard.py`, `test_headless_never_loads.py`.
+
+It comes from SilverBolt's pattern `…-1789095945`: the settings gate existed, named
+both fields, and the outage shipped anyway because nothing ran it against merged
+main. **A gate outside the merge condition only dates the outage.**
+
+To which the obvious follow-on is: a gate INSIDE the merge condition that cannot go
+red only dates it more precisely. So each was mutated at its SUBJECT once, the arm
+pre-registered before running. All six went red on the predicted arm; every restore
+was byte-identical.
+
+### Re-runnable record — mutate the SUBJECT, not the test
+
+| # | guard | subject (the seam, not the test) | mutation | expect RED |
+| --- | --- | --- | --- | --- |
+| 1 | `test_settings_controls.py` | `src/litetui/settings.py`, the `Settings` dataclass | add a field with no control row (`0d099bc`'s shape) | `test_every_settings_field_has_a_control_or_is_exempt` |
+| 2 | `test_plugin_dogfood.py` | `src/litetui/app.py` import block | add `from litetui.plugins.misc import _cmd_think` | `test_app_never_imports_a_plugin_module` |
+| 3 | `test_tool_policy_wiring.py` | `src/litetui/app.py` `_fire_job`, the `profile =` line | take it from `job.tool_profile` | `test_the_SET_level_rides_with_queued_and_idle_cron_turns` |
+| 4 | `test_live_state_guard.py` | `tests/conftest.py` `_never_write_the_live_task_store` | drop the three `monkeypatch.setattr` redirects | `test_saving_with_the_live_root_does_not_touch_the_live_store` (+2) |
+| 5 | `test_headless_never_loads.py` | `src/litetui/app.py` `_ensure_chat_ready`, the `--rpc` refusal | delete the block | `test_NO_chat_request_leaves_an_rpc_child_for_an_unloaded_id` |
+| 6 | `test_headless_never_loads.py` | `src/litetui/app.py` `_headless_model_decision` | `return ("ok", self.model_id, "")` first thing | 4 of 7, incl. `test_nothing_is_resident_so_it_REFUSES` |
+
+6 is the unasked addition and the one worth keeping as a habit: 5 mutates the
+ENFORCEMENT, 6 mutates the DECISION it enforces. **A guard that only watches the
+call site cannot tell a correct decision from a rubber stamp.**
+
+Readings at `main 495c4ce`; #4 re-run at `main 7b929b5` after the T592 follow-up
+changed that exact fixture (`mkdir` moved onto the redirect branch) — still RED 3/6,
+same three arms, restore `f459256f0eacb0933743fea2f51d8f8b`.
+
+**Three of my first six anchors missed** (wrong dash count, wrong `profile =` line,
+a `getattr` spelling). None was a guard failing — all were my text. A missed anchor
+reports as "subject not found", which is the right shape: it cannot be mistaken for
+a green.
+
+### ⚠️ #4 did not just go red — it reproduced the outage
+
+With the conftest redirects gone, the run wrote `background-tasks.json` into the
+repo root: untracked, one row, `"label": "sleep 300"`, `"state": "running"`, id
+`t-89b84f`. T592's own account is an untracked `background-tasks.json` carrying a
+killed `t-343839 "sleep 300"`. Same file, same shape, different id. Deleted both
+times; tree verified clean after.
+
+Note where the guard lives: **`tasks.save` has no guard at all** — it writes
+`Path(root) / STORE` unconditionally, which is correct for production. The
+protection is the autouse fixture in `conftest.py`, so the subject of that guard is
+test infrastructure. Do not go looking for a production seam that was never there.
+
+### 🔴 #3 IS GREEN, IS A REAL INSTRUMENT, AND ITS NAME IS FALSE (carded T595)
+
+`_fire_job` reads `profile = tool_policy.AUTONOMOUS` — a literal. Its own comment
+says the conversation setting "deliberately does NOT reach here any more". The test
+sets `settings.tool_policy_profile = AUTONOMOUS` and asserts `AUTONOMOUS`, so it is
+agreeing with a constant.
+
+Measured: changing that line to `tool_policy.unattended(self.settings.tool_policy_profile)`
+— actually reading the setting, the thing the test's NAME claims — leaves it **5
+passed, GREEN**. Both behaviours pass. The test cannot say which one is running.
+
+Its docstring anticipated exactly this hazard and guarded the wrong pair:
+
+> 🔴 THE SETTING IS AUTONOMOUS AND THE JOB IS SCHEDULED, DELIBERATELY. With both set
+> to `scheduled` this test would pass whether the ruling was implemented or not.
+
+That defends against the JOB being the source. A THIRD source appeared later — a
+literal — and the precaution does not reach it, because the literal equals the value
+the test chose. **Making two sources disagree proves nothing about a third.**
+
+T595 is Ryan's ruling, not a seat's: AUTONOMOUS-always (rename the test, pin the
+literal) vs ride-with-the-setting (change `_fire_job`, keep the name). Nobody edits
+either until he picks.
