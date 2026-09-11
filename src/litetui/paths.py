@@ -32,20 +32,38 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 # ── Prompt text: ships inside the package (T135) ────────────────
 _PKG_PROMPTS = Path(__file__).resolve().parent / "prompts"
 _REPO_PROMPTS = ROOT / "prompts"
-#: Repo-root copy wins only while it still carries the base prompt — a stale
-#: checkout. Fresh trees and installed wheels both resolve to _PKG_PROMPTS,
-#: where the files ship (see pyproject package-data).
-PROMPTS_DIR = (
-    _REPO_PROMPTS if (_REPO_PROMPTS / "systemprompt.md").is_file() else _PKG_PROMPTS
-)
-SYSTEM_PROMPT_FILE = PROMPTS_DIR / "systemprompt.md"
+#: Where the prompt text SHIPS. Reads go through `prompt_file()`, which lets a
+#: repo-root copy win PER FILE; this stays a directory because two call sites in
+#: textfmt.py monkeypatch it in the suite to point at a scratch prompts/ dir.
+PROMPTS_DIR = _PKG_PROMPTS
+
+
+def prompt_file(name: str) -> Path:
+    """The prompt named `name`, repo-root copy winning PER FILE (T582).
+
+    The anchor used to be all-or-nothing: a repo-root `prompts/` holding ONLY
+    `systemprompt.md` moved EVERY prompt read to that directory, and
+    `textfmt.load_prompt` reads its files unguarded. Overriding the one file the
+    docstring in `prompts/__init__.py` invites you to override therefore raised
+    FileNotFoundError on `compact.md`, `wake-after-compact.md` and
+    `tool-denied.md` -- the exact crash class T135 was written to remove,
+    reintroduced by the shape of the anchor rather than by a missing file.
+
+    Per-file makes that docstring's promise ("override any file") true, and a
+    partial override stays partial.
+    """
+    repo = _REPO_PROMPTS / name
+    return repo if repo.is_file() else PROMPTS_DIR / name
+
+
+SYSTEM_PROMPT_FILE = prompt_file("systemprompt.md")
 #: The tools section of the system prompt. Lived as a string constant in
 #: app.py until 2026-08-22 -- authored prompt text belongs on disk beside the
 #: rest of it, where it can be read and edited without a source change.
-TOOLS_PROMPT_FILE = PROMPTS_DIR / "tools.md"
+TOOLS_PROMPT_FILE = prompt_file("tools.md")
 #: The plan-mode section (T558). Rendered only while plan mode is on, so leaving
 #: the mode drops the instruction rather than leaving a stale one in context.
-PLAN_PROMPT_FILE = PROMPTS_DIR / "plan-mode.md"
+PLAN_PROMPT_FILE = prompt_file("plan-mode.md")
 
 # ── Conversation persistence ─────────────────────────────────────
 # .convos/<uuid>/

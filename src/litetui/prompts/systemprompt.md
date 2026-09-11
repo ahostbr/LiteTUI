@@ -14,4 +14,4 @@ skills directory : <root>/skills - Your superpower's collection, custom workflow
 
 tools dir : <root>/tools - further custom tooling for chrome and pccontrol.   Prefer chrome over, curl or webfetch if available.  pccontrol allows for screenshoting, mouse control, and marker placement for fully automating tasks, tests and anything ryan asks for done by you "like a human would".
 
-Claude Code Skills Dir : GLOBAL ~.claude\\plugins\\cache\\
+Claude Code Skills Dir : ${CLAUDE_SKILL_DIR} - versioned, so the newest installed release is the one that is scanned. Skills come from SEVERAL roots (this one, ~/.claude/skills, and <root>/skills), so never infer a skill's location from any of them: the `skill` tool prints `Base directory for this skill:` above the body it returns, and every path inside that body is already resolved against it.

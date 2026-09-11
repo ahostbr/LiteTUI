@@ -15,4 +15,11 @@ T135 (2026-08-30): the files ship inside ``litetui`` and ``paths.PROMPTS_DIR``
 resolves to this folder when the repo-root layout is absent. A repo-root
 ``prompts/`` still wins when present, so a dev checkout can override any file
 without touching src/.
+
+T582 (2026-09-10): "override any file" is TRUE ONLY NOW. The anchor was
+all-or-nothing on ``systemprompt.md``'s existence, so a repo-root ``prompts/``
+holding just that one file moved EVERY read to a directory missing the other
+five -- and ``textfmt.load_prompt`` reads them unguarded. Taking this docstring
+at its word crashed on ``compact.md``. Reads now go through
+``paths.prompt_file()``, which resolves PER FILE.
 """
