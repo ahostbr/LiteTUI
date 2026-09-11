@@ -4389,8 +4389,18 @@ class LiteTUI(App):
 
         Returns (action, model, message):
           ("ok",        id,   "")   the selection is resident; proceed
-          ("substitute", id,  why)  exactly one OTHER is resident; use it
-          ("refuse",    None, why)  nothing is resident; answer nothing
+          ("substitute", id,  why)  ANOTHER is resident; use it, say which
+          ("refuse",    None, why)  NOTHING is resident; answer nothing
+
+        🔴 T642 — "SEVERAL LOADED" IS A SUBSTITUTE, NOT A REFUSAL, AND THAT
+        REVERSES WHAT THIS RETURNED. It used to refuse unless EXACTLY ONE other
+        model was resident, reasoning that choosing among several is "picking one
+        on the user's behalf". A tester's fresh thread then refused its first
+        prompt with TWO models sitting in VRAM, which inverts Ryan's standing
+        rule: "when a model is already loaded, USE THAT ONE." The hazard that
+        reasoning named is real, so the choice is a STATED tie-break in
+        `model_residency.substitute_main_model` plus a note saying what was used
+        — not silence. Refuse now means one thing: nothing at all is loaded.
 
         ⚠️ READ-ONLY, like the seam it guards. A question about state must
         not change it — the same law `_ensure_chat_ready` is written under.
@@ -4412,13 +4422,22 @@ class LiteTUI(App):
         want = self.model_id
         if want and want in resident:
             return ("ok", want, "")
-        if len(resident) == 1:
-            why = (
-                f"selected {want!r} was not loaded; using the resident "
-                f"{resident[0]!r}"
-            )
-            return ("substitute", resident[0], why)
+
+        settings = getattr(self, "settings", None)
+        chosen = model_residency.substitute_main_model(
+            set(resident),
+            want=want,
+            subagent_model=getattr(settings, "subagent_model", None),
+            tool_summary_model=getattr(settings, "tool_summary_model", None),
+            default_model=getattr(settings, "default_model", None),
+        )
         names = ", ".join(sorted(resident)) or "(none)"
+        if chosen is not None:
+            why = (
+                f"asked for {want!r}, not loaded; using {chosen!r}. "
+                f"Loaded: {names}."
+            )
+            return ("substitute", chosen, why)
         why = (
             f"asked for {want!r}; loaded: {names}. A headless child does not "
             f"load models — load one in LM Studio, or pass --model naming one "

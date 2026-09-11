@@ -58,14 +58,30 @@ def test_nothing_is_resident_so_it_REFUSES():
     assert "(none)" in why and "does not load models" in why, why
 
 
-def test_several_are_resident_and_none_is_the_one_asked_for_so_it_REFUSES():
-    """Substituting would be picking one on the user's behalf — with two
+def test_several_are_resident_and_none_is_the_one_asked_for_so_it_SUBSTITUTES():
+    """🔴 THIS ARM ASSERTED THE OPPOSITE UNTIL T642, DELIBERATELY, AND WAS
+    OVERRULED BY THE INCIDENT IT ALLOWED.
+
+    It read: "Substituting would be picking one on the user's behalf — with two
     resident models there is no obvious answer, and guessing is how a consult
-    panel silently reports the wrong model's opinion."""
+    panel silently reports the wrong model's opinion." The hazard is real. But a
+    tester's fresh Frontier Chat thread then REFUSED its first prompt with TWO
+    models resident, which inverts Ryan's standing rule — "when a model is
+    already loaded, USE THAT ONE" — and a pane that answers nothing is worse
+    than one that answers and says who answered.
+
+    Sentinel's ruling (0ccd6180 / d1e7d2cd): substitute on a STATED tie-break and
+    put it in the note; refuse only when NOTHING is resident. The guessing
+    hazard is now addressed by the note rather than by silence.
+    """
     a = _app("qwen/a", ["b", "c"])
-    action, _, why = a._headless_model_decision()
-    assert action == "refuse"
+    action, model, why = a._headless_model_decision()
+    assert action == "substitute"
+    assert model == "b", "the tie-break is first-by-name with no helper or family"
+    # The note still names the whole resident set, so the choice is visible and
+    # correctable rather than merely made.
     assert "b, c" in why, why
+    assert "not loaded" in why and "using 'b'" in why, why
 
 
 # ── the negative control: no request LEAVES for an unloaded id ──────────────

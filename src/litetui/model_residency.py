@@ -75,3 +75,64 @@ def resolve_side_call_model(app, configured: str | None) -> tuple[str, str | Non
         f"tool-summary model {want!r} is not loaded, so the fold used "
         f"{main!r} instead. Loaded: {names}. Nothing was loaded to satisfy it."
     )
+
+
+def _family(model: str) -> str:
+    """The leading alphabetic run of a model's LAST path segment, lowercased.
+
+    `qwen/qwen3.8-27b` -> "qwen"; `minicpm5-2b` -> "minicpm". Deliberately crude:
+    it exists only to break a tie between residents, so being approximately right
+    costs a slightly odd pick and never a wrong refusal.
+    """
+    last = model.rsplit("/", 1)[-1].strip().lower()
+    end = 0
+    while end < len(last) and last[end].isalpha():
+        end += 1
+    return last[:end]
+
+
+def substitute_main_model(
+    resident: set[str],
+    *,
+    want: str | None,
+    subagent_model: str | None,
+    tool_summary_model: str | None,
+    default_model: str | None,
+) -> str | None:
+    """Which resident model a MAIN seat should answer with, or None to refuse.
+
+    🔴 RYAN'S RULE: "when a model is already loaded, USE THAT ONE." T594 refused
+    whenever several were resident and none was the one asked for, on the
+    reasoning that substituting is "picking one on the user's behalf". The
+    hazard is real and the remedy was wrong: a tester's fresh thread refused its
+    first prompt with TWO models sitting in VRAM (T642). Refuse now means one
+    thing only — NOTHING is resident.
+
+    ⚠️ THE HELPERS ARE EXCLUDED BY VALUE, NOT BY LOOKING SMALL. `subagent_model`
+    and `tool_summary_model` (T538/T640) are configured for side calls, so a main
+    seat answering as one of them would quietly hand the user a 2B where they
+    expected a 27B. Nothing here inspects a name for size, because nothing in
+    this process knows a size: `ModelRow` has none, LM Studio rows have no path,
+    and the native listing reports CONTEXT LENGTHS, which are not sizes.
+
+    THE TIE-BREAK, ruled by Sentinel (d1e7d2cd) and stated rather than measured:
+      1. prefer a resident that is neither helper;
+      2. among those, one whose family matches `default_model`'s;
+      3. otherwise the first by name — deterministic, so a restarted child does
+         not silently answer as somebody else.
+    If step 1 empties the set, the helpers come back: the only resident being the
+    subagent's model is still better than no answer at all.
+    """
+    if not resident:
+        return None
+    if want and want in resident:
+        return want
+
+    helpers = {h.strip() for h in (subagent_model, tool_summary_model) if h and h.strip()}
+    candidates = resident - helpers or resident
+
+    family = _family(default_model or "")
+    same_family = [c for c in candidates if family and _family(c) == family]
+    # `min`, not `sorted()[0]`: same answer, and it says "the first by name" once
+    # rather than ordering a whole set to read one element off it.
+    return min(same_family) if same_family else min(candidates)
