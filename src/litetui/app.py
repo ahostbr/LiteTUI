@@ -5110,6 +5110,10 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "") -> None:
+        # A new operation gets a fresh cancellation latch, not the prior turn's.
+        # Keep _turn_abandoned: maintenance must not revive stopped user work.
+        self._stop_requested = False
+        self._stop_reason = None
         # Read-and-clear FIRST: the early returns below must also consume
         # the flag, or an aborted autocompact marks the next MANUAL one auto.
         auto = getattr(self, "_compact_is_auto", False)
