@@ -178,8 +178,33 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
                       "(already answered, or timed out)",
             )
     elif cmd_type == "abort":
-        app.action_stop_turn()
-        _respond(cmd_id, ok=True, result={"stopped": True})
+        # T632. TWO THINGS HAD TO HAPPEN HERE AND NEITHER DID.
+        #
+        # The asks go FIRST. A tool call parked in `_run_over_rpc` blocks a
+        # worker thread on a `threading.Event`, and stopping the turn does not
+        # touch it — so releasing it before asking for the stop is what lets the
+        # turn actually reach its end instead of stopping on paper.
+        from litetui import ask_user_question as auq_mod
+
+        cancelled = auq_mod.cancel_pending_asks(app)
+        for ask_id in cancelled:
+            # The host resolves its own card locally on interrupt, so this is
+            # not what clears the UI. It is the child SAYING what it did, which
+            # is the only record that the question died rather than was answered.
+            app._rpc_emit({
+                "type": "user_input_resolved",
+                "id": ask_id,
+                "cancelled": True,
+                "reason": "abort",
+            })
+        stopped = app.stop_turn_over_rpc()
+        # `stopped` is now MEASURED, not asserted. It used to be the literal
+        # `True` on every abort, including the ones that did nothing — a reply
+        # that agreed with the host while the turn ran on.
+        _respond(cmd_id, ok=True, result={
+            "stopped": stopped,
+            "cancelled_asks": cancelled,
+        })
     elif cmd_type == "list_models":
         models = [
             {"slug": m, "loaded": getattr(app.model_rows.get(m), "loaded", None)}
