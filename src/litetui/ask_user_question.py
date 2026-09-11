@@ -189,6 +189,17 @@ def _serialize(payload: dict) -> str:
             "Ryan pressed 'Chat about this': discuss the question(s) with him in "
             "plain chat. You may ask again later with a refined question list."
         )
+    elif action == "aborted":
+        # T632. NOT the `cancel` text: that one names Ryan pressing Esc, and a
+        # turn the HOST stopped is a different event with a different actor. A
+        # model told the wrong cause reasons from it — the same defect class
+        # T558's "stale request" message was.
+        return (
+            "[ask_user_question] ABORTED — the turn was stopped while this "
+            "question was still open, so it was never put to Ryan. No answers "
+            "were given; do not assume any option and do not re-ask unless you "
+            "are asked to continue."
+        )
     else:
         return (
             "[ask_user_question] CANCELLED — Ryan pressed Esc without answering. "
@@ -657,6 +668,36 @@ def resolve_over_rpc(app: App, ask_id: str, action: str, answers: object) -> boo
     result_box.append({"action": act, "questions": [s.to_dict() for s in states]})
     done.set()
     return True
+
+
+def cancel_pending_asks(app: App) -> list[str]:
+    """Release every wire ask parked on this app. Returns the ids released.
+
+    🔴 THE PARKED THREAD HAS EXACTLY ONE EXIT AND `abort` WAS NOT IT (T632).
+    `_run_over_rpc` blocks on a `threading.Event`; the only things that ever set
+    it are `resolve_over_rpc` (an `answer` command) and the app shutting down.
+    A host `abort` reached neither, so the tool thread stayed parked, the turn
+    never ended, and the host's interrupt could not complete — while the `abort`
+    reply said `stopped: true`.
+
+    ⚠️ AND CANCELLING THE WORKER WOULD NOT HAVE DONE IT EITHER. The tool runs
+    under `asyncio.to_thread`, whose threads cannot be cancelled from outside;
+    the block has to be released at the Event or not at all. That is why this is
+    a resolve and not a kill.
+
+    Idempotent by the `is_set` check, so a second abort is a no-op rather than a
+    second write into a box nobody is reading.
+    """
+    released: list[str] = []
+    for ask_id, (done, result_box, states) in list(_ask_registry(app).items()):
+        if done.is_set():
+            continue
+        result_box.append(
+            {"action": "aborted", "questions": [s.to_dict() for s in states]}
+        )
+        done.set()
+        released.append(ask_id)
+    return released
 
 
 def _run_over_rpc(states: list[QuestionState], app: App) -> str:

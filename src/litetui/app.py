@@ -4057,6 +4057,19 @@ class LiteTUI(App):
                 timeout=6,
             )
 
+    def _force_stop(self) -> None:
+        """The hard kill, shared by the keyboard and the wire (T632).
+
+        Extracted so `stop_turn_over_rpc` cannot drift from the second Escape.
+        """
+        self.workers.cancel_group(self, "chat")
+        self._system("[force-stopped — no partial reply was recoverable]")
+        self._stop_requested = False
+        # Marked HERE as well as at _stream's stop branch: a cancelled
+        # worker never reaches that branch, so without this the HARDER of
+        # the two stops would be the one the wake ping ignored.
+        self._turn_abandoned = True
+
     def action_stop_turn(self) -> None:
         if not self._chat_running():
             # Escape with nothing running should be inert, not a dialog.
@@ -4064,17 +4077,39 @@ class LiteTUI(App):
         if self._stop_requested:
             # Already asked nicely. A model that has not produced a chunk since
             # cannot see the flag, so the second escape is the hard kill.
-            self.workers.cancel_group(self, "chat")
-            self._system("[force-stopped — no partial reply was recoverable]")
-            self._stop_requested = False
-            # Marked HERE as well as at _stream's stop branch: a cancelled
-            # worker never reaches that branch, so without this the HARDER of
-            # the two stops would be the one the wake ping ignored.
-            self._turn_abandoned = True
+            self._force_stop()
             return
         # Sidebar or modal, decided by the setting. With dialog_style at its
         # default this is still literally `push_screen(ConfirmStop(), cb)`.
         present_dialog(self, ConfirmStopBody, ConfirmStop, self._on_stop_answer)
+
+    def stop_turn_over_rpc(self) -> bool:
+        """Stop the turn for a headless host. True when there was one to stop.
+
+        🔴 THE WIRE MUST NOT BORROW THE KEYBOARD'S VERB, AND IT WAS (T632).
+        `abort` called `action_stop_turn`, whose first stop is a ConfirmStop
+        dialog. T572's `refuse_over_rpc` correctly declines to open a keyboard
+        dialog in a headless child — so the confirmation never happened,
+        `_stop_requested` was never set, and nothing stopped. The SECOND abort
+        could not help either: its hard-kill branch is gated on the very flag
+        the first one failed to set, so `abort` had no path to stopping
+        anything at all, with or without a question open.
+
+        ⚠️ THE GUARD WAS NOT THE BUG. It turned a hang into a no-op, which is
+        the better failure. What was missing is that no entrance was ever built
+        for the caller that cannot answer a dialog — the confirmation is the
+        keyboard's step, not the decision.
+            A REFUSAL THAT PROTECTS THE CALLER STILL OWES IT ANOTHER DOOR.
+
+        Escalates exactly as Escape does: first call asks, second forces.
+        """
+        if not self._chat_running():
+            return False
+        if self._stop_requested:
+            self._force_stop()
+        else:
+            self._stop_requested = True
+        return True
 
     def _on_stop_answer(self, stop: bool | None) -> None:
         if not stop:
