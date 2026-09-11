@@ -261,3 +261,104 @@ async def test_always_allow_runs_to_the_cap_and_asks_only_once():
     assert len(a.ran) == 3, f"ran {len(a.ran)} times"
     assert a._stop_requested is False, "'always allow' stopped the turn"
     assert a.settings.tool_always_allow == ["probe:process_execution"]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deny_index,iterations", [(0, 3), (1, 3), (0, 1)])
+async def test_denial_stops_remaining_batch_and_pairs_every_call(deny_index, iterations):
+    """T614: retain the review's inert two-call repro and middle/last-round arms."""
+    a = _app(DENIED, iterations=iterations)
+    later = []
+    a.plugins.add_tool("batch-test", {
+        "type": "function", "function": {
+            "name": "later", "description": "inert batch probe",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }, lambda args: later.append("executed") or "inert", policy=SHELL_POLICY)
+    a.settings.tool_always_allow = ["later:process_execution"]
+
+    async def create(**kwargs):
+        stream = _ToolCallStream(0)
+        names = ["later"] * deny_index + ["probe", "later"]
+        stream._chunks = [_Chunk(tool_calls=[
+            _TC(i, id=f"batch-{i}", name=name, arguments='{"command":"inert"}')
+            for i, name in enumerate(names)
+        ])]
+        return stream
+
+    a._create = create
+    async with a.run_test(size=(100, 35)) as pilot:
+        await _turn(a, pilot)
+    assert later == ["executed"] * deny_index
+    assert len(a.prompted) == 1
+    results = [m for m in a.conversation if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in results] == [f"batch-{i}" for i in range(deny_index + 2)]
+    assert "not executed" in results[-1]["content"]
+    assert not any("reached" in text for text in a.said)
+
+@pytest.mark.asyncio
+async def test_escape_confirmation_mid_batch_pairs_unexecuted_calls():
+    a = _app(ONCE, iterations=1)
+    executed = []
+
+    async def execute(name, args):
+        executed.append(name)
+        a._on_stop_answer(True)  # the confirmed Escape path, while first tool runs
+        return "first completed", True
+
+    a._execute_tool = execute
+
+    async def create(**kwargs):
+        stream = _ToolCallStream(0)
+        stream._chunks = [_Chunk(tool_calls=[
+            _TC(i, id=f"esc-{i}", name="probe", arguments="{}") for i in range(3)
+        ])]
+        return stream
+
+    a._create = create
+    async with a.run_test(size=(100, 35)) as pilot:
+        await _turn(a, pilot)
+    assert executed == ["probe"]
+    results = [m for m in a.conversation if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in results] == ["esc-0", "esc-1", "esc-2"]
+    assert all("not executed" in m["content"] for m in results[1:])
+    assert a._turn_abandoned
+    assert not any("reached" in text for text in a.said)
+
+@pytest.mark.asyncio
+async def test_compaction_denial_stops_batch_without_next_inference(monkeypatch):
+    from test_compaction_ui import _seed
+    a = _app(DENIED)
+    a.settings.compact_keep_recent = 2
+    a.settings.compact_max_tool_iters = 2
+    calls = []
+    captured = []
+    original = app_mod.TurnEngine.compact_request
+
+    def request(**kwargs):
+        # Capture the compaction history itself, before transport sanitization copies it.
+        captured[:] = [kwargs["messages"]]
+        return original(**kwargs)
+
+    monkeypatch.setattr(app_mod.TurnEngine, "compact_request", request)
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        stream = _ToolCallStream(0)
+        stream._chunks = [_Chunk(tool_calls=[
+            _TC(i, id=f"compact-{i}", name="probe", arguments='{"command":"inert"}')
+            for i in range(2)
+        ])]
+        return stream
+
+    async with a.run_test(size=(100, 35)) as pilot:
+        _seed(a)
+        before = list(a.conversation)
+        a.client.chat.completions.create = create
+        a._compact()
+        await _settle(a, pilot)
+    assert len(a.prompted) == 1
+    assert len(calls) == 1
+    assert a.conversation == before
+    results = [m for m in captured[0] if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in results] == ["compact-0", "compact-1"]
+    assert "not executed" in results[-1]["content"]
