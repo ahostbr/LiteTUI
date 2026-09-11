@@ -33,6 +33,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import tool_schemas
 
 
+def _schemas_loaded_in_source() -> set[str]:
+    """Schema names some code actually loads: `tool_schemas.load("<name>")`.
+
+    \U0001F534 THE SECOND DIRECTION OF THIS GATE ASKS "IS THIS FILE LOADED BY
+    NOTHING", AND THE MODULE LIST BELOW CANNOT ANSWER THAT. It enumerates
+    module-level SPEC constants, which is a proxy for "loaded" that held while
+    every tool was a constant. `plugins/tool_search.py:49` registers through the
+    plugin substrate --
+
+        ctx.tool(tool_schemas.load("tool_search"), ...)
+
+    -- so its file is loaded on every boot and the census called it an orphan.
+    The file was never dead; the instrument was measuring the wrong noun.
+
+    Read from SOURCE rather than by importing: a plugin that registers inside
+    `register(ctx)` has not run at import time, so an import-based probe would
+    see nothing here either.
+    """
+    import ast
+
+    src = Path(__file__).resolve().parent.parent / "src" / "litetui"
+    names: set[str] = set()
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "load"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "tool_schemas"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                names.add(node.args[0].value)
+    return names
+
+
 def _registered() -> dict[str, dict]:
     """Every statically-defined tool spec the app can offer, by name.
 
@@ -73,8 +112,24 @@ def test_every_tool_has_a_schema_file() -> None:
     )
 
 
+def test_a_schema_loaded_only_by_a_plugin_is_not_an_orphan() -> None:
+    """The regression this pair missed: tool_search is loaded at
+    plugins/tool_search.py:49 and appears in no module-level SPEC list."""
+    loaded = _schemas_loaded_in_source()
+    assert "tool_search" in loaded, (
+        "nothing in src/ calls tool_schemas.load(\"tool_search\") any more — "
+        "either the plugin stopped registering it, or the scan below went blind"
+    )
+    assert "tool_search" not in set(_registered()), (
+        "tool_search grew a module-level SPEC; this arm's premise is gone and "
+        "the orphan check no longer needs the source scan for it"
+    )
+
+
 def test_every_schema_file_belongs_to_a_tool() -> None:
-    orphans = tool_schemas.available() - set(_registered())
+    # A file is an orphan when NOTHING loads it — by a module-level SPEC or by a
+    # `tool_schemas.load(...)` anywhere in src. See `_schemas_loaded_in_source`.
+    orphans = tool_schemas.available() - set(_registered()) - _schemas_loaded_in_source()
     assert not orphans, (
         f"these files in tools/ are loaded by nothing — a fact no code reads "
         f"is a fact that rots: {sorted(orphans)}"
