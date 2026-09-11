@@ -48,6 +48,32 @@ chk("reports registration state", "registered" in out)
 s = seat(registered=False); s.error = "liteharness not installed"
 chk("surfaces the error when registration failed", "liteharness not installed" in harness_mod.run(s, {"action": "whoami"}))
 
+# \U0001f534 THE SEND ARMS NEED A REGISTRY, BECAUSE `send` RESOLVES AGAINST ONE NOW.
+# 4dc8a36 (T536, "send resolves truncated ids against the registry") put
+# `resolve_agent(to_raw)` ahead of every other check, so an id the registry does
+# not know returns "[error] send: ..." BEFORE the self-send and unregistered
+# branches are ever reached. These fixtures use 1111.../2222..., which no real
+# registry contains, so three arms below have been red since that commit and a
+# fourth was passing for the wrong reason:
+#
+#     chk("\U0001f534 self-send is refused", out.startswith("[error]"))
+#
+# is satisfied by the RESOLVE error just as well as by the self-send one. Only
+# the arm that reads the message body noticed. An assertion loose enough to be
+# satisfied by a different failure is not a weaker test, it is a test of
+# something else.
+#
+# The fix is the idiom this file already uses for the maildir below: hand the
+# module a controlled directory instead of the machine's. That keeps the REAL
+# `resolve_agent` in the path — stubbing it out would have made these arms blind
+# to the very step that broke them.
+_registry = Path(tempfile.mkdtemp(prefix="harness-tool-agents-"))
+for _aid in ("11111111-1111-1111-1111-111111111111",
+             "22222222-2222-2222-2222-222222222222"):
+    (_registry / f"{_aid}.json").write_text(
+        json.dumps({"agent_id": _aid, "name": f"seat-{_aid[:4]}"}), encoding="utf-8")
+harness_mod.AGENTS_DIR = _registry
+
 print("\n=== send: the two silent failures are refused LOUDLY ===")
 s = seat()
 out = harness_mod.run(s, {"action": "send", "to": s.agent_id, "body": "hi"})
