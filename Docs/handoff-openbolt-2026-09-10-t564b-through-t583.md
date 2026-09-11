@@ -142,13 +142,21 @@ it cannot load at all; the interactive path still JIT-loads by design (D2/D11,
 Piece 1 (SKILL.md) is pushed. **Piece 2 is the smoke, NOT committed:**
 `tests/test_rpc_consult_smoke.py` is UNTRACKED in `.worktrees/openbolt-litetui` —
 written, 7/7 green before the incident, already updated to read the resident model
-and skip when none is loaded. It has NOT been re-run since. Take it from there.
+and skip when none is loaded. ~~It has NOT been re-run since.~~
+
+**SUPERSEDED — it was re-run, and it went 4/7.** See the T584 piece 2 row below:
+the file now lives at `e2e/consult_smoke_e2e.py`, 8/8, merged on `main 20988af`.
 
 Also still open: `C:/Projects/.claude/consult-config.json` does not exist yet; the
 skill reads it relative to the project root and falls back to the template.
 
-⚠️ UNMEASURED, and the skill says so in its own text: codex over `--rpc` (nobody has
-run one end to end) and llama.cpp (7470 was down, so that row is expected to SKIP).
+~~⚠️ UNMEASURED: codex over `--rpc` (nobody has run one end to end) and llama.cpp.~~
+
+**SUPERSEDED. CODEX IS MEASURED** (2026-09-10 23:1x, and the skill text now says so):
+`gpt-6-astra`, answer `ok`, `turn_end` `stopReason: "stop"`, rc 0 on stdin close,
+6.5 s — about a third of the LM Studio run. It emits **no `reasoning_delta` at all**,
+so a parser that waits for reasoning is wrong on that backend. llama.cpp on 7470 is
+still down and still expected to SKIP; re-check with `curl -s -m 3 localhost:7470/health`.
 
 ### The shape that caught me four times in one session
 
@@ -157,3 +165,98 @@ subject grows a dependency, and nothing links the two. T576 `PickDouble`/`backen
 T579 two doubles/`_rpc_emit`; T594 every app double/`_rpc` — that last one MINE, an
 hour after I wrote the commit body describing it. The fix each time is `getattr` with
 a default at the reader, or the double taught the attribute and told why.
+
+---
+
+## Continued — T584 piece 2, then T559 and T588 in other repos
+
+Same seat, later the same night. Three cards, three repositories; this doc is the
+index because it is the one a LiteTUI successor opens first.
+
+| card | where | state |
+| --- | --- | --- |
+| T584 piece 2 | LiteTUI `main 20988af` | merged, **unverified** |
+| T584 skill text | liteharness-oss `main 20fe0e7` | merged, **unverified** |
+| T559 local timeline order | LiteSuite `develop 13c7d659d` (merge of `e09f15f20`) | merged, **unverified** |
+| T588 batch real paths | LiteImage `main bedeff2` (merge of `25d7763`) | merged, **unverified** |
+
+Nothing above is verified end to end. Acceptances outstanding: Ryan running
+`/ls-consult` from a Claude seat (T584), his eye on a local turn with tools (T559),
+and a LiteImage batch of two yielding two files with a failing item reported failed
+(T588).
+
+**T559's own detail lives in the LiteSuite handoff**, appended to
+`Docs/handoff-openbolt-2026-09-10-t564b-through-t575.md` on branch
+`docs/handoff-openbolt-t559` (`79ce07fcd`). Not duplicated here.
+
+### T584 piece 2 — the smoke went 4/7 and it was not the code
+
+The three reds were about a backend the child was never connected to. The test
+gated on "LM Studio is up and has a resident model", then launched a child that
+read `<install>/settings.json` — `backend=llamacpp`, nothing on 7470. **Two
+conditions were being conflated: the service is up, and the client is pointed at
+it.** Fixed by telling the child (`LITETUI_BACKEND`); there is no `--backend` flag.
+
+A second arm hid it: `"bracketed by turn_start and turn_end"` was GREEN on a turn
+that produced nothing, because bracketing is satisfied by a turn that errored. It
+now asserts `stopReason == "stop"` and prints the error text.
+
+The file moved to `e2e/` — I had committed a live 27B smoke into the default suite,
+which `tests/run_all.py` records as a thing already fixed once. Both gates now
+apply: `testpaths` excludes `e2e/`, and `LITETUI_E2E=1` is required.
+
+Re-runnable: `python e2e/consult_smoke_e2e.py` (8/8, needs LM Studio up with a
+model resident — it skips by name otherwise and loads nothing).
+
+### The through-line across all three cards
+
+**An event is a claim, not evidence.** Every card this stretch was something
+reporting a state nothing had produced:
+
+- T584: `turn_end` arrived on a turn that had emitted nothing, and an arm called
+  that a pass.
+- T559: one assistant message per turn meant the timeline placed c4's answer where
+  c2's first delta was stamped — the sort was right, the item's identity was not.
+- T588: `batch-item-complete` after a pipeline that aborted, `model-switch` that
+  loaded no model, `batch-complete` carrying a total equally true of ten successes
+  and ten failures — and an API job marked `complete` from that event.
+
+In every case the code read as correct and the unit was correct in isolation. What
+was missing was asking, of each event, *what action does this assert, and did it
+happen?*
+
+### Two instrument lessons worth keeping
+
+1. **`open(path, "w")` truncates before your payload exists.** A patch script threw
+   on a bad escape mid-build and left a tracked 491-line test file at 0 bytes; only
+   its being committed and clean made `git checkout --` a full recovery. The scripts
+   now encode the whole payload before opening the target.
+2. **`cmd | head` gives you `head`'s exit code.** I read `TSC_EXIT=0` off a `tsc`
+   that had just emitted two TS2783 errors. Redirect to a file and read `$?`, or the
+   gate reports on the pipe instead of the command.
+
+Patterns recorded this stretch:
+
+- `c30dbfa8…-1789094221` — a gate that checks the service is up but not that the
+  client is pointed at it.
+- `c30dbfa8…-1789094941` — a reported MISORDERING that is really a MERGE; if you
+  cannot say where the item *should* sort, check whether it is a separate item.
+- `c30dbfa8…-1789095635` — a try/catch around a generator that reports failure by
+  RETURNING can never fire; the terminal event is the only discriminator.
+
+### Open, and not mine
+
+- **LiteTUI:** `--tool-profile scheduled` never reaches the turn. Installed at
+  construction (`app.py:1209-1215`), then `_submit_text` overwrites it with
+  `settings.tool_policy_profile` (`app.py:4272` → `:4296`) before `_stream()`. So an
+  `--rpc` child runs tools as `autonomous` in the main checkout — the inverse of
+  what ls-consult requires. The skill text says so; the code does not yet.
+- **LiteImage:** `executePipeline` sets `this.cancelled = false` on entry, so each
+  item resets the flag `executeBatch` checks at the top of its loop — a batch
+  cannot be cancelled. One field, two owners.
+- **LiteImage:** `inpaint` with no mask and `controlnet` with no control image still
+  return the input UNCHANGED and report `step-complete`. Now that generation runs
+  first they hand back a real image, so a batch reports success carrying a file that
+  was never inpainted. Re-pinned in its new shape in `pipeline-batch.unit.test.ts`.
+- **Still open from piece 1:** `C:/Projects/.claude/consult-config.json` does not
+  exist; nothing in T584 creates it.
