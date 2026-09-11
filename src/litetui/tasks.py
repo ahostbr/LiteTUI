@@ -15,8 +15,9 @@ WHY THE RESULT IS A USER-ROLE WAKE AND NOT A LATE ``role: "tool"`` MESSAGE
     already takes: a user turn carrying the pointer, which the model can `read`.
 
 THE RAW NEVER ENTERS THE CONVERSATION WHOLE. It is written to
-`output/tasks/<id>.log` and the wake carries an excerpt (head + tail) plus the
-path — the same discipline `tool_context` applies to large results, for the
+`<data root>/output/tasks/<id>.log` and the wake carries an excerpt (head +
+tail) plus the ABSOLUTE path (T643: a relative one resolved against the reader's
+cwd, which is not the data root when LITETUI_DATA_ROOT is set) — the same discipline `tool_context` applies to large results, for the
 same reason: a model that cannot tell "the output did not contain X" from
 "X was cut" reports absence as fact.
 
@@ -166,8 +167,17 @@ async def wait_or_promote(aw, seconds: float):
 
 
 def start_text(task: Task, root: Path | str, promoted_after: float | None = None) -> str:
-    """What the MODEL gets back immediately — the tool result of a background call."""
-    rel = Path(*LOG_DIR) / f"{task.id}.log"
+    """What the MODEL gets back immediately — the tool result of a background call.
+
+    🔴 THE PATH IS ABSOLUTE, BECAUSE THE READER RESOLVES AGAINST ITS OWN CWD.
+    This used to advertise `output/tasks/<id>.log`, relative to `root` (T643).
+    Under LITETUI_DATA_ROOT the log is written beneath the DATA ROOT while the
+    read tool resolves a relative path against the process's working directory —
+    the user's checkout — so the model was handed a path to nothing and reported
+    "file not found" for a file that had been written correctly elsewhere. With
+    the two roots equal it resolved by coincidence, which is why it survived.
+    """
+    where = log_path(task, root)
     head = (
         f"[task {task.id} started · {task.tool} · {task.label}]\n" if not promoted_after else
         f"[task {task.id} · {task.tool} · {task.label} — still running after {promoted_after:g}s, "
@@ -176,7 +186,7 @@ def start_text(task: Task, root: Path | str, promoted_after: float | None = None
     return (
         head +
         f"Running in the background. Its output arrives later as a message tagged "
-        f"[inbox from task]; the full output will be at {rel.as_posix()} "
+        f"[inbox from task]; the full output will be at {where.as_posix()} "
         f"(read it with the read tool). Continue with other work, or end the turn "
         f"and wait."
     )
@@ -205,7 +215,9 @@ def finish(task: Task, result: str, ok: bool, root: Path | str) -> str:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(result or "", encoding="utf-8", errors="replace")
-        task.log = p.relative_to(Path(root)).as_posix()
+        # T643: the absolute path, for the same reason `start_text` gives one —
+        # this string is handed to a model that will pass it to the read tool.
+        task.log = p.as_posix()
     except OSError:
         task.log = ""
     where = f"full output: {task.log}" if task.log else "the log could not be written"
