@@ -63,3 +63,23 @@ assert ConversationRepository.read(paths.CONVO_DIR / 'probe' / 'convo.jsonl')[1]
     for code in (create, resume):
         subprocess.run([sys.executable, "-c", code], env=env, cwd=tmp_path,
                        capture_output=True, text=True, timeout=15, check=True)
+
+
+def test_runtime_log_default_follows_override(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from litetui import runtime_log
+    from litetui.plugins import runtime_log_plugin
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    captured = []
+    monkeypatch.setattr(runtime_log, "install", captured.append)
+    runtime_log_plugin.register(SimpleNamespace(observe=lambda fn: None))
+    assert captured == [tmp_path / ".logs" / "runtime.jsonl"]
+
+
+def test_unset_scheduler_and_log_paths_are_unchanged(monkeypatch):
+    from litetui import paths, runtime_log, scheduler
+    monkeypatch.delenv("LITETUI_DATA_ROOT", raising=False)
+    monkeypatch.setattr(paths, "ROOT", Path("C:/Projects/LiteTUI"))
+    assert scheduler.jobs_path(paths.data_root()) == Path("C:/Projects/LiteTUI/jobs.json")
+    assert runtime_log.default_log_path(paths.data_root()) == Path("C:/Projects/LiteTUI/.logs/runtime.jsonl")

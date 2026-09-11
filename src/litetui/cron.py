@@ -46,7 +46,7 @@ class CronService:
 
     def __init__(self, app) -> None:
         self._app = app
-        self.jobs: list = sched_mod.load(paths.ROOT)
+        self.jobs: list = sched_mod.load(paths.data_root())
 
     def command(self, arg: str) -> None:
         """/cron — add, list, remove, enable, disable, or fire a job now."""
@@ -68,7 +68,7 @@ class CronService:
             if not job:
                 return
             self.jobs.remove(job)
-            sched_mod.save(self.jobs, paths.ROOT)
+            sched_mod.save(self.jobs, paths.data_root())
             self._app._system(f"/cron: removed {job.id} ({job.label or job.prompt[:40]})")
             return
 
@@ -77,7 +77,7 @@ class CronService:
             if not job:
                 return
             job.enabled = verb in ("on", "enable")
-            sched_mod.save(self.jobs, paths.ROOT)
+            sched_mod.save(self.jobs, paths.data_root())
             self._app._system(f"/cron: {job.id} is now {'ON' if job.enabled else 'OFF'}")
             return
 
@@ -152,7 +152,7 @@ class CronService:
 
         job = sched_mod.Job(prompt=prompt, schedule=schedule)
         self.jobs.append(job)
-        sched_mod.save(self.jobs, paths.ROOT)
+        sched_mod.save(self.jobs, paths.data_root())
 
         nxt = cron.next_after(datetime.now())
         when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"

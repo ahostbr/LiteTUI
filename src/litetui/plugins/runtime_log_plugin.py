@@ -8,7 +8,7 @@ from litetui.plugins import PluginManifest
 
 PLUGIN_ID = "runtime-log"
 def register(ctx, root: Path | None = None) -> None:
-    runtime_log.install(runtime_log.default_log_path(root or paths.ROOT))
+    runtime_log.install(runtime_log.default_log_path(root or paths.data_root()))
     ctx.observe(runtime_log.record_signal)
 
 
