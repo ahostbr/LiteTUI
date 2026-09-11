@@ -303,6 +303,60 @@ a `getattr` spelling). None was a guard failing — all were my text. A missed a
 reports as "subject not found", which is the right shape: it cannot be mistaken for
 a green.
 
+### 🔴 "3/6" IS THE GUARD'S SENSITIVITY, NOT THE BLAST RADIUS
+
+The #4 row above reads RED 3/6. That is three arms failing **in the one file I
+ran**, and it would be a mistake to read it as what a conftest regression costs.
+Sentinel's conftest rule exists because an autouse fixture touches every test, so
+the row was measured against a question narrower than the rule's premise.
+
+**Measured across fifteen — in fact twenty-five — files, at main `f2705cb`:**
+
+> Gutting `_never_write_the_live_task_store`: **3 failed of 269 tests, and 1 file
+> leaked — `background-tasks.json` in the repo root.** All three failures are in
+> `test_live_state_guard.py`; baseline on the same set is 0 failed, 0 leaked.
+
+The set is the 21 files the grep instrument in `51e2a89`'s body names on this tree
+(`ast.parse|rglob|iterdir|os.walk|glob.glob`) plus the four merge-guard files that
+grep does not already include. It is a SUPERSET of SilverBolt's ten rather than
+his exact list, which is named in no artefact I could read — and picking a set by
+guess produces a figure that looks authoritative while measuring something nobody
+chose. A superset bounds the answer: every failure and every leak in it is real.
+
+**THE RESULT IS THE OPPOSITE SHAPE TO THE ONE THE PHRASE SUGGESTS, AND IT
+STRENGTHENS THE RULE.** The DAMAGE is suite-wide — any test touching the store
+writes the live root. The DETECTION is concentrated in one file: 269 tests ran and
+266 of them could not tell. That is precisely why a conftest edit needs a named
+gate list rather than "the suite went green": nothing else goes red, so a
+cross-cutting fixture regression is invisible to every instrument except the one
+written for it.
+
+Two incidental measurements from the same runs:
+
+- The 25-file set **cannot run as one pytest invocation** — `INTERNALERROR
+  SystemExit: 0`, the same shape `f2705cb`'s body reports for the 40. Two
+  script-style files (`test_footer.py`, `test_ttyguard.py`) abort collection, so
+  the figure above needed `run_all.py`'s own discriminator to split the runners.
+  Script-style files never see conftest at all, so they sit outside this guard by
+  construction.
+- `test_kill_tree_honesty.py::test_a_real_tree_dies_by_HANDLE_CLOSE_and_the_grandchild_goes_with_it`
+  failed **once** in a batch run and I nearly reported it as blast radius. It did
+  not reproduce in a second mutated run and passed three baselines and three solo
+  runs — a flake under batch load, not the mutation. Interleaving the arms rather
+  than batching them is what separated the two.
+
+### 🔴 PROVEN-INSTRUMENT IS A READING AT A SHA, NOT A PROPERTY
+
+Every mutation in the table above is a measurement taken at a commit: the six at
+`495c4ce`, #4 re-verified at `7b929b5`, the blast radius at `f2705cb`. Between the
+first two of those, the T592 follow-up changed one of the fixtures being mutated —
+inside the hour.
+
+So the table is **re-run, never cited**. A row saying "this guard is an instrument"
+is true of the tree it was measured on and says nothing about yours. If you need
+the claim, spend the two minutes and take the reading again; if you find yourself
+quoting a row instead, you are doing the thing the merge guard was written to stop.
+
 ### ⚠️ #4 did not just go red — it reproduced the outage
 
 With the conftest redirects gone, the run wrote `background-tasks.json` into the
