@@ -18,8 +18,10 @@ and the test carries a NEGATIVE CONTROL proving the detector can still fail.
 
 from __future__ import annotations
 
+import ast
 import io
 import re
+import warnings
 from dataclasses import fields
 from pathlib import Path
 
@@ -32,10 +34,59 @@ APP = (ROOT / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
 # claim is about the RUNTIME, so its scope is app.py plus every plugin,
 # plus the backend core module: the dual-backend seam reads its settings
 # there (constructor-injected), exactly as app.py reads its own.
-RUNTIME = APP + "".join(
+_SOURCES = [APP] + [
     p.read_text(encoding="utf-8")
     for p in sorted((ROOT / "src" / "litetui" / "plugins").rglob("*.py"))
-) + (ROOT / "src" / "litetui" / "llm_backend.py").read_text(encoding="utf-8")
+] + [(ROOT / "src" / "litetui" / "llm_backend.py").read_text(encoding="utf-8")]
+RUNTIME = "".join(_SOURCES)
+
+
+def _getattr_names(sources: list[str]) -> set[str]:
+    """Every name fetched by getattr(..., "name") anywhere in the runtime.
+
+    🔴 ATTRIBUTE SYNTAX IS NOT THE ONLY ACCESS CHANNEL, and a detector that
+    believes it is accuses live code of being dead. Two fields were reported
+    as changing nothing while both are read on every relevant call:
+        app.py:1884              getattr(self.settings, "tool_auto_background_s", 0)
+        subagent_plugin.py:58    getattr(getattr(app, "settings", None), "subagent_model", None)
+    The second is why this is an AST walk and not another regex. I added a
+    regex for `getattr(<alias>, "field")` first, and the NESTED getattr broke
+    it immediately — the base is an expression, not an alias. Fixing a
+    detector against the last failure you saw never converges; you have to
+    name the CHANNEL.
+
+    ⚠️ THE TRADE-OFF, STATED: this does not prove the getattr was on a
+    settings object, so a same-named attribute fetched from something else
+    would read as a use. That direction is the safe one. The remedy this
+    gate prints is "either wire them or delete them", so a false DEAD report
+    deletes working behaviour, while a false LIVE report only fails to spot
+    a genuinely dead field.
+    """
+    names: set[str] = set()
+    for src in sources:
+        try:
+            # A runtime file carries an invalid escape sequence; parsing it
+            # warns, and that warning is this detector's noise, not the
+            # suite's. Contained here rather than silenced globally.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+            ):
+                names.add(node.args[1].value)
+    return names
+
+
+_GETATTR_READS = _getattr_names(_SOURCES)
 
 #: Fields consumed through a helper rather than by name. Each entry names the
 #: helper, so a reader can check the claim instead of trusting the list.
@@ -66,6 +117,24 @@ _ALIASES = sorted(
 
 
 def _reads(field: str, source: str = RUNTIME) -> bool:
+    """Is this field read anywhere, BY ANY SPELLING (see _getattr_names).
+
+    🔴 ATTRIBUTE SYNTAX IS NOT THE ONLY ACCESS CHANNEL, and this detector
+    used to believe it was. `tool_auto_background_s` was reported dead —
+    "renders in /settings and changes nothing" — while app.py:1884 reads it
+    every time a tool call runs:
+        limit = int(getattr(self.settings, "tool_auto_background_s", 0) or 0)
+    A string argument is invisible to a scan for `settings.<name>`, so the
+    detector was not measuring "is this read", it was measuring "is this read
+    the way I expect". That is a false accusation of dead code, and the
+    remedy it prints — "either wire them or delete them" — would have deleted
+    a live setting.
+
+    The channel is added here rather than the field being exempted: an
+    exemption fixes one name, and the next getattr read is dead again.
+    """
+    if field in _GETATTR_READS:
+        return True
     for base in _ALIASES:
         if re.search(re.escape(base) + r"\." + re.escape(field) + r"\b", source):
             return True
