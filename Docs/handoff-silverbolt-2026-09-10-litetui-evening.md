@@ -22,7 +22,7 @@ Sentinel's instruction. Every row names a sha, a symbol or a re-runnable query.
 | T587 — a failed workspace save is not silent | LiteSuite develop `ef7a5336d` | merged, unverified |
 | T593 — the electron double catches up | LiteSuite develop `46b786921` | merged, unverified |
 | T579 remainder — the last two LiteTUI reds | main `b13bada` | merged, unverified · **one red was hiding a real leak** |
-| T590 — the installed Codex wrapper | SCOUTED, nothing changed | scout sent as `83621b39`; blocked on a coordination call |
+| T590 — the installed Codex wrapper | 7 installed files, NOT in git | REVIEWING · §3e has every path + stamp · **wake proof moved to Ryan** |
 
 ## 1. 🔴 A DEFECT I SHIPPED AND MIS-ATTRIBUTED — read this first
 
@@ -212,7 +212,54 @@ enumerate them. A new arm pins that there is exactly ONE computed producer.
 on the card's list of three and I could not make it fail. Accepted as green by
 Sentinel; if a full run reds it, that is order-dependence and a new card.
 
-## 3e. T590 — SCOUTED ONLY, nothing touched
+## 3e. T590 — the installed Codex wrapper, FIXED OUTSIDE GIT
+
+🔴 **NOTHING HERE IS IN A REPO.** Seven files under `~/.codex/skills/` were
+rewritten in place. There is no sha to revert to — the only way back is the
+`.bak` files, so their stamps are the record:
+
+| stamp | what |
+| --- | --- |
+| `20260910_224657` | the 4 scripts (`manual_liteharness.py` ×2, `liteharness_inbox_watcher.py`, `liteharness_watcher_supervisor.py`) |
+| `20260910_224903` | `liteharness/SKILL.md`, `liteharness-manual-start/SKILL.md` |
+| `20260910_224948` | `ls-liteharness/SKILL.md` |
+
+Every one sits beside the file it replaced, as `<name>.bak.<stamp>`. Nothing was
+deleted. `liteharness/scripts/liteharness_notify.py` was already plain and is
+untouched; `ls-liteharness/scripts/` is empty.
+
+**The census command, which is the thing to re-run** — it counts ASSIGNMENTS,
+not string mentions, because the rewritten files name the dead path in their
+docstrings on purpose:
+
+```
+grep -rn "liteharness-t370-desktop-wake" ~/.codex/skills | grep -v "\.bak\." \
+  | grep -cE "RUNTIME = Path|\$env:PYTHONPATH = |is pinned to"
+```
+
+Expected **0**. It read 10-and-more before; my scout's "10 hits, 6 files, two
+skills" was a `head -10` reported as a census and MISSED a whole third dir
+(`ls-liteharness`).
+
+⬜ **NO OSS CHANGE, DELIBERATELY.** `liteharness/cli.py:520-574`
+(`_install_cli_scripts("codex-cli")`) deploys all of these, and all seven
+sources carry zero pins; `tests/test_codex_stdout_delivery.py:101` already
+asserts byte-identity. The shim was hand-applied over a correctly-deployed
+file. ⚠️ A future `install --cli codex-cli` will overwrite the SKILL.md wording
+above with the canonical oss text — which is clean, so that is the right
+outcome, not a regression.
+
+⚠️ **TWO SIDE EFFECTS I CAUSED, both in the report `4d0b8708`**: running the
+installed `check` as a gate CLAIMED my own QUESTION to ArcCap out of `new/`
+(repaired — moved back, body verified 2686 chars); and `start --check-now`
+registered as `01a08e03`, so that seat's `last_seen` freshness is MY artefact.
+It was `[ghost]` ~1h before I touched it.
+
+⬜ **WAKE PROOF NOT MET AND MOVED TO RYAN** (Sentinel, `2a700974`): the
+acceptance is his own live Codex Desktop session re-running
+`start --check-now` from the installed path and registering. Fire no wake.
+
+## 3e-old. T590 scout, superseded by the above
 
 Scout sent as `83621b39`. Re-runnable:
 `grep -rn "liteharness-t370-desktop-wake" ~/.codex/skills` → **10 hits, 6 files,
@@ -266,7 +313,9 @@ invokes is the disruption the card warns about. Awaiting Sentinel's call.
 2. Keep id `1ccbc1d5-e16b-4022-b42e-8aa9659028c6`; arm ONE watcher with the
    explicit `--agent-id` form, never `watch-auto`.
 3. Report "back" to `2dc57f3e-a914-4d1e-b414-36db80e3006a` by **inbox**.
-4. T590 is the live card and is SCOUTED, NOT STARTED (§3e) — it is blocked
-   on a coordination call, not on work. Everything else of mine is merged. T577 (tool approval over `--rpc` routed to the
+4. T590 is REVIEWING (§3e) — fixed OUTSIDE git, so the `.bak` stamps are the
+   only way back. The live card is T389's command half: the 12 command
+   checks in LiteSuite `Docs/VERIFY-PASS-2026-09-05.md`, evidence under
+   `~/.liteharness/evidence/verify-pass-2026-09-05/<card>/`. T577 (tool approval over `--rpc` routed to the
    host — the door left unguarded on purpose in T572) waits on Ryan's priority.
    T570 and T569 are the ONLY things Ryan has verified end to end.
