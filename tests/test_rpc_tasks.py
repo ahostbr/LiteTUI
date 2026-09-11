@@ -24,9 +24,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from litetui import app as m  # noqa: E402
-from litetui import rpc as rpc_mod  # noqa: E402
-from litetui import tasks as tasks_mod  # noqa: E402
+from litetui import app as m
+from litetui import rpc as rpc_mod
+from litetui import tasks as tasks_mod
 
 
 def make_app():
@@ -206,3 +206,17 @@ def test_an_unknown_verb_is_still_refused_by_name(wire):
     resp = drive(a, wire, "explode")
     assert resp["ok"] is False
     assert "explode" in resp["error"]
+
+
+def test_rpc_tail_uses_durable_root_not_workspace(tmp_path, monkeypatch, wire):
+    from litetui import paths
+    data = tmp_path / "durable"
+    data.mkdir()
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(data))
+    monkeypatch.setattr(paths, "ROOT", tmp_path / "resources")
+    a = make_app()
+    task = add(a)
+    tasks_mod.finish(task, "distinct durable output", True, data)
+    response = drive(a, wire, "tail", task_id=task.id)
+    assert response["ok"] is True
+    assert "distinct durable output" in response["result"]["tail"]

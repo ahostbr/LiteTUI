@@ -194,6 +194,8 @@ def main() -> int:
         os.environ["PYTHONPATH"] = _src + (os.pathsep + _existing if _existing else "")
 
     pyt, scr = classify()
+    if "--scripts-only" in sys.argv:
+        pyt = []
 
     print(f"pytest-style: {len(pyt)}   script-style: {len(scr)}\n")
 

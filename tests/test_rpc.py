@@ -1,44 +1,37 @@
 """T507-T6 — RPC behavioral tests.
 
 Spawns `litetui --rpc` and drives it through JSONL stdin/stdout.
-Skips when no model server is answering on the configured backend.
+Live subprocess cases require explicit LITETUI_E2E=1; collection never probes.
 """
 from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
-import urllib.request
 
 from litetui import settings as settings_mod
 
-
-def _probe_url() -> str:
-    """Return the models endpoint for the configured backend."""
-    s = settings_mod.load()
-    if s.backend == "lmstudio":
-        return f"{s.lm_host.rstrip('/')}/v1/models"
-    return f"{s.llama_host.rstrip('/')}/models"
+# Never probe at collection. Live execution requires explicit opt-in.
+_needs_backend = pytest.mark.skipif(
+    os.environ.get("LITETUI_E2E") != "1", reason="requires LITETUI_E2E=1"
+)
 
 
-BACKEND_URL = _probe_url()
-
-
-def backend_up() -> bool:
-    try:
-        urllib.request.urlopen(BACKEND_URL, timeout=3)
-        return True
-    except Exception:
-        return False
-
-
-SKIP_REASON = f"model server at {BACKEND_URL} is not responding"
-_needs_backend = pytest.mark.skipif(not backend_up(), reason=SKIP_REASON)
+def _child_env(root: Path) -> dict:
+    root.mkdir(parents=True, exist_ok=True)
+    # Read-only selection from caller config; all writes use the isolated copy.
+    settings = settings_mod.load()
+    settings.mcp_enabled = False
+    settings.plugins_disabled = ["scheduler", "skills", "harness", "glassbox"]
+    settings_mod.save(settings, root=root)
+    return dict(os.environ, LITETUI_DATA_ROOT=str(root), LITETUI_NO_HARNESS="1")
 
 
 class RpcSession:
@@ -52,12 +45,27 @@ class RpcSession:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             cwd=cwd or os.getcwd(),
+            env=_child_env(Path(cwd or os.getcwd()) / "rpc-data"),
             text=True,
             bufsize=1,
         )
         self.events: list[dict] = []
+        self._start_reader()
+
+    def _start_reader(self):
+        self._lines = queue.Queue()
+
+        def read():
+            try:
+                for line in iter(self.proc.stdout.readline, ""):
+                    self._lines.put(line)
+            finally:
+                self._lines.put(None)
+
+        self._reader = threading.Thread(target=read, daemon=True)
+        self._reader.start()
 
     def send(self, cmd: dict) -> None:
         assert self.proc.stdin
@@ -66,10 +74,12 @@ class RpcSession:
 
     def read_until(self, predicate, timeout: float = 120.0) -> dict | None:
         """Read events until predicate(event) is true or timeout."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            assert self.proc.stdout
-            line = self.proc.stdout.readline()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                line = self._lines.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                break
             if not line:
                 break
             line = line.strip()
@@ -85,22 +95,9 @@ class RpcSession:
         return None
 
     def read_events(self, timeout: float = 5.0) -> list[dict]:
-        """Read all events within timeout."""
-        deadline = time.time() + timeout
-        collected = []
-        while time.time() < deadline:
-            assert self.proc.stdout
-            # Non-blocking would be better but this works for tests
-            line = self.proc.stdout.readline()
-            if not line:
-                break
-            try:
-                evt = json.loads(line.strip())
-                collected.append(evt)
-                self.events.append(evt)
-            except json.JSONDecodeError:
-                continue
-        return collected
+        before = len(self.events)
+        self.read_until(lambda event: False, timeout)
+        return self.events[before:]
 
     def wait_ready(self, timeout: float = 30.0) -> dict | None:
         return self.read_until(lambda e: e.get("type") == "ready", timeout=timeout)
@@ -109,7 +106,7 @@ class RpcSession:
         try:
             self.send({"type": "shutdown", "id": "fin"})
             self.proc.wait(timeout=5)
-        except Exception:
+        except (OSError, subprocess.TimeoutExpired):
             self.proc.kill()
             self.proc.wait()
 
@@ -210,6 +207,7 @@ class TestRpcTurn:
         assert "unknown" in resp.get("error", "").lower()
 
 
+@_needs_backend
 class TestStdoutPurity:
     """T519: fd 1 in --rpc mode carries ONLY valid JSONL — no Textual escape codes."""
 
@@ -219,8 +217,9 @@ class TestStdoutPurity:
             [sys.executable, "-m", "litetui.cli", "--rpc"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             cwd=str(tmp_path),
+            env=_child_env(tmp_path / "rpc-data"),
         )
         try:
             # Read raw stdout in a thread so we can timeout
@@ -243,7 +242,7 @@ class TestStdoutPurity:
                 proc.stdin.write(b'{"type":"shutdown","id":"fin"}\n')
                 proc.stdin.flush()
                 proc.wait(timeout=5)
-            except Exception:
+            except (OSError, subprocess.TimeoutExpired):
                 proc.kill()
                 proc.wait()
 
