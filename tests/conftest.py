@@ -90,6 +90,56 @@ def _never_write_the_live_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_mod, "settings_path", redirected)
 
 
+# 🔴 FOURTH INSTANCE OF THE CLASS NAMED DIRECTLY ABOVE: A TEST MUST NEVER
+# WRITE A PATH THE RUNNING APP OWNS. This one is the background task store.
+#
+# Found the way the skills/index.json carve-out was found -- an untracked file
+# appeared in a worktree minutes after the code that wrote it shipped. T581's
+# arms call `app._save_background()`, which reaches
+# `tasks.save(..., paths.ROOT)` three frames down, so a run of the suite
+# OVERWRITES the background-tasks.json of anyone running LiteTUI from that
+# tree. `tasks.load` then marks those rows LOST at the next boot: a developer's
+# real in-flight tasks reported as killed by the app, by a test run.
+#
+# ⚠️ THE CARD SAID "RESOLVES RELATIVE TO CWD". IT DOES NOT, AND THE
+# DISTINCTION DECIDES THE FIX. `paths.ROOT` is derived from `__file__`, so the
+# store lands in the REPO ROOT from any working directory -- re-anchoring it or
+# chdir-ing a test changes nothing. What was missing is this guard. An arm in
+# test_live_state_guard.py pins that, so the next reader does not go hunting a
+# cwd bug that has never existed.
+#
+# `finish` is guarded alongside `save` because it is the OTHER writer: it puts
+# the raw output in `<root>/output/tasks/<id>.log`. `load` follows them so a
+# test that saves and then loads sees its own rows instead of a stale live file.
+# An explicit root is honoured untouched -- test_background_tasks.py and
+# test_task_screens.py already pass tmp_path, correctly, and must not change.
+@pytest.fixture(autouse=True)
+def _never_write_the_live_task_store(tmp_path, monkeypatch):
+    """Redirect the LIVE task-store root to a per-test temp dir."""
+    from litetui import paths as paths_mod
+    from litetui import tasks as tasks_mod
+
+    live = Path(paths_mod.ROOT)
+    store = tmp_path / "task-store"
+    store.mkdir(exist_ok=True)
+
+    def _swap(root):
+        return store if Path(root) == live else root
+
+    real_save, real_load = tasks_mod.save, tasks_mod.load
+    real_finish = tasks_mod.finish
+
+    monkeypatch.setattr(
+        tasks_mod, "save", lambda tasks, root: real_save(tasks, _swap(root))
+    )
+    monkeypatch.setattr(tasks_mod, "load", lambda root: real_load(_swap(root)))
+    monkeypatch.setattr(
+        tasks_mod,
+        "finish",
+        lambda task, result, ok, root: real_finish(task, result, ok, _swap(root)),
+    )
+
+
 # 🔴 THE SUITE MUST NOT DIAL OUT. THIS WAS 4.0 SECONDS PER CONSTRUCTED APP.
 #
 # Measured 2026-09-03, tests/_probe_floor.py, 12 reps per arm:
