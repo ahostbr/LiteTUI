@@ -90,6 +90,15 @@ class QuestionState:
     options: list[dict]  # {"title": str, "description": str}
     selected: set[int] = field(default_factory=set)
     note: str = ""
+    #: May Ryan tick more than one option? (T644)
+    #:
+    #: 🔴 DEFAULTS TO TRUE BECAUSE THAT IS WHAT THIS TOOL HAS ALWAYS DONE. The
+    #: schema has said "Options are MULTI-SELECT: any number of them can be
+    #: correct" since it was written, `selected` is a `set[int]`, and the widget
+    #: ticks freely. The flag is not a new capability — it is this one finally
+    #: being STATED, so a consumer that cannot see the widget knows what it is
+    #: rendering. A model that wants one-of-N now says so.
+    multi_select: bool = True
 
     @property
     def answered(self) -> bool:
@@ -108,6 +117,13 @@ class QuestionState:
             "selected": sorted(self.selected),
             "note": self.note,
             "answered": self.answered,
+            # 🔴 THE WIRE NAME IS camelCase BECAUSE THE CONSUMER IS TYPESCRIPT.
+            # LiteSuite reads `question.multiSelect === true`
+            # (session-logic.ts, T634) and every other key in this dict is
+            # already the name it reads. A snake_case key here would be dropped
+            # silently by a whitelist rebuild — which is exactly how T634's
+            # flag went missing in the first place, one process further on.
+            "multiSelect": self.multi_select,
         }
 
 
@@ -153,7 +169,16 @@ def _parse_questions(args: dict) -> list[QuestionState]:
                 opts.append({"title": title, "description": desc})
         if not opts:
             raise ValueError(f"questions[{i}] has no usable options (each needs a non-empty title)")
-        states.append(QuestionState(label=label, question=question, options=opts))
+        states.append(
+            QuestionState(
+                label=label,
+                question=question,
+                options=opts,
+                # Absent means MULTI, which is this tool's long-standing
+                # behaviour; only an explicit `false` narrows it.
+                multi_select=item.get("multiSelect") is not False,
+            )
+        )
     return states
 
 
