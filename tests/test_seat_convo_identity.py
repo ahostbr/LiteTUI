@@ -10,8 +10,7 @@ a task dispatched to the previous id was never seen by the seat.
 """
 import uuid
 
-from litetui import harness as harness_mod
-from litetui.harness import process_agent_id, agent_id_for_convo, new_agent_id
+from litetui.harness import agent_id_for_convo, new_agent_id, process_agent_id
 
 CONVO = "5f8e1a90-2c3b-4d7e-9a10-0badc0ffee11"
 
@@ -71,16 +70,18 @@ sync = LiteTUI._sync_seat_identity
 class FakeSeat:
     """The REAL transition over a fake transport.
 
-    🔴 `rebind` IS BOUND FROM THE REAL Seat ON PURPOSE. A hand-written
-    stand-in lets this file agree with a broken seam, and that is not
-    hypothetical — the switching test below used to assert `registered is
-    False` and cite "the next heartbeat re-registers it", a heartbeat that
-    could never fire. The fake defended the defect for the life of the bug.
-    Only the two subprocess calls are faked; the logic under test is shipped
-    code.
-    """
+    ⚠️ IT USED TO BIND `rebind` FROM THE REAL Seat, and the reason is worth
+    keeping even though the method is gone (T585): a hand-written stand-in
+    lets a fake agree with a broken seam, and that was not hypothetical here
+    — the switching test used to assert `registered is False` and cite "the
+    next heartbeat re-registers it", a heartbeat that could never fire. The
+    fake defended the defect for the life of the bug.
 
-    rebind = harness_mod.Seat.rebind
+    `Seat.rebind` was deleted in T585 because f64442b left it with no caller
+    outside its own tests, so the binding went with it. Nothing below calls
+    it; the arms that did were removed in 83074a3 when the contract they
+    tested was superseded. Only the two subprocess calls are faked.
+    """
 
     def __init__(self, agent_id, registered=False, register_ok=True):
         self.agent_id = agent_id

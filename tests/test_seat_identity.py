@@ -47,8 +47,8 @@ from pathlib import Path
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from litetui import harness as harness_mod
 from litetui import app as app_mod
+from litetui import harness as harness_mod
 
 ok = []
 
@@ -110,7 +110,6 @@ def seat_with(result):
     return s
 
 
-import types
 _real_run = harness_mod.ttyguard.run
 
 # The guard that stops the SUITE writing to the live registry
@@ -183,6 +182,46 @@ chk("...and the same conversation resolves to the same seat id",
 chk("...while different conversations do not collide",
     harness_mod.agent_id_for_convo("abc") != harness_mod.agent_id_for_convo("abd"))
 
+
+print("\n=== a conversation change reaches the registry NOT AT ALL (T585) ===")
+# 🔴 INLINED BY HAND FROM tests/test_seat_rebind.py, NOT MOVED VERBATIM.
+# That file was pytest-style and this one is script-style (it ends in
+# sys.exit()), so its `transport` fixture cannot come with it — but the
+# interception is the same one this file already does by hand a few lines
+# up: swap harness_mod.ttyguard.run and put it back in a finally.
+#
+# The original asserted an UNCHANGED conversation touches the transport not
+# at all. Generalised here to a CHANGED one, which is the case that used to
+# rebind and mint a ghost — so the ruling in f64442b keeps a test after the
+# machinery it ruled on is gone.
+#
+# ⚠️ DELIBERATELY A DIFFERENT INSTRUMENT from the arm 83074a3 landed in
+# test_seat_convo_identity.py. That one asks the SEAT (no id change, no
+# deregister, no registration); this one asks the WIRE (no registry call at
+# all). Two copies of one assertion drift apart; two instruments on one
+# ruling do not.
+_calls: list = []
+_saved_run = harness_mod.ttyguard.run
+_saved_env = os.environ.pop(harness_mod.NO_HARNESS_ENV, None)
+try:
+    harness_mod.ttyguard.run = lambda *a, **k: _calls.append(a) or FakeResult("")
+    _s = harness_mod.Seat(agent_id=harness_mod.process_agent_id(),
+                          name="LiteTUI", model="qwen")
+    _app = app_mod.LiteTUI.__new__(app_mod.LiteTUI)
+    _app.seat = _s
+    _app.convo_id = "convo-one"
+    _app._system = lambda *a, **k: None
+    _before = len(_calls)
+    _app.convo_id = "convo-two"          # the switch that used to rebind
+    _app._sync_seat_identity()
+    chk("a conversation change makes no registry call at all",
+        len(_calls) == _before)
+    chk("...and the seat id is untouched by it",
+        _s.agent_id == harness_mod.process_agent_id())
+finally:
+    harness_mod.ttyguard.run = _saved_run
+    if _saved_env is not None:
+        os.environ[harness_mod.NO_HARNESS_ENV] = _saved_env
 print("\n=== 🔴 THE LIVENESS GUARD DOES NOT PROTECT THIS SEAT -- measured ===")
 # --takeover is documented to refuse a GENUINELY LIVE holder. That guard reads
 # presence.session_pid, and _agent_record_live treats a falsy session_pid as NOT
