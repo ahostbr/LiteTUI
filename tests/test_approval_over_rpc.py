@@ -28,9 +28,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import app as m  # noqa: E402
-from litetui import textfmt  # noqa: E402
-from litetui import tool_approval  # noqa: E402
-from litetui import tool_policy  # noqa: E402
+from litetui import textfmt, tool_approval, tool_policy  # noqa: E402
 
 
 def make_app(rpc: bool = False):

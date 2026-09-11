@@ -8,9 +8,8 @@ from uuid import uuid4
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widget import Widget
 from textual.widgets import Button, Static
 
 from litetui.side_panel import SwapButton, close_dialog
