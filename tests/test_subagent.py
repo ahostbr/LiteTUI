@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from litetui import tool_schemas, tasks as tasks_mod
+from litetui import tasks as tasks_mod
+from litetui import tool_schemas
 
 
 class _FakeResp:
@@ -59,6 +60,7 @@ class TestRunner:
     def _make_app(self, host="http://localhost:1234", model="test-model"):
         return SimpleNamespace(
             model_id=model,
+            model_rows={key: SimpleNamespace(loaded=True) for key in (model, "small-child")},
             settings=SimpleNamespace(
                 lm_host=host,
                 compact_max_tokens=12288,
@@ -228,7 +230,7 @@ class TestRunner:
         assert "[error reading file:" in content
 
     def test_large_file_truncated(self, tmp_path):
-        from litetui.plugins.subagent_plugin import _make_runner, FILE_CAP
+        from litetui.plugins.subagent_plugin import FILE_CAP, _make_runner
         app = self._make_app()
         f = tmp_path / "big.txt"
         f.write_text("x" * (FILE_CAP + 1000), encoding="utf-8")
@@ -309,3 +311,75 @@ class TestRunner:
             run({"prompt": "hello", "model": "named-one"})
 
         assert captured["body"]["model"] == "named-one"
+
+class TestBackendModelSelection:
+    def _run(self, remote, persisted, current, available, explicit=None):
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = SimpleNamespace(
+            backend=SimpleNamespace(name="codex" if remote else "lmstudio", remote=remote,
+                                    models={key: {} for key in available}),
+            model_id=current,
+            model_rows={key: SimpleNamespace(loaded=loaded) for key, loaded in available.items()},
+            settings=SimpleNamespace(subagent_model=persisted, compact_max_tokens=100),
+        )
+        captured = []
+        def complete(app, payload, **kwargs):
+            captured.append(payload["model"])
+            return {"choices": [{"message": {"content": "ok"}}]}
+        args = {"prompt": "hello"}
+        if explicit:
+            args["model"] = explicit
+        with patch("litetui.plugins.subagent_plugin.model_transport.complete_sidecall", complete):
+            result = _make_runner(app)(args)
+        return captured, result
+
+    def test_codex_ignores_persisted_local_slot(self):
+        calls, result = self._run(True, "minicpm5-2b-q4", "gpt-6-astra", {"gpt-6-astra": True})
+        assert calls == ["gpt-6-astra"]
+        assert "[error]" not in result
+
+    def test_local_ignores_persisted_codex_model(self):
+        calls, result = self._run(False, "gpt-6-astra", "local-main", {"local-main": True})
+        assert calls == ["local-main"]
+        assert "[error]" not in result
+
+    def test_local_unloaded_child_is_not_requested(self):
+        calls, _ = self._run(False, "unloaded-child", "local-main",
+                             {"local-main": True, "unloaded-child": False})
+        assert calls == ["local-main"]
+
+    def test_valid_persisted_codex_child_wins(self):
+        calls, _ = self._run(True, "gpt-child", "gpt-main", {"gpt-child": True, "gpt-main": True})
+        assert calls == ["gpt-child"]
+
+    def test_explicit_model_wins(self):
+        calls, _ = self._run(True, "gpt-child", "gpt-main", {"gpt-main": True}, explicit="gpt-explicit")
+        assert calls == ["gpt-explicit"]
+
+    def test_no_valid_codex_model_returns_existing_error_without_request(self):
+        calls, result = self._run(True, "local-child", "local-main", {})
+        assert calls == []
+        assert result == "[error] ProviderError: Select a Codex model for the subagent with /model or its model argument."
+
+    def test_residency_is_refreshed_between_calls(self):
+        from litetui.plugins.subagent_plugin import _make_runner
+        residents = ["local-child", "local-main"]
+        app = SimpleNamespace(
+            backend=SimpleNamespace(remote=False, loaded_models=lambda: list(residents)),
+            model_id="local-main",
+            model_rows={"local-child": SimpleNamespace(loaded=True)},
+            settings=SimpleNamespace(subagent_model="local-child", compact_max_tokens=100),
+        )
+        calls = []
+        def complete(app, payload, **kwargs):
+            calls.append(payload["model"])
+            return {"choices": [{"message": {"content": "ok"}}]}
+        runner = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.model_transport.complete_sidecall", complete):
+            runner({"prompt": "first"})
+            residents.remove("local-child")
+            runner({"prompt": "second"})
+            app.backend = SimpleNamespace(remote=True, models={"gpt-main": {}})
+            app.model_id = "gpt-main"
+            runner({"prompt": "third"})
+        assert calls == ["local-child", "local-main", "gpt-main"]

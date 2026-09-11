@@ -1,14 +1,12 @@
-"""Subagent tool: a one-shot chat completion in its own LM Studio slot.
+"""Subagent tool: an independent one-shot completion on the active backend.
 
 No tools, no parent history — the child sees only its own prompt (and an
-optional system message). The loaded model pool is SHARED across live slots,
-so the ceiling is the app's own thinking-safe budget, settings.compact_max_tokens
+optional system message). The token ceiling is the app's own thinking-safe budget, settings.compact_max_tokens
 (Ryan 2026-09-08 21:0x: "litetui already has a think token budget set reuse
 that for subagents its the same model running") — the knob the tool-result
 summariser side call reuses too, never a third literal.
 
-Thinking is OFF by default (reasoning_effort "none" on the wire, same as the
-app's own "off" level). Pass think=true when chain-of-thought is wanted.
+Thinking defaults to off locally and the minimum supported effort remotely. Pass think=true when chain-of-thought is wanted.
 
 Files are read by the PLUGIN (not the model) and appended as fenced blocks —
 the prompt stays short and the tool_call renders instantly.
@@ -18,6 +16,7 @@ so it rides the same T499/T517 path as bash: explicit flag or auto-promotion.
 """
 from __future__ import annotations
 
+import asyncio
 import urllib.request
 from pathlib import Path
 
@@ -42,9 +41,48 @@ def _read_files(paths: list) -> str:
             if len(text) > FILE_CAP:
                 text = text[:FILE_CAP] + f"\n[... truncated at {FILE_CAP} chars ...]"
             blocks.append(f"--- {p.name} ---\n{text}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - tool boundary returns failures as visible results
             blocks.append(f"--- {raw} ---\n[error reading file: {type(e).__name__}: {e}]")
     return "\n\n".join(blocks)
+
+
+def _resolve_model(app, explicit):
+    """Resolve active-backend defaults; refresh local residency without loading."""
+    if explicit:
+        return explicit
+    backend = getattr(app, "backend", None)
+    remote = getattr(backend, "remote", False)
+    rows = getattr(app, "model_rows", {})
+    if backend is not None and not remote:
+        # Query residency for each call, not a UI snapshot from before a switch.
+        resident = getattr(backend, "loaded_models", None)
+        listing = getattr(backend, "list_models", None)
+        if resident is not None:
+            loaded = set(resident())
+        elif listing is not None:
+            loaded = {r.key for r in asyncio.run(listing()) if r.loaded}
+        else:
+            loaded = {key for key, row in rows.items() if row.loaded}
+    else:
+        loaded = {key for key, row in rows.items() if row.loaded}
+
+    def valid(model):
+        if not model:
+            return False
+        if remote:
+            return model in getattr(backend, "models", {})
+        return model in loaded
+
+    persisted = getattr(getattr(app, "settings", None), "subagent_model", None)
+    current = getattr(app, "model_id", None)
+    for model in (persisted, current):
+        if valid(model):
+            return model
+    if remote:
+        raise model_transport.ProviderError(
+            "Select a Codex model for the subagent with /model or its model argument."
+        )
+    raise model_transport.ProviderError("Select an available loaded model for the subagent with /model or its model argument.")
 
 
 def _make_runner(app):
@@ -53,12 +91,10 @@ def _make_runner(app):
         if not prompt:
             return "[error] prompt is required"
         system = (args.get("system") or "").strip() or None
-        model = (
-            (args.get("model") or "").strip()
-            or getattr(getattr(app, "settings", None), "subagent_model", None)
-            or getattr(app, "model_id", None)
-            or "local-model"
-        )
+        try:
+            model = _resolve_model(app, (args.get("model") or "").strip())
+        except Exception as e:  # noqa: BLE001 - tool boundary returns failures as visible results
+            return f"[error] {type(e).__name__}: {e}"
         think = bool(args.get("think", False))
         file_paths = args.get("files") or []
         cap = getattr(getattr(app, "settings", None), "compact_max_tokens", 12288) or 12288
@@ -84,7 +120,7 @@ def _make_runner(app):
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         try:
             data = model_transport.complete_sidecall(app, payload, opener=urllib.request.urlopen)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - tool boundary returns failures as visible results
             return f"[error] {type(e).__name__}: {e}"
 
         choice = (data.get("choices") or [{}])[0]
