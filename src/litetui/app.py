@@ -2849,6 +2849,14 @@ class LiteTUI(App):
             "type": "ready",
             "version": __version__,
             "model": self.model_id or None,
+            # T631: the host cannot derive this. LiteSuite spawns us with --rpc,
+            # --cwd, --tool-profile, --mode and --model and NO backend -- the
+            # choice is ours, from our own settings -- so its Frontier Chat pill
+            # had nothing to show but the placeholder it sent us. `getattr`
+            # twice and never str(): a stubbed backend with no `name` must
+            # report null so the host renders nothing, where the string "None"
+            # would put that word on screen.
+            "backend": getattr(getattr(self, "backend", None), "name", None),
             **({"model_note": note} if note else {}),
             "cwd": os.getcwd(),
             "tool_profile": str(getattr(self, "_active_tool_profile", None)),
