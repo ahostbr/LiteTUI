@@ -98,16 +98,25 @@ def _has_tests(tree: ast.AST) -> bool:
     matches what the collector actually does rather than a guess about it.
     """
     for node in tree.body:
+        # ⚠️ THE TWO BRANCHES BELOW LOOK SYMMETRIC AND ARE NOT. This one keeps
+        # its nested `if` on purpose: it is followed by an `elif`, so collapsing
+        # it into `if isinstance(...) and node.name.startswith("test_")` would
+        # send a module-level function NOT named test_* on to the ClassDef
+        # branch — a behaviour change in the classifier, not a tidy-up. ruff
+        # flags only the other one, correctly; do not "fix" this to match.
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name.startswith("test_"):
                 return True
-        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-            if any(
+        elif (
+            isinstance(node, ast.ClassDef)
+            and node.name.startswith("Test")
+            and any(
                 isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and m.name.startswith("test_")
                 for m in node.body
-            ):
-                return True
+            )
+        ):
+            return True
     return False
 
 
@@ -211,7 +220,12 @@ def main() -> int:
         # time. Measured 2026-09-03: the top ten were all ~9s and nearly
         # identical to each other, which is the signature of a fixed per-test
         # cost (app boot / teardown), not of ten slow tests.
-        proc = subprocess.run(
+        # ⬜ NO `check=True`, DELIBERATELY (ruff PLW1510 points here). `check`
+        # raises on a non-zero exit, which would abandon the run at the first
+        # failing file and never reach the script half below — the opposite of
+        # what a runner whose job is to report EVERY file wants. The return code
+        # is read by name immediately after, which is the whole point.
+        proc = subprocess.run(  # noqa: PLW1510
             [sys.executable, "-m", "pytest", "-q", "--durations=25",
              *[str(p) for p in pyt]],
             cwd=str(ROOT),
@@ -233,7 +247,10 @@ def main() -> int:
 
     print()
     for f in scr:
-        proc = subprocess.run(
+        # Same reason as the pytest child above: `check=True` would raise on
+        # the first failing script and the remaining files would never run, so
+        # the report would name one failure and hide the rest.
+        proc = subprocess.run(  # noqa: PLW1510
             [sys.executable, str(f)],
             cwd=str(ROOT),
             capture_output=True,
