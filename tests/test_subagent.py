@@ -297,6 +297,7 @@ class TestRunner:
         assert captured["body"]["model"] == "small-child"
 
     def test_explicit_model_beats_the_setting(self):
+        """Explicit still wins - over the persisted slot AND the parent model."""
         from litetui.plugins.subagent_plugin import _make_runner
         app = self._make_app(model="big-parent")
         app.settings.subagent_model = "small-child"
@@ -308,9 +309,32 @@ class TestRunner:
 
         run = _make_runner(app)
         with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
-            run({"prompt": "hello", "model": "named-one"})
+            run({"prompt": "hello", "model": "small-child"})
 
-        assert captured["body"]["model"] == "named-one"
+        assert captured["body"]["model"] == "small-child"
+
+    def test_an_explicit_UNLOADED_model_is_refused_without_a_request(self):
+        """T611. This arm used to assert the opposite: `model: "named-one"`
+        with nothing of that name loaded went straight to urlopen, and LM
+        Studio JIT-loads whatever a request names. The id is written by the
+        PARENT MODEL mid-turn, so "the user asked for it" was never true of
+        this path - and it was the one way left to reach a cold load after
+        T609 closed the defaults."""
+        from litetui.plugins.subagent_plugin import _make_runner
+        app = self._make_app(model="big-parent")
+        app.settings.subagent_model = "small-child"
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data)["model"])
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+        run = _make_runner(app)
+        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
+            result = run({"prompt": "hello", "model": "named-one"})
+
+        assert sent == [], "a request left naming a model LM Studio would load"
+        assert "named-one" in result and "[error]" in result, result
 
 class TestBackendModelSelection:
     def _run(self, remote, persisted, current, available, explicit=None):

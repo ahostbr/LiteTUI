@@ -47,9 +47,16 @@ def _read_files(paths: list) -> str:
 
 
 def _resolve_model(app, explicit):
-    """Resolve active-backend defaults; refresh local residency without loading."""
-    if explicit:
-        return explicit
+    """Resolve against the active backend; refresh local residency without loading.
+
+    🔴 T611 - THE EXPLICIT ARGUMENT IS CHECKED TOO, AND THAT IS THE POINT.
+    T609 made the DEFAULTS (persisted slot, current model) resident-only on
+    local so the fallback could never name a model LM Studio would JIT-load.
+    `model` is not a user's choice though: the PARENT MODEL writes it mid-turn,
+    so "explicit" here means "a token the LLM emitted", and letting it through
+    left the whole T594 rule reachable by one tool call. It still wins over
+    every default - it is just held to the same residency law.
+    """
     backend = getattr(app, "backend", None)
     remote = getattr(backend, "remote", False)
     rows = getattr(app, "model_rows", {})
@@ -72,6 +79,17 @@ def _resolve_model(app, explicit):
         if remote:
             return model in getattr(backend, "models", {})
         return model in loaded
+
+    if explicit:
+        # LOCAL ONLY, deliberately. A remote backend loads nothing, so an
+        # explicit remote id costs at most one 404 and refusing it here would
+        # be a different card's change (test_explicit_model_wins pins that).
+        if remote or valid(explicit):
+            return explicit
+        raise model_transport.ProviderError(
+            f"The subagent asked for {explicit!r}, which is not loaded. "
+            f"Available: {', '.join(sorted(loaded)) or '(none)'}."
+        )
 
     persisted = getattr(getattr(app, "settings", None), "subagent_model", None)
     current = getattr(app, "model_id", None)

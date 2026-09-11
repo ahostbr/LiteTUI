@@ -3655,10 +3655,28 @@ class LiteTUI(App):
 
     @work(thread=True, group="thinking-probe", exclusive=True)
     def _probe_thinking(self) -> None:
-        """T540: discover the real thinking levels for the current model."""
+        """T540: discover the real thinking levels for the current model.
+
+        🔴 T611 — THIS IS A CHAT REQUEST, AND IT FIRES WITHOUT A USER TURN.
+        `connect()` calls it for every lmstudio connect, headless children
+        included, and the probe POSTs to /api/v1/chat (or five times to
+        /v1/chat/completions) naming `model_id` — through urllib, not through
+        model_transport, so nothing `_ensure_chat_ready` does reaches it.
+        `connect()` can set `model_id` from the PERSISTED `default_model`
+        filtered against `available_models`, which is the DOWNLOADED listing
+        and not the resident one, so the id can be cold with nobody present.
+        Same three-branch answer as everywhere else, and READ-ONLY: the probe
+        asks about the model that will answer, it does not choose one.
+        """
         model = self.model_id
         if not model:
             return
+        if getattr(self, "_rpc", False):   # doubles predate this seam
+            action, resident, _why = self._headless_model_decision()
+            if action == "refuse":
+                return
+            if action == "substitute" and resident:
+                model = resident
         host = self.settings.lm_host
         seed = getattr(self.settings, "lmstudio_graded_thinking_models", ())
         levels = thinking_probe.get_effective_levels(host, model, seed)
