@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 from textual.widgets import Select
 from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
-from litetui.widgets import PaletteButton
+from litetui.widgets import ContextFooter, PaletteButton
 from textual.command import CommandPalette
 from litetui import paths
 from litetui import scheduler as sched_mod
@@ -394,4 +394,56 @@ def test_the_palette_button_is_a_button_not_a_bar():
                 f"the palette button is {button.region.width} columns wide; "
                 "it should size to its label, not span the footer"
             )
+    _run(body())
+
+
+def test_every_clickable_footer_widget_owns_its_own_cells():
+    """A control that does not own its cells is a control nobody can click.
+
+    🔴 THIS IS THE INVARIANT, NOT "nothing overlaps" (T578). Overlap is not
+    satisfiable here and the card was wrong to ask for it: `.ctx-label` is
+    Region(x=0, width=190) — the full footer row — and `dock: right` on a
+    sibling does not stack, it places both against the same edge, so the label
+    and the palette button cover the same cells BY DESIGN. Adding `width: auto`
+    to the label does not fix that either; measured, the label becomes
+    Region(x=103, width=87) and still covers the button at 176..190.
+
+    What keeps the button clickable is that `ContextFooter` composes it LAST, so
+    it wins the hit test on the cells they share — which was an undocumented
+    ordering constraint until this arm. The next clickable chip composed BEFORE
+    the label would render, report visible and display True, hold a non-zero
+    region, and never receive a click; no behavioural arm can see that, because
+    the widget is perfect and only the hit test disagrees.
+
+    So the question asked here is the one a mouse asks: for every cell of every
+    clickable child, who does `get_widget_at` say is there?
+    """
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)) as pilot:
+            # Layout first and judged separately — a region is 0x0 until it has
+            # happened, and cell ownership before then means nothing.
+            for _ in range(200):
+                if a.screen.query_one(PaletteButton).region.width:
+                    break
+                await pilot.pause()
+            footer = a.screen.query_one(ContextFooter)
+            clickable = [c for c in footer.children
+                         if hasattr(type(c), "on_click") and c.region.area]
+            assert clickable, (
+                "no clickable footer widget was found laid out; this arm is "
+                "measuring nothing"
+            )
+            for widget in clickable:
+                stolen = []
+                for x in range(widget.region.x, widget.region.right):
+                    hit = a.screen.get_widget_at(x, widget.region.y)
+                    if hit and hit[0] is not widget:
+                        stolen.append((x, type(hit[0]).__name__))
+                assert not stolen, (
+                    f"{type(widget).__name__} {widget.region} does not own "
+                    f"{len(stolen)} of its cells — {stolen[:4]} — so a click "
+                    "there goes to the other widget. Compose it after the "
+                    "widget that covers it, or stop that widget covering it."
+                )
     _run(body())
