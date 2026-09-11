@@ -121,10 +121,20 @@ def _never_write_the_live_task_store(tmp_path, monkeypatch):
 
     live = Path(paths_mod.ROOT)
     store = tmp_path / "task-store"
-    store.mkdir(exist_ok=True)
 
+    # Created ON REDIRECT, never eagerly: this fixture is autouse, so an
+    # unconditional mkdir puts a `task-store` dir in EVERY test's tmp_path,
+    # including tests that never touch the store and assert on tmp_path's
+    # contents. That is what broke test_router_record.py's
+    # test_the_write_is_atomic_and_leaves_no_tmp -- it asserts the write
+    # leaves exactly ["router.json"] behind and got ["router.json",
+    # "task-store"]. The mkdir cannot simply be dropped: `tasks.save` calls
+    # `tempfile.mkstemp(dir=<root>)` and creates no directory itself.
     def _swap(root):
-        return store if Path(root) == live else root
+        if Path(root) != live:
+            return root
+        store.mkdir(exist_ok=True)
+        return store
 
     real_save, real_load = tasks_mod.save, tasks_mod.load
     real_finish = tasks_mod.finish
