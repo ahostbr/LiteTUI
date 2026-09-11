@@ -17,7 +17,12 @@ Sentinel's instruction. Every row names a sha, a symbol or a re-runnable query.
 | T583 — my T570 defect, landed by OpenBolt | main `27a201c` | merged, unverified — closes §1 |
 | T582 — a skill body names where it was loaded from | main `d040e7a` | merged, unverified |
 | T592 — the suite stops writing the live task store | main `28004e6` | merged, unverified · carries the T581 flake fix as its own commit |
-| T577 half 1 — approval over `--rpc` | `fix/t577-approval-over-rpc` `e6decdd` | pushed, NOT merged · **half 2 (LiteSuite) NOT STARTED** |
+| T577 half 1 — approval over `--rpc` | main `3794261` (+ ruff fold `afdb19b`) | merged, unverified |
+| T577 half 2 — the card in Frontier Chat | LiteSuite develop `c5dee454a` | merged, unverified · **T577 stays REVIEWING: the end-to-end is Ryan's to see** |
+| T587 — a failed workspace save is not silent | LiteSuite develop `ef7a5336d` | merged, unverified |
+| T593 — the electron double catches up | LiteSuite develop `46b786921` | merged, unverified |
+| T579 remainder — the last two LiteTUI reds | main `b13bada` | merged, unverified · **one red was hiding a real leak** |
+| T590 — the installed Codex wrapper | SCOUTED, nothing changed | scout sent as `83621b39`; blocked on a coordination call |
 
 ## 1. 🔴 A DEFECT I SHIPPED AND MIS-ATTRIBUTED — read this first
 
@@ -177,6 +182,63 @@ the wire, not that a spawned child does. It belongs with half 2.
 Frontier Chat ALREADY has an approval flow for claudeAgent tool permissions —
 REUSE that component, do not fork it. The click sends `approve` back.
 
+## 3d. T579 remainder — a gate red for one reason hid a real defect
+
+main `b13bada`: `e8bb28c` (the leak + the census) and `a1e62a4` (the schema scan).
+
+🔴 **THE COUNT WAS NOT THE DEFECT — IT WAS WHAT HID ONE.**
+`test_runtime_log_producers.py` failed at `assert len(calls) == 18` (line 101)
+and so never reached line 109, where T499's producer says:
+
+```
+runtime_log.record("task.started", task_id=task.id, tool=name, label=task.label)
+AssertionError: assert not ({'label','task_id','tool'} & PROHIBITED)
+```
+
+`label` is in `PROHIBITED` **by name**, and `tasks.label_of` (tasks.py:96)
+returns the first 60 characters of the call's `command` or `prompt`. Every
+background tool call was writing the request into the ALWAYS-ON runtime log.
+Fixed in production, not the gate.
+
+⬜ **THE REMOVED PRODUCER WAS CHECKED, NOT WAVED THROUGH**:
+`harness_rebind_failed` is gone because `f64442b` (T5) removed the rebind path
+and T585 deleted `Seat.rebind` — the note survives at `app.py:2290`.
+
+⚠️ **A BLIND SPOT NAMED**: `app.py:1959` records `"task." + task.state`, so
+`task.done/failed/killed` reach the log and no constant-scanning gate can
+enumerate them. A new arm pins that there is exactly ONE computed producer.
+
+⬜ **`test_theme_extra_tokens.py` IS GREEN** at `afdb19b` — 3 runs alone. It was
+on the card's list of three and I could not make it fail. Accepted as green by
+Sentinel; if a full run reds it, that is order-dependence and a new card.
+
+## 3e. T590 — SCOUTED ONLY, nothing touched
+
+Scout sent as `83621b39`. Re-runnable:
+`grep -rn "liteharness-t370-desktop-wake" ~/.codex/skills` → **10 hits, 6 files,
+two skills** (`liteharness` and `liteharness-manual-start`).
+
+🔴 The installed `manual_liteharness.py` is a **bridge shim whose own docstring
+says to delete it**: *"Pinned runtime ecb3488. Remove this bridge after verified
+T376 deployment."* It `raise SystemExit`s before argparse when
+`C:/Projects/.worktrees/liteharness-t370-desktop-wake` is absent — and it is
+absent. That is the "exits before bootstrap/check".
+
+✅ **The bridge is also unnecessary**: `liteharness` is an EDITABLE install
+resolving to `C:/Projects/liteharness-oss`, so
+`importlib.import_module('liteharness.cli_scripts.codex.manual_liteharness')`
+already works. The `.bak.20260904_184241` siblings carry the correct
+post-cutover form — a plain import, no pin. `manual_liteharness` has **no**
+`.bak`.
+
+⬜ **oss needs no code change**: it never had the pin, and
+`catalog/skills/ls-liteharness/scripts/` is EMPTY, so the installed files are
+not deployed from the catalog. Pure machine-local residue.
+
+⬜ **BLOCKED, deliberately**: the end-to-end wake gate needs a Codex Desktop
+seat and the only one is Astra's `01a08e03`, live. Editing the scripts that seat
+invokes is the disruption the card warns about. Awaiting Sentinel's call.
+
 ## 4. Laws this evening paid for, each with its measurement
 
 1. **A measurement of what ARRIVES is not a measurement of what was SENT.**
@@ -204,6 +266,7 @@ REUSE that component, do not fork it. The click sends `approve` back.
 2. Keep id `1ccbc1d5-e16b-4022-b42e-8aa9659028c6`; arm ONE watcher with the
    explicit `--agent-id` form, never `watch-auto`.
 3. Report "back" to `2dc57f3e-a914-4d1e-b414-36db80e3006a` by **inbox**.
-4. T577 half 2 is the live card (§3c). T582/T592 are merged. T577 (tool approval over `--rpc` routed to the
+4. T590 is the live card and is SCOUTED, NOT STARTED (§3e) — it is blocked
+   on a coordination call, not on work. Everything else of mine is merged. T577 (tool approval over `--rpc` routed to the
    host — the door left unguarded on purpose in T572) waits on Ryan's priority.
    T570 and T569 are the ONLY things Ryan has verified end to end.
