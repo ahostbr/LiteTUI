@@ -1395,6 +1395,19 @@ class LMStudioBackend:
                 return int(m.get("max_context_length") or 0) or None, m.get("type"), False
         return None
 
+    def loaded_models(self) -> list[str]:
+        """Ids LM Studio has RESIDENT right now. Read-only, starts no load.
+
+        Reads the same native listing `_list_sync` does, so it cannot
+        disagree with it, and asks the only question a headless caller
+        needs: what is already in VRAM.
+        """
+        return [
+            str(m.get("id"))
+            for m in self._native_models()
+            if m.get("id") and m.get("loaded_context_length")
+        ]
+
     # -- readiness ---------------------------------------------------------
 
     async def ensure_chat_ready(self, key: str | None) -> None:
@@ -1413,6 +1426,12 @@ class LMStudioBackend:
         The asymmetry with the llama.cpp side is the truth about the two
         engines, not an oversight: our router will not JIT-load (it is
         started ``--no-models-autoload``, by law), and LM Studio will.
+
+        ⚠️ AND THAT IS TRUE OF AN INTERACTIVE SESSION ONLY (T594). A person
+        typing a prompt wants the load; a `--rpc` child has nobody watching
+        and must never take VRAM someone else is using, so app.py refuses
+        the cold case BEFORE this is reached in headless mode. The decision
+        above is unchanged for the path it was written for.
         """
         if not key:
             raise BackendError(
