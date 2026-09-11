@@ -4775,14 +4775,17 @@ class LiteTUI(App):
                 args_json = slot["arguments"] or "{}"
                 tc_id = slot.get("id") or f"call_{i}"
                 msg = tool_msgs.get(i)
-                try:
-                    args = json.loads(args_json) if args_json else {}
-                    if not isinstance(args, dict):
-                        raise ValueError("arguments must be a JSON object")
-                except Exception as e:
-                    result, ok = f"[error] invalid tool arguments: {e}", False
+                if self._stop_requested:
+                    result, ok = "[cancelled] not executed — turn stopped", False
                 else:
-                    result, ok = await self._execute_tool(name, args)
+                    try:
+                        args = json.loads(args_json) if args_json else {}
+                        if not isinstance(args, dict):
+                            raise ValueError("arguments must be a JSON object")
+                    except Exception as e:
+                        result, ok = f"[error] invalid tool arguments: {e}", False
+                    else:
+                        result, ok = await self._execute_tool(name, args)
                 # ── one hygiene point for every tool result ──────────
                 # bash, read, web_fetch, harness, skill and every MCP tool
                 # pass through here and nowhere else, so this is where they
@@ -4821,6 +4824,11 @@ class LiteTUI(App):
                         ),
                     }
                 )
+
+            if self._stop_requested:
+                # Pair every call before stopping, even on the last allowed round.
+                stopped_early = True
+                break
 
             # 🔴 THE ONLY DOOR AN IMAGE CAN COME THROUGH.
             #
@@ -5252,16 +5260,19 @@ class LiteTUI(App):
                 for i, slot in sorted(tool_acc.items()):
                     fname = slot["name"]
                     ok = True
-                    try:
-                        fargs = json.loads(slot["arguments"] or "{}")
-                        if not isinstance(fargs, dict):
-                            raise ValueError("arguments must be a JSON object")
-                        result, ok = await self._execute_tool(fname, fargs)
-                        if ok and fname == "write":
-                            writes.append(str(fargs.get("path", "?")))
-                    except Exception as e:
-                        result = f"[error] {type(e).__name__}: {e}"
-                        ok = False
+                    if self._stop_requested:
+                        result, ok = "[cancelled] not executed — turn stopped", False
+                    else:
+                        try:
+                            fargs = json.loads(slot["arguments"] or "{}")
+                            if not isinstance(fargs, dict):
+                                raise ValueError("arguments must be a JSON object")
+                            result, ok = await self._execute_tool(fname, fargs)
+                            if ok and fname == "write":
+                                writes.append(str(fargs.get("path", "?")))
+                        except Exception as e:
+                            result = f"[error] {type(e).__name__}: {e}"
+                            ok = False
                     if i in tool_msgs:
                         tool_msgs[i].set_result(str(result), ok)
                     ask.append({
@@ -5271,6 +5282,11 @@ class LiteTUI(App):
                         "content": str(result),
                     })
                 self._scroll_down(only_if_following=True)
+                if self._stop_requested:
+                    self._turn_abandoned = True
+                    card.fail("stopped — conversation unchanged")
+                    self._system(self._stop_reason or "[stopped by you]")
+                    return
         except Exception as e:
             self._autocompact_failed_at = self.ctx_used
             # The repr goes to the sink; card and chat get plain words. A
