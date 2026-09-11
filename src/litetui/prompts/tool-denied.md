@@ -61,3 +61,15 @@ that it is off, then carry on with what you can still do.
 Only the user can turn them on: Ctrl+T, or Settings -> Agent loop -> Tools
 enabled. Tell them that in plain language, then answer as best you can without
 tools. Do not retry and do not try another tool.
+
+## no-host
+
+<!-- T577. A headless child asked its host to approve a tool call and nothing
+     came back. DISTINCT FROM `by-user` on purpose: "the user refused" tells the
+     model a person decided and it should stop asking, which would make a broken
+     host look like a settled decision forever. -->
+
+[no answer] {name} needed approval and the request was sent to the host, which
+never answered. Nothing ran and nothing changed. This is NOT a refusal by the
+user -- nobody decided. Report it as an approval that went unanswered, not as a
+denial, and say the host did not respond.

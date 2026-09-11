@@ -59,6 +59,7 @@ TOOL_DENIED_REQUIRED: dict[str, tuple[str, ...]] = {
     "no-metadata": ("name",),
     "profile": ("name", "reason"),
     "by-user": ("name",),
+    "no-host": ("name",),
     "tool-disabled": ("name",),
     "tools-off": (),
 }
@@ -70,6 +71,12 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
         "[policy denied] {name}: {reason}. Nothing ran and nothing changed. "
         "This is the active authority profile refusing, not the user — do not "
         "ask them to approve it and do not retry."
+    ),
+    "no-host": (
+        "[no answer] {name} needed approval and the request was sent to the "
+        "host, which never answered. Nothing ran and nothing changed. This is "
+        "NOT a refusal by the user -- nobody decided. Say that the approval "
+        "went unanswered rather than reporting it as denied."
     ),
     "by-user": (
         "[policy denied by user] {name} — the user was asked and refused, so "

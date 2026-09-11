@@ -13,11 +13,14 @@ list that is wrong the day someone adds the twelfth — and wrong SILENTLY, sinc
 the symptom is a hang in someone else's process. The bare `/loop` this card
 names is the instance; the doors are the fix.
 
-⚠️ `show_dialog` IS DELIBERATELY NOT GUARDED HERE, and that is a finding rather
-than an omission — see the arm at the bottom. Its awaiting caller is tool
-approval, where "no answer" means DENY AND STOP THE TURN. A blanket refusal
-there would convert a hang into a silent policy change, which is worse: the
-hang is at least visible.
+⚠️ `show_dialog` IS STILL NOT GUARDED HERE, AND STILL DELIBERATELY -- but the
+reason changed on 2026-09-10 (T577) and the arm at the bottom changed with it.
+Its awaiting caller is tool approval, where "no answer" means DENY AND STOP THE
+TURN, so a blanket refusal here would have converted a hang into a silent policy
+change. That door is now ROUTED rather than refused: over `--rpc` the CONFIRM
+branch in `app._execute_tool` asks the HOST and awaits the answer on the wire.
+The routing lives at that caller, never in `show_dialog`, which is generic and
+serves three callers with no approval semantics at all.
 """
 from __future__ import annotations
 
@@ -190,28 +193,50 @@ def test_loop_list_is_unchanged_on_both_transports():
         assert a.said, f"/loop list said nothing (rpc={rpc})"
 
 
-# ── the door that is NOT guarded, and why ──────────────────────────────────
+# ── the door that is ROUTED rather than guarded, and why ───────────────────
 
-def test_show_dialog_is_left_alone_on_purpose():
-    """🔴 A GUARD HERE WOULD BE A SILENT POLICY CHANGE, NOT A FIX.
+def test_show_dialog_has_no_rpc_branch_of_its_own():
+    """🔴 THIS ARM USED TO BE THE WHOLE POLICY AND IT IS NOW ONLY HALF OF IT.
 
-    `show_dialog` is awaited by ONE caller that blocks a turn on the answer:
-    tool approval (app.py, the `tool_policy.CONFIRM` branch). Its contract is
-    `not answer` -> DENY, and DENY STOPS THE TURN. Refusing over rpc would turn
-    every confirm-profile tool call in a headless child into a denial that ends
-    the turn, with no dialog and no explanation — a hang at least announces
-    itself by never finishing.
+    Until T577 it read `"_rpc" not in inspect.getsource(show_dialog)` and its
+    docstring explained that a guard there would silently convert every
+    confirm-profile tool call in a headless child into DENY-and-stop-the-turn.
+    That reasoning still holds and is why the grep survives. What it can no
+    longer do is stand for the policy:
 
-    This arm exists so the omission is a DECISION with a reason attached rather
-    than a door somebody notices is missing and closes. What a headless child
-    actually needs is approval routed to its HOST over the wire; that is a
-    feature, not a guard, and it is not built.
+        T577 routes approval to the host at the AWAITING CALLER, so this
+        assertion stays green whether or not the feature exists, and a green
+        that cannot fail is a guard that tells the next reader the question is
+        settled when it is not.
+
+    The policy itself — the request goes out, no screen appears, the keyboard
+    path is untouched, and an unanswered request is never reported as a human
+    refusal — is asserted in `tests/test_approval_over_rpc.py`. This one keeps
+    only its narrow structural claim: the rpc branch belongs to the caller, not
+    to the generic dialog door.
     """
     import inspect
 
     src = inspect.getsource(side_panel.show_dialog)
     assert "_rpc" not in src, (
-        "show_dialog grew an rpc guard — read this arm's docstring first: it "
-        "silently converts every headless tool-approval prompt into DENY, which "
-        "stops the turn"
+        "show_dialog grew an rpc branch — T577 put approval routing in "
+        "app._execute_tool's CONFIRM branch on purpose: show_dialog serves "
+        "three other callers with no approval semantics, and an rpc branch "
+        "here makes all of them rpc-aware to serve one"
     )
+
+
+def test_the_approval_policy_is_asserted_somewhere_that_can_fail():
+    """The pointer that stops the grep above from being read as the whole story.
+
+    A file rename or a deletion of the real arms would otherwise leave this
+    module looking like it still covers tool approval over rpc.
+    """
+    real = Path(__file__).resolve().parent / "test_approval_over_rpc.py"
+    assert real.is_file(), (
+        "test_approval_over_rpc.py is gone — the arm above is a structural "
+        "claim only and does NOT cover the approval policy on its own"
+    )
+    body = real.read_text(encoding="utf-8")
+    for needed in ("tool_approval_requested", "screen_stack", "no-host"):
+        assert needed in body, f"{needed} is no longer asserted over there"
