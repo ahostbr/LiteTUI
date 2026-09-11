@@ -2826,10 +2826,22 @@ class LiteTUI(App):
                 break
             await asyncio.sleep(0.5)
         from litetui.version import __version__
+
+        # T594: resolve BEFORE announcing, so `ready` names the model that
+        # will actually answer rather than the one that was configured.
+        note = ""
+        if getattr(self, "_rpc", False):   # doubles predate this seam
+            action, model, why = self._headless_model_decision()
+            if action == "substitute" and model:
+                self.model_id = model
+                note = why
+            elif action == "refuse":
+                note = why
         self._rpc_emit({
             "type": "ready",
             "version": __version__,
             "model": self.model_id or None,
+            **({"model_note": note} if note else {}),
             "cwd": os.getcwd(),
             "tool_profile": str(getattr(self, "_active_tool_profile", None)),
         })
@@ -4284,6 +4296,58 @@ class LiteTUI(App):
         self._active_tool_profile = profile
         self._stream()
 
+    def _headless_model_decision(self) -> tuple[str, str | None, str]:
+        """What a `--rpc` child may do about the model, without loading one.
+
+        🔴 LM STUDIO JIT-LOADS WHATEVER A CHAT REQUEST NAMES, and that is a
+        DELIBERATE convenience for a person at a keyboard — `_chat_ready_sync`
+        says so and names D2/D11. Headless is the opposite case: a consult
+        panel spawns these children, nobody is present, and a cold model id
+        silently takes ~18 GB of a GPU someone else is using. Measured
+        2026-09-10: six probe children put a second 27B beside the one Ryan
+        was running, and nothing in the RPC output said a load had happened —
+        `ready` looks identical either way.
+
+        Returns (action, model, message):
+          ("ok",        id,   "")   the selection is resident; proceed
+          ("substitute", id,  why)  exactly one OTHER is resident; use it
+          ("refuse",    None, why)  nothing is resident; answer nothing
+
+        ⚠️ READ-ONLY, like the seam it guards. A question about state must
+        not change it — the same law `_ensure_chat_ready` is written under.
+        """
+        ask = getattr(self.backend, "loaded_models", None)
+        if ask is None:
+            # A backend with no opinion (llama.cpp will not JIT-load at all,
+            # by law; doubles predate the seam). Never AttributeError mid-turn.
+            return ("ok", self.model_id, "")
+        try:
+            resident = [m for m in ask() if m]
+        except Exception as exc:  # noqa: BLE001 - ANY failure to read the
+            # loaded set means we cannot prove a request is safe, so refuse.
+            why = (
+                f"cannot tell which models are loaded ({exc}); refusing rather "
+                f"than sending a request that might load one"
+            )
+            return ("refuse", None, why)
+        want = self.model_id
+        if want and want in resident:
+            return ("ok", want, "")
+        if len(resident) == 1:
+            why = (
+                f"selected {want!r} was not loaded; using the resident "
+                f"{resident[0]!r}"
+            )
+            return ("substitute", resident[0], why)
+        names = ", ".join(sorted(resident)) or "(none)"
+        why = (
+            f"asked for {want!r}; loaded: {names}. A headless child does not "
+            f"load models — load one in LM Studio, or pass --model naming one "
+            f"that is loaded."
+        )
+        return ("refuse", None, why)
+
+
     async def _ensure_chat_ready(self, *, timeout: float | None = None) -> None:
         """Ask, in plain words, whether model_id can serve a turn RIGHT NOW.
 
@@ -4312,6 +4376,16 @@ class LiteTUI(App):
         a missing capability must mean "no opinion", never AttributeError
         mid-turn.
         """
+        # T594: the headless gate runs FIRST, because refusing has to happen
+        # before anything that could name a cold id reaches LM Studio.
+        if getattr(self, "_rpc", False):   # doubles predate this seam
+            action, model, why = self._headless_model_decision()
+            if action == "refuse":
+                self._rpc_emit({"type": "error", "kind": "model_not_loaded",
+                                "message": why})
+                raise llm_backend.BackendError(f"model not loaded — {why}")
+            if action == "substitute" and model:
+                self.model_id = model
         ask = getattr(self.backend, "ensure_chat_ready", None)
         if ask is None:
             return
