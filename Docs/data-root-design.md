@@ -7,10 +7,10 @@ Introduce **`LITETUI_DATA_ROOT`**, resolved once by the shared implementation `p
 Three locations are deliberately distinct:
 
 - **Bundled resources:** package prompts/schemas and existing per-file prompt overrides. Their anchors do not change.
-- **Durable application data/config:** the override currently owns settings.json, .convos (transcripts, memory, goals), background-tasks.json and background task output paths. `settings_path(root=...)` retains explicit caller precedence.
+- **Durable application data/config:** the override currently owns settings.json, .convos (transcripts, memory, goals), background-tasks.json and background task output paths. The T618 fence extension also includes scheduler jobs.json and runtime diagnostic logs. `settings_path(root=...)` retains explicit caller precedence.
 - **Tool workspace:** cwd/--cwd, workspace authorization, skill discovery and MCP configuration anchors remain unchanged. `paths.ROOT` is NOT repurposed.
 
-This is not a complete application sandbox. **Incomplete migration:** scheduler jobs, runtime logs, generated llama configuration/logs, skill caches, fleet/inbox state and MCP configuration still follow their existing locations. The subprocess-test isolation card must disable these paths or obtain a separately reviewed extension per root; setting the variable alone does not prove isolation.
+This is not a complete application sandbox. **Incomplete migration:** generated llama configuration/logs, skill caches, fleet/inbox state and MCP configuration still follow their existing locations. The subprocess-test isolation card must disable these paths or obtain a separately reviewed extension per root; setting the variable alone does not prove isolation.
 
 ## Compatibility and migration policy
 

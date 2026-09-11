@@ -285,19 +285,19 @@ def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) 
         from litetui import paths
         verb = cmd_type.split(".", 1)[1] if "." in cmd_type else ""
         if verb == "list":
-            jobs = scheduler.load(paths.ROOT)
+            jobs = scheduler.load(paths.data_root())
             _respond(cmd_id, ok=True, result=[j.__dict__ for j in jobs])
         elif verb == "create":
-            jobs = scheduler.load(paths.ROOT)
+            jobs = scheduler.load(paths.data_root())
             job = scheduler.Job(**{k: v for k, v in cmd.items() if k not in ("type", "id")})
             jobs.append(job)
-            scheduler.save(paths.ROOT, jobs)
+            scheduler.save(paths.data_root(), jobs)
             _respond(cmd_id, ok=True, result=job.__dict__)
         elif verb == "delete":
             job_id = cmd.get("job_id", "")
-            jobs = scheduler.load(paths.ROOT)
+            jobs = scheduler.load(paths.data_root())
             jobs = [j for j in jobs if getattr(j, "id", None) != job_id]
-            scheduler.save(paths.ROOT, jobs)
+            scheduler.save(paths.data_root(), jobs)
             _respond(cmd_id, ok=True, result={"deleted": job_id})
         else:
             _respond(cmd_id, ok=False, error=f"unknown jobs verb: {verb}")
@@ -349,7 +349,7 @@ def _handle_tasks(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any)
                 from litetui import tasks as tasks_mod
 
                 _respond(cmd_id, ok=True, result={
-                    "id": task_id, "tail": tasks_mod.tail_text(task, paths.ROOT),
+                    "id": task_id, "tail": tasks_mod.tail_text(task, paths.data_root()),
                 })
         else:
             _respond(cmd_id, ok=False, error=f"unknown tasks verb: {verb}")

@@ -574,7 +574,7 @@ def _apply_job_edit(jobs: list, job, result) -> bool:
     else:
         return False
     try:
-        sched_mod.save(jobs, paths.ROOT)
+        sched_mod.save(jobs, paths.data_root())
     except OSError:
         pass    # an unwritable store must not lose the in-memory edit
     return True

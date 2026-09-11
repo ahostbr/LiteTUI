@@ -72,6 +72,9 @@ jobs:
       - name: pytest (locked runtime)
         run: uv run --locked pytest -q
 
+      - name: Standalone regression scripts
+        run: uv run --locked python tests/run_all.py --scripts-only -v
+
       # T135 (2026-08-30): the wheel must be INSTALLABLE, not just importable in a
       # dev checkout. 0.22.0 shipped data (schemas, prompts) that only existed at
       # the repo root, so first launch from PyPI died with FileNotFoundError — and
