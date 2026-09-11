@@ -12,7 +12,10 @@ Sentinel's instruction. Every row names a sha, a symbol or a re-runnable query.
 | T571 — `tasks.list`/`kill` over `--rpc` | main `7e07b08` | merged, unverified |
 | T572 — no keyboard dialog headless | main `5df7d5b` | merged, unverified |
 | T558-C — the one runner measures every file | main `a514f1e` | merged, unverified |
-| T580 — the guard rule + the lint debt | `fix/t580-script-guard-coverage` `e7b408b`, `f795e63` | pushed, NOT merged |
+| T580 — the guard rule + the lint debt | main `1a0aa51` | merged, unverified |
+| T581 — the chip repaints when the task set moves | main `9921a48` | merged, unverified · **two of its four arms are NOT pinned by the fix**, see §3 |
+| T583 — my T570 defect, landed by OpenBolt | main `27a201c` | merged, unverified — closes §1 |
+| T582 — a skill body names where it was loaded from | `fix/t582-ls-mark-skill-path` `fe6d2d8` | pushed, NOT merged |
 
 ## 1. 🔴 A DEFECT I SHIPPED AND MIS-ATTRIBUTED — read this first
 
@@ -104,6 +107,45 @@ a task leaves the live set. `_refresh_ctx_label` is called by the nav methods an
 by the settings path — check whether `_run_background`'s completion calls it.
 Reproduce with a task that times out.
 
+## 3b. T582 — the ls-mark path, and what the card had backwards
+
+`fix/t582-ls-mark-skill-path` `fe6d2d8`, pushed, NOT merged.
+
+🔴 **THE CARD BLAMED THE SKILL TEXT; NO SKILL.md NAMES A REPO PATH.** The literal
+`C:/Projects/LiteTUI/skills/ls-mark/mark.py` exists in exactly one file on this
+machine — the Codex seat's own `convo.jsonl` — because the seat INFERRED it from
+the only skills directory the system prompt named. Re-run:
+
+```
+grep -rIl "LiteTUI/skills/ls-mark" C:/Projects/LiteTUI C:/Projects/liteharness-oss
+```
+
+The real defect: `skills.load()` returned SKILL.md **verbatim**, so the two
+placeholder spellings in the wild (`${CLAUDE_SKILL_DIR}`, `<this skill's
+directory>`) bound to nothing. Measured across the discovered library:
+**25 skills, 100 occurrences, all unbound → 0 after.** `bind_skill_dir` in
+`skills.py` substitutes both and prepends `Base directory for this skill:`.
+
+⬜ **NO liteharness-oss COMMIT, DELIBERATELY.** The card named it as the second
+repo. With the loader binding both spellings, ls-mark works unchanged, and
+Claude Code injects a base directory anyway — so an OSS edit would be 25 files
+of text churn against a pre-commit PII gate to work around one missing line in
+the host. Flagged to Sentinel as a premise correction, not silently skipped.
+
+✅ **ONE CARD ITEM WAS ALREADY BUILT AND I NEARLY REBUILT IT**: "precedence when
+two cached versions exist". `skills.resolve_roots` already sorts glob matches by
+mtime; with 1.0.15 and 1.0.16 both on disk it returns only `.../1.0.16/skills`.
+
+⚠️ **ONE OF THE EIGHT ARMS IS PINNED BY NEITHER PROBE**
+(`test_an_unknown_name_is_not_given_a_base_directory`) — it guards the ERROR
+path against acquiring a header, a mistake not yet made. Forward guard, not a
+proof. The census arm sees only the two spellings that exist today.
+
+⬜ **UNTRACKED `background-tasks.json` IN THE REPO ROOT** — a killed `t-343839`
+"sleep 300", written by my own T581 arms: `_save_background()` resolves relative
+to cwd. Test pollution, not a shipped defect, and NOT in `.gitignore`. Reported,
+not patched — a `.gitignore` line would hide it rather than fix it.
+
 ## 4. Laws this evening paid for, each with its measurement
 
 1. **A measurement of what ARRIVES is not a measurement of what was SENT.**
@@ -131,5 +173,6 @@ Reproduce with a task that times out.
 2. Keep id `1ccbc1d5-e16b-4022-b42e-8aa9659028c6`; arm ONE watcher with the
    explicit `--agent-id` form, never `watch-auto`.
 3. Report "back" to `2dc57f3e-a914-4d1e-b414-36db80e3006a` by **inbox**.
-4. T581 is queued (§3). T580 awaits merge. T577 (tool approval over `--rpc`
-   routed to the host) waits on Ryan's priority.
+4. T582 awaits merge (§3b). T577 (tool approval over `--rpc` routed to the
+   host — the door left unguarded on purpose in T572) waits on Ryan's priority.
+   T570 and T569 are the ONLY things Ryan has verified end to end.
