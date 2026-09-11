@@ -1172,6 +1172,7 @@ class LiteTUI(App):
         # nothing that reads them had to change.
         self.store = ConversationRepository(on_error=self._report_persist_error)
         # Staged-but-not-created. See _new_convo / _materialise_convo.
+        self.last_usage: dict | None = None
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
         #: WHY _stop_requested was set, as the line to show the user, or None
         #: for the plain Esc case. It exists because the agent loop's tail used
@@ -4569,6 +4570,8 @@ class LiteTUI(App):
                 async for chunk in stream:
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
+                    if u is not None:
+                        self._record_usage(u)
                     if u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
                         rate = self._tps.final(
@@ -5107,6 +5110,15 @@ class LiteTUI(App):
         self._user_bubble(WAKE_AFTER_COMPACT, False)
         self._append({"role": "user", "content": WAKE_AFTER_COMPACT})
         self._stream()
+
+    def _record_usage(self, usage) -> None:
+        """Last provider usage, numeric-only; cache hits do not reduce context."""
+        self.last_usage = {
+            key: model_transport.numeric_usage(getattr(usage, key, None))
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens",
+                        "cached_tokens", "cache_write_tokens", "input_tokens_details",
+                        "usage_details")
+        }
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "") -> None:

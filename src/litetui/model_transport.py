@@ -303,6 +303,16 @@ def _call(index, id=None, name=None, arguments=None):
     return NS(index=index, id=id, function=NS(name=name, arguments=arguments))
 
 
+def numeric_usage(value):
+    """Retain numeric usage metadata only; unknown values remain unknown."""
+    import math
+
+    if isinstance(value, dict):
+        return {k: numeric_usage(v) for k, v in value.items()
+                if isinstance(v, dict) or (type(v) in (int, float) and math.isfinite(v))}
+    return value if type(value) in (int, float) and math.isfinite(value) else None
+
+
 def _usage(raw, provider):
     inp = raw.get("input_tokens", 0)
     if provider == "claude":
@@ -310,7 +320,12 @@ def _usage(raw, provider):
             "cache_creation_input_tokens", 0
         )
     out = raw.get("output_tokens", 0)
-    return NS(prompt_tokens=inp, completion_tokens=out, total_tokens=inp + out)
+    details = numeric_usage(raw.get("input_tokens_details"))
+    numeric = numeric_usage(raw)
+    return NS(prompt_tokens=inp, completion_tokens=out, total_tokens=inp + out,
+              cached_tokens=(details or {}).get("cached_tokens"),
+              cache_write_tokens=(details or {}).get("cache_write_tokens"),
+              input_tokens_details=details, usage_details=numeric)
 
 
 class ResponseStream:
