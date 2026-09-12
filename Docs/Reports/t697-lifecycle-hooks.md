@@ -32,3 +32,7 @@ Specification: `Docs/Plans/litetui-lifecycle-hooks.md`. User guide: `Docs/lifecy
 The editor's explicit Test action uses the same authorization helper with `stop_on_denial=False`: denying a test does not stop unrelated conversation work. Normal hook/tool approval denial retains the existing stop behavior. No hook runtime log producer or payload logging was added.
 
 Independent Intent Gate is pending Sentinel's review of the commit and this map. This worker does not merge.
+
+## First review correction
+
+Sentinel's first pass on `0c68d90` returned the `/mark` image prompt profile as the only requested correction: it stamped the global default onto a human turn instead of the conversation's choice. Both immediate delivery and the queued image item now carry `chosen_tool_profile`. `test_mark_image_prompt_uses_conversation_profile` exercises the real image handoff worker and, for its queued case, the actual flush path; both cases failed with global `autonomous` versus chosen `interactive` before the correction. The revised boundary/conversation-settings/six-guard slice passed **107 tests in 21.25 seconds**. The new test passes Ruff and the tool-door invariant remains one door/two callers. Sentinel's final recheck and merge remain pending.

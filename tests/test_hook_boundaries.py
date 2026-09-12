@@ -42,6 +42,30 @@ def tool(app, fn, name="hook_probe", policy=tool_policy.READ_POLICY):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("queued", [False, True])
+async def test_mark_image_prompt_uses_conversation_profile(app, tmp_path, monkeypatch, queued):
+    from litetui.convo_settings import ConvoSettings
+
+    handoff = tmp_path / "mark.json"
+    handoff.write_text(json.dumps({"x": 1, "y": 2, "mon": 0,
+        "mon_x": 1, "mon_y": 2, "png": str(tmp_path / "fixture.png")}))
+    monkeypatch.setattr("litetui.app.appsvc.load_image_file", lambda *args: "fixture-image")
+    async with app.run_test(size=(110, 40)):
+        app._materialise_convo()
+        app._convo_settings = ConvoSettings(tool_policy_profile=tool_policy.INTERACTIVE)
+        app.settings.tool_policy_profile = tool_policy.AUTONOMOUS
+        assert app.chosen_tool_profile == tool_policy.INTERACTIVE
+        app._stream = lambda: None
+        app._chat_running = lambda: queued
+        await app._mark_wait(handoff, None).wait()
+        if queued:
+            app._chat_running = lambda: False
+            app._flush_pending_input()
+        assert app._active_tool_profile == tool_policy.INTERACTIVE
+        assert app.conversation[-1]["content"][0]["type"] == "image_url"
+
+
+@pytest.mark.asyncio
 async def test_gate_prevents_real_tool_side_effect_and_allows_recovery(app, tmp_path):
     target = tmp_path / "side-effect.txt"
     tool(app, lambda args: target.write_text("ran") or "ran")

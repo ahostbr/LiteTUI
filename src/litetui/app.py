@@ -6242,11 +6242,12 @@ class LiteTUI(App):
         # visibly and flushes as a real turn; idle it sends now.
         if self._chat_running():
             self._user_bubble(text, True, queued=True)
-            self._pending_input.append({"content": content, "text": text})
+            self._pending_input.append({"content": content, "text": text,
+                                        "tool_profile": self.chosen_tool_profile})
             return
         self._materialise_convo()
         self._user_bubble(text, True)
-        hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": self.settings.tool_policy_profile})
+        hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": self.chosen_tool_profile})
 
     def _handle_command(self, cmd: str) -> None:
         parts = cmd.split(maxsplit=1)
