@@ -31,15 +31,28 @@ T682 `9fcd6574e`, T683 (tip `93db1d213`).
 
 ## 2. Owed — split by owner
 
-### Queued to me, in Sentinel's order
+### Queued to me, in Sentinel's order — ALL LANDED, see §6
 
-- **T689** — `background-tasks.json` loses rows between instances. Reproduction
-  is written and lives in the T688 F+G commit body: A adds `task-A` and saves;
-  B, loaded earlier, adds `task-B`; the file then holds `['task-B']`.
-  ⚠️ **Do not fix it with a plain read-merge-write.** It is a LIST store, so a
-  merge resurrects deleted rows from disk on the next save — a worse bug than the
-  one being fixed, and one a green suite cannot see. It needs a deletion rule
-  (tombstone, or a documented single-writer).
+🔴 **THE T689 ROW BELOW WAS WRONG AND IS RETRACTED. IT IS KEPT SO THE
+CORRECTION TRAVELS WITH IT.** I wrote that `background-tasks.json` was a list
+store where a merge would resurrect deleted rows. The LAW is right; the FILE I
+attached it to was not. Measured across the whole package including `plugins/`
+and `rpc.py` — `grep -rn "bg_tasks" --include=*.py src/`, twelve hits — rows
+are added at `app.py:1963` and mutated in place, and there is no `del`, no
+`.pop`, no prune, no cap, no `/tasks clear` and no rpc delete. **Nothing in
+this app ever removes a task row**, so the hazard did not exist for that file.
+Where it DOES apply is `jobs.json`, which has three deletion paths
+(`cron.py:70`, `goal_loop.py:406`, `rpc.py:361`). Carried in the Daily as
+"handoff row on background-tasks.json retracted, law moved to jobs.json".
+
+> **A LAW APPLIED WITHOUT CHECKING ITS ANTECEDENT IS A GUESS WEARING A RULE'S
+> CLOTHES** — and in a handoff it is one the next reader has no reason to doubt.
+
+~~- **T689** — `background-tasks.json` loses rows between instances.~~
+~~Reproduction is in the T688 F+G commit body: A adds `task-A` and saves; B,~~
+~~loaded earlier, adds `task-B`; the file then holds `['task-B']`.~~
+~~⚠️ **Do not fix it with a plain read-merge-write.** It is a LIST store, so a~~
+~~merge resurrects deleted rows from disk on the next save.~~
 - **T694** — `tests/test_context_length.py::test_every_explicit_model_switch_applies_the_setting`
   counts switch sites in SOURCE TEXT and finds 2 where it wants 3. **Red on
   pristine `main`, not caused by anything in this run** — confirmed by running it
@@ -134,3 +147,73 @@ T682 `9fcd6574e`, T683 (tip `93db1d213`).
 
 - None to continue any of this. `/ls-conversation-lookup` before claiming
   anything in this workspace does not exist.
+
+
+## 6. What landed after this doc was written (T689 → T703)
+
+Every row names a sha on `main`. All UNVERIFIED by Ryan.
+
+| card | merged as | what it was |
+| --- | --- | --- |
+| T689 | `dc0be0a` | two windows no longer erase each other's task and job rows; a sibling's live task is not reported LOST; `jobs.json` written where it is read |
+| T694 | `6623608` | the switch-site count in `test_context_length` was pinned to a source LAYOUT, not the rule |
+| T695 | `aba39c9` | the tool authority a conversation was SET to is per-conversation; every transient elevation stays transient |
+| T699 | `1130286` | two files named `test_*` were scripts that killed the whole run |
+| T698 | `ccc9251` | the model picker goes through the one switch path |
+| T700 | `881ed0d` | ten more such scripts; an AST scan stops the class recurring |
+| T702 | `39a47c4` | ONE module-level-exit rule shared by the runner and the detector; thirteen misfiled files move |
+| T703 | `7196775` | the cancel-then-JIT READING (`Docs/Plans/litetui-cancel-then-jit.md`), no code |
+
+### The three things a successor most needs
+
+1. 🔴 **`row_store` takes a BASELINE, and where it is taken decides two silent
+   failures.** `src/litetui/row_store.py`. Taken after a load-time mutation, the
+   mutation is not in the delta and never reaches disk; taken as everything on
+   disk, a row the loader could not parse looks DELETED and the next save erases
+   it. Both loaders therefore baseline the rows they KEPT, before changing their
+   mind about any of them.
+2. 🔴 **A delta reconciles two PROCESSES and cannot reconcile two holders inside
+   one.** That is why `rpc._handle_jobs` now edits `app.jobs` instead of loading
+   its own copy. If a second in-process holder ever appears, no merge rule fixes
+   it.
+3. ⚠️ **`_active_tool_profile` has nine writers and exactly one is a CHOICE.**
+   `set_tool_profile` only. Mail, a cron fire, a goal loop and the queued flush
+   are all transient; persisting any of them records a temporary elevation as
+   the conversation's standing authority. `chosen_tool_profile` is the source
+   the two non-transient reads consult.
+
+### Open on Ryan alone
+
+- T689: two windows, long task in A → stays `running` in both; quit A → LOST.
+- T689: `/cron rm` in one window, edit another job in the other, third boot.
+- T689: `LITETUI_DATA_ROOT` set → a schedule's `last_fired_slot` survives a
+  restart and no `jobs.json` appears in the checkout.
+- T695: set the authority in one conversation, find another unmoved, `/resume`
+  the first — then let a cron job fire and confirm the authority did NOT follow.
+- **T701** — `tests/test_footer_fields.py` is 6-failed/4-passed on pristine
+  `main`; the footer renders its compact form where the arms expect `think:`,
+  `ctx 60,000 / 120,000` and tok/s. `tests/test_footer.py` passes 34/34 on the
+  same surface. Two footer suites disagreeing, and since T699 they disagree in
+  the same run. Not mine; queued for his eye.
+- **T703** — refuse-and-stay / refuse-and-roll-back / refuse-once-then-allow.
+
+### Traps that cost me time in this run
+
+- **A branch with no commit is not a save point.** `git checkout <branch> --
+  <files>` reads that branch's TREE, and an uncommitted branch's tree is its
+  base — it destroyed ~90 lines of new arms. Recovered only because the edits
+  came from scratchpad generator scripts. Pattern `1ccbc1d5-…-1789238583`.
+- **A linter must be run INSIDE the project.** Comparing ruff on copies outside
+  the repo answered 16 → 20 where the truth was 19 → 17: wrong count and wrong
+  DIRECTION, because `pyproject.toml` does not follow the files. Pattern
+  `1ccbc1d5-…-1789240395`.
+- **A source file under a test run is live state, not a document.** `ruff --fix`
+  during a gate that parses those files produced a red that was mine, not the
+  code's.
+- **`tests/run_all.py` is the repo runner and `classify()` decides what it
+  executes.** Since T702 the script half is EMPTY; if an arm ever ranges over it
+  again it is measuring nothing.
+
+### Suggested skills
+
+- None. `/ls-conversation-lookup` before claiming anything here does not exist.
