@@ -83,6 +83,7 @@ def _no_vram_gate_leaks_between_apps(monkeypatch):
     from litetui import llm_backend
 
     monkeypatch.setattr(llm_backend, "_DEFAULT_VRAM_GATE", None)
+    monkeypatch.setattr(llm_backend, "_DEFAULT_LOAD_HOOK", None)
 
 
 @pytest.fixture(autouse=True)

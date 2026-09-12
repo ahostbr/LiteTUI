@@ -13,10 +13,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from litetui import convo_settings as convo_settings_mod
 from litetui import harness as harness_mod
 from litetui import second_instance
 from litetui import vram_dialog
-from dataclasses import dataclass, fields as fields_of
+from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
 from functools import partial
 
 from litetui import settings as settings_mod
@@ -1141,6 +1142,13 @@ class LiteTUI(App):
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
         self.conversation: list[dict] = []
+        #: T691: the conversation's own settings, once one is open. None
+        #: while the app is still starting — the setters below check for it, so
+        #: startup assignments do not write a file for a conversation that does
+        #: not exist yet.
+        self._convo_settings = None
+        self._model_id: str = ""
+        self._thinking_level: str | None = None
         self.model_id: str = ""
         self.available_models: list[str] = []
         self.tools_enabled = self.settings.tools_enabled
@@ -1237,6 +1245,8 @@ class LiteTUI(App):
         # T690: install the VRAM gate BEFORE the first backend is made, so the
         # one at boot is stamped like every one a /backend switch makes later.
         llm_backend.set_vram_gate(self._vram_gate_allows)
+        llm_backend.set_load_settings_hook(self.remember_load_settings)
+        self._backend = None
         self.backend = llm_backend.make_backend(self.settings)
         #: key -> ModelRow for the connected backend; the /model picker reads
         #: source tags and load state from here.
@@ -2228,6 +2238,9 @@ class LiteTUI(App):
             seat_name=seat.name if seat is not None else None,
             seat_id=seat.agent_id if seat is not None else None,
         )
+        # T691: born here, from the global defaults, so the file exists from the
+        # first turn and a later change has something to merge into.
+        self._adopt_convo_settings(born=True)
         # Everything said before the first user message (the system prompt) was
         # held in memory only. This is where it reaches disk.
         if self.conversation:
@@ -2465,6 +2478,11 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        # T691: AFTER convo_dir moves and BEFORE the seat sync — this
+        # conversation's own model and think level are what /resume is
+        # restoring, and reading them from the old directory would apply the
+        # settings of the conversation being left.
+        self._adopt_convo_settings(born=False)
         self._sync_seat_identity()
         self._refresh_ctx_label()   # resumed into a different conversation
         # The restored system message already names THIS store (it was written
@@ -2716,6 +2734,204 @@ class LiteTUI(App):
                 f"{profile_text(profile)} — {tool_policy.PROFILES[profile].summary}"
             )
         return True
+
+    # ── per-conversation settings (T691) ─────────────────────────────────
+    #
+    # 🔴 PROPERTIES, BECAUSE THERE ARE 24 ASSIGNMENT SITES ACROSS SIX FILES.
+    # `app.model_id = …` and `app.thinking_level = …` are written from app.py,
+    # `plugins/misc.py`, `plugins/model_switch.py`, `rpc.py` and
+    # `goal_loop.py` — measured, not estimated. Persisting from the callers
+    # would mean a list of twenty-four places to remember, and T690 had just
+    # finished proving what happens to a rule kept as a list: the one caller
+    # nobody updated is the one the user meets. A write-through setter has no
+    # list to fall off, and a plugin added next month is covered by assigning
+    # the attribute it would assign anyway.
+    #
+    # ⚠️ A SETTER THAT WRITES A FILE MUST TOLERATE STARTUP. `__init__` assigns
+    # both fields before any conversation exists; `_convo_settings` is None
+    # until one is opened, and both setters return early on it. So the boot
+    # sequence writes nothing, which is also why `_convo_settings` is set up
+    # BEFORE the first assignment rather than beside the rest of the state.
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @model_id.setter
+    def model_id(self, value: str) -> None:
+        self._model_id = value
+        self._remember_for_this_convo("model", value)
+
+    @property
+    def backend(self):
+        # `getattr` because `__init__` reads other properties before this one is
+        # assigned; a bare attribute read here fails the whole boot.
+        return getattr(self, "_backend", None)
+
+    @backend.setter
+    def backend(self, value) -> None:
+        """The engine this conversation runs on.
+
+        🔴 A PROPERTY FOR THE SAME REASON THE OTHER TWO ARE. `app.backend =
+        make_backend(...)` is assigned from four places — app.py once and
+        `plugins/model_switch.py` three times (the `/backend` picker and two
+        first-boot recovery paths). Ryan named backend FIRST in the ruling, and
+        the first cut of this card declared the field and wired none of them.
+        """
+        self._backend = value
+        self._remember_for_this_convo("backend", getattr(value, "name", None))
+
+    @property
+    def thinking_level(self) -> str | None:
+        return self._thinking_level
+
+    @thinking_level.setter
+    def thinking_level(self, value: str | None) -> None:
+        self._thinking_level = value
+        self._remember_for_this_convo("thinking_level", value)
+        # Ryan wrote "think level WHEN ON CODEX" as its own item, and it is a
+        # different vocabulary from LM Studio's levels — `model_switch.py:906`
+        # stores it under `model_infer_overrides[model]["reasoning_effort"]`.
+        # Kept in its own field so a conversation carried between engines does
+        # not hand a codex effort to a llama.cpp thinking level.
+        if getattr(getattr(self, "_backend", None), "name", None) == "codex":
+            self._remember_for_this_convo("reasoning_effort", value)
+
+    def _remember_for_this_convo(self, field: str, value) -> None:
+        """Write one field through to `.convos/<id>/settings.json`.
+
+        ⚠️ ONLY ON A REAL CHANGE, because these setters fire on every assignment
+        including the ones that re-assign the same value (a `/model` to the
+        model already selected, a reconnect re-applying the current level). A
+        write per assignment would rewrite the file several times per turn for
+        no change at all.
+
+        ⚠️ AND A FAILURE HERE IS NOT WORTH A TURN. A read-only directory or a
+        full disk must not take down the switch the user just made; the choice
+        is already live in memory, and the file is the part that can be retried.
+        """
+        cs = self._convo_settings
+        if cs is None or self.convo_dir is None:
+            return
+        if getattr(cs, field, None) == value:
+            return
+        setattr(cs, field, value)
+        try:
+            convo_settings_mod.save(self.convo_dir, cs)
+        except OSError as e:
+            runtime_log.record_error(
+                "convo_settings.save_failed",
+                detail=f"{self.convo_dir} — {e}", site="app")
+
+    def remember_load_settings(self, model: str, cfg: dict) -> None:
+        """Mirror THIS conversation's load settings for its own model.
+
+        🔴 CALLED BY THE BACKEND, NOT BY THE THREE WRITERS. `llama_load_settings
+        [key] = …` happens in `llm_backend` twice and in
+        `plugins/model_switch.py` once, and those are the sites that exist
+        today. The backend hook is stamped by the same factory that stamps the
+        T690 VRAM gate, so a new writer inside the backend is covered and a new
+        caller cannot route around it.
+
+        ⚠️ ONLY FOR THE MODEL THIS CONVERSATION IS ON. `/modelcfg` can edit the
+        settings of a model the conversation is not using; recording that here
+        would make the conversation claim a configuration it never ran.
+        """
+        if not model or model != self._model_id:
+            return
+        name = getattr(getattr(self, "_backend", None), "name", None)
+        field = "llama_load" if name == "llamacpp" else "lmstudio_load" if name == "lmstudio" else None
+        if field is None:
+            return
+        self._remember_for_this_convo(field, dict(cfg or {}))
+
+    def _adopt_convo_settings(self, born: bool) -> None:
+        """Apply this conversation's settings, or create them from the globals.
+
+        `born=True` is a NEW conversation: it copies the global defaults once
+        and writes them, so the file exists from the first turn and a later
+        change has something to merge into. `born=False` is an open or a
+        /resume: whatever the file says wins, and anything it does not say
+        falls through to the globals.
+        """
+        if self.convo_dir is None:
+            return
+        if born:
+            cs = convo_settings_mod.born_from(self.settings)
+            cs.seat_name = getattr(self.seat, "name", None)
+            cs.seat_id = getattr(self.seat, "agent_id", None)
+            cs.seat_tier = getattr(self.seat, "tier", None)
+            self._convo_settings = cs
+            try:
+                convo_settings_mod.save(self.convo_dir, cs)
+            except OSError:
+                pass
+            return
+
+        cs = convo_settings_mod.load(self.convo_dir)
+        self._convo_settings = cs
+        # Apply through the BACKING fields, not the properties: applying a
+        # stored value is not a new choice and must not write the file back.
+        model = convo_settings_mod.resolved(cs, self.settings, "model")
+        if model and self.available_models and model not in self.available_models:
+            # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
+            # the server no longer has — it was uninstalled, or this is another
+            # machine. Falling back silently would answer in a different model's
+            # voice while the header still showed the old name, which is the one
+            # outcome worse than an error.
+            # ⚠️ Guarded on `available_models` being POPULATED: it is empty
+            # until `connect()` has listed, and an empty list is "not known
+            # yet", never "the server has nothing".
+            self._system(
+                f"{model} is not on this server any more — this conversation "
+                f"falls back to {self.settings.default_model}."
+            )
+            model = self.settings.default_model
+        if model:
+            self._model_id = model
+        level = convo_settings_mod.resolved(cs, self.settings, "thinking_level")
+        self._thinking_level = None if level in (None, "off") else level
+        self._adopt_convo_backend(cs)
+        # The backend-specific load settings this conversation last used. They
+        # go back into the GLOBAL per-model map because that is what the
+        # backends read at load time; the conversation owns the VALUE, the map
+        # is just where a backend looks it up.
+        if cs.llama_load and self._model_id:
+            self.settings.llama_load_settings = {
+                **self.settings.llama_load_settings, self._model_id: dict(cs.llama_load)}
+        if cs.reasoning_effort and self._model_id:
+            overrides = dict(self.settings.model_infer_overrides)
+            entry = dict(overrides.get(self._model_id, {}))
+            entry["reasoning_effort"] = cs.reasoning_effort
+            overrides[self._model_id] = entry
+            self.settings.model_infer_overrides = overrides
+
+    def _adopt_convo_backend(self, cs) -> None:
+        """Put this conversation back on the engine it was using.
+
+        ⚠️ REBUILT THROUGH THE FACTORY, so the T690 VRAM gate is stamped on the
+        new backend. Assigning a hand-made backend here would hand the app an
+        ungated one, and the modal would stop appearing for exactly the people
+        who switch engines.
+
+        ⬜ AND AN ENGINE THE BOX NO LONGER HAS FALLS BACK OUT LOUD, like the
+        stale model above: silently answering on a different engine while the
+        header names the old one is the failure this card exists to prevent,
+        one field over.
+        """
+        want = cs.backend
+        if not want or want == getattr(getattr(self, "_backend", None), "name", None):
+            return
+        probe = replace(self.settings, backend=want) if is_dataclass(self.settings) else None
+        try:
+            new_backend = llm_backend.make_backend(probe if probe is not None else self.settings)
+        except llm_backend.BackendError as e:
+            self._system(
+                f"This conversation used {want}, which is not available here "
+                f"({e}). Staying on {getattr(self._backend, 'name', 'the current engine')}."
+            )
+            return
+        self._backend = new_backend
 
     async def _vram_gate_allows(self, model: str) -> bool:
         """May this load proceed? Asks the human when it would add weights.
