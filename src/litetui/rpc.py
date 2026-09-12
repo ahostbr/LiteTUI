@@ -347,20 +347,26 @@ def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) 
         from litetui import scheduler
         from litetui import paths
         verb = cmd_type.split(".", 1)[1] if "." in cmd_type else ""
+        # 🔴 `app.jobs`, NOT A FRESH `scheduler.load` (T689). This handler used
+        # to read its own copy off disk, which made it a SECOND holder of the
+        # same list inside one process: an rpc create was invisible to the
+        # calendar UI, and the UI's next save — still holding the pre-create
+        # list — wrote it back out without the new job. The delta in
+        # `row_store` reconciles two PROCESSES; it cannot reconcile two
+        # holders inside one, and it should not have to. `app.jobs` is the
+        # shared mutable list every other writer already goes through.
         if verb == "list":
-            jobs = scheduler.load(paths.data_root())
-            _respond(cmd_id, ok=True, result=[j.__dict__ for j in jobs])
+            _respond(cmd_id, ok=True, result=[j.__dict__ for j in app.jobs])
         elif verb == "create":
-            jobs = scheduler.load(paths.data_root())
             job = scheduler.Job(**{k: v for k, v in cmd.items() if k not in ("type", "id")})
-            jobs.append(job)
-            scheduler.save(jobs, paths.data_root())
+            app.jobs.append(job)
+            scheduler.save(app.jobs, paths.data_root())
             _respond(cmd_id, ok=True, result=job.__dict__)
         elif verb == "delete":
             job_id = cmd.get("job_id", "")
-            jobs = scheduler.load(paths.data_root())
-            jobs = [j for j in jobs if getattr(j, "id", None) != job_id]
-            scheduler.save(jobs, paths.data_root())
+            for job in [j for j in app.jobs if getattr(j, "id", None) == job_id]:
+                app.jobs.remove(job)
+            scheduler.save(app.jobs, paths.data_root())
             _respond(cmd_id, ok=True, result={"deleted": job_id})
         else:
             _respond(cmd_id, ok=False, error=f"unknown jobs verb: {verb}")
