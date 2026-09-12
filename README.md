@@ -194,6 +194,32 @@ use.
 > long-running child process, and a child that inherits this console paints
 > straight over a TUI that owns every cell.
 
+## Two instances at once
+
+Two LiteTUI processes started from the same checkout share one data root, so they
+share **one `settings.json`** — 70 keys, one file. That is supported: a save now
+reads the file, writes back only the keys *this* instance changed, and replaces
+the file atomically, so the think level you set in one window survives a theme
+change in the other. Env-sourced fields (`LITETUI_MODEL`, `LITETUI_THINKING`,
+`LITETUI_BACKEND`, …) are still written on every save — the file records what you
+*chose*, so unsetting a variable must not silently revert the knob.
+
+⚠️ **`background-tasks.json` is not merged this way yet.** It is a list store, and
+two instances editing tasks can still drop each other's rows (measured: A's row
+gone after B saves). Merging it needs a rule for deletion that a plain
+read-merge-write cannot give — a removed row would be resurrected from disk — so
+it is its own change, not a line here.
+
+Want them fully independent instead? Give one its own root before it starts:
+
+```bash
+LITETUI_DATA_ROOT=~/.litetui-b litetui
+```
+
+That instance gets its own `settings.json`, `.convos/`, tasks and jobs. Finer
+knobs exist for one field at a time: `LITETUI_SEAT_NAME`, `LITETUI_MODEL`,
+`LITETUI_THINKING`, `LITETUI_BACKEND`.
+
 ## Harness seat
 
 LiteTUI registers as a LiteHarness agent and monitors its own inbox, so other

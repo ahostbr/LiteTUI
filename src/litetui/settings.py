@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
@@ -445,6 +446,9 @@ def load(root: Path | None = None) -> Settings:
         if raw is not None and raw != "":
             setattr(s, name, _coerce(name, raw, getattr(s, name)))
     s.tool_policy_profile = _selectable_profile(s.tool_policy_profile)
+    # The snapshot `save()` diffs against: everything this instance believes the
+    # file said at load time. Not a field, so `asdict` never sees it.
+    object.__setattr__(s, "_baseline", asdict(s))
     return s
 
 
@@ -478,15 +482,78 @@ def _selectable_profile(name: str) -> str:
     return selectable[0]
 
 
-def save(s: Settings, root: Path | None = None) -> Path:
-    """Write settings.json.
+def _baseline(s: Settings) -> dict[str, object] | None:
+    """What this instance last agreed the file said, or None if it never read one."""
+    return getattr(s, "_baseline", None)
 
-    Env-sourced fields are written too: the file records what the user CHOSE.
-    Suppressing them would mean unsetting an env var silently reverts the knob
-    to a default the user never picked.
+
+def save(s: Settings, root: Path | None = None) -> Path:
+    """Write settings.json: only THIS instance's changes, and atomically.
+
+    🔴 IT USED TO WRITE THE WHOLE DATACLASS, AND THAT ERASED THE OTHER INSTANCE.
+    Ryan runs two LiteTUI processes from one repo (2026-09-12), both resolving
+    `data_root()` to the same directory and therefore to ONE settings.json with
+    seventy keys in it. Writing every field meant the second instance to save
+    wrote back the snapshot it had loaded minutes earlier, undoing every change
+    the first had made in between.
+        AND IT IS NOT A RACE. No interleaving is needed: the two saves can be
+    hours apart and the later one still wins every field it never touched.
+    Reproduced in `tests/test_two_instances_coexist.py` — A sets the think level
+    to xhigh, B later sets a theme, the file reads `medium`.
+
+    ⇒ So a save now READS the file, applies only the keys that differ from this
+    instance's baseline, and leaves the rest of the file exactly as it found it.
+
+    ⚠️ ENV-SOURCED FIELDS ARE STILL WRITTEN, CHANGED OR NOT — the pre-existing
+    rule, kept deliberately: the file records what the user CHOSE, so unsetting
+    an env var must not silently revert the knob to a default they never picked.
+    They are the one category that is written without having changed.
+
+    🔴 ATOMIC, BECAUSE THE TORN FILE IS WORSE THAN THE LOST FIELD. `write_text`
+    truncates before it writes, and `load()` answers an unparseable file with
+    SILENT DEFAULTS ("one bad line must not stop the app") — so a reader landing
+    between the two syscalls does not see an error, it sees a settings reset
+    nobody is told about. Temp file plus one `os.replace`, the same shape
+    `tasks.py` and `scheduler.py` already use; the target is never opened for
+    writing at all.
     """
     p = settings_path(root)
-    p.write_text(json.dumps(asdict(s), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    current = asdict(s)
+    base = _baseline(s)
+
+    merged: dict[str, object] = {}
+    if p.exists():
+        try:
+            existing = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if isinstance(existing, dict):
+            merged.update(existing)
+
+    if base is None:
+        # Never loaded: this Settings IS the intent, so it authors every key.
+        merged.update(current)
+    else:
+        merged.update({k: v for k, v in current.items() if base.get(k) != v})
+        for name, env_key in ENV_OVERRIDES.items():
+            if os.environ.get(env_key) and name in current:
+                merged[name] = current[name]
+
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".settings-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(merged, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, p)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    # The file and this instance now agree; a second save must not re-apply a
+    # diff it has already written.
+    object.__setattr__(s, "_baseline", dict(current))
     return p
 
 
