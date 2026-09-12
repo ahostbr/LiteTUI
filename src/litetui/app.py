@@ -40,6 +40,7 @@ from litetui import ttyguard, hook_host
 from litetui import mcp_client
 from litetui import sanitize
 from litetui.fmt import fmt_dur
+from litetui.turnstats import format_turn_stop_line
 
 # 🔴 RE-EXPORT, NOT JUST AN IMPORT. These nine helpers and one constant were
 # defined here until T070 step O0 moved them to `textfmt`. They are imported
@@ -490,6 +491,13 @@ class LiteTUI(App):
         border: round $success-darken-2;
         border-title-color: $success;
         border-title-align: left;
+    }
+
+    .turn-stop-line {
+        height: auto;
+        color: $text-muted;
+        text-style: italic;
+        margin-top: 1;
     }
 
     .system-msg {
@@ -1185,6 +1193,13 @@ class LiteTUI(App):
         # Staged-but-not-created. See _new_convo / _materialise_convo.
         self.last_usage: dict | None = None
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
+        # Presentation state for the turn in flight. App-owned (not only local
+        # to _stream) so the second-Esc hard kill can settle before cancelling
+        # the worker that owns the locals.
+        self._active_turn_started_at = 0.0
+        self._active_turn_widget: AssistantMessage | None = None
+        self._active_turn_tps: float | None = None
+        self._turn_stop_line_settled = False
         #: WHY _stop_requested was set, as the line to show the user, or None
         #: for the plain Esc case. It exists because the agent loop's tail used
         #: to report "reached N tool iterations" for EVERY early break — so
@@ -4092,6 +4107,39 @@ class LiteTUI(App):
     def watch_tps(self, value: float | None) -> None:
         self._refresh_ctx_label()
 
+    def _settle_turn_stop_line(
+        self,
+        widget: AssistantMessage | None,
+        *,
+        started_at: float,
+        final_tps: float | None,
+        stopped: bool,
+    ) -> None:
+        """Settle one terminal turn in the TUI, without touching its payload.
+
+        ``None`` means the last model round was a pure tool call whose empty
+        assistant bubble was removed. A tiny answer-less assistant bubble is
+        created only when the line is enabled, keeping tool cards themselves
+        unchanged while still giving interrupted/capped turns one terminus.
+        """
+        if self._rpc or getattr(self, "_turn_stop_line_settled", False):
+            return
+        line = format_turn_stop_line(
+            started_at=started_at,
+            final_tps=final_tps,
+            stopped=stopped,
+            show_line=self.settings.show_stop_line,
+            show_time=self.settings.show_stop_time,
+        )
+        if line is None:
+            return
+        self._turn_stop_line_settled = True
+        if widget is None:
+            widget = self._assistant_bubble()
+            widget.body.styles.display = "none"
+        widget.set_stop_line(line)
+        self._scroll_down()
+
     # -- elapsed time while a turn is in flight -----------------------
     # Ryan's "..." read as nothing happening while LM Studio chewed the prompt.
     # While no answer token has arrived (and while tool calls run), the bubble
@@ -4687,6 +4735,12 @@ class LiteTUI(App):
 
         Extracted so `stop_turn_over_rpc` cannot drift from the second Escape.
         """
+        self._settle_turn_stop_line(
+            self._active_turn_widget,
+            started_at=self._active_turn_started_at,
+            final_tps=self._active_turn_tps,
+            stopped=True,
+        )
         self.workers.cancel_group(self, "chat")
         self._system("[force-stopped — no partial reply was recoverable]")
         self._stop_requested = False
@@ -5164,6 +5218,13 @@ class LiteTUI(App):
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
+        # Stamp before setup/probing: waiting for the turn's first request is
+        # part of the turn, not free time before it.
+        turn_started_at = time.monotonic()
+        self._active_turn_started_at = turn_started_at
+        self._active_turn_widget = None
+        self._active_turn_tps = None
+        self._turn_stop_line_settled = False
         self._stop_requested = False
         # Cleared with the flag it explains. A reason that outlived its turn
         # would attribute THIS turn's ending to the last turn's cause.
@@ -5187,6 +5248,11 @@ class LiteTUI(App):
         # first request, so by now the real window exists to be read.
         self._resync_ctx_if_stale()
         self._rpc_emit({"type": "turn_start", "model": self.model_id, "thinking_level": self.thinking_level})
+        # One clock and one final generation rate span the WHOLE agent turn,
+        # including all tool rounds. The footer intentionally retains its last
+        # rate; this local starts empty so a no-rate turn cannot reuse it.
+        final_turn_tps: float | None = None
+        terminal_widget: AssistantMessage | None = None
         compact_due = False
         stopped_early = False
         for _iteration in range(self.settings.tool_iterations):
@@ -5218,8 +5284,14 @@ class LiteTUI(App):
                 # before it may compact again, or the two ping-pong.
                 compact_due = True
                 break
+            # ETA learning is per model request; the visible elapsed clock is
+            # per user turn. Keep both stamps so tool execution between rounds
+            # cannot pollute the prompt-evaluation sample.
+            request_started_at = time.monotonic()
             widget = self._assistant_bubble()
-            self._elapsed.start(widget.body)
+            terminal_widget = widget
+            self._active_turn_widget = widget
+            self._elapsed.start(widget.body, started_at=turn_started_at)
             thinking: ThinkingBlock | None = None
             text_full = ""
             reasoning = ""
@@ -5280,7 +5352,12 @@ class LiteTUI(App):
                     takeover or _plain_backend_error(e, self.backend.name), style="bold red"
                 )
                 widget.border_title = "Error"
-                self._scroll_down()
+                self._settle_turn_stop_line(
+                    widget,
+                    started_at=turn_started_at,
+                    final_tps=final_turn_tps,
+                    stopped=True,
+                )
                 self._rpc_emit({"type": "turn_end", "stopReason": "error",
                                 "error": takeover or _plain_backend_error(e, self.backend.name)})
                 return
@@ -5297,13 +5374,15 @@ class LiteTUI(App):
                             int(getattr(u, "completion_tokens", 0) or 0))
                         if rate is not None:
                             self.tps = rate
+                            final_turn_tps = rate
+                            self._active_turn_tps = rate
                         # ETA: this is the end of the turn -- the usage chunk
                         # carries prompt_tokens, so fold this turn into the
                         # learned rate (gated) and remember its count as the
                         # estimate for the next turn's ETA.
                         self._eta.learn(
                             getattr(u, "prompt_tokens", None),
-                            self._elapsed.body_t0,
+                            request_started_at,
                             is_reliable_rate_sample,
                         )
                     if not chunk.choices:
@@ -5424,7 +5503,12 @@ class LiteTUI(App):
                     takeover or _plain_backend_error(e, self.backend.name), style="bold red"
                 )
                 widget.border_title = "Error"
-                self._scroll_down()
+                self._settle_turn_stop_line(
+                    widget,
+                    started_at=turn_started_at,
+                    final_tps=final_turn_tps,
+                    stopped=True,
+                )
                 # T526: the open-failure branch above emits this; this branch
                 # did not, so an rpc client (LiteSuite's LiteTuiAdapter) that
                 # saw turn_start waited forever on a mid-stream 400.
@@ -5449,6 +5533,8 @@ class LiteTUI(App):
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.
                 if thinking is None:
                     widget.remove()
+                    terminal_widget = None
+                    self._active_turn_widget = None
                 else:
                     widget.body.styles.display = "none"
             self._scroll_down()
@@ -5486,6 +5572,12 @@ class LiteTUI(App):
                 # KILLED rather than finished, so the post-compaction wake ping
                 # does not tell the model to resume what the user just stopped.
                 self._turn_abandoned = True
+                self._settle_turn_stop_line(
+                    terminal_widget,
+                    started_at=turn_started_at,
+                    final_tps=final_turn_tps,
+                    stopped=True,
+                )
                 self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
                 self.call_after_refresh(self._maybe_autocompact)
                 return
@@ -5497,11 +5589,19 @@ class LiteTUI(App):
                 if verdict == "pause":
                     self._rpc_emit({"type": "turn_end", "stopReason": "hook_denied"})
                     return
+                # Only an answer accepted by the completion gate is terminal.
+                # Retried and paused drafts deliberately never receive a line.
                 # Turn is over. Check the window AFTER this worker exits:
                 # _compact shares group="chat" and would cancel us mid-frame.
                 await self.plugins.finalize_turn()
                 if not getattr(self, "_hooks_suppressed", False):
                     await hook_host.dispatch(self, "completion_after", {"answer": text_full or ""})
+                self._settle_turn_stop_line(
+                    terminal_widget,
+                    started_at=turn_started_at,
+                    final_tps=final_turn_tps,
+                    stopped=False,
+                )
                 self._rpc_emit({"type": "turn_end", "stopReason": "stop"})
                 self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
@@ -5624,9 +5724,21 @@ class LiteTUI(App):
             # line only has to avoid claiming a cap was reached.
             self._system(self._stop_reason or "[stopped by you]")
             self._turn_abandoned = True
+            self._settle_turn_stop_line(
+                terminal_widget,
+                started_at=turn_started_at,
+                final_tps=final_turn_tps,
+                stopped=True,
+            )
             self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
             return
 
+        self._settle_turn_stop_line(
+            terminal_widget,
+            started_at=turn_started_at,
+            final_tps=final_turn_tps,
+            stopped=True,
+        )
         self._rpc_emit({"type": "turn_end", "stopReason": "tools_cap"})
         self._system(
             f"[stopped \u2014 reached {self.settings.tool_iterations} tool iterations in one turn — raise it in /settings]"

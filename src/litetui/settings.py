@@ -341,6 +341,10 @@ class Settings:
     #: every settings save; a corrupt entry is skipped, never fatal.
     custom_themes: dict = field(default_factory=dict)
     show_thinking: bool = True
+    #: Presentation-only terminal summary below the final assistant bubble.
+    show_stop_line: bool = True
+    #: Append the local wall-clock completion time to that summary.
+    show_stop_time: bool = False
     autoscroll: bool = True
     #: How dialogs are presented. "modal" is the current behaviour and stays the
     #: default. "sidebar" mounts them in a `split: right` panel so the chat

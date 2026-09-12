@@ -663,6 +663,15 @@ class SettingsBody(Widget):
                             "show_thinking", "Show thinking blocks",
                             "Render the model's reasoning trace in the transcript.",
                         )
+                        yield from self._switch_row(
+                            "show_stop_line", "Show turn stop line",
+                            "Add elapsed time and final generation speed below the "
+                            "last assistant bubble.",
+                        )
+                        yield from self._switch_row(
+                            "show_stop_time", "Show local completion time",
+                            "Append the local 12-hour wall-clock time to the turn stop line.",
+                        )
                         yield from self._select_row(
                             "dialog_style", "Dialog style", DIALOG_STYLE_CHOICES,
                             "Sidebar dialogs CARVE space out of the layout instead of "

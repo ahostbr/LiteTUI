@@ -637,15 +637,25 @@ class CompactionCard(Vertical):
 
 
 class AssistantMessage(Vertical):
-    """Assistant bubble — optional thinking block above the answer body."""
+    """Assistant bubble — optional thinking, answer, then terminal stop line."""
 
     def __init__(self) -> None:
         super().__init__(classes="assistant-msg")
         self.thinking: ThinkingBlock | None = None
         self.body = AnswerBody("...", id="answer-body")
+        self.stop_line = Static("", classes="turn-stop-line")
+        self.stop_line.styles.display = "none"
 
     def compose(self) -> ComposeResult:
         yield self.body
+        yield self.stop_line
+
+    def set_stop_line(self, text: str | None) -> None:
+        """Settle the bubble without putting display text in answer markdown."""
+        if not text:
+            return
+        self.stop_line.content = text
+        self.stop_line.styles.display = "block"
 
 
 class ToolMessage(Static):

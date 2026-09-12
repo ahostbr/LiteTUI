@@ -43,6 +43,38 @@ from __future__ import annotations
 import asyncio
 import statistics
 import time
+from datetime import datetime
+
+from litetui.fmt import fmt_dur
+
+
+def format_turn_stop_line(
+    *,
+    started_at: float,
+    final_tps: float | None,
+    stopped: bool,
+    show_line: bool,
+    show_time: bool,
+    now_monotonic: float | None = None,
+    now_local: datetime | None = None,
+) -> str | None:
+    """Format the presentation-only line that settles one terminal turn.
+
+    ``started_at`` is the request/turn clock, deliberately independent of the
+    first-token clock used to calculate generation speed. Both clocks describe
+    useful but different parts of the turn and must not be folded together.
+    """
+    if not show_line:
+        return None
+    now = time.monotonic() if now_monotonic is None else now_monotonic
+    elapsed = fmt_dur(now - started_at)
+    verb = f"stopped after {elapsed}" if stopped else f"Cooked for {elapsed}"
+    if final_tps is not None:
+        verb += f" · {final_tps:.1f} tok/s"
+    if show_time:
+        local = datetime.now().astimezone() if now_local is None else now_local
+        verb += f" · done {local.strftime('%I:%M %p').lstrip('0')}"
+    return verb
 
 
 class EtaState:
@@ -133,12 +165,17 @@ class ElapsedState:
             task.cancel()
         self.task = None
 
-    def start(self, body) -> None:
-        """Begin counting for `body`. Cancels any lingering loop first, so a
-        turn can never be repainted by its predecessor's task."""
+    def start(self, body, *, started_at: float | None = None) -> None:
+        """Begin counting for ``body`` from the whole turn's start.
+
+        Agent turns may open several assistant bubbles across tool rounds. The
+        caller passes one shared ``started_at`` so each bubble's live clock —
+        and the eventual stop line — describes the whole user turn rather than
+        restarting after every tool result.
+        """
         self.cancel()
         self.body = body
-        self.body_t0 = time.monotonic()
+        self.body_t0 = time.monotonic() if started_at is None else started_at
         self._spawn()
 
     def stop_body(self) -> None:
