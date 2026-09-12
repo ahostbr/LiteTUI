@@ -428,7 +428,7 @@ def bash_spec() -> dict:
     if exe is not None:
         return tool_schemas.load(
             "bash",
-            shell_note=f"a real bash ({exe}) on Windows: sleep, grep, sed, pipes and redirection all work; QUOTE Windows paths or write them with forward slashes, an unquoted C:\dir\file loses its backslashes",
+            shell_note=f"a real bash ({exe}) on Windows: sleep, grep, sed, pipes and redirection all work; QUOTE Windows paths or write them with forward slashes, an unquoted C:\\dir\\file loses its backslashes",
             windows_hint="The `powershell` tool is still the right one for Windows-native cmdlets, services and the registry.",
         )
     return tool_schemas.load(

@@ -195,6 +195,54 @@ def _never_write_the_live_task_store(tmp_path, monkeypatch):
     )
 
 
+# 🔴 FIFTH INSTANCE, AND THE GUARD FOR THE FOURTH WAS WATCHING THE OTHER FILE.
+# `jobs.json` sits in the same root as `background-tasks.json` and had the same
+# exposure, and nothing was watching it — which is how T689's defect 3 (five
+# `scheduler.save` call sites passing `paths.ROOT` while every `load` read
+# `data_root()`) dumped whole job lists into the shared checkout unnoticed.
+#
+# ⚠️ THE TWO STORES ARE NOT SYMMETRICAL AND THIS FIXTURE IS DELIBERATELY
+# SMALLER. `scheduler.save` calls `path.parent.mkdir(parents=True,
+# exist_ok=True)` itself, so unlike `_swap` above this needs no mkdir at all —
+# and therefore seeds nothing into any test's tmp_path, which is the condition
+# `test_a_test_that_touches_nothing_leaves_tmp_path_empty` enforces.
+@pytest.fixture(autouse=True)
+def _never_write_the_live_job_store(tmp_path, monkeypatch):
+    """Redirect the LIVE job-store root to a per-test temp dir."""
+    from litetui import paths as paths_mod
+    from litetui import scheduler as sched_mod
+
+    live = Path(paths_mod.ROOT)
+    store = tmp_path / "job-store"
+
+    def _swap(root):
+        return store if Path(root) == live else root
+
+    real_save, real_load = sched_mod.save, sched_mod.load
+    monkeypatch.setattr(
+        sched_mod, "save", lambda jobs, root: real_save(jobs, _swap(root))
+    )
+    monkeypatch.setattr(sched_mod, "load", lambda root: real_load(_swap(root)))
+
+
+# 🔴 `row_store` KEEPS A PER-FILE BASELINE IN MODULE STATE, so without this a
+# test's answer depends on which tests ran before it — the same class the
+# `_DEFAULT_VRAM_GATE` reset below exists for (T690: a dead App's bound method
+# answering for a live one).
+#
+# ⚠️ IT IS NOT COSMETIC HERE. The baseline decides whether a row counts as
+# CHANGED. A leftover entry from an earlier test that wrote the same tmp path
+# would make a real change look like a no-op, and the arm would go green
+# holding a file it never actually updated.
+@pytest.fixture(autouse=True)
+def _no_row_store_baseline_leaks_between_tests():
+    from litetui import row_store
+
+    row_store.forget()
+    yield
+    row_store.forget()
+
+
 # 🔴 THE SUITE MUST NOT DIAL OUT. THIS WAS 4.0 SECONDS PER CONSTRUCTED APP.
 #
 # Measured 2026-09-03, tests/_probe_floor.py, 12 reps per arm:

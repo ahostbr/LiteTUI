@@ -1643,7 +1643,7 @@ class LiteTUI(App):
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
         if blocked:
             try:
-                sched_mod.save(self.jobs, paths.ROOT)
+                sched_mod.save(self.jobs, paths.data_root())
             except OSError:
                 pass
             self._system(blocked)
@@ -1651,7 +1651,7 @@ class LiteTUI(App):
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
-            sched_mod.save(self.jobs, paths.ROOT)
+            sched_mod.save(self.jobs, paths.data_root())
         except OSError:
             pass  # an unwritable store must not stop the job from running
 

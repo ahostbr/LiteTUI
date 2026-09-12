@@ -29,14 +29,12 @@ missed occurrences are handled meanwhile.
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from litetui import row_store
 from litetui.tool_policy import SCHEDULED
 
 #: How often the app polls. Cron resolves to the minute, so anything under 60s
@@ -380,43 +378,48 @@ def load(root: Path) -> list[Job]:
     a convenience and the chat is the product.
     """
     path = jobs_path(root)
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(raw, list):
-        return []
     out = []
-    for item in raw:
-        if not isinstance(item, dict) or "prompt" not in item or "schedule" not in item:
+    kept: list[dict] = []
+    for item in row_store.rows_on_disk(path):
+        if "prompt" not in item or "schedule" not in item:
             continue
         known = {k: v for k, v in item.items() if k in Job.__dataclass_fields__}
         try:
             out.append(Job(**known))
         except TypeError:
             continue
+        kept.append(item)
+    # ⚠️ THE ROWS WE KEPT, NOT EVERYTHING ON DISK. A row this loader skipped is
+    # one we do not hold, and a baseline that claimed it would make the next
+    # save read it as something we DELETED and erase it. Same reasoning as
+    # `tasks.load`; the failure is silent in both.
+    row_store.rebaseline(path, kept)
     return out
 
 
 def save(jobs: list[Job], root: Path) -> None:
-    """Write the job file atomically.
+    """Persist through `row_store`: re-read, apply OUR delta, replace atomically.
 
-    Temp file in the SAME directory, then os.replace. Never open the real path
-    for writing: that truncates at open, so an encoding error lands between the
-    destructive step and the constructive one and the traceback is evidence the
-    damage is already maximal.
+    🔴 A WHOLE-FILE WRITE LOSES THE OTHER INSTANCE'S EDITS (T689). Both windows
+    hold this list from boot and rewrite the file entire, so the second to save
+    erases whatever the first added. `row_store` diffs against what THIS
+    process last held instead.
+
+    ⬜ AND THIS FILE IS THE HALF `background-tasks.json` CANNOT EXERCISE: it has
+    three real deletion paths (`cron.py` `/cron rm`, `goal_loop.remove_loop`,
+    the rpc `jobs.delete`). Under a merge-by-id the instance that did NOT
+    delete a job would hand it back from memory on its next save. Under a
+    delta a removal is an entry, so it applies once and stays applied — which
+    is why the helper takes a baseline rather than being a smarter `save`.
+
+    The atomic write is unchanged in kind and now lives in `row_store.write`:
+    temp file in the SAME directory then `os.replace`, never opening the real
+    path for writing, because that truncates at open and puts any failure
+    between the destructive step and the constructive one.
     """
-    path = jobs_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps([asdict(j) for j in jobs], indent=2, ensure_ascii=False)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".jobs-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(payload)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    row_store.write(
+        jobs_path(root),
+        [asdict(j) for j in jobs],
+        prefix=".jobs-",
+        ensure_ascii=False,
+    )

@@ -398,13 +398,13 @@ def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> None:
         job.next_run_at = (
             datetime.now() + timedelta(minutes=job.interval_minutes)
         ).isoformat(timespec="seconds")
-    scheduler.save(app.jobs, paths.ROOT)
+    scheduler.save(app.jobs, paths.data_root())
 
 
 def remove_loop(app: Any, job: scheduler.Job) -> None:
     """Delete one loop, and persist it. Same reason as `set_loop_enabled`."""
     app.jobs.remove(job)
-    scheduler.save(app.jobs, paths.ROOT)
+    scheduler.save(app.jobs, paths.data_root())
 
 
 def loop_command(app: Any, arg: str) -> None:
@@ -475,7 +475,7 @@ def loop_command(app: Any, arg: str) -> None:
         tool_profile=SCHEDULED,
     )
     app.jobs.append(job)
-    scheduler.save(app.jobs, paths.ROOT)
+    scheduler.save(app.jobs, paths.data_root())
     app._system(
         f"/loop added {job.id} · every {minutes}m\n  {job.prompt}\n"
         f"  {textfmt.SCHEDULED_AUTO_NOTE}"

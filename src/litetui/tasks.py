@@ -30,13 +30,13 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
-import json
 import os
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+from litetui import router_record, row_store
 
 #: Set by the runner around the tool call; `core_tools._run_shell` reads it to
 #: park the child on the TASK instead of the one foreground cancel slot, so a
@@ -81,6 +81,18 @@ class Task:
     #: the row rather than re-derived because `args` is gone by then: the runner
     #: hands the awaitable to the task and never stores the call.
     prompt: str = ""
+    #: The pid of the instance that STARTED this task (T689).
+    #:
+    #: 🔴 LOST IS A CLAIM ABOUT A PROCESS, AND IT WAS BEING MADE BY THE WRONG
+    #: ONE. `load` marked every `running` row LOST at boot, on the true premise
+    #: that a task cannot outlive its app — the child sits in that app's
+    #: kill-on-close Job Object. True of the app that started it; false of a
+    #: SIBLING's task, and with two windows supported (T690) a second instance
+    #: booting reported the first one's live work as killed.
+    #:
+    #: ⚠️ None MEANS "no claim", not "no owner": every row written before this
+    #: field existed keeps the old answer and is marked LOST at boot.
+    owner_pid: int | None = None
     #: The live child, for `/tasks kill`. Not persisted, not compared.
     proc: object = field(default=None, repr=False, compare=False)
 
@@ -121,6 +133,7 @@ def new_task(tool: str, args: dict, convo_id: str) -> Task:
         convo_id=convo_id or "",
         started=time.time(),
         prompt=prompt_of(args),
+        owner_pid=os.getpid(),
     )
 
 
@@ -284,44 +297,83 @@ def render_list(tasks) -> str:
 
 
 def save(tasks, root: Path | str) -> None:
-    """Atomic write, same shape as the scheduler's store: temp file + replace."""
-    p = Path(root) / STORE
-    rows = [t.to_row() for t in tasks]
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".tasks-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(rows, fh, indent=2)
-        os.replace(tmp, p)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """Persist through `row_store`: re-read, apply OUR delta, replace atomically.
+
+    🔴 A WHOLE-FILE WRITE IS A LOST UPDATE AS SOON AS THERE ARE TWO WINDOWS.
+    Each instance loaded this store once at boot and rewrote it in full on
+    every transition, so the second to save erased the first's rows: A adds a
+    task and saves, B — whose memory predates that row and therefore cannot
+    contain it — saves, and the file holds only B's.
+
+    ⬜ WHY THE HELPER TAKES A BASELINE INSTEAD OF JUST MERGING BY ID: a merge
+    would also let B's stale copy of a row A had just advanced overwrite A's
+    newer one. Nothing here ever DELETES a row — measured across the whole
+    package including `plugins/` and `rpc.py`, rows are added and mutated in
+    place and there is no prune, cap, `/tasks clear` or rpc delete — so this
+    file is the degenerate case whose delta never contains a removal.
+    `jobs.json`, which has three deletion paths, needs the same helper for the
+    half this file does not exercise.
+    """
+    row_store.write(Path(root) / STORE, [t.to_row() for t in tasks], prefix=".tasks-")
 
 
 def load(root: Path | str) -> dict[str, Task]:
-    """The store, with every row that was still running marked LOST.
+    """The store, with a running row marked LOST only if its owner is gone.
 
-    Called at boot. A task cannot survive the app: the shell runner puts the
-    child in a kill-on-close Job Object, so when the app went, the tree went.
+    Called at boot. The premise is unchanged and still true: a task cannot
+    survive the app that started it, because the shell runner puts the child in
+    a kill-on-close Job Object. What changed is WHOSE boot may say so — see
+    `Task.owner_pid`. A row with no pid predates the field and keeps the old
+    answer.
     """
     p = Path(root) / STORE
-    try:
-        rows = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
     out: dict[str, Task] = {}
-    for r in rows:
-        if not isinstance(r, dict) or "id" not in r:
+    seen: list[dict] = []
+    for raw in row_store.rows_on_disk(p):
+        if "id" not in raw:
             continue
-        r = {k: v for k, v in r.items() if k in Task.__dataclass_fields__}
+        r = {k: v for k, v in raw.items() if k in Task.__dataclass_fields__}
         try:
             t = Task(**r)
         except TypeError:
             continue
-        if t.state == RUNNING:
+        seen.append(raw)
+        if t.state == RUNNING and not _owner_alive(t):
             t.state = LOST
             t.ended = t.ended or time.time()
         out[t.id] = t
+    # ⚠️ THE BASELINE IS THE DISK ROWS WE KEPT, NOT WHAT WE NOW HOLD, and the
+    # difference decides two things. Taken after the LOST stamping, that
+    # stamping would not be in our delta and would never reach disk. Taken as
+    # everything on disk, a row we could not parse would look like one we
+    # DELETED and the next save would erase it. This is the set we both read
+    # and hold, before we changed our mind about any of it.
+    row_store.rebaseline(p, seen)
     return out
+
+
+def _owner_alive(task: Task) -> bool:
+    """Is the instance that started this task still running? Asked at BOOT.
+
+    🔴 OUR OWN PID ON A DISK ROW MEANS THE PID WAS REUSED, NOT THAT WE OWN IT.
+    `load` runs once, from `LiteTUI.__init__` (app.py:1216) — the only caller in
+    the package — so this process has not started a task yet and cannot be the
+    owner of anything already in the file. Windows hands pids out again, so the
+    row belongs to a DEAD predecessor that happened to hold this number. Without
+    this line `pid_is_live` answers True about us, that row stays `running` for
+    the life of the instance, and it does so again on every future boot that
+    draws the same pid. (Sentinel, message 94cedaec.)
+
+    ⚠️ THE WHOLE RULE RESTS ON "AT BOOT". If `load` were ever called mid-session
+    it would mark this instance's own live tasks LOST. `test_load_is_called_once
+    _at_construction_and_nowhere_else` pins that, because the day someone adds a
+    reload is the day this line silently starts lying.
+
+    `pid_is_live` treats an unopenable pid as ALIVE (access denied is not death),
+    which is the right direction here too: a wrong "alive" costs a row that stays
+    `running` until the next boot, and a wrong "dead" tells the human their task
+    was killed while it is still producing output in the other window.
+    """
+    if task.owner_pid is None or task.owner_pid == os.getpid():
+        return False
+    return router_record.pid_is_live(task.owner_pid)

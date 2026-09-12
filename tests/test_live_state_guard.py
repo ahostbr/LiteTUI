@@ -30,11 +30,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import paths  # noqa: E402
+from litetui import scheduler as sched_mod  # noqa: E402
 from litetui import tasks as tasks_mod  # noqa: E402
 
 
 def _live_store() -> Path:
     return Path(paths.ROOT) / tasks_mod.STORE
+
+
+def _live_jobs() -> Path:
+    return sched_mod.jobs_path(paths.ROOT)
 
 
 def _snapshot(p: Path):
@@ -94,6 +99,53 @@ def test_an_explicit_root_is_still_honoured(tmp_path: Path) -> None:
     tasks_mod.save([task], explicit)
 
     assert (explicit / tasks_mod.STORE).is_file(), "an explicit root was swallowed"
+
+
+# ── the same guard, for the file nobody was watching (T689) ─────────
+
+# 🔴 `jobs.json` LIVES IN THE SAME ROOT AND HAD THE SAME EXPOSURE. The guard
+# above exists because an untracked `background-tasks.json` appeared in a
+# worktree; five `scheduler.save` call sites were passing `paths.ROOT` the whole
+# time and nothing said a word, because the guard was watching its neighbour.
+#
+#     A GUARD IS SCOPED TO THE FILE IT NAMES, NOT TO THE CLASS OF MISTAKE.
+#
+# ⚠️ AND THE CALL SITES ARE NOT THE ASSERTION HERE. That lives in
+# test_jobs_store_root.py, which reads them out of the AST. This pair is the
+# suite's own hygiene: whatever the app decides its root is, a TEST RUN must
+# not write the developer's live job list.
+
+
+def test_saving_with_the_live_root_does_not_touch_the_live_jobs_store() -> None:
+    before = _snapshot(_live_jobs())
+    job = sched_mod.Job(prompt="do a thing", schedule="0 9 * * *")
+
+    sched_mod.save([job], paths.ROOT)
+
+    assert _snapshot(_live_jobs()) == before, (
+        "a test wrote the repo-root jobs.json — the developer's real schedule"
+    )
+
+
+def test_the_saved_jobs_are_still_readable_back() -> None:
+    """The redirect must not turn persistence into a no-op — same reason as the
+    task-store arm above. An empty store would hide real breakage."""
+    job = sched_mod.Job(prompt="do a thing", schedule="0 9 * * *")
+    sched_mod.save([job], paths.ROOT)
+
+    assert [j.id for j in sched_mod.load(paths.ROOT)] == [job.id]
+
+
+def test_an_explicit_jobs_root_is_still_honoured(tmp_path: Path) -> None:
+    """The negative control. Every existing scheduler test passes its own
+    tmp_path, and a guard that swallowed every root would make them all pass
+    while measuring somewhere else entirely."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    sched_mod.save([sched_mod.Job(prompt="p", schedule="0 9 * * *")], elsewhere)
+
+    assert sched_mod.jobs_path(elsewhere).is_file(), "an explicit root was swallowed"
 
 
 @pytest.mark.asyncio
