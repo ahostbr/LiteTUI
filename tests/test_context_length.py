@@ -204,39 +204,43 @@ def test_every_explicit_model_switch_applies_the_setting():
     Boot is asserted NOT to apply, by the same reading — that rule is what
     stopped the app loading a 27B on every start.
 
-    🔴 THE COUNT IS A FLOOR NOW, NOT AN EQUALITY (T694). It read `== 3` and had
-    gone red on pristine `main`, because `/model <n>` and `/model <name>` were
+    🔴 THE COUNT IS A FLOOR, NOT AN EQUALITY (T694). It read `== 3` and had gone
+    red on pristine `main`, because `/model <n>` and `/model <name>` were
     CONSOLIDATED into one `switch_model` (model_switch.py:52), which the rpc
-    host also calls. Nothing was lost — two live entrances remain, the shared
-    one and `on_model_picked` (app.py:4429), and both apply. The arm was
-    counting an old source LAYOUT while calling itself a check on a rule, so a
-    good change read as a missing switch.
+    host also calls. Nothing was lost, and the arm was counting an old source
+    LAYOUT while calling itself a check on a rule — so a good change read as a
+    missing switch.
 
         A COUNT PINNED TO A LAYOUT GOES RED WHEN THE LAYOUT IMPROVES.
 
-    ⚠️ THE FLOOR CANNOT DEFEND ITSELF ALONE, so the marker's own presence is
-    asserted per file below. A reworded announcement would otherwise drop the
-    site list toward empty and the pairing loop would pass over nothing —
-    0-of-0 and 0-of-2 are the same green.
+    🔴 IT HAPPENED AGAIN ONE CARD LATER, WHICH IS THE REAL LESSON (T698).
+    `on_model_picked` was the last duplicate of `switch_model`; folding it left
+    ONE announcement in the tree, and the per-file check below went red saying
+    the site was "gone". It was right to ask and wrong to conclude: the site was
+    ABSORBED, not deleted. So the rule is stated properly now — the tree may
+    hold any number of announcements, every one must apply the setting, and a
+    path that no longer announces must DELEGATE to one that does. That last
+    clause is `test_the_picker_only_DELEGATES`, and it is what makes a
+    disappearing site provable rather than merely plausible.
+
+    ⚠️ THE FLOOR STILL CANNOT DEFEND ITSELF, so at least one file must carry
+    the marker. A rewording everywhere would otherwise empty the site list and
+    the pairing loop would pass over nothing — 0-of-0 and 0-of-1 are the same
+    green.
     """
-    # The runtime is app.py + the model_switch plugin since the split: the
-    # command/rpc path lives in the plugin, the picker callback stayed in
-    # app.py. The count and the pairing both span the pair.
+    # The runtime is app.py + the model_switch plugin since the split. Since
+    # T698 every announcement lives in the plugin; app.py is still read because
+    # a new switch path added there must be caught, not assumed absent.
     app_src = Path(app_mod.__file__).read_text(encoding="utf-8")
     plug_src = (Path(app_mod.__file__).parent / "plugins" / "model_switch.py").read_text(encoding="utf-8")
     sites = []
     for src_text, marker in ((app_src, 'self._system(f"Switched to: {self.model_id}")'),
                              (plug_src, 'app.system_message(f"Switched to: {app.model_id}")')):
-        parts = src_text.split(marker)
-        assert len(parts) > 1, (
-            f"the switch announcement {marker!r} is gone from this file. Either "
-            f"a switch path was removed or it was reworded — and a reworded one "
-            f"makes this whole gate pass over an empty list"
-        )
-        sites.extend(parts[1:])
-    assert len(sites) >= 2, (
-        f"expected at least the 2 live switch entrances (the shared "
-        f"`switch_model`, and `on_model_picked`), found {len(sites)}"
+        sites.extend(src_text.split(marker)[1:])
+    assert len(sites) >= 1, (
+        "no switch announcement was found in either file. Either every switch "
+        "path was removed or the announcement was reworded — and a reworded one "
+        "makes this whole gate pass over an empty list"
     )
 
     # Each one is followed by an apply.
@@ -258,3 +262,51 @@ def test_every_explicit_model_switch_applies_the_setting():
     # under-matching is how it goes vacuous without anyone noticing.
     assert "apply_context_length()" not in connect.replace(
         "# _apply_context_length()", ""), "connect must never load a model"
+
+
+def test_the_picker_only_DELEGATES() -> None:
+    """🔴 THE CLAUSE THAT MAKES AN ABSENT ANNOUNCEMENT PROVABLE (T698).
+
+    `on_model_picked` used to be a second copy of `switch_model` — the same
+    seven effects written out again, so every future change to a switch had to
+    be made twice and looked complete after the first. It now calls the shared
+    path, which is why the arm above finds one announcement where it used to
+    find two.
+
+    ⚠️ "CALLS `switch_model`" IS NOT ENOUGH, AND THAT EXACT ESCAPE HATCH HAS
+    ALREADY COST THIS REPO A CARD. A T690 detector accepted "delegates to
+    something guarded" and stayed GREEN under a mutation, because the function
+    it cleared ALSO had an unguarded branch — an escape hatch not scoped to the
+    whole body is an escape hatch for the whole body. So this parses the body
+    and requires that it does nothing ELSE: no assignment, and no call but the
+    delegation.
+    """
+    import ast
+
+    tree = ast.parse(Path(app_mod.__file__).read_text(encoding="utf-8"))
+    fn = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.FunctionDef) and n.name == "on_model_picked"),
+        None,
+    )
+    assert fn is not None, "on_model_picked is gone — the picker has no callback"
+
+    calls = [
+        n.func.id for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    ]
+    assert "switch_model" in calls, (
+        "the picker does not reach the shared switch path — if it grew its own "
+        "body again, it needs its own announcement and its own apply, and the "
+        "floor above needs raising to match"
+    )
+    assert [c for c in calls if c != "switch_model"] == [], calls
+
+    assigned = [
+        t.attr for n in ast.walk(fn) if isinstance(n, ast.Assign)
+        for t in n.targets if isinstance(t, ast.Attribute)
+    ]
+    assert assigned == [], (
+        f"the picker assigns {assigned} itself instead of leaving it to "
+        f"`switch_model` — that is how the two copies drifted the first time"
+    )

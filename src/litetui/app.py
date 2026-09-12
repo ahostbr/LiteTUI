@@ -4475,19 +4475,39 @@ class LiteTUI(App):
     # ── Modal callbacks ──────────────────────────────────────────
 
     def on_model_picked(self, model_id: str | None) -> None:
-        if not model_id or model_id == self.model_id:
+        """The picker's choice, through the one switch path (T698).
+
+        🔴 THIS WAS A SECOND COPY OF `switch_model` AND THE TWO HAD DRIFTED.
+        `plugins/model_switch.switch_model` already serves `/model <n>`,
+        `/model <name>` and the rpc host, and its docstring says outright that a
+        host-side picker is "another entrance to LiteTUI's existing control, not
+        a parallel assignment". This body was the parallel assignment: the same
+        seven effects, written out again, where every future change to a switch
+        had to be made twice and would look complete after the first.
+
+        ⚠️ THE DRIFT I REPORTED WAS COSMETIC, AND SAYING SO MATTERS MORE THAN
+        THE FOLD. I flagged that this copy guarded `_rpc_emit_model_state()`
+        behind `getattr(self, "_rpc", False)` while the plugin called it
+        unconditionally. That is a real textual difference and NOT a behavioural
+        one: `_rpc_emit_model_state` opens with exactly that check (app.py:3247),
+        so both spellings already did the same thing. The reason to fold is the
+        duplication, not a bug I found in it.
+
+        ⬜ ONE BEHAVIOUR DOES CHANGE, AND IT TIGHTENS. `switch_model` refuses a
+        target that is not in `available_models`; this copy assigned whatever it
+        was handed. The picker only ever offers `available_models`, so no live
+        path loses anything — a stale pick is now declined instead of naming a
+        model the server does not have.
+
+        The local import mirrors `rpc.py`: the plugin is imported at call time,
+        not at module scope, so app.py keeps no import-time dependency on a
+        plugin that is loaded through the registry.
+        """
+        if not model_id:
             return
-        self.model_id = model_id
-        self._model_thinking_levels = None
-        thinking_probe.clear_cache(model_id)
-        self._update_header()
-        self._fetch_ctx_window()
-        self._system(f"Switched to: {self.model_id}")
-        self._apply_context_length()
-        if self.backend.name == "lmstudio":
-            self._probe_thinking()
-        if getattr(self, "_rpc", False):
-            self._rpc_emit_model_state()
+        from litetui.plugins.model_switch import switch_model
+
+        switch_model(self, model_id)
 
     # ⚠️ `_on_` IS NOT A "HIDDEN FROM TEXTUAL" PREFIX. MessagePump dispatch does
     # `cls.__dict__.get(f"_{method_name}") or cls.__dict__.get(method_name)` —
