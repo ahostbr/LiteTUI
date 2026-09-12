@@ -46,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from litetui.model_transport import OAuthTransport, collect
+from litetui.model_transport import OAuthTransport
 
 TURNS = 6
 DISCOVERY_AT = 3  # 1-based turn index after which the tools array grows
@@ -111,10 +111,23 @@ async def _one_arm(transport, model: str, *, discover_at: int | None) -> list[di
 
         messages.append({"role": "user", "content": _prompt(i)})
         started = time.perf_counter()
-        stream = await transport.create(
+        # 🔴 `create()` ALREADY COLLECTS UNLESS YOU ASK FOR A STREAM.
+        # model_transport.py:567 ends `return result if kwargs.get("stream", False)
+        # else await collect(result)`. This probe never passed stream=True, so it
+        # was handed the FINISHED result and then called `collect()` on it a
+        # second time - `TypeError: 'async for' requires an object with __aiter__,
+        # got types.SimpleNamespace`, on the first turn of the control arm.
+        #
+        # ⚠️ AND THE REQUEST HAD ALREADY BEEN SENT AND PAID FOR. The crash is
+        # AFTER the HTTP round trip, so the failure looked like a broken probe
+        # and was also a spent request. A CRASH DOWNSTREAM OF THE SIDE EFFECT
+        # STILL HAS THE SIDE EFFECT - which is exactly why this file shipped with
+        # a spend-guard and exactly what "RUNNABLE, NOT RUN" could not protect:
+        # an unrun script is an unverified script, and the only way to find this
+        # was to spend the thing the guard exists to protect.
+        result = await transport.create(
             model=model, messages=messages, tools=tools, max_tokens=32
         )
-        result = await collect(stream)
         elapsed_ms = (time.perf_counter() - started) * 1000
 
         usage = result.usage
