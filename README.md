@@ -196,13 +196,60 @@ use.
 
 ## Two instances at once
 
-Two LiteTUI processes started from the same checkout share one data root, so they
-share **one `settings.json`** — 70 keys, one file. That is supported: a save now
-reads the file, writes back only the keys *this* instance changed, and replaces
-the file atomically, so the think level you set in one window survives a theme
-change in the other. Env-sourced fields (`LITETUI_MODEL`, `LITETUI_THINKING`,
-`LITETUI_BACKEND`, …) are still written on every save — the file records what you
-*chose*, so unsetting a variable must not silently revert the knob.
+**Running two LiteTUI windows against one model server is supported, and they run
+in parallel.** llama.cpp and LM Studio both serve concurrent requests; two
+instances on the *same loaded model* cost one set of weights and do not wait on
+each other.
+
+### The one thing you will be asked about: a *different* model
+
+Loading a **different** model in a second instance puts a **second set of weights
+in VRAM**, and on a card that was already full that is an OOM. So whenever
+another LiteTUI is running, a load that would add a model you do not already have
+resident stops and asks first:
+
+> Another LiteTUI instance is running (OpenBolt).
+> Loading a different model puts a second model in VRAM and can OOM depending on
+> your setup. Load qwen/qwen3-8b anyway? **[Load] [Cancel]**
+
+- It asks **every time**, for as long as the instance is alive. There is no
+  "don't ask again" — the cost is real every time, not just the first.
+- It asks on **every** route into a load: `/model`, the picker, a `/modelcfg`
+  context change (a reload *is* a load), the pre-turn load, and the rpc
+  `set_model` a host drives. The check lives inside the backend, so a route
+  added later is covered without anyone remembering to add it.
+- The **same** model raises nothing. That is the parallel case, and it is the
+  point.
+- A **headless** child (LiteSuite's rpc LiteTUI) cannot show a modal, so it
+  refuses instead of deciding for you, and the host renders the refusal.
+
+"Another instance" means a LiteHarness registry row with `cli = litetui` and a
+live session — which includes LiteSuite's headless children, because they load
+models too.
+
+### Each conversation remembers its own setup
+
+A conversation carries its own `.convos/<id>/settings.json`: backend, model,
+thinking level (and the codex reasoning effort, which is a separate vocabulary),
+the llama.cpp or LM Studio load settings for *its* model, and the seat that owned
+it. Switching model or engine inside one conversation changes that conversation
+only — the other one you have open does not move, and the global `settings.json`
+keeps being the **defaults** a new conversation is born from, plus the app-wide
+knobs (theme, seat name, dialog style).
+
+Opening or `/resume`-ing a conversation puts it back on what it was using. If
+that model or engine is no longer available here, it falls back to the default
+and **says so** rather than answering quietly as something else.
+
+### The shared `settings.json`
+
+Two processes from one checkout share one data root and therefore one
+`settings.json` — 70 keys, one file. A save reads it, writes back only the keys
+*this* instance changed, and replaces it atomically, so the think level you set
+in one window survives a theme change in the other. Env-sourced fields
+(`LITETUI_MODEL`, `LITETUI_THINKING`, `LITETUI_BACKEND`, …) are written on every
+save: the file records what you *chose*, so unsetting a variable must not
+silently revert the knob.
 
 ⚠️ **`background-tasks.json` is not merged this way yet.** It is a list store, and
 two instances editing tasks can still drop each other's rows (measured: A's row
@@ -210,15 +257,23 @@ gone after B saves). Merging it needs a rule for deletion that a plain
 read-merge-write cannot give — a removed row would be resurrected from disk — so
 it is its own change, not a line here.
 
-Want them fully independent instead? Give one its own root before it starts:
+⚠️ **The model ceiling is shared too.** The llama.cpp router holds at most
+`--models-max` models and that limit belongs to whichever instance started it, so
+a load can push out a model the other window is mid-turn on. The instance doing
+the loading names what is resident before it displaces anything.
+
+### Or keep them completely separate
+
+Give one its own root before it starts:
 
 ```bash
 LITETUI_DATA_ROOT=~/.litetui-b litetui
 ```
 
-That instance gets its own `settings.json`, `.convos/`, tasks and jobs. Finer
-knobs exist for one field at a time: `LITETUI_SEAT_NAME`, `LITETUI_MODEL`,
-`LITETUI_THINKING`, `LITETUI_BACKEND`.
+That instance gets its own `settings.json`, `.convos/`, tasks and jobs — and,
+being a separate data root, no shared anything. Finer knobs exist for one field
+at a time: `LITETUI_SEAT_NAME`, `LITETUI_MODEL`, `LITETUI_THINKING`,
+`LITETUI_BACKEND`.
 
 ## Harness seat
 
