@@ -14,8 +14,7 @@ from pathlib import Path
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as app_mod
-from litetui import appsvc
-from litetui import turnstats
+from litetui import appsvc, turnstats
 
 ok = []
 
@@ -38,7 +37,7 @@ class FakeApp:
     _append_tps_into = appsvc.append_tps_into
 
     def __init__(self, seat=None, think=None, convo="", used=None, mx=None, tps=None,
-                 settings=None):
+                 settings=None, width=None):
         # The footer reads per-field toggles now. Default them ALL ON so every
         # assertion below keeps testing the field it was written for rather than
         # accidentally passing because the field is switched off.
@@ -53,6 +52,8 @@ class FakeApp:
         # `tps` stays on the app -- it is the reactive the footer reads.
         # The bookkeeping behind it moved to turnstats.TpsState (T070 O4-c).
         self.tps = tps
+        if width is not None:
+            self._footer_available_width = width - 12 - 1
 
 
 CONVO = "4f3a1c9d-2b7e-4a11-9c30-8e5f6d1b2a44"
@@ -65,6 +66,29 @@ chk("shows the thinking level", "think:low" in t)
 chk("shows the first chunk of the convo uuid", "4f3a1c9d" in t)
 chk("...only the first chunk, not the whole uuid", CONVO not in t)
 chk("still shows the context readout", "ctx 5,087 / 100,096" in t)
+
+print("\n=== narrow panes keep identity and percent instead of clipping the tail ===")
+narrow = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO, 27000, 100000,
+                 tps=42.3, width=76)
+narrow._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
+line = narrow.ctx_label_text.plain
+print("   ", line)
+chk("76 columns keeps the seat", "OpenBolt" in line)
+chk("76 columns keeps the context percent", "27%" in line)
+chk("narrow text drops thinking before protected fields", "think:high" not in line)
+chk("narrow text drops the conversation before protected fields", "4f3a1c9d" not in line)
+chk("narrow text fits beside the 12-cell palette and one-cell gap",
+    narrow.ctx_label_text.cell_len <= 63)
+
+wide = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO, 27000, 100000,
+               tps=42.3, width=200)
+wide._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
+wide_line = wide.ctx_label_text.plain
+chk("wide width leaves every configured field unchanged",
+    all(field in wide_line for field in (
+        ">> autonomous on", "plan:off", "OpenBolt", "think:high",
+        "4f3a1c9d", "ctx 27,000 / 100,000", "27%", "42.3 tok/s",
+    )))
 
 print("\n=== 🔴 an UNREGISTERED seat must not claim a name ===")
 t = FakeApp(FakeSeat(False), None, CONVO).ctx_label_text.plain

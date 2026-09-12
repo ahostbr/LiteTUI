@@ -833,6 +833,16 @@ class PaletteButton(Static):
 class ContextFooter(Footer):
     """Textual's Footer plus a live context-window readout on the right."""
 
+    def on_resize(self, _event) -> None:
+        """Re-fit after this footer has received its new layout width."""
+        palette_width = 12
+        buttons = list(self.query(".palette-button"))
+        button_width = max((button.size.width for button in buttons), default=0)
+        if button_width:
+            palette_width = button_width
+        self.app._footer_available_width = max(0, self.size.width - palette_width - 1)
+        self.call_after_refresh(self.app._refresh_ctx_label)
+
     def compose(self) -> ComposeResult:
         yield from super().compose()
         # CLASS, not id. Footer recomposes (Textual removes its children and

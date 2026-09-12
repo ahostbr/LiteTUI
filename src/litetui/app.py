@@ -3023,10 +3023,16 @@ class LiteTUI(App):
         in order and there is ONE return: an early return for a missing value is
         what previously made tok/s unreachable whenever the context window had
         not resolved.
+
+        This stays ONE Text rather than one widget per field because Footer
+        recomposes (see above), but it is width-aware before Textual gets a chance
+        to clip the tail. The tail contains the context percentage -- the field a
+        visual monitor needs most -- so optional chunks are dropped by explicit
+        priority while authority, plan, seat and percent are never sacrificed.
         """
         s = self.settings
         sep = "  \u00b7  "
-        t = Text()
+        chunks: list[tuple[str, Text]] = []
 
         # T570 — the selected chip, if the keyboard has taken the footer. Applied
         # by `add` so EVERY chip gets it for free: a per-chip opt-in is how one
@@ -3034,10 +3040,11 @@ class LiteTUI(App):
         # arrow key having done nothing.
         nav = getattr(self, "_footer_nav", None)
 
-        def add(chunk: str, style: str, chip: str | None = None) -> None:
-            if t.plain:
-                t.append(sep, "#5c6370")
-            t.append(chunk, "reverse bold" if (chip and chip == nav) else style)
+        def add(key: str, chunk: str, style: str, chip: str | None = None) -> None:
+            chunks.append((
+                key,
+                Text(chunk, "reverse bold" if (chip and chip == nav) else style),
+            ))
 
         # THE AUTHORITY LEVEL, FIRST AND WITHOUT A TOGGLE. Ryan asked for it
         # ("ALSO show this in the footer") after being denied a write while
@@ -3053,7 +3060,7 @@ class LiteTUI(App):
         # profile_text returns "" before any turn has resolved one.
         level = profile_text(getattr(self, "_active_tool_profile", None))
         if level:
-            add(level, "#7d8799" if tool_policy.stops_you(
+            add("authority", level, "#7d8799" if tool_policy.stops_you(
                 self._active_tool_profile) else "#7aa2f7", chip="authority")
 
         # PLAN MODE, beside Authority and unhideable for the same reason (T558):
@@ -3069,7 +3076,7 @@ class LiteTUI(App):
         # position: you could leave plan mode from the footer and never enter it
         # there. Drawing it off is what makes it a control rather than a readout.
         plan_on = bool(getattr(self, "_plan_mode", False))
-        add("plan:on" if plan_on else "plan:off",
+        add("plan", "plan:on" if plan_on else "plan:off",
             "bold #bb9af7" if plan_on else "#5c6370", chip="plan")
 
         # Identity, but only when the seat actually holds it. An unregistered
@@ -3078,14 +3085,14 @@ class LiteTUI(App):
         if s.footer_show_seat:
             seat = getattr(self, "seat", None)
             if seat is not None and getattr(seat, "registered", False):
-                add(str(seat.name), "bold #7d8799")
+                add("seat", str(seat.name), "bold #7d8799")
             elif seat is not None:
-                add("unregistered", "#e5534b")
+                add("seat", "unregistered", "#e5534b")
             else:
-                add("no seat", "#5c6370")
+                add("seat", "no seat", "#5c6370")
 
         if s.footer_show_thinking:
-            add(f"think:{self.thinking_level or 'default'}", "#5c6370", chip="think")
+            add("think", f"think:{self.thinking_level or 'default'}", "#5c6370", chip="think")
 
         # T570 — WHAT IS RUNNING WITHOUT ME. Ryan: "sub agents and background
         # process should show in the footer".
@@ -3099,12 +3106,12 @@ class LiteTUI(App):
         # registry has not been constructed is worse than one that shows nothing.
         subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
         if s.footer_show_bg and bg:
-            add(f"bg:{len(bg)}", "#7aa2f7", chip="bg")
+            add("bg", f"bg:{len(bg)}", "#7aa2f7", chip="bg")
         if s.footer_show_subagents and subs:
-            add(f"agents:{len(subs)}", "#bb9af7", chip="agents")
+            add("agents", f"agents:{len(subs)}", "#bb9af7", chip="agents")
 
         if s.footer_show_convo and self.convo_id:
-            add(self.convo_id[:8], "#5c6370")
+            add("convo", self.convo_id[:8], "#5c6370")
 
         used, mx = self.ctx_used, self.ctx_max
         pct = (used / mx) if (used is not None and mx) else None
@@ -3117,7 +3124,7 @@ class LiteTUI(App):
 
         if s.footer_show_context:
             if used is None and mx is None:
-                add("ctx \u2014", "dim")
+                add("ctx", "ctx \u2014", "dim")
             else:
                 u = f"{used:,}" if used is not None else "\u2014"
                 m = f"{mx:,}" if mx is not None else "?"
@@ -3125,9 +3132,9 @@ class LiteTUI(App):
                 # Printing it unmarked is how "ctx / 262,144" can sit in the
                 # footer while LM Studio is about to serve the model at 8k.
                 if mx is not None and not getattr(self, "ctx_loaded", False):
-                    add(f"ctx {u} / {m} max", "#5c6370")
+                    add("ctx", f"ctx {u} / {m} max", "#5c6370")
                 else:
-                    add(f"ctx {u} / {m}", ctx_style)
+                    add("ctx", f"ctx {u} / {m}", ctx_style)
 
         # The percent was ALREADY computed to pick the colour above and then
         # discarded, so the footer knew how full the window was and made you do
@@ -3135,11 +3142,38 @@ class LiteTUI(App):
         # counts are hidden — for most turns the ratio is the only part anyone
         # actually reads.
         if s.footer_show_context_pct and pct is not None:
-            add(f"{pct * 100:.0f}%", ctx_style)
+            add("pct", f"{pct * 100:.0f}%", ctx_style)
 
         if s.footer_show_tps:
-            appsvc.append_tps_into(self, t, sep)
+            stats = Text()
+            appsvc.append_tps_into(self, stats, sep)
+            if stats.plain:
+                chunks.append(("tps", stats))
 
+        # The footer owns the usable width. During its first compose it is
+        # mounted but its children are not, so use the measured palette width
+        # when available and its stable 12-cell footprint otherwise. The label's
+        # CSS right padding consumes the remaining one cell. FakeApp unit tests
+        # have no query/size at all; in that unmounted world width is unknown
+        # and the full historical text is returned unchanged.
+        available = getattr(self, "_footer_available_width", None)
+
+        # Drop low-value fields until the protected visual-cron facts fit.
+        # Display order never changes; only membership does. Calculate against
+        # Rich cell widths (not len()) so wide glyphs cannot reintroduce clipping.
+        if available is not None:
+            for drop_key in ("tps", "convo", "bg", "agents", "think", "ctx"):
+                total = sum(chunk.cell_len for _, chunk in chunks)
+                total += Text(sep).cell_len * max(0, len(chunks) - 1)
+                if total <= available:
+                    break
+                chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
+
+        t = Text()
+        for _, chunk in chunks:
+            if t.plain:
+                t.append(sep, "#5c6370")
+            t.append(chunk)
         return t
 
 
