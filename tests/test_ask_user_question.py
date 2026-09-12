@@ -18,6 +18,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+import pytest
+
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import _script_guard  # tests/ is sys.path[0] when a file is run as a script
@@ -35,15 +37,22 @@ _script_guard.redirect_live_settings()
 # Deliberately a SECOND import block: the env pin and the settings redirect must
 # run BETWEEN these imports, not before or after them.
 from litetui import app as m
-from litetui import paths
 from litetui import ask_user_question as aq
+from litetui import paths
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-auq-"))
 ok = []
+#: The labels that FAILED. `ok` is bools, which is all an exit status needed; a
+#: pytest arm has to be able to say WHICH check failed, and a bool cannot.
+#: Recorded alongside rather than by changing `ok`, so `sum(ok)` / `all(ok)` /
+#: `len(ok)` keep meaning exactly what they meant (T700).
+failures: list[str] = []
 
 
 def chk(label, cond):
     ok.append(bool(cond))
+    if not cond:
+        failures.append(label)
     print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
 
 
@@ -248,8 +257,28 @@ async def main():
             "Poll loop heartbeat" not in res and "do not assume any option" in res)
         chk("widget dismissed", c.screen is not scr)
 
+
+
+# ── the same checks, as a pytest arm (T700) ─────────────────────────────
+#
+# 🔴 THIS FILE IS NAMED `test_*` AND NOTHING HAS EVER RUN IT. A module-level
+# exit raises SystemExit during collection, which pytest reports as
+# INTERNALERROR and which abandons the WHOLE invocation — not just this file.
+# Ten files in this directory were in that state (T699 fixed two, T700 the
+# rest); each abort hid the others, which is why the class kept looking small.
+#
+# The tally and the exit left `main`; `main` itself is unchanged and still does
+# every check.
+
+
+@pytest.mark.asyncio
+async def test_every_check_in_this_file_passed() -> None:
+    await main()
+    assert ok, "no check ran"
+    assert failures == [], failures
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
     print(f"\n{sum(ok)}/{len(ok)} passed")
     sys.exit(0 if all(ok) else 1)
-
-
-asyncio.run(main())
