@@ -28,10 +28,17 @@ from litetui.plugins.view_image import VIEW_IMAGE_TOOL_SPEC
 from litetui import appsvc
 
 ok = []
+#: The labels that FAILED. `ok` is bools, which is all an exit status needed; a
+#: pytest arm has to be able to say WHICH check failed, and a bool cannot.
+#: Recorded alongside rather than by changing `ok`, so `sum(ok)` / `all(ok)` /
+#: `len(ok)` keep meaning exactly what they meant (T700).
+failures: list[str] = []
 
 
 def chk(label, cond):
     ok.append(bool(cond))
+    if not cond:
+        failures.append(label)
     print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
 
 
@@ -140,7 +147,29 @@ chk("🔴 drains the queue so one image is not sent twice",
 chk("...and is INSIDE the tool loop, after the results are appended",
     src.index('"role": "tool"') < src.index("if self._pending_tool_images:"))
 
-print(f"\n{sum(ok)}/{len(ok)} passed")
+# ⚠️ THE CLEANUP RUNS IN BOTH MODES, THE REPORT ONLY AS A SCRIPT. `TMP` is a
+# real temp tree this file creates; leaving it behind under pytest would make
+# the suite a litterer, so the rmtree stays at module level while the tally and
+# the exit move (T700).
 import shutil
+
 shutil.rmtree(TMP, ignore_errors=True)
-sys.exit(0 if all(ok) else 1)
+
+
+# ── the same checks, as a pytest arm (T700) ─────────────────────────────
+#
+# 🔴 THIS FILE IS NAMED `test_*` AND NOTHING HAS EVER RUN IT. A module-level
+# exit raises SystemExit during collection, which pytest reports as
+# INTERNALERROR and which abandons the WHOLE invocation — not just this file.
+# Ten files in this directory were in that state (T699 fixed two, T700 the
+# rest); each abort hid the others, which is why the class kept looking small.
+
+
+def test_every_check_in_this_file_passed() -> None:
+    assert ok, "no check ran — the body above did not execute"
+    assert failures == [], failures
+
+
+if __name__ == "__main__":
+    print(f"\n{sum(ok)}/{len(ok)} passed")
+    sys.exit(0 if all(ok) else 1)

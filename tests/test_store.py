@@ -30,10 +30,17 @@ from litetui import appsvc
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-store-"))
 
 ok = []
+#: The labels that FAILED. `ok` is bools, which is all an exit status needed; a
+#: pytest arm has to be able to say WHICH check failed, and a bool cannot.
+#: Recorded alongside rather than by changing `ok`, so `sum(ok)` / `all(ok)` /
+#: `len(ok)` keep meaning exactly what they meant (T700).
+failures: list[str] = []
 
 
 def chk(label, cond):
     ok.append(bool(cond))
+    if not cond:
+        failures.append(label)
     print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
 
 
@@ -109,5 +116,21 @@ chk("live block is not the once-only text", m.STORE_HEADER not in live)
 chk("once block carries the marker", m.STORE_HEADER in once)
 chk("both carry the actual file contents", "Prefers `dir`" in live and "Prefers `dir`" in once)
 
-print(f"\n{sum(ok)}/{len(ok)} passed")
-sys.exit(0 if all(ok) else 1)
+
+# ── the same checks, as a pytest arm (T700) ─────────────────────────────
+#
+# 🔴 THIS FILE IS NAMED `test_*` AND NOTHING HAS EVER RUN IT. A module-level
+# `sys.exit` raises SystemExit during collection, which pytest reports as
+# INTERNALERROR and which abandons the WHOLE invocation — not just this file.
+# Ten files in this directory were in that state (T699 fixed two, T700 the
+# rest); each abort hid the others, which is why the class kept looking small.
+
+
+def test_every_check_in_this_file_passed() -> None:
+    assert ok, "no check ran — the body above did not execute"
+    assert failures == [], failures
+
+
+if __name__ == "__main__":
+    print(f"\n{sum(ok)}/{len(ok)} passed")
+    sys.exit(0 if all(ok) else 1)

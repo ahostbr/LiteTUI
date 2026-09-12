@@ -18,10 +18,17 @@ from litetui import sanitize
 from litetui.plugins.core_tools import tool_bash
 
 ok = []
+#: The labels that FAILED. `ok` is bools, which is all an exit status needed; a
+#: pytest arm has to be able to say WHICH check failed, and a bool cannot.
+#: Recorded alongside rather than by changing `ok`, so `sum(ok)` / `all(ok)` /
+#: `len(ok)` keep meaning exactly what they meant (T700).
+failures: list[str] = []
 
 
 def chk(label, cond):
     ok.append(bool(cond))
+    if not cond:
+        failures.append(label)
     print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
 
 
@@ -66,5 +73,21 @@ chk("writes the off sequences first", written.startswith(sanitize._MOUSE_OFF))
 chk("...then the on sequences (final state is Textual's)", written.endswith(sanitize._MOUSE_ON))
 chk("exactly the mode set, nothing else", written == sanitize._MOUSE_OFF + sanitize._MOUSE_ON)
 
-print(f"\n{sum(ok)}/{len(ok)} passed")
-sys.exit(0 if all(ok) else 1)
+
+# ── the same checks, as a pytest arm (T700) ─────────────────────────────
+#
+# 🔴 THIS FILE IS NAMED `test_*` AND NOTHING HAS EVER RUN IT. A module-level
+# `sys.exit` raises SystemExit during collection, which pytest reports as
+# INTERNALERROR and which abandons the WHOLE invocation — not just this file.
+# Ten files in this directory were in that state (T699 fixed two, T700 the
+# rest); each abort hid the others, which is why the class kept looking small.
+
+
+def test_every_check_in_this_file_passed() -> None:
+    assert ok, "no check ran — the body above did not execute"
+    assert failures == [], failures
+
+
+if __name__ == "__main__":
+    print(f"\n{sum(ok)}/{len(ok)} passed")
+    sys.exit(0 if all(ok) else 1)
