@@ -353,12 +353,27 @@ def load(root: Path | str) -> dict[str, Task]:
 
 
 def _owner_alive(task: Task) -> bool:
-    """Is the instance that started this task still running?
+    """Is the instance that started this task still running? Asked at BOOT.
 
-    `pid_is_live` treats an unopenable pid as ALIVE (access denied is not
-    death), which is the safe direction here too: the cost of a wrong "alive"
-    is a row that stays `running` until the next boot, and the cost of a wrong
-    "dead" is telling the human their task was killed while it is producing
-    output in the other window.
+    🔴 OUR OWN PID ON A DISK ROW MEANS THE PID WAS REUSED, NOT THAT WE OWN IT.
+    `load` runs once, from `LiteTUI.__init__` (app.py:1216) — the only caller in
+    the package — so this process has not started a task yet and cannot be the
+    owner of anything already in the file. Windows hands pids out again, so the
+    row belongs to a DEAD predecessor that happened to hold this number. Without
+    this line `pid_is_live` answers True about us, that row stays `running` for
+    the life of the instance, and it does so again on every future boot that
+    draws the same pid. (Sentinel, message 94cedaec.)
+
+    ⚠️ THE WHOLE RULE RESTS ON "AT BOOT". If `load` were ever called mid-session
+    it would mark this instance's own live tasks LOST. `test_load_is_called_once
+    _at_construction_and_nowhere_else` pins that, because the day someone adds a
+    reload is the day this line silently starts lying.
+
+    `pid_is_live` treats an unopenable pid as ALIVE (access denied is not death),
+    which is the right direction here too: a wrong "alive" costs a row that stays
+    `running` until the next boot, and a wrong "dead" tells the human their task
+    was killed while it is still producing output in the other window.
     """
-    return task.owner_pid is not None and router_record.pid_is_live(task.owner_pid)
+    if task.owner_pid is None or task.owner_pid == os.getpid():
+        return False
+    return router_record.pid_is_live(task.owner_pid)

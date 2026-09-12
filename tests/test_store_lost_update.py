@@ -23,9 +23,26 @@ the owner pid: LOST is stamped only when the owner is actually gone.
 """
 import json
 from contextlib import contextmanager
+from typing import ClassVar
+
+import pytest
 
 from litetui import router_record, row_store
 from litetui import tasks as tasks_mod
+
+
+@pytest.fixture(autouse=True)
+def _instances_are_the_only_live_pids(monkeypatch):
+    """An `_Instance` is alive until it is not, and nothing else is.
+
+    ⚠️ WITHOUT THIS THE HARNESS CONTRADICTED ITSELF. Instances stamp invented
+    pids, which the real `pid_is_live` correctly calls dead — so B booting
+    would mark A's row LOST while A was still running in the very next line of
+    the test. An arm may still pin `pid_is_live` itself; it is applied after
+    this and wins.
+    """
+    _Instance.LIVE.clear()
+    monkeypatch.setattr(router_record, "pid_is_live", lambda pid: pid in _Instance.LIVE)
 
 
 class _Instance:
@@ -44,10 +61,29 @@ class _Instance:
     worse lie than this comment.
     """
 
+    #: Each instance stamps its own pid, and NONE of them is the pytest
+    #: process's. That is not decoration: `_owner_alive` reads our own pid on a
+    #: disk row as a REUSED pid, so a harness that stamped `os.getpid()` could
+    #: not tell a live sibling from a recycled number — and two arms below were
+    #: passing for exactly that wrong reason before Sentinel caught it.
+    _next_pid = 900001
+    #: The pids `pid_is_live` reports as running, per the autouse fixture
+    #: above. Shared on purpose — it is the box, not an instance — and reset
+    #: per test by that fixture.
+    LIVE: ClassVar[set] = set()
+
     def __init__(self, root):
         self.root = root
         self.baseline: dict = {}
         self.tasks: dict = {}
+        type(self)._next_pid += 1
+        self.pid = type(self)._next_pid
+        self.LIVE.add(self.pid)
+
+    def quit(self):
+        """This window closed. Its tasks died with it — the Job Object saw to
+        that — which is what a later boot must be able to work out."""
+        self.LIVE.discard(self.pid)
 
     @contextmanager
     def _switched_in(self):
@@ -71,6 +107,7 @@ class _Instance:
 
     def start(self, command):
         t = tasks_mod.new_task("bash", {"command": command}, "")
+        t.owner_pid = self.pid          # this instance's process, not pytest's
         self.tasks[t.id] = t
         self.save()
         return t
@@ -160,22 +197,30 @@ def test_an_unreadable_store_still_writes_our_own_rows(tmp_path):
 # ── LOST belongs to the owner's death, not to our boot ───────────────────
 
 
-def test_a_running_row_whose_owner_is_ALIVE_is_not_marked_lost(tmp_path, monkeypatch):
-    """Ryan's two windows: B booting must not report A's in-flight task as
-    killed. Before the owner pid, every boot stamped every running row."""
-    monkeypatch.setattr(router_record, "pid_is_live", lambda pid: True)
+def test_a_running_row_whose_owner_is_ALIVE_is_not_marked_lost(tmp_path):
+    """RYAN'S TWO WINDOWS, and the defect this half of the card is for: B
+    booting must not report A's in-flight task as killed. Before the owner pid
+    every boot stamped every running row, whoever owned it."""
     a = _Instance(tmp_path).boot()
     t = a.start("sleep 900")
 
+    b = _Instance(tmp_path).boot()
+
+    assert b.tasks[t.id].state == tasks_mod.RUNNING
     assert _on_disk(tmp_path)[t.id].state == tasks_mod.RUNNING
 
 
-def test_a_running_row_whose_owner_is_GONE_is_marked_lost(tmp_path, monkeypatch):
-    """The original truth, and it must survive the fix: the child sits in the
-    owner's Job Object, so when that process went, the work went."""
-    monkeypatch.setattr(router_record, "pid_is_live", lambda pid: False)
+def test_a_running_row_whose_owner_QUIT_is_marked_lost(tmp_path):
+    """The original truth, which had to survive the fix: the child sits in the
+    owner's kill-on-close Job Object, so when that process went, the work went.
+
+    ⬜ DRIVEN THROUGH `quit()` RATHER THAN A STUBBED `pid_is_live`. The stub
+    proves the branch; this proves the SEQUENCE Ryan would actually perform —
+    start a task in one window, close that window, open another.
+    """
     a = _Instance(tmp_path).boot()
     t = a.start("sleep 900")
+    a.quit()
 
     back = _on_disk(tmp_path)[t.id]
     assert back.state == tasks_mod.LOST and back.ended is not None
@@ -219,9 +264,67 @@ def test_a_row_written_before_this_change_keeps_TODAYS_answer(tmp_path, monkeypa
 
 
 def test_the_owner_pid_is_THIS_process() -> None:
-    """The validity gate for the three arms above. If `new_task` stamped
-    nothing, `owner_pid` would be None on every row and all three would be
-    exercising the legacy branch while appearing to test the new one."""
+    """The validity gate for the arms above. If `new_task` stamped nothing,
+    `owner_pid` would be None on every row and they would all be exercising the
+    legacy branch while appearing to test the new one."""
     import os
 
     assert tasks_mod.new_task("bash", {"command": "x"}, "").owner_pid == os.getpid()
+
+
+def test_a_row_carrying_OUR_OWN_pid_is_marked_lost(tmp_path, monkeypatch):
+    """🔴 OUR PID ON A ROW WE FIND AT BOOT MEANS THE PID WAS REUSED.
+
+    `load` runs once, from `__init__`, before this process has started any
+    task — so it cannot be the owner of anything already in the file. Windows
+    hands pids out again, so that row belongs to a dead predecessor that
+    happened to hold this number. `pid_is_live` is pinned True here precisely
+    to prove the row is NOT taking the dead branch by accident: without the
+    identity check it would answer True about us and the row would sit
+    `running` for the life of this instance, and again on every future boot
+    that drew the same pid. (Sentinel, 94cedaec.)
+    """
+    import os
+
+    monkeypatch.setattr(router_record, "pid_is_live", lambda pid: True)
+    t = tasks_mod.new_task("bash", {"command": "sleep 900"}, "")
+    assert t.owner_pid == os.getpid(), "the arm is not testing what it claims"
+    tasks_mod.save([t], tmp_path)
+
+    assert _on_disk(tmp_path)[t.id].state == tasks_mod.LOST
+
+
+def test_load_is_called_once_at_construction_and_nowhere_else():
+    """⚠️ THE PREMISE THE IDENTITY CHECK RESTS ON, pinned so it cannot rot.
+
+    "Our own pid means a reused pid" is true only because `load` runs at BOOT.
+    A reload added later — a `/tasks refresh`, a data-root switch — would make
+    this instance re-read the store it has been writing to and mark its OWN
+    live tasks LOST. That is a silent, plausible change, so the rule's
+    precondition is asserted rather than described.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(tasks_mod.__file__).resolve().parent
+    calls: list[str] = []
+    for py in sorted(src.rglob("*.py")):
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "load"
+                and isinstance(node.func.value, ast.Name)
+                and "tasks" in node.func.value.id.lower()
+            ):
+                calls.append(f"{py.name}:{node.lineno}")
+
+    assert calls == ["app.py:1216"], (
+        f"tasks.load is called from {calls}. It may only run at construction: "
+        f"`_owner_alive` reads OUR pid on a disk row as a reused pid, which is "
+        f"only true before this process has started any task."
+    )
