@@ -250,6 +250,68 @@ class DialogController:
         return not self._done
 
 
+
+def _is_composing(root: Widget) -> bool:
+    """True while a descendant is ATTACHED but has not composed its children yet.
+
+    The predicate is `children`, and it is the one that was MEASURED to flip.
+    `is_mounted` looks like the right question and is not: `_is_mounted` is set
+    in `_pre_process`'s `finally` (message_pump.py:612), and a `Select` mounted
+    into a live body read `is_mounted is False` for six `asyncio.sleep(0)` ticks
+    AFTER its own children already existed. A guard built on it would exhaust
+    its tries every single time and never fire, which is a guard that defends
+    the bug rather than catching it.
+
+    The class test is what keeps this honest for widgets that have no children
+    by design. A `Label` never composes, so asking "has it composed?" of one
+    would be permanently False; only a class that overrides `compose` is asked.
+    """
+    return any(
+        type(w).compose is not Widget.compose and not w.children
+        for w in root.walk_children(Widget, with_self=True)
+    )
+
+
+async def _await_subtree_composed(root: Widget) -> None:
+    """Bounded wait before a teardown prunes `root`. THE T704 GUARD.
+
+    IT LIVES ON `close_view`, NOT ON THE SWAP THAT REPORTED THE BUG. T704 was
+    found through `DialogController.swap`, but `swap` is only one of the two
+    callers — `resolve()` does `call_next(view.close_view)` for every dialog
+    that is ANSWERED, which is the common case. Guarding the swap call site
+    would have fixed the path the card names and left the other one exactly as
+    broken. Both hosts call it because both define their own teardown.
+
+    WHAT GOES WRONG WITHOUT IT, read out of the installed Textual 8.1.0 source
+    rather than inferred. `App._prune` marks `_pruning` across `walk_children`;
+    `Widget.mount` then EARLY RETURNS `AwaitMount(self, [])` on `_pruning`
+    (widget.py:1424) — so a `Select` that is attached but has not yet run
+    `_pre_process` composes, hands its `SelectOverlay` to
+    `mount_composed_widgets`, and that mount is silently dropped.
+    `_pre_process` dispatches `Compose()` and then `Mount()` unconditionally
+    anyway (message_pump.py:599/604) and sets `_is_mounted` in its `finally`
+    regardless — so `Select._on_mount` (_select.py:623) runs on a `Select` with
+    no children, calls `_setup_options_renderables`, and that does
+    `self.query_one(SelectOverlay)` at _select.py:546 -> NoMatches, raised out
+    of a handler, which kills the app.
+
+    CORRECTION TO THE COMMENT IN `_mount_view` ABOVE: the order is Compose THEN
+    Mount, not "a Select never got its children so Mount crashed". Compose does
+    run. It is the mount OF WHAT COMPOSE PRODUCED that `_pruning` throws away.
+
+    THIS NARROWS THE WINDOW, IT DOES NOT CLOSE IT — and the bound is why. An
+    unbounded wait inside a teardown is a hung dialog, so this reuses
+    `_ViewMixin._settle_tries` and then proceeds exactly as the code did
+    before. Under a load heavy enough that four ticks are not enough, the race
+    is still reachable. The unit arm proves the GUARD; only the seven-file
+    reproducer measures the product's own timing.
+    """
+    for _ in range(_ViewMixin._settle_tries):
+        if not _is_composing(root):
+            return
+        await asyncio.sleep(0)
+
+
 class _ViewMixin:
     """Shared teardown + focus behaviour. Neither view may resolve the future."""
 
@@ -432,6 +494,7 @@ class SidePanel(Widget, _ViewMixin):
 
     async def close_view(self) -> None:
         """Teardown ONLY. Deliberately not named dismiss, and never resolves."""
+        await _await_subtree_composed(self.body)   # T704
         prev = self._prev_focus
         await self.remove()
         if prev is not None:
@@ -605,6 +668,7 @@ class _ModalHost(ModalScreen, _ViewMixin):
 
     async def close_view(self) -> None:
         """Pop WITHOUT dismissing: dismiss would answer a push_screen_wait."""
+        await _await_subtree_composed(self.body)   # T704
         if self.app.screen is self:
             self.app.pop_screen()
 
