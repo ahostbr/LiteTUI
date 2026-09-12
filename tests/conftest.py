@@ -71,6 +71,21 @@ os.environ.setdefault("LITETUI_BACKEND", "lmstudio")
 # and this. One missing rule, not three bugs: A TEST MUST NEVER WRITE A PATH THE
 # RUNNING APP OWNS.
 @pytest.fixture(autouse=True)
+def _no_vram_gate_leaks_between_apps(monkeypatch):
+    """Clear the module-level VRAM gate default between tests.
+
+    `App.__init__` installs `_vram_gate_allows` via `llm_backend.set_vram_gate`,
+    and the suite builds many Apps in one process. Without this, a backend built
+    by a LATER test would be stamped with a DEAD app's bound method — which is
+    the module-level-state hazard app.py's own plugin docstring warns about,
+    arriving through a different door.
+    """
+    from litetui import llm_backend
+
+    monkeypatch.setattr(llm_backend, "_DEFAULT_VRAM_GATE", None)
+
+
+@pytest.fixture(autouse=True)
 def _never_read_the_live_agent_registry(tmp_path, monkeypatch):
     """Point `harness.AGENTS_DIR` at an EMPTY per-test directory.
 

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from litetui import harness, router_record, second_instance
+from litetui import harness, llm_backend, router_record, second_instance
 
 SELF_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -145,3 +145,148 @@ class TestWhatItSays:
         assert t.startswith("refused:")
         assert "OpenBolt" in t and "qwen/x" in t
         assert "LiteTUI window" in t
+
+
+# ── the chokepoint ───────────────────────────────────────────────────────────
+
+
+class _Gate:
+    """Records what it was asked about and answers a scripted verdict."""
+
+    def __init__(self, allow: bool = True) -> None:
+        self.allow = allow
+        self.asked: list[str] = []
+
+    async def __call__(self, model: str) -> bool:
+        self.asked.append(model)
+        return self.allow
+
+
+def _llama(monkeypatch, gate):
+    from litetui import settings as st
+
+    cfg = st.Settings()
+    cfg.backend = "llamacpp"
+    b = llm_backend.LlamaCppBackend(cfg)
+    b.vram_gate = gate
+    # Nothing may reach a real server; the gate is what these arms measure.
+    monkeypatch.setattr(b, "_load_sync", lambda key: None)
+    monkeypatch.setattr(b, "_apply_sync", lambda key, c: None)
+    return b
+
+
+@pytest.mark.asyncio
+async def test_a_DIRECT_backend_load_is_gated(monkeypatch) -> None:
+    """🔴 THE ONE THE FIRST CUT MISSED. `plugins/model_switch.py:216` calls
+    `backend.load(target)` for `/model <name>`, the picker AND the rpc
+    `set_model` — the most common swap in the app. Gating the pre-turn path in
+    app.py left every one of them uncovered."""
+    gate = _Gate()
+    b = _llama(monkeypatch, gate)
+    await b.load("qwen/a")
+    assert gate.asked == ["qwen/a"]
+
+
+@pytest.mark.asyncio
+async def test_apply_load_settings_is_gated_because_a_RELOAD_IS_A_LOAD(monkeypatch) -> None:
+    """`model_switch.py:835/854`. A ctx change puts the weights back with a new
+    window — the first cut called that a settings change, and it was wrong."""
+    gate = _Gate()
+    b = _llama(monkeypatch, gate)
+    await b.apply_load_settings("qwen/a", {"ctx": 8192})
+    assert gate.asked == ["qwen/a"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_load_RAISES_and_does_not_touch_the_server(monkeypatch) -> None:
+    """Cancel must stop the load, not merely colour it. The refusal is a
+    BackendError subclass, so every existing caller already renders it as plain
+    words instead of a traceback."""
+    gate = _Gate(allow=False)
+    b = _llama(monkeypatch, gate)
+    loaded: list[str] = []
+    monkeypatch.setattr(b, "_load_sync", lambda key: loaded.append(key))
+
+    with pytest.raises(llm_backend.VramRefused):
+        await b.load("qwen/a")
+    assert loaded == [], "the server was touched after a refusal"
+    assert isinstance(llm_backend.VramRefused("x"), llm_backend.BackendError)
+
+
+@pytest.mark.asyncio
+async def test_one_user_action_asks_ONCE_even_though_the_entries_nest(monkeypatch) -> None:
+    """`LlamaCppBackend.load(ctx=...)` delegates to `apply_load_settings`, and
+    LM Studio's `apply_load_settings` delegates to `load`. Guarding both without
+    reentrancy would ask the same question twice for one click — which is how a
+    modal stops being read."""
+    gate = _Gate()
+    b = _llama(monkeypatch, gate)
+    await b.load("qwen/a", ctx=8192)
+    assert gate.asked == ["qwen/a"], f"asked {len(gate.asked)} times for one load"
+
+
+@pytest.mark.asyncio
+async def test_no_gate_installed_means_no_prompt_and_no_crash(monkeypatch) -> None:
+    """Every existing test, and any embedder, constructs a backend without a
+    gate. That must behave exactly as it did before this card."""
+    b = _llama(monkeypatch, None)
+    await b.load("qwen/a")
+    await b.apply_load_settings("qwen/a", {"ctx": 4096})
+
+
+def test_the_FACTORY_stamps_the_gate_so_a_backend_switch_cannot_drop_it(monkeypatch) -> None:
+    """🔴 FOUR ASSIGNMENT SITES, THREE OF THEM IN A PLUGIN. `app.backend =
+    make_backend(...)` happens at boot and three more times in
+    `plugins/model_switch.py`. Installing the hook at the App's own assignment
+    would mean a `/backend` switch silently dropped it — the same "enforced at
+    the callers" mistake, one layer up."""
+    from litetui import settings as st
+
+    gate = _Gate()
+    monkeypatch.setattr(llm_backend, "_DEFAULT_VRAM_GATE", gate)
+    cfg = st.Settings()
+    cfg.backend = "llamacpp"
+    assert llm_backend.make_backend(cfg).vram_gate is gate
+    cfg.backend = "lmstudio"
+    assert llm_backend.make_backend(cfg).vram_gate is gate
+
+
+def test_EVERY_public_load_entry_point_GOES_THROUGH_THE_GUARD() -> None:
+    """🔴 DERIVED FROM THE SOURCE, NOT FROM A LIST I WROTE.
+
+    The defect this fixes was a gate applied to the call sites I happened to
+    grep — and my grep was `src/litetui/*.py`, which does not include
+    `plugins/`. A list cannot contain the entry point somebody adds next month,
+    so this reads the class bodies and insists each one either takes the guard
+    or delegates to something that does.
+    """
+    import inspect
+
+    checked = []
+    for cls in (llm_backend.LlamaCppBackend, llm_backend.LMStudioBackend):
+        for name in ("load", "apply_load_settings"):
+            src = inspect.getsource(getattr(cls, name))
+            guarded = "vram_guard" in src
+            # Delegation counts ONLY when the body does nothing else that
+            # loads. LM Studio's `apply_load_settings` is pure delegation; a
+            # function that BOTH delegates and has its own to_thread path is
+            # covered on one branch and open on the other.
+            #
+            # ⚠️ THIS CLAUSE USED TO BE `delegates = "await self.load(" in src`
+            # ALONE, AND IT MADE THIS ARM BLIND TO ITS OWN SUBJECT. Deleting
+            # the guard from `LlamaCppBackend.load` left this GREEN, because
+            # that function still delegates on its `ctx is not None` branch
+            # while its other branch went straight to `_load_sync`. Two sibling
+            # arms went red and this one — the one that exists to catch a
+            # future entry point — did not. An escape hatch that is not scoped
+            # to the whole body is an escape hatch for the whole body.
+            delegates = ("await self.load(" in src or "await self.apply_load_settings(" in src)
+            own_load = ("to_thread" in src or "_load_sync" in src or "_apply_sync" in src)
+            assert guarded or (delegates and not own_load), (
+                f"{cls.__name__}.{name} loads weights without passing a VRAM gate "
+                f"— add `async with self.vram_guard(key):` or delegate to one that does"
+            )
+            checked.append(f"{cls.__name__}.{name}")
+
+    # The validity gate: an empty sweep would satisfy the loop above.
+    assert len(checked) == 4, checked

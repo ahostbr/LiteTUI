@@ -1234,6 +1234,9 @@ class LiteTUI(App):
         # client is rebuilt in _connect after ensure_running(), because the
         # llama backend may ATTACH to a different host than it was configured
         # with — building here alone would pin the pre-attach URL.
+        # T690: install the VRAM gate BEFORE the first backend is made, so the
+        # one at boot is stamped like every one a /backend switch makes later.
+        llm_backend.set_vram_gate(self._vram_gate_allows)
         self.backend = llm_backend.make_backend(self.settings)
         #: key -> ModelRow for the connected backend; the /model picker reads
         #: source tags and load state from here.
@@ -2717,6 +2720,16 @@ class LiteTUI(App):
     async def _vram_gate_allows(self, model: str) -> bool:
         """May this load proceed? Asks the human when it would add weights.
 
+        🔴 INSTALLED ON THE BACKEND, NOT CALLED AT A CALL SITE. The first cut of
+        this card called it from the pre-turn ensure-loaded path only, and the
+        most common swap in the app went past it: `plugins/model_switch.py`
+        calls `backend.load()` directly for `/model <name>`, the picker and the
+        rpc `set_model`, and `apply_load_settings` is a reload that nobody had
+        counted as a load. Ryan asked for the modal *"in any way ... EVERY TIME
+        a model would be swapped or loaded"*, and a gate at one call site covers
+        exactly the callers that existed when it was written. It is
+        `backend.vram_gate` now — see `_VramGate` in llm_backend.py.
+
         🔴 SHARING A LOADED MODEL IS THE DESIGN AND NEVER PROMPTS. Ryan's ruling
         (a-62edbbe0): two instances run against one server in parallel. The
         hazard he named is the other one — *"LOADING different models in
@@ -3450,9 +3463,6 @@ class LiteTUI(App):
             said = notice(self.model_id)
             if said:
                 self._system(said)
-        if not await self._vram_gate_allows(self.model_id):
-            return
-
         self._system(f"Loading {self.model_id} at {want:,} tokens…")
         try:
             # The backend owns the HOW: LM Studio via the SDK (replacing the

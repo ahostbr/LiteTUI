@@ -74,6 +74,7 @@ through ttyguard (envelope sweep rglobs src/**).
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import os
 import subprocess
@@ -585,7 +586,60 @@ _SHAPE_ROUTER = "router"
 _SHAPE_SINGLE = "single"
 
 
-class LlamaCppBackend:
+class VramRefused(BackendError):
+    """A load the human declined, or that a headless child was not allowed to
+    make on their behalf. A BackendError subclass so every existing caller
+    already renders it as plain words (`_plain_backend_error` returns
+    `str(e)`), and a distinct type so a caller that wants to tell "refused"
+    from "failed" can."""
+
+
+class _VramGate:
+    """The one place a model load can be stopped (T690).
+
+    🔴 IT LIVES ON THE BACKEND BECAUSE THE CALLERS ARE PLURAL AND GROWING. The
+    first cut of this card gated ONE site — the pre-turn ensure-loaded path in
+    `app.py` — and the most common swap in the app went straight past it:
+    `plugins/model_switch.py` calls `backend.load()` directly for `/model
+    <name>`, for the picker, AND for the T684 rpc `set_model`, and
+    `apply_load_settings` is a reload nobody had counted as a load at all.
+    Ryan asked for the modal *"when a 2nd instance tries to load a model IN ANY
+    WAY ... EVERY TIME a model would be swapped or loaded"*, and a gate at a
+    call site can only ever cover the callers that exist today.
+        A RULE ENFORCED AT THE CALLERS IS A RULE WITH A LIST; A RULE ENFORCED AT
+        THE CALLEE HAS NO LIST TO FALL OFF.
+
+    ⚠️ REENTRANT BY CONSTRUCTION, because the public entries call each other.
+    `LlamaCppBackend.load(ctx=...)` delegates to `apply_load_settings`, and
+    LM Studio's `apply_load_settings` delegates to `load` — gating both without
+    a guard would ask the same question twice for one user action.
+    """
+
+    #: Installed by the App: `async (model) -> bool`. None = no gate (every
+    #: test that never installs one, and any embedder of this class).
+    vram_gate = None
+    _vram_asking = False
+
+    @asynccontextmanager
+    async def vram_guard(self, key: str):
+        """Ask once per outermost load, then run the body."""
+        if self.vram_gate is None or self._vram_asking:
+            yield
+            return
+        self._vram_asking = True
+        try:
+            allowed = await self.vram_gate(key)
+            if not allowed:
+                raise VramRefused(
+                    f"{key} was not loaded — another LiteTUI instance is running "
+                    "and loading a different model would put a second model in VRAM."
+                )
+            yield
+        finally:
+            self._vram_asking = False
+
+
+class LlamaCppBackend(_VramGate):
     """llama-server: router-mode (ours) or single-model (someone else's).
 
     Ownership rule: a healthy server on an attach host belongs to whoever
@@ -1129,13 +1183,14 @@ class LlamaCppBackend:
     # -- control ----------------------------------------------------------
 
     async def load(self, key: str, *, ctx: int | None = None) -> None:
-        if ctx is not None:
-            cfg = dict(self._settings.llama_load_settings.get(key, {}))
-            cfg["ctx"] = ctx
-            self._settings.llama_load_settings[key] = cfg
-            await self.apply_load_settings(key, cfg)
-            return
-        await asyncio.to_thread(self._load_sync, key)
+        async with self.vram_guard(key):
+            if ctx is not None:
+                cfg = dict(self._settings.llama_load_settings.get(key, {}))
+                cfg["ctx"] = ctx
+                self._settings.llama_load_settings[key] = cfg
+                await self.apply_load_settings(key, cfg)
+                return
+            await asyncio.to_thread(self._load_sync, key)
 
     def _owner_label(self) -> str:
         """Who to name in a refusal. The record when there is one, and a
@@ -1283,7 +1338,9 @@ class LlamaCppBackend:
             raise BackendError(f"could not unload {key!r} on the llama.cpp server — try again in a moment.") from e
 
     async def apply_load_settings(self, key: str, cfg: dict) -> None:
-        await asyncio.to_thread(self._apply_sync, key, cfg)
+        # A reload IS a load: it puts the weights back with a new window.
+        async with self.vram_guard(key):
+            await asyncio.to_thread(self._apply_sync, key, cfg)
 
     def _apply_sync(self, key: str, cfg: dict) -> None:
         """Persist cfg for KEY, rewrite the ini, and bounce only that model.
@@ -1381,7 +1438,7 @@ class LlamaCppBackend:
 
 # ── LM Studio backend ────────────────────────────────────────────────────────
 
-class LMStudioBackend:
+class LMStudioBackend(_VramGate):
     """LM Studio desktop. Chat stays on the OpenAI-compat endpoint; control
     goes through the ``lmstudio`` SDK (imported lazily — a missing dep must
     degrade to a named in-band error, not kill boot). The native
@@ -1540,7 +1597,8 @@ class LMStudioBackend:
                     "lmstudio.load_failed", detail=f"load of {key!r} at {self._host} — {e}",
                     site="llm_backend")
                 raise BackendError(f"could not load {key!r} in LM Studio — try again in a moment.") from e
-        await asyncio.to_thread(_load)
+        async with self.vram_guard(key):
+            await asyncio.to_thread(_load)
 
     async def unload(self, key: str) -> None:
         def _unload() -> None:
@@ -1566,6 +1624,8 @@ class LMStudioBackend:
                 + ", ".join(sorted(rest))
                 + " in its own Load panel — only context length is scriptable here."
             )
+        # No guard here: this delegates to `load`, which has one. Wrapping both
+        # would ask twice for one action — see `_VramGate`.
         await self.load(key, ctx=cfg.get("ctx"))
 
     # -- seat guard --------------------------------------------------------
@@ -1737,8 +1797,42 @@ def llama_available() -> bool:
     return LLAMA_EXE.exists()
 
 
+#: The gate every new backend is born with. The App installs it once via
+#: `set_vram_gate`; `make_backend` stamps it onto each instance.
+_DEFAULT_VRAM_GATE = None
+
+
+def set_vram_gate(gate) -> None:
+    """Install the second-instance VRAM gate for backends made from here on.
+
+    🔴 ONE INSTALL, BECAUSE THERE ARE FOUR ASSIGNMENT SITES AND THREE ARE IN A
+    PLUGIN. `app.backend = make_backend(...)` happens once at boot and three
+    more times in `plugins/model_switch.py` (a `/backend` switch, and two
+    recovery paths). Installing the hook at the App's own assignment would have
+    meant a backend SWITCH silently dropped the gate — the same "enforced at
+    the callers, so it has a list to fall off" mistake this card already made
+    once at the call sites. The factory is the single door every one of them
+    goes through.
+
+    ⚠️ STAMPED PER INSTANCE, NOT READ FROM MODULE STATE AT CALL TIME. A backend
+    keeps the gate it was born with, so a later App installing its own does not
+    reach back into an older App's backend — the suite builds many Apps in one
+    process, and module-level state read live is how they start answering for
+    each other.
+    """
+    global _DEFAULT_VRAM_GATE
+    _DEFAULT_VRAM_GATE = gate
+
+
 def make_backend(settings):
     """THE factory. app.py calls this once at boot and again on /backend."""
+    backend = _make_backend(settings)
+    if _DEFAULT_VRAM_GATE is not None:
+        backend.vram_gate = _DEFAULT_VRAM_GATE
+    return backend
+
+
+def _make_backend(settings):
     if settings.backend == "codex":
         from litetui.oauth_backend import OAuthBackend
         return OAuthBackend(settings)
