@@ -25,6 +25,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import app as app_mod
+from litetui import llm_backend, rpc
 
 
 def _app(*, backend_name="lmstudio", model_id="qwen/a", loaded=("qwen/a",), rpc=True):
@@ -32,6 +33,10 @@ def _app(*, backend_name="lmstudio", model_id="qwen/a", loaded=("qwen/a",), rpc=
     a._rpc = rpc
     a.model_id = model_id
     a.available_models = ["qwen/a", "ektome-b"]
+    a.model_rows = {
+        key: llm_backend.ModelRow(key, None, "test", loaded=key in loaded)
+        for key in a.available_models
+    }
     a.backend = SimpleNamespace(name=backend_name, loaded_models=lambda: list(loaded))
     a._active_tool_profile = "interactive"
     a.emitted: list[dict] = []
@@ -68,6 +73,27 @@ def test_the_fields_ready_already_carried_are_untouched():
     assert "version" in ready and "cwd" in ready
 
 
+def test_ready_carries_the_real_switchable_catalogue_and_marks_current():
+    """T684: the host menu is the child's backend list, not a host table."""
+    a = _app(model_id="qwen/a")
+    a.backend.models = {
+        "qwen/a": {"display_name": "Qwen A"},
+        "ektome-b": {"display_name": "Ektome B"},
+    }
+
+    ready = _ready(a)
+
+    assert ready["models"] == [
+        {"slug": "qwen/a", "name": "Qwen A", "current": True, "loaded": True},
+        {"slug": "ektome-b", "name": "Ektome B", "current": False, "loaded": False},
+    ]
+
+
+def test_ready_catalogue_falls_back_to_slug_when_backend_has_no_display_name():
+    ready = _ready(_app())
+    assert [row["name"] for row in ready["models"]] == ["qwen/a", "ektome-b"]
+
+
 def test_a_substitution_still_reports_the_model_AND_the_reason():
     """
     🔴 THE CASE THE HOST'S PILL IS ACTIVELY WRONG ABOUT. T594 substitutes the one
@@ -80,6 +106,18 @@ def test_a_substitution_still_reports_the_model_AND_the_reason():
     assert ready["model"] == "ektome-b"
     assert "not loaded" in ready["model_note"]
     assert ready["backend"] == "lmstudio"
+
+
+def test_list_models_uses_the_same_catalogue_shape_as_ready(monkeypatch):
+    a = _app()
+    replies = []
+    monkeypatch.setattr(rpc, "_respond", lambda *args, **kwargs: replies.append((args, kwargs)))
+
+    rpc._dispatch(a, {"type": "list_models", "id": "models-1"})
+
+    assert replies == [
+        (("models-1",), {"ok": True, "result": _ready(_app())["models"]})
+    ]
 
 
 def test_model_note_is_ABSENT_when_nothing_was_substituted():

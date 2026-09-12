@@ -248,21 +248,16 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             "cancelled_asks": cancelled,
         })
     elif cmd_type == "list_models":
-        models = [
-            {"slug": m, "loaded": getattr(app.model_rows.get(m), "loaded", None)}
-            for m in app.available_models
-        ]
-        _respond(cmd_id, ok=True, result=models)
+        _respond(cmd_id, ok=True, result=app._rpc_model_state()["models"])
     elif cmd_type == "set_model":
-        slug = cmd.get("slug", "")
-        if slug in app.available_models:
-            app.model_id = slug
-            _respond(cmd_id, ok=True, result={"model": slug})
+        from litetui.plugins.model_switch import switch_model
+
+        slug = str(cmd.get("slug") or "")
+        if switch_model(app, slug):
+            _respond(cmd_id, ok=True, result=app._rpc_model_state())
         else:
             _respond(cmd_id, ok=False, error=f"model not available: {slug}")
     elif cmd_type == "get_settings":
-        from litetui import settings as settings_mod
-        s = settings_mod.load()
         _respond(cmd_id, ok=True, result={
             "thinking_level": app.thinking_level,
             "tool_policy_profile": str(getattr(app, "_active_tool_profile", None)),
@@ -277,8 +272,9 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         if "thinking_level" in patch:
             app.thinking_level = patch["thinking_level"] if patch["thinking_level"] != "off" else None
         if "model" in patch:
-            if patch["model"] in app.available_models:
-                app.model_id = patch["model"]
+            from litetui.plugins.model_switch import switch_model
+
+            switch_model(app, str(patch["model"]))
         _respond(cmd_id, ok=True, result={
             "thinking_level": app.thinking_level,
             "model": app.model_id,

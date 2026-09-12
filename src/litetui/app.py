@@ -2790,6 +2790,7 @@ class LiteTUI(App):
                     self._system(f"{len(self.available_models)} models available — /models to list, /model <n> to switch")
                 if self.backend.name == "lmstudio":
                     self._probe_thinking()
+                self._rpc_emit_model_state()
             else:
                 self.sub_title = "No model loaded"
                 # No URL here: a bare address tells a human nothing to DO. Name
@@ -2836,6 +2837,60 @@ class LiteTUI(App):
         from litetui.rpc import rpc_emit
         rpc_emit(data)
 
+    def _rpc_model_state(self) -> dict:
+        """The model/backend facts a headless host may display and switch.
+
+        The backend owns the catalogue. ``model_rows`` is the filtered result
+        of its real ``list_models()`` call, not a host-side table; OAuth rows
+        borrow the provider's display name when its metadata has one, while
+        local backends truthfully fall back to the request slug.
+        """
+        backend = getattr(self, "backend", None)
+        metadata = getattr(backend, "models", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        model_rows = getattr(self, "model_rows", {})
+        models = []
+        for slug in getattr(self, "available_models", []):
+            raw = metadata.get(slug)
+            details = raw if isinstance(raw, dict) else {}
+            name = next(
+                (
+                    value.strip()
+                    for value in (
+                        details.get("display_name"),
+                        details.get("name"),
+                        details.get("title"),
+                    )
+                    if isinstance(value, str) and value.strip()
+                ),
+                slug,
+            )
+            row = model_rows.get(slug)
+            models.append({
+                "slug": slug,
+                "name": name,
+                "current": slug == getattr(self, "model_id", ""),
+                "loaded": getattr(row, "loaded", None),
+            })
+
+        return {
+            "model": getattr(self, "model_id", "") or None,
+            "backend": getattr(backend, "name", None),
+            "models": models,
+        }
+
+    def _rpc_emit_model_state(self) -> None:
+        """Tell a live host that a LiteTUI-side switch changed its picker."""
+        if not getattr(self, "_rpc", False):
+            return
+        # Initial connect is followed by ``ready``, which carries the same
+        # snapshot. Only later reconnects/switches need an extra event.
+        if not getattr(self, "_rpc_ready_sent", False):
+            return
+        self._rpc_emit({"type": "model_state", **self._rpc_model_state()})
+
     @work(exclusive=True, group="cli-args-ready")
     async def _rpc_emit_ready(self) -> None:
         """Emit the ready event once the model list is available."""
@@ -2858,15 +2913,11 @@ class LiteTUI(App):
         self._rpc_emit({
             "type": "ready",
             "version": __version__,
-            "model": self.model_id or None,
+            **self._rpc_model_state(),
             # T631: the host cannot derive this. LiteSuite spawns us with --rpc,
             # --cwd, --tool-profile, --mode and --model and NO backend -- the
             # choice is ours, from our own settings -- so its Frontier Chat pill
-            # had nothing to show but the placeholder it sent us. `getattr`
-            # twice and never str(): a stubbed backend with no `name` must
-            # report null so the host renders nothing, where the string "None"
-            # would put that word on screen.
-            "backend": getattr(getattr(self, "backend", None), "name", None),
+            # had nothing to show but the placeholder it sent us.
             **({"model_note": note} if note else {}),
             "cwd": os.getcwd(),
             "tool_profile": str(getattr(self, "_active_tool_profile", None)),
@@ -2880,6 +2931,7 @@ class LiteTUI(App):
             # NOBODY ASKED.
             "tool_profile_requested": getattr(self, "_cli_tool_profile", None) or None,
         })
+        self._rpc_ready_sent = True
 
     @work(exclusive=True, group="cli-args")
     async def _apply_cli_args(self) -> None:
@@ -4064,6 +4116,8 @@ class LiteTUI(App):
         self._apply_context_length()
         if self.backend.name == "lmstudio":
             self._probe_thinking()
+        if getattr(self, "_rpc", False):
+            self._rpc_emit_model_state()
 
     # ⚠️ `_on_` IS NOT A "HIDDEN FROM TEXTUAL" PREFIX. MessagePump dispatch does
     # `cls.__dict__.get(f"_{method_name}") or cls.__dict__.get(method_name)` —
