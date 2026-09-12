@@ -240,9 +240,13 @@ def test_the_DEFAULT_spawn_gets_NO_job_which_protects_the_long_lived_callers():
         proc.wait(timeout=30)
 
 
-def test_only_the_TOOL_opts_in():
-    """Structural. The three long-lived callers must not acquire the keyword
-    by copy-paste later; this fails loudly if one does."""
+def test_only_cancellable_tool_and_hook_providers_opt_in():
+    """Long-lived callers must not acquire the keyword by copy-paste.
+
+    T697 added bounded hook subprocesses, which need the same cancellation
+    guarantee as dispatched tools. Both providers are explicit; a new caller
+    still fails this census rather than silently gaining kill-on-close.
+    """
     root = Path(ttyguard.__file__).parent
     optins = []
     for py in root.rglob("*.py"):
@@ -251,8 +255,8 @@ def test_only_the_TOOL_opts_in():
             if (isinstance(node, ast.Call)
                     and any(k.arg == "kill_on_close" for k in node.keywords)):
                 optins.append(py.name)
-    assert optins == ["core_tools.py"], (
-        f"kill_on_close is passed from {optins}; only the cancellable tool may"
+    assert sorted(optins) == ["core_tools.py", "lifecycle_hooks.py"], (
+        f"kill_on_close is passed from {optins}; only cancellable tools and hooks may"
     )
 
 
