@@ -197,25 +197,47 @@ async def test_force_lowers_a_window_that_already_exceeds_the_request(recorder, 
 
 # ── fault 1: the switch applies it ────────────────────────────────────────
 def test_every_explicit_model_switch_applies_the_setting():
-    """Source-level, deliberately: the three switch paths (/model <n>,
-    /model <name>, and the picker callback) are three separate code paths and
-    the bug was one of omission. A behavioural test on one of them would leave
-    the other two free to regress.
+    """Source-level, deliberately: the switch paths are separate code paths and
+    the bug was one of OMISSION. A behavioural test on one of them would leave
+    the others free to regress.
 
     Boot is asserted NOT to apply, by the same reading — that rule is what
     stopped the app loading a 27B on every start.
+
+    🔴 THE COUNT IS A FLOOR NOW, NOT AN EQUALITY (T694). It read `== 3` and had
+    gone red on pristine `main`, because `/model <n>` and `/model <name>` were
+    CONSOLIDATED into one `switch_model` (model_switch.py:52), which the rpc
+    host also calls. Nothing was lost — two live entrances remain, the shared
+    one and `on_model_picked` (app.py:4429), and both apply. The arm was
+    counting an old source LAYOUT while calling itself a check on a rule, so a
+    good change read as a missing switch.
+
+        A COUNT PINNED TO A LAYOUT GOES RED WHEN THE LAYOUT IMPROVES.
+
+    ⚠️ THE FLOOR CANNOT DEFEND ITSELF ALONE, so the marker's own presence is
+    asserted per file below. A reworded announcement would otherwise drop the
+    site list toward empty and the pairing loop would pass over nothing —
+    0-of-0 and 0-of-2 are the same green.
     """
-    # The runtime is app.py + the model_switch plugin since the split: two
-    # switch paths moved with /model, the picker callback stayed. Same three
-    # sites, two homes — the count and the pairing both span the pair.
+    # The runtime is app.py + the model_switch plugin since the split: the
+    # command/rpc path lives in the plugin, the picker callback stayed in
+    # app.py. The count and the pairing both span the pair.
     app_src = Path(app_mod.__file__).read_text(encoding="utf-8")
     plug_src = (Path(app_mod.__file__).parent / "plugins" / "model_switch.py").read_text(encoding="utf-8")
     sites = []
     for src_text, marker in ((app_src, 'self._system(f"Switched to: {self.model_id}")'),
                              (plug_src, 'app.system_message(f"Switched to: {app.model_id}")')):
         parts = src_text.split(marker)
+        assert len(parts) > 1, (
+            f"the switch announcement {marker!r} is gone from this file. Either "
+            f"a switch path was removed or it was reworded — and a reworded one "
+            f"makes this whole gate pass over an empty list"
+        )
         sites.extend(parts[1:])
-    assert len(sites) == 3, f"expected 3 switch sites across app+plugin, found {len(sites)}"
+    assert len(sites) >= 2, (
+        f"expected at least the 2 live switch entrances (the shared "
+        f"`switch_model`, and `on_model_picked`), found {len(sites)}"
+    )
 
     # Each one is followed by an apply.
     for chunk in sites:
