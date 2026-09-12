@@ -217,3 +217,126 @@ Every row names a sha on `main`. All UNVERIFIED by Ryan.
 ### Suggested skills
 
 - None. `/ls-conversation-lookup` before claiming anything here does not exist.
+
+
+## 7. T694 → T706 landed; T704 open mid-card (written 2026-09-12, pre-compaction)
+
+Everything in §6 still stands. This section is the state a successor picks up.
+
+### Landed since §6 — all UNVERIFIED by Ryan
+
+| card | merged as | what it was |
+| --- | --- | --- |
+| T699 | `1130286` | two `test_*` files were scripts that killed the whole run |
+| T698 | `ccc9251` | the model picker goes through the one switch path |
+| T700 | `881ed0d` | ten more such scripts; an AST scan stops the class recurring |
+| T702 | `39a47c4` | ONE module-level-exit rule shared by runner and detector |
+| T703 | `7196775` | cancel-then-JIT READING (`Docs/Plans/litetui-cancel-then-jit.md`) |
+| T706 | `20daf09` | autoscroll: follow is a LOCK the reader owns |
+
+`64ddf88` is main as of writing (T705 stop line merged after T706).
+
+### 🔴 T704 IS OPEN AND MID-CARD. Read this before running anything.
+
+**The defect.** `tests/test_swap_control_is_wired.py::test_pressing_the_control_
+swaps_in_a_sidebar[model_config]` (and `[job]`) raises `NoMatches` for
+`SelectOverlay` inside Textual's own `Select._on_mount`. Carried for weeks as a
+flake; it is a real race.
+
+**The mechanism** (Textual 8.1.0, measured, not inferred):
+`Widget.mount` returns SILENTLY when the parent is `_pruning` (widget.py:1424),
+while `_pre_process` dispatches `Compose()` then `Mount()` unconditionally
+(message_pump.py:602/604). A widget pruned between being mounted and running its
+own compose therefore gets no children and is told it mounted anyway.
+`side_panel.py`'s `_mount_view` documents this exact traceback as T252 — and
+fixed it for the MODAL path only. The sidebar teardown in `swap()` is the half
+that was never treated; `swap()` even catches `NoMatches` from `get_state()`
+with the comment *"the body exists but has not composed its children yet"*, so
+the code knows the state occurs and prunes anyway.
+
+**🔴 THE INTERPRETER IS PART OF THE REPRODUCER, AND IT COST ME THREE WRONG
+REPORTS.** The worktree `.venv` is **py3.14.0**; the main `.venv` is **py3.11.9**
+(textual 8.1.0 in both). It reproduces on 3.11. Every "not reproduced" run I
+filed before noticing was on 3.14 and is VOID.
+
+```bash
+# the cheapest known reproducer — 2 red in 5 reps on 64ddf88, ~105s each
+cd C:/Projects/LiteTUI/.worktrees/silverbolt-t596
+PYTHONUTF8=1 C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest -q \
+  tests/test_hooks_ui.py tests/test_hook_boundaries.py tests/test_lifecycle_hooks.py \
+  tests/test_settings.py tests/test_settings_live.py tests/test_theme_extra_tokens.py \
+  tests/test_swap_control_is_wired.py
+```
+Order is part of the reproducer; do not sort it. Sentinel's full 44-file list is
+copied at `<scratchpad>/t704-repro-list-44.txt`.
+
+**⚠️ T706 DID NOT FIX IT.** I reported 0/3 on post-T706 main and built a
+"masked by T706" hypothesis on three greens whose coincidence probability I had
+computed at 12.5% IN THE SAME MESSAGE. Six more reps gave 2 red. The rate is the
+same either side. That hypothesis is WITHDRAWN.
+
+**⚠️ THE DETERMINISTIC ARM DOES NOT WORK BY THE OBVIOUS ROUTE, measured.**
+Pumping `asyncio.sleep(0)` after the sidebar opens gives three states:
+
+| after | body.children | Selects | with overlay |
+| --- | --- | --- | --- |
+| sleep(0) ×1-2 | 0 | 0 | 0 |
+| sleep(0) ×3-4 | 1 | 0 | 0 |
+| `settle_until` | 1 | 10 | 10 |
+
+Swapping in the middle state is GREEN 3/3 — pruning a body whose Selects have
+not mounted is harmless, there are no Select tasks in flight. The real window is
+between a Select being MOUNTED and its own Compose running, and that never
+appears at `sleep(0)` granularity: 0 Selects → 10 composed in one step. It lives
+inside Textual's scheduler, which is why it needs machine load. **I discarded
+that arm rather than banking it** — it passes, so shipping it would imply it
+guards this race.
+
+**Sentinel's ruling for the live-and-not-deterministic case** (message
+`19370862`), which is the plan to execute COLD:
+1. ONE rep capturing the FAILED names first. Rep 2 failed with `NoMatches=0`, so
+   there may be a SECOND arm failing under that load; two arms are two cards. My
+   loop captured only the tail — my gap.
+2. **(c)** an arm that forces the exact state the rep-4 traceback shows — a
+   `Select` mounted, its parent marked `_pruning`, `Mount` dispatched, compose
+   not yet run — and asserts the guard prevents `NoMatches`. It is not synthetic
+   IF pinned to the traceback: the precondition must assert the same widget path
+   and the same `NoMatches` origin in `Select._on_mount`.
+3. The defensive line: the bounded re-defer on the TEARDOWN (the condition
+   `_ViewMixin._settle` already bounds at `_settle_tries = 4`, applied before
+   `close_view()` in `DialogController.swap`). One line if it is one line.
+4. **(b)** card body + arm docstring carry the mechanism, the three-state table,
+   the reproducer and the honest limit: the unit arm proves the GUARD, the
+   seven-file reps are the only instrument for the product's own timing.
+5. **(a)-lite** 5 pre / 5 post reps at the seven-file load, ONLY in a window
+   where nobody else is gating — ask Sentinel. Report as rate at known load,
+   never as proof of zero.
+
+Branch `fix/t704-sidebar-mount-race-2` is on `64ddf88`, clean, NOTHING COMMITTED.
+
+### Queued after T704
+
+- **T711** then **T712** — the resolve CLI half of Ryan's authorized T708 gap
+  closure (relay `81ad1d74`). Read `~/.claude/skills/ls-davinci-resolve/
+  PLAN-gap-closure.md` first; three gates (no purchase, no transcription
+  provider, no live Resolve). **T711 starts only once T710 (RustAxis, shared
+  stub server) has merged into dotclaude master — Sentinel will say so.**
+  Worktree: `git -C C:/Users/Ryan/.claude worktree add
+  C:/Projects/.worktrees/dotclaude-silverbolt -b feat/t711-default-instance
+  master`. Never edit `~/.claude` live. Upstream clone
+  `E:/SAS/REPO_CLONES/davinci-resolve-mcp` is READ-ONLY; tests run with that
+  repo's own venv python, never against Resolve.
+- **T701** (footer suites disagree) is with Ryan, not me.
+
+### Traps this run added to §6's list
+
+- **A branch with no commit is not a save point** — `git checkout <branch> --
+  <files>` reads that branch's tree, which is its base. Cost ~90 lines.
+  Pattern `1ccbc1d5-…-1789238583`.
+- **A linter must run INSIDE the project** — copies outside answered 16→20 where
+  the truth was 19→17. Pattern `1ccbc1d5-…-1789240395`.
+- **Print `sys.executable` with any version claim** — see the 3.14/3.11 note.
+- **A source file under a test run is live state** — `ruff --fix` during a gate
+  that parses those files produced a red that was mine, not the code's.
+- **Rule 13 is about the BOX, not my session** — a 73-suite run of mine
+  overlapped OpenBolt's T705 gate for a few minutes and dirtied both loads.
