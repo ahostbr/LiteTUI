@@ -272,7 +272,7 @@ def _is_composing(root: Widget) -> bool:
     )
 
 
-async def _await_subtree_composed(root: Widget) -> None:
+async def await_subtree_composed(root: Widget) -> None:
     """Bounded wait before a teardown prunes `root`. THE T704 GUARD.
 
     IT LIVES ON `close_view`, NOT ON THE SWAP THAT REPORTED THE BUG. T704 was
@@ -494,7 +494,7 @@ class SidePanel(Widget, _ViewMixin):
 
     async def close_view(self) -> None:
         """Teardown ONLY. Deliberately not named dismiss, and never resolves."""
-        await _await_subtree_composed(self.body)   # T704
+        await await_subtree_composed(self.body)   # T704
         prev = self._prev_focus
         await self.remove()
         if prev is not None:
@@ -668,7 +668,7 @@ class _ModalHost(ModalScreen, _ViewMixin):
 
     async def close_view(self) -> None:
         """Pop WITHOUT dismissing: dismiss would answer a push_screen_wait."""
-        await _await_subtree_composed(self.body)   # T704
+        await await_subtree_composed(self.body)   # T704
         if self.app.screen is self:
             self.app.pop_screen()
 
