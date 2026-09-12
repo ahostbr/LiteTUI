@@ -6,7 +6,9 @@ rendering (widget.content) needs a live app, so the display logic was extracted
 into tool_display_parts(tool, ...) which takes a lightweight object with the
 same state fields — see _FakeTool below.
 """
-from litetui.app import render_progress, tool_display_parts
+import time
+
+from litetui.app import ToolMessage, render_progress, tool_display_parts
 from litetui.fmt import fmt_dur
 
 
@@ -99,14 +101,14 @@ def test_set_result_settles_took():
     timing capture is tested headlessly. _took must be None until the result
     lands, then >= the elapsed time (here: the 2s we pretend the call ran).
     """
-    import time
-    from litetui.app import ToolMessage
-
     class _TM:
         set_result = ToolMessage.set_result  # the real method, bound at call time
 
         def _update_display(self):
             pass  # needs a live Textual app; not what we are testing here
+
+        def set_expanded(self, value):
+            self.expanded = value
 
         def __init__(self):
             self.tool_name = "bash"

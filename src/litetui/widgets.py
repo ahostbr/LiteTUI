@@ -522,20 +522,29 @@ class _FoldHeader(Static):
 
 
 class FoldBlock(Vertical):
-    """A collapsible static payload — ThinkingBlock's shape minus the timer.
+    """One collapse mechanism for static payloads and live tool cards.
 
-    COLLAPSED by default, which is the difference in kind: a thinking trace
-    is watched as it streams, while this holds content whose default view is
-    the fold line itself (the compaction prompt: present for inspection,
-    not for re-reading on every compact). Reuses the thinking-block CSS so
-    the two fold identically.
+    It remains collapsed by default for compaction prompts. Subclasses may
+    start expanded and override ``_header_content`` without reimplementing the
+    marker, class, or body-visibility state machine.
     """
 
-    def __init__(self, label: str, text: str) -> None:
-        super().__init__(classes="thinking-block")     # no 'expanded' class
+    def __init__(
+        self,
+        label: str,
+        text: str,
+        *,
+        expanded: bool = False,
+        classes: str = "thinking-block",
+        body_classes: str = "thinking-body",
+    ) -> None:
+        if expanded:
+            classes += " expanded"
+        super().__init__(classes=classes)
         self._label = label
         self.header = _FoldHeader(label)
-        self.scroll = VerticalScroll(Static(Text(text)), classes="thinking-body")
+        self.body = Static(Text(text))
+        self.scroll = VerticalScroll(self.body, classes=body_classes)
 
     def compose(self) -> ComposeResult:
         yield self.header
@@ -545,13 +554,19 @@ class FoldBlock(Vertical):
     def expanded(self) -> bool:
         return self.has_class("expanded")
 
+    def _header_content(self, marker: str):
+        return f"{marker} {self._label}"
+
+    def _refresh_header(self) -> None:
+        marker = "\u25be" if self.expanded else "\u25b8"
+        self.header.content = self._header_content(marker)
+
     def set_expanded(self, value: bool) -> None:
         if value:
             self.add_class("expanded")
         else:
             self.remove_class("expanded")
-        marker = "\u25be" if value else "\u25b8"
-        self.header.content = f"{marker} {self._label}"
+        self._refresh_header()
 
 
 class CompactionCard(Vertical):
@@ -658,22 +673,66 @@ class AssistantMessage(Vertical):
         self.stop_line.styles.display = "block"
 
 
-class ToolMessage(Static):
-    """A single tool call (name + streamed args) and its display-truncated result."""
+class ToolMessage(FoldBlock):
+    """A tool card: expanded while live, folded to its summary when complete."""
 
-    MAX_DISPLAY_LINES = 12
+    MAX_SUMMARY_CHARS = 110
 
     def __init__(self, name: str) -> None:
-        super().__init__(Text.assemble((f"\U0001F527 {name}", "bold #e8a33d")), classes="tool-msg")
-        # NOTE: Textual's Widget base class owns `name` (read-only property),
-        # so the tool's name lives in `tool_name`.
+        # NOTE: Textual's Widget base owns ``name`` (read-only), so the tool's
+        # name lives in ``tool_name``.
         self.tool_name = name
         self._args = ""
         self._result: str | None = None
         self._ok = True
-        # Elapsed timing: t0 at creation, _took settled in set_result.
         self._t0 = time.monotonic()
         self._took: float | None = None
+        super().__init__(
+            name,
+            "",
+            expanded=True,
+            classes="tool-msg",
+            body_classes="tool-body",
+        )
+        # Construction already seeds a plain header. Rich styling arrives on
+        # mount's first elapsed tick; assigning Rich Text before mount asks
+        # Textual for an app console that does not exist yet.
+
+    @staticmethod
+    def _one_line(value: str) -> str:
+        return " ".join(value.split())
+
+    def _arg_summary(self) -> str:
+        summary = self._one_line(self._args)
+        if len(summary) > self.MAX_SUMMARY_CHARS:
+            summary = summary[: self.MAX_SUMMARY_CHARS - 3] + "..."
+        return summary
+
+    def _header_content(self, marker: str) -> Text:
+        color = self._tool_name_color()
+        parts = [(f"{marker} \U0001F527 {self.tool_name}", f"bold {color}")]
+        summary = self._arg_summary()
+        if summary:
+            parts.append((f" · {summary}", "#8b95a7"))
+        if self._result is None:
+            parts.append((f" · {fmt_dur(time.monotonic() - self._t0)} …", "#8b95a7"))
+        else:
+            status = "done" if self._ok else "error"
+            parts.append((f" · {status} · {fmt_dur(self._took or 0.0)}", "#5c6470"))
+            parts.append((f" · {len(self._result)} chars", "#5c6470"))
+        return Text.assemble(*parts)
+
+    def _body_content(self) -> Text:
+        out = Text()
+        if self._args:
+            out.append("Arguments\n", style="bold #8b95a7")
+            out.append(self._args)
+        if self._result is not None:
+            if self._args:
+                out.append("\n\n")
+            out.append("Result\n", style="bold #8b95a7")
+            out.append(self._result, style="bold #e5534b" if not self._ok else "#7d8799")
+        return out
 
     def set_args(self, args_json: str) -> None:
         self._args = args_json
@@ -683,32 +742,32 @@ class ToolMessage(Static):
         self._result = result
         self._ok = ok
         self._took = time.monotonic() - self._t0
+        self.set_expanded(False)
         self._update_display()
 
     def _tick(self) -> None:
-        """Live elapsed repaint while the call is still running; no-op once the
-        result has landed. Driven by the app's shared elapsed repaint task."""
+        """Refresh live elapsed without changing the user's fold state."""
         if self._result is None:
             self._update_display()
 
-    # NOTE: must NOT be named `_render` — Textual's Widget._render() is an
-    # internal method that must return a Visual; shadowing it breaks layout.
     def _tool_name_color(self) -> str:
-        """The active theme's $tool-text, or the default when unthemed.
-
-        Best-effort on purpose: a ToolMessage is constructed in tests with no
-        app attached, and a colour lookup must never be the reason a tool card
-        fails to render."""
+        """The active theme's $tool-text, or the default when unthemed."""
         try:
-            v = self.app.current_theme.variables.get("tool-text")
-            return v or TOOL_NAME_DEFAULT
+            value = self.app.current_theme.variables.get("tool-text")
+            return value or TOOL_NAME_DEFAULT
         except Exception:
             return TOOL_NAME_DEFAULT
 
+    def set_expanded(self, value: bool) -> None:
+        # A running call stays open so its arguments and live state cannot be
+        # hidden. Once a result lands it follows FoldBlock's shared toggle.
+        if self._result is None and not value:
+            return
+        super().set_expanded(value)
+
     def _update_display(self) -> None:
-        self.content = Text.assemble(
-            *tool_display_parts(self, self.MAX_DISPLAY_LINES, self._tool_name_color())
-        )
+        self._refresh_header()
+        self.body.content = self._body_content()
 
 
 class ConfirmStopBody(Widget):

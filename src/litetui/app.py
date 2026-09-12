@@ -544,9 +544,26 @@ class LiteTUI(App):
     }
 
     .tool-msg {
+        height: auto;
         margin: 0 2;
-        padding: 0 2;
         background: $surface-darken-2;
+    }
+
+    .tool-msg .thinking-header {
+        color: $tool-text;
+    }
+
+    .tool-body {
+        display: none;
+        height: auto;
+        max-height: 12;
+        scrollbar-size: 1 1;
+        padding: 0 2 1 2;
+        color: $text-muted;
+    }
+
+    .tool-msg.expanded .tool-body {
+        display: block;
     }
 
     #image-indicator {
