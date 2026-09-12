@@ -157,7 +157,10 @@ def test_prompt_now_honours_tool_profile():
     a = make_app()
     a._active_tool_profile = tool_policy.AUTONOMOUS
     submitted: list[str] = []
-    a._submit_text = lambda text, alt_chord=False: submitted.append(text)
+    def submit(text, alt_chord=False, *, source="typed"):
+        assert source == "rpc"
+        submitted.append(text)
+    a._submit_text = submit
 
     out = dispatch(a, {"type": "prompt", "id": "p1", "message": "hello", "tool_profile": tool_policy.INTERACTIVE})
 
@@ -172,7 +175,10 @@ def test_a_prompt_with_an_unknown_profile_does_not_run_the_turn():
     a = make_app()
     a._active_tool_profile = tool_policy.AUTONOMOUS
     submitted: list[str] = []
-    a._submit_text = lambda text, alt_chord=False: submitted.append(text)
+    def submit(text, alt_chord=False, *, source="typed"):
+        assert source == "rpc"
+        submitted.append(text)
+    a._submit_text = submit
 
     out = dispatch(a, {"type": "prompt", "id": "p1", "message": "hello", "tool_profile": "godmode"})
 
@@ -185,7 +191,10 @@ def test_a_prompt_without_the_field_is_unchanged():
     a = make_app()
     a._active_tool_profile = tool_policy.SCHEDULED
     submitted: list[str] = []
-    a._submit_text = lambda text, alt_chord=False: submitted.append(text)
+    def submit(text, alt_chord=False, *, source="typed"):
+        assert source == "rpc"
+        submitted.append(text)
+    a._submit_text = submit
 
     dispatch(a, {"type": "prompt", "id": "p1", "message": "hello"})
 

@@ -60,6 +60,9 @@ def make_app():
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
+    # This file tests theme state, including a display-only fake seat. The
+    # delayed fleet monitor must not attempt to register that fake after 2s.
+    a._inbox_monitor = lambda: None
     a.jobs[:] = []
     return a
 

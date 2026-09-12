@@ -47,6 +47,14 @@ if str(SRC) not in sys.path:
 # caller already chose a value.
 os.environ.setdefault("LITETUI_NO_HARNESS", "1")
 
+
+@pytest.fixture(autouse=True)
+def _never_read_live_hooks(tmp_path, monkeypatch):
+    from litetui import lifecycle_hooks
+
+    monkeypatch.setattr(lifecycle_hooks, "config_paths", lambda workspace: (
+        tmp_path / "global-hooks.json", tmp_path / "project-hooks.json"))
+
 # The suite must not meet the first-boot ENGINE PICKER either: this box has
 # both engines installed, so a fresh Settings() would push a modal over every
 # pilot test. An env-pinned backend is product logic for "nothing to ask"

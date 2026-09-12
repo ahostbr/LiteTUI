@@ -45,6 +45,7 @@ from textual.widgets import (
     TabPane,
 )
 
+from litetui.hooks_screen import HooksEditor
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
@@ -633,6 +634,8 @@ class SettingsBody(Widget):
                             )
 
                         # ── Interface ────────────────────────────────────────────────
+                with TabPane("Hooks", id="tab-hooks"):
+                    yield HooksEditor()
                 with TabPane("Themes", id="tab-themes"):
                     with VerticalScroll(classes="set-scroll"):
                         yield from self._select_row(
@@ -958,12 +961,16 @@ class SettingsBody(Widget):
         """
         out: dict = {}
         for w in list(self.query(Input)) + list(self.query(Select)) + list(self.query(Switch)):
-            if w.id:
+            if w.id and not w.id.startswith("hook-"):
                 out[w.id] = w.value
+        out["_hooks_editor"] = self.query_one(HooksEditor).get_state()
         return out
 
     def set_state(self, state: dict) -> None:
         for wid, value in (state or {}).items():
+            if wid == "_hooks_editor":
+                self.query_one(HooksEditor).set_state(value)
+                continue
             found = self.query(f"#{wid}")
             if not found:
                 continue          # a control this host does not render

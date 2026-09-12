@@ -36,7 +36,7 @@ from litetui.conversation import (
     TRANSCRIPT_NAME,
     ConversationRepository,
 )
-from litetui import ttyguard
+from litetui import ttyguard, hook_host
 from litetui import mcp_client
 from litetui import sanitize
 from litetui.fmt import fmt_dur
@@ -1141,6 +1141,7 @@ class LiteTUI(App):
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
+        hook_host.initialize(self)
         self.conversation: list[dict] = []
         #: T691: the conversation's own settings, once one is open. None
         #: while the app is still starting — the setters below check for it, so
@@ -1412,6 +1413,12 @@ class LiteTUI(App):
         self._system(LITETUI_SPLASH)
 
     def on_mount(self) -> None:
+        state = hook_host.snapshot(self)
+        if state.disabled:
+            self._system("Hooks disabled by LITETUI_HOOKS=off")
+        elif state.error:
+            self._system(f"[hooks configuration error] {state.error}")
+        hook_host.queue_lifecycle(self, "app_start")
         self.query_one("#message-input", Input).focus()
         self._splash()
         # An authored prompt file that has gone missing is invisible everywhere
@@ -1445,6 +1452,12 @@ class LiteTUI(App):
             from litetui import rpc as rpc_mod
             rpc_mod.start_rpc_reader(self)
             self._rpc_emit_ready()
+
+    async def on_unmount(self) -> None:
+        self._hook_shutting_down = True
+        hook_host.leave_conversation(self)
+        hook_host.queue_lifecycle(self, "app_shutdown")
+        await hook_host.drain_lifecycle(self)
 
     @work(exclusive=True, group="mcp")
     async def _mcp_connect(self) -> None:
@@ -1622,13 +1635,11 @@ class LiteTUI(App):
             # Why: Docs/adr/0001-mid-turn-mail-is-held-not-appended.md
             self._user_bubble(text, False, queued=True)
             self._pending_input.append(
-                {"content": text, "text": text, "tool_profile": profile}
+                {"content": text, "text": text, "tool_profile": profile, "source": "harness"}
             )
             return
         self._user_bubble(text, False)
-        self._append({"role": "user", "content": text})
-        self._active_tool_profile = profile
-        self._stream()
+        hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "harness"})
 
     def _fire_job(self, job) -> None:
         """Deliver a job as a real user turn, holding if one is running.
@@ -1691,13 +1702,11 @@ class LiteTUI(App):
             # has no business cancelling something a human asked for.
             self._user_bubble(banner, False, queued=True)
             self._pending_input.append(
-                {"content": text, "text": banner, "tool_profile": profile}
+                {"content": text, "text": banner, "tool_profile": profile, "source": "scheduled"}
             )
             return
         self._user_bubble(banner, False)
-        self._append({"role": "user", "content": text})
-        self._active_tool_profile = profile
-        self._stream()
+        hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "scheduled"})
 
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
         """What this tool result contributes to the CONVERSATION (tool_context).
@@ -1804,7 +1813,91 @@ class LiteTUI(App):
         """Resolve a tool name across all three sources, static first."""
         return self.plugins.dispatch_for(name)
 
-    async def _execute_tool(self, name: str, args: dict) -> tuple[str, bool]:
+    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True):
+        """Shared policy and approval door for tools and hook processes."""
+        decision = tool_policy.evaluate(
+            # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
+            # this turn holds, the answer is the least authority -- never the
+            # widest, and never a confirm profile that would prompt a room
+            # with nobody in it. This read `INTERACTIVE` while INTERACTIVE was
+            # also the settings default, so the two agreed by coincidence;
+            # T084 moved the default to `autonomous` and that coincidence
+            # became a contradiction pointing the permissive way.
+            profile or getattr(self, "_active_tool_profile", None) or tool_policy.SCHEDULED,
+            policy,
+            args,
+            workspace or paths.ROOT,
+            tool_name=name,
+            always_allow=frozenset(self.settings.tool_always_allow or ()),
+            deny=frozenset(self.settings.tool_deny or ()),
+        )
+        if decision.action == tool_policy.DENY:
+            return tool_denied("profile", name=name, reason=decision.reason), False
+        if decision.action == tool_policy.CONFIRM:
+            if not allow_prompt:
+                return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
+            # Sidebar or modal, decided by the setting. `show_dialog` — not
+            # `open_dialog` — because this frame ALREADY awaits, and the whole
+            # turn is blocked on the answer. It returns the body's value, or
+            # None on cancel: the same falsy-on-cancel contract
+            # `push_screen_wait` had, so `not answer` below is unchanged.
+            #
+            # T577: A HEADLESS CHILD HAS NO KEYBOARD, SO THE QUESTION GOES TO
+            # ITS HOST. The branch is HERE, at the awaiting caller, and not
+            # inside `show_dialog`: that door is generic and three other
+            # callers use it with no approval semantics at all, so an rpc
+            # branch in there would make every dialog rpc-aware to serve one.
+            # Ryan, 2026-09-10: "i want the approvals to route threw frontier
+            # chat GUI".
+            if self._rpc:
+                answer = await tool_approval.approve_over_rpc(
+                    self, name, args, decision
+                )
+                # None is NOT DENIED. See approve_over_rpc: one is a person
+                # choosing, the other is a host that never spoke, and they
+                # owe the model different sentences.
+                unanswered = answer is None
+            else:
+                answer = await show_dialog(
+                    self,
+                    partial(ToolApprovalBody, name, args, decision),
+                    modal_factory=partial(ToolApprovalScreen, name, args, decision),
+                )
+                unanswered = False
+            # `not answer` covers three cases on purpose: DENIED, and None from
+            # a screen dismissed without a value, and any future falsy answer.
+            # ToolApproval.__bool__ is what keeps this line correct now that the
+            # modal returns a tri-state instead of a bool.
+            if not answer:
+                if not stop_on_denial:
+                    return tool_denied("no-host" if unanswered else "by-user", name=name), False
+                # DENY STOPS THE TURN (Ryan, 2026-08-24 — asked whether this
+                # should replace or supplement the existing verb, answered
+                # REPLACE). The refusal is still returned and still recorded,
+                # so the transcript says what happened; the loop just does not
+                # get another round-trip to work around it with.
+                #
+                # The reason is set alongside the flag because the loop's tail
+                # otherwise reports "reached N tool iterations" for ANY early
+                # break — see _stop_reason.
+                self._stop_requested = True
+                if unanswered:
+                    # SAY IT. A timeout that reads as "you denied" would tell
+                    # the model a person refused, and a person who refused is
+                    # a reason to stop asking -- so a broken host would look
+                    # like a settled decision, forever.
+                    self._stop_reason = (
+                        f"[stopped — no host answered the approval for {name} "
+                        f"within {tool_approval.APPROVAL_TIMEOUT_S:.0f}s; denied]"
+                    )
+                    return tool_denied("no-host", name=name), False
+                self._stop_reason = f"[stopped — you denied {name}]"
+                return tool_denied("by-user", name=name), False
+            if answer.remember:
+                self._remember_tool_rule(name, decision.capabilities)
+        return None
+
+    async def _execute_tool(self, name: str, args: dict, *, hooks_enabled=True) -> tuple[str, bool]:
         """The one host authorization door before any tool side effect."""
         self._rpc_emit({"type": "tool_call", "name": name, "args": args})
         # THE TOGGLE IS ENFORCED HERE, BEFORE RESOLUTION, so a disabled tool
@@ -1840,82 +1933,19 @@ class LiteTUI(App):
         policy = self.plugins.policy_for(name)
         if policy is None:
             return tool_denied("no-metadata", name=name), False
-        decision = tool_policy.evaluate(
-            # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
-            # this turn holds, the answer is the least authority -- never the
-            # widest, and never a confirm profile that would prompt a room
-            # with nobody in it. This read `INTERACTIVE` while INTERACTIVE was
-            # also the settings default, so the two agreed by coincidence;
-            # T084 moved the default to `autonomous` and that coincidence
-            # became a contradiction pointing the permissive way.
-            getattr(self, "_active_tool_profile", None) or tool_policy.SCHEDULED,
-            policy,
-            args,
-            paths.ROOT,
-            tool_name=name,
-            always_allow=frozenset(self.settings.tool_always_allow or ()),
-            deny=frozenset(self.settings.tool_deny or ()),
-        )
-        if decision.action == tool_policy.DENY:
-            return tool_denied("profile", name=name, reason=decision.reason), False
-        if decision.action == tool_policy.CONFIRM:
-            # Sidebar or modal, decided by the setting. `show_dialog` — not
-            # `open_dialog` — because this frame ALREADY awaits, and the whole
-            # turn is blocked on the answer. It returns the body's value, or
-            # None on cancel: the same falsy-on-cancel contract
-            # `push_screen_wait` had, so `not answer` below is unchanged.
-            #
-            # T577: A HEADLESS CHILD HAS NO KEYBOARD, SO THE QUESTION GOES TO
-            # ITS HOST. The branch is HERE, at the awaiting caller, and not
-            # inside `show_dialog`: that door is generic and three other
-            # callers use it with no approval semantics at all, so an rpc
-            # branch in there would make every dialog rpc-aware to serve one.
-            # Ryan, 2026-09-10: "i want the approvals to route threw frontier
-            # chat GUI".
-            if self._rpc:
-                answer = await tool_approval.approve_over_rpc(
-                    self, name, args, decision
-                )
-                # None is NOT DENIED. See approve_over_rpc: one is a person
-                # choosing, the other is a host that never spoke, and they
-                # owe the model different sentences.
-                unanswered = answer is None
-            else:
-                answer = await show_dialog(
-                    self,
-                    partial(ToolApprovalBody, name, args, decision),
-                    modal_factory=partial(ToolApprovalScreen, name, args, decision),
-                )
-                unanswered = False
-            # `not answer` covers three cases on purpose: DENIED, and None from
-            # a screen dismissed without a value, and any future falsy answer.
-            # ToolApproval.__bool__ is what keeps this line correct now that the
-            # modal returns a tri-state instead of a bool.
-            if not answer:
-                # DENY STOPS THE TURN (Ryan, 2026-08-24 — asked whether this
-                # should replace or supplement the existing verb, answered
-                # REPLACE). The refusal is still returned and still recorded,
-                # so the transcript says what happened; the loop just does not
-                # get another round-trip to work around it with.
-                #
-                # The reason is set alongside the flag because the loop's tail
-                # otherwise reports "reached N tool iterations" for ANY early
-                # break — see _stop_reason.
-                self._stop_requested = True
-                if unanswered:
-                    # SAY IT. A timeout that reads as "you denied" would tell
-                    # the model a person refused, and a person who refused is
-                    # a reason to stop asking -- so a broken host would look
-                    # like a settled decision, forever.
-                    self._stop_reason = (
-                        f"[stopped — no host answered the approval for {name} "
-                        f"within {tool_approval.APPROVAL_TIMEOUT_S:.0f}s; denied]"
-                    )
-                    return tool_denied("no-host", name=name), False
-                self._stop_reason = f"[stopped — you denied {name}]"
-                return tool_denied("by-user", name=name), False
-            if answer.remember:
-                self._remember_tool_rule(name, decision.capabilities)
+        hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.SCHEDULED
+        authorize = getattr(self, "_authorize_action", partial(LiteTUI._authorize_action, self))
+        refusal = await authorize(name, args, policy, profile=hook_profile)
+        if refusal:
+            return refusal
+        hook_context = hook_host.context(self)
+        run_hooks = (hooks_enabled and getattr(self, "hook_config", None) is not None
+                     and not getattr(self, "_hooks_suppressed", False))
+        if run_hooks:
+            gate = await hook_host.dispatch(self, "tool_before", {"tool": name, "args": args},
+                                            profile=hook_profile, captured=hook_context)
+            if not gate.allowed or self._stop_requested:
+                return f"[hook denied] {gate.reason}", False
         # BACKGROUND (T499): the model asked not to wait. Authorization above
         # is identical — the profile decision and any CONFIRM are taken HERE,
         # once, at fire time — and the door is still the one call below: the
@@ -1929,6 +1959,8 @@ class LiteTUI(App):
         if isinstance(args, dict):
             args.pop("background", None)
         aw = asyncio.to_thread(fn, args)
+        if run_hooks:
+            aw = self._observe_tool_outcome(name, dict(args), aw, hook_profile, hook_context)
         if background:
             return self._start_background(name, args, aw), True
         # AUTO-PROMOTION (T517, Ryan: "the calls are still blocked is it off by
@@ -1944,6 +1976,25 @@ class LiteTUI(App):
             return str(fut.result()), True
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}", False
+
+    async def _observe_tool_outcome(self, name, args, aw, profile, captured):
+        result, ok, cancelled = "", False, False
+        try:
+            result = await aw
+            task = tasks_mod.CURRENT.get()
+            cancelled = task.state == tasks_mod.KILLED if task else self._stop_requested
+            ok = not cancelled
+            return result
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        except Exception as exc:
+            result = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            await hook_host.dispatch(self, "tool_after",
+                {"tool": name, "args": args, "result": str(result), "ok": ok,
+                 "cancelled": cancelled}, profile=profile, captured=captured)
 
     # ── background tasks (T499) ──────────────────────────────────────────
     #
@@ -2206,6 +2257,7 @@ class LiteTUI(App):
         paths are assigned here anyway, so the footer can name the conversation
         and /clear can report where it will live.
         """
+        hook_host.leave_conversation(self)
         self.store.stage(str(uuid.uuid4()))
         self._refresh_ctx_label()   # the footer names the conversation
         self._sync_seat_identity()
@@ -2245,6 +2297,7 @@ class LiteTUI(App):
         # held in memory only. This is where it reaches disk.
         if self.conversation:
             self._snapshot("materialised on first message")
+        hook_host.enter_conversation(self, "conversation_start")
 
     def _report_persist_error(self, msg: str) -> None:
         """How the store speaks. It owns no widgets, so the app lends it one.
@@ -2469,6 +2522,7 @@ class LiteTUI(App):
             self._system(f"{path.name} holds no messages — not resuming.")
             return
 
+        hook_host.leave_conversation(self)
         self.conversation = msgs
         # The staged conversation is abandoned WITHOUT being written — that is
         # the whole point of staging. Clearing the flag before reassigning the
@@ -2478,6 +2532,7 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        hook_host.enter_conversation(self, "conversation_resume")
         # T691: AFTER convo_dir moves and BEFORE the seat sync — this
         # conversation's own model and think level are what /resume is
         # restoring, and reading them from the old directory would apply the
@@ -4828,7 +4883,7 @@ class LiteTUI(App):
         inp.value = ""
         self._submit_text(value, alt_chord=True)
 
-    def _submit_text(self, value: str, alt_chord: bool) -> None:
+    def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
         text = value.strip()
         if not text and not self.pending_image:
             return
@@ -4868,7 +4923,7 @@ class LiteTUI(App):
         # This is the moment a conversation earns its directory. Everything
         # before it — boot, the system prompt, a /model switch, an abandoned
         # /resume — leaves nothing on disk.
-        self._materialise_convo()
+        # Materialization follows prompt admission.
 
         # Build API message content
         if image_b64 and text:
@@ -4898,7 +4953,7 @@ class LiteTUI(App):
                 bubble = self._user_bubble(text, has_image, queued=True)
                 self._pending_input.append(
                     {"content": content, "text": text, "bubble": bubble,
-                     "tool_profile": profile}
+                     "tool_profile": profile, "source": "rpc" if source == "rpc" else "queued"}
                 )
                 self.notify("Queued — sends when this turn ends", timeout=3)
                 return
@@ -4908,15 +4963,13 @@ class LiteTUI(App):
             # flush sends it before anything queued behind it.
             self._user_bubble(text, has_image)
             self._pending_input.insert(
-                0, {"content": content, "text": text, "tool_profile": profile}
+                0, {"content": content, "text": text, "tool_profile": profile, "source": "rpc" if source == "rpc" else "interrupted"}
             )
             self._stop_requested = True
             self.notify("Interrupting — your message sends next", timeout=3)
             return
         self._user_bubble(text, has_image)
-        self._append({"role": "user", "content": content})
-        self._active_tool_profile = profile
-        self._stream()
+        hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": source})
 
     def _headless_model_decision(self) -> tuple[str, str | None, str]:
         """What a `--rpc` child may do about the model, without loading one.
@@ -5413,9 +5466,17 @@ class LiteTUI(App):
                 return
 
             if not tool_acc:
+                verdict = await hook_host.completion(self, text_full or "")
+                if verdict == "retry":
+                    continue
+                if verdict == "pause":
+                    self._rpc_emit({"type": "turn_end", "stopReason": "hook_denied"})
+                    return
                 # Turn is over. Check the window AFTER this worker exits:
                 # _compact shares group="chat" and would cancel us mid-frame.
                 await self.plugins.finalize_turn()
+                if not getattr(self, "_hooks_suppressed", False):
+                    await hook_host.dispatch(self, "completion_after", {"answer": text_full or ""})
                 self._rpc_emit({"type": "turn_end", "stopReason": "stop"})
                 self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
@@ -5498,7 +5559,7 @@ class LiteTUI(App):
             # boundary, so the model sees it on its very next request instead
             # of after the whole loop unwinds. Same slot and same reason as the
             # staged images below.
-            self._deliver_queued_input()
+            await hook_host.queued_prompt(self)
 
             if self._pending_tool_images:
                 staged = self._pending_tool_images
@@ -5606,15 +5667,7 @@ class LiteTUI(App):
         # model this app is usually pointed at. The rest ride the next round,
         # and rounds are plentiful.
         item = self._pending_input.pop(0)
-        self._active_tool_profile = item.get(
-            "tool_profile",
-            getattr(getattr(self, "settings", None), "tool_policy_profile",
-                    # The floor when there is no settings object at all --
-                    # same reasoning as the tool door above.
-                    tool_policy.SCHEDULED),
-        )
-        self._append({"role": "user", "content": item["content"]})
-        _mark_delivered(item)
+        hook_host.accept_prompt(self, item)
         return True
 
     def _flush_pending_input(self) -> None:
@@ -5634,17 +5687,7 @@ class LiteTUI(App):
             self.set_timer(0.7, self._flush_pending_input)
             return
         item = self._pending_input.pop(0)
-        self._active_tool_profile = item.get(
-            "tool_profile",
-            getattr(getattr(self, "settings", None), "tool_policy_profile",
-                    # The floor when there is no settings object at all --
-                    # same reasoning as the tool door above.
-                    tool_policy.SCHEDULED),
-        )
-        self._materialise_convo()
-        self._append({"role": "user", "content": item["content"]})
-        _mark_delivered(item)
-        self._stream()
+        hook_host.start_prompt(self, item)
 
 
     def refresh_skills(self) -> tuple[list[str], list[str]]:
@@ -5762,6 +5805,7 @@ class LiteTUI(App):
             return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)
+        self._hooks_suppressed = True
         self._append({"role": "user", "content": WAKE_AFTER_COMPACT})
         self._stream()
 
@@ -5937,7 +5981,7 @@ class LiteTUI(App):
                             fargs = json.loads(slot["arguments"] or "{}")
                             if not isinstance(fargs, dict):
                                 raise ValueError("arguments must be a JSON object")
-                            result, ok = await self._execute_tool(fname, fargs)
+                            result, ok = await self._execute_tool(fname, fargs, hooks_enabled=False)
                             if ok and fname == "write":
                                 writes.append(str(fargs.get("path", "?")))
                         except Exception as e:
@@ -6201,12 +6245,12 @@ class LiteTUI(App):
         # visibly and flushes as a real turn; idle it sends now.
         if self._chat_running():
             self._user_bubble(text, True, queued=True)
-            self._pending_input.append({"content": content, "text": text})
+            self._pending_input.append({"content": content, "text": text,
+                                        "tool_profile": self.chosen_tool_profile})
             return
         self._materialise_convo()
         self._user_bubble(text, True)
-        self._append({"role": "user", "content": content})
-        self._stream()
+        hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": self.chosen_tool_profile})
 
     def _handle_command(self, cmd: str) -> None:
         parts = cmd.split(maxsplit=1)

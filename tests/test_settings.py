@@ -364,7 +364,7 @@ async def test_collect_refuses_a_partial_save_instead_of_skipping():
 
 
 @pytest.mark.asyncio
-async def test_the_six_sections_are_tabs():
+async def test_the_settings_sections_are_tabs():
     from textual.app import App, ComposeResult
     from textual.widgets import TabPane
     from litetui.settings_screen import SettingsScreen
@@ -380,7 +380,10 @@ async def test_the_six_sections_are_tabs():
     async with app.run_test() as pilot:
         await pilot.pause()
         panes = app.screen.query(TabPane)
-        assert len(panes) == 7, f"expected 7 section tabs, found {len(panes)}"
+        assert [pane.id for pane in panes] == [
+            "tab-model", "tab-generation", "tab-agent", "tab-compaction",
+            "tab-capabilities", "tab-hooks", "tab-themes", "tab-interface",
+        ]
 
 @pytest.mark.asyncio
 async def test_the_panel_is_centred_not_docked_top_left():

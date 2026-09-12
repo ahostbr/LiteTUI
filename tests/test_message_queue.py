@@ -126,6 +126,9 @@ class InboxDouble(SimpleNamespace):
         super().__init__(_running=running, _pending_input=[], bubbles=[],
                          appended=[], streamed=0, settings=Settings())
 
+    def _materialise_convo(self):
+        pass
+
     def _chat_running(self):
         return self._running
 

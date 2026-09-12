@@ -66,7 +66,13 @@ def _cmd_settings(app, name: str, arg: str) -> None:
     )
 
 
+def _cmd_hooks(app, name: str, arg: str) -> None:
+    from litetui.hooks_screen import HooksBody, HooksScreen
+    present_dialog(app, HooksBody, HooksScreen, lambda result: None)
+
+
 def _register(ctx) -> None:
+    ctx.command(("/hooks",), _cmd_hooks, palette="Hooks", help="Configure and test lifecycle hooks.", group="app", order=11)
     ctx.command(
         ("/settings", "/config", "/set"), _cmd_settings,
         palette="Settings",

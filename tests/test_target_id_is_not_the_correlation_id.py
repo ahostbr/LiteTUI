@@ -362,7 +362,8 @@ def test_CONTROL_a_command_with_no_target_is_unaffected(monkeypatch) -> None:
             super().__init__()
             self.submitted: list[str] = []
 
-        def _submit_text(self, text: str, alt_chord: bool = False) -> None:
+        def _submit_text(self, text: str, alt_chord: bool = False, *, source="typed") -> None:
+            assert source == "rpc"
             self.submitted.append(text)
 
     app = PromptApp()
