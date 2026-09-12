@@ -126,6 +126,8 @@ def enter_conversation(app, event):
 
 
 def accept_prompt(app, item):
+    if not item.get("_gui_in_turn"):
+        app._gui_operation_id = item.get("operation_id")
     app._active_tool_profile = item.get("tool_profile") or getattr(
         getattr(app, "settings", None), "tool_policy_profile", tool_policy.SCHEDULED)
     app._hooks_suppressed = False
@@ -140,6 +142,8 @@ def accept_prompt(app, item):
 
 
 async def admit_prompt(app, item):
+    if not item.get("_gui_in_turn"):
+        app._gui_operation_id = item.get("operation_id")
     app._stop_requested = False
     await drain_lifecycle(app)
     ctx = {**context(app), "source": item.get("source", "queued"), "turn_id": str(uuid.uuid4())}
@@ -175,7 +179,7 @@ async def queued_prompt(app):
         return app._deliver_queued_input()
     if not app._pending_input or app._stop_requested:
         return False
-    return await admit_prompt(app, app._pending_input.pop(0))
+    return await admit_prompt(app, {**app._pending_input.pop(0), "_gui_in_turn": True})
 
 
 async def completion(app, answer):

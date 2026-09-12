@@ -93,10 +93,24 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     cmd_type = cmd.get("type", "")
     cmd_id = cmd.get("id")
 
+    if isinstance(cmd_type, str) and cmd_type.startswith("gui."):
+        from litetui.gui_rpc import async_dispatch
+        async def manage():
+            try:
+                result = await async_dispatch(app, cmd)
+                _respond(cmd_id, ok=True, result=result)
+            except Exception as exc:  # noqa: BLE001 - isolate malformed management requests at the wire boundary
+                _respond(cmd_id, ok=False, error=str(exc))
+        app.run_worker(manage(), group="gui-management", exit_on_error=False)
+        return
+
     if cmd_type == "shutdown":
         _respond(cmd_id, ok=True, result={"ok": True})
         app.exit()
     elif cmd_type == "prompt":
+        if getattr(app, "_gui_management_busy", False):
+            _respond(cmd_id, ok=False, error="A management operation is active; wait or cancel it")
+            return
         message = cmd.get("message", "")
         if not message:
             _respond(cmd_id, ok=False, error="empty message")
@@ -115,7 +129,16 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
                 # kind of surprise.
                 _respond(cmd_id, ok=False, error=f"unknown tool profile {profile!r}")
                 return
-        app._submit_text(str(message), alt_chord=False, source="rpc")
+        try:
+            app.store.acquire()
+        except OSError as exc:
+            _respond(cmd_id, ok=False, error=str(exc))
+            return
+        app._gui_next_operation_id = cmd_id
+        try:
+            app._submit_text(str(message), alt_chord=False, source="rpc")
+        finally:
+            app._gui_next_operation_id = None
         _respond(cmd_id, ok=True, result={"turn": "accepted"})
     elif cmd_type == "set":
         # T558-B. Authority and plan mode, mid-session, through the SAME setters
@@ -228,6 +251,13 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         # turn actually reach its end instead of stopping on paper.
         from litetui import ask_user_question as auq_mod
 
+        for pending in getattr(app, "_gui_model_pending", {}).values():
+            if not pending["future"].done():
+                pending["future"].set_result(False)
+        from litetui.tool_approval import DENIED
+        for future in getattr(app, "_approval_waiters", {}).values():
+            if not future.done():
+                future.set_result(DENIED)
         cancelled = auq_mod.cancel_pending_asks(app)
         for ask_id in cancelled:
             # The host resolves its own card locally on interrupt, so this is

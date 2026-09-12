@@ -145,22 +145,24 @@ def write(
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    merged = apply_delta(
-        _BASELINE.get(_key_of(path), []), rows, rows_on_disk(path), key=key
-    )
+    from litetui.shared_state import coordinated_write
+    with coordinated_write(path):
+        merged = apply_delta(
+            _BASELINE.get(_key_of(path), []), rows, rows_on_disk(path), key=key
+        )
 
-    payload = json.dumps(merged, indent=2, ensure_ascii=ensure_ascii)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(payload)
-        os.replace(tmp, path)
-    except BaseException:
+        payload = json.dumps(merged, indent=2, ensure_ascii=ensure_ascii)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(payload)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     # Our own rows, NOT `merged`: adopting a sibling's rows as ours would make
     # them look deleted the next time we save without them.
     rebaseline(path, rows)

@@ -210,21 +210,12 @@ def test_a_DEAD_foreign_claim_on_another_port_is_overwritten(tmp_path):
     assert (got.owner, got.pid, got.port) == ("litetui", 4242, 7471)
 
 
-def test_our_OWN_live_claim_on_another_port_is_overwritten(tmp_path):
-    """⬜ CONTROL: the owner term, not just liveness.
-
-    A LiteTUI record for a port we have just moved off is ours to replace —
-    refusing here would strand our own claim on a port nothing is serving.
-    Uses our own live pid, so only the OWNER differs from the arm above.
-    """
+def test_live_same_family_claim_on_another_port_is_preserved(tmp_path):
+    """The owner family does not identify this process or its server."""
     p = _rec(tmp_path, owner="litetui", pid=os.getpid(), port=7470)
-
-    result = rr.write(pid=4242, port=7471, ini="ours.ini", path=p)
-
-    assert result == p
-    got = rr.read(p)
-    assert got is not None
-    assert (got.owner, got.pid, got.port) == ("litetui", 4242, 7471)
+    original = p.read_bytes()
+    assert rr.write(pid=4242, port=7471, ini="ours.ini", path=p) is None
+    assert p.read_bytes() == original
 
 
 def test_a_live_foreign_claim_on_the_SAME_port_is_still_overwritten(tmp_path):

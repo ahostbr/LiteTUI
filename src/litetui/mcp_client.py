@@ -791,9 +791,14 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         if name in self.configs:
             return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
         path = self.root / WRITE_CONFIG_NAME
-        doc = _load_doc(path)
-        doc.setdefault("mcpServers", {})[name] = cfg
-        _save_doc(path, doc)
+        from litetui.shared_state import coordinated_write
+        with coordinated_write(path):
+            doc = _load_doc(path)
+            block = doc.setdefault("mcpServers", {})
+            if name in block:
+                return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
+            block[name] = cfg
+            _save_doc(path, doc)
         self.reload_configs()
         return self.connect(name) if connect else None
 
@@ -805,17 +810,19 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         an orphan. Doing it in this order means `remove` has no such aftermath.
         """
         path = self.root / WRITE_CONFIG_NAME
-        doc = _load_doc(path)
-        block = doc.get("mcpServers") or {}
-        if name not in block:
-            other = shadowing_file(self.root, name)
-            if other is not None:
-                return f"{name!r} is declared in {other.name}, which /mcp does not write"
-            return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
-        self.disconnect(name)
-        del block[name]
-        doc["mcpServers"] = block
-        _save_doc(path, doc)
+        from litetui.shared_state import coordinated_write
+        with coordinated_write(path):
+            doc = _load_doc(path)
+            block = doc.get("mcpServers") or {}
+            if name not in block:
+                other = shadowing_file(self.root, name)
+                if other is not None:
+                    return f"{name!r} is declared in {other.name}, which /mcp does not write"
+                return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
+            self.disconnect(name)
+            del block[name]
+            doc["mcpServers"] = block
+            _save_doc(path, doc)
         self.reload_configs()
         self.failures.pop(name, None)
         return None

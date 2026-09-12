@@ -31,13 +31,12 @@ import json
 import shutil
 import subprocess
 import time
-from pathlib import Path
 
-from litetui import ttyguard
+from litetui import paths, ttyguard
 
 #: Where the recovery breadcrumb lands if a resume fails: the exact reload
 #: command, on disk, findable by a human whose agent has gone quiet.
-BREADCRUMB = Path(__file__).resolve().parent.parent.parent / "suspended_seat.json"
+BREADCRUMB = paths.data_root() / "suspended_seat.json"
 
 RESUME_RETRIES = 3
 LOAD_TIMEOUT = 180

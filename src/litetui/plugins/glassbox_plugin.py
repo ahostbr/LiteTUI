@@ -268,7 +268,7 @@ def register(ctx, root: Path | None = None) -> None:
 def _default_root(ctx) -> Path:
     try:
         from litetui import paths
-        return Path(paths.ROOT) / "artifacts"
+        return paths.data_root() / "artifacts"
     except Exception:
         return Path.cwd()
 

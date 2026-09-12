@@ -217,7 +217,7 @@ class GoalRuntime:
         self._evaluating = False
 
     async def on_plain_answer(self) -> None:
-        if self._evaluating:
+        if self._evaluating or getattr(self.app, "_gui_quitting", False):
             return
         state = load_goal(getattr(self.app, "convo_dir", None))
         if state is None or state.status != "active":
@@ -261,6 +261,8 @@ class GoalRuntime:
         finally:
             self._evaluating = False
 
+        if getattr(self.app, "_gui_quitting", False):
+            return
         previous_reason = state.last_reason
         state.evaluated_turns += 1
         state.last_verdict = verdict.verdict

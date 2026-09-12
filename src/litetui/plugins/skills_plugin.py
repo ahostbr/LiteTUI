@@ -31,7 +31,7 @@ def _cmd_refresh(app) -> None:
         app.system_message("Skills are OFF in /settings — nothing to refresh.")
         return
     added, removed = app.refresh_skills()
-    where = skills_mod.cache_path(paths.ROOT)
+    where = skills_mod.cache_path(paths.data_root())
     lines = [f"{len(app.skills)} skill(s) after refresh — cache: {where}"]
     if added:
         lines.append("  + " + ", ".join(added))
@@ -40,7 +40,7 @@ def _cmd_refresh(app) -> None:
     if not added and not removed:
         lines.append("  no change")
     # A folder that produced nothing is the whole reason someone refreshes.
-    lines.extend(_skipped_lines(app, paths.ROOT / skills_mod.SKILLS_DIR_NAME))
+    lines.extend(_skipped_lines(app, paths.data_root() / skills_mod.SKILLS_DIR_NAME))
     app.system_message("\n".join(lines))
 
 
@@ -99,7 +99,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
     # scratch folder, not an error. That makes a MISNAMED or MISPLACED
     # skill look exactly like one that was never written — so say what
     # was found, where it was looked for, and what the model can see.
-    base = paths.ROOT / skills_mod.SKILLS_DIR_NAME
+    base = paths.data_root() / skills_mod.SKILLS_DIR_NAME
     if arg.strip().lower() in ("refresh", "reload", "rescan"):
         _cmd_refresh(app)
         return

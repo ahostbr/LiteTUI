@@ -93,4 +93,4 @@ MEMORIES_DIR = "memories"
 #                               regenerated from settings; never hand-edited
 #     litetui-llama-server.log  the spawned server's whole console — a child
 #                               of a TUI must NEVER inherit the terminal
-LLAMA_DIR = ROOT / ".llama"
+LLAMA_DIR = data_root() / ".llama"
