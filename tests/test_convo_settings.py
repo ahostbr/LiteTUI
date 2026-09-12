@@ -174,6 +174,8 @@ class _App:
     model_id = _Real.model_id
     thinking_level = _Real.thinking_level
     backend = _Real.backend
+    chosen_tool_profile = _Real.chosen_tool_profile
+    set_tool_profile = _Real.set_tool_profile
     _remember_for_this_convo = _Real._remember_for_this_convo
     _adopt_convo_settings = _Real._adopt_convo_settings
     _adopt_convo_backend = _Real._adopt_convo_backend
@@ -189,9 +191,18 @@ class _App:
         self._model_id = ""
         self._thinking_level = None
         self._backend = _FakeBackend(backend_name)
+        self._active_tool_profile = settings.tool_policy_profile
+        self._cli_tool_profile = None
 
     def _system(self, text):
         self.said.append(text)
+
+    def _refresh_ctx_label(self):
+        # `set_tool_profile` repaints the footer chip. Stubbed rather than
+        # avoided: driving the REAL method is the whole point — T691 shipped a
+        # field that round-tripped through the file and was written by nothing,
+        # because its arm exercised the dataclass instead of the app.
+        pass
 
 
 def test_a_NEW_conversation_writes_its_file_from_the_globals(tmp_path: Path) -> None:
@@ -492,7 +503,7 @@ def test_EVERY_declared_field_has_a_writer_or_is_named_as_carried_only() -> None
     from pathlib import Path as _P
 
     app_src = _P(app_mod.__file__).read_text(encoding="utf-8")
-    carried_only = {"tool_policy_profile", "seat_name", "seat_id", "seat_tier"}
+    carried_only = {"seat_name", "seat_id", "seat_tier"}
 
     missing = []
     for f in fields_of(cs_mod.ConvoSettings):
@@ -508,3 +519,166 @@ def test_EVERY_declared_field_has_a_writer_or_is_named_as_carried_only() -> None
     )
     # The validity gate: an all-exempt list would satisfy the loop above.
     assert len(carried_only) < len(fields_of(cs_mod.ConvoSettings))
+
+
+# ── T695: the CHOSEN profile, separated from every transient one ─────────
+#
+# 🔴 NINE THINGS WRITE `_active_tool_profile` AND EXACTLY ONE IS A CHOICE.
+# Inbox mail degrades through `unattended()` (app.py:1630), a cron or loop fire
+# pins AUTONOMOUS (app.py:1699), a goal loop restores its own
+# (goal_loop.py:326), the flush re-stamps whatever a queued item carried
+# (app.py:5541/5569), and `--tool-profile` overrides for the process
+# (app.py:1226). Persisting any of those would record a temporary elevation as
+# the conversation's standing choice — one scheduled job and the chat is
+# autonomous for good.
+#     `set_tool_profile` (shift+tab and the wire) is the only CHOICE, so it is
+# the only writer, and `chosen_tool_profile` is the source the two
+# non-transient reads consult.
+
+
+def test_an_explicit_authority_change_is_remembered_by_the_conversation(tmp_path: Path) -> None:
+    d = _dir(tmp_path)
+    a = _App(st.Settings(), d)
+    a._adopt_convo_settings(born=True)
+
+    a.set_tool_profile("interactive", announce=False)
+
+    assert cs_mod.load(d).tool_policy_profile == "interactive"
+    assert a._active_tool_profile == "interactive"
+
+
+def test_an_authority_change_in_A_does_not_move_B(tmp_path: Path) -> None:
+    s = st.Settings()
+    a_dir, b_dir = _dir(tmp_path, "a"), _dir(tmp_path, "b")
+    a, b = _App(s, a_dir), _App(s, b_dir)
+    a._adopt_convo_settings(born=True)
+    b._adopt_convo_settings(born=True)
+
+    before = cs_mod.load(b_dir).tool_policy_profile
+
+    a.set_tool_profile("interactive", announce=False)
+
+    assert cs_mod.load(a_dir).tool_policy_profile == "interactive"
+    # ⚠️ AGAINST THE SNAPSHOT, NOT AGAINST `s.tool_policy_profile`. An explicit
+    # choice also moves the GLOBAL default (existing behaviour, unchanged by
+    # this card), so comparing B against the live settings object compares it
+    # with something the treatment just edited — and the arm would fail while
+    # B was in fact untouched.
+    assert cs_mod.load(b_dir).tool_policy_profile == before
+
+
+def test_opening_a_conversation_puts_it_back_on_its_own_authority(tmp_path: Path) -> None:
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(tool_policy_profile="interactive"))
+    s = st.Settings()
+    s.tool_policy_profile = "autonomous"
+
+    a = _App(s, d)
+    a._adopt_convo_settings(born=False)
+
+    assert a._active_tool_profile == "interactive"
+    assert a.chosen_tool_profile == "interactive"
+
+
+def test_a_TRANSIENT_elevation_is_not_recorded_as_the_choice(tmp_path: Path) -> None:
+    """🔴 THE DISCRIMINATING ARM, and the reason this was not done with T691.
+
+    Every other field could be wired by writing through its setter; this one
+    cannot, because most of what assigns it is a TURN-SCOPED override. A cron
+    fire assigning AUTONOMOUS directly — exactly what `app.py:1699` does — must
+    leave the conversation remembered authority alone.
+
+    Without this, a wiring that simply made `_active_tool_profile` a
+    write-through property would pass every other arm in this file and quietly
+    make one scheduled job the conversation standing authority.
+    """
+    d = _dir(tmp_path)
+    s = st.Settings()
+    s.tool_policy_profile = "interactive"
+    a = _App(s, d)
+    a._adopt_convo_settings(born=True)
+    a.set_tool_profile("interactive", announce=False)
+
+    a._active_tool_profile = "autonomous"      # a cron fire, verbatim
+
+    assert cs_mod.load(d).tool_policy_profile == "interactive"
+    assert a.chosen_tool_profile == "interactive"
+
+
+def test_the_chosen_profile_falls_through_when_the_conversation_never_chose(tmp_path: Path) -> None:
+    """A conversation that predates this card has no file and must behave
+    exactly as it did — absent is not empty."""
+    s = st.Settings()
+    s.tool_policy_profile = "autonomous"
+    a = _App(s, _dir(tmp_path))
+    a._adopt_convo_settings(born=False)
+
+    assert a.chosen_tool_profile == "autonomous"
+
+
+# ── the two rulings, each with an arm ────────────────────────────────────
+
+
+def test_a_LOOP_is_stamped_from_the_GLOBAL_setting_not_the_conversation(tmp_path: Path) -> None:
+    """🔴 RYAN RULING, ALREADY IN THE CODE AT app.py:1672, AND BINDING:
+    changing how autonomous the CHAT is must not silently change what every
+    saved automation may do. So `goal_loop.py:372` reads
+    `settings.tool_policy_profile` and deliberately NOT this conversation.
+
+    Stated as an arm rather than left to the comment, because a per-convo card
+    is exactly when someone "finishes the job" by pointing this at the
+    conversation too.
+    """
+    from litetui import goal_loop
+
+    s = st.Settings()
+    s.tool_policy_profile = "autonomous"
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(tool_policy_profile="interactive"))
+
+    a = _App(s, d)
+    a._adopt_convo_settings(born=False)
+    assert a.chosen_tool_profile == "interactive", "the arm is not testing what it claims"
+
+    state = goal_loop.GoalState(
+        objective="ship it",
+        tool_profile=getattr(a.settings, "tool_policy_profile", goal_loop.INTERACTIVE),
+    )
+
+    assert state.tool_profile == "autonomous", (
+        "a saved automation inherited the conversation authority — app.py:1672"
+    )
+
+
+def test_the_CLI_FLAG_wins_on_resume_and_never_writes_the_file(tmp_path: Path) -> None:
+    """🔴 SENTINEL RULING: an explicit invocation outranks a stored default,
+    and a flag that became sticky would be the opposite of explicit — it would
+    outlive the invocation that asked for it and apply to runs that did not."""
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(tool_policy_profile="interactive"))
+    s = st.Settings()
+
+    a = _App(s, d)
+    a._cli_tool_profile = "autonomous"
+    a._active_tool_profile = "autonomous"      # what app.py:1226 already did
+    a._adopt_convo_settings(born=False)
+
+    assert a._active_tool_profile == "autonomous", "the flag lost to the stored choice"
+    assert cs_mod.load(d).tool_policy_profile == "interactive", (
+        "the flag wrote itself into the conversation and became sticky"
+    )
+
+
+def test_CONTROL_without_the_flag_the_conversation_wins(tmp_path: Path) -> None:
+    """The other half. Without it the arm above passes for a resume that never
+    adopts anything at all."""
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(tool_policy_profile="interactive"))
+    s = st.Settings()
+    s.tool_policy_profile = "autonomous"
+
+    a = _App(s, d)
+    a._active_tool_profile = "autonomous"
+    a._adopt_convo_settings(born=False)
+
+    assert a._active_tool_profile == "interactive"

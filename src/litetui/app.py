@@ -1217,7 +1217,7 @@ class LiteTUI(App):
         #: Host authority for the turn currently consuming tools. Human turns
         #: start from settings; cron/inbox turns explicitly replace it with a
         #: narrower profile. The model never writes this field.
-        self._active_tool_profile = self.settings.tool_policy_profile
+        self._active_tool_profile = self.chosen_tool_profile
         # T507-T1: CLI overrides, applied in on_mount after _connect.
         if self._cli_tool_profile:
             from litetui import tool_policy
@@ -2722,6 +2722,10 @@ class LiteTUI(App):
             return False
         self.settings.tool_policy_profile = profile
         self._active_tool_profile = profile
+        # 🔴 THE ONE PLACE A PROFILE IS CHOSEN (T695), so the one place it is
+        # remembered per conversation. The other eight writers of
+        # `_active_tool_profile` are transient — see `chosen_tool_profile`.
+        self._remember_for_this_convo("tool_policy_profile", profile)
         try:
             settings_mod.save(self.settings)
         except OSError:
@@ -2797,6 +2801,36 @@ class LiteTUI(App):
         if getattr(getattr(self, "_backend", None), "name", None) == "codex":
             self._remember_for_this_convo("reasoning_effort", value)
 
+    @property
+    def chosen_tool_profile(self) -> str:
+        """The authority this CONVERSATION was set to, else the global default.
+
+        🔴 NOT A PROPERTY OVER `_active_tool_profile`, AND THE DISTINCTION IS
+        THE WHOLE CARD (T695). `_active_tool_profile` is what `_execute_tool`
+        reads for the turn in flight, and most of what writes it is TRANSIENT:
+        inbox mail degrades through `unattended()`, a cron or loop fire pins
+        AUTONOMOUS, a goal loop restores its own, and the flush re-stamps
+        whatever a queued item carried. Persisting any of those would record a
+        temporary elevation as the conversation's standing choice — a
+        scheduled job would quietly make the chat autonomous for good.
+
+        Exactly one act is a CHOICE: `set_tool_profile` (shift+tab and the
+        wire). So the choice is what gets remembered, and this is the source
+        the two non-transient reads consult — `__init__` and the human-turn
+        path. `_active_tool_profile` itself, and everything that reads it,
+        are untouched by this card.
+
+        ⚠️ `getattr` ON BOTH, because `__init__` reads this before
+        `_convo_settings` exists and before `settings` is necessarily set on a
+        test double. A property that participates in `__init__` cannot assume
+        the rest of `__init__` has run — that cost 20 red arms in T691.
+        """
+        cs = getattr(self, "_convo_settings", None)
+        settings = getattr(self, "settings", None)
+        if cs is not None:
+            return convo_settings_mod.resolved(cs, settings, "tool_policy_profile")
+        return getattr(settings, "tool_policy_profile", tool_policy.INTERACTIVE)
+
     def _remember_for_this_convo(self, field: str, value) -> None:
         """Write one field through to `.convos/<id>/settings.json`.
 
@@ -2810,8 +2844,14 @@ class LiteTUI(App):
         full disk must not take down the switch the user just made; the choice
         is already live in memory, and the file is the part that can be retried.
         """
-        cs = self._convo_settings
-        if cs is None or self.convo_dir is None:
+        # ⚠️ `getattr`, NOT A BARE READ (T695). This already tolerates
+        # `_convo_settings is None`; tolerating it being ABSENT is the same
+        # rule, and the new caller is what exposed the gap — `set_tool_profile`
+        # is reachable from an app built without the full `__init__` (the
+        # `ready` payload arms construct one that way), where the property
+        # setters that used to be the only callers never ran.
+        cs = getattr(self, "_convo_settings", None)
+        if cs is None or getattr(self, "convo_dir", None) is None:
             return
         if getattr(cs, field, None) == value:
             return
@@ -2892,6 +2932,14 @@ class LiteTUI(App):
         level = convo_settings_mod.resolved(cs, self.settings, "thinking_level")
         self._thinking_level = None if level in (None, "off") else level
         self._adopt_convo_backend(cs)
+        # 🔴 `--tool-profile` OUTRANKS THE REMEMBERED CHOICE AND NEVER BECOMES
+        # IT (T695, Sentinel's ruling). An explicit invocation beats a stored
+        # default — but a flag that wrote itself into the conversation file
+        # would be the opposite of explicit: it would outlive the invocation
+        # that asked for it and keep applying to runs that did not. So the flag
+        # wins in MEMORY and the file is left saying whatever the human chose.
+        if not getattr(self, "_cli_tool_profile", None):
+            self._active_tool_profile = self.chosen_tool_profile
         # The backend-specific load settings this conversation last used. They
         # go back into the GLOBAL per-model map because that is what the
         # backends read at load time; the conversation owns the VALUE, the map
@@ -4823,7 +4871,7 @@ class LiteTUI(App):
             content = text
 
         self.pending_image = None
-        profile = self.settings.tool_policy_profile
+        profile = self.chosen_tool_profile
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
