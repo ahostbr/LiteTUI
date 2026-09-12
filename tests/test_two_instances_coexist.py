@@ -176,3 +176,46 @@ def test_a_seat_does_not_persist_a_name_it_was_refused(tmp_path: Path) -> None:
         "the file still records the name the USER chose; the second instance "
         "neither claimed it nor erased it"
     )
+
+
+def test_a_model_switch_and_a_think_level_change_both_persist(tmp_path: Path) -> None:
+    """The two knobs Ryan named, changed in different instances (T688 amendment).
+
+    RUNTIME is already per instance — `settings_mod.load()` runs once per app
+    (app.py:1140) and each holds its own `backend` and current model. What
+    collided was PERSISTENCE: `model_switch.py:116` and `:828` both call
+    `settings_mod.save(s)` after a model switch and after llama load settings,
+    and `:906` writes the reasoning-effort override. Each of those wrote the
+    whole dataclass, so whichever instance switched model last also published
+    its stale think level.
+    """
+    st.save(st.Settings(), tmp_path)
+    switcher = st.load(tmp_path)
+    thinker = st.load(tmp_path)
+
+    # A switches model and pins it, the way model_switch.py does.
+    switcher.default_model = "qwen/qwen3.8-27b"
+    switcher.pin_default_model = True
+    st.save(switcher, tmp_path)
+
+    # B, open all along, raises its think level.
+    thinker.thinking_level = "xhigh"
+    st.save(thinker, tmp_path)
+
+    on_disk = _read(tmp_path)
+    assert on_disk["thinking_level"] == "xhigh", "B's think level"
+    assert on_disk["default_model"] == "qwen/qwen3.8-27b", "A's model survived B's save"
+    assert on_disk["pin_default_model"] is True, "...and so did the pin beside it"
+
+    # And the reverse order, because "last writer wins" is order-dependent and
+    # one ordering passing proves nothing about the other.
+    switcher2 = st.load(tmp_path)
+    thinker2 = st.load(tmp_path)
+    thinker2.thinking_level = "high"
+    st.save(thinker2, tmp_path)
+    switcher2.default_model = "gemma-3-4b-it.Q4_K_M"
+    st.save(switcher2, tmp_path)
+
+    on_disk = _read(tmp_path)
+    assert on_disk["thinking_level"] == "high"
+    assert on_disk["default_model"] == "gemma-3-4b-it.Q4_K_M"

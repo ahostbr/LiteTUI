@@ -31,6 +31,7 @@ from litetui import ttyguard
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from litetui import router_record
 from litetui import tool_schemas
 
 INBOX_ROOT = Path.home() / ".liteharness" / "inbox"
@@ -498,6 +499,46 @@ HARNESS_TOOL_SPEC = tool_schemas.load("harness")
 
 
 AGENTS_DIR = Path.home() / ".liteharness" / "agents"
+
+
+def other_live_litetui(self_id: str | None = None) -> str | None:
+    """The NAME of another live LiteTUI, or None when this is the only one.
+
+    🔴 THE REGISTRY, NOT A PROCESS SCAN. Ryan's ruling (a-62edbbe0): two
+    instances SHARE a model server and run in parallel, and the only thing he
+    wants guarded is a load that puts a SECOND set of weights in VRAM. So the
+    question is not "is another litetui.exe running" — LiteSuite's headless
+    children are LiteTUI too, they load models, and they are not that image.
+    A registry row with `cli == "litetui"` is every one of them.
+
+    ⚠️ LIVENESS IS `session_pid`, AND AN UNREADABLE ROW COUNTS AS ALIVE. A stale
+    file left by a crash must not raise a modal forever; an ELEVATED sibling we
+    cannot open must. `pid_is_live` already makes that call the safe way, which
+    is why it was extracted rather than re-implemented here.
+
+    ⬜ NOT CACHED ACROSS CALLS, ON PURPOSE. The answer changes when the user
+    opens or closes a window, and this runs once per model load — a rate of
+    "when a human clicks something". A cache would be the one thing capable of
+    telling them nobody else is running while somebody is.
+    """
+    if not AGENTS_DIR.is_dir():
+        return None
+    for f in sorted(AGENTS_DIR.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("cli") != "litetui":
+            continue
+        aid = data.get("agent_id") or f.stem
+        if self_id and aid == self_id:
+            continue
+        pid = data.get("session_pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            continue
+        if router_record.pid_is_live(pid):
+            return str(data.get("name") or aid[:8])
+    return None
 
 
 def resolve_agent(token: str) -> tuple[str | None, str]:
