@@ -2554,6 +2554,14 @@ class LiteTUI(App):
 
         log = self.query_one("#chat-log")
         log.remove_children()
+        # 🔴 THE LOG IS NEW, SO THE ANCHOR IS MEANINGLESS (T706). `_scroll_down`
+        # is gated on the follow check now, and the anchor it compares against
+        # is a scroll_y from the conversation being replaced. A stale anchor of
+        # 500 against a rebuilt log sitting at 0 reads as "the reader scrolled
+        # up", so the scroll below would be REFUSED and the conversation would
+        # open at the top. `None` is already defined as "nothing scrolled yet,
+        # trivially following", which is the truth about a log just emptied.
+        self._follow_anchor = None
         users = assistants = tools = 0
         for m in msgs:
             role = m.get("role")
@@ -3890,6 +3898,7 @@ class LiteTUI(App):
         was a record of something the model can no longer see.
         """
         self.query_one("#chat-log").remove_children()
+        self._follow_anchor = None    # see _resume: a rebuilt log has no anchor
         if note:
             self._system(note)
 
@@ -4312,50 +4321,58 @@ class LiteTUI(App):
             # over-eager scroll is a visual nit; a dead autoscroll is this bug.
             return True
 
-    def _scroll_down(self, *, only_if_following: bool = False) -> None:
-        """Scroll the conversation log to the bottom.
+    def _scroll_down(self, *, reader_acted: bool = False) -> None:
+        """Scroll the conversation log to the bottom — IF THE READER IS FOLLOWING.
 
-        Returns immediately when the `autoscroll` setting is off. That switch is
-        about the STREAM: discrete events still scroll, because those are the
-        user's own action and jumping to the bottom is what they asked for.
+        🔴 FOLLOW IS A LOCK THE READER OWNS, NOT A DEFAULT THE APP APPLIES.
+        Ryan, 2026-09-12, watching a turn with tool calls streaming: *"autoscroll
+        is always on... it should only turn on when the user scrolls to the
+        bottom and then lock. if i start scrolling up on my own right now it
+        drags me back down NO MATTER WHAT."*
 
-        `only_if_following` is for the STREAMING path. An unconditional
-        scroll_end during a long thinking trace yanks the viewport away from a
-        reader who deliberately scrolled up -- worse than the missing autoscroll
-        it would be fixing. During a stream we follow the tail only when the
-        reader was already at the tail.
+        "No matter what" is the clause that removed the old design. This used to
+        take `only_if_following`, and TWELVE of seventeen call sites passed
+        nothing: every tool card, tool result, system line, assistant bubble,
+        compact render and resume scrolled unconditionally. The docstring
+        defended that as "the user's own action" — true of a human pressing
+        send, and false of everything a turn mounts on its own, which is
+        precisely what drags a reader who is trying to read.
 
-        Discrete events (a new bubble, a tool call, the final render, AND a new
-        thinking block appearing) still scroll unconditionally: those are the
-        user's own action or the start/end of a turn, where jumping to the
-        bottom is what they want.
+        ⚠️ AND A BARE CALL DID NOT ONLY DRAG, IT RE-ARMED. The anchor is written
+        after every successful scroll, so one unconditional scroll also told
+        every later follow check that the reader was at the tail. A single tool
+        card poisoned the lock for the rest of the turn, which is why the stream
+        path looked like it was respecting the reader and did not.
 
-        A NEW THINKING BLOCK WAS THE ONE MISSING FROM THAT LIST, and it read as
-        "the log only moves once the answer arrives". Mounting the assistant
-        bubble plus the block grows the log by more than 2 lines in a single
-        frame, so the reader was judged to have scrolled up -- by the app's OWN
-        newly mounted content -- and following was refused for the whole turn.
-        The guard written to protect a reader who scrolled up was firing on
-        content nobody had scrolled away from.
+        ⬜ `reader_acted` IS THE ONLY WAY PAST, and it is spelled at the call
+        site so a reviewer can see who claims it. Today that is `_submit_text`
+        alone — a person pressing send is at the bottom by their own choice, and
+        it RE-ENGAGES the lock. It is deliberately not `_user_bubble`, which
+        also mounts bubbles for cron fires, inbox mail and goal-loop turns.
 
-        That is now handled where it belongs, in _still_following: the check no
-        longer asks "are we at the bottom" (which content growth falsifies) but
-        "has the reader moved away from where WE last scrolled" (which only a
-        human can do). Both fixes were needed -- deferring the mount-time scroll
-        until after measurement, AND anchoring the follow test -- and shipping
-        only the first one left the bug looking untouched.
+        ⬜ RE-LOCKING NEEDS NO NEW MACHINERY, and no at-bottom geometry check —
+        reintroducing one is what made the three thinking-block arms flaky.
+        `_still_following` already compares scroll_y against where WE last
+        scrolled, and content growth raises max_scroll_y without moving
+        scroll_y. So a reader who returns to the bottom is past the anchor again
+        and following resumes on its own, with nothing to observe or subscribe
+        to.
         """
-        # The setting gates the STREAM path only. `only_if_following` is what the
-        # stream passes, so guarding on it keeps discrete events (new bubble,
-        # tool call, final render) scrolling as before.
-        if only_if_following and not self.settings.autoscroll:
-            return
         log = self.query_one("#chat-log")
-        if only_if_following and not self._still_following(log):
-            return
+        if not reader_acted:
+            # The setting is the master switch for FOLLOWING (Ryan item 4). It
+            # used to gate the stream only, so with autoscroll off a tool card
+            # still jumped — the same complaint arriving through the setting
+            # instead of through the scroll position.
+            if not self.settings.autoscroll:
+                return
+            if not self._still_following(log):
+                return
         log.scroll_end(animate=False)
-        # Remember where we put it. This is the whole fix: the next follow check
-        # compares against THIS, not against a bottom that keeps moving away.
+        # Remember where we put it. The next follow check compares against THIS,
+        # not against a bottom that keeps moving away. Reached only when we
+        # actually scrolled: a REFUSED scroll must leave the anchor alone, or
+        # the refusal would re-arm the very lock it just honoured.
         self._follow_anchor = log.scroll_y
 
     # ── Image handling ───────────────────────────────────────────
@@ -4962,6 +4979,10 @@ class LiteTUI(App):
             # the tool_call_id pairing. The message goes to the FRONT so the
             # flush sends it before anything queued behind it.
             self._user_bubble(text, has_image)
+            # Also a prompt submit: the reader pressed send, their message is
+            # queued to go next, and the bubble they just made is worth showing
+            # them. Same clause as the normal path below (T706).
+            self._scroll_down(reader_acted=True)
             self._pending_input.insert(
                 0, {"content": content, "text": text, "tool_profile": profile, "source": "rpc" if source == "rpc" else "interrupted"}
             )
@@ -4969,6 +4990,10 @@ class LiteTUI(App):
             self.notify("Interrupting — your message sends next", timeout=3)
             return
         self._user_bubble(text, has_image)
+        # The reader pressed send: their own action, at the bottom by their own
+        # choice. The one call that bypasses the follow check, and it RE-ENGAGES
+        # the lock for the turn that follows (T706).
+        self._scroll_down(reader_acted=True)
         hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": source})
 
     def _headless_model_decision(self) -> tuple[str, str | None, str]:
@@ -5325,7 +5350,7 @@ class LiteTUI(App):
                         # branch nor the answer branch below called it, so the
                         # log only moved at the final render -- which is why it
                         # read as "only scrolls when the message comes through".
-                        self._scroll_down(only_if_following=True)
+                        self._scroll_down()
                     if delta.content:
                         rate = self._tps.tick()
                         if rate is not None:
@@ -5336,7 +5361,7 @@ class LiteTUI(App):
                         text_full += delta.content
                         self._rpc_emit({"type": "text_delta", "text": delta.content})
                         widget.body.content = Text(text_full + " \u258c")
-                        self._scroll_down(only_if_following=True)
+                        self._scroll_down()
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
                         # chunk is already in hand, and the dialog promises that
@@ -5919,7 +5944,7 @@ class LiteTUI(App):
                     )
                     if token:
                         card.think(token)
-                        self._scroll_down(only_if_following=True)
+                        self._scroll_down()
                     if delta.content:
                         card.thinking_done()
                         text_full += delta.content
@@ -5928,7 +5953,7 @@ class LiteTUI(App):
                             f"round {round_no} \u00b7 summary "
                             f"{len(text_full):,} chars"
                         )
-                        self._scroll_down(only_if_following=True)
+                        self._scroll_down()
                     for tc in (getattr(delta, "tool_calls", None) or []):
                         card.thinking_done()
                         idx, named_now, argued_now = TurnEngine.accumulate_tool_call(
@@ -5995,7 +6020,7 @@ class LiteTUI(App):
                         "name": fname,
                         "content": str(result),
                     })
-                self._scroll_down(only_if_following=True)
+                self._scroll_down()
                 if self._stop_requested:
                     self._turn_abandoned = True
                     card.fail("stopped — conversation unchanged")

@@ -121,7 +121,7 @@ async def _fill_and_stream(a, pilot, *, scroll_up_by: int = 0):
     # The burst: this is what takes the block past the 10-row cap.
     for i in range(40):
         block.append(f"a line of reasoning, number {i}\n")
-        a._scroll_down(only_if_following=True)
+        a._scroll_down()
         await pilot.pause()
 
     return log
