@@ -8,13 +8,37 @@ from litetui.app import LiteTUI
 from litetui.hooks_screen import HooksEditor, HooksScreen
 
 
-def app_fixture():
-    app = LiteTUI()
-    app._connect = lambda: None
-    app._fetch_ctx_window = lambda: None
-    app.jobs[:] = []
-    app.settings.tool_policy_profile = "autonomous"
-    return app
+@pytest.fixture
+def app_fixture(monkeypatch):
+    # These arms own editor workers, not fleet/scheduler monitors. Keep the
+    # actual hook lifecycle and Test-script workers, and prove they terminate.
+    monkeypatch.setattr("litetui.cron.monitor", lambda app: None)
+    created = []
+
+    def build():
+        app = LiteTUI()
+        app._connect = lambda: None
+        app._fetch_ctx_window = lambda: None
+        app._inbox_monitor = lambda: None
+        app.jobs[:] = []
+        app.settings.tool_policy_profile = "autonomous"
+        started = []
+        run_worker = app.run_worker
+
+        def track(*args, **kwargs):
+            worker = run_worker(*args, **kwargs)
+            started.append(worker)
+            return worker
+
+        app.run_worker = track
+        created.append((app, started))
+        return app
+
+    yield build
+    for app, started in created:
+        assert not app.workers, "a Hooks UI app retained workers after run_test"
+        assert all(worker.is_finished for worker in started), "a Hooks UI worker outlived its app"
+        assert not {worker.group for worker in started} & {"inbox", "cron"}
 
 
 async def click(pilot, app, id):
@@ -26,7 +50,7 @@ async def click(pilot, app, id):
 
 
 @pytest.mark.asyncio
-async def test_author_save_validate_test_and_reopen(tmp_path):
+async def test_author_save_validate_test_and_reopen(tmp_path, app_fixture):
     app = app_fixture()
     async with app.run_test(size=(120, 50)) as pilot:
         app.push_screen(HooksScreen())
@@ -63,7 +87,7 @@ async def test_author_save_validate_test_and_reopen(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_settings_tab_and_slash_command_share_editor():
+async def test_settings_tab_and_slash_command_share_editor(app_fixture):
     from litetui.settings_screen import SettingsScreen
     app = app_fixture()
     async with app.run_test(size=(120, 50)) as pilot:
@@ -78,7 +102,7 @@ async def test_settings_tab_and_slash_command_share_editor():
 
 
 @pytest.mark.asyncio
-async def test_disabled_project_override_and_delete_reveal_global():
+async def test_disabled_project_override_and_delete_reveal_global(app_fixture):
     from litetui.lifecycle_hooks import Hook
     app = app_fixture()
     hook = Hook.parse({"id": "inherited", "events": ["tool_before"], "executable": "python"})
@@ -100,7 +124,7 @@ async def test_disabled_project_override_and_delete_reveal_global():
 
 
 @pytest.mark.asyncio
-async def test_malformed_file_can_be_repaired_in_editor():
+async def test_malformed_file_can_be_repaired_in_editor(app_fixture):
     app = app_fixture()
     app.hook_config.project_path.write_text("{broken")
     async with app.run_test(size=(120, 50)) as pilot:
@@ -116,7 +140,7 @@ async def test_malformed_file_can_be_repaired_in_editor():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("settings_host", [False, True])
 @pytest.mark.parametrize("broken", [False, True])
-async def test_swap_preserves_unsaved_hook_state_and_disk_baseline(settings_host, broken):
+async def test_swap_preserves_unsaved_hook_state_and_disk_baseline(settings_host, broken, app_fixture):
     from functools import partial
 
     from litetui.hooks_screen import HooksBody
@@ -163,3 +187,15 @@ async def test_swap_preserves_unsaved_hook_state_and_disk_baseline(settings_host
         assert app.hook_config.global_path.read_text(encoding="utf-8") == "{changed externally"
         assert str(editor.query_one("#hook-error", Static).render())
         ctrl.resolve(None)
+
+
+@pytest.mark.asyncio
+async def test_theme_round_trip_after_hooks_editor_in_the_same_process(tmp_path, app_fixture):
+    from test_theme_extra_tokens import (
+        test_footer_colours_round_trip_and_preserve_warnings,
+    )
+
+    # Exercise actual author/save/Test/reopen and then the complete existing
+    # theme acceptance arm, with all its CSS/Rich/persistence assertions intact.
+    await test_author_save_validate_test_and_reopen(tmp_path, app_fixture)
+    await test_footer_colours_round_trip_and_preserve_warnings(tmp_path)

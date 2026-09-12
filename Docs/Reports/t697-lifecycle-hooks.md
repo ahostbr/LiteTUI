@@ -1,6 +1,6 @@
 # T697 lifecycle hooks implementation evidence
 
-Owner: RustAxis (`01a096ad-0296-7c82-94a9-4f596dfb57b2`), worker. Branch: `codex/litetui-lifecycle-hooks`. Worktree: `C:/Projects/LiteTUI/.worktrees/codex-lifecycle-hooks`. Current base: `881ed0d` (includes T698, T699, T700); original validation below is historical. Sentinel owns review and merging.
+Owner: RustAxis (`01a096ad-0296-7c82-94a9-4f596dfb57b2`), worker. Branch: `codex/litetui-lifecycle-hooks`. Worktree: `C:/Projects/LiteTUI/.worktrees/codex-lifecycle-hooks`. Current base: `39a47c4` (includes T702); original validation below is historical. Sentinel owns review and merging.
 
 Specification: `Docs/Plans/litetui-lifecycle-hooks.md`. User guide: `Docs/lifecycle-hooks.md`.
 
@@ -140,3 +140,57 @@ The six expected failures are existing dialog-geometry cases:
 - All existing assertions in the returned policy, compaction, RPC and swap tests remain. The tab count became an exact ordered identity assertion. No expected-failure or skip marker was added.
 
 Sentinel's integration review is still required. This worker has not merged the branch.
+
+## Third review: UI worker isolation on the project runtime
+
+Sentinel's ordered seven-file run exposed a later theme/CSS failure and, in other file subsets, a later dialog swap failure. This seat had validated with the isolated uv environment's Python **3.14.0**; Ryan's main checkout uses Python **3.11.9**. Both environments contain Textual 8.1.0, pytest 9.1.1, pytest-asyncio 1.4.0 and Rich 14.3.3. The final checks in this section use **3.11.9** against this worktree's explicit source path; main's source and environment were not modified.
+
+Before changing code, this seat measured:
+- Exact seven-file order under Python 3.14: **125 passed in 72.08s**.
+- Same order under Python 3.11: **124 passed, 1 failed in 90.52s**. The failure was `_inbox_monitor` waking after its two-second startup delay and calling `register` on the theme test's display-only `SimpleNamespace` seat.
+- Drop `test_hooks_ui.py`, Python 3.11: **117 passed in 66.84s**.
+- Drop `test_hook_boundaries.py`, Python 3.11: **105 passed in 86.64s**. A failure-only CSS probe was enabled for the two bisection runs.
+
+Evidence boundary: the theme test itself assigns that `SimpleNamespace`; the hooks UI tests never do. This seat did not reproduce a mutation of a shared theme cache or prove that a hooks app acquired another app's seat. The reproducible worker name is `_inbox_monitor`, group `inbox`. The correction removes unrelated monitor scheduling from the UI fixture and tests its lifetime directly, rather than clearing an unproven cache.
+
+### Correction and assertions
+
+`tests/test_hooks_ui.py::app_fixture` is now a tracked pytest factory. Its apps do not start the inbox monitor; the fixture temporarily suppresses the cron monitor as well. The existing connection stubs remain. Actual lifecycle hooks and explicit Test-script workers still run. After **every** hooks UI arm, teardown asserts that each created app's worker manager is empty, every captured worker has finished, and no inbox or cron worker was submitted. No cleanup cancellation is inserted before those assertions, so they cannot make an escaped worker appear clean.
+
+`test_theme_round_trip_after_hooks_editor_in_the_same_process` executes the real hook author/save/Test/reopen arm, then the entire existing footer theme round-trip in the same process. The existing CSS, Rich, persistence, warning-colour and re-edit assertions are reused unchanged.
+
+Separately, `tests/test_theme_extra_tokens.py::make_app` suppresses its own inbox monitor: the theme test's display-only fake seat cannot answer fleet registration. This is neighbour-test hardening, not evidence by itself that hooks UI state is isolated. Sentinel required a run with this neighbouring stub removed; that control is recorded below.
+
+The seven-file order is:
+```text
+tests/test_hooks_ui.py
+tests/test_hook_boundaries.py
+tests/test_lifecycle_hooks.py
+tests/test_settings.py
+tests/test_settings_live.py
+tests/test_theme_extra_tokens.py
+tests/test_swap_control_is_wired.py
+```
+
+With both fixture changes and the new combined arm: **126 passed in 94.74s** on Python 3.11. This run included the diagnostic probe; the required stub-removed control and final 49-file run do not.
+
+The required **neighbour-stub-removed** control used the unmodified `test_theme_extra_tokens.py` (its git diff was empty), no diagnostic plugin, and the same seven-file order on Python 3.11: **125 passed, 1 failed in 93.52s**. The theme round-trip and all hooks UI teardown checks passed. The one failure was `test_swap_control_is_wired.py::test_pressing_the_control_swaps_in_a_sidebar[model_config]`: Textual dispatched a Select mount after its `SelectOverlay` children had been pruned. The test waits for the controller's style to change, which precedes completion of the replacement view's mount.
+
+Sentinel explicitly ruled this a separate shared dialog mount/teardown race and assigned **T704 to SilverBolt**. T697 makes no `side_panel.py` or swap-test changes. The theme helper stub was restored after the control. Neither the failed control nor the runtime mismatch is hidden by a rerun-until-green.
+
+The final derived list remains the same **49 files**, recorded at `artifacts/t697/review-tests-list-py311.txt`; its comparison with the previous exact list is empty. The final runner is:
+
+```powershell
+$env:PYTHONUTF8 = "1"
+$env:PYTHONPATH = "C:\Projects\LiteTUI\.worktrees\codex-lifecycle-hooks\src"
+$hooksReviewFiles = @(Get-Content artifacts/t697/review-tests-list-py311.txt)
+C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest @hooksReviewFiles -q --tb=short --junitxml=artifacts/t697/final-py311.xml
+```
+
+### Final Python 3.11 result
+
+**736 passed, 6 xfailed, 1 failed in 292.62 seconds**, across the named 49 files. This run is **not green**. Its sole failure is the separately assigned **T704** mount/teardown race in `test_swap_control_is_wired.py::test_pressing_the_control_swaps_in_a_sidebar[job]`: `NoMatches: No nodes match SelectOverlay on Select(id='job-preset')` during `_on_mount`. This is the same exception path as the model-config control, on the job body's Select. All hooks UI worker-teardown assertions and both the combined and standalone theme round-trip arms passed. No repeat was run to seek a green result. Full trace and JUnit: `artifacts/t697/final-py311.txt` and `artifacts/t697/final-py311.xml`.
+
+The six xfails remain the existing dialog-geometry cases listed earlier. No xfail or skip was added. Final Ruff delta on Python 3.11 compares all **18** changed Python files against `39a47c4`: **114 baseline / 114 current, zero added diagnostics** (`artifacts/t697/ruff-baseline-py311.json`). The changed test files pass Ruff; the three hooks modules pass mypy; the tool-door gate still reports one door and two callers.
+
+Final changes for this review are confined to the hooks UI test factory and its regression arm, the theme test's monitor stub, and this report. T704 remains assigned to SilverBolt. Sentinel owns the integration gate and merge.
