@@ -257,7 +257,12 @@ THEME_EXTRA_TOKENS = ("thinking-text", "thinking-box", "tool-text")
 
 #: What the /settings creator renders a row for. The form loops this, so a
 #: token added here appears in the editor and the picker with no UI change.
-THEME_FORM_TOKENS = THEME_TOKENS + THEME_EXTRA_TOKENS
+# Textual already defines these variables and derives them from each theme.
+# Expose the native names rather than inventing a second footer palette. Unlike
+# our extras, OMIT absent overrides: old themes must retain their derived strip
+# background and the footer's existing semantic/neutral text colours.
+THEME_FOOTER_TOKENS = ("footer-foreground", "footer-background")
+THEME_FORM_TOKENS = THEME_TOKENS + THEME_EXTRA_TOKENS + THEME_FOOTER_TOKENS
 
 
 def theme_from_tokens(name: str, tokens: dict) -> Theme:
@@ -287,5 +292,10 @@ def theme_from_tokens(name: str, tokens: dict) -> Theme:
         v = str(tokens.get(tok, "")).strip()
         ok = len(v) == 7 and v[0] == "#" and all(c in _HEX for c in v[1:])
         variables[tok] = v if ok else fallback[tok]
+
+    for tok in THEME_FOOTER_TOKENS:
+        v = str(tokens.get(tok, "")).strip()
+        if len(v) == 7 and v[0] == "#" and all(c in _HEX for c in v[1:]):
+            variables[tok] = v
 
     return Theme(name=name, dark=True, variables=variables, **clean)

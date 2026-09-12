@@ -739,7 +739,7 @@ class SettingsBody(Widget):
     # ── Actions ──────────────────────────────────────────────────────────────
 
     def _custom_theme_rows(self):
-        """Name + the 10 token fields, prefilled from the ACTIVE theme."""
+        """Name + all editable theme tokens, prefilled from the ACTIVE theme."""
         from litetui import themes as themes_mod
         try:
             resolved = self.app.current_theme.to_color_system().generate()
@@ -752,9 +752,13 @@ class SettingsBody(Widget):
             extras = dict(self.app.current_theme.variables or {})
         except Exception:
             extras = {}
+        token_labels = {
+            "footer-foreground": "Context footer text",
+            "footer-background": "Context footer background",
+        }
         for tok in themes_mod.THEME_FORM_TOKENS:
             with Vertical(classes="set-row"):
-                yield Label(tok, classes="set-label")
+                yield Label(token_labels.get(tok, tok), classes="set-label")
                 # The FIELD is the trigger: clicking it opens the picker
                 # (see on_click). The first version put a "pick" Button beside
                 # a 100%-width Input in a Horizontal — the button laid out
