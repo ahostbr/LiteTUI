@@ -78,3 +78,96 @@ config lists only `gpt-5.6-sol`.
 ```
 
 🔴 Not verified by Ryan.
+
+---
+
+# Run 2 — the floor is cleared, and the metric the card rests on does not exist here
+
+Run: `PYTHONPATH=src python scripts/t625_cache_cost_probe.py --model gpt-5.6-luna --i-am-spending-quota`
+2026-09-12, after `71029b4` (real tool catalogue + free `--fake` arm). 12 requests.
+Tool array: **16 real schemas from `src/litetui/schemas/`, 22,246 bytes**, with `read.json`
+held back as the discovered one.
+
+## ✅ The floor IS cleared — run 1's explanation was right
+
+Prompts went from run 1's 69–258 tokens to **4,209** on turn 1, and `cached_tokens` reached
+**3,584** — twice. So the cache does engage at this size, and run 1's zero really was "the
+prompt was too small", not "the discovery is free".
+
+## 🔴 But `cache_write_tokens` is 0 on all 12 turns, in both arms
+
+`extra_write_tokens_caused_by_one_discovery` is the number this card was built to produce, and
+it is **total `cache_write_tokens`, treated minus control**. This endpoint never populates that
+field — not once, at any prompt size, in either arm, including the two turns where
+`cached_tokens` was plainly non-zero.
+
+> **THE CARD'S CHOSEN METRIC IS NOT REPORTED BY THIS PROVIDER.** That is not a null result and
+> it is not a bug in the probe: `_usage` reads `input_tokens_details`, and the field simply is
+> not there. No amount of further spending on this endpoint will produce it.
+
+## ⚠️ And caching is INTERMITTENT, which is its own finding
+
+`cached_tokens` was non-zero on exactly **2 of 12 turns** — control turn 5 and treated turn 6 —
+and 0 on the other ten, at prompts that never dropped below 4,209 tokens.
+
+| arm | turn | prompt | cached |
+| --- | --- | --- | --- |
+| control | 5 | 4,293 | 3,584 |
+| treated | 6 | 4,438 | 3,584 |
+
+A prefix that is eligible for caching is not therefore cached. Any future measurement here has
+to treat a cache hit as a **probabilistic event** and take enough samples to estimate a rate —
+a 12-turn run cannot distinguish "the discovery evicted the prefix" from "this turn happened
+not to hit", and that is exactly the confusion a single-run verdict would have published.
+
+## 🔴 The control assertion failed, and it caught a real flaw in my harness
+
+`arms_comparable_before_discovery: false`. The arms diverge before the discovery — by **one to
+two tokens**:
+
+| turn | control | treated |
+| --- | --- | --- |
+| 1 | 4,209 | 4,209 |
+| 2 | 4,230 | 4,229 |
+| 3 | 4,251 | 4,249 |
+
+Cause: the probe appends **the model's real reply** to the history, and the reply is not
+deterministic. Its length differs between arms, so from turn 2 the prompts differ by that
+difference — in a run whose entire premise is that the arms are identical until the discovery.
+
+> **THE ARMS WERE NOT IDENTICAL, AND WITHOUT THIS ASSERTION THE TABLE WOULD HAVE LOOKED FINE.**
+> A one-token drift is invisible next to a 4,209-token prompt and would never have been
+> spotted by eye. This is the check earning its place a second time.
+
+The fix is to append a **fixed** assistant turn instead of the real reply: the reply's content
+is not under test, and letting it into the prompt makes the model a variable in its own
+experiment. Not applied yet — it changes what is measured and the next run costs quota.
+
+## Where this leaves the card
+
+- The **precondition** is confirmed twice over: a discovery permanently grows the tools array
+  (4,251 → 4,398 prompt tokens at the discovery turn, and it never comes back down).
+- The **cost in cache writes** cannot be measured on this endpoint at all, because the field is
+  never populated.
+- Answering the card as written would need a provider that reports cache writes, or a different
+  proxy for the cost (e.g. measuring `cached_tokens` *absence* after a discovery across enough
+  samples to beat the intermittency above).
+
+🔴 Not verified by Ryan. No further quota spent on my own judgement.
+
+## Raw verdict block — run 2
+
+```json
+{
+  "arms_comparable_before_discovery": false,
+  "prompt_tokens_before_discovery": [[4209, 4209], [4230, 4229], [4251, 4249]],
+  "total_cache_write_control": 0,
+  "total_cache_write_after_discovery": 0,
+  "extra_write_tokens_caused_by_one_discovery": 0,
+  "total_latency_ms_control": 17187,
+  "total_latency_ms_treated": 11989
+}
+```
+
+⚠️ The latency totals are 6 samples per arm over a network and one control turn took 7,633 ms
+on its own. Treated being *faster* here is noise, not a result.
