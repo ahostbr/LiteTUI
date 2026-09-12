@@ -12,6 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import _script_guard  # tests/ is sys.path[0] when a file is run as a script
@@ -34,10 +36,17 @@ from litetui import settings as settings_mod
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-settings-"))
 ok = []
+#: The labels that FAILED. `ok` is bools, which is all the script needed for an
+#: exit status; a pytest arm has to be able to say WHICH check failed, and a
+#: bool cannot. Recorded alongside rather than by changing `ok`, so `sum(ok)` /
+#: `all(ok)` / `len(ok)` below keep meaning exactly what they meant (T699).
+failures: list[str] = []
 
 
 def chk(label, cond):
     ok.append(bool(cond))
+    if not cond:
+        failures.append(label)
     print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
 
 
@@ -124,8 +133,27 @@ async def main():
         chk("tools_enabled came from settings",
             a.tools_enabled == a.settings.tools_enabled)
 
+
+# ── the same checks, as a pytest arm (T699) ─────────────────────────────
+#
+# 🔴 SAME DEFECT AS `test_footer.py`: a module-level `asyncio.run(main())` whose
+# `main` ended in `sys.exit`, so collection aborted the entire run. The tally
+# and the exit moved out of `main` and behind `__main__`; `main` itself is
+# unchanged and still does every check.
+#
+# ⬜ AND IT IS FASTER IN THE SUITE THAN IT IS AS A SCRIPT. The child process a
+# subprocess runner would spawn pays the ~4s MCP refusal that conftest's
+# `_never_dial_out_from_a_constructor` exists to avoid; in-process it does not.
+
+
+@pytest.mark.asyncio
+async def test_the_live_settings_wiring_holds() -> None:
+    await main()
+    assert ok, "no check ran"
+    assert failures == [], failures
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
     print(f"\n{sum(ok)}/{len(ok)} passed")
     sys.exit(0 if all(ok) else 1)
-
-
-asyncio.run(main())

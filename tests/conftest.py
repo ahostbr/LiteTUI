@@ -18,6 +18,20 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"          # the modules moved; data stays at ROOT
+
+
+# 🔴 NO `collect_ignore` HERE, AND THAT IS A MEASURED DECISION (T699).
+# `test_footer.py` and `test_settings_live.py` used to abort the whole run —
+# module-level `sys.exit` / `asyncio.run(main())` raised SystemExit during
+# collection, which pytest reports as INTERNALERROR and which kills every other
+# file in the invocation. Ignoring them was tried first and does NOT fix it:
+# `collect_ignore` covers a directory walk, not a path named on the command
+# line, and a disk-derived list is passed file by file. A
+# `pytest_ignore_collect` hook did not stop it either.
+#     The defect was the module-level side effect, so that is what moved: both
+# files now keep their checks, put the tally and the exit behind `__main__`,
+# and expose one arm each. They still run as scripts, and they finally run in
+# the suite — 48 assertions that had never executed under pytest.
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
