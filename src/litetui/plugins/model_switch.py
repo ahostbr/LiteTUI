@@ -49,29 +49,44 @@ def _row_label(app, m: str) -> str:
     return ("▸ " if m == app.model_id else "  ") + m + tag
 
 
+def switch_model(app, target: str) -> bool:
+    """Switch through the same effects as ``/model`` and the RPC host.
+
+    A host-side picker is another entrance to LiteTUI's existing control, not a
+    parallel assignment: header/context/thinking refresh and the explicit local
+    context apply must remain identical whichever surface chose the model.
+    """
+    if target not in app.available_models:
+        return False
+    if target == app.model_id:
+        return True
+    app.model_id = target
+    app._model_thinking_levels = None
+    from litetui import thinking_probe
+
+    thinking_probe.clear_cache(target)
+    app.update_header()
+    app.fetch_context_window()
+    app.system_message(f"Switched to: {app.model_id}")
+    # An explicit switch is an explicit act — the thing the no-load-on-connect
+    # rule asks for. Boot still loads nothing.
+    app.apply_context_length()
+    if app.backend.name == "lmstudio":
+        app._probe_thinking()
+    app._rpc_emit_model_state()
+    return True
+
+
 def _cmd_model(app, name: str, arg: str) -> None:
     if arg:
         # Switch by number or name
         if arg.isdigit():
             idx = int(arg) - 1
             if 0 <= idx < len(app.available_models):
-                app.model_id = app.available_models[idx]
-                app.update_header()
-                app.fetch_context_window()
-                app.system_message(f"Switched to: {app.model_id}")
-                # An explicit switch is an explicit act — the thing the
-                # no-load-on-connect rule asks for. Boot still loads
-                # nothing.
-                app.apply_context_length()
+                switch_model(app, app.available_models[idx])
             else:
                 app.system_message(f"Invalid number. Use 1-{len(app.available_models)}")
-        elif arg in app.available_models:
-            app.model_id = arg
-            app.update_header()
-            app.fetch_context_window()
-            app.system_message(f"Switched to: {app.model_id}")
-            app.apply_context_length()
-        else:
+        elif not switch_model(app, arg):
             app.system_message(f"Model not found: {arg}")
     elif not app.available_models:
         app.system_message("No models discovered — try /reconnect")
