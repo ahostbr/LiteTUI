@@ -46,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from litetui.model_transport import OAuthTransport
+from litetui.model_transport import NS, OAuthTransport
 
 TURNS = 6
 DISCOVERY_AT = 3  # 1-based turn index after which the tools array grows
@@ -56,46 +56,97 @@ STABLE_SYSTEM = (
     "Do not call tools unless asked to."
 )
 
-BASE_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "discover",
-            "description": "List the agents currently online.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
-]
+SCHEMA_DIR = Path(__file__).resolve().parent.parent / "src" / "litetui" / "schemas"
 
-#: The schema a discovery would append. Shaped like a real deferred tool rather
-#: than a stub: a tiny one would understate the invalidation, and the point is
-#: what a REAL tool_search costs.
-DISCOVERED_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "Read a file from disk and return its contents. Supports an optional "
-            "line range, a byte limit, and a choice of text or binary handling. "
-            "Paths are resolved against the workspace root unless absolute."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File to read."},
-                "start": {"type": "integer", "description": "First line, 1-based."},
-                "end": {"type": "integer", "description": "Last line, inclusive."},
-                "binary": {"type": "boolean", "description": "Return base64 instead of text."},
-            },
-            "required": ["path"],
-        },
-    },
-}
+#: The tool a discovery appends. Held back from the base set so the treated arm's
+#: growth is a REAL schema arriving, not a synthetic one bolted on.
+DISCOVERED_SCHEMA = "read.json"
+
+
+def _load_catalogue() -> tuple[list[dict], dict]:
+    """The REAL tool schemas this app ships, as the wire would carry them.
+
+    🔴 RUN 1 MEASURED NOTHING BECAUSE ITS PROMPT WAS 69-258 TOKENS. Two toy
+    tools put the whole conversation two orders of magnitude below the prompt
+    cache's minimum, so every `cached_tokens` came back 0 — and a zero from a
+    cache that never engaged is indistinguishable, in the table, from a zero
+    that means the discovery was free. The fix is not a bigger stub: a made-up
+    array of the right SIZE would still have the wrong SHAPE, and the thing
+    under test is what a real `tool_search` append does to a real prefix.
+    src/litetui/schemas/ is that prefix — 17 schemas, 29,368 bytes on disk.
+    """
+    files = sorted(SCHEMA_DIR.glob("*.json"))
+    if not files:
+        raise SystemExit(f"REFUSED: no tool schemas under {SCHEMA_DIR}")
+    base, discovered = [], None
+    for f in files:
+        spec = json.loads(f.read_text(encoding="utf-8"))
+        # The schemas are stored as the function body; the wire wants it wrapped.
+        tool = spec if spec.get("type") == "function" else {"type": "function", "function": spec}
+        if f.name == DISCOVERED_SCHEMA:
+            discovered = tool
+        else:
+            base.append(tool)
+    if discovered is None:
+        raise SystemExit(f"REFUSED: {DISCOVERED_SCHEMA} is not in {SCHEMA_DIR}")
+    return base, discovered
+
+
+BASE_TOOLS, DISCOVERED_TOOL = _load_catalogue()
 
 
 def _prompt(i: int) -> str:
     """Identical shape every turn, so prompt length is not a variable."""
     return f"Turn {i:02d}: name one primary colour."
+
+
+class FakeTransport:
+    """Runs the whole probe end to end with ZERO requests.
+
+    🔴 THIS EXISTS BECAUSE RUN 1 SPENT A REQUEST ON A ONE-LINE BUG IN THIS FILE.
+    The probe called `collect()` on a result `create()` had already collected,
+    and died on the first turn — AFTER the HTTP round trip, so the request was
+    sent and paid for and then the script fell over. The spend-guard stops an
+    ACCIDENTAL invocation; it cannot stop a DELIBERATE one that is broken, and
+    "RUNNABLE, NOT RUN" is a claim about intent rather than a measurement.
+        AN UNRUN SCRIPT IS AN UNVERIFIED SCRIPT.
+    So the paid path is now reachable only after the same code has executed
+    against this, for free, on every turn of both arms.
+
+    ⚠️ IT IS A SHAPE CHECK, NOT A SIMULATION. The numbers it returns are canned
+    and mean nothing; what it proves is that the loop, the accounting, the
+    verdict block and the table all survive a full run. A green fake arm says
+    the plumbing holds, never that the cache behaves this way.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def create(self, **kwargs):
+        self.calls += 1
+        # ⚠️ DERIVED FROM THE ARGUMENTS, NEVER FROM A COUNTER. The first cut used
+        # `self.calls`, which keeps counting across the arm boundary — so the
+        # treated arm's turn 1 was billed as turn 7 and
+        # `arms_comparable_before_discovery` came back FALSE on a run where the
+        # arms were identical by construction. A FAKE THAT FAILS THE REAL
+        # CONTROL TEACHES PEOPLE TO IGNORE THE CONTROL. `messages` grows within
+        # an arm and resets between them, which is exactly the shape wanted.
+        # Carries the seven fields `_usage` produces (T624, 741ddbd) with
+        # cached_tokens NON-ZERO — the field run 1 could not get off the floor.
+        prompt = 400 * len(kwargs.get("tools") or []) + 20 * len(kwargs.get("messages") or [])
+        details = {"cached_tokens": int(prompt * 0.9), "cache_write_tokens": 128}
+        return NS(
+            choices=[NS(message=NS(content="red", tool_calls=[]), finish_reason="stop")],
+            usage=NS(
+                prompt_tokens=prompt,
+                completion_tokens=3,
+                total_tokens=prompt + 3,
+                cached_tokens=details["cached_tokens"],
+                cache_write_tokens=details["cache_write_tokens"],
+                input_tokens_details=details,
+                usage_details={"prompt_tokens": prompt},
+            ),
+        )
 
 
 async def _one_arm(transport, model: str, *, discover_at: int | None) -> list[dict]:
@@ -195,7 +246,14 @@ def _verdict(control: list[dict], treated: list[dict]) -> dict:
 
 
 async def _main(args) -> int:
-    transport = OAuthTransport("codex")
+    transport = FakeTransport() if args.fake else OAuthTransport("codex")
+    if args.fake:
+        print("FAKE TRANSPORT — no requests will be sent.", flush=True)
+    print(
+        f"tools: {len(BASE_TOOLS)} base + 1 discovered, "
+        f"{sum(len(json.dumps(t)) for t in BASE_TOOLS)} bytes of base schema",
+        flush=True,
+    )
     print(f"control arm: {TURNS} turns, no discovery", flush=True)
     control = await _one_arm(transport, args.model, discover_at=None)
     print(f"treated arm: {TURNS} turns, one discovery after turn {DISCOVERY_AT}", flush=True)
@@ -214,12 +272,19 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", default="gpt-6-astra")
     p.add_argument(
+        "--fake",
+        action="store_true",
+        help="run end to end against a canned transport; sends nothing, costs nothing",
+    )
+    p.add_argument(
         "--i-am-spending-quota",
         action="store_true",
         help="required: this sends real requests on Ryan's ChatGPT subscription",
     )
     a = p.parse_args()
-    if not a.i_am_spending_quota:
+    # --fake spends nothing, so it is not gated. That is the point: the free path
+    # must be the easy one, or nobody exercises it before the paid one.
+    if not a.fake and not a.i_am_spending_quota:
         print(
             f"REFUSED. This probe sends {TURNS * 2} real requests to "
             "chatgpt.com/backend-api/codex/responses on Ryan's subscription.\n"
