@@ -3169,10 +3169,28 @@ class LiteTUI(App):
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
 
+        # Rich's explicit spans override CSS foreground, so a stylesheet-only
+        # editor control would save successfully and leave the readout unchanged.
+        # Only an EXPLICIT override recolours neutral text. Old themes keep
+        # their palette; authority and warning/status colours retain meaning.
+        theme = getattr(self, "current_theme", None)
+        foreground = (getattr(theme, "variables", None) or {}).get("footer-foreground")
+
+        def neutral_style(style: str) -> str:
+            if foreground:
+                return style.replace("#5c6370", foreground).replace("#7d8799", foreground)
+            return style
+
         t = Text()
-        for _, chunk in chunks:
+        for key, chunk in chunks:
+            if foreground and key != "authority":
+                chunk.style = neutral_style(str(chunk.style))
+                chunk.spans = [
+                    span._replace(style=neutral_style(str(span.style)))
+                    for span in chunk.spans
+                ]
             if t.plain:
-                t.append(sep, "#5c6370")
+                t.append(sep, foreground or "#5c6370")
             t.append(chunk)
         return t
 
@@ -5232,6 +5250,11 @@ class LiteTUI(App):
         Guarded: at construction settings may not exist yet, and a no-op
         write (same name) is skipped so booting never rewrites the file.
         """
+        # CSS repaints itself; the footer is a pre-styled Rich Text, so rebuild
+        # it on a theme switch too (including the palette's Change theme route).
+        refresh_footer = getattr(self, "_refresh_ctx_label", None)
+        if refresh_footer is not None:
+            refresh_footer()
         st = getattr(self, "settings", None)
         if st is None or st.theme_name == theme_name:
             return
@@ -5598,6 +5621,10 @@ class LiteTUI(App):
                 self.theme = new.theme_name
             except Exception:
                 self._system(f"Theme {new.theme_name!r} not found — keeping {self.theme}")
+        elif old.custom_themes.get(new.theme_name) != new.custom_themes.get(new.theme_name):
+            # Editing the active custom theme changes its variables, not its
+            # name. Re-run Textual's CSS watcher or its background stays stale.
+            self.mutate_reactive(App.theme)
         try:
             path = settings_mod.save(new)
         except OSError as e:

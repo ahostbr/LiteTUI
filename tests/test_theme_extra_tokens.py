@@ -29,12 +29,16 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from textual.widgets import Input, Label, TabbedContent
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
+from litetui import settings as settings_mod
 from litetui import themes as themes_mod
+from litetui.settings_screen import SettingsScreen
 
 
 def _settings_body(app_or_screen):
@@ -150,8 +154,9 @@ async def test_the_creator_SAVES_the_extra_rows() -> None:
     """
     from textual.app import App, ComposeResult
     from textual.widgets import Input
-    from litetui.settings_screen import SettingsScreen
+
     from litetui import settings as settings_mod
+    from litetui.settings_screen import SettingsScreen
 
     class Host(App):
         def compose(self) -> ComposeResult:
@@ -179,6 +184,8 @@ async def test_the_creator_SAVES_the_extra_rows() -> None:
             "thinking-text": "#00ff41",
             "thinking-box": "#123456",
             "tool-text": "#abcdef",
+            "footer-foreground": "#33ccff",
+            "footer-background": "#142536",
         }
         for tok, value in wanted.items():
             screen.query_one(f"#ct-{tok}", Input).value = value
@@ -190,3 +197,88 @@ async def test_the_creator_SAVES_the_extra_rows() -> None:
                 f"{tok} was typed into the creator and did not survive the save "
                 f"(got {saved.get(tok)!r})"
             )
+
+
+@pytest.mark.asyncio
+async def test_footer_colours_round_trip_and_preserve_warnings(tmp_path) -> None:
+    """Editor -> save -> CSS AND Rich, at the narrow width Ryan actually uses."""
+    legacy = themes_mod.theme_from_tokens("legacy", CORE_ONLY)
+    assert not set(themes_mod.THEME_FOOTER_TOKENS) & legacy.variables.keys()
+    invalid = themes_mod.theme_from_tokens(
+        "invalid", {**CORE_ONLY, "footer-foreground": "bad", "footer-background": "bad"}
+    )
+    assert not set(themes_mod.THEME_FOOTER_TOKENS) & invalid.variables.keys()
+
+    a = make_app()
+    a.seat = SimpleNamespace(registered=True, name="OpenBolt")
+    a.ctx_used, a.ctx_max, a.ctx_loaded = 27000, 100000, True
+    a.convo_id = "4f3a1c9d-2b7e-4a11-9c30-8e5f6d1b2a44"
+    a.thinking_level = "high"
+
+    def footer_colour(field):
+        text = a.query_one(".ctx-label").content
+        return text.get_style_at_offset(a.console, text.plain.index(field)).color.triplet.hex
+
+    async with a.run_test(size=(76, 30)) as pilot:
+        await pilot.pause()
+        a.push_screen(SettingsScreen(a.settings, models=["a-model"], mcp_servers=[]),
+                      a._on_settings_saved)
+        await pilot.pause()
+        body = _settings_body(a)
+        body.query_one(TabbedContent).active = "tab-themes"
+        await pilot.pause()
+        assert body.query_one("#ct-footer-background", Input).value.startswith("#")
+        labels = [label.content for label in body.query(Label)]
+        assert "Context footer text" in labels and "Context footer background" in labels
+        body.query_one("#ct-name", Input).value = "footer-test"
+        body.query_one("#ct-footer-foreground", Input).value = "#33ccff"
+        body.query_one("#ct-footer-background", Input).value = "#142536"
+        body.action_save()
+        await pilot.pause()
+
+        assert a.theme == "footer-test"
+        loaded = settings_mod.load(root=tmp_path)
+        assert loaded.custom_themes["footer-test"]["footer-foreground"] == "#33ccff"
+        assert loaded.custom_themes["footer-test"]["footer-background"] == "#142536"
+        for selector in (".ctx-label", ".palette-button"):
+            assert a.query_one(selector).styles.background.hex == "#142536"
+        assert footer_colour("OpenBolt") == "#33ccff"
+        assert footer_colour("27%") == "#33ccff"
+        assert footer_colour("autonomous on") == "#7aa2f7"
+        assert a.query_one(".ctx-label").content.cell_len <= 63
+
+        # The setting is a neutral text colour, never a way to hide warnings.
+        a.ctx_used = 92000
+        a._plan_mode = True
+        a._refresh_ctx_label()
+        await pilot.pause()
+        assert footer_colour("OpenBolt") == "#33ccff"
+        assert footer_colour("92%") == "#e5534b"
+        assert footer_colour("plan:on") == "#bb9af7"
+        a._active_tool_profile = m.tool_policy.INTERACTIVE
+        a.ctx_used = 75000
+        a._refresh_ctx_label()
+        await pilot.pause()
+        assert footer_colour("interactive on") == "#7d8799"
+        assert footer_colour("75%") == "#e8a33d"
+
+        # Re-editing the ACTIVE name must invalidate CSS as well as Rich text.
+        a.push_screen(SettingsScreen(a.settings, models=["a-model"], mcp_servers=[]),
+                      a._on_settings_saved)
+        await pilot.pause()
+        body = _settings_body(a)
+        assert body.query_one("#ct-footer-foreground", Input).value == "#33ccff"
+        assert body.query_one("#ct-footer-background", Input).value == "#142536"
+        body.query_one("#ct-name", Input).value = "footer-test"
+        body.query_one("#ct-footer-foreground", Input).value = "#aacc55"
+        body.query_one("#ct-footer-background", Input).value = "#263748"
+        body.action_save()
+        await pilot.pause()
+        assert footer_colour("OpenBolt") == "#aacc55"
+        assert a.query_one(".ctx-label").styles.background.hex == "#263748"
+
+        # Switching back to an old preset restores its original spans/strip.
+        a.theme = "ash"
+        await pilot.pause()
+        assert footer_colour("OpenBolt") == "#7d8799"
+        assert a.query_one(".ctx-label").styles.background.hex != "#263748"
