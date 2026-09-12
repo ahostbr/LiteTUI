@@ -48,27 +48,97 @@ ROOT = TESTS.parent
 # LITETUI_E2E=1. Both gates were verified with a control proving they can open.
 
 
-def _exits(tree: ast.AST) -> bool:
-    """Does this module actually EXIT when imported?
+#: Definitions whose bodies do NOT run at import.
+_DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
-    `raise SystemExit(...)` or a call to `sys.exit(...)`/`exit(...)` as real
-    code, anywhere in the file. Text that merely LOOKS like one — a traceback
-    quoted in a fixture, a docstring describing the hazard — is not a hazard.
+#: Calls that end or hijack the interpreter when they run at import.
+_EXITERS = {
+    ("sys", "exit"), ("os", "exit"), ("os", "_exit"),
+    ("", "exit"), ("", "quit"), ("asyncio", "run"),
+}
+
+
+def _is_main_guard(node: ast.AST) -> bool:
+    """`if __name__ == "__main__":` — the one place an exit belongs."""
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+    )
+
+
+def _flat(node: ast.AST):
+    """Every node under `node` EXCEPT the bodies of nested defs.
+
+    ⚠️ THIS IS THE SECOND HALF OF THE PRUNE, NOT THE WHOLE OF IT, AND MY OWN
+    COMMENT SAID OTHERWISE UNTIL A MUTATION PROVED IT WRONG. The comment here
+    read "THE PRUNE IS THE WHOLE RULE"; deleting this `continue` and running
+    the suite changed nothing, because `module_level_hazards` already skips a
+    top-level `def` before it ever calls this. What the earlier scan got wrong
+    (28 files flagged, 10 real — T700) was the OUTER filter, not this one.
+
+    What this covers is the narrower case the outer filter cannot see: a `def`
+    nested inside a module-level `try`, `if` or `with`, whose body also does
+    not run at import. `test_the_prune_covers_a_def_nested_in_a_module_level_
+    block` in `test_script_checks.py` is that case, added because a line no
+    test can kill is a line nobody knows is load-bearing.
     """
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Raise):
-            exc = node.exc
-            name = getattr(exc, "func", exc)
-            if isinstance(name, ast.Name) and name.id == "SystemExit":
-                return True
-        elif isinstance(node, ast.Call):
-            f = node.func
-            if isinstance(f, ast.Attribute) and f.attr == "exit":
-                if isinstance(f.value, ast.Name) and f.value.id == "sys":
-                    return True
-            elif isinstance(f, ast.Name) and f.id == "exit":
-                return True
-    return False
+    yield node
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, _DEFS):
+            continue
+        yield from _flat(child)
+
+
+def module_level_hazards(tree: ast.AST) -> list[str]:
+    """What this module does AT IMPORT that breaks pytest collection.
+
+    🔴 ONE RULE, ONE HOME (T702). `tests/test_script_checks.py` imports this
+    rather than carrying its own copy: two detectors answering the same
+    question are two answers that can disagree, and the day they do, the one
+    nobody is looking at is the one that is right. An arm in that file asserts
+    they are literally the same function.
+
+    ⬜ `if __name__ == "__main__":` IS EXEMPT, AND THAT IS THE T702 FIX. This
+    used to walk the whole tree, so a guarded exit still counted — which left
+    thirteen files filed as script-style that pytest can collect perfectly
+    well, `tests/test_ttyguard.py` among them, guarded since before any of
+    this. The comment that said it "must run as a script" was a description of
+    this blind spot, not a requirement.
+
+    ⚠️ IT COVERS `raise SystemExit(...)` TOO. `test_chrome_tool.py` carries
+    that spelling inside a fake TRACEBACK — a string literal — which is why
+    this is an AST rule and was never a substring one: the text check filed
+    that file as script-style and silently stopped running its nine
+    assertions.
+    """
+    hazards = []
+    for stmt in getattr(tree, "body", []):
+        if isinstance(stmt, _DEFS) or _is_main_guard(stmt):
+            continue
+        for node in _flat(stmt):
+            if isinstance(node, ast.Raise):
+                exc = node.exc
+                name = getattr(exc, "func", exc)
+                if isinstance(name, ast.Name) and name.id == "SystemExit":
+                    hazards.append(f"{node.lineno} raise SystemExit")
+                continue
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            attr = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            owner = getattr(getattr(func, "value", None), "id", "")
+            if (owner, attr) in _EXITERS:
+                hazards.append(f"{node.lineno} {owner + '.' if owner else ''}{attr}")
+    return hazards
+
+
+def _exits(tree: ast.AST) -> bool:
+    """Does importing this module end the interpreter or spin a loop?"""
+    return bool(module_level_hazards(tree))
 
 
 def _has_tests(tree: ast.AST) -> bool:
@@ -127,8 +197,14 @@ def classify() -> tuple[list[Path], list[Path]]:
         # TWO conditions, because either alone misclassifies a real file:
         #   * a module-level exit (either spelling) kills pytest COLLECTION and
         #     aborts the entire run with INTERNALERROR — one bad file reports
-        #     "no tests ran" for everything. test_ttyguard has BOTH an exit and
-        #     test functions, and must run as a script.
+        #     "no tests ran" for everything.
+        #     ⬜ "MODULE-LEVEL" NOW MEANS IT (T702). This used to count an exit
+        #     anywhere in the file, including under `if __name__ ==
+        #     "__main__":`, so thirteen files pytest can collect perfectly well
+        #     were filed as scripts — `test_ttyguard.py` among them, guarded
+        #     since long before this. The note that used to sit here said it
+        #     "must run as a script", which described the blind spot rather
+        #     than a requirement.
         #   * no module-level `def test_*` means pytest would collect nothing
         #     and report a silent pass covering zero assertions.
         # 🔴 THE STATEMENT, NEVER THE STRING. This was a substring check, and

@@ -100,6 +100,47 @@ def test_every_script_file_that_builds_an_app_imports_the_guard():
     )
 
 
+def _runnable_as_a_script(tree: ast.AST) -> bool:
+    """Does this file still have a `if __name__ == "__main__":` entry point?
+
+    🔴 THE SET THIS FILE RANGES OVER CHANGED, AND THE RULE DID NOT (T702).
+    These arms used to iterate `run_all.classify()`'s script half. That half is
+    now EMPTY — every file was given a `__main__` guard, so pytest can collect
+    all of them — and three arms ranging over an empty list are three arms that
+    are green because they measure nothing.
+
+        A SET THAT EMPTIES DOES NOT RETIRE THE RULE IT CARRIED.
+
+    `_script_guard` exists because running one of these files DIRECTLY skips
+    `conftest.py` entirely — autouse fixtures cannot reach a process that never
+    imports them. That is still true of every file with a `__main__` block, so
+    that is the set now. It resolves to the same four files as before, which is
+    the continuity worth having: the number below did not move.
+    """
+    return any(_is_main_guard(node) for node in tree.body)
+
+
+def _is_main_guard(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Name)
+        and node.test.left.id == "__name__"
+    )
+
+
+def _script_runnable_files() -> list[Path]:
+    out = []
+    for f in sorted(TESTS.glob("test_*.py")):
+        try:
+            tree = _tree(f)
+        except SyntaxError:
+            continue
+        if _runnable_as_a_script(tree):
+            out.append(f)
+    return out
+
+
 def test_the_guard_is_not_carried_by_files_that_do_not_need_it():
     """The reverse rule, as a NEGATIVE CONTROL on the arm above.
 
@@ -108,10 +149,9 @@ def test_the_guard_is_not_carried_by_files_that_do_not_need_it():
     state" and become decoration, which is how the next reader loses the ability
     to tell which files are dangerous by looking.
     """
-    _, scripts = run_all.classify()
     gratuitous = [
         f.name
-        for f in scripts
+        for f in _script_runnable_files()
         if imports_guard(_tree(f)) and not constructs_app(_tree(f))
     ]
     assert gratuitous == [], (
@@ -121,14 +161,37 @@ def test_the_guard_is_not_carried_by_files_that_do_not_need_it():
     )
 
 
-def test_the_rule_currently_partitions_the_script_half_exactly():
+def test_the_rule_currently_partitions_the_script_runnable_files_exactly():
     """Pins today's answer so a drift is visible as a NUMBER as well as a name:
-    4 files construct an app and all 4 are guarded; 10 do neither."""
-    _, scripts = run_all.classify()
-    builds = [f.name for f in scripts if constructs_app(_tree(f))]
-    guarded = [f.name for f in scripts if imports_guard(_tree(f))]
+    4 script-runnable files construct an app and all 4 are guarded.
+
+    ⬜ THE NUMBER SURVIVED THE PARTITION CHANGE, which is the point of keeping
+    it. Before T702 these were the four app-constructing members of
+    `classify()`'s script half; after it that half is empty and they are the
+    four app-constructing files with a `__main__` block. Same files, same
+    hazard, same guard — only the way of naming the set moved.
+    """
+    runnable = _script_runnable_files()
+    builds = [f.name for f in runnable if constructs_app(_tree(f))]
+    guarded = [f.name for f in runnable if imports_guard(_tree(f))]
     assert sorted(builds) == sorted(guarded)
-    assert len(builds) == 4, f"expected 4 app-constructing script files, got {builds}"
+    assert len(builds) == 4, f"expected 4 app-constructing script-runnable files, got {builds}"
+
+
+def test_the_script_half_being_empty_does_not_make_this_file_vacuous():
+    """⭐ THE VALIDITY GATE FOR THE MOVE ABOVE.
+
+    If `_script_runnable_files()` returned nothing, every arm here would pass
+    while guarding nothing at all — which is precisely what would have happened
+    had the set been left as `classify()`'s script half.
+    """
+    runnable = _script_runnable_files()
+    assert len(runnable) > 10, f"only {len(runnable)} files look script-runnable"
+    _, scripts = run_all.classify()
+    assert scripts == [], (
+        "classify() still has a script half; if that is deliberate these arms "
+        "should range over it again rather than over __main__ blocks"
+    )
 
 
 def test_the_detector_sees_a_real_call_and_ignores_the_word():

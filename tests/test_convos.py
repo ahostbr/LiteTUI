@@ -21,6 +21,11 @@ from litetui.app import LiteTUI as A
 from litetui.conversation import ConversationRepository
 
 results = []
+#: The labels that FAILED, with their reason. `results` is bools, which is all
+#: an exit status needed; a pytest arm has to be able to say WHICH check failed
+#: and why. Recorded alongside rather than by changing `results`, so `sum` /
+#: `all` / `len` below keep meaning exactly what they meant (T702).
+failures: list[str] = []
 
 
 def check(label, fn):
@@ -28,9 +33,11 @@ def check(label, fn):
         fn()
     except AssertionError as e:
         print(f"  FAIL  {label}: {e}")
+        failures.append(f"{label}: {e}")
         return results.append(False)
     except Exception as e:
         print(f"  FAIL  {label}: {type(e).__name__}: {e}")
+        failures.append(f"{label}: {type(e).__name__}: {e}")
         return results.append(False)
     print(f"  ok    {label}")
     results.append(True)
@@ -143,9 +150,32 @@ def t_chars_counts_image_text():
     eq(A._msg_chars(msgs), 5)
 
 
+
+# ── the same checks, as a pytest arm (T702) ─────────────────────────────
+#
+# 🔴 THE LAST ONE. Twelve files were converted by T699 and T700; this was the
+# thirteenth and the only one left in the runner's script half — and it earned
+# its place there TWICE, which is why it was missed: it has no module-level
+# `def test_*` AND it ends in `raise SystemExit`, a spelling the T700 scan did
+# not cover. Folding that spelling into the shared rule (`run_all`) is what
+# surfaced it.
+#
+# ⬜ THE `t_*` LOOP STAYS. Renaming those to `test_*` would let pytest call
+# them directly — and silently, because `eq` raises but `check` SWALLOWS the
+# exception into a bool. A pytest-collected `t_*` would pass while its
+# assertion failed. The loop plus one arm keeps the reporting honest.
+
+
 for name, fn in list(globals().items()):
     if name.startswith("t_"):
         check(name[2:].replace("_", " "), fn)
 
-print(f"\n{sum(results)}/{len(results)} passed")
-raise SystemExit(0 if all(results) else 1)
+
+def test_every_check_in_this_file_passed() -> None:
+    assert results, "no check ran — the loop above found no t_* functions"
+    assert failures == [], failures
+
+
+if __name__ == "__main__":
+    print(f"\n{sum(results)}/{len(results)} passed")
+    raise SystemExit(0 if all(results) else 1)

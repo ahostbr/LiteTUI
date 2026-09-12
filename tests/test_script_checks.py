@@ -32,6 +32,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+HERE_FOR_IMPORT = Path(__file__).resolve().parent
+if str(HERE_FOR_IMPORT) not in sys.path:
+    sys.path.insert(0, str(HERE_FOR_IMPORT))
+
+import run_all  # the shared exit rule; tests/ is put on the path just above
+
 HERE = Path(__file__).resolve().parent
 #: The two T699 converted; T700 did ten more. Named here because these are the
 #: ones this file drives END TO END as scripts — the whole class is covered by
@@ -81,58 +87,22 @@ def test_both_files_still_work_as_STANDALONE_SCRIPTS() -> None:
 # ── the class cannot grow back (T700) ───────────────────────────────────
 
 
-_DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
-#: Calls that end or hijack the interpreter when they run at import.
-_EXITERS = {("sys", "exit"), ("os", "exit"), ("os", "_exit"), ("", "exit"),
-            ("", "quit"), ("asyncio", "run")}
+# 🔴 ONE RULE, ONE HOME (T702). This file used to carry its own copy of the
+# module-level-exit scan, beside `run_all._exits` which answered the same
+# question with a different answer — that is the T694 shape, and two detectors
+# that can disagree eventually do, with the one nobody is watching being the
+# one that was right. The rule now lives in `run_all.module_level_hazards`,
+# which `classify()` also uses, and the arms below assert they are literally
+# the same function rather than merely consistent today.
 
 
-def _is_main_guard(node: ast.AST) -> bool:
-    """`if __name__ == "__main__":` — the one place an exit belongs."""
-    if not isinstance(node, ast.If):
-        return False
-    test = node.test
-    return (
-        isinstance(test, ast.Compare)
-        and isinstance(test.left, ast.Name)
-        and test.left.id == "__name__"
-    )
-
-
-def _flat(node: ast.AST):
-    """Every node under `node` EXCEPT the bodies of nested defs.
-
-    🔴 THE PRUNE IS THE WHOLE DETECTOR. A plain `ast.walk` over each top-level
-    statement descends into every `def` in the file, so `asyncio.run` inside a
-    helper reads exactly like one at module level. My first cut did that and
-    flagged 28 files where 10 are real — and a detector that cries wolf on 18
-    innocents is one somebody switches off.
-    """
-    yield node
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, _DEFS):
-            continue
-        yield from _flat(child)
-
-
-def _module_level_exits(path: Path) -> list[str]:
+def _hazards(path: Path) -> list[str]:
+    """The rule, applied to a file, with the filename attached for the report."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
         return []
-    hits = []
-    for stmt in tree.body:
-        if isinstance(stmt, _DEFS) or _is_main_guard(stmt):
-            continue
-        for node in _flat(stmt):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            owner = getattr(getattr(func, "value", None), "id", "")
-            if (owner, name) in _EXITERS:
-                hits.append(f"{path.name}:{node.lineno} {owner + '.' if owner else ''}{name}")
-    return hits
+    return [f"{path.name}:{h}" for h in run_all.module_level_hazards(tree)]
 
 
 def test_no_test_file_exits_or_runs_a_loop_at_IMPORT_time() -> None:
@@ -150,14 +120,11 @@ def test_no_test_file_exits_or_runs_a_loop_at_IMPORT_time() -> None:
     conversions did — these files are still useful as hand-run scripts, and
     that is the one place the exit belongs.
 
-    ⚠️ THIS AND `run_all._exits` DISAGREE ON PURPOSE, AND NEITHER IS BROKEN.
-    `run_all.classify` asks "should this file be RUN as a script?" and walks the
-    whole tree, so a guarded exit still counts; this asks "does importing it end
-    the interpreter?" and exempts the guard. The consequence is measured and is
-    its own card: with the guard exempted, the script half falls from 14 files
-    to 1, and `test_ttyguard.py` — which has guarded its exit all along — has
-    been on the wrong side of that partition the whole time. Not changed here;
-    rewriting how the repo runner executes the suite is not a test-file fix.
+    ⬜ `run_all.classify()` USES THIS SAME FUNCTION (T702), so the repo runner
+    and this arm can no longer disagree about which files are collectable. They
+    did until T702: `_exits` walked the whole tree, so a guarded exit counted,
+    and thirteen collectable files were filed as scripts — `test_ttyguard.py`
+    among them, guarded since long before any of this.
 
     ⚠️ THIS IS AST, NOT GREP, FOR TWO REASONS. A grep counts the PROSE about a
     call as a call — this file's own docstrings name `sys.exit` repeatedly —
@@ -166,7 +133,7 @@ def test_no_test_file_exits_or_runs_a_loop_at_IMPORT_time() -> None:
     """
     offenders = []
     for path in sorted(HERE.glob("test_*.py")):
-        offenders.extend(_module_level_exits(path))
+        offenders.extend(_hazards(path))
 
     assert offenders == [], (
         "these files exit or start an event loop at import, so collecting any "
@@ -196,8 +163,119 @@ def test_the_detector_CATCHES_a_planted_offender(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert _module_level_exits(bad), "the detector missed a module-level sys.exit"
-    assert _module_level_exits(good) == [], (
+    assert _hazards(bad), "the detector missed a module-level sys.exit"
+    assert _hazards(good) == [], (
         "the detector flagged an exit inside a function or under a __main__ "
         "guard — it would report every healthy script in the suite"
+    )
+
+
+def test_the_two_detectors_are_ONE_FUNCTION() -> None:
+    """🔴 NOT "consistent today" — THE SAME OBJECT.
+
+    `run_all.classify()` decides which files the repo runner executes as
+    scripts; the scan above decides which files may be collected. Those are the
+    same question, and until T702 they were answered by two implementations
+    that gave different answers. Asserting agreement on today's tree would pass
+    the moment they drift on a file nobody has added yet; asserting identity
+    cannot.
+    """
+    import inspect
+
+    assert _hazards.__module__ == __name__
+    src = inspect.getsource(_hazards)
+    assert "run_all.module_level_hazards" in src, src
+    assert run_all._exits(ast.parse("import sys\nsys.exit(0)\n")) is True
+    assert run_all._exits(ast.parse('if __name__ == "__main__":\n    exit(0)\n')) is False
+
+
+def test_classify_and_the_scan_agree_on_EVERY_file() -> None:
+    """The behavioural half, over the real tree.
+
+    A file belongs to the runner's script half exactly when it is hazardous to
+    import OR has nothing for pytest to call. Anything else means the runner is
+    executing as a script a file this scan calls clean — which is how thirteen
+    files sat on the wrong side of the partition for months.
+    """
+    _, scripts = run_all.classify()
+    script_names = {f.name for f in scripts}
+
+    disagreements = []
+    for path in sorted(HERE.glob("test_*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        should_be_script = bool(run_all.module_level_hazards(tree)) or not run_all._has_tests(tree)
+        if should_be_script != (path.name in script_names):
+            disagreements.append(
+                f"{path.name}: rule says {'script' if should_be_script else 'pytest'}, "
+                f"classify says {'script' if path.name in script_names else 'pytest'}"
+            )
+
+    assert disagreements == [], disagreements
+
+
+def test_the_script_half_is_EMPTY_and_the_suite_is_still_there() -> None:
+    """⭐ THE VALIDITY GATE FOR THE ARM ABOVE, which a `classify()` that called
+    EVERYTHING a script would otherwise satisfy.
+
+    🔴 MY FIRST VERSION OF THIS ARM ASSERTED THE WRONG FACT AND CAUGHT ME.
+    It claimed `test_convos.py` was the one survivor and was there for the
+    no-tests reason only. It was there for BOTH: it also ends in
+    `raise SystemExit`, a spelling the T700 scan did not cover and the shared
+    rule does. The arm went red on its own precondition, which is what a
+    precondition is for — so `test_convos.py` was converted like the other
+    twelve and the half is now empty.
+
+    An empty script half is not an empty suite, and the second assertion is
+    what separates those two readings: `classify()` must still be finding the
+    two hundred-odd files it always found, just on the other side.
+    """
+    pytest_style, scripts = run_all.classify()
+    assert scripts == [], [f.name for f in scripts]
+    assert len(pytest_style) > 150, (
+        f"classify() returned {len(pytest_style)} collectable files — an empty "
+        f"script half means everything moved, not that everything vanished"
+    )
+
+
+def test_the_prune_covers_a_def_nested_in_a_module_level_block(tmp_path: Path) -> None:
+    """🔴 THE ARM THAT MAKES `_flat`'s PRUNE LOAD-BEARING.
+
+    Deleting that `continue` and running the whole suite changed NOTHING —
+    `module_level_hazards` skips a top-level `def` before `_flat` is reached,
+    so on today's tree the prune is unexercised and my comment claiming it was
+    "the whole rule" was wrong. A line no test can kill is a line nobody knows
+    is load-bearing, and the next reader simplifying this away would get a
+    green suite for it.
+
+    The case it actually covers: a `def` nested inside a module-level `try` /
+    `if` / `with`. Those statements DO run at import, so the scan descends into
+    them — but the function body inside still does not.
+    """
+    nested = tmp_path / "test_planted_nested.py"
+    nested.write_text(
+        "import sys\n"
+        "try:\n"
+        "    def helper():\n"
+        "        sys.exit(1)\n"
+        "except Exception:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    assert _hazards(nested) == [], (
+        "an exit inside a def nested in a module-level try was reported as a "
+        "module-level exit — importing that file runs nothing of the kind"
+    )
+
+    # The discriminator: the same block WITHOUT the def is a real hazard.
+    bare = tmp_path / "test_planted_nested_bare.py"
+    bare.write_text(
+        "import sys\ntry:\n    sys.exit(1)\nexcept Exception:\n    pass\n",
+        encoding="utf-8",
+    )
+    assert _hazards(bare), (
+        "the scan stopped descending into module-level blocks altogether — it "
+        "would now miss every exit inside a try or an if"
     )
