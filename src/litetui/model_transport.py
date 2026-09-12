@@ -342,6 +342,9 @@ class ResponseStream:
 
     async def __aiter__(self):
         completed, usage, blocks = False, {}, {}
+        # Codex sends reasoning as SEVERAL summary parts per turn; see the
+        # comment at response.reasoning_summary_part.added below.
+        summary_part_seen = False
         try:
             async for line in self.response.aiter_lines():
                 if not line.startswith("data:"):
@@ -362,6 +365,31 @@ class ResponseStream:
                             yield _chunk(text=e["delta"])
                         elif kind == "response.reasoning_summary_text.delta":
                             yield _chunk(reasoning=e["delta"])
+                        elif kind == "response.reasoning_summary_part.added":
+                            """A part boundary is a LINE BREAK, and it only exists here.
+
+                            Measured against one real stream from gpt-5.6-sol
+                            (probe, 2026-09-11): each summary part arrives as
+                            part.added -> summary_text.delta* ->
+                            summary_text.done -> part.done, carrying
+                            summary_index, and each part's text is a bold
+                            heading such as "**Calculating smallest n for 100
+                            trailing zeros**" with no trailing newline.
+                            Forwarding only the deltas concatenates the parts
+                            with NOTHING between them, so heading N's closing
+                            ** abuts heading N+1's opening ** and the block
+                            renders "**A****B****C**" on one line -- which is
+                            exactly what Ryan photographed.
+
+                            The flag, rather than `summary_index > 0`: a turn
+                            can contain several reasoning ITEMS (one per tool
+                            round), and summary_index restarts at 0 in each, so
+                            an index test would re-fuse the first heading of
+                            every item after the first.
+                            """
+                            if summary_part_seen:
+                                yield _chunk(reasoning="\n\n")
+                            summary_part_seen = True
                         elif (
                             kind == "response.output_item.added"
                             and e["item"]["type"] == "function_call"

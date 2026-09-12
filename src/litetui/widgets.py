@@ -18,6 +18,7 @@ unchanged. See PLAN.md §6 — a line count is one metric of three.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, fields as fields_of
 from functools import partial
@@ -298,6 +299,33 @@ class ThinkingHeader(Static):
             block.set_expanded(not block.expanded)
 
 
+_BOLD_SPAN = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+
+
+def reasoning_text(buffer: str, caret: str = "") -> Text:
+    """The reasoning trace as Rich Text, with `**heading**` actually bold.
+
+    Codex summary parts are markdown: a bold heading, sometimes a body. The
+    block used to render the raw string, so the asterisks were printed --
+    "**Planning image tests**" with the stars visible. Styling the span and
+    dropping the markers is the whole fix; it is deliberately NOT a markdown
+    parser, because reasoning text is arbitrary and Text.from_markup would let
+    a stray "[" in it become a Rich tag.
+
+    A part still streaming has no closing `**` yet, so its markers show until
+    the delta that closes them lands -- for one repaint, on text that is being
+    typed out anyway.
+    """
+    out = Text()
+    at = 0
+    for match in _BOLD_SPAN.finditer(buffer):
+        out.append(buffer[at : match.start()])
+        out.append(match.group(1), style="bold")
+        at = match.end()
+    out.append(buffer[at:] + caret)
+    return out
+
+
 class ThinkingBlock(Vertical):
     """Collapsible model thinking/reasoning trace (click header to toggle)."""
 
@@ -345,14 +373,14 @@ class ThinkingBlock(Vertical):
         # NOTE: use the `content` setter, not .update() — in textual 8.0.2
         # update() does not invalidate the content-size cache, so an
         # auto-height parent would freeze at the first (small) height.
-        self.text.content = Text(self._buffer + " \u258c")
+        self.text.content = reasoning_text(self._buffer, " \u258c")
         if follow:
             # After the refresh: the scroll extent does not grow until the
             # new content has been re-measured.
             self.call_after_refresh(self.scroll.scroll_end, animate=False)
 
     def finalize(self) -> None:
-        self.text.content = Text(self._buffer)
+        self.text.content = reasoning_text(self._buffer)
 
     # -- header timer ------------------------------------------------------
     #
