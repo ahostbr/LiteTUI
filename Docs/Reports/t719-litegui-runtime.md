@@ -1,6 +1,6 @@
 # T719 — LiteGUI runtime interfaces and shared ownership
 
-Owner: RustAxis, worker, `01a096ad-0296-7c82-94a9-4f596dfb57b2`. Branch: `feat/t719-litegui-runtime`. Worktree: `C:/Projects/LiteTUI/.worktrees/feat-t719-litegui-runtime`. Original base: `9735a96`. Review base after the separate census correction: `05b1f655`. Sentinel owns review and merge; this report does not claim a release or Ryan's real-backend acceptance.
+Owner: RustAxis, worker, `01a096ad-0296-7c82-94a9-4f596dfb57b2`. Branch: `feat/t719-litegui-runtime`. Worktree: `C:/Projects/LiteTUI/.worktrees/feat-t719-litegui-runtime`. Original base: `9735a96`. Review base after the separate census and shutdown corrections: `928a9b7`. Sentinel owns review and merge; this report does not claim a release or Ryan's real-backend acceptance.
 
 ## Ryan's implementation intent
 
@@ -53,11 +53,11 @@ Minimum supported cooperating terminal runtime: a build containing T719's protoc
 
 The existing MCP add/remove read-modify-write now uses the same cross-process configuration lock. The test `test_two_process_mcp_edits_preserve_both_servers` starts two real Python children, holds the first after its read, and lets the second attempt its edit. Before the fix only the first server survived; after the fix both declarations survive. It never starts an MCP server or model. Malformed hook recovery uses the existing exact-byte repair conflict guard, so a concurrent external edit is retained rather than overwritten.
 
-Sentinel directed the pre-existing kill-tree census correction onto a separate branch inside this same worktree. Commit `05b1f655` changes only that census test, explicitly permitting the two cancellable providers and rejecting additions. Its seven named tests passed **68 passed in 20.41s**, with Ruff **3 before / 3 after**. Sentinel independently reported 68 passing tests and merged it first. T719 was then rebased cleanly onto that commit; no application change was hidden in the census correction.
+Sentinel directed the pre-existing kill-tree census correction onto a separate branch inside this same worktree. Commit `05b1f655` changes only that census test, explicitly permitting the two cancellable providers and rejecting additions. Its seven named tests passed **68 passed in 20.41s**, with Ruff **3 before / 3 after**. Sentinel independently reported 68 passing tests and merged it first. T719 was then rebased cleanly onto that commit, and later onto T723 merge `928a9b7`. The T723 `_shutdown` settling override and `side_panel` changes are unchanged. T719 releases the conversation lease after the existing `on_unmount` hook drain. No application change was hidden in the census correction.
 
 ### Final disk-derived regression scope
 
-The original 156-file list remains unchanged for the repeated gate. Newly touched correlation and MCP symbols add `tests/test_queued_input_delivery.py` and `tests/test_mcp_timeout_bounds.py`, run as an explicit two-file supplement. The final union contains **158 named files**. Only `test_footer_fields.py` is excluded. The six guard files are included in the original list. This is not a full repository suite.
+The original 156-file list remained unchanged. Under Sentinel's explicit final GO, one runner executed that set plus `tests/test_queued_input_delivery.py`, `tests/test_mcp_timeout_bounds.py` and the new dependency guard `tests/test_shutdown_prune_guard.py`. The final union contains **159 named files**. Only `test_footer_fields.py` is excluded. The six guard files are included in the original list. This is not a full repository suite.
 
 Selection expression (followed by the explicit guard files and named extras):
 
@@ -183,6 +183,7 @@ tests/test_set_over_rpc.py
 tests/test_settings.py
 tests/test_settings_controls.py
 tests/test_settings_live.py
+tests/test_shutdown_prune_guard.py
 tests/test_sidebar_dialog.py
 tests/test_sidebar_side.py
 tests/test_skill_dir_binding.py
@@ -266,6 +267,34 @@ tests/test_target_id_is_not_the_correlation_id.py
 tests/test_torn_transcript_tail.py
 ```
 
-Final gate results will be recorded after Sentinel releases the heavy-runner window.
+### Final verified gate
+
+- Tested source commit: `4580223dbf9dfbdf5bee881a4a272a54171aae50`, rebased onto `928a9b798b0fe007f0e013171c6dca249897b3a3`. The final evidence commit changes this report only.
+- `git merge-base --is-ancestor 928a9b7 HEAD`: exit 0, **ANCESTOR-OK**. Original base `9735a96` also remains an ancestor.
+- **159 named test files**, **32 touched Python source/test files**, **33 T719-owned changed files total**. The runtime source map above includes all 25 changed runtime modules.
+- Verbatim pytest summary: **1971 passed, 7 skipped, 6 xfailed in 520.35s (0:08:40)**. Exit 0; no failed test names or flaky-failure classification to report. This is one coordinated run, not repeated attempts until green.
+- Ruff on all 32 touched Python source/test files versus pristine `928a9b7` blobs: **168 baseline diagnostics / 168 current diagnostics**, identical counts by code, **zero additions**. Both sides use `C:/Projects/LiteTUI/.venv/Scripts/python.exe` and the same explicit `pyproject.toml`. The two new runtime modules and new management test file are clean. This does not claim the repository's existing lint baseline is clean.
+- Host: **Windows 11 Pro 10.0.26200, build 26200**; canonical test interpreter **Python 3.11.9, Windows AMD64**. Final run used the quiet coordinated heavy-runner window: Sentinel confirmed T716/T723 were finished and root paused integration and packaging. The initial failing run overlapped other work and is recorded separately above.
+- Only this worker's leftover `.scheduler.lease` test artifact was removed after the runner exited. Final tracked/untracked status is checked after the report commit; ignored verification artifacts stay in `artifacts/t719/`.
+
+Exact final environment and argv:
+
+```powershell
+$env:PYTHONUTF8='1'
+& C:\Projects\LiteTUI\.venv\Scripts\python.exe -m pytest tests/test_abort_releases_a_parked_ask.py tests/test_approval_over_rpc.py tests/test_ask_over_rpc.py tests/test_ask_user_question.py tests/test_authority_footer_and_key.py tests/test_autoscroll.py tests/test_backend_switch.py tests/test_background_tasks.py tests/test_bash_tool_git_bash.py tests/test_calendar.py tests/test_calendar_ui.py tests/test_chat_ready_call_sites.py tests/test_chrome_tool.py tests/test_cli.py tests/test_cli_model_flag.py tests/test_collapsible_tool_cards.py tests/test_colorpicker.py tests/test_command_palette.py tests/test_compaction_ui.py tests/test_connect_banner.py tests/test_context_length.py tests/test_convo_picked.py tests/test_convo_rename.py tests/test_convo_settings.py tests/test_convos.py tests/test_convos_picker.py tests/test_cron_wiring.py tests/test_ctx_resync.py tests/test_data_root.py tests/test_deny_stops_the_turn.py tests/test_desktop_tools.py tests/test_dialog_geometry.py tests/test_file_tools.py tests/test_first_boot.py tests/test_fleet_identity.py tests/test_footer.py tests/test_footer_nav.py tests/test_glassbox_emission.py tests/test_glassbox_plugin.py tests/test_goal_loop.py tests/test_gui_management.py tests/test_headless_never_loads.py tests/test_hook_boundaries.py tests/test_hooks_ui.py tests/test_input.py tests/test_integrations.py tests/test_job_builder_ui.py tests/test_jobs_store_lost_update.py tests/test_jobs_store_root.py tests/test_kill_tree_honesty.py tests/test_lazy_convo.py tests/test_lifecycle_hooks.py tests/test_live_state_guard.py tests/test_live_state_isolation.py tests/test_llama_chat_ready.py tests/test_llama_discovery.py tests/test_llama_flags.py tests/test_llama_ini.py tests/test_llama_router.py tests/test_llama_single_model.py tests/test_lms_backend.py tests/test_loop_list.py tests/test_loop_model_pickers.py tests/test_mcp_command.py tests/test_mcp_config_writer.py tests/test_mcp_dialog.py tests/test_mcp_lifecycle.py tests/test_message_queue.py tests/test_mmproj_autopair.py tests/test_modal_centering.py tests/test_modals.py tests/test_model_picked.py tests/test_model_screen.py tests/test_modelcfg_validation.py tests/test_no_dead_controls.py tests/test_no_dialog_over_rpc.py tests/test_no_fleet_registration.py tests/test_no_implicit_model_load.py tests/test_no_network_at_construction.py tests/test_oauth_transport.py tests/test_oauth_ui.py tests/test_paths.py tests/test_persist_error_report.py tests/test_plan_mode.py tests/test_plugins_command.py tests/test_prompt_compiler.py tests/test_prompt_compose.py tests/test_ready_payload.py tests/test_request_overrides.py tests/test_resume_identity.py tests/test_router_coexistence.py tests/test_router_eviction_notice.py tests/test_router_owner_exit.py tests/test_router_record.py tests/test_rpc.py tests/test_rpc_isolation.py tests/test_rpc_jobs.py tests/test_rpc_model_switch.py tests/test_rpc_tasks.py tests/test_runtime_log_producers.py tests/test_schedule_builder.py tests/test_scheduler.py tests/test_script_guard_coverage.py tests/test_seat_convo_identity.py tests/test_seat_guard.py tests/test_seat_guard_backends.py tests/test_seat_identity.py tests/test_second_instance_guard.py tests/test_self_store_writes.py tests/test_set_over_rpc.py tests/test_settings.py tests/test_settings_controls.py tests/test_settings_live.py tests/test_sidebar_dialog.py tests/test_sidebar_side.py tests/test_skill_dir_binding.py tests/test_skill_invocation.py tests/test_skills_cache.py tests/test_skills_library.py tests/test_skills_picker.py tests/test_skills_visible.py tests/test_store.py tests/test_store_lost_update.py tests/test_studio_tool.py tests/test_swap_button_in_real_dialogs.py tests/test_swap_control_is_wired.py tests/test_swap_teardown_mount_race.py tests/test_target_id_is_not_the_correlation_id.py tests/test_task_log_path_is_absolute.py tests/test_task_screens.py tests/test_theme_extra_tokens.py tests/test_themes.py tests/test_think_load_pickers.py tests/test_thinking_timer.py tests/test_toggle_tools_persists.py tests/test_token_counts.py tests/test_tool_approval.py tests/test_tool_context.py tests/test_tool_denied.py tests/test_tool_list_dialog.py tests/test_tool_policy.py tests/test_tool_policy_wiring.py tests/test_tool_profile_choices.py tests/test_tool_schemas.py tests/test_tools_disabled.py tests/test_tools_prompt.py tests/test_tools_registered.py tests/test_torn_transcript_tail.py tests/test_ttyguard.py tests/test_turn_stop_line.py tests/test_two_instances_coexist.py tests/test_unattended_profile.py tests/test_usage_on_the_wire.py tests/test_view_image.py tests/test_wake_after_compact.py tests/test_wake_guard_abandoned_turn.py tests/test_mcp_timeout_bounds.py tests/test_queued_input_delivery.py tests/test_shutdown_prune_guard.py -q -p no:cacheprovider
+```
+
+Evidence on disk: `artifacts/t719/final-evidence.json`, `final-command.txt`, `pytest-final.log`, `ruff-final-base.json`, `ruff-final-current.json`, `review-tests-list.txt`, and `review-tests-final-union.txt`. SHA-256:
+
+| Artifact | SHA-256 |
+|---|---|
+| `pytest-final.log` | `44518717f983aac1fa408d1a47587d1511a91049bc022d9f9ff408994978e5bc` |
+| `final-command.txt` | `b6dec9e46075b21981f81361d205bdbfe77938ea0349b33784362614fb6de52c` |
+| `review-tests-list.txt` | `be4bc3eeceb5a54c4444412c366a437587cbe603df16bd253cc64cee66f75e78` |
+| `review-tests-final-union.txt` | `67d3844fe3188846d345ebf31d13431b91db1681cafb8110ccd2062dc062b4d2` |
+
+
+Sentinel's independent intent review and coordinated merge remain the leader's responsibility. This worker did not push or merge T719; only the separately authorized census correction was pushed.
+
 
 The package-scoped tool-authority AST gate passes: one dispatched execution door inside `LiteTUI._execute_tool`. Its three callers are the existing stream and compaction paths plus structured GUI tool execution. The gate intentionally permits additional callers that enter the same door and identifies them for review; GUI tools preserve normal authority and approval policy.
