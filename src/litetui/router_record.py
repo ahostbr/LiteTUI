@@ -126,9 +126,21 @@ def is_live(record: RouterRecord | None) -> bool:
     """
     if record is None:
         return False
+    return pid_is_live(record.pid)
+
+
+def pid_is_live(pid: int) -> bool:
+    """Is this pid running? Extracted from `is_live` so the same rule — and
+    especially the same reading of "unopenable" — answers for the agent
+    registry as well as for the router record (T690).
+
+    ⚠️ EXTRACTED, NOT REWRITTEN. A second liveness test would be a second place
+    for "access denied" to be read as "dead", and that misreading is precisely
+    what makes one app steal another's server. There is one of these.
+    """
     if sys.platform != "win32":
         try:
-            os.kill(record.pid, 0)
+            os.kill(pid, 0)
         except ProcessLookupError:
             return False
         except PermissionError:
@@ -149,7 +161,7 @@ def is_live(record: RouterRecord | None) -> bool:
         return True   # cannot even ask: assume alive rather than steal
     k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
     k32.OpenProcess.restype = wt.HANDLE
-    handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, record.pid)
+    handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         # ONLY "no such process" is dead. Access-denied, and anything else we
         # did not anticipate, mean somebody has it.

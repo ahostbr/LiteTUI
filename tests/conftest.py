@@ -71,6 +71,35 @@ os.environ.setdefault("LITETUI_BACKEND", "lmstudio")
 # and this. One missing rule, not three bugs: A TEST MUST NEVER WRITE A PATH THE
 # RUNNING APP OWNS.
 @pytest.fixture(autouse=True)
+def _never_read_the_live_agent_registry(tmp_path, monkeypatch):
+    """Point `harness.AGENTS_DIR` at an EMPTY per-test directory.
+
+    🔴 WITHOUT THIS, T690 MADE THE SUITE DEPEND ON RYAN'S OPEN WINDOWS. The
+    second-instance VRAM gate asks `harness.other_live_litetui()` before every
+    model load, and that reads `~/.liteharness/agents/*.json` — the LIVE roster.
+    With a LiteTUI window open, two context-length tests went red because the
+    gate correctly refused to load a second model; with every window closed the
+    same tests passed. Measured on both states, 2026-09-12.
+        A SUITE WHOSE RESULT DEPENDS ON WHICH APPS ARE RUNNING IS NOT A SUITE.
+    It is the same failure as writing the live settings.json, one fixture below,
+    reached by reading instead of writing.
+
+    ⬜ ABSENT, NOT EMPTY — AND `test_a_test_that_touches_nothing_leaves_tmp_path_
+    empty` IS WHY. A first cut created the directory, reasoning that an empty one
+    keeps the glob running; that fixture runs for EVERY test, so it left a
+    stray `agents/` in every tmp_path and the live-state guard went red. It was
+    right to: an autouse fixture that plants a directory makes "this test wrote
+    nothing" unprovable for the whole suite. `other_live_litetui` answers None
+    for a missing directory too, so the gate is inert either way, and the glob
+    is exercised properly by `test_second_instance_guard.py`, which builds real
+    rows in a directory it owns.
+    """
+    from litetui import harness as harness_mod
+
+    monkeypatch.setattr(harness_mod, "AGENTS_DIR", tmp_path / "agents")
+
+
+@pytest.fixture(autouse=True)
 def _never_write_the_live_settings(tmp_path, monkeypatch):
     """Redirect the DEFAULT settings path to a per-test temp dir.
 

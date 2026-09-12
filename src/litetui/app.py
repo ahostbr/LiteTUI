@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 
 from litetui import harness as harness_mod
+from litetui import second_instance
+from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of
 from functools import partial
 
@@ -2712,6 +2714,63 @@ class LiteTUI(App):
             )
         return True
 
+    async def _vram_gate_allows(self, model: str) -> bool:
+        """May this load proceed? Asks the human when it would add weights.
+
+        🔴 SHARING A LOADED MODEL IS THE DESIGN AND NEVER PROMPTS. Ryan's ruling
+        (a-62edbbe0): two instances run against one server in parallel. The
+        hazard he named is the other one — *"LOADING different models in
+        different instances WILL CAUSE MULTIPLE MODELS IN VRAM"* — so the gate
+        fires only when this load would put a SECOND set of weights on the card.
+
+        ⚠️ THE `model_info` PROBE IS BEHIND THE SIBLING CHECK, DELIBERATELY.
+        `apply_context_length`'s own docblock records that reading state before
+        a load we were going to do anyway is "a pure cost — and it cost a real
+        failure": the extra round-trip pushed a load past the window a test
+        waits in. When nobody else is running there is nothing to ask about, so
+        that path keeps exactly the shape it had.
+
+        ⬜ A HEADLESS CHILD REFUSES RATHER THAN ASSUMING YES. It has no keyboard,
+        and approving on the human's behalf reaches the very outcome the modal
+        exists to prevent, by the one path that cannot show it. LiteSuite
+        renders refusals loudly already.
+        """
+        try:
+            sibling = harness_mod.other_live_litetui(getattr(self.seat, "agent_id", None))
+        except Exception:  # noqa: BLE001 - a registry read must not block a load
+            return True
+        if sibling is None:
+            return True
+        try:
+            info = await self.backend.model_info(model)
+            already_loaded = bool(info and info[2])
+        except Exception:  # noqa: BLE001 - unknown state is treated as NOT loaded,
+            # which asks rather than assumes. The cost of a needless question is
+            # one click; the cost of a skipped one is somebody's OOM.
+            already_loaded = False
+        if not second_instance.needs_vram_confirmation(
+            sibling=sibling, already_loaded=already_loaded
+        ):
+            return True
+
+        if self._rpc:
+            note = second_instance.refusal_text(sibling, model)
+            self._system(note)
+            self._rpc_emit({"type": "error", "error": note})
+            return False
+
+        answer = await show_dialog(
+            self,
+            partial(vram_dialog.VramWarningBody,
+                    second_instance.warning_text(sibling, model)),
+            modal_factory=partial(vram_dialog.VramWarningScreen,
+                                  second_instance.warning_text(sibling, model)),
+        )
+        if answer != vram_dialog.LOAD:
+            self._system(f"Load cancelled — {model} was not loaded ({sibling} is running).")
+            return False
+        return True
+
     def _llama_takeover_note(self) -> str | None:
         """We became the owner of the llama.cpp router because the previous one
         left, or None when there was nothing to take over.
@@ -3391,6 +3450,9 @@ class LiteTUI(App):
             said = notice(self.model_id)
             if said:
                 self._system(said)
+        if not await self._vram_gate_allows(self.model_id):
+            return
+
         self._system(f"Loading {self.model_id} at {want:,} tokens…")
         try:
             # The backend owns the HOW: LM Studio via the SDK (replacing the
