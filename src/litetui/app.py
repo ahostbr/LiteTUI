@@ -23,7 +23,9 @@ from functools import partial
 from litetui import settings as settings_mod
 from litetui.settings import Settings
 from litetui import side_panel
-from litetui.side_panel import present_dialog, show_dialog
+from textual.app import ScreenStackError, UnknownModeError
+
+from litetui.side_panel import await_subtree_composed, present_dialog, show_dialog
 
 from litetui import llm_backend
 from litetui import model_residency, model_transport
@@ -1484,6 +1486,69 @@ class LiteTUI(App):
             from litetui import rpc as rpc_mod
             rpc_mod.start_rpc_reader(self)
             self._rpc_emit_ready()
+
+    async def _settle_before_teardown(self) -> None:
+        """Let anything mid-mount finish composing before Textual prunes it. T723.
+
+        🔴 THE RACE, AND WHY `on_unmount` CANNOT BE THE PLACE. Textual 8.1.0's
+        `App._shutdown` (app.py:3687) runs in this order:
+
+            await self._close_all()                        <- the prune
+            await self._close_messages()
+            await self._dispatch_message(events.Unmount())  <- on_unmount, too late
+
+        `_close_all` marks `_pruning` across the tree; `Widget.mount` then early
+        returns silently (widget.py:1424), so a `Select` whose compose has not
+        run gets no children — and `_pre_process` dispatches its `Mount` anyway
+        (message_pump.py:599/604), reaching `Select._on_mount` ->
+        `_setup_options_renderables` -> `query_one(SelectOverlay)` at
+        _select.py:546 -> NoMatches, raised out of a handler during shutdown.
+        A wait installed in `on_unmount` changed NOTHING when measured: by then
+        the tree it waits for is already pruned.
+
+        📌 IT IS THE SAME MECHANISM AS T704, ONE PRUNER FURTHER OUT, and it
+        reuses that guard rather than growing a second one:
+        `side_panel.await_subtree_composed` is the single implementation, used
+        by `close_view` for our own teardown and here for the app's.
+
+        ⚠️ WHAT IT DOES NOT BUY, measured: `on_unmount` was observed ENTERING
+        and COMPLETING on every reproduction, crash included, so no
+        `app_shutdown` lifecycle work was ever lost. This removes a traceback on
+        exit and an intermittent suite red that misattributed T704 for weeks —
+        it does not recover state, because none was being lost.
+
+        The wait is bounded (`_ViewMixin._settle_tries`) for the same reason
+        `close_view`'s is: an unbounded wait on the quit path is a hung exit,
+        which is worse than the traceback it prevents.
+        """
+        if os.environ.get("LITETUI_T723_GUARD") == "off":
+            # THE A/B CONTROL, and it exists so both arms run IDENTICAL code.
+            # The first A/B harness rewrote this file between runs; killing it
+            # mid-run left the tree in the control arm's state with nothing
+            # saying so. A toggle the harness sets per RUN cannot do that.
+            return
+        try:
+            screen = self.screen
+        except (ScreenStackError, UnknownModeError):
+            # `App.screen` RAISES rather than returning None (app.py:1590-1593):
+            # ScreenStackError with nothing pushed, UnknownModeError for an
+            # unknown mode. Both mean there is no tree to settle, which is not
+            # an error on the way out.
+            return
+        await await_subtree_composed(screen)
+
+    async def _shutdown(self) -> None:
+        """Settle the tree before Textual prunes it, then shut down normally.
+
+        Overrides a PRIVATE Textual method because it is the only seam that
+        exists before `_close_all`: `run_test` calls `_shutdown` directly
+        (app.py:2163), so no quit action of ours is on that path. The
+        dependency is guarded by an arm — if a future Textual renames or
+        reorders `_shutdown`, that arm goes red rather than this silently
+        becoming a no-op.
+        """
+        await self._settle_before_teardown()
+        await super()._shutdown()
 
     async def on_unmount(self) -> None:
         self._hook_shutting_down = True
