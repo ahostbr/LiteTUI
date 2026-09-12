@@ -2,6 +2,7 @@ import json
 import os
 
 import pytest
+from _settle import settle_until
 from textual.widgets import Button, Input, Select, Static, Switch, TextArea
 
 from litetui.app import LiteTUI
@@ -42,9 +43,37 @@ def app_fixture(monkeypatch):
 
 
 async def click(pilot, app, id):
+    """Scroll the target into view, WAIT FOR IT TO BE THERE, then click. T717.
+
+    🔴 ONE PAUSE WAS A GUESS, AND UNDER LOAD IT LOST. `scroll_visible` asks for
+    a scroll; the region does not move until the app has processed it. The old
+    helper paused ONCE and clicked, so on a busy box the click was computed
+    against the OLD region and Textual refused it:
+
+        textual.pilot.OutOfBounds: Target offset is outside of currently-visible
+        screen region.
+        widget = '#hook-repair', offset = Offset(x=8, y=86)   # on a 50-row screen
+
+    That is the arm that went red in T704's rep 1 and was carried as a flake.
+
+    📌 THE PREDICATE IS PILOT'S OWN CHECK, not an approximation of it.
+    `Pilot.click` computes `target.region.offset + offset` and refuses unless
+    that POINT is in `screen.region` (pilot.py:433-444). Waiting for the whole
+    region to be visible would be a different, stricter question that can be
+    false while the click would have worked — and waiting for "some" visibility
+    could pass while the point is still outside. Ask exactly what it asks.
+
+    A longer sleep would have made this rarer and left it load-sensitive; the
+    wait is bounded and on the CONDITION, which is the same law `_settle.py`
+    exists for.
+    """
     button = app.screen.query_one(id, Button)
     button.scroll_visible(immediate=True, animate=False)
-    await pilot.pause()
+    landed = await settle_until(pilot, lambda: button.region.offset in app.screen.region)
+    assert landed, (
+        f"{id} never scrolled into the visible region: "
+        f"click point {button.region.offset} is outside {app.screen.region}"
+    )
     await pilot.click(id)
     await pilot.pause(.35)
 
@@ -199,3 +228,95 @@ async def test_theme_round_trip_after_hooks_editor_in_the_same_process(tmp_path,
     # theme acceptance arm, with all its CSS/Rich/persistence assertions intact.
     await test_author_save_validate_test_and_reopen(tmp_path, app_fixture)
     await test_footer_colours_round_trip_and_preserve_warnings(tmp_path)
+
+
+# ── T717: the helper waits for the scroll, and the old one did not ──────────
+
+async def _click_the_old_way(pilot, app, id):
+    """The pre-T717 helper, kept VERBATIM as the control.
+
+    Without it, the new helper's arm would prove only that clicking works on an
+    idle box — which the old one also did. This is the thing that has to fail.
+    """
+    button = app.screen.query_one(id, Button)
+    button.scroll_visible(immediate=True, animate=False)
+    await pilot.pause()
+    await pilot.click(id)
+    await pilot.pause(.35)
+
+
+def _defer_the_scroll(monkeypatch, seconds: float = 0.2) -> None:
+    """Make `scroll_visible` land `seconds` later instead of at once.
+
+    This is what a loaded box does to the real helper: the scroll is requested,
+    and the region has not moved by the time the click is computed. Injecting it
+    turns a load-dependent failure into a deterministic one, so the guard can be
+    a test rather than a rate.
+
+    🔴 IT MUST BE A TIMER, NOT A CHAIN OF REFRESHES, AND THAT COST ME AN ARM.
+    My first version deferred through `call_after_refresh` — and
+    `Pilot.pause()` waits for the app to go IDLE, so a single pause drained the
+    whole chain however deep it was. The control arm then passed alone (where
+    the box was slow enough) and failed in a three-file run, which is a flaky
+    arm, not a guard. A timer is not drained by going idle.
+
+    📌 THE MARGIN IS MEASURED, not assumed: one `pilot.pause()` costs ~16 ms
+    here, and `settle_until`'s 25 pauses cost ~851 ms — a 52x separation. At
+    0.2 s the old helper (one pause) cannot win and the new helper cannot lose.
+    If those numbers ever converge this arm becomes a race; the assertion below
+    names the click-time visibility, so it would fail loudly rather than drift.
+    """
+    from textual.widget import Widget
+
+    real = Widget.scroll_visible
+
+    def deferred(self, *args, **kwargs):
+        self.set_timer(seconds, lambda: real(self, *args, **kwargs))
+
+    monkeypatch.setattr(Widget, "scroll_visible", deferred)
+
+
+@pytest.mark.asyncio
+async def test_the_old_click_helper_fails_when_the_scroll_is_slow(tmp_path, app_fixture, monkeypatch):
+    """THE CONTROL: one pause is not enough, and this proves it deterministically."""
+    from textual.pilot import OutOfBounds
+
+    app = app_fixture()
+    app.hook_config.project_path.write_text("{broken")
+    async with app.run_test(size=(120, 50)) as pilot:
+        app.push_screen(HooksScreen())
+        await pilot.pause()
+        area = app.screen.query_one("#hook-repair-json", TextArea)
+        area.load_text('{"version": 1, "hooks": []}')
+
+        # 🔴 THE PRECONDITION IS ASSERTED, NOT ASSUMED. This arm only means
+        # anything while the target starts OUT of view — if it is already
+        # visible, no scroll is needed, the old helper clicks it happily and
+        # the arm passes for a reason that has nothing to do with the bug.
+        # Measured: with two more hook files in the run the button WAS already
+        # in view and this arm went red. Scroll home first, then prove it.
+        app.screen.scroll_home(animate=False)
+        await pilot.pause()
+        button = app.screen.query_one("#hook-repair", Button)
+        assert button.region.offset not in app.screen.region, (
+            "the target is already visible, so this arm cannot test the scroll"
+        )
+
+        _defer_the_scroll(monkeypatch)
+        with pytest.raises(OutOfBounds):
+            await _click_the_old_way(pilot, app, "#hook-repair")
+
+
+@pytest.mark.asyncio
+async def test_the_click_helper_waits_for_the_scroll_to_land(tmp_path, app_fixture, monkeypatch):
+    """THE TREATMENT: the same injected delay, and the helper waits it out."""
+    app = app_fixture()
+    app.hook_config.project_path.write_text("{broken")
+    async with app.run_test(size=(120, 50)) as pilot:
+        app.push_screen(HooksScreen())
+        await pilot.pause()
+        area = app.screen.query_one("#hook-repair-json", TextArea)
+        area.load_text('{"version": 1, "hooks": []}')
+        _defer_the_scroll(monkeypatch)
+        await click(pilot, app, "#hook-repair")        # must not raise
+        assert not app.hook_config.snapshot().error, "the repair never landed"
