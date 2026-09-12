@@ -17,7 +17,7 @@ from litetui import convo_settings as convo_settings_mod
 from litetui import harness as harness_mod
 from litetui import second_instance
 from litetui import vram_dialog
-from dataclasses import dataclass, fields as fields_of
+from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
 from functools import partial
 
 from litetui import settings as settings_mod
@@ -1245,6 +1245,8 @@ class LiteTUI(App):
         # T690: install the VRAM gate BEFORE the first backend is made, so the
         # one at boot is stamped like every one a /backend switch makes later.
         llm_backend.set_vram_gate(self._vram_gate_allows)
+        llm_backend.set_load_settings_hook(self.remember_load_settings)
+        self._backend = None
         self.backend = llm_backend.make_backend(self.settings)
         #: key -> ModelRow for the connected backend; the /model picker reads
         #: source tags and load state from here.
@@ -2761,6 +2763,25 @@ class LiteTUI(App):
         self._remember_for_this_convo("model", value)
 
     @property
+    def backend(self):
+        # `getattr` because `__init__` reads other properties before this one is
+        # assigned; a bare attribute read here fails the whole boot.
+        return getattr(self, "_backend", None)
+
+    @backend.setter
+    def backend(self, value) -> None:
+        """The engine this conversation runs on.
+
+        🔴 A PROPERTY FOR THE SAME REASON THE OTHER TWO ARE. `app.backend =
+        make_backend(...)` is assigned from four places — app.py once and
+        `plugins/model_switch.py` three times (the `/backend` picker and two
+        first-boot recovery paths). Ryan named backend FIRST in the ruling, and
+        the first cut of this card declared the field and wired none of them.
+        """
+        self._backend = value
+        self._remember_for_this_convo("backend", getattr(value, "name", None))
+
+    @property
     def thinking_level(self) -> str | None:
         return self._thinking_level
 
@@ -2768,6 +2789,13 @@ class LiteTUI(App):
     def thinking_level(self, value: str | None) -> None:
         self._thinking_level = value
         self._remember_for_this_convo("thinking_level", value)
+        # Ryan wrote "think level WHEN ON CODEX" as its own item, and it is a
+        # different vocabulary from LM Studio's levels — `model_switch.py:906`
+        # stores it under `model_infer_overrides[model]["reasoning_effort"]`.
+        # Kept in its own field so a conversation carried between engines does
+        # not hand a codex effort to a llama.cpp thinking level.
+        if getattr(getattr(self, "_backend", None), "name", None) == "codex":
+            self._remember_for_this_convo("reasoning_effort", value)
 
     def _remember_for_this_convo(self, field: str, value) -> None:
         """Write one field through to `.convos/<id>/settings.json`.
@@ -2794,6 +2822,28 @@ class LiteTUI(App):
             runtime_log.record_error(
                 "convo_settings.save_failed",
                 detail=f"{self.convo_dir} — {e}", site="app")
+
+    def remember_load_settings(self, model: str, cfg: dict) -> None:
+        """Mirror THIS conversation's load settings for its own model.
+
+        🔴 CALLED BY THE BACKEND, NOT BY THE THREE WRITERS. `llama_load_settings
+        [key] = …` happens in `llm_backend` twice and in
+        `plugins/model_switch.py` once, and those are the sites that exist
+        today. The backend hook is stamped by the same factory that stamps the
+        T690 VRAM gate, so a new writer inside the backend is covered and a new
+        caller cannot route around it.
+
+        ⚠️ ONLY FOR THE MODEL THIS CONVERSATION IS ON. `/modelcfg` can edit the
+        settings of a model the conversation is not using; recording that here
+        would make the conversation claim a configuration it never ran.
+        """
+        if not model or model != self._model_id:
+            return
+        name = getattr(getattr(self, "_backend", None), "name", None)
+        field = "llama_load" if name == "llamacpp" else "lmstudio_load" if name == "lmstudio" else None
+        if field is None:
+            return
+        self._remember_for_this_convo(field, dict(cfg or {}))
 
     def _adopt_convo_settings(self, born: bool) -> None:
         """Apply this conversation's settings, or create them from the globals.
@@ -2841,6 +2891,47 @@ class LiteTUI(App):
             self._model_id = model
         level = convo_settings_mod.resolved(cs, self.settings, "thinking_level")
         self._thinking_level = None if level in (None, "off") else level
+        self._adopt_convo_backend(cs)
+        # The backend-specific load settings this conversation last used. They
+        # go back into the GLOBAL per-model map because that is what the
+        # backends read at load time; the conversation owns the VALUE, the map
+        # is just where a backend looks it up.
+        if cs.llama_load and self._model_id:
+            self.settings.llama_load_settings = {
+                **self.settings.llama_load_settings, self._model_id: dict(cs.llama_load)}
+        if cs.reasoning_effort and self._model_id:
+            overrides = dict(self.settings.model_infer_overrides)
+            entry = dict(overrides.get(self._model_id, {}))
+            entry["reasoning_effort"] = cs.reasoning_effort
+            overrides[self._model_id] = entry
+            self.settings.model_infer_overrides = overrides
+
+    def _adopt_convo_backend(self, cs) -> None:
+        """Put this conversation back on the engine it was using.
+
+        ⚠️ REBUILT THROUGH THE FACTORY, so the T690 VRAM gate is stamped on the
+        new backend. Assigning a hand-made backend here would hand the app an
+        ungated one, and the modal would stop appearing for exactly the people
+        who switch engines.
+
+        ⬜ AND AN ENGINE THE BOX NO LONGER HAS FALLS BACK OUT LOUD, like the
+        stale model above: silently answering on a different engine while the
+        header names the old one is the failure this card exists to prevent,
+        one field over.
+        """
+        want = cs.backend
+        if not want or want == getattr(getattr(self, "_backend", None), "name", None):
+            return
+        probe = replace(self.settings, backend=want) if is_dataclass(self.settings) else None
+        try:
+            new_backend = llm_backend.make_backend(probe if probe is not None else self.settings)
+        except llm_backend.BackendError as e:
+            self._system(
+                f"This conversation used {want}, which is not available here "
+                f"({e}). Staying on {getattr(self._backend, 'name', 'the current engine')}."
+            )
+            return
+        self._backend = new_backend
 
     async def _vram_gate_allows(self, model: str) -> bool:
         """May this load proceed? Asks the human when it would add weights.

@@ -620,6 +620,23 @@ class _VramGate:
     vram_gate = None
     _vram_asking = False
 
+    #: Installed by the App (T691): `(model, cfg) -> None`, called whenever the
+    #: load settings for a model are recorded, so the open conversation can keep
+    #: its own copy. It sits beside the gate because it has the same shape — the
+    #: WRITERS are several and most are inside this module, so a hook on the
+    #: callee covers them with no list of callers to maintain.
+    on_load_settings = None
+
+    def _record_load_settings(self, key: str, cfg: dict) -> None:
+        """Tell whoever is listening that `key` now loads with `cfg`."""
+        hook = self.on_load_settings
+        if hook is None:
+            return
+        try:
+            hook(key, cfg)
+        except Exception:  # noqa: BLE001 - bookkeeping must never fail a load
+            pass
+
     @asynccontextmanager
     async def vram_guard(self, key: str):
         """Ask once per outermost load, then run the body."""
@@ -1188,6 +1205,7 @@ class LlamaCppBackend(_VramGate):
                 cfg = dict(self._settings.llama_load_settings.get(key, {}))
                 cfg["ctx"] = ctx
                 self._settings.llama_load_settings[key] = cfg
+                self._record_load_settings(key, cfg)
                 await self.apply_load_settings(key, cfg)
                 return
             await asyncio.to_thread(self._load_sync, key)
@@ -1354,6 +1372,7 @@ class LlamaCppBackend(_VramGate):
         apply had only ever run against a not-yet-loaded one."""
         self._refuse_if_attached("change load settings")
         self._settings.llama_load_settings[key] = dict(cfg)
+        self._record_load_settings(key, dict(cfg))
         info = self._server_models().get(key)
         if info is not None and info.get("status", {}).get("value") == "loaded":
             self._unload_sync(key)   # evict while THIS router still knows it
@@ -1599,6 +1618,9 @@ class LMStudioBackend(_VramGate):
                 raise BackendError(f"could not load {key!r} in LM Studio — try again in a moment.") from e
         async with self.vram_guard(key):
             await asyncio.to_thread(_load)
+        # LM Studio takes its load config on the request itself, so THIS is the
+        # point at which "what this model was loaded with" is known.
+        self._record_load_settings(key, {"ctx": ctx} if ctx else {})
 
     async def unload(self, key: str) -> None:
         def _unload() -> None:
@@ -1801,6 +1823,17 @@ def llama_available() -> bool:
 #: `set_vram_gate`; `make_backend` stamps it onto each instance.
 _DEFAULT_VRAM_GATE = None
 
+#: The load-settings listener new backends are born with (T691). Installed the
+#: same way and for the same reason: `app.backend = make_backend(...)` happens
+#: at four sites, so the App's own assignment is not the only one.
+_DEFAULT_LOAD_HOOK = None
+
+
+def set_load_settings_hook(hook) -> None:
+    """Install the per-conversation load-settings listener (T691)."""
+    global _DEFAULT_LOAD_HOOK
+    _DEFAULT_LOAD_HOOK = hook
+
 
 def set_vram_gate(gate) -> None:
     """Install the second-instance VRAM gate for backends made from here on.
@@ -1829,6 +1862,8 @@ def make_backend(settings):
     backend = _make_backend(settings)
     if _DEFAULT_VRAM_GATE is not None:
         backend.vram_gate = _DEFAULT_VRAM_GATE
+    if _DEFAULT_LOAD_HOOK is not None:
+        backend.on_load_settings = _DEFAULT_LOAD_HOOK
     return backend
 
 

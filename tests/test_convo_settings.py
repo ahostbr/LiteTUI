@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from litetui import app as app_mod
 from litetui import convo_settings as cs_mod
 from litetui import settings as st
 
@@ -148,6 +149,11 @@ def test_a_save_is_atomic_and_leaves_no_litter(tmp_path: Path) -> None:
 # ── the App writes through, and reads back ───────────────────────────────────
 
 
+class _FakeBackend:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
 class _FakeSeat:
     name = "OpenBolt"
     agent_id = "2578f274"
@@ -167,10 +173,13 @@ class _App:
 
     model_id = _Real.model_id
     thinking_level = _Real.thinking_level
+    backend = _Real.backend
     _remember_for_this_convo = _Real._remember_for_this_convo
     _adopt_convo_settings = _Real._adopt_convo_settings
+    _adopt_convo_backend = _Real._adopt_convo_backend
+    remember_load_settings = _Real.remember_load_settings
 
-    def __init__(self, settings, convo_dir):
+    def __init__(self, settings, convo_dir, backend_name="llamacpp"):
         self.settings = settings
         self.convo_dir = convo_dir
         self.seat = _FakeSeat()
@@ -179,6 +188,7 @@ class _App:
         self._convo_settings = None
         self._model_id = ""
         self._thinking_level = None
+        self._backend = _FakeBackend(backend_name)
 
     def _system(self, text):
         self.said.append(text)
@@ -302,3 +312,199 @@ def test_an_EMPTY_model_list_is_unknown_and_never_triggers_the_fallback(tmp_path
 
     assert a.model_id == "qwen/qwen3-8b"
     assert a.said == []
+
+
+# ── the four fields the first cut declared and never wired ───────────────────
+#
+# 🔴 A DECLARED FIELD READS AS A CARRIED FIELD. The first cut of this card put
+# `backend`, `reasoning_effort`, `llama_load` and `lmstudio_load` in the
+# dataclass and wired none of them — and the arms above PASSED, because they
+# asserted the FILE round-trips those keys. It does. What no arm asked was
+# whether anything in the app ever writes or reads them, and a dataclass will
+# happily round-trip a field the product never touches.
+#     A SCHEMA IS A PROMISE ABOUT SHAPE, NOT ABOUT BEHAVIOUR.
+# Each arm below drives the APP, not the file.
+
+
+def test_a_backend_switch_is_remembered_by_the_conversation(tmp_path: Path) -> None:
+    """Ryan named backend FIRST, and the first cut recorded it nowhere."""
+    d = _dir(tmp_path)
+    a = _App(st.Settings(), d)
+    a._adopt_convo_settings(born=True)
+
+    a.backend = _FakeBackend("codex")      # what /backend assigns
+
+    assert cs_mod.load(d).backend == "codex"
+
+
+def test_a_backend_switch_in_A_does_not_move_B(tmp_path: Path) -> None:
+    s = st.Settings()
+    a_dir, b_dir = _dir(tmp_path, "a"), _dir(tmp_path, "b")
+    a, b = _App(s, a_dir), _App(s, b_dir)
+    a._adopt_convo_settings(born=True)
+    b._adopt_convo_settings(born=True)
+
+    a.backend = _FakeBackend("codex")
+
+    assert cs_mod.load(a_dir).backend == "codex"
+    assert cs_mod.load(b_dir).backend == s.backend
+
+
+def test_opening_a_conversation_puts_it_back_on_its_own_engine(tmp_path: Path, monkeypatch) -> None:
+    """And through the FACTORY, so T690's VRAM gate is stamped on the rebuilt
+    backend — assigning a hand-made one would hand the app an ungated engine and
+    the modal would stop appearing for exactly the people who switch engines."""
+    from litetui import llm_backend
+
+    made: list[str] = []
+
+    def _fake_factory(settings):
+        made.append(settings.backend)
+        return _FakeBackend(settings.backend)
+
+    monkeypatch.setattr(llm_backend, "make_backend", _fake_factory)
+
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(backend="codex"))
+    a = _App(st.Settings(), d, backend_name="llamacpp")
+    a._adopt_convo_settings(born=False)
+
+    assert made == ["codex"], "the factory was not asked for the convo's engine"
+    assert a.backend.name == "codex"
+
+
+def test_an_engine_the_box_no_longer_has_falls_back_AND_SAYS_SO(tmp_path: Path, monkeypatch) -> None:
+    from litetui import llm_backend
+
+    def _boom(settings):
+        raise llm_backend.BackendError("that backend is unavailable")
+
+    monkeypatch.setattr(llm_backend, "make_backend", _boom)
+
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(backend="codex"))
+    a = _App(st.Settings(), d, backend_name="llamacpp")
+    a._adopt_convo_settings(born=False)
+
+    assert a.backend.name == "llamacpp", "it switched to an engine that cannot be built"
+    assert any("codex" in m for m in a.said), a.said
+
+
+def test_the_codex_effort_is_kept_in_its_OWN_field(tmp_path: Path) -> None:
+    """Ryan: *"think level when on codex"*. It is a different vocabulary from
+    LM Studio's thinking levels, so a conversation carried between engines must
+    not hand a codex effort to a llama.cpp level."""
+    d = _dir(tmp_path)
+    a = _App(st.Settings(), d, backend_name="codex")
+    a._adopt_convo_settings(born=True)
+
+    a.thinking_level = "high"
+
+    got = cs_mod.load(d)
+    assert got.reasoning_effort == "high"
+    assert got.thinking_level == "high"
+
+
+def test_a_NON_codex_level_does_not_write_the_codex_field(tmp_path: Path) -> None:
+    """The discriminator. Without it the arm above is satisfied by a setter that
+    writes both fields unconditionally, which is exactly the conflation the
+    separate field exists to prevent."""
+    d = _dir(tmp_path)
+    a = _App(st.Settings(), d, backend_name="llamacpp")
+    a._adopt_convo_settings(born=True)
+
+    a.thinking_level = "xhigh"
+
+    got = cs_mod.load(d)
+    assert got.thinking_level == "xhigh"
+    assert got.reasoning_effort is None
+
+
+def test_llama_load_settings_are_remembered_for_THIS_model(tmp_path: Path) -> None:
+    d = _dir(tmp_path)
+    a = _App(st.Settings(), d, backend_name="llamacpp")
+    a._adopt_convo_settings(born=True)
+    a.model_id = "qwen/qwen3-8b"
+
+    a.remember_load_settings("qwen/qwen3-8b", {"ctx": 8192, "gpu_layers": 99})
+
+    assert cs_mod.load(d).llama_load == {"ctx": 8192, "gpu_layers": 99}
+
+
+def test_load_settings_for_ANOTHER_model_are_not_claimed(tmp_path: Path) -> None:
+    """`/modelcfg` can edit a model the conversation is not using. Recording
+    that here would make the conversation claim a configuration it never ran."""
+    d = _dir(tmp_path)
+    a = _App(st.Settings(), d, backend_name="llamacpp")
+    a._adopt_convo_settings(born=True)
+    a.model_id = "qwen/qwen3-8b"
+
+    a.remember_load_settings("some/other-model", {"ctx": 512})
+
+    assert cs_mod.load(d).llama_load == {}
+
+
+def test_lmstudio_load_settings_land_in_the_LMSTUDIO_field(tmp_path: Path) -> None:
+    """Two runtimes, two key vocabularies. One merged dict would make a llama
+    ctx indistinguishable from an LM Studio one when the conversation moves."""
+    d = _dir(tmp_path)
+    a = _App(st.Settings(), d, backend_name="lmstudio")
+    a._adopt_convo_settings(born=True)
+    a.model_id = "qwen/qwen3-8b"
+
+    a.remember_load_settings("qwen/qwen3-8b", {"ctx": 4096})
+
+    got = cs_mod.load(d)
+    assert got.lmstudio_load == {"ctx": 4096}
+    assert got.llama_load == {}
+
+
+def test_opening_a_conversation_restores_its_load_settings_and_effort(tmp_path: Path) -> None:
+    """The READ half. The first cut had writers for nothing and readers for two
+    fields; these are the ones that had neither."""
+    s = st.Settings()
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(
+        model="qwen/qwen3-8b",
+        llama_load={"ctx": 8192},
+        reasoning_effort="high",
+    ))
+
+    a = _App(s, d)
+    a._adopt_convo_settings(born=False)
+
+    assert a.settings.llama_load_settings["qwen/qwen3-8b"] == {"ctx": 8192}
+    assert (a.settings.model_infer_overrides["qwen/qwen3-8b"]["reasoning_effort"]) == "high"
+
+
+def test_EVERY_declared_field_has_a_writer_or_is_named_as_carried_only() -> None:
+    """🔴 THE ARM THAT WOULD HAVE CAUGHT THE FIRST CUT, derived from the
+    dataclass rather than from a list.
+
+    A field in `ConvoSettings` that nothing ever writes is a promise the file
+    makes and the app does not keep. `tool_policy_profile` is the one deliberate
+    exception — it is CARRIED so the shape is stable, and its write-through is
+    its own card, because several of its eight assignment sites are transient
+    (a goal-loop override, two restore paths) and persisting those would record
+    a temporary elevation as the conversation's standing choice.
+    """
+    from dataclasses import fields as fields_of
+    from pathlib import Path as _P
+
+    app_src = _P(app_mod.__file__).read_text(encoding="utf-8")
+    carried_only = {"tool_policy_profile", "seat_name", "seat_id", "seat_tier"}
+
+    missing = []
+    for f in fields_of(cs_mod.ConvoSettings):
+        if f.name in carried_only:
+            continue
+        if f'"{f.name}"' not in app_src:
+            missing.append(f.name)
+
+    assert missing == [], (
+        f"{missing} are declared in ConvoSettings and never named in app.py — "
+        f"a field the file round-trips and the app never writes is a promise "
+        f"the schema makes and the product does not keep"
+    )
+    # The validity gate: an all-exempt list would satisfy the loop above.
+    assert len(carried_only) < len(fields_of(cs_mod.ConvoSettings))
