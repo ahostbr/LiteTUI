@@ -632,6 +632,51 @@ class LlamaCppBackend:
         """The owning app's name, or `None` when nobody claimed the router."""
         return self._attached_owner
 
+    def owner_exited(self) -> bool:
+        """True only when the app that owned our attached router has GONE.
+
+        🔴 THREE CONDITIONS, AND EACH ONE EXCLUDES A CASE WE MUST NOT TAKE OVER.
+        `attached` — our own dead server is a crash to report, not a takeover to
+        perform. The record being absent (or dead) — a server can stop answering
+        while its owner is very much alive, mid-restart or swapping a model, and
+        spawning a second router on a port another app still claims is the exact
+        collision `router_record` exists to prevent. The host being unhealthy —
+        an owner that deregistered but left the server up is still serving us.
+
+        ⚠️ REACHABLE BETWEEN LiteTUI AND LiteSuite, NOT BETWEEN TWO LiteTUIs.
+        `router_record` knows two owners, "litesuite" and "litetui", so
+        `is_mine` names the APP; a second LiteTUI reads the first's record as
+        its own and never attaches in the first place. That is a separate
+        defect — the record cannot tell a crashed instance's orphaned server
+        from a live sibling's — and it is not fixed here.
+        """
+        if not self.attached:
+            return False
+        record = router_record.read()
+        if record is not None and router_record.is_live(record):
+            return False
+        return not _healthy(self.host())
+
+    def recover_owner_exit(self) -> str | None:
+        """Become the owner after the previous one left. None when there is
+        nothing to recover, so a caller can use it as its own guard.
+
+        ⬜ IT DOES NOT TRY TO INHERIT THE SERVER — there is nothing left to
+        inherit. `shutdown()` tree-kills what it spawned, so by the time this
+        fires the process is gone and the port is free; `_ensure_running_sync`
+        finds nothing healthy and spawns ours, which is the ordinary path and
+        not a special case.
+        """
+        if not self.owner_exited():
+            return None
+        gone = self._attached_owner or "the other app"
+        self._ensure_running_sync()
+        if self.attached:
+            # Somebody else got there first between the two checks. Say nothing
+            # rather than claim a server we do not own.
+            return None
+        return f"{gone} closed its llama.cpp server — running my own instead."
+
     @property
     def single_model(self) -> bool:
         """True when the server serves ONE permanently-resident model.
@@ -1135,6 +1180,46 @@ class LlamaCppBackend:
         raise BackendError(
             f"cannot {verb}: {self._owner_label()} owns that server — switch "
             "models there, or stop it and I'll run my own."
+        )
+
+    def eviction_notice(self, key: str) -> str | None:
+        """What this load is about to push out, or None when it pushes nothing.
+
+        🔴 THE CEILING IS SHARED AND BELONGS TO WHOEVER SPAWNED THE ROUTER.
+        `--models-max` comes from the OWNER's `llama_models_max`, so a second
+        instance loading a model can evict one the first is mid-turn on, and the
+        router does it in silence — `/models/load` answers `{"success": true}`
+        either way. Naming it in the loading instance's status line is the whole
+        countermeasure: both sides read the same `/models`, so the other one
+        sees the change on its next refresh without any new protocol between
+        two apps that today share nothing but a port.
+
+        ⚠️ IT DOES NOT NAME *WHICH* MODEL WILL BE DROPPED. That policy is
+        llama.cpp's, not ours; "evicting X" when the router actually drops Y is
+        a confident wrong answer, and worse than a vague right one. It names
+        what is loaded and the ceiling that forces a choice.
+
+        ⚠️ AND IT NEVER RAISES. It runs on the way into a load, so a probe that
+        threw would turn a load that was about to succeed into a failure — the
+        warning is worth less than the thing it interrupts.
+        """
+        try:
+            rows = self._server_models()
+        except Exception:  # noqa: BLE001 - see the docstring
+            return None
+        loaded = [
+            mid for mid, row in rows.items()
+            if (row.get("status") or {}).get("value") == "loaded"
+        ]
+        if key in loaded:
+            return None
+        ceiling = int(self._settings.llama_models_max or 0)
+        if ceiling <= 0 or len(loaded) < ceiling:
+            return None
+        return (
+            f"loading {key} will unload one of {', '.join(sorted(loaded))} — "
+            f"this llama.cpp server holds {ceiling} at a time, and another app "
+            "may be using it."
         )
 
     def _load_sync(self, key: str) -> None:

@@ -2712,6 +2712,31 @@ class LiteTUI(App):
             )
         return True
 
+    def _llama_takeover_note(self) -> str | None:
+        """We became the owner of the llama.cpp router because the previous one
+        left, or None when there was nothing to take over.
+
+        🔴 CALLED ONCE PER FAILURE, NOT ONCE PER MESSAGE. The bubble and the rpc
+        `turn_end` both render the same failure, and `recover_owner_exit` is
+        idempotent — the second call would answer None and the two surfaces
+        would disagree about what happened. So the note is taken once and both
+        read it.
+
+        ⚠️ NEVER RAISES INTO A FAILURE PATH. This runs while something has
+        already gone wrong; a probe that threw here would replace a recoverable
+        error with an unhandled one.
+        """
+        if getattr(self.backend, "name", None) != "llamacpp":
+            return None
+        try:
+            note = self.backend.recover_owner_exit()
+        except Exception:  # noqa: BLE001 - see the docstring
+            return None
+        if not note:
+            return None
+        self._system(f"llama.cpp: {note}")
+        return f"{note} Send that again."
+
     # ── Connection ───────────────────────────────────────────────
 
     @work(exclusive=True, group="init")
@@ -3357,6 +3382,15 @@ class LiteTUI(App):
                 if is_loaded and cur and cur >= want:
                     return
 
+        # T688 G: the llama.cpp router's model ceiling is SHARED with whatever
+        # else is talking to it, so say what this load is about to displace
+        # BEFORE it happens — afterwards the other instance has already lost its
+        # model and nobody told either side.
+        notice = getattr(self.backend, "eviction_notice", None)
+        if callable(notice):
+            said = notice(self.model_id)
+            if said:
+                self._system(said)
         self._system(f"Loading {self.model_id} at {want:,} tokens…")
         try:
             # The backend owns the HOW: LM Studio via the SDK (replacing the
@@ -4803,10 +4837,18 @@ class LiteTUI(App):
                 )
                 self._elapsed.stop_body()
                 self._thinking_done()
-                widget.body.content = Text(_plain_backend_error(e, self.backend.name), style="bold red")
+                # T688 F: if the app that owned our attached llama.cpp router has
+                # left, take it over HERE, before the words are chosen — "start it
+                # or switch backends" is advice for a situation that is not the
+                # user's, and by the time they read it we can already be serving.
+                takeover = self._llama_takeover_note()
+                widget.body.content = Text(
+                    takeover or _plain_backend_error(e, self.backend.name), style="bold red"
+                )
                 widget.border_title = "Error"
                 self._scroll_down()
-                self._rpc_emit({"type": "turn_end", "stopReason": "error", "error": _plain_backend_error(e, self.backend.name)})
+                self._rpc_emit({"type": "turn_end", "stopReason": "error",
+                                "error": takeover or _plain_backend_error(e, self.backend.name)})
                 return
 
             try:
@@ -4939,13 +4981,21 @@ class LiteTUI(App):
                 )
                 self._elapsed.stop_body()
                 self._thinking_done()
-                widget.body.content = Text(_plain_backend_error(e, self.backend.name), style="bold red")
+                # T688 F: if the app that owned our attached llama.cpp router has
+                # left, take it over HERE, before the words are chosen — "start it
+                # or switch backends" is advice for a situation that is not the
+                # user's, and by the time they read it we can already be serving.
+                takeover = self._llama_takeover_note()
+                widget.body.content = Text(
+                    takeover or _plain_backend_error(e, self.backend.name), style="bold red"
+                )
                 widget.border_title = "Error"
                 self._scroll_down()
                 # T526: the open-failure branch above emits this; this branch
                 # did not, so an rpc client (LiteSuite's LiteTuiAdapter) that
                 # saw turn_start waited forever on a mid-stream 400.
-                self._rpc_emit({"type": "turn_end", "stopReason": "error", "error": _plain_backend_error(e, self.backend.name)})
+                self._rpc_emit({"type": "turn_end", "stopReason": "error",
+                                "error": takeover or _plain_backend_error(e, self.backend.name)})
                 return
             finally:
                 if isinstance(stream, model_transport.ResponseStream):
