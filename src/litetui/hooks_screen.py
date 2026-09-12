@@ -161,6 +161,39 @@ class HooksEditor(VerticalScroll):
         data["mode"] = self.query_one("#hook-mode", Select).value
         return hooks.Hook.parse(data, self.scope)
 
+    def get_state(self):
+        # Carry raw edits, even invalid JSON, and the original disk baseline.
+        # Re-reading disk here would hide a concurrent writer from Save.
+        return {
+            "scope": self.scope, "rows": list(self.rows), "baseline": self.baseline,
+            "selected": self.selected, "broken_bytes": self._broken_bytes,
+            "values": {w.id: w.value for w in self.query("Input, Select, Switch")},
+            "text": {w.id: w.text for w in self.query(TextArea)},
+            "display": {id: self.query_one(f"#{id}").display
+                        for id in ("hook-repair-json", "hook-repair")},
+            "messages": {id: self.query_one(f"#{id}", Static).render()
+                         for id in ("hook-error", "hook-result")},
+            "scroll_y": self.scroll_y,
+        }
+
+    def set_state(self, state):
+        self.scope, self.rows = state["scope"], list(state["rows"])
+        self.baseline, self.selected = state["baseline"], state["selected"]
+        self._broken_bytes = state["broken_bytes"]
+        # Suppress queued selection events that would reload disk over the draft.
+        with self.prevent(Select.Changed):
+            if hasattr(self.app, "hook_config"):
+                self.refresh_rows()
+            for id, value in state["values"].items():
+                self.query_one(f"#{id}").value = value
+        for id, text in state["text"].items():
+            self.query_one(f"#{id}", TextArea).load_text(text)
+        for id, display in state["display"].items():
+            self.query_one(f"#{id}").display = display
+        for id, message in state["messages"].items():
+            self.query_one(f"#{id}", Static).update(message)
+        self.call_after_refresh(self.scroll_to, y=state["scroll_y"], animate=False)
+
     def keep_form(self):
         if self.selected is None:
             return
@@ -274,6 +307,12 @@ class HooksBody(VerticalScroll):
         with Horizontal():
             yield Button("Close", id="hooks-close")
             yield SwapButton()
+
+    def get_state(self):
+        return self.query_one(HooksEditor).get_state()
+
+    def set_state(self, state):
+        self.query_one(HooksEditor).set_state(state)
 
     @on(Button.Pressed, "#hooks-close")
     def close(self):

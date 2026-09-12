@@ -375,7 +375,8 @@ async def test_explicit_compaction_can_persist_after_a_previous_stop(previous_st
     async def ready(**kwargs):
         pass
 
-    async def execute(name, args):
+    async def execute(name, args, *, hooks_enabled=True):
+        assert hooks_enabled is False, "compaction must bypass lifecycle hooks"
         executed.append(name)
         return "persisted", True
 

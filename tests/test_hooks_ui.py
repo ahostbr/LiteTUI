@@ -111,3 +111,55 @@ async def test_malformed_file_can_be_repaired_in_editor():
         area.load_text('{"version": 1, "hooks": []}')
         await click(pilot, app, "#hook-repair")
         assert not app.hook_config.snapshot().error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settings_host", [False, True])
+@pytest.mark.parametrize("broken", [False, True])
+async def test_swap_preserves_unsaved_hook_state_and_disk_baseline(settings_host, broken):
+    from functools import partial
+
+    from litetui.hooks_screen import HooksBody
+    from litetui.lifecycle_hooks import Hook
+    from litetui.settings_screen import SettingsBody
+    from litetui.side_panel import DialogController, SwapButton
+
+    app = app_fixture()
+    hook = Hook.parse({"id": "existing", "events": ["tool_before"], "executable": "python"}, "global")
+    app.hook_config.save("global", [hook], [])
+    if broken:
+        app.hook_config.global_path.write_text("{broken", encoding="utf-8")
+    async with app.run_test(size=(120, 50)) as pilot:
+        factory = partial(SettingsBody, app.settings) if settings_host else HooksBody
+        ctrl = DialogController(app, factory, "sidebar", "right")
+        app.run_worker(ctrl.open(), name="hook-swap")
+        for _ in range(8):
+            await pilot.pause()
+        editor = app.query_one(HooksEditor)
+        editor.query_one("#hook-scope", Select).value = "global"
+        await pilot.pause()
+        if not broken:
+            editor.query_one("#hook-new", Button).press()
+            await pilot.pause()
+        editor.query_one("#hook-field-argv", Input).value = "[unfinished"
+        editor.query_one("#hook-sample", TextArea).load_text('{"event":')
+        editor.query_one("#hook-repair-json", TextArea).load_text('{"version": 1, "hooks": []}')
+        expected = editor.get_state()
+        # A concurrent change must still conflict after swapping, not become
+        # the new baseline and get silently overwritten by Save/Repair.
+        app.hook_config.global_path.write_text("{changed externally", encoding="utf-8")
+        for style in ("modal", "sidebar"):
+            ctrl._view.body.query_one(SwapButton).press()
+            for _ in range(12):
+                await pilot.pause()
+            assert ctrl.style == style and ctrl.pending
+            editor = ctrl._view.body.query_one(HooksEditor)
+            carried = editor.get_state()
+            for key in ("scope", "rows", "baseline", "selected", "broken_bytes", "values", "text", "display"):
+                assert carried[key] == expected[key], f"swap lost {key}"
+        editor.query_one("#hook-field-argv", Input).value = "[]"
+        editor.query_one("#hook-repair" if broken else "#hook-save", Button).press()
+        await pilot.pause()
+        assert app.hook_config.global_path.read_text(encoding="utf-8") == "{changed externally"
+        assert str(editor.query_one("#hook-error", Static).render())
+        ctrl.resolve(None)

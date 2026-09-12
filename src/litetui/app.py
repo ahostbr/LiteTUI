@@ -1454,6 +1454,7 @@ class LiteTUI(App):
             self._rpc_emit_ready()
 
     async def on_unmount(self) -> None:
+        self._hook_shutting_down = True
         hook_host.leave_conversation(self)
         hook_host.queue_lifecycle(self, "app_shutdown")
         await hook_host.drain_lifecycle(self)
@@ -1933,11 +1934,13 @@ class LiteTUI(App):
         if policy is None:
             return tool_denied("no-metadata", name=name), False
         hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.SCHEDULED
-        refusal = await self._authorize_action(name, args, policy, profile=hook_profile)
+        authorize = getattr(self, "_authorize_action", partial(LiteTUI._authorize_action, self))
+        refusal = await authorize(name, args, policy, profile=hook_profile)
         if refusal:
             return refusal
         hook_context = hook_host.context(self)
-        run_hooks = hooks_enabled and not getattr(self, "_hooks_suppressed", False)
+        run_hooks = (hooks_enabled and getattr(self, "hook_config", None) is not None
+                     and not getattr(self, "_hooks_suppressed", False))
         if run_hooks:
             gate = await hook_host.dispatch(self, "tool_before", {"tool": name, "args": args},
                                             profile=hook_profile, captured=hook_context)

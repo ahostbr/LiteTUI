@@ -36,6 +36,15 @@ def context(app):
             "turn_id": getattr(app, "_hook_turn_id", None)}
 
 
+def report_failure(app, event, message):
+    if getattr(app, "_hook_shutting_down", False):
+        # Textual has removed the chat DOM before on_unmount. Keep shutdown
+        # diagnostics metadata-only; no hook output or free-form error text.
+        app.log.warning(f"Lifecycle hook failure during shutdown: {event}")
+    else:
+        app._system(message)
+
+
 async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=False):
     workspace = app._hook_workspace
     # The existing classifier receives the command plus its arguments; the
@@ -62,7 +71,7 @@ async def dispatch(app, event, data, *, profile=None, captured=None,
     if state.disabled:
         return hooks.HookResult(True)
     if state.error:
-        app._system(f"[hooks configuration error] {state.error}")
+        report_failure(app, event, f"[hooks configuration error] {state.error}")
         return hooks.HookResult(event not in hooks.GATES, state.error)
     ctx = captured or context(app)
     matches = state.matching(event, ctx["source"], data.get("tool", ""))
@@ -76,7 +85,7 @@ async def dispatch(app, event, data, *, profile=None, captured=None,
             return hooks.HookResult(False, "stopped by user")
         result = await invoke(app, hook, document, profile, allow_prompt=allow_prompt)
         if not result.allowed:
-            app._system(f"[hook {hook.id}] {result.reason}")
+            report_failure(app, event, f"[hook {hook.id}] {result.reason}")
             if hook.mode == "gate":
                 refusals.append(f"{hook.id}: {result.reason}")
     return hooks.HookResult(not refusals, "\n".join(refusals))
@@ -87,7 +96,7 @@ def queue_lifecycle(app, event, conversation_id=None):
         return
     ctx = {**context(app), "conversation_id": conversation_id}
     app._hook_lifecycle.append((event, ctx, snapshot(app)))
-    if app.is_running:
+    if app.is_running and not getattr(app, "_hook_shutting_down", False):
         app.run_worker(drain_lifecycle(app), group="hooks", exit_on_error=False)
 
 
@@ -96,7 +105,7 @@ async def drain_lifecycle(app):
         while app._hook_lifecycle:
             event, ctx, state = app._hook_lifecycle.pop(0)
             await dispatch(app, event, {}, captured=ctx, selected=state,
-                           allow_prompt=event != "app_shutdown")
+                           allow_prompt=event != "app_shutdown" and not getattr(app, "_hook_shutting_down", False))
 
 
 def leave_conversation(app):
@@ -123,7 +132,9 @@ def accept_prompt(app, item):
     app._hook_corrections = 0
     app._hook_turn_id = str(uuid.uuid4())
     app._hook_source = item.get("source", "queued")
-    app._materialise_convo()
+    materialise = getattr(app, "_materialise_convo", None)
+    if materialise is not None:
+        materialise()
     app._append({"role": "user", "content": item["content"]})
     _mark_delivered(item)
 
