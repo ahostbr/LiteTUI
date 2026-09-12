@@ -225,6 +225,24 @@ def _never_write_the_live_job_store(tmp_path, monkeypatch):
     monkeypatch.setattr(sched_mod, "load", lambda root: real_load(_swap(root)))
 
 
+# 🔴 `row_store` KEEPS A PER-FILE BASELINE IN MODULE STATE, so without this a
+# test's answer depends on which tests ran before it — the same class the
+# `_DEFAULT_VRAM_GATE` reset below exists for (T690: a dead App's bound method
+# answering for a live one).
+#
+# ⚠️ IT IS NOT COSMETIC HERE. The baseline decides whether a row counts as
+# CHANGED. A leftover entry from an earlier test that wrote the same tmp path
+# would make a real change look like a no-op, and the arm would go green
+# holding a file it never actually updated.
+@pytest.fixture(autouse=True)
+def _no_row_store_baseline_leaks_between_tests():
+    from litetui import row_store
+
+    row_store.forget()
+    yield
+    row_store.forget()
+
+
 # 🔴 THE SUITE MUST NOT DIAL OUT. THIS WAS 4.0 SECONDS PER CONSTRUCTED APP.
 #
 # Measured 2026-09-03, tests/_probe_floor.py, 12 reps per arm:

@@ -34,7 +34,20 @@ def test_a_killed_task_stays_killed_when_the_child_returns(tmp_path):
     assert t.state == tasks_mod.KILLED and txt.startswith(f"[task {t.id} killed")
 
 
-def test_store_round_trips_and_marks_running_rows_lost(tmp_path):
+def test_store_round_trips_and_marks_running_rows_lost(tmp_path, monkeypatch):
+    """⚠️ THE `monkeypatch` IS THE SUBJECT, NOT SCAFFOLDING (T689).
+
+    This arm used to need nothing: every `running` row was marked LOST at boot,
+    full stop. That premise — a task cannot outlive its app, because the child
+    sits in a kill-on-close Job Object — is still true, but it is a claim about
+    ONE process, and with two windows supported a second instance's boot was
+    making it about someone else's live work. `load` now asks whether the
+    OWNER is gone, so an arm about LOST has to say whose pid it means. Here it
+    is dead; `test_store_lost_update.py` has the live half.
+    """
+    from litetui import router_record
+
+    monkeypatch.setattr(router_record, "pid_is_live", lambda pid: False)
     a = tasks_mod.new_task("bash", {"command": "a"}, "")
     b = tasks_mod.new_task("bash", {"command": "b"}, "")
     tasks_mod.finish(b, "ok", True, tmp_path)
