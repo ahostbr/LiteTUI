@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from litetui import convo_settings as convo_settings_mod
 from litetui import harness as harness_mod
 from litetui import second_instance
 from litetui import vram_dialog
@@ -1141,6 +1142,13 @@ class LiteTUI(App):
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
         self.conversation: list[dict] = []
+        #: T691: the conversation's own settings, once one is open. None
+        #: while the app is still starting — the setters below check for it, so
+        #: startup assignments do not write a file for a conversation that does
+        #: not exist yet.
+        self._convo_settings = None
+        self._model_id: str = ""
+        self._thinking_level: str | None = None
         self.model_id: str = ""
         self.available_models: list[str] = []
         self.tools_enabled = self.settings.tools_enabled
@@ -2228,6 +2236,9 @@ class LiteTUI(App):
             seat_name=seat.name if seat is not None else None,
             seat_id=seat.agent_id if seat is not None else None,
         )
+        # T691: born here, from the global defaults, so the file exists from the
+        # first turn and a later change has something to merge into.
+        self._adopt_convo_settings(born=True)
         # Everything said before the first user message (the system prompt) was
         # held in memory only. This is where it reaches disk.
         if self.conversation:
@@ -2465,6 +2476,11 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        # T691: AFTER convo_dir moves and BEFORE the seat sync — this
+        # conversation's own model and think level are what /resume is
+        # restoring, and reading them from the old directory would apply the
+        # settings of the conversation being left.
+        self._adopt_convo_settings(born=False)
         self._sync_seat_identity()
         self._refresh_ctx_label()   # resumed into a different conversation
         # The restored system message already names THIS store (it was written
@@ -2716,6 +2732,115 @@ class LiteTUI(App):
                 f"{profile_text(profile)} — {tool_policy.PROFILES[profile].summary}"
             )
         return True
+
+    # ── per-conversation settings (T691) ─────────────────────────────────
+    #
+    # 🔴 PROPERTIES, BECAUSE THERE ARE 24 ASSIGNMENT SITES ACROSS SIX FILES.
+    # `app.model_id = …` and `app.thinking_level = …` are written from app.py,
+    # `plugins/misc.py`, `plugins/model_switch.py`, `rpc.py` and
+    # `goal_loop.py` — measured, not estimated. Persisting from the callers
+    # would mean a list of twenty-four places to remember, and T690 had just
+    # finished proving what happens to a rule kept as a list: the one caller
+    # nobody updated is the one the user meets. A write-through setter has no
+    # list to fall off, and a plugin added next month is covered by assigning
+    # the attribute it would assign anyway.
+    #
+    # ⚠️ A SETTER THAT WRITES A FILE MUST TOLERATE STARTUP. `__init__` assigns
+    # both fields before any conversation exists; `_convo_settings` is None
+    # until one is opened, and both setters return early on it. So the boot
+    # sequence writes nothing, which is also why `_convo_settings` is set up
+    # BEFORE the first assignment rather than beside the rest of the state.
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @model_id.setter
+    def model_id(self, value: str) -> None:
+        self._model_id = value
+        self._remember_for_this_convo("model", value)
+
+    @property
+    def thinking_level(self) -> str | None:
+        return self._thinking_level
+
+    @thinking_level.setter
+    def thinking_level(self, value: str | None) -> None:
+        self._thinking_level = value
+        self._remember_for_this_convo("thinking_level", value)
+
+    def _remember_for_this_convo(self, field: str, value) -> None:
+        """Write one field through to `.convos/<id>/settings.json`.
+
+        ⚠️ ONLY ON A REAL CHANGE, because these setters fire on every assignment
+        including the ones that re-assign the same value (a `/model` to the
+        model already selected, a reconnect re-applying the current level). A
+        write per assignment would rewrite the file several times per turn for
+        no change at all.
+
+        ⚠️ AND A FAILURE HERE IS NOT WORTH A TURN. A read-only directory or a
+        full disk must not take down the switch the user just made; the choice
+        is already live in memory, and the file is the part that can be retried.
+        """
+        cs = self._convo_settings
+        if cs is None or self.convo_dir is None:
+            return
+        if getattr(cs, field, None) == value:
+            return
+        setattr(cs, field, value)
+        try:
+            convo_settings_mod.save(self.convo_dir, cs)
+        except OSError as e:
+            runtime_log.record_error(
+                "convo_settings.save_failed",
+                detail=f"{self.convo_dir} — {e}", site="app")
+
+    def _adopt_convo_settings(self, born: bool) -> None:
+        """Apply this conversation's settings, or create them from the globals.
+
+        `born=True` is a NEW conversation: it copies the global defaults once
+        and writes them, so the file exists from the first turn and a later
+        change has something to merge into. `born=False` is an open or a
+        /resume: whatever the file says wins, and anything it does not say
+        falls through to the globals.
+        """
+        if self.convo_dir is None:
+            return
+        if born:
+            cs = convo_settings_mod.born_from(self.settings)
+            cs.seat_name = getattr(self.seat, "name", None)
+            cs.seat_id = getattr(self.seat, "agent_id", None)
+            cs.seat_tier = getattr(self.seat, "tier", None)
+            self._convo_settings = cs
+            try:
+                convo_settings_mod.save(self.convo_dir, cs)
+            except OSError:
+                pass
+            return
+
+        cs = convo_settings_mod.load(self.convo_dir)
+        self._convo_settings = cs
+        # Apply through the BACKING fields, not the properties: applying a
+        # stored value is not a new choice and must not write the file back.
+        model = convo_settings_mod.resolved(cs, self.settings, "model")
+        if model and self.available_models and model not in self.available_models:
+            # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
+            # the server no longer has — it was uninstalled, or this is another
+            # machine. Falling back silently would answer in a different model's
+            # voice while the header still showed the old name, which is the one
+            # outcome worse than an error.
+            # ⚠️ Guarded on `available_models` being POPULATED: it is empty
+            # until `connect()` has listed, and an empty list is "not known
+            # yet", never "the server has nothing".
+            self._system(
+                f"{model} is not on this server any more — this conversation "
+                f"falls back to {self.settings.default_model}."
+            )
+            model = self.settings.default_model
+        if model:
+            self._model_id = model
+        level = convo_settings_mod.resolved(cs, self.settings, "thinking_level")
+        self._thinking_level = None if level in (None, "off") else level
 
     async def _vram_gate_allows(self, model: str) -> bool:
         """May this load proceed? Asks the human when it would add weights.
