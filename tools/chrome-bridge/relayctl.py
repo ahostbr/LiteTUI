@@ -99,10 +99,11 @@ def start() -> str:
 
     flags = 0
     if sys.platform == "win32":
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP - so the relay outlives
-        # this TUI and never inherits its console. An attached child would spray
-        # its output into whatever terminal started us.
-        flags = 0x00000008 | 0x00000200
+        # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP. DETACHED_PROCESS still
+        # opened a visible venv console on Ryan's Windows 11 machine (T693), so
+        # "detached" was not the same property as "headless". The relay writes
+        # both streams to files and reads DEVNULL; it needs no console at all.
+        flags = 0x08000000 | 0x00000200
 
     out = open(OUT_LOG, "a", encoding="utf-8")
     err = open(ERR_LOG, "a", encoding="utf-8")
