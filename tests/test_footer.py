@@ -17,10 +17,17 @@ from litetui import app as app_mod
 from litetui import appsvc, turnstats
 
 ok = []
+#: The labels that FAILED. `ok` is bools, which is all the script needed for an
+#: exit status; a pytest arm has to be able to say WHICH check failed, and a
+#: bool cannot. Recorded alongside rather than by changing `ok`, so `sum(ok)` /
+#: `all(ok)` / `len(ok)` below keep meaning exactly what they meant (T699).
+failures: list[str] = []
 
 
 def chk(label, cond):
     ok.append(bool(cond))
+    if not cond:
+        failures.append(label)
     print(f"  {'ok  ' if cond else 'FAIL'}  {label}")
 
 
@@ -200,5 +207,28 @@ chk("50 further deltas do not repaint 50 times", s.painted == first_paint)
 # attribute. Counting what the app WOULD publish can.
 chk("...and exactly one value was published, not fifty-one", len(published) == 1)
 
-print(f"\n{sum(ok)}/{len(ok)} passed")
-sys.exit(0 if all(ok) else 1)
+# ── the same checks, as a pytest arm (T699) ─────────────────────────────
+#
+# 🔴 THIS FILE IS NAMED `test_*` AND NOTHING HAS EVER RUN IT. It ended in a
+# module-level `sys.exit`, so importing it during collection raised SystemExit
+# and pytest reported INTERNALERROR — which takes down the WHOLE run, not just
+# this file. Anyone assembling a list from disk got no results for any of it.
+#
+# ⚠️ `collect_ignore` WAS TRIED FIRST AND MEASURED INSUFFICIENT: it covers a
+# directory walk, not a path named on the command line, and a disk-derived list
+# is passed file by file. Neither it nor a `pytest_ignore_collect` hook stopped
+# the abort. The defect is the module-level side effect, so that is what moved.
+#
+# ⬜ THE CHECKS THEMSELVES ARE UNTOUCHED. They run at import, as they always
+# have; what changed is that the EXIT is behind `__main__` and a real arm reads
+# the result. `python tests/test_footer.py` behaves exactly as before.
+
+
+def test_every_footer_check_passed() -> None:
+    assert ok, "no check ran — the body above did not execute"
+    assert failures == [], failures
+
+
+if __name__ == "__main__":
+    print(f"\n{sum(ok)}/{len(ok)} passed")
+    sys.exit(0 if all(ok) else 1)
