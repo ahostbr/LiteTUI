@@ -64,33 +64,56 @@ class PickDouble(SimpleNamespace):
     llamacpp is the default because the same-model guard exists for it: a
     re-apply there evicts resident weights. The three arms that were already
     green keep exactly the behaviour they had.
+
+    ⚠️ THE METHOD NAMES ARE THE PUBLIC SPELLINGS SINCE T698, and that is a fact
+    about the fold rather than a preference. `on_model_picked` no longer has a
+    body: it calls `plugins.model_switch.switch_model`, which drives
+    `update_header` / `fetch_context_window` / `system_message` /
+    `apply_context_length`. The real app carries both spellings (app.py aliases
+    the private ones), but a SimpleNamespace carries only what it is given — so
+    a double still answering `_update_header` would record zero effects and
+    every count below would read 0 while the switch worked perfectly.
+
+    `available_models` is likewise not padding: `switch_model` REFUSES a target
+    it does not contain, which is the one behaviour the fold tightened. The old
+    copy assigned whatever it was handed.
     """
 
     def __init__(self, model_id="alpha", backend="llamacpp"):
         super().__init__(
             model_id=model_id,
+            available_models=["alpha", "beta"],
             headers=0,
             fetches=0,
             applied=0,
             said=[],
             probes=0,
+            emits=0,
+            _model_thinking_levels=None,
             backend=SimpleNamespace(name=backend),
         )
 
-    def _update_header(self):
+    def update_header(self):
         self.headers += 1
 
-    def _fetch_ctx_window(self):
+    def fetch_context_window(self):
         self.fetches += 1
 
-    def _system(self, message):
+    def system_message(self, message):
         self.said.append(message)
 
-    def _apply_context_length(self):
+    def apply_context_length(self):
         self.applied += 1
 
     def _probe_thinking(self):
         self.probes += 1
+
+    def _rpc_emit_model_state(self):
+        # Self-guarding in the real app (app.py:3247 returns unless `_rpc`), so
+        # the plugin calls it unconditionally and always did the same thing as
+        # app.py's `if getattr(self, "_rpc", False)` wrapper. Counted here so
+        # the arm below can say that out loud instead of implying a change.
+        self.emits += 1
 
 
 def test_picking_a_new_model_switches_and_drives_all_four_effects():
@@ -154,3 +177,40 @@ def test_a_non_lmstudio_backend_does_not_probe():
     # and the switch itself still happened -- the guard narrows one effect, not all
     assert d.model_id == "beta"
     assert (d.headers, d.fetches, d.applied) == (1, 1, 1)
+
+
+def test_the_picker_goes_through_the_ONE_switch_path() -> None:
+    """🔴 T698: `on_model_picked` was a second copy of `switch_model`.
+
+    Seven effects written out twice, so every future change to a switch had to
+    be made in two places and looked complete after the first. The callback now
+    delegates, and this pins that the delegation actually reaches the shared
+    body rather than a lookalike — `test_context_length.py` proves it does
+    nothing ELSE, by AST.
+
+    ⬜ AND THE REFUSAL IS NEW. `switch_model` declines a target that is not in
+    `available_models`; the old copy assigned whatever it was handed. The picker
+    only offers `available_models`, so nothing live loses a path — a STALE pick
+    is now declined instead of naming a model the server does not have.
+    """
+    d = PickDouble("alpha")
+    picked(d, "gamma")          # never offered, not available
+
+    assert d.model_id == "alpha", "a model the server does not have was selected"
+    assert (d.headers, d.fetches, d.applied, d.said) == (0, 0, 0, [])
+
+
+def test_the_rpc_emit_was_never_conditional_in_EFFECT() -> None:
+    """The drift I reported when I found this duplication was COSMETIC, and the
+    record should say so. app.py wrapped `_rpc_emit_model_state()` in
+    `if getattr(self, "_rpc", False)`; the plugin calls it bare. But the method
+    itself opens with that exact check (app.py:3247), so both spellings always
+    did the same thing. The fold is justified by the duplication, not by a bug
+    in it — and an arm that quietly implied otherwise would be worse than no
+    arm."""
+    import inspect
+
+    from litetui.app import LiteTUI
+
+    src = inspect.getsource(LiteTUI._rpc_emit_model_state)
+    assert 'if not getattr(self, "_rpc", False):' in src, src[:400]
