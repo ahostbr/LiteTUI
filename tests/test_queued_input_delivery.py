@@ -120,13 +120,13 @@ def test_delivery_is_wired_into_the_agent_loop() -> None:
     a full multi-round tool loop against a live model -- is not a unit test.
     """
     assert "def _deliver_queued_input" in APP_SRC
-    call_sites = APP_SRC.count("self._deliver_queued_input()")
+    call_sites = APP_SRC.count("await hook_host.queued_prompt(self)")
     assert call_sites >= 1, "_deliver_queued_input is defined but never called"
 
     # It has to sit at the round boundary, beside the staged-image drain, which
     # is the point that guarantees every tool_call_id has been answered.
     boundary = APP_SRC.index("if self._pending_tool_images:")
-    call = APP_SRC.index("self._deliver_queued_input()")
+    call = APP_SRC.index("await hook_host.queued_prompt(self)")
     assert call < boundary, (
         "the queued-input drain is not at the round boundary the image drain uses"
     )

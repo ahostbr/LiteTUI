@@ -115,7 +115,7 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
                 # kind of surprise.
                 _respond(cmd_id, ok=False, error=f"unknown tool profile {profile!r}")
                 return
-        app._submit_text(str(message), alt_chord=False)
+        app._submit_text(str(message), alt_chord=False, source="rpc")
         _respond(cmd_id, ok=True, result={"turn": "accepted"})
     elif cmd_type == "set":
         # T558-B. Authority and plan mode, mid-session, through the SAME setters

@@ -45,6 +45,7 @@ from textual.widgets import (
     TabPane,
 )
 
+from litetui.hooks_screen import HooksEditor
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
@@ -633,6 +634,8 @@ class SettingsBody(Widget):
                             )
 
                         # ── Interface ────────────────────────────────────────────────
+                with TabPane("Hooks", id="tab-hooks"):
+                    yield HooksEditor()
                 with TabPane("Themes", id="tab-themes"):
                     with VerticalScroll(classes="set-scroll"):
                         yield from self._select_row(
