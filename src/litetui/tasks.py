@@ -21,7 +21,7 @@ cwd, which is not the data root when LITETUI_DATA_ROOT is set) — the same disc
 same reason: a model that cannot tell "the output did not contain X" from
 "X was cut" reports absence as fact.
 
-This module is pure — no Textual, no app, no threads — so the store and the
+This module is pure — no Textual, no app, no worker threads — so the store and the
 wake text are testable without a terminal.
 """
 
@@ -31,6 +31,7 @@ import asyncio
 import contextvars
 import functools
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, fields
@@ -42,6 +43,10 @@ from litetui import router_record, row_store
 #: park the child on the TASK instead of the one foreground cancel slot, so a
 #: background shell never hijacks the cancel button of a foreground one.
 CURRENT: contextvars.ContextVar = contextvars.ContextVar("litetui_task", default=None)
+
+# Only the handle handoff is locked, never spawn/kill or other blocking work.
+# Stop and a late process attachment must agree which side owns the kill.
+_PROCESS_LOCK = threading.Lock()
 
 STORE = "background-tasks.json"
 LOG_DIR = ("output", "tasks")
@@ -135,6 +140,31 @@ def new_task(tool: str, args: dict, convo_id: str) -> Task:
         prompt=prompt_of(args),
         owner_pid=os.getpid(),
     )
+
+
+def pending_cancellable(task: Task) -> bool:
+    """Only shell providers participate in the late-process handoff below."""
+    return (task.state == RUNNING and getattr(task, "owner_pid", None) == os.getpid()
+            and task.tool in {"bash", "powershell"})
+
+
+def request_kill(task: Task) -> tuple[bool, object | None]:
+    """Claim a local running task, including the interval before spawn."""
+    with _PROCESS_LOCK:
+        owner = getattr(task, "owner_pid", None)
+        if task.state != RUNNING or owner not in (None, os.getpid()):
+            return False, None
+        if task.proc is None and not pending_cancellable(task):
+            return False, None  # other providers cannot promise a late-child kill
+        task.state = KILLED
+        return True, task.proc
+
+
+def attach_process(task: Task, proc: object) -> bool:
+    """Publish the handle; True transfers a pending Stop to this caller."""
+    with _PROCESS_LOCK:
+        task.proc = proc
+        return task.state == KILLED
 
 
 def log_path(task: Task, root: Path | str) -> Path:

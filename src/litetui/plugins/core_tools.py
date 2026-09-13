@@ -207,6 +207,9 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
     keep in step, and this repo has been bitten by a second copy today already.
     """
     t0 = time.monotonic()
+    task = tasks_mod.CURRENT.get()
+    if task is not None and task.state == tasks_mod.KILLED:
+        return "[cancelled] Background task stopped before process spawn."
     try:
         proc = ttyguard.popen(
             argv,
@@ -223,9 +226,17 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
     # foreground cancel slot: two shells overlap now, and the cancel button
     # must keep pointing at the one the turn is waiting on. `/tasks kill`
     # reaches this child through the task.
-    task = tasks_mod.CURRENT.get()
     if task is not None:
-        task.proc = proc
+        if tasks_mod.attach_process(task, proc):
+            # Stop won while popen was in flight. The app saw no handle, so
+            # this side owns its sole kill; never leave the late child orphaned.
+            killed = ttyguard.kill_tree(proc.pid, proc)
+            try:
+                out, err = proc.communicate(timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                return "[cancelled] Process stop could not be confirmed; it may still be running."
+            text = _bash_cancelled_result(out, err, t0)
+            return text if killed else text + "\n[warning] Process stop could not be confirmed."
     else:
         ttyguard.CANCELLABLE["proc"], ttyguard.CANCELLABLE["cancelled"] = proc, False
         # Reset beside "cancelled": a False left over from a PREVIOUS command

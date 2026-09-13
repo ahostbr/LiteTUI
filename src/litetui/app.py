@@ -2193,11 +2193,11 @@ class LiteTUI(App):
             reason = f"no task {task_id}"
             self._system(reason)
             return reason
-        if task.state != tasks_mod.RUNNING or task.proc is None:
+        accepted, proc = tasks_mod.request_kill(task)
+        if not accepted:
             reason = f"{task_id} is {task.state}; nothing to kill"
             self._system(reason)
             return reason
-        task.state = tasks_mod.KILLED
         # 🔴 THE THIRD TRANSITION, AND IT WAS NOT PERSISTED EITHER. A kill moved
         # the state in memory only: the store still said `running`, so
         # `tasks.load` marked it LOST at the next boot rather than KILLED — a
@@ -2206,7 +2206,10 @@ class LiteTUI(App):
         # chip down; see `_save_background`.
         self._save_background()
         self.notify(f"Killing {task_id}…", timeout=2)
-        self._kill_background_tree(task)
+        if proc is not None:
+            self._kill_background_tree(task)
+        # Otherwise the local runner observes KILLED before spawn, or claims
+        # the kill when a spawn already in flight attaches its handle.
         return None
 
     @work(thread=True, group="cancel")

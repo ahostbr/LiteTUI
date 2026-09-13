@@ -1,0 +1,25 @@
+# T719 prerequisite — Stop while a background shell is starting
+
+Owner: RustAxis, worker, `01a096ad-0296-7c82-94a9-4f596dfb57b2`. Branch `fix/t719-pending-spawn-stop`, base `7b47136fe1583e6f70077649a1f8e1e2505c87e4`, reused seat `C:/Projects/LiteTUI/.worktrees/feat-t719-litegui-runtime`. Sentinel explicitly directed a separate prerequisite branch for this preexisting defect. T719's GUI/API work is preserved on `feat/t719-litegui-runtime`; this branch contains no GUI implementation.
+
+The packaged LiteGUI desktop scenario failed Stop on a running background PowerShell task in all three repetitions. The RPC reported `is running; nothing to kill`. A real no-model CLI reproduction on main `7b47136` under Python 3.11.9, and the same source under Python 3.11.9 and embedded 3.13.15, reproduced the same interval: the task was already advertised as running, `proc` was still `None`, immediate Stop was refused, and a later Stop worked after the handle appeared. The defect predates T719; packaging latency exposed it. All probe children were stopped; data directories were isolated.
+
+## Change
+
+`tasks.request_kill` and `tasks.attach_process` arbitrate the process-handle handoff with a short lock. No spawn, kill, disk access or other blocking work occurs under that lock. A Stop request marks a locally owned running shell task killed even before it has a process handle. A shell that has not started suppresses its spawn; if spawn was already in flight, the thread attaching the handle owns the single kill. If the handle arrived first, the existing app kill worker owns it.
+
+Pending acceptance is limited to `bash` and `powershell`, the providers participating in this handoff. Foreign tasks, unowned persisted rows and pending non-shell/subagent/trusted-provider work are not reported killed. Existing process-backed cancellation retains its behavior. The task row's schema is unchanged; the synchronization lock is not serialized. Killed state is persisted through the existing app transition and retained when the background runner finishes.
+
+The unchanged single-constructor `tasks.load` invariant had an unrelated stale line-number assertion (`app.py:1216` vs the baseline's actual `app.py:1251`). The exact structural assertion already reviewed for T719 is migrated here: it requires one call in `app.py` whose containing function is `__init__`. It does not permit another load or a different caller.
+
+## Behavioral evidence
+
+- Original real CLI logs: `artifacts/t719/background-start-main311.log`, `background-start-python311.log`, and `background-start-python313.log`; all show running/no-handle, refused immediate Stop, eventual attachment and later successful stop.
+- Deterministic regression injects a delay before shell startup and before handle attachment. It asserts accepted Stop, durable killed state, no side-effect sentinel, no child in the before-spawn case, and exactly one confirmed child kill in the late-attachment case. Foreign ownership is a negative control.
+- Initial regression log `pending-spawn-red.log`: `2 failed, 1 passed in 17.79s`. One fixture initially delayed executable availability registration in the constructor as well; its delay was moved after registration. The late-attachment arm reached the actual Stop refusal before implementation. Both corrected phase arms and the foreign guard passed: `3 passed in 5.42s`.
+- Review exposed an overbroad first implementation. Owned non-shell negatives were red (`2 failed, 3 deselected in 0.93s`), then pending acceptance was restricted to coordinated shell providers. Pending cancellation, structural census and existing RPC task tests passed together: `30 passed in 8.57s`.
+- The first 27-file census/six-guard/cancellation run reported `1 failed, 302 passed in 82.90s (0:01:22)`. The only failure was the preexisting hard-coded constructor line described above; no cancellation or runtime guard failed.
+
+The final 27-file command and list are recorded under `artifacts/t719/pending-spawn-gate-command.txt` and `pending-spawn-gate-files.txt`. The set is the 19 disk-derived AST/walk census files plus six mandatory guards and existing/new background cancellation tests, deduplicated to 27. Canonical interpreter: `C:/Projects/LiteTUI/.venv/Scripts/python.exe`, `PYTHONUTF8=1`, explicit named pytest files, `-q -p no:cacheprovider`. This is a coordinated single-runner check, not the full suite and not a live model test.
+
+**Final result: `305 passed in 81.51s (0:01:21)`, exit 0.** Log: `artifacts/t719/pending-spawn-gate-final.log`. Ruff across the five changed Python files against pristine `7b47136` blobs using the same canonical interpreter/configuration: **76 baseline / 76 current**, identical per-code counts, zero additions. `git diff --check` passes. Touched files are `src/litetui/app.py`, `src/litetui/tasks.py`, `src/litetui/plugins/core_tools.py`, `tests/test_pending_background_cancel.py`, `tests/test_store_lost_update.py`, and this report. Commit/push is explicitly authorized; Sentinel owns merge and the subsequent T719 rebase/gate sequence.

@@ -307,7 +307,7 @@ def test_load_is_called_once_at_construction_and_nowhere_else():
     from pathlib import Path
 
     src = Path(tasks_mod.__file__).resolve().parent
-    calls: list[str] = []
+    calls: list[tuple[str, list[str]]] = []
     for py in sorted(src.rglob("*.py")):
         try:
             tree = ast.parse(py.read_text(encoding="utf-8"))
@@ -321,9 +321,12 @@ def test_load_is_called_once_at_construction_and_nowhere_else():
                 and isinstance(node.func.value, ast.Name)
                 and "tasks" in node.func.value.id.lower()
             ):
-                calls.append(f"{py.name}:{node.lineno}")
+                owners = [parent.name for parent in ast.walk(tree)
+                          if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+                          and node in ast.walk(parent)]
+                calls.append((py.name, owners))
 
-    assert calls == ["app.py:1216"], (
+    assert calls == [("app.py", ["__init__"])], (
         f"tasks.load is called from {calls}. It may only run at construction: "
         f"`_owner_alive` reads OUR pid on a disk row as a reused pid, which is "
         f"only true before this process has started any task."
