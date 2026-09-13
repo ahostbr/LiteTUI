@@ -43,6 +43,7 @@ from litetui import router_record, row_store
 #: park the child on the TASK instead of the one foreground cancel slot, so a
 #: background shell never hijacks the cancel button of a foreground one.
 CURRENT: contextvars.ContextVar = contextvars.ContextVar("litetui_task", default=None)
+PROCESS_SLOT: contextvars.ContextVar = contextvars.ContextVar("litetui_process_slot", default=None)
 
 # Only the handle handoff is locked, never spawn/kill or other blocking work.
 # Stop and a late process attachment must agree which side owns the kill.
@@ -113,6 +114,57 @@ class Task:
         return max(0.0, end - self.started)
 
 
+@dataclass
+class ProcessSlot:
+    """One call's handle and mutable owner, shared across promotion and spawn."""
+    proc: object | None = None
+    task: Task | None = None
+
+
+async def run_in_process_slot(aw, slot: ProcessSlot):
+    token = PROCESS_SLOT.set(slot)
+    try:
+        return await aw
+    finally:
+        PROCESS_SLOT.reset(token)
+
+
+def promote_process(slot: ProcessSlot, task: Task, foreground: dict) -> None:
+    with _PROCESS_LOCK:
+        slot.task = task
+        task.proc = slot.proc
+        if foreground.get("proc") is slot.proc:
+            foreground["proc"] = None
+
+
+def publish_process(slot: ProcessSlot, proc: object, foreground: dict) -> tuple[Task | None, bool]:
+    with _PROCESS_LOCK:
+        slot.proc = proc
+        if slot.task is not None:
+            slot.task.proc = proc
+            return slot.task, slot.task.state == KILLED
+        foreground.update(proc=proc, cancelled=False, kill_confirmed=True)
+        return None, False
+
+
+def finish_process(slot: ProcessSlot | None, task: Task | None, proc: object,
+                   foreground: dict, *, consume_cancelled: bool = True) -> tuple[bool, bool]:
+    """Clear and take cancellation metadata only while this call still owns it."""
+    with _PROCESS_LOCK:
+        if task is not None or (slot is not None and slot.task is not None):
+            return False, True
+        current = foreground.get("proc")
+        if current is not None and current is not proc:
+            return False, True
+        if current is proc:
+            foreground["proc"] = None
+        cancelled = bool(foreground.get("cancelled", False)) if consume_cancelled else False
+        confirmed = bool(foreground.get("kill_confirmed", True))
+        if consume_cancelled:
+            foreground["cancelled"] = False
+        return cancelled, confirmed
+
+
 def label_of(tool: str, args: dict) -> str:
     """What the task is, in one short line: the command's first line, trimmed."""
     raw = (args or {}).get("command") or (args or {}).get("prompt") or ""
@@ -145,7 +197,8 @@ def new_task(tool: str, args: dict, convo_id: str) -> Task:
 def pending_cancellable(task: Task) -> bool:
     """Only shell providers participate in the late-process handoff below."""
     return (task.state == RUNNING and getattr(task, "owner_pid", None) == os.getpid()
-            and task.tool in {"bash", "powershell"})
+            and task.tool in {"bash", "powershell"}
+            and getattr(task, "_pending_process_handoff", False))
 
 
 def request_kill(task: Task) -> tuple[bool, object | None]:

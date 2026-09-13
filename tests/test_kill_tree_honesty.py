@@ -146,18 +146,27 @@ def test_CONTROL_the_cancel_result_is_unchanged_when_the_kill_was_confirmed():
     assert "could NOT be confirmed" not in out
 
 
-def test_a_failed_kill_does_not_leak_its_warning_into_the_NEXT_command():
+def test_a_failed_kill_does_not_leak_its_warning_into_the_NEXT_command(monkeypatch):
     """`kill_confirmed` is reset at spawn beside `cancelled`. Without that, one
     unconfirmed cancel would attach its warning to every later result for the
     life of the process - a true warning in the wrong place, which trains the
     reader to ignore it."""
-    ttyguard.CANCELLABLE["kill_confirmed"] = False
-    src = Path(core_tools.__file__).read_text(encoding="utf-8")
-    body = src.split("def _run_shell(", 1)[1].split("\ndef ", 1)[0]
-    assert 'CANCELLABLE["kill_confirmed"] = True' in body, (
-        "_run_shell does not reset kill_confirmed at spawn"
-    )
-    ttyguard.CANCELLABLE["kill_confirmed"] = True
+    foreground = {"proc": None, "cancelled": False, "kill_confirmed": False}
+    monkeypatch.setattr(ttyguard, "CANCELLABLE", foreground)
+
+    def communicate(timeout):
+        # Exercise the actual spawn/publication path, even when its atomic
+        # reset moves to a shared helper. The next cancellation is confirmed.
+        assert foreground["kill_confirmed"] is True
+        foreground["cancelled"] = True
+        return "new output", ""
+
+    proc = types.SimpleNamespace(returncode=0, communicate=communicate)
+    monkeypatch.setattr(ttyguard, "popen", lambda *args, **kwargs: proc)
+    result = core_tools._run_shell(["fixture"], shell=False, timeout=1)
+    assert "[cancelled by user" in result
+    assert "could NOT be confirmed" not in result
+    assert "new output" in result
 
 
 # ── structural: the blanket swallow must not come back ──────────────────
