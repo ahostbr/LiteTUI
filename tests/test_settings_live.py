@@ -62,24 +62,39 @@ def make_app():
 
 async def main():
     print("=== /settings opens the real screen ===")
-    a = make_app()
-    async with a.run_test() as pilot:
-        a._handle_command("/settings")
-        await pilot.pause()
-        from litetui.settings_screen import SettingsScreen
+    # `/settings` asks only for a read-only residency snapshot. Patch the
+    # command's lookup seam for this block, including standalone-script mode
+    # where no pytest monkeypatch fixture exists, and restore it even if a UI
+    # assertion fails so later tests keep the real function.
+    from litetui.plugins import settings_ui
 
-        chk("a SettingsScreen is on top", isinstance(a.screen, SettingsScreen))
-        # The knobs behind the two caps that started this must be reachable.
-        for fid in ("f-tool_iterations", "f-compact_max_tokens", "f-autocompact_at_percent"):
-            try:
-                a.screen.query_one(f"#{fid}")
-                found = True
-            except Exception:
-                found = False
-            chk(f"{fid} is present and mounted", found)
-        a.screen.action_cancel()
-        await pilot.pause()
-        chk("cancel closes it", not isinstance(a.screen, SettingsScreen))
+    original_resident_models = settings_ui.model_residency.resident_models
+    settings_ui.model_residency.resident_models = lambda app: ({"b-model"}, False)
+    try:
+        a = make_app()
+        async with a.run_test() as pilot:
+            a._handle_command("/settings")
+            await pilot.pause()
+            from litetui.settings_screen import SettingsScreen
+
+            chk("a SettingsScreen is on top", isinstance(a.screen, SettingsScreen))
+            # The knobs behind the two caps that started this must be reachable.
+            for fid in ("f-tool_iterations", "f-compact_max_tokens", "f-autocompact_at_percent"):
+                try:
+                    a.screen.query_one(f"#{fid}")
+                    found = True
+                except Exception:
+                    found = False
+                chk(f"{fid} is present and mounted", found)
+            a.screen.action_cancel()
+            await pilot.pause()
+            chk("cancel closes it", not isinstance(a.screen, SettingsScreen))
+    finally:
+        settings_ui.model_residency.resident_models = original_resident_models
+    chk(
+        "settings residency probe restored after the screen closes",
+        settings_ui.model_residency.resident_models is original_resident_models,
+    )
 
     print("\n=== /clear-screen clears the DISPLAY, not the conversation ===")
     a = make_app()

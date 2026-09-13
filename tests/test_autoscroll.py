@@ -46,8 +46,55 @@ class FakeScroll:
         self.max_scroll_y = max_scroll_y
         self.scrolled = False
 
-    def scroll_end(self, animate=False):
+    def call_after_refresh(self, callback):
+        # The ordinary unit fake has no refresh loop. Controlled ordering tests
+        # below replace this with a queue.
+        callback()
+
+    def scroll_end(self, animate=False, on_complete=None, immediate=False):
         self.scrolled = True
+        # Production Textual invokes this after its deferred scroll settles.
+        # The fake has no refresh loop, so settle synchronously at its tail.
+        self.scroll_y = self.max_scroll_y
+        if on_complete is not None:
+            on_complete()
+
+
+class DeferredScroll(FakeScroll):
+    """Textual's two async seams, with release controlled by the test.
+
+    ``scroll_end(immediate=False)`` queues the layout-aware action. The action
+    changes the viewport and then queues its completion separately, matching
+    Textual's call_after_refresh + call_next ordering closely enough that
+    reader input can be inserted on either side.
+    """
+
+    def __init__(self, scroll_y, max_scroll_y):
+        super().__init__(scroll_y, max_scroll_y)
+        self.actions = []
+        self.completions = []
+
+    def call_after_refresh(self, callback):
+        self.actions.append(callback)
+
+    def scroll_end(self, animate=False, on_complete=None, immediate=False):
+        if not immediate:
+            self.actions.append(
+                lambda: self.scroll_end(
+                    animate=animate, on_complete=on_complete, immediate=True
+                )
+            )
+            return
+        self.scrolled = True
+        self.scroll_y = self.max_scroll_y
+        if on_complete is not None:
+            self.completions.append(on_complete)
+
+    def release_action(self):
+        self.actions.pop(0)()
+
+    def release_completion(self):
+        self.completions.pop(0)()
 
 
 class FakeApp:
@@ -73,10 +120,18 @@ class FakeApp:
     # shipping logic, so these assertions test the product, not a model of it.
     _still_following = app_mod.LiteTUI._still_following
 
+    def _next_follow_generation(self):
+        self._follow_generation += 1
+        return self._follow_generation
+
+    def _reader_left_follow_tail(self):
+        self._next_follow_generation()
+
     def __init__(self, log, autoscroll=True, follow_anchor=100.0):
         self._log = log
         self.settings = settings_mod.Settings(autoscroll=autoscroll)
         self._follow_anchor = follow_anchor
+        self._follow_generation = 0
 
     def query_one(self, sel):
         return self._log
@@ -191,6 +246,27 @@ def test_stream_branches_scroll():
     # kwarg is gone) and the CLAIM did not — this branch must still scroll.
     m = re.search(r"if delta\.content:(.{0,600})", src, re.S)
     assert m and "self._scroll_down()" in m.group(1), "answer-content branch scrolls"
+
+
+def test_chat_log_wheel_handler_invalidates_before_textual_default_scroll() -> None:
+    """The product seam is the widget handler, not only a directly called helper."""
+    src = Path(app_mod.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    chat_log = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ChatLog"
+    )
+    handler = next(
+        node for node in chat_log.body
+        if isinstance(node, ast.FunctionDef) and node.name == "on_mouse_scroll_up"
+    )
+    calls = [
+        node for node in ast.walk(handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_reader_left_follow_tail"
+    ]
+    assert len(calls) == 1, "chat-log wheel-up does not invalidate queued follow work"
 
 
 def test_follow_mode_is_used_never_a_bare_scroll_end():
@@ -428,6 +504,49 @@ def test_the_readers_OWN_action_scrolls_even_when_scrolled_up():
     assert app._follow_anchor == log.scroll_y, "the lock was not re-engaged"
 
 
+def test_wheel_up_invalidates_an_accepted_but_deferred_scroll() -> None:
+    """A stale accepted operation must not overrule newer reader intent.
+
+    This is Textual's real ordering under control: ``scroll_end`` defers the
+    viewport move until after refresh, and its completion is deferred again.
+    The reader wheels upward between acceptance and execution. Releasing both
+    old callbacks must then be a no-op -- checking only the completion would
+    still let the action visibly yank the reader to the tail.
+    """
+    log = DeferredScroll(100.0, 140.0)
+    app = FakeApp(log, follow_anchor=100.0)
+
+    app_mod.LiteTUI._scroll_down(app)
+    assert len(log.actions) == 1, "the accepted operation was not deferred"
+
+    log.scroll_y = 70.0
+    app_mod.LiteTUI._reader_left_follow_tail(app)
+    app_mod.LiteTUI._scroll_down(app)
+    assert len(log.actions) == 1, "the newer request should refuse while reader is up"
+
+    log.release_action()
+    assert log.scroll_y == 70.0, "stale deferred action yanked the reader to the tail"
+    assert log.completions == [], "an invalidated action still armed a completion"
+    assert app._follow_anchor == 100.0, "stale action changed follow ownership"
+
+
+def test_wheel_up_invalidates_a_deferred_completion_too() -> None:
+    """Reader intent may arrive after the action but before its completion."""
+    log = DeferredScroll(100.0, 140.0)
+    app = FakeApp(log, follow_anchor=100.0)
+
+    app_mod.LiteTUI._scroll_down(app)
+    log.release_action()
+    assert log.scroll_y == 140.0
+    assert len(log.completions) == 1
+
+    log.scroll_y = 70.0
+    app_mod.LiteTUI._reader_left_follow_tail(app)
+    log.release_completion()
+    assert log.scroll_y == 70.0
+    assert app._follow_anchor == 100.0, "stale completion re-armed follow ownership"
+
+
 def test_a_refused_scroll_does_NOT_move_the_anchor():
     """🔴 THE ARM THAT SEPARATES A GATE FROM A FIX, and the reason one bare call
     used to poison the whole turn.
@@ -511,4 +630,9 @@ def test_emptying_the_log_clears_the_anchor():
             f"the first thing a log-emptying site does with the anchor is not "
             f"clearing it (near offset {i}) — the next scroll would be judged "
             f"against a position from the conversation just thrown away"
+        )
+        reset_end = src.find("\n", nxt)
+        assert "_next_follow_generation()" in src[reset_end:reset_end + 80], (
+            f"emptying the log did not invalidate already queued scroll work "
+            f"(near offset {i})"
         )

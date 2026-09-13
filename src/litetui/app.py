@@ -398,6 +398,22 @@ def key_label(key: str) -> str:
     )
 
 
+class ChatLog(VerticalScroll):
+    """The conversation viewport, including ownership of upward reader intent.
+
+    Textual defers ``scroll_end`` until after refresh. Its ordinary wheel
+    handler therefore can't know that an older app-requested scroll is waiting
+    to run. Invalidate those requests *before* applying wheel-up so stale work
+    can neither yank the viewport nor later rewrite the follow anchor.
+    """
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        # Ctrl/Shift-wheel is Textual's horizontal-scroll gesture, not an
+        # attempt to leave the conversation tail vertically.
+        if not (event.ctrl or event.shift):
+            self.app._reader_left_follow_tail()
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -1242,6 +1258,10 @@ class LiteTUI(App):
         # The last scroll position this app SET. Following is judged against it,
         # never against max_scroll_y -- see _scroll_down.
         self._follow_anchor: float | None = None
+        # Authorization token for app-owned deferred scrolls. Wheel-up advances
+        # it before Textual moves the viewport, invalidating both a queued
+        # action and a separately queued completion from the old intent.
+        self._follow_generation = 0
         self._compact_card = None            # the live CompactionCard, if any
         #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
         #: Flushed one per turn end — consecutive role:"user" messages are a
@@ -1421,7 +1441,7 @@ class LiteTUI(App):
         yield Header()
         # No cancel control here any more: it is mounted next to the tool it
         # kills, by _tool_begin. See CancelToolButton.
-        yield VerticalScroll(id="chat-log")
+        yield ChatLog(id="chat-log")
         yield Static(
             "  Image attached — Ctrl+X to remove", id="image-indicator"
         )
@@ -2659,6 +2679,7 @@ class LiteTUI(App):
         # open at the top. `None` is already defined as "nothing scrolled yet,
         # trivially following", which is the truth about a log just emptied.
         self._follow_anchor = None
+        self._next_follow_generation()
         users = assistants = tools = 0
         for m in msgs:
             role = m.get("role")
@@ -3996,6 +4017,7 @@ class LiteTUI(App):
         """
         self.query_one("#chat-log").remove_children()
         self._follow_anchor = None    # see _resume: a rebuilt log has no anchor
+        self._next_follow_generation()
         if note:
             self._system(note)
 
@@ -4417,6 +4439,15 @@ class LiteTUI(App):
         self._model_thinking_levels = levels
         self._update_header()
 
+    def _next_follow_generation(self) -> int:
+        """Invalidate earlier deferred scroll work and return the new token."""
+        self._follow_generation += 1
+        return self._follow_generation
+
+    def _reader_left_follow_tail(self) -> None:
+        """Give newer upward reader intent priority over deferred app work."""
+        self._next_follow_generation()
+
     def _still_following(self, log) -> bool:
         """Has the READER moved, or has the CONTENT moved?
 
@@ -4498,12 +4529,31 @@ class LiteTUI(App):
                 return
             if not self._still_following(log):
                 return
-        log.scroll_end(animate=False)
-        # Remember where we put it. The next follow check compares against THIS,
-        # not against a bottom that keeps moving away. Reached only when we
-        # actually scrolled: a REFUSED scroll must leave the anchor alone, or
-        # the refusal would re-arm the very lock it just honoured.
-        self._follow_anchor = log.scroll_y
+        # Textual's public scroll_end is deferred even with animation disabled.
+        # Own that first defer here so its ACTION can validate authorization;
+        # validating only the completion is too late because the stale action
+        # may already have yanked a reader who wheeled upward meanwhile.
+        generation = self._next_follow_generation()
+
+        def scroll_if_current() -> None:
+            if generation != self._follow_generation:
+                return
+
+            # Layout has now settled, so immediate=True uses the current end.
+            # Textual still schedules on_complete separately; validate there as
+            # well because wheel-up can interleave after this move but before
+            # ownership would otherwise be recorded.
+            def remember_settled_end() -> None:
+                if generation == self._follow_generation:
+                    self._follow_anchor = log.scroll_y
+
+            log.scroll_end(
+                animate=False,
+                immediate=True,
+                on_complete=remember_settled_end,
+            )
+
+        log.call_after_refresh(scroll_if_current)
 
     # ── Image handling ───────────────────────────────────────────
 

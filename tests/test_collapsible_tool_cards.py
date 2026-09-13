@@ -39,15 +39,23 @@ async def test_running_tool_card_starts_expanded_with_header_and_full_body() -> 
 
 
 @pytest.mark.asyncio
-async def test_completed_tool_collapses_and_header_keeps_elapsed_and_result_size() -> None:
+async def test_completed_tool_collapses_and_header_keeps_elapsed_and_result_size(
+    monkeypatch,
+) -> None:
     app = _app()
     async with app.run_test(size=(100, 35)) as pilot:
         card = ToolMessage("read")
         app.query_one("#chat-log").mount(card)
         await pilot.pause()
         card.set_args('{"path": "README.md"}')
-        card._t0 -= 2.0
-        card.set_result("first line\nsecond line", True)
+        # `widgets.time` is Python's shared time module, so a test-wide patch
+        # would also freeze asyncio/Textual's clock and deadlock the pilot.
+        # Freeze only the synchronous product seam that captures `_took`.
+        with monkeypatch.context() as clock:
+            clock.setattr(
+                "litetui.widgets.time.monotonic", lambda: card._t0 + 2.0
+            )
+            card.set_result("first line\nsecond line", True)
         await pilot.pause()
 
         header = _plain(card.header.content)
