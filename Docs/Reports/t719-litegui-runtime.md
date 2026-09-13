@@ -1,5 +1,7 @@
 # T719 — LiteGUI runtime interfaces and shared ownership
 
+**ADVISORY LEASE LIMIT — Ryan's currently running pre-T719 LiteTUI instance must stop and restart on the updated build BEFORE any new LiteTUI or LiteGUI process touches the same data root. Older instances ignore these leases; otherwise silent simultaneous writers remain possible. The protocol protects cooperating updated runtimes, not an already-running legacy writer.**
+
 Owner: RustAxis, worker, `01a096ad-0296-7c82-94a9-4f596dfb57b2`. Branch: `feat/t719-litegui-runtime`. Worktree: `C:/Projects/LiteTUI/.worktrees/feat-t719-litegui-runtime`. Original base: `9735a96`. Review base after the separate census and shutdown corrections: `928a9b7`. Sentinel owns review and merge; this report does not claim a release or Ryan's real-backend acceptance.
 
 ## Ryan's implementation intent
@@ -307,6 +309,20 @@ The fixture had only an in-memory fake job and mocked scheduler persistence. T71
 
 Red first: isolate `paths.data_root()` to the test directory and create an empty store while retaining the old fake. The same arm then produced `1 failed in 1.27s`: actual `['typed', 'rpc', 'harness']`, expected `['typed', 'rpc', 'harness', 'scheduled']`. Evidence: `artifacts/t719/hook-boundaries-empty-store-red.log`.
 
-Correction: keep the isolated initially empty store, persist a real `scheduler.Job` through production `scheduler.save`, remove the prepare/save mocks, and assert the persisted execution count is one. The exact four-source admission assertion remains unchanged, with a comment explaining shared-scheduler candidate ownership. No production source changed.
+Correction: keep the isolated initially empty store, persist a real `scheduler.Job` through production `scheduler.save`, remove the prepare/save mocks, and assert the persisted execution count is one. The exact four-source admission assertion remains unchanged, with a comment explaining shared-scheduler candidate ownership. No production source changed in this correction.
 
 Verification: `PYTHONUTF8=1 C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest tests/test_hook_boundaries.py -q -p no:cacheprovider` -> **`20 passed in 8.47s`**, exit 0. Evidence: `artifacts/t719/hook-boundaries-review-green.log`. Ruff on this test file using the canonical interpreter and repository configuration: **0 baseline / 0 current**. This supplement changes one test file and this report only; the 159-file runtime gate above remains evidence for unchanged runtime code. Sentinel explicitly authorized one correction commit and push on `feat/t719-litegui-runtime`; merging remains Sentinel's responsibility.
+
+## Final review corrections: isolation and legacy RPC evidence
+
+The autouse test fixture now redirects `LITETUI_DATA_ROOT` to each test's `tmp_path`, including authoritative jobs reads and persistent lease/version files. Import-time writable anchors (`CONVO_DIR`, `LLAMA_DIR`, audio working/log paths and suspended-seat breadcrumb) follow the same temporary root. It creates nothing eagerly. A checkout-root before/after listing rejects added/deleted entries and modified root files. Negative controls prove additions, edits and deletions are detected; this is a root-listing guard, not a recursive filesystem monitor.
+
+The new isolation test failed before invoking writers when the fixture was absent: **`1 failed in 0.18s`**. The first guarded group then caught the import-time conversation anchor (`77 passed, 1 error in 18.15s`), demonstrating the guard detects the actual leaked marker/lock. After rebinding those anchors, the five-file focused group (`test_live_state_guard.py`, `test_data_root.py`, `test_jobs_store_root.py`, `test_hook_boundaries.py`, `test_gui_management.py`) passed **`78 passed in 19.75s`**. Evidence is in `artifacts/t719/data-root-guard-red.log`, `data-root-guard-green.log`, and `data-root-guard-green-final.log`.
+
+The new legacy RPC test drives real `rpc._dispatch({type: 'prompt'})` against a real app while another process holds the current session lease. It asserts the correlated wire refusal, unchanged conversation and absent transcript, then releases the holder and proves a second prompt is accepted and persisted. A temporary catch-omission mutant caused the real `OwnershipError` to escape: **`1 failed in 3.24s`**, recorded in `artifacts/t719/legacy-rpc-ownership-mutant-red.log`; `rpc.py` was restored byte-for-byte afterward. The test uses asynchronous child supervision to avoid blocking the app loop. `_fire_job_owned` now accurately declares `bool | None`; its behavior is unchanged.
+
+The screenshot helper path correction is **a preexisting defect outside T719's original API/ownership scope**, retained as a necessary packaging repair after review: `pccontrol_tool.SCREENSHOT` previously used `ROOT/pccontrol/screenshot.ps1`, while the tracked immutable helper lives at `ROOT/tools/pccontrol/screenshot.ps1`. Output redirection to the writable data root is the T719 change; the helper-location repair has separate provenance and is not presented as a new GUI feature.
+
+Sentinel identified exactly two main-checkout test leftovers. Before removal, their resolved parent was verified as `C:/Projects/LiteTUI`; exclusive `FileShare.None` opens confirmed no open holder; each contained exactly one NUL byte. Modification times matched the reported debris: `.scheduler.lease` at `2026-09-12T19:55:05`, `.litetui-data.json.lock` at `2026-09-12T19:58:30`. Only those two named files were deleted, and both were verified absent. No recursive cleanup or other main-checkout edit occurred.
+
+The advisory lease compatibility requirement is now prominent at the top of this report. These changes require the final coordinated 159-file rerun after rebasing onto main `7b47136`; the previous gate is historical until that final result is appended.

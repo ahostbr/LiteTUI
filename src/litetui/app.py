@@ -1774,7 +1774,7 @@ class LiteTUI(App):
         except OwnershipError:
             return  # another scheduler owns this tick
 
-    def _fire_job_owned(self, job) -> None:
+    def _fire_job_owned(self, job) -> bool | None:
         """Deliver a job as a real user turn, holding if one is running.
 
         The slot is stamped and PERSISTED BEFORE delivery, not after. If the

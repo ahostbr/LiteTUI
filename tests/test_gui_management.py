@@ -60,6 +60,53 @@ def test_session_lease_blocks_other_process_and_recovers_after_exit(tmp_path):
             child.wait(timeout=10)
 
 
+@pytest.mark.asyncio
+async def test_legacy_rpc_prompt_refuses_foreign_session_then_recovers(tmp_path, monkeypatch):
+    import asyncio
+    from io import StringIO
+    from pathlib import Path
+
+    from litetui import app as app_mod
+    from litetui import rpc
+
+    monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
+    wire = StringIO()
+    monkeypatch.setattr(rpc, "_real_stdout", wire)
+    app = app_mod.LiteTUI()
+    app._stream = lambda: None
+    child = None
+    try:
+        async with app.run_test(size=(100, 35)):
+            lease = app.store.convo_dir / ".session.lease"
+            code = ("from litetui.shared_state import Lease; import sys; "
+                    "lease=Lease(sys.argv[1]); lease.acquire(); "
+                    "print('held', flush=True); sys.stdin.readline(); lease.release()")
+            env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+            child = await asyncio.create_subprocess_exec(sys.executable, "-c", code, str(lease),
+                                                        stdin=asyncio.subprocess.PIPE,
+                                                        stdout=asyncio.subprocess.PIPE, env=env)
+            assert (await asyncio.wait_for(child.stdout.readline(), 10)).strip() == b"held"
+            before = list(app.conversation)
+            rpc._dispatch(app, {"type": "prompt", "id": "blocked", "message": "must not persist"})
+            response = json.loads(wire.getvalue().splitlines()[-1])
+            assert response["type"] == "response" and response["id"] == "blocked"
+            assert response["ok"] is False and "owned by another process" in response["error"]
+            assert app.conversation == before and not app.store.convo_path.exists()
+            child.stdin.write(b"release\n")
+            await child.stdin.drain()
+            await asyncio.wait_for(child.wait(), 10)
+            rpc._dispatch(app, {"type": "prompt", "id": "recovered", "message": "persist after release"})
+            response = json.loads(wire.getvalue().splitlines()[-1])
+            assert response["id"] == "recovered" and response["ok"] is True
+            assert any(item.get("content") == "persist after release" for item in app.conversation)
+            assert "persist after release" in app.store.convo_path.read_text(encoding="utf-8")
+            assert "must not persist" not in app.store.convo_path.read_text(encoding="utf-8")
+    finally:
+        if child is not None and child.returncode is None:
+            child.kill()
+            await asyncio.wait_for(child.wait(), 10)
+
+
 def test_compatibility_refuses_newer_data(tmp_path):
     from litetui.shared_state import check_data_version
     (tmp_path / ".litetui-data.json").write_text(json.dumps({"version": 999}), encoding="utf-8")

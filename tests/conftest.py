@@ -48,6 +48,45 @@ if str(SRC) not in sys.path:
 os.environ.setdefault("LITETUI_NO_HARNESS", "1")
 
 
+def _checkout_root_listing(root):
+    """Include new entries and changed root files, without traversing caches."""
+    return {
+        item.name: (item.stat().st_size, item.stat().st_mtime_ns) if item.is_file() else None
+        for item in root.iterdir()
+    }
+
+
+def _assert_checkout_root_unchanged(root, before):
+    after = _checkout_root_listing(root)
+    changed = sorted(name for name in before.keys() | after.keys()
+                     if name not in before or name not in after or before[name] != after[name])
+    assert not changed, f"test wrote checkout root {root}: {changed}"
+
+
+@pytest.fixture(autouse=True)
+def _guard_checkout_root_writes():
+    before = _checkout_root_listing(ROOT)
+    yield
+    _assert_checkout_root_unchanged(ROOT, before)
+
+
+@pytest.fixture(autouse=True)
+def _never_write_the_live_data_root(tmp_path, monkeypatch):
+    # Redirect the anchor, not selected writers: authoritative scheduler reads,
+    # session/scheduler leases and the data-version lock must share one store.
+    # Set the real configuration seam so tests of explicit overrides and the
+    # legacy unset behavior can still exercise paths.data_root itself.
+    # No eager mkdir: a test that writes nothing must leave tmp_path empty.
+    from litetui import listen_tool, paths, seat_guard
+
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
+    monkeypatch.setattr(paths, "LLAMA_DIR", tmp_path / ".llama")
+    monkeypatch.setattr(listen_tool, "WORKDIR", tmp_path / "temp-working-dir")
+    monkeypatch.setattr(listen_tool, "SERVER_LOG", tmp_path / "temp-working-dir" / "llama_server.log")
+    monkeypatch.setattr(seat_guard, "BREADCRUMB", tmp_path / "suspended_seat.json")
+
+
 @pytest.fixture(autouse=True)
 def _never_read_live_hooks(tmp_path, monkeypatch):
     from litetui import lifecycle_hooks
