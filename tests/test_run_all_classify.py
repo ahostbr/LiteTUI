@@ -128,12 +128,52 @@ def test_the_six_class_based_files_are_in_the_pytest_half():
     assert {f.name for f in pyt} >= {"test_subagent.py", "test_thinking_probe.py"}
 
 
-def test_ttyguard_stays_on_the_script_side():
-    """The negative control for the arm above. A fix that simply moved
-    everything into the pytest half would satisfy it — and would take the whole
-    run down with INTERNALERROR the first time it ran."""
+def test_the_script_half_is_empty_by_design_and_the_branch_still_works(tmp_path, monkeypatch):
+    """The negative control, restated for a tree where the category is gone.
+
+    🔴 IT USED TO NAME test_ttyguard.py, AND THAT FILE MOVED. T699/T700/T702
+    converted every script-style file to the pytest side and taught the
+    classifier to read module-level exits as STATEMENTS rather than substrings
+    — `test_ttyguard.py`'s exit lives under `if __name__ == "__main__":`, which
+    pytest collects perfectly well. The arm then asserted a fact the fix had
+    deliberately removed: a test defending the defect. It has been red on main
+    since, and moving the file back to satisfy it would undo the fix.
+
+    WHAT THE CONTROL WAS FOR IS STILL NEEDED. Its job was to stop "move
+    everything into the pytest half" from being a cheap way to pass the arm
+    above while breaking the run. Today the script half is EMPTY — 213 files
+    pytest-side, 0 script-side — so the question becomes a different one: is it
+    empty because no file is script-style, or because the branch that files
+    them stopped working? An empty partition looks identical either way.
+
+    So this plants a genuinely script-style file in a temp tree and requires
+    the classifier to file it script-side. The emptiness is then a fact about
+    the repository, not about a dead code path.
+
+    (The emptiness ITSELF, and that the suite survived the conversion, are
+    gated in test_script_checks.py::test_the_script_half_is_EMPTY_and_the_suite
+    _is_still_there; the import-time hazard that made the script half necessary
+    is gated by test_no_test_file_exits_or_runs_a_loop_at_IMPORT_time.)
+    """
     _, scr = run_all.classify()
-    assert "test_ttyguard.py" in {f.name for f in scr}
+    assert [f.name for f in scr] == [], (
+        f"the script half is no longer empty: {[f.name for f in scr]} — either a new "
+        "file exits at import time, or one was filed script-style by mistake"
+    )
+
+    planted = tmp_path / "test_planted_script_style.py"
+    planted.write_text(
+        "import sys\n\ndef test_one():\n    assert True\n\nsys.exit(0)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_all, "TESTS", tmp_path)
+    pytest_side, script_side = run_all.classify()
+    assert [f.name for f in script_side] == ["test_planted_script_style.py"], (
+        "a file with a module-level sys.exit was NOT filed script-side — the branch "
+        "that protects the run from INTERNALERROR is dead, and the empty script half "
+        "above proves nothing"
+    )
+    assert pytest_side == []
 
 
 def test_the_partition_is_total_and_disjoint():
