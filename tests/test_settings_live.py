@@ -31,7 +31,6 @@ _script_guard.redirect_live_settings()
 # Deliberately a SECOND import block: the env pin and the settings redirect must
 # run BETWEEN these imports, not before or after them.
 from litetui import app as m
-from litetui import model_residency
 from litetui import paths
 from litetui import settings as settings_mod
 
@@ -52,11 +51,6 @@ def chk(label, cond):
 
 
 def make_app():
-    # `/settings` asks only for a read-only residency snapshot. Keep this wiring
-    # test deterministic in both pytest and standalone-script mode: there is no
-    # conftest fixture in the latter, and a test must never dial Ryan's live
-    # backend merely to mount a screen.
-    model_residency.resident_models = lambda app: ({"b-model"}, False)
     a = m.LiteTUI()
     a.available_models = ["a-model", "b-model"]
     a.model_id = "b-model"
@@ -68,24 +62,39 @@ def make_app():
 
 async def main():
     print("=== /settings opens the real screen ===")
-    a = make_app()
-    async with a.run_test() as pilot:
-        a._handle_command("/settings")
-        await pilot.pause()
-        from litetui.settings_screen import SettingsScreen
+    # `/settings` asks only for a read-only residency snapshot. Patch the
+    # command's lookup seam for this block, including standalone-script mode
+    # where no pytest monkeypatch fixture exists, and restore it even if a UI
+    # assertion fails so later tests keep the real function.
+    from litetui.plugins import settings_ui
 
-        chk("a SettingsScreen is on top", isinstance(a.screen, SettingsScreen))
-        # The knobs behind the two caps that started this must be reachable.
-        for fid in ("f-tool_iterations", "f-compact_max_tokens", "f-autocompact_at_percent"):
-            try:
-                a.screen.query_one(f"#{fid}")
-                found = True
-            except Exception:
-                found = False
-            chk(f"{fid} is present and mounted", found)
-        a.screen.action_cancel()
-        await pilot.pause()
-        chk("cancel closes it", not isinstance(a.screen, SettingsScreen))
+    original_resident_models = settings_ui.model_residency.resident_models
+    settings_ui.model_residency.resident_models = lambda app: ({"b-model"}, False)
+    try:
+        a = make_app()
+        async with a.run_test() as pilot:
+            a._handle_command("/settings")
+            await pilot.pause()
+            from litetui.settings_screen import SettingsScreen
+
+            chk("a SettingsScreen is on top", isinstance(a.screen, SettingsScreen))
+            # The knobs behind the two caps that started this must be reachable.
+            for fid in ("f-tool_iterations", "f-compact_max_tokens", "f-autocompact_at_percent"):
+                try:
+                    a.screen.query_one(f"#{fid}")
+                    found = True
+                except Exception:
+                    found = False
+                chk(f"{fid} is present and mounted", found)
+            a.screen.action_cancel()
+            await pilot.pause()
+            chk("cancel closes it", not isinstance(a.screen, SettingsScreen))
+    finally:
+        settings_ui.model_residency.resident_models = original_resident_models
+    chk(
+        "settings residency probe restored after the screen closes",
+        settings_ui.model_residency.resident_models is original_resident_models,
+    )
 
     print("\n=== /clear-screen clears the DISPLAY, not the conversation ===")
     a = make_app()
