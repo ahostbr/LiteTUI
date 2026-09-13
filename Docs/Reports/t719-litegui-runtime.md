@@ -298,3 +298,15 @@ Sentinel's independent intent review and coordinated merge remain the leader's r
 
 
 The package-scoped tool-authority AST gate passes: one dispatched execution door inside `LiteTUI._execute_tool`. Its three callers are the existing stream and compaction paths plus structured GUI tool execution. The gate intentionally permits additional callers that enter the same door and identifies them for review; GUI tools preserve normal authority and approval policy.
+
+## Sentinel send-back: scheduler admission fixture
+
+Sentinel's merged-tree review reported `test_hook_boundaries.py::test_external_producers_reach_admission_once` failing. Both main `4b4c05c` and T719 `f51f0be` already expected exactly `typed, rpc, harness, scheduled`; the failure was missing scheduled delivery, not an extra source. The untouched T719 worktree passed the single arm (`1 passed in 1.09s`) and entire file (`20 passed in 9.30s`). Main's newer changes only concern `tests/test_hooks_ui.py`, so no rebase was needed for this fixture correction.
+
+The fixture had only an in-memory fake job and mocked scheduler persistence. T719 correctly rereads automatic candidates under its lease and rejects candidates deleted from an existing job store. Consequently, the test's result depended on whether the checkout already contained `jobs.json`. Conftest redirected scheduler load/save but not this authoritative reread.
+
+Red first: isolate `paths.data_root()` to the test directory and create an empty store while retaining the old fake. The same arm then produced `1 failed in 1.27s`: actual `['typed', 'rpc', 'harness']`, expected `['typed', 'rpc', 'harness', 'scheduled']`. Evidence: `artifacts/t719/hook-boundaries-empty-store-red.log`.
+
+Correction: keep the isolated initially empty store, persist a real `scheduler.Job` through production `scheduler.save`, remove the prepare/save mocks, and assert the persisted execution count is one. The exact four-source admission assertion remains unchanged, with a comment explaining shared-scheduler candidate ownership. No production source changed.
+
+Verification: `PYTHONUTF8=1 C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest tests/test_hook_boundaries.py -q -p no:cacheprovider` -> **`20 passed in 8.47s`**, exit 0. Evidence: `artifacts/t719/hook-boundaries-review-green.log`. Ruff on this test file using the canonical interpreter and repository configuration: **0 baseline / 0 current**. This supplement changes one test file and this report only; the 159-file runtime gate above remains evidence for unchanged runtime code. Sentinel explicitly authorized one correction commit and push on `feat/t719-litegui-runtime`; merging remains Sentinel's responsibility.

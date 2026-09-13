@@ -231,12 +231,12 @@ async def test_lifecycle_transitions_and_graceful_shutdown_once(app, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_external_producers_reach_admission_once(app, monkeypatch):
-    from litetui import rpc, scheduler
+async def test_external_producers_reach_admission_once(app, monkeypatch, tmp_path):
+    from litetui import paths, rpc, scheduler
+    monkeypatch.setattr(paths, "data_root", lambda: tmp_path)
+    scheduler.save([], tmp_path)
     received = []
     monkeypatch.setattr(hook_host, "start_prompt", lambda a, item: received.append(item))
-    monkeypatch.setattr(scheduler, "prepare_fire", lambda *args: None)
-    monkeypatch.setattr(scheduler, "save", lambda *args: None)
     monkeypatch.setattr(rpc, "_respond", lambda *args, **kwargs: None)
     app._user_bubble = lambda *args, **kwargs: None
     app._chat_running = lambda: False
@@ -244,10 +244,18 @@ async def test_external_producers_reach_admission_once(app, monkeypatch):
         app._submit_text("typed", False)
         rpc._dispatch(app, {"type": "prompt", "message": "rpc"})
         app._deliver_inbox({"from": "fixture", "body": "mail"})
-        job = SimpleNamespace(label="fixture", id="fixture", prompt="scheduled", kind="cron",
-                              schedule="* * * * *", run_count=0, new_conversation=False)
+        # Shared schedulers reread the durable candidate under their lease so
+        # a sibling's deletion cannot fire stale work. Persist a real job;
+        # an in-memory fake depended on whether the checkout had jobs.json.
+        job = scheduler.Job(label="fixture", id="fixture", prompt="scheduled",
+                            schedule="* * * * *")
+        app.jobs.append(job)
+        scheduler.save(app.jobs, tmp_path)
         app._fire_job(job)
+        # Scheduled prompts enter the same admission door exactly once, just
+        # like typed, RPC and harness prompts; keep the exact four sources.
         assert [item["source"] for item in received] == ["typed", "rpc", "harness", "scheduled"]
+        assert scheduler.load(tmp_path)[0].run_count == 1
         app._chat_running = lambda: True
         app.settings.enter_interrupts = False
         app._submit_text("queued", False)
