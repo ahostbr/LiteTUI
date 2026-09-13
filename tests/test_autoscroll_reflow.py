@@ -47,6 +47,41 @@ async def _mount_tall_live_tool(app, pilot) -> ToolMessage:
 
 
 @pytest.mark.asyncio
+async def test_real_wheel_up_wins_over_a_queued_follow_action() -> None:
+    """Overlap real Textual input with the first deferred scroll seam."""
+    app = _app()
+    async with app.run_test(size=(100, 24)) as pilot:
+        log = await _fill_and_park_at_tail(app, pilot)
+        start_y = log.scroll_y
+
+        # Queue an app-owned follow, but hold its after-refresh action so a real
+        # wheel event can express newer reader intent before it executes.
+        held = []
+        original_call_after_refresh = log.call_after_refresh
+        log.call_after_refresh = lambda callback, *args, **kwargs: held.append(
+            (callback, args, kwargs)
+        )
+        app._scroll_down()
+        assert len(held) == 1
+        # Restore first: wheel handling and Pilot's own pause machinery are
+        # allowed to schedule ordinary refresh work. Only the already-captured
+        # follow action remains held.
+        log.call_after_refresh = original_call_after_refresh
+
+        await pilot._post_mouse_events(
+            [events.MouseScrollUp], widget=log, offset=(2, 2), times=3
+        )
+        up_y = log.scroll_y
+        assert up_y < start_y
+
+        callback, args, kwargs = held.pop()
+        callback(*args, **kwargs)
+        await _settle(pilot)
+        assert log.scroll_y == up_y, "queued follow yanked after real wheel-up"
+        assert app._follow_anchor == start_y, "queued follow reclaimed ownership"
+
+
+@pytest.mark.asyncio
 async def test_collapsing_a_tool_does_not_break_follow_for_the_next_output() -> None:
     """Layout shrink is not reader intent; the next streamed growth must follow."""
     app = _app()
