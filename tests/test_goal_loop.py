@@ -266,7 +266,7 @@ def test_wrong_conversation_loop_pauses_without_delivery(
         _append=lambda message: delivered.append("append"),
         _stream=lambda: delivered.append("stream"),
     )
-    monkeypatch.setattr(app_mod.paths, "ROOT", tmp_path)
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
     app_mod.LiteTUI._fire_job(app, job)
     assert job.enabled is False
     assert delivered == []
@@ -317,7 +317,7 @@ def test_loop_command_creates_a_conversation_owned_scheduled_job(
         _materialise_convo=lambda: None,
         _system=notices.append,
     )
-    monkeypatch.setattr(goal_mod.paths, "ROOT", tmp_path)
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
     goal_mod.loop_command(app, "15m inspect the build")
     [job] = app.jobs
     assert job.kind == "loop"

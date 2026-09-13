@@ -31,6 +31,7 @@ _script_guard.redirect_live_settings()
 # Deliberately a SECOND import block: the env pin and the settings redirect must
 # run BETWEEN these imports, not before or after them.
 from litetui import app as m
+from litetui import model_residency
 from litetui import paths
 from litetui import settings as settings_mod
 
@@ -51,6 +52,11 @@ def chk(label, cond):
 
 
 def make_app():
+    # `/settings` asks only for a read-only residency snapshot. Keep this wiring
+    # test deterministic in both pytest and standalone-script mode: there is no
+    # conftest fixture in the latter, and a test must never dial Ryan's live
+    # backend merely to mount a screen.
+    model_residency.resident_models = lambda app: ({"b-model"}, False)
     a = m.LiteTUI()
     a.available_models = ["a-model", "b-model"]
     a.model_id = "b-model"

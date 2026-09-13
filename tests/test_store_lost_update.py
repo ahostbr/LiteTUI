@@ -307,24 +307,48 @@ def test_load_is_called_once_at_construction_and_nowhere_else():
     from pathlib import Path
 
     src = Path(tasks_mod.__file__).resolve().parent
-    calls: list[str] = []
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    class TasksLoadVisitor(ast.NodeVisitor):
+        """Record every tasks.load call with its lexical class/function owner."""
+
+        def __init__(self, filename: str) -> None:
+            self.filename = filename
+            self.scope: list[str] = []
+
+        def _visit_scope(self, node: ast.AST, name: str) -> None:
+            self.scope.append(name)
+            self.generic_visit(node)
+            self.scope.pop()
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self._visit_scope(node, node.name)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_scope(node, node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_scope(node, node.name)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "load"
+                and isinstance(node.func.value, ast.Name)
+                and "tasks" in node.func.value.id.lower()
+            ):
+                calls.append((self.filename, tuple(self.scope)))
+            self.generic_visit(node)
+
     for py in sorted(src.rglob("*.py")):
         try:
             tree = ast.parse(py.read_text(encoding="utf-8"))
         except (OSError, SyntaxError):
             continue
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "load"
-                and isinstance(node.func.value, ast.Name)
-                and "tasks" in node.func.value.id.lower()
-            ):
-                calls.append(f"{py.name}:{node.lineno}")
+        TasksLoadVisitor(py.name).visit(tree)
 
-    assert calls == ["app.py:1216"], (
-        f"tasks.load is called from {calls}. It may only run at construction: "
+    assert calls == [("app.py", ("LiteTUI", "__init__"))], (
+        f"tasks.load is called from {calls}. It may only run in LiteTUI.__init__: "
         f"`_owner_alive` reads OUR pid on a disk row as a reused pid, which is "
         f"only true before this process has started any task."
     )
