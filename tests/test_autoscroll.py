@@ -46,8 +46,13 @@ class FakeScroll:
         self.max_scroll_y = max_scroll_y
         self.scrolled = False
 
-    def scroll_end(self, animate=False):
+    def scroll_end(self, animate=False, on_complete=None):
         self.scrolled = True
+        # Production Textual invokes this after its deferred scroll settles.
+        # The fake has no refresh loop, so settle synchronously at its tail.
+        self.scroll_y = self.max_scroll_y
+        if on_complete is not None:
+            on_complete()
 
 
 class FakeApp:

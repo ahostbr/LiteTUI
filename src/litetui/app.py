@@ -4498,12 +4498,16 @@ class LiteTUI(App):
                 return
             if not self._still_following(log):
                 return
-        log.scroll_end(animate=False)
-        # Remember where we put it. The next follow check compares against THIS,
-        # not against a bottom that keeps moving away. Reached only when we
-        # actually scrolled: a REFUSED scroll must leave the anchor alone, or
-        # the refusal would re-arm the very lock it just honoured.
-        self._follow_anchor = log.scroll_y
+        # Textual's scroll_end is deferred even with animation disabled: it
+        # waits for the next refresh so max_scroll_y includes newly mounted or
+        # collapsed content. Record our anchor from its completion callback,
+        # not from the stale pre-layout scroll_y. Otherwise a tool card that
+        # collapses from twelve rows to one leaves an impossible old anchor and
+        # the next token is mistaken for a reader who scrolled up.
+        def remember_settled_end() -> None:
+            self._follow_anchor = log.scroll_y
+
+        log.scroll_end(animate=False, on_complete=remember_settled_end)
 
     # ── Image handling ───────────────────────────────────────────
 
