@@ -22,6 +22,8 @@ from litetui.model_transport import ProviderError, _chunk, _usage, collect
 class AppServer:
     def __init__(self, *, config_overrides=()):
         self.config_overrides = tuple(config_overrides)
+        self.environment = {}
+        self.native_bridge = None
         self.process = None
         self.reader = None
         self.pending = {}
@@ -76,6 +78,7 @@ class AppServer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
                 limit=16 * 1024 * 1024,
+                env={**os.environ, **self.environment},
                 **(
                     {"creationflags": subprocess.CREATE_NO_WINDOW}
                     if os.name == "nt"
@@ -145,6 +148,11 @@ class AppServer:
             await self.events.put(error)
 
     def shutdown(self):
+        if self.native_bridge:
+            self.native_bridge.close()
+            self.config_overrides = self.native_bridge.original_overrides
+            self.environment = self.native_bridge.original_environment
+            self.native_bridge = None
         if self.process and self.process.returncode is None:
             self.process.stdin.close()
             if not self.closer:
@@ -420,6 +428,10 @@ class AppServerTransport:
 
     async def _stream(self, kwargs):
         async with self.lock:
+            if isinstance(self.server, AppServer) and self.server.native_bridge is None:
+                from litetui.codex_hook_bridge import NativeHookBridge
+
+                await NativeHookBridge(self.app).install(self.server)
             await self.server.start()
             if self.process is not self.server.process:
                 self.thread_id = None
@@ -547,7 +559,20 @@ class AppServerTransport:
             }
             from litetui.codex_tool_ui import CodexToolUI
 
-            tool_ui = CodexToolUI(self.app)
+            record_index = None
+            display_records = {}
+
+            def record_display(record):
+                record["turnId"] = self.turn_id
+                display_records[record["id"]] = record
+                metadata["display_trace"] = {
+                    "version": 1,
+                    "items": list(display_records.values()),
+                }
+                if self.app is not None and record_index is not None:
+                    self.app._edit(record_index, "Codex display trace updated")
+
+            tool_ui = CodexToolUI(self.app, on_record=record_display)
             completed = False
             interrupt_sent = False
             last_message_id = None
@@ -559,6 +584,7 @@ class AppServerTransport:
                             original is m for m in messages
                         ):
                             original["provider_metadata"] = metadata
+                            record_index = original_index
                             self.app._edit(original_index, "Codex accepted user turn")
                             break
                 yield _chunk(metadata=metadata)
@@ -583,9 +609,13 @@ class AppServerTransport:
                         await self._server_request(event)
                         continue
                     method, payload = event.get("method"), event.get("params", {})
+                    bridge = getattr(self.server, "native_bridge", None)
+                    if method == "item/completed" and bridge is not None and bridge.policy is not None:
+                        await bridge.policy.completed(payload)
                     if payload.get("threadId") not in (None, self.thread_id):
                         continue
                     if method == "item/agentMessage/delta":
+                        tool_ui.agent_delta(payload)
                         item_id = payload.get("itemId")
                         if item_id and last_message_id and item_id != last_message_id:
                             yield _chunk(text="\n\n")
@@ -615,6 +645,14 @@ class AppServerTransport:
                             payload.get("item", {}),
                             completed=method == "item/completed",
                         )
+                    elif method in (
+                        "item/commandExecution/outputDelta",
+                        "item/fileChange/outputDelta",
+                        "item/mcpToolCall/progress",
+                    ):
+                        tool_ui.progress(payload)
+                    elif method == "turn/plan/updated":
+                        await tool_ui.plan(payload)
                     elif (
                         method == "turn/completed"
                         and payload.get("turn", {}).get("id") == self.turn_id
@@ -634,6 +672,9 @@ class AppServerTransport:
                         return
             finally:
                 tool_ui.finish()
+                bridge = getattr(self.server, "native_bridge", None)
+                if bridge is not None and bridge.policy is not None:
+                    await bridge.policy.finish()
                 if not completed and self.turn_id and not interrupt_sent:
                     await self.server.request(
                         "turn/interrupt",

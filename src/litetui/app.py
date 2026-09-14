@@ -2752,6 +2752,8 @@ class LiteTUI(App):
         self._follow_anchor = None
         self._next_follow_generation()
         users = assistants = tools = 0
+        native_tools = 0
+        native_seen = set()
         for m in msgs:
             role = m.get("role")
             text = self._flatten(m.get("content"))
@@ -2759,7 +2761,10 @@ class LiteTUI(App):
                 self._user_bubble(text, False)
                 users += 1
             elif role == "assistant":
-                if text:
+                from litetui.codex_trace import records as codex_trace_records
+                native_text = any(r.get("kind") == "agentMessage" and r.get("result")
+                                  for r in codex_trace_records(m.get("provider_metadata")))
+                if text and not native_text:
                     w = self._assistant_bubble()
                     try:
                         w.body.set_markdown(text)
@@ -2768,10 +2773,14 @@ class LiteTUI(App):
                     assistants += 1
             elif role == "tool":
                 tools += 1
+            from litetui.codex_trace import replay as replay_codex_trace
+            native_tools += replay_codex_trace(self, m.get("provider_metadata") or {}, native_seen)
         # Tool traffic is summarised rather than replayed — the widgets carry
         # streamed state that cannot be faithfully reconstructed from the log.
         # It IS still in self.conversation, so the model sees all of it.
         note = f", {tools} tool result(s) restored to context but not redrawn" if tools else ""
+        if native_tools:
+            note += f", {native_tools} Codex tool card(s) restored"
         mem_dir = self.convo_dir / paths.MEMORIES_DIR
         n_mem = len(list(mem_dir.glob("*.md"))) if mem_dir.exists() else 0
         store = ", ".join(

@@ -74,10 +74,11 @@ host-hook bridge contract; validate steering/inventory boundaries independently.
 - Native shell enforcement is now live-proven in `native-hook-startup-probe.json`:
   `blocked_before_command=true`, hook tool identity `Bash`, completed hook status
   `blocked`, and no native command item. Enabling hooks alone was insufficient.
-- Trust state must be supplied at user configuration level: startup-level
-  `trusted_hash` overrides remained untrusted. The successful probe used its own
-  temporary CODEX_HOME, copied login state only into that temporary directory, and
-  removed it on exit; normal user configuration was not modified.
+- Correction after further probing: session trust works with a whole-table
+  `hooks.state={...}` override. Dotted override syntax misparsed the hook identity
+  containing `config.toml` and Windows backslashes. The successful probe now uses
+  session-only trust; no normal user configuration writes are needed. Its private
+  temporary CODEX_HOME and copied login state are removed on exit.
 - Quoted executable-first hook commands failed under the session shell; the
   successful synthetic probe invoked `python` with the quoted script path. Product
   helper launch must explicitly control runtime discovery and test paths with spaces.
@@ -93,3 +94,22 @@ host-hook bridge contract; validate steering/inventory boundaries independently.
 - Next implementation: a scoped native hook-to-host policy bridge, including trusted
   registration lifecycle, failure behavior, exact tool identity and child scope.
   C1 remains incomplete; other C2–C10 gates remain open as previously recorded.
+
+## Native policy and display checkpoint
+
+- Session hook discovery preserves source-layer user hooks and trusts only the two
+  host helper definitions. The helper uses an authenticated loopback connection.
+  Missing or failed policy replies fail closed. Live allow/disabled/tools-off
+  checks are recorded in `native-policy-probe.json`.
+- Native pre-tool requests pass through shared authorization and lifecycle hooks.
+  PostToolUse alone has no reliable success status; tool_after waits for native
+  item completion and uses its exit/status fields, with the original host context
+  and policy profile. Outstanding items settle as cancelled, never success.
+- Bridge approval waits run in Textual workers. Tests cover a real modal response,
+  stop, peer disconnect, bridge close and policy exceptions. Delegated child hook
+  scope, full native cancellation and packaged helper discovery remain open.
+- Native command/MCP progress, plans and compactions use shared widgets. Display
+  traces persist separately in provider metadata and replay without tool dispatch;
+  duplicate IDs are suppressed and missing durations remain unknown. Authoritative
+  native history reconciliation, output throttling and RPC consumer parity remain
+  open. This is a checkpoint, not C1–C10 or release acceptance.

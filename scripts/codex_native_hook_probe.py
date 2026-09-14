@@ -75,16 +75,14 @@ async def probe():
             )
             if own_hooks:
                 overrides = list(server.config_overrides)
-                trust_config = ""
-                for entry in own_hooks:
-                    trust_config += (
-                        "[hooks.state."
-                        + json.dumps(entry["key"])
-                        + "]\ntrusted_hash="
-                        + json.dumps(entry["currentHash"])
-                        + "\n"
-                    )
-                (root / "config.toml").write_text(trust_config)
+                states = ",".join(
+                    json.dumps(entry["key"])
+                    + "={trusted_hash="
+                    + json.dumps(entry["currentHash"])
+                    + "}"
+                    for entry in own_hooks
+                )
+                overrides.append("hooks.state={" + states + "}")
                 await server.close()
                 server = AppServer(config_overrides=overrides)
                 await server.start()
@@ -152,7 +150,8 @@ async def probe():
                         {
                             "method": method,
                             "type": item.get("type"),
-                            "status": item.get("status") or payload.get("run", {}).get("status"),
+                            "status": item.get("status")
+                            or payload.get("run", {}).get("status"),
                         }
                     )
                 if method == "turn/completed":
@@ -167,7 +166,12 @@ async def probe():
                 "hook_hits": hits,
                 "events": events,
                 "pre_tool_hook_executed": bool(hits),
-                "blocked_before_command": bool(hits) and any(e["method"] == "hook/completed" and e["status"] == "blocked" for e in events) and not any(e["type"] == "commandExecution" for e in events),
+                "blocked_before_command": bool(hits)
+                and any(
+                    e["method"] == "hook/completed" and e["status"] == "blocked"
+                    for e in events
+                )
+                and not any(e["type"] == "commandExecution" for e in events),
             }
             Path(
                 "Docs/Plans/codex-host-parity-evidence/native-hook-startup-probe.json"

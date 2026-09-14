@@ -1,0 +1,36 @@
+[
+  {
+    "mode": "allow",
+    "command_calls": 1,
+    "policy_decisions": [
+      {
+        "name": "bash",
+        "decision": "allow"
+      }
+    ],
+    "host_hook_events": [
+      {
+        "event": "tool_before",
+        "tool": "bash",
+        "ok": null
+      },
+      {
+        "event": "tool_after",
+        "tool": "bash",
+        "ok": true
+      }
+    ]
+  },
+  {
+    "mode": "disabled",
+    "command_calls": 0,
+    "policy_decisions": [],
+    "host_hook_events": []
+  },
+  {
+    "mode": "tools-off",
+    "command_calls": 0,
+    "policy_decisions": [],
+    "host_hook_events": []
+  }
+]

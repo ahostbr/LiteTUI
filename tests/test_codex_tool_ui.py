@@ -27,6 +27,151 @@ class Host(App):
     def _scroll_down(self):
         pass
 
+    def _assistant_bubble(self):
+        from litetui.widgets import AssistantMessage
+
+        card = AssistantMessage()
+        self.query_one("#chat-log").mount(card)
+        return card
+
+
+@pytest.mark.asyncio
+async def test_output_bursts_are_coalesced_and_completion_cancels_pending_render():
+    import asyncio
+
+    app = Host()
+    async with app.run_test():
+        ui = CodexToolUI(app)
+        item = {"type": "commandExecution", "id": "burst", "command": "echo"}
+        await ui.item(item)
+        for _ in range(100):
+            ui.progress({"itemId": "burst", "delta": "x" * 1000})
+        assert len([e for e in app.events if e["type"] == "tool_progress"]) == 1
+        assert len(ui.output["burst"]) < 33000
+        await asyncio.sleep(0.12)
+        assert len([e for e in app.events if e["type"] == "tool_progress"]) == 2
+        ui.progress({"itemId": "burst", "delta": "late"})
+        await ui.item({**item, "status": "completed", "aggregatedOutput": "final"}, True)
+        count = len(app.events)
+        await asyncio.sleep(0.12)
+        assert len(app.events) == count
+        assert not ui.progress_timers
+
+
+@pytest.mark.asyncio
+async def test_display_trace_replays_once_without_dispatch_or_fake_duration():
+    from litetui.codex_trace import replay
+
+    app = Host()
+    async with app.run_test() as pilot:
+        metadata = {
+            "app_server_thread_id": "native-thread",
+            "display_trace": {
+                "version": 1,
+                "items": [
+                    {
+                        "id": "a",
+                        "turnId": "1",
+                        "kind": "agentMessage",
+                        "result": "Checking.",
+                    },
+                    {
+                        "id": "b",
+                        "turnId": "1",
+                        "kind": "commandExecution",
+                        "name": "command",
+                        "args": "echo hi",
+                        "state": "running",
+                    },
+                    {
+                        "id": "c",
+                        "turnId": "1",
+                        "kind": "commandExecution",
+                        "name": "command",
+                        "args": "echo bye",
+                        "state": "completed",
+                        "ok": True,
+                        "result": "bye",
+                        "durationMs": 1234,
+                    },
+                ],
+            },
+        }
+        seen = set()
+        assert replay(app, metadata, seen) == 2
+        assert replay(app, metadata, seen) == 0
+        await pilot.pause()
+        cards = list(app.query(ToolMessage))
+        assert len(cards) == 2
+        assert cards[0]._took is None and not cards[0]._ok
+        assert "duration unknown" in cards[0].header.content.plain
+        assert cards[1]._took == 1.234 and cards[1]._ok
+        assert not app.events and not app.running
+
+
+@pytest.mark.asyncio
+async def test_recorded_completion_is_idempotent_and_preserves_partial_text():
+    app = Host()
+    recorded = {}
+    async with app.run_test():
+        ui = CodexToolUI(app, lambda record: recorded.update({record["id"]: record}))
+        await ui.item({"type": "agentMessage", "id": "a", "text": ""})
+        ui.agent_delta({"itemId": "a", "delta": "Partial reply"})
+        item = {"type": "commandExecution", "id": "b", "command": "echo hi"}
+        await ui.item(item)
+        completed = {
+            **item,
+            "status": "completed",
+            "aggregatedOutput": "hi",
+            "exitCode": 0,
+        }
+        await ui.item(completed, True)
+        await ui.item(completed, True)
+        ui.finish()
+        assert len(app.query(ToolMessage)) == 1
+        assert recorded["a"]["result"] == "Partial reply"
+        assert recorded["a"]["state"] == "interrupted"
+        assert recorded["b"]["result"].endswith("hi")
+
+
+@pytest.mark.asyncio
+async def test_native_progress_plan_and_compaction_use_shared_widgets():
+    from litetui.widgets import CompactionCard, FoldBlock
+
+    app = Host()
+    async with app.run_test(size=(55, 35)) as pilot:
+        ui = CodexToolUI(app)
+        item = {"type": "commandExecution", "id": "stream", "command": "echo"}
+        await ui.item(item)
+        ui.progress({"itemId": "stream", "delta": "first\nsecond\n"})
+        card = next(iter(app.query(ToolMessage)))
+        assert "Output (running)" in card.body.content.plain
+        assert "first\nsecond" in card.body.content.plain
+        await ui.item(
+            {
+                **item,
+                "status": "completed",
+                "aggregatedOutput": "final only",
+                "exitCode": 0,
+            },
+            True,
+        )
+        assert "final only" in card.body.content.plain
+        assert "first\nsecond" not in card.body.content.plain
+        await ui.plan({"plan": [{"step": "Check", "status": "inProgress"}]})
+        await ui.plan({"plan": [{"step": "Check", "status": "completed"}]})
+        assert isinstance(ui.plan_card, FoldBlock)
+        assert ui.plan_card.body.content.plain == "completed: Check"
+        await ui.item({"type": "contextCompaction", "id": "compact"})
+        assert len(app.query(CompactionCard)) == 1
+        await ui.item({"type": "contextCompaction", "id": "compact"}, True)
+        await pilot.pause()
+        assert not ui.compactions and not ui.calls
+        assert [e["type"] for e in app.events][-2:] == [
+            "compaction_start",
+            "compaction_end",
+        ]
+
 
 @pytest.mark.asyncio
 async def test_concurrent_cards_complete_by_id_and_expand_at_narrow_width():

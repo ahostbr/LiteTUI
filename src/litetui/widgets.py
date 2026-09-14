@@ -693,6 +693,7 @@ class ToolMessage(FoldBlock):
         self.tool_name = name
         self._args = ""
         self._result: str | None = None
+        self._progress = ""
         self._ok = True
         self._t0 = time.monotonic()
         self._took: float | None = None
@@ -727,7 +728,8 @@ class ToolMessage(FoldBlock):
             parts.append((f" · {fmt_dur(time.monotonic() - self._t0)} …", "#8b95a7"))
         else:
             status = "done" if self._ok else "error"
-            parts.append((f" · {status} · {fmt_dur(self._took or 0.0)}", "#5c6470"))
+            duration = fmt_dur(self._took) if self._took is not None else "duration unknown"
+            parts.append((f" · {status} · {duration}", "#5c6470"))
             parts.append((f" · {len(self._result)} chars", "#5c6470"))
         return Text.assemble(*parts)
 
@@ -741,16 +743,25 @@ class ToolMessage(FoldBlock):
                 out.append("\n\n")
             out.append("Result\n", style="bold #8b95a7")
             out.append(self._result, style="bold #e5534b" if not self._ok else "#7d8799")
+        elif self._progress:
+            out.append("\n\nOutput (running)\n", style="bold #8b95a7")
+            out.append(self._progress)
         return out
+
+    def set_progress(self, text: str) -> None:
+        if self._result is None:
+            self._progress = text
+            self._update_display()
 
     def set_args(self, args_json: str) -> None:
         self._args = args_json
         self._update_display()
 
-    def set_result(self, result: str, ok: bool, *, elapsed: float | None = None) -> None:
+    def set_result(self, result: str, ok: bool, *, elapsed: float | None = None,
+                   duration_unknown: bool = False) -> None:
         self._result = result
         self._ok = ok
-        self._took = time.monotonic() - self._t0 if elapsed is None else elapsed
+        self._took = None if duration_unknown else time.monotonic() - self._t0 if elapsed is None else elapsed
         self.set_expanded(False)
         self._update_display()
 
