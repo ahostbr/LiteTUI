@@ -3957,6 +3957,8 @@ class LiteTUI(App):
         # The provider's own accounting rides along when a turn has produced any;
         # extra keys are harmless because the host looks for the ones it knows.
         for key, value in (getattr(self, "last_usage", None) or {}).items():
+            if key in ("context_tokens", "max_context_tokens"):
+                continue
             if isinstance(value, (int, float)):
                 usage[key] = value
             elif key in ("latest_request_usage", "thread_usage", "turn_usage") and isinstance(value, dict):
@@ -5646,14 +5648,11 @@ class LiteTUI(App):
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
                     if u is not None:
-                        self._record_usage(u)
-                        request_usage = dict(self.last_usage)
                         if native_loop:
-                            self.ctx_used = getattr(u, "context_tokens", None)
-                            window = getattr(u, "max_context_tokens", None)
-                            if window is not None:
-                                self.ctx_max = window
-                                self.ctx_loaded = True
+                            self._record_native_usage(u)
+                        else:
+                            self._record_usage(u)
+                        request_usage = dict(self.last_usage)
                     if not native_loop and u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
                         rate = self._tps.final(
@@ -6267,6 +6266,20 @@ class LiteTUI(App):
         self._hooks_suppressed = True
         self._append({"role": "user", "content": WAKE_AFTER_COMPACT})
         self._stream()
+
+    def _record_native_usage(self, usage) -> None:
+        """Publish native accounting even when context occupancy is unchanged."""
+        self._record_usage(usage)
+        previous = self.ctx_used
+        window = getattr(usage, "max_context_tokens", None)
+        if window is not None:
+            self.ctx_max = window
+            self.ctx_loaded = True
+        self.ctx_used = getattr(usage, "context_tokens", None)
+        # Changed values publish through watch_ctx_used. Equal occupancy can
+        # still carry new cumulative/turn counters or a changed native window.
+        if self.ctx_used == previous:
+            self._rpc_emit_usage(self.ctx_used)
 
     def _record_usage(self, usage) -> None:
         """Last provider usage, numeric-only; cache hits do not reduce context."""

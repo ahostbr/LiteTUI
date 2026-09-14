@@ -332,12 +332,8 @@ class AppServerTransport:
                         continue
                     if event.get("method") == "thread/tokenUsage/updated":
                         usage = compact_usage.update(payload.get("tokenUsage") or {})
-                        if usage is not None and hasattr(self.app, "_record_usage"):
-                            self.app._record_usage(usage)
-                            self.app.ctx_used = usage.context_tokens
-                            if usage.max_context_tokens is not None:
-                                self.app.ctx_max = usage.max_context_tokens
-                                self.app.ctx_loaded = True
+                        if usage is not None and hasattr(self.app, "_record_native_usage"):
+                            self.app._record_native_usage(usage)
                     if event.get("method") == "turn/started":
                         self.turn_id = payload["turn"]["id"]
                         if ui:

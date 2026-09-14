@@ -101,6 +101,38 @@ def test_a_None_last_usage_does_not_become_junk_on_the_wire():
     assert payload == {"context_tokens": 1234, "max_context_tokens": 32768}
 
 
+def test_saved_usage_cannot_override_current_context_or_loaded_window():
+    payload = _payload(_app(mx=32768, loaded=False, last_usage={
+        "context_tokens": 999, "max_context_tokens": 262144,
+        "cached_tokens": 800,
+    }), 1234)
+    assert payload["context_tokens"] == 1234
+    assert "max_context_tokens" not in payload
+    assert payload["cached_tokens"] == 800
+
+
+def test_native_equal_context_update_still_reports_new_usage():
+    from types import SimpleNamespace
+
+    from litetui.codex_usage import NativeUsage
+
+    a = SimpleNamespace(ctx_used=110, ctx_max=200, ctx_loaded=True, last_usage=None)
+    a._record_usage = lambda usage: app_mod.LiteTUI._record_usage(a, usage)
+    events = []
+    a._rpc_emit = events.append
+    a._rpc_emit_usage = lambda used: app_mod.LiteTUI._rpc_emit_usage(a, used)
+    usage = NativeUsage(fresh=True).update({
+        "last": {"totalTokens": 110},
+        "total": {"totalTokens": 220, "cachedInputTokens": 80},
+        "modelContextWindow": 300,
+    })
+    app_mod.LiteTUI._record_native_usage(a, usage)
+    assert events[-1]["usage"]["context_tokens"] == 110
+    assert events[-1]["usage"]["max_context_tokens"] == 300
+    assert events[-1]["usage"]["cached_tokens"] == 80
+    assert events[-1]["usage"]["thread_usage"]["totalTokens"] == 220
+
+
 def test_nothing_is_emitted_when_there_is_no_number_to_report():
     """🔴 An empty meter and an unknown meter are different claims.
 
