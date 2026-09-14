@@ -2720,6 +2720,10 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        from litetui.codex_steering import restore_queue
+        restore_queue(self)
+        if self._pending_input:
+            self.call_after_refresh(self._flush_pending_input)
         hook_host.enter_conversation(self, "conversation_resume")
         # T691: AFTER convo_dir moves and BEFORE the seat sync — this
         # conversation's own model and think level are what /resume is
@@ -3423,6 +3427,8 @@ class LiteTUI(App):
                 # already resident; it must be an explicit act, never a side
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
+                if self._pending_input and hasattr(self.backend, "app_server"):
+                    self.call_after_refresh(self._flush_pending_input)
                 if self.tools_enabled:
                     from litetui.codex_settings import loop_description
                     self._system(loop_description(self.backend.name, self.settings.tool_iterations))
@@ -5281,7 +5287,7 @@ class LiteTUI(App):
                     {"content": content, "text": text, "bubble": bubble,
                      "tool_profile": profile, "source": "rpc" if source == "rpc" else "queued", **correlation}
                 )
-                self.notify("Queued — sends when this turn ends", timeout=3)
+                self.notify("Queued for Codex" if hasattr(self.backend, "app_server") else "Queued — sends when this turn ends", timeout=3)
                 return
             # Interrupt: soft stop — the existing stop path keeps the partial
             # reply and discards unanswered tool calls, which is what protects
@@ -6077,6 +6083,8 @@ class LiteTUI(App):
         """
         if not self._pending_input or self._stop_requested:
             return False
+        if self._pending_input[0].get("_codex_entry"):
+            return False  # Native delivery is reconciled by the idle queue path.
         # ONE per boundary, FIFO -- never the whole queue. Consecutive role:user
         # turns are a chat-template gamble and qwen's template 500s on some
         # shapes, which is exactly why _flush_pending_input has always sent one
@@ -6103,6 +6111,25 @@ class LiteTUI(App):
             return
         if self._chat_running():
             self.set_timer(0.7, self._flush_pending_input)
+            return
+        entry = self._pending_input[0].get("_codex_entry")
+        if entry and not hasattr(self.backend, "app_server"):
+            self._system("Queued Codex input is retained for its Codex conversation.")
+            return
+        if entry and entry.get("conversationId") not in (None, self.convo_id):
+            self._system("Queued Codex input belongs to another conversation and remains retained there.")
+            return
+        if entry and entry.get("state") not in ("queued", "admitted", "next_turn"):
+            async def recover():
+                from litetui.codex_steering import recover_queue_head
+                if not hasattr(self.backend, "app_server"):
+                    self._system("Queued Codex input is retained until its native delivery is reconciled.")
+                    return
+                if await recover_queue_head(self, self.backend.app_server):
+                    self.call_after_refresh(self._flush_pending_input)
+                else:
+                    self._system("Queued Codex input is retained: delivery is unconfirmed. Reconnect to reconcile it before retrying.")
+            self.run_worker(recover(), group="chat", exclusive=False, exit_on_error=False)
             return
         item = self._pending_input.pop(0)
         hook_host.start_prompt(self, item)

@@ -268,6 +268,7 @@ async def test_local_client_never_receives_opaque_metadata():
                 "role": "assistant",
                 "content": "hi",
                 "provider_metadata": {"items": ["opaque"]},
+                "codex_delivery": {"id": "private-client-id", "state": "accepted"},
             }
         ]
     )

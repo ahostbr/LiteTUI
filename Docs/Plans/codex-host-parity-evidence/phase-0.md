@@ -168,3 +168,31 @@ host-hook bridge contract; validate steering/inventory boundaries independently.
   internal errors, lost replies, interrupted admission/send and restored-ledger
   reconciliation. Host queue integration, durable resume UI, and automatic safe
   fallback are the next work; C6 remains open.
+
+## Host queue integration checkpoint
+
+- Active Codex turns now start a separate host steering worker. It can run while
+  the stream consumer awaits a host tool or question. It invokes the shared prompt
+  admission hook before native steering, saves each delivery transition, and
+  removes queued input only on confirmed acceptance.
+- Explicit validation rejection retains the admitted message for the next turn.
+  The fallback carries the same client identity and skips duplicate admission.
+  Lost replies and cancelled sends remain held. Resume reconstructs queued entries
+  from private conversation metadata; native history can positively confirm them
+  without resending. Uncertain fallback turn/start delivery also requires matching
+  native thread and client identity before it is treated as accepted.
+- Local user records carry an internal delivery marker. It is stripped by the
+  local OpenAI transport. Conversation guards prevent native queued input from
+  being silently sent into a different conversation or local backend. The queued
+  bubble changes to delivered only after native acceptance, including fallback.
+- The repository's persistence-error state now gates queued sends. A failed or
+  unavailable journal write cannot be followed by native steering. A disk-backed
+  ConversationRepository test reloads an uncertain delivery and verifies its
+  content, identity, admission and state survive.
+- `host-queue-steering-probe.json` verifies the integrated queue path against the
+  installed app-server while a synthetic host tool waits. Steering affected the
+  answer and produced one matching persisted native user-message ID.
+- Validation: 75 queue/hook/adapter/question/usage checks passed, followed by the
+  added disk-reload test in a 13-test steering run. Full interactive approval-wait,
+  abrupt process restart, multiple queued images and rendered resume acceptance
+  still require validation; C6 and the overall release gate remain open.

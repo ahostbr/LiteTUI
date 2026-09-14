@@ -137,8 +137,20 @@ def accept_prompt(app, item):
     materialise = getattr(app, "_materialise_convo", None)
     if materialise is not None:
         materialise()
-    app._append({"role": "user", "content": item["content"]})
-    _mark_delivered(item)
+    message = {"role": "user", "content": item["content"]}
+    entry = item.get("_codex_entry")
+    if entry:
+        message["codex_delivery"] = {"id": entry["id"], "threadId": entry["threadId"],
+                                     "state": "accepted" if entry["state"] == "accepted" else "pending"}
+        if item.get("_codex_metadata"):
+            message["provider_metadata"] = item["_codex_metadata"]
+        if item.get("bubble") is not None and entry["state"] != "accepted":
+            if not hasattr(app, "_codex_delivery_bubbles"):
+                app._codex_delivery_bubbles = {}
+            app._codex_delivery_bubbles[entry["id"]] = item["bubble"]
+    app._append(message)
+    if not entry or entry["state"] == "accepted":
+        _mark_delivered(item)
 
 
 async def admit_prompt(app, item):
@@ -161,6 +173,12 @@ async def admit_prompt(app, item):
 
 
 def start_prompt(app, item):
+    entry = item.get("_codex_entry")
+    if entry and entry.get("state") in ("admitted", "next_turn"):
+        accept_prompt(app, item)
+        app._hook_turn_id = entry.get("admission", {}).get("turn_id", app._hook_turn_id)
+        app._stream()
+        return
     state = snapshot(app)
     if not state.hooks and not state.error:
         accept_prompt(app, item)
@@ -174,6 +192,8 @@ def start_prompt(app, item):
 
 
 async def queued_prompt(app):
+    if app._pending_input and app._pending_input[0].get("_codex_entry"):
+        return False
     state = snapshot(app)
     if not state.hooks and not state.error:
         return app._deliver_queued_input()

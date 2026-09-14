@@ -11,7 +11,7 @@ from litetui.codex_app_server import AppServer, AppServerTransport
 from litetui.model_transport import ProviderError, collect
 
 
-async def main():
+async def main(host_queue=False):
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def execute(name, arguments):
@@ -36,6 +36,11 @@ async def main():
         _edit=lambda *a: None,
         _rpc=True,
     )
+    if host_queue:
+        app._pending_input = []
+        app._append = messages.append
+        app.settings = NS(tool_policy_profile="scheduled")
+        app.convo_id = "synthetic"
     server = AppServer()
     transport = AppServerTransport(server, app)
     client_id = str(uuid.uuid4())
@@ -75,7 +80,26 @@ async def main():
                 }
             ],
         }
-        accepted = await server.request("turn/steer", params)
+        if host_queue:
+            queued = {
+                "content": params["input"][0]["text"],
+                "source": "queued",
+                "tool_profile": "scheduled",
+            }
+            app._pending_input.append(queued)
+
+            async def wait_for_delivery():
+                while app._pending_input:
+                    await asyncio.sleep(0.05)
+
+            await asyncio.wait_for(wait_for_delivery(), 30)
+            entry = queued["_codex_entry"]
+            assert entry["state"] == "accepted"
+            client_id = entry["id"]
+            params["clientUserMessageId"] = client_id
+            accepted = {"turnId": entry["turnId"]}
+        else:
+            accepted = await server.request("turn/steer", params)
         release.set()
         response = await asyncio.wait_for(task, 90)
         history = await server.request(
@@ -105,7 +129,8 @@ async def main():
             "steering_applied": True,
             "completed_turn_rejects_steer": True,
         }, result
-        Path("Docs/Plans/codex-host-parity-evidence/steering-probe.json").write_text(
+        path = "host-queue-steering-probe.json" if host_queue else "steering-probe.json"
+        Path("Docs/Plans/codex-host-parity-evidence", path).write_text(
             json.dumps(result, indent=2) + "\n"
         )
         print(json.dumps(result))
@@ -120,5 +145,6 @@ async def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", required=True)
-    parser.parse_args()
-    asyncio.run(main())
+    parser.add_argument("--host-queue", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(main(args.host_queue))

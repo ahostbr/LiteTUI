@@ -291,11 +291,15 @@ class AppServerTransport:
                 # Compaction can rebase counters. Never subtract the old user
                 # turn's total from a post-compaction snapshot on the next turn.
                 for index in range(len(self.app.conversation) - 1, -1, -1):
-                    metadata = self.app.conversation[index].get("provider_metadata") or {}
+                    metadata = (
+                        self.app.conversation[index].get("provider_metadata") or {}
+                    )
                     if metadata.get("app_server_thread_id") == reference:
                         metadata["native_usage"] = compact_usage.previous
                         if hasattr(self.app, "_edit"):
-                            self.app._edit(index, "Codex compaction usage baseline updated")
+                            self.app._edit(
+                                index, "Codex compaction usage baseline updated"
+                            )
                         break
                 if not finished and self.turn_id:
                     await self.server.request(
@@ -459,6 +463,14 @@ class AppServerTransport:
                     "Codex requires a ChatGPT subscription login. Run `codex login`."
                 )
             messages = kwargs["messages"]
+            from litetui.codex_steering import (
+                HostSteering,
+                RejectedRequest,
+                message_state,
+                reconcile_messages,
+            )
+
+            await reconcile_messages(self.app, self.server, messages)
             instructions = "\n\n".join(
                 str(m.get("content", "")) for m in messages if m["role"] == "system"
             )
@@ -568,7 +580,26 @@ class AppServerTransport:
                         "value": instructions,
                     }
                 }
-            started = await self.server.request("turn/start", params)
+            deliveries = [
+                m
+                for m in messages[boundary:]
+                if (m.get("codex_delivery") or {}).get("state") == "pending"
+            ]
+            if len(deliveries) > 1:
+                raise ProviderError(
+                    "Multiple pending native deliveries require reconciliation before starting another turn."
+                )
+            if deliveries:
+                params["clientUserMessageId"] = deliveries[0]["codex_delivery"]["id"]
+                message_state(self.app, deliveries[0], "sending")
+            try:
+                started = await self.server.request("turn/start", params)
+            except RejectedRequest as error:
+                if deliveries and error.code in (-32600, -32602):
+                    message_state(self.app, deliveries[0], "pending")
+                raise
+            for message in deliveries:
+                message_state(self.app, message, "accepted")
             self.turn_id = started["turn"]["id"]
             metadata = {
                 "provider": "codex",
@@ -598,6 +629,8 @@ class AppServerTransport:
             completed = False
             interrupt_sent = False
             last_message_id = None
+            steering_worker = None
+            steering_task = None
             try:
                 if self.app:
                     for original_index in range(len(self.app.conversation) - 1, -1, -1):
@@ -609,6 +642,29 @@ class AppServerTransport:
                             record_index = original_index
                             self.app._edit(original_index, "Codex accepted user turn")
                             break
+                    if hasattr(self.app, "_pending_input") and record_index is not None:
+
+                        def save_steering():
+                            from litetui.codex_steering import save_at
+                            save_at(self.app, record_index)
+
+                        steering = HostSteering(
+                            self.app,
+                            self.server,
+                            self.thread_id,
+                            self.turn_id,
+                            metadata,
+                            save_steering,
+                        )
+                        if hasattr(self.app, "run_worker"):
+                            steering_worker = self.app.run_worker(
+                                steering.run(),
+                                group="codex-steering",
+                                exclusive=False,
+                                exit_on_error=False,
+                            )
+                        else:
+                            steering_task = asyncio.create_task(steering.run())
                 yield _chunk(metadata=metadata)
                 while True:
                     if (
@@ -632,7 +688,11 @@ class AppServerTransport:
                         continue
                     method, payload = event.get("method"), event.get("params", {})
                     bridge = getattr(self.server, "native_bridge", None)
-                    if method == "item/completed" and bridge is not None and bridge.policy is not None:
+                    if (
+                        method == "item/completed"
+                        and bridge is not None
+                        and bridge.policy is not None
+                    ):
                         await bridge.policy.completed(payload)
                     if payload.get("threadId") not in (None, self.thread_id):
                         continue
@@ -655,7 +715,9 @@ class AppServerTransport:
                         if usage is not None:
                             metadata["native_usage"] = usage_tracker.previous
                             if self.app is not None and record_index is not None:
-                                self.app._edit(record_index, "Codex usage snapshot updated")
+                                self.app._edit(
+                                    record_index, "Codex usage snapshot updated"
+                                )
                             yield _chunk(usage=usage, metadata=metadata)
                     elif method in ("item/started", "item/completed"):
                         if payload.get("item", {}).get("type") == "contextCompaction":
@@ -690,6 +752,12 @@ class AppServerTransport:
                         yield _chunk(metadata=metadata)
                         return
             finally:
+                if steering_worker is not None:
+                    steering_worker.cancel()
+                    await asyncio.gather(steering_worker.wait(), return_exceptions=True)
+                if steering_task is not None:
+                    steering_task.cancel()
+                    await asyncio.gather(steering_task, return_exceptions=True)
                 tool_ui.finish()
                 bridge = getattr(self.server, "native_bridge", None)
                 if bridge is not None and bridge.policy is not None:

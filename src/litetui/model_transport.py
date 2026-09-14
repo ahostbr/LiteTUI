@@ -619,7 +619,7 @@ class OpenAITransport:
     async def create(self, **kwargs):
         kwargs = dict(kwargs)
         kwargs["messages"] = [
-            {k: v for k, v in m.items() if k != "provider_metadata"}
+            {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
             for m in kwargs["messages"]
         ]
         return await self.client.chat.completions.create(**kwargs)
