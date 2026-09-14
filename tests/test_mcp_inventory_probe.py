@@ -98,3 +98,19 @@ def test_gate_command_executes_in_powershell_with_spaces(tmp_path, monkeypatch):
         env={**os.environ, "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"]})
     assert json.loads(result.stdout) == {}
     assert json.loads(log.read_text()) == {"category": "alpha", "allowed": True}
+
+
+def test_session_mcp_overrides_touch_only_owned_server_and_encode_paths(tmp_path, monkeypatch):
+    import tomllib
+
+    module = probe_module(monkeypatch)
+    fixture, state, counts = [tmp_path / name for name in ("fixture with spaces.py", "state", "counts")]
+    before = module.mcp_overrides(fixture, state, counts, 1)
+    after = module.mcp_overrides(fixture, state, counts, 2)
+    assert before[:2] == after[:2] and before[2] != after[2]
+    parsed = tomllib.loads("\n".join(after))
+    assert set(parsed["mcp_servers"]) == {"catalog_probe"}
+    assert parsed["mcp_servers"]["catalog_probe"] == {
+        "command": sys.executable, "args": [str(fixture), str(state), str(counts)],
+        "env": {"CATALOG_REVISION": "2"},
+    }

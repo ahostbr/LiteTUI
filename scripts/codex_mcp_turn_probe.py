@@ -36,6 +36,15 @@ def gate_command(path):
     return f'{Path(sys.executable).name} "{path}"'
 
 
+def mcp_overrides(fixture, state, counts, revision):
+    prefix = "mcp_servers.catalog_probe."
+    return (
+        prefix + "command=" + json.dumps(sys.executable),
+        prefix + "args=" + json.dumps([str(fixture), str(state), str(counts)]),
+        prefix + "env.CATALOG_REVISION=" + json.dumps(str(revision)),
+    )
+
+
 async def trust_gate(server, root, command):
     hooks = own_hooks(await server.request("hooks/list", {"cwds": [str(root)]}), command)
     if len(hooks) != 1:
@@ -68,7 +77,11 @@ async def probe(output, refresh):
                 + '\n[mcp_servers.catalog_probe.env]\nCATALOG_REVISION = '
                 + json.dumps(str(revision)) + '\n', encoding="utf-8")
 
-        config(1)
+        if refresh == "session-restart":
+            (root / "config.toml").write_text("# User configuration remains unchanged.\n", encoding="utf-8")
+        else:
+            config(1)
+        original_config = (root / "config.toml").read_bytes()
         command = gate_command(gate)
         server = AppServer(config_overrides=["features.hooks=true", "features.multi_agent=false",
                                              "features.multi_agent_v2=false",
@@ -76,6 +89,8 @@ async def probe(output, refresh):
             + json.dumps(command) + ',timeout=10}]}]'])
         server.environment["CODEX_HOME"] = str(root)
         server.environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
+        if refresh == "session-restart":
+            server.config_overrides += mcp_overrides(fixture, state, counts, 1)
         thread = turn = None
         phase = "start"
         try:
@@ -99,6 +114,24 @@ async def probe(output, refresh):
                         if refresh == "config-revision":
                             config(2)
                             await server.request("config/mcpServer/reload", {})
+                        elif refresh == "session-restart":
+                            phase = "session_restart"
+                            await server.close()
+                            server.config_overrides = tuple(value for value in server.config_overrides
+                                                            if not value.startswith("mcp_servers.catalog_probe."))
+                            server.config_overrides += mcp_overrides(fixture, state, counts, 2)
+                            await server.start()
+                            evidence["resumed_hook_trust"] = await trust_gate(server, root, command)
+                            resumed = await server.request("thread/resume", {"threadId": thread})
+                            evidence["resumed_thread_same"] = resumed["thread"]["id"] == thread
+                            if not evidence["resumed_thread_same"]:
+                                raise AssertionError("Native resume changed thread identity")
+                            from litetui.codex_history import read
+
+                            saved = await read(server, thread)
+                            evidence["prior_turn_visible"] = any(
+                                row["id"] == evidence["turns"][0]["turn_id"] for row in saved.get("turns", []))
+                            phase = "turn_2"
                     started = await server.request("turn/start", {"threadId": thread,
                         "input": [{"type": "text", "text": prompt}], "effort": "medium"})
                     turn = started["turn"]["id"]
@@ -155,6 +188,7 @@ async def probe(output, refresh):
             evidence["app_server_closed"] = server.process is None or server.process.returncode is not None
             evidence["gates"] = [json.loads(line) for line in gates.read_text().splitlines()] if gates.exists() else []
             evidence["tools_list_versions"] = [int(line) for line in counts.read_text().splitlines()] if counts.exists() else []
+            evidence["config_file_unchanged"] = (root / "config.toml").read_bytes() == original_config
     evidence["temporary_home_removed"] = not root.exists()
     evidence["inventory_accepted"] = evidence["accepted"]
     statuses = [status for row in evidence["turns"] for status in row.get("hook_statuses", [])]
@@ -163,6 +197,9 @@ async def probe(output, refresh):
                                  and all(gate["allowed"] for gate in evidence["gates"]))
     evidence["accepted"] = (evidence["inventory_accepted"] and evidence["hook_accepted"]
                             and evidence["app_server_closed"] and evidence["temporary_home_removed"])
+    if refresh == "session-restart":
+        evidence["accepted"] = (evidence["accepted"] and evidence.get("resumed_thread_same")
+                                and evidence.get("prior_turn_visible") and evidence["config_file_unchanged"])
     output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(evidence))
 
@@ -171,7 +208,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--refresh", choices=("notification", "config-revision"), default="notification")
+    parser.add_argument("--refresh", choices=("notification", "config-revision", "session-restart"), default="notification")
     args = parser.parse_args()
     if not args.live:
         parser.error("--live required for the bounded two-turn inference probe")
