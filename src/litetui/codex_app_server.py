@@ -256,9 +256,10 @@ class AppServerTransport:
         conversation = self.app.conversation
         length = len(conversation)
         backend = self.app.backend
-        reference = next((m.get("provider_metadata", {}).get("app_server_thread_id")
+        reference = next(((m.get("provider_metadata") or {}).get("app_server_thread_id")
                           for m in reversed(conversation)
-                          if m.get("provider_metadata", {}).get("provider") == "codex"), None)
+                          if (m.get("provider_metadata") or {}).get("provider") == "codex"
+                          and (m.get("provider_metadata") or {}).get("app_server_thread_id")), None)
         if not reference:
             return 0
 
@@ -295,7 +296,9 @@ class AppServerTransport:
                 await NativeHookBridge(self.app).install(self.server)
             await self.server.start()
             if self.thread_id != reference or self.process is not self.server.process:
-                await self.server.request("thread/resume", {"threadId": reference})
+                opened = await self.server.request("thread/resume", {"threadId": reference})
+                if opened.get("thread", {}).get("id") != reference:
+                    raise ProviderError("Codex resumed a different thread than requested.")
                 self.thread_id, self.process = reference, self.server.process
             await self.server.request("thread/compact/start", {"threadId": reference})
             finished = False

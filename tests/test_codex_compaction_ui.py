@@ -8,6 +8,30 @@ from litetui.widgets import CompactionCard
 
 
 @pytest.mark.asyncio
+async def test_compaction_refuses_mismatched_resume_before_mutating_thread_or_transcript():
+    from copy import deepcopy
+
+    class WrongThreadServer(Server):
+        async def request(self, method, params):
+            self.requests.append((method, params))
+            assert method == "thread/resume"
+            return {"thread": {"id": "different-thread"}}
+
+    app = Host()
+    app.conversation = [{"role": "assistant", "content": "preserved", "provider_metadata": {
+        "provider": "codex", "app_server_thread_id": "thread-1",
+    }}]
+    before = deepcopy(app.conversation)
+    server = WrongThreadServer()
+    transport = AppServerTransport(server, app)
+    with pytest.raises(ProviderError, match="different thread"):
+        await transport.compact()
+    assert server.requests == [("thread/resume", {"threadId": "thread-1"})]
+    assert transport.thread_id is None and transport.process is None
+    assert app.conversation == before and not app.events
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stopped", [False, True])
 async def test_manual_compaction_uses_shared_card_rpc_status_and_saved_trace(stopped):
     class CompactServer(Server):

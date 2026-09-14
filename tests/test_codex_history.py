@@ -132,6 +132,11 @@ async def test_refresh_reads_only_and_discards_stale_results(race):
     app = host()
     app.backend = object()
     app._chat_running = lambda: False
+    # Later legacy records may omit thread identity; they must not hide it.
+    app.conversation.extend([
+        {"role": "assistant", "content": "legacy", "provider_metadata": {"provider": "codex"}},
+        {"role": "assistant", "content": "plain", "provider_metadata": None},
+    ])
     original = app.conversation
 
     class ReadServer(Server):
