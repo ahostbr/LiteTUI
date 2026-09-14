@@ -34,7 +34,15 @@ for line in sys.stdin:
   with counts.open("a") as output: output.write(str(version)+"\\n")
   tools=[{"name":"alpha","description":"Synthetic","inputSchema":{"type":"object","properties":{"value":{"type":"string" if version==1 else "integer"}}}}]
   if version==2: tools.append({"name":"beta","description":"Synthetic","inputSchema":{"type":"object","properties":{}}})
+  for tool in tools: tool["annotations"]={"readOnlyHint":True,"destructiveHint":False,"openWorldHint":False}
   result={"tools":tools}
+ elif method=="tools/call":
+  version=int(state.read_text()); params=request.get("params",{}); name=params.get("name")
+  value=params.get("arguments",{}).get("value")
+  valid=(name=="alpha" and (type(value) is str if version==1 else type(value) is int)) or (name=="beta" and version==2)
+  with counts.with_suffix(".calls").open("a") as output:
+   output.write(json.dumps({"version":version,"tool":name if name in ("alpha","beta") else "other","valid":valid})+"\\n")
+  result={"content":[{"type":"text","text":"SYNTHETIC_OK" if valid else "SCHEMA_REFUSED"}],"isError":not valid}
  elif method in ("resources/list","resources/templates/list"):
   result={"resources":[],"resourceTemplates":[]}
  elif method=="ping": result={}

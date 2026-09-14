@@ -1,0 +1,132 @@
+"""Bounded same-thread MCP inventory test; synthetic tools, no delegation."""
+
+import argparse
+import asyncio
+import json
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+from codex_mcp_catalog_probe import FIXTURE
+
+from litetui.codex_app_server import AppServer
+from litetui.model_transport import credential_path
+
+
+def gate_program(log):
+    return (
+        "import json,sys\nfrom pathlib import Path\np=json.load(sys.stdin)\n"
+        "name=p.get('tool_name','')\n"
+        "category={'tool_search':'search','mcp__catalog_probe__alpha':'alpha',"
+        "'mcp__catalog_probe__beta':'beta'}.get(name,'other')\n"
+        "allow=category!='other'\n"
+        f"with Path({str(log)!r}).open('a') as f: f.write(json.dumps({{'category':category,'allowed':allow}})+'\\n')\n"
+        "print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse',"
+        "'permissionDecision':'allow' if allow else 'deny',"
+        "'permissionDecisionReason':'Synthetic MCP inventory probe only'}}))\n"
+    )
+
+
+async def probe(output):
+    evidence = {"accepted": False, "delegation_enabled": False, "turns": []}
+    with tempfile.TemporaryDirectory(prefix="litetui-mcp-turn-") as directory:
+        root = Path(directory)
+        fixture, state, counts, gate, gates = [root / name for name in
+                                              ("fixture.py", "state", "counts", "gate.py", "gates")]
+        fixture.write_text(FIXTURE, encoding="utf-8")
+        gate.write_text(gate_program(gates), encoding="utf-8")
+        state.write_text("1", encoding="utf-8")
+        shutil.copy2(credential_path("codex"), root / "auth.json")
+        (root / "config.toml").write_text(
+            '[mcp_servers.catalog_probe]\ncommand = ' + json.dumps(sys.executable)
+            + '\nargs = ' + json.dumps([str(fixture), str(state), str(counts)]) + '\n', encoding="utf-8")
+        server = AppServer(config_overrides=["features.hooks=true", "features.multi_agent=false",
+                                             "features.multi_agent_v2=false",
+            'hooks.PreToolUse=[{matcher=".*",hooks=[{type="command",command='
+            + json.dumps(f'"{sys.executable}" "{gate}"') + ',timeout=10}]}]'])
+        server.environment["CODEX_HOME"] = str(root)
+        thread = turn = None
+        phase = "start"
+        try:
+            async with asyncio.timeout(150):
+                await server.start()
+                opened = await server.request("thread/start", {
+                    "model": "gpt-6-astra", "cwd": str(root), "approvalPolicy": "never", "sandbox": "read-only",
+                    "baseInstructions": "You are testing synthetic MCP tools. Use only catalog_probe alpha/beta and tool search. Do not use shell, files, web, agents, or other tools. If tools are unavailable report unavailable and stop. After requested tool calls reply DONE.",
+                })
+                thread = opened["thread"]["id"]
+                evidence["thread_id"] = thread
+                prompts = ["Find catalog_probe alpha and call it with value 'first'.",
+                           "The synthetic MCP inventory has changed. Find catalog_probe beta and call it once, then call catalog_probe alpha with value 7 using its current schema."]
+                for index, prompt in enumerate(prompts):
+                    phase = f"turn_{index + 1}"
+                    if index:
+                        state.write_text("2", encoding="utf-8")
+                        await asyncio.sleep(.3)
+                    started = await server.request("turn/start", {"threadId": thread,
+                        "input": [{"type": "text", "text": prompt}], "effort": "medium"})
+                    turn = started["turn"]["id"]
+                    row = {"turn_id": turn, "completed": False, "mcp_completed": 0, "mcp_items": [], "interactive_requests": 0}
+                    evidence["turns"].append(row)
+                    while True:
+                        event = await server.events.get()
+                        if isinstance(event, Exception):
+                            raise event
+                        if "id" in event and "method" in event:
+                            row["interactive_requests"] += 1
+                            await server.send({"id": event["id"], "error": {
+                                "code": -32601, "message": "Interactive requests are unavailable in this probe"}})
+                            continue
+                        params = event.get("params", {})
+                        if params.get("threadId") != thread:
+                            continue
+                        if event.get("method") == "thread/tokenUsage/updated":
+                            row["usage"] = params.get("tokenUsage")
+                        if event.get("method") == "item/completed" and params.get("item", {}).get("type") == "mcpToolCall":
+                            row["mcp_completed"] += 1
+                            item = params["item"]
+                            error = str((item.get("error") or {}).get("message", "")).lower()
+                            row["mcp_items"].append({
+                                "status": item.get("status") if item.get("status") in ("completed", "failed", "inProgress") else "other",
+                                "read_only_hint": item.get("readOnlyHint"), "has_error": bool(error),
+                                "error_signals": [token for token in ("approval", "permission", "denied", "unknown", "not found", "schema", "timeout", "hook") if token in error],
+                            })
+                        if event.get("method") == "turn/completed" and params.get("turn", {}).get("id") == turn:
+                            row["completed"] = params["turn"].get("status") == "completed"
+                            turn = None
+                            break
+                    if not row["completed"]:
+                        break
+                call_log = counts.with_suffix(".calls")
+                evidence["calls"] = [json.loads(line) for line in call_log.read_text().splitlines()] if call_log.exists() else []
+                expected = {(1, "alpha"), (2, "alpha"), (2, "beta")}
+                evidence["accepted"] = (len(evidence["turns"]) == 2
+                    and all(row["completed"] for row in evidence["turns"])
+                    and expected <= {(row["version"], row["tool"]) for row in evidence["calls"] if row["valid"]}
+                    and all(row["valid"] for row in evidence["calls"]))
+        except Exception as exc:  # noqa: BLE001 - preserve only an enumerated phase and error class
+            evidence.update(failure_phase=phase, failure_type=type(exc).__name__)
+        finally:
+            if thread and turn:
+                try:
+                    await asyncio.wait_for(server.request("turn/interrupt", {"threadId": thread, "turnId": turn}), 5)
+                except Exception:  # noqa: BLE001 - cleanup still closes the process
+                    evidence["interrupt_failed"] = True
+            await server.close()
+            evidence["app_server_closed"] = server.process is None or server.process.returncode is not None
+            evidence["gates"] = [json.loads(line) for line in gates.read_text().splitlines()] if gates.exists() else []
+            evidence["tools_list_versions"] = [int(line) for line in counts.read_text().splitlines()] if counts.exists() else []
+    evidence["temporary_home_removed"] = not root.exists()
+    output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(evidence))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if not args.live:
+        parser.error("--live required for the bounded two-turn inference probe")
+    asyncio.run(probe(args.output))
