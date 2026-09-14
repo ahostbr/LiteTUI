@@ -126,10 +126,13 @@ class AppServer:
                     future = self.pending[message["id"]]
                     if not future.done():
                         if "error" in message:
+                            from litetui.codex_steering import RejectedRequest
+
                             future.set_exception(
-                                ProviderError(
+                                RejectedRequest(
                                     "Codex app-server rejected the operation. "
-                                    + str(message["error"].get("message", ""))[:500]
+                                    + str(message["error"].get("message", ""))[:500],
+                                    code=message["error"].get("code"),
                                 )
                             )
                         else:

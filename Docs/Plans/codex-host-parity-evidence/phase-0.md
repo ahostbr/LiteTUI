@@ -145,3 +145,26 @@ host-hook bridge contract; validate steering/inventory boundaries independently.
   the tests expect all footer fields at the default narrow test width, while the
   current responsive footer omits them. This baseline remains to reconcile with
   explicit wide/narrow acceptance; it is not a passing full-suite claim.
+
+## Steering capability and delivery-state checkpoint
+
+- `steering-probe.json` verifies live `turn/steer` during a synthetic host-tool
+  wait: the response identifies the expected active turn, the resulting answer
+  reflects the steering, and `thread/read(includeTurns=true)` contains exactly
+  one `userMessage.clientId` matching `clientUserMessageId`. Steering after the
+  turn completes is explicitly rejected. No prompt, output or credentials appear
+  in the saved evidence.
+- Matching [official steering tests](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/app-server/tests/suite/v2/turn_steer.rs)
+  confirm the expected-turn precondition and invalid-request rejection code
+  `-32600`. The host now preserves JSON-RPC rejection codes in a dedicated error
+  type; connection loss and timeouts remain distinguishable from rejection.
+- `codex_steering.py` adds a delivery ledger with save-before-effect transitions:
+  queued, admitting, admitted, sending, accepted, denied, next_turn and uncertain.
+  Admission and send are not automatically repeated after interruption. Explicit
+  validation rejection permits next-turn fallback; uncertain submission requires
+  positive native-history reconciliation. Missing history is not treated as proof
+  of non-delivery, including partial or rolled-back histories.
+- Tests cover image input, stable identity, one admission/send, explicit rejection,
+  internal errors, lost replies, interrupted admission/send and restored-ledger
+  reconciliation. Host queue integration, durable resume UI, and automatic safe
+  fallback are the next work; C6 remains open.
