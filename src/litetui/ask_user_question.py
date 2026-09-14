@@ -747,6 +747,9 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
     reason: `done` is never set when nobody answers, so the `is_running` check is
     the only thing that ever releases this thread.
     """
+    from litetui.question_result import current_lifetime
+
+    lifetime = current_lifetime()
     ask_id = "ask-" + uuid4().hex[:12]
     done = threading.Event()
     result_box: list[dict] = []
@@ -757,7 +760,14 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
             "id": ask_id,
             "questions": [s.to_dict() for s in states],
         })
-        while not done.wait(timeout=5):
+        while not done.wait(timeout=0.1 if lifetime is not None else 5):
+            if lifetime is not None and lifetime.is_set():
+                if done.is_set():
+                    break
+                result_box.append({"action": "aborted", "questions": [s.to_dict() for s in states]})
+                done.set()
+                app._rpc_emit({"type": "user_input_resolved", "id": ask_id, "cancelled": True})
+                break
             if not getattr(app, "is_running", True):
                 return UNANSWERED_EXITED
         if not result_box:
@@ -790,6 +800,9 @@ def run(args: dict, app: App | None) -> str:
     if getattr(app, "_rpc", False):
         return _run_over_rpc(states, app)
 
+    from litetui.question_result import current_lifetime
+
+    lifetime = current_lifetime()
     done = threading.Event()
     result_box: list[dict] = []
     loop = getattr(app, "_loop", None)
@@ -853,7 +866,25 @@ def run(args: dict, app: App | None) -> str:
 
     # Block until Submit / Chat / Esc. Poll so a LiteTUI that exits
     # mid-question cannot hang this thread forever.
-    while not done.wait(timeout=5):
+    while not done.wait(timeout=0.1 if lifetime is not None else 5):
+        if lifetime is not None and lifetime.is_set():
+            def cancel_owned_question():
+                # Match the shared Event, never dismiss an unrelated dialog.
+                for screen in app.screen_stack:
+                    for body in screen.query(AskUserQuestionBody):
+                        if body._done is done:
+                            body._finish("aborted")
+                            return
+            try:
+                app.call_from_thread(cancel_owned_question)
+            except Exception:  # noqa: BLE001 - teardown must still release the tool thread
+                if not done.is_set():
+                    result_box.append({"action": "aborted", "questions": [s.to_dict() for s in states]})
+                    done.set()
+            if not done.is_set():
+                result_box.append({"action": "aborted", "questions": [s.to_dict() for s in states]})
+                done.set()
+            break
         if not getattr(app, "is_running", True):
             return (
                 "[error] ask_user_question: LiteTUI exited before the question "

@@ -3,8 +3,29 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
+from threading import Event
 
 _capture = ContextVar("question_result_capture", default=None)
+_lifetime = ContextVar("native_question_lifetime", default=None)
+
+
+@contextmanager
+def question_lifetime(cancelled: Event):
+    """Carry native request cancellation into the shared tool's worker thread."""
+    token = _lifetime.set(cancelled)
+    try:
+        yield
+    finally:
+        _lifetime.reset(token)
+
+
+def current_lifetime():
+    return _lifetime.get()
+
+
+def question_cancelled():
+    lifetime = current_lifetime()
+    return lifetime is not None and lifetime.is_set()
 
 
 @contextmanager

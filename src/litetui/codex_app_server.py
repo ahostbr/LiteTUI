@@ -296,6 +296,9 @@ class AppServerTransport:
                 else None
             )
             interrupted = False
+            from litetui.codex_question_requests import QuestionRequests
+
+            questions = QuestionRequests(self)
             try:
                 while True:
                     if (
@@ -303,6 +306,7 @@ class AppServerTransport:
                         and self.turn_id
                         and not interrupted
                     ):
+                        await questions.close()
                         await self.server.request(
                             "turn/interrupt",
                             {"threadId": reference, "turnId": self.turn_id},
@@ -315,7 +319,8 @@ class AppServerTransport:
                     if isinstance(event, Exception):
                         raise event
                     if "id" in event and "method" in event:
-                        await self._server_request(event)
+                        if not questions.dispatch(event):
+                            await self._server_request(event)
                         continue
                     payload = event.get("params", {})
                     if payload.get("threadId") != reference:
@@ -356,6 +361,7 @@ class AppServerTransport:
                             )
                         return
             finally:
+                await questions.close()
                 if ui:
                     ui.finish()
                 # Compaction can rebase counters. Never subtract the old user
@@ -378,7 +384,7 @@ class AppServerTransport:
                     )
                 self.turn_id = None
 
-    async def _server_request(self, message):
+    async def _server_request(self, message, *, interrupt_on_stop=True):
         method, params = message["method"], message.get("params", {})
         result = None
         if method == "item/tool/call":
@@ -458,7 +464,11 @@ class AppServerTransport:
                 else {"decision": "accept" if approved else "cancel"}
             )
         elif method == "item/tool/requestUserInput":
-            from litetui.question_result import capture_answers, native_answers
+            from litetui.question_result import (
+                capture_answers,
+                native_answers,
+                question_cancelled,
+            )
             from litetui.tool_events import native_lifecycle
 
             result = {"answers": {}}
@@ -489,11 +499,13 @@ class AppServerTransport:
                             ]
                         },
                     )
+                if question_cancelled():
+                    return
                 if success and captured:
                     result["answers"] = native_answers(
                         [question["id"] for question in questions], captured[-1]
                     )
-                if not result["answers"]:
+                if not result["answers"] and params.get("isBlocking", True):
                     # Empty/partial UI outcomes must not become an inferred answer.
                     self.app._stop_requested = True
         if result is None:
@@ -508,7 +520,10 @@ class AppServerTransport:
             )
         else:
             await self.server.send({"id": message["id"], "result": result})
-        if self.app and getattr(self.app, "_stop_requested", False) and self.turn_id:
+        if (
+            interrupt_on_stop and self.app
+            and getattr(self.app, "_stop_requested", False) and self.turn_id
+        ):
             await self.server.request(
                 "turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id}
             )
@@ -702,6 +717,9 @@ class AppServerTransport:
             last_message_id = None
             steering_worker = None
             steering_task = None
+            from litetui.codex_question_requests import QuestionRequests
+
+            questions = QuestionRequests(self)
             try:
                 if self.app:
                     for original_index in range(len(self.app.conversation) - 1, -1, -1):
@@ -744,6 +762,7 @@ class AppServerTransport:
                         and getattr(self.app, "_stop_requested", False)
                         and not interrupt_sent
                     ):
+                        await questions.close()
                         await self.server.request(
                             "turn/interrupt",
                             {"threadId": self.thread_id, "turnId": self.turn_id},
@@ -756,7 +775,8 @@ class AppServerTransport:
                     if isinstance(event, Exception):
                         raise event
                     if "id" in event and "method" in event:
-                        await self._server_request(event)
+                        if not questions.dispatch(event):
+                            await self._server_request(event)
                         continue
                     method, payload = event.get("method"), event.get("params", {})
                     bridge = getattr(self.server, "native_bridge", None)
@@ -824,6 +844,7 @@ class AppServerTransport:
                         yield _chunk(metadata=metadata)
                         return
             finally:
+                await questions.close()
                 if steering_worker is not None:
                     steering_worker.cancel()
                     await asyncio.gather(steering_worker.wait(), return_exceptions=True)

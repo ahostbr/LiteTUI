@@ -220,3 +220,24 @@ host-hook bridge contract; validate steering/inventory boundaries independently.
   limited to LiteTuiAdapter and focused tests/helpers, with no commits or runtime
   launches there. LiteGUI stays excluded; a separate proposed diff/report against
   its dirty baseline is required for Sentinel's consolidated user scope decision.
+
+## Suite C5 consumer checkpoint (2026-09-14)
+
+Authorized companion work implemented without commits in release-20260914-suite.
+See `suite-c5-checkpoint.md` for exact fence and validation: 19 server + 61 web logic
++ 8 isolated browser tests, server/web typechecks. Producer/schema/projection/card
+identity, arguments, progress, status and timing are connected by a shared synthetic
+fixture. Full release/client/packaged acceptance stays open. LiteGUI report/draft
+patch sent to Sentinel; proposal remains unapplied pending consolidated user scope.
+
+## C5 review repair and C7 question lifetime checkpoint
+
+C5 Suite review found late start args were dropped after completion-first. Repaired
+with idempotent metadata-only updates and terminal-safe merges in both projections.
+Revised evidence: 20 server, 62 web logic, 9 browser tests; both typechecks pass.
+Independent Sentinel re-review requested; no Suite commits or release action.
+
+C7 server-request questions now run independently of the native reader; turn-owned
+cancellation releases RPC threads and real modal/sidebar widgets. 43 focused tests
+pass, including actual-reader stop/disconnect. See `question-lifecycle-checkpoint.md`.
+Async agentMessage questions and full all-client/live acceptance remain open.
