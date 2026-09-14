@@ -87,11 +87,13 @@ def _bash_timeout_result(proc: subprocess.Popen, timeout: int) -> str:
     return f"{head}\n{partial}".strip()
 
 
-def _bash_cancelled_result(out: str, err: str, t0: float) -> str:
+def _bash_cancelled_result(out: str, err: str, t0: float, *, kill_confirmed: bool | None = None) -> str:
     """Format the result when the user cancelled a still-running command."""
     partial = _truncate_tail((out or "") + (("\n[stderr]\n" + err) if err else ""))
     note = f"[cancelled by user after {fmt_dur(time.monotonic() - t0)}]"
-    if not ttyguard.CANCELLABLE.get("kill_confirmed", True):
+    if kill_confirmed is None:
+        kill_confirmed = ttyguard.CANCELLABLE.get("kill_confirmed", True)
+    if not kill_confirmed:
         # Same honesty as the timeout arm. A model told the command was
         # cancelled will reason as though it stopped; if we could not confirm
         # the kill, it has to know that.
@@ -207,6 +209,12 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
     keep in step, and this repo has been bitten by a second copy today already.
     """
     t0 = time.monotonic()
+    slot = tasks_mod.PROCESS_SLOT.get()
+    task = tasks_mod.CURRENT.get() or (slot.task if slot is not None else None)
+    if slot is None and task is None:
+        slot = tasks_mod.ProcessSlot()
+    if task is not None and task.state == tasks_mod.KILLED:
+        return "[cancelled] Background task stopped before process spawn."
     try:
         proc = ttyguard.popen(
             argv,
@@ -223,14 +231,20 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
     # foreground cancel slot: two shells overlap now, and the cancel button
     # must keep pointing at the one the turn is waiting on. `/tasks kill`
     # reaches this child through the task.
-    task = tasks_mod.CURRENT.get()
-    if task is not None:
-        task.proc = proc
-    else:
-        ttyguard.CANCELLABLE["proc"], ttyguard.CANCELLABLE["cancelled"] = proc, False
-        # Reset beside "cancelled": a False left over from a PREVIOUS command
-        # would attach its warning to this one's result.
-        ttyguard.CANCELLABLE["kill_confirmed"] = True
+    late_cancel = False
+    if slot is not None:
+        task, late_cancel = tasks_mod.publish_process(slot, proc, ttyguard.CANCELLABLE)
+    elif task is not None:
+        late_cancel = tasks_mod.attach_process(task, proc)
+    if late_cancel:
+        # Stop won while popen was in flight. The app saw no handle, so
+        # this side owns its sole kill; never leave the late child orphaned.
+        killed = ttyguard.kill_tree(proc.pid, proc)
+        try:
+            out, err = proc.communicate(timeout=10)
+        except (subprocess.TimeoutExpired, OSError):
+            return "[cancelled] Process stop could not be confirmed; it may still be running."
+        return _bash_cancelled_result(out, err, t0, kill_confirmed=killed)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -240,15 +254,12 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
         # to press cancel on a tool that already ended. Slot cleared, that press
         # is an honest no-op; slot populated, it would arm "cancelled" and
         # dispatch a second kill racing this one's.
-        if task is None:
-            ttyguard.CANCELLABLE["proc"] = None
+        tasks_mod.finish_process(slot, task, proc, ttyguard.CANCELLABLE, consume_cancelled=False)
         return _bash_timeout_result(proc, timeout)
     finally:
-        if task is None:
-            ttyguard.CANCELLABLE["proc"] = None
-    if task is None and ttyguard.CANCELLABLE["cancelled"]:
-        ttyguard.CANCELLABLE["cancelled"] = False
-        return _bash_cancelled_result(out, err, t0)
+        cancelled, confirmed = tasks_mod.finish_process(slot, task, proc, ttyguard.CANCELLABLE)
+    if cancelled:
+        return _bash_cancelled_result(out, err, t0, kill_confirmed=confirmed)
     return _bash_completed_result(out, err, proc.returncode)
 
 

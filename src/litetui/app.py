@@ -2080,6 +2080,9 @@ class LiteTUI(App):
             aw = self._observe_tool_outcome(name, dict(args), aw, hook_profile, hook_context)
         if background:
             return self._start_background(name, args, aw), True
+        process_slot = tasks_mod.ProcessSlot() if may_bg else None
+        if process_slot is not None:
+            aw = tasks_mod.run_in_process_slot(aw, process_slot)
         # AUTO-PROMOTION (T517, Ryan: "the calls are still blocked is it off by
         # default or something ?"): the model almost never asks for background,
         # so a call still running after the settings threshold becomes a
@@ -2088,7 +2091,8 @@ class LiteTUI(App):
         limit = int(getattr(self.settings, "tool_auto_background_s", 0) or 0) if may_bg else 0
         done, fut = await tasks_mod.wait_or_promote(aw, limit)
         if not done:
-            return self._start_background(name, args, fut, promoted_after=limit), True
+            return self._start_background(name, args, fut, promoted_after=limit,
+                                          process_slot=process_slot), True
         try:
             return str(fut.result()), True
         except Exception as e:
@@ -2098,7 +2102,8 @@ class LiteTUI(App):
         result, ok, cancelled = "", False, False
         try:
             result = await aw
-            task = tasks_mod.CURRENT.get()
+            slot = tasks_mod.PROCESS_SLOT.get()
+            task = tasks_mod.CURRENT.get() or (slot.task if slot is not None else None)
             cancelled = task.state == tasks_mod.KILLED if task else self._stop_requested
             ok = not cancelled
             return result
@@ -2121,13 +2126,18 @@ class LiteTUI(App):
     # mid-turn, flushed after, wakes the agent unattended. Why the result
     # cannot be a late role:"tool" message is in tasks.py's docstring.
 
-    def _start_background(self, name: str, args: dict, aw, promoted_after: float | None = None) -> str:
+    def _start_background(self, name: str, args: dict, aw, promoted_after: float | None = None,
+                          process_slot=None) -> str:
         task = tasks_mod.new_task(name, args, getattr(self, "convo_id", ""))
+        task._pending_process_handoff = not promoted_after or process_slot is not None
         if promoted_after:
             # The call began in the FOREGROUND, so its child (a shell) sits in the
             # cancel slot, not on a task. It is the task's now — `/tasks kill` needs
             # the handle, and the cancel button must not reach a backgrounded child.
-            task.proc, ttyguard.CANCELLABLE["proc"] = ttyguard.CANCELLABLE.get("proc"), None
+            if process_slot is not None:
+                tasks_mod.promote_process(process_slot, task, ttyguard.CANCELLABLE)
+            else:
+                task.proc, ttyguard.CANCELLABLE["proc"] = ttyguard.CANCELLABLE.get("proc"), None
         self.bg_tasks[task.id] = task
         self._save_background()
         # 🔴 NO `label=` HERE. `tasks.label_of` returns the first 60 characters
@@ -2213,11 +2223,11 @@ class LiteTUI(App):
             reason = f"no task {task_id}"
             self._system(reason)
             return reason
-        if task.state != tasks_mod.RUNNING or task.proc is None:
+        accepted, proc = tasks_mod.request_kill(task)
+        if not accepted:
             reason = f"{task_id} is {task.state}; nothing to kill"
             self._system(reason)
             return reason
-        task.state = tasks_mod.KILLED
         # 🔴 THE THIRD TRANSITION, AND IT WAS NOT PERSISTED EITHER. A kill moved
         # the state in memory only: the store still said `running`, so
         # `tasks.load` marked it LOST at the next boot rather than KILLED — a
@@ -2226,7 +2236,10 @@ class LiteTUI(App):
         # chip down; see `_save_background`.
         self._save_background()
         self.notify(f"Killing {task_id}…", timeout=2)
-        self._kill_background_tree(task)
+        if proc is not None:
+            self._kill_background_tree(task)
+        # Otherwise the local runner observes KILLED before spawn, or claims
+        # the kill when a spawn already in flight attaches its handle.
         return None
 
     @work(thread=True, group="cancel")
