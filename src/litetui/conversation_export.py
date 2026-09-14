@@ -1,7 +1,11 @@
 """Read-only Markdown projection of saved visible conversation activity."""
 
+import base64
+import binascii
+import hashlib
 import re
 from types import SimpleNamespace
+from urllib.parse import quote
 
 from litetui.codex_async_questions import latest_question
 from litetui.codex_trace import records
@@ -15,7 +19,12 @@ def literal(text):
     return f"{fence}\n{text}\n{fence}"
 
 
-def content(value):
+def image_url(block):
+    value = block.get("image_url", block.get("imageUrl", block.get("url")))
+    return value.get("url") if isinstance(value, dict) else value
+
+
+def content(value, image_refs=None):
     if isinstance(value, str):
         return value
     if not isinstance(value, list):
@@ -27,11 +36,13 @@ def content(value):
         if block.get("type") in ("text", "input_text"):
             parts.append(str(block.get("text", "")))
         elif block.get("type") in ("image_url", "input_image"):
-            parts.append("[Image attachment; image bytes are not included in this text export]")
+            reference = (image_refs or {}).get(image_url(block))
+            parts.append(f"[Image attachment: {reference}]" if reference else
+                         "[Image attachment; image bytes are not included in this text export]")
     return "\n\n".join(parts)
 
 
-def markdown(messages):
+def markdown(messages, image_refs=None):
     # Later saved snapshots win, but each native item keeps its first visible
     # position. Metadata may be mirrored on both user and assistant records.
     latest = {}
@@ -50,7 +61,7 @@ def markdown(messages):
         meta = message.get("provider_metadata") or {}
         trace = records(meta)
         role = message.get("role")
-        text = content(message.get("content"))
+        text = content(message.get("content"), image_refs)
         traced_answer = any(r.get("kind") == "agentMessage" and r.get("result") for r in trace)
         if text and role in ("user", "assistant", "tool") and not (role == "assistant" and traced_answer):
             label = {"user": "You", "assistant": "Assistant", "tool": "Tool"}[role]
@@ -107,6 +118,51 @@ def markdown(messages):
 
 def export(source, destination):
     _, messages = ConversationRepository.read(source)
-    text = markdown(messages)
+    assets = destination.with_name(destination.name + ".assets")
+    files, references = {}, {}
+    extensions = {"png": "png", "jpeg": "jpg", "webp": "webp", "gif": "gif"}
+    for message in messages:
+        blocks = message.get("content")
+        for block in blocks if isinstance(blocks, list) else []:
+            if not isinstance(block, dict) or block.get("type") not in ("image_url", "input_image"):
+                continue
+            url = image_url(block)
+            if not isinstance(url, str) or not url.startswith("data:"):
+                continue  # Never fetch remote attachments while exporting.
+            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,(.*)", url, re.DOTALL)
+            if not match:
+                raise ValueError("Unsupported embedded image format in conversation")
+            try:
+                data = base64.b64decode(match[2], validate=True)
+            except binascii.Error as error:
+                raise ValueError("Invalid embedded image in conversation") from error
+            name = hashlib.sha256(data).hexdigest() + "." + extensions[match[1]]
+            files[name] = data
+            references[url] = assets.name + "/" + name
+    text = markdown(messages, references)
+    if references:
+        text += "\n## Image attachments\n\n" + "\n\n".join(
+            f"![Image attachment {index}](<{quote(reference)}>)"
+            for index, reference in enumerate(dict.fromkeys(references.values()), 1)
+        ) + "\n"
+    created = []
+    made_assets = False
     with destination.open("x", encoding="utf-8") as stream:
-        stream.write(text)
+        try:
+            if files:
+                assets.mkdir()
+                made_assets = True
+                for name, data in files.items():
+                    target = assets / name
+                    with target.open("xb") as image:
+                        created.append(target)
+                        image.write(data)
+            stream.write(text)
+        except BaseException:
+            stream.close()
+            for target in created:
+                target.unlink()
+            if made_assets:
+                assets.rmdir()
+            destination.unlink()
+            raise

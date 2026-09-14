@@ -70,7 +70,7 @@ def main() -> None:
 
         try:
             export(Path(args.export_conversation), Path(args.export_output))
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             parser.error(str(exc))
         return
 

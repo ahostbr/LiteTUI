@@ -15,8 +15,12 @@ from duplicating the trace. Assistant phase/state, tool status, arguments, resul
 and known duration are retained. Missing duration is marked unknown.
 
 Message and tool bodies are fenced as literal text. System instructions are not
-part of the visible transcript export. Image attachments receive a placeholder;
-this text export does not copy attachments or embed their bytes. Saved Codex question
+part of the visible transcript export. Embedded PNG, JPEG, WebP and GIF images are
+copied into a sibling `<output filename>.assets` folder and linked from the document.
+Repeated images share a file. Keep this folder beside the Markdown when moving it.
+Neither the output file nor its assets folder may already exist. Invalid embedded
+images fail the export. Remote image URLs are not fetched and retain placeholders.
+Saved Codex question
 cards include titles, options, latest state and known delivery state. Queued answers
 appear once; an answer already materialised as a user message is not repeated in
 the question card. The source conversation remains the full saved record.

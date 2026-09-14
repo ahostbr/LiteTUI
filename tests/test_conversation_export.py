@@ -27,6 +27,48 @@ def test_export_deduplicates_mirrored_metadata_and_uses_latest_results():
     assert messages == before
 
 
+def test_export_copies_embedded_images_once_with_relative_links(tmp_path):
+    import base64
+
+    source, destination = tmp_path / "convo.jsonl", tmp_path / "with spaces.md"
+    data = b"synthetic image bytes"
+    url = "data:image/png;base64," + base64.b64encode(data).decode()
+    message = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}] * 2}
+    source.write_text(json.dumps({"type": "msg", "message": message}), encoding="utf-8")
+    original = source.read_bytes()
+    export(source, destination)
+    assets = list((tmp_path / "with spaces.md.assets").iterdir())
+    assert len(assets) == 1 and assets[0].read_bytes() == data
+    text = destination.read_text(encoding="utf-8")
+    assert "data:image" not in text
+    assert "with%20spaces.md.assets/" in text
+    assert text.count("![Image attachment") == 1
+    assert source.read_bytes() == original
+
+
+def test_existing_asset_directory_is_preserved_and_no_partial_document_remains(tmp_path):
+    source, destination = tmp_path / "convo.jsonl", tmp_path / "out.md"
+    source.write_text(json.dumps({"type": "msg", "message": {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,eA=="}}]}}), encoding="utf-8")
+    assets = tmp_path / "out.md.assets"
+    assets.mkdir()
+    sentinel = assets / "existing.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        export(source, destination)
+    assert not destination.exists()
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+def test_invalid_image_fails_before_creating_output(tmp_path):
+    source, destination = tmp_path / "convo.jsonl", tmp_path / "out.md"
+    source.write_text(json.dumps({"type": "msg", "message": {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,invalid!"}}]}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid embedded image"):
+        export(source, destination)
+    assert not destination.exists()
+
+
 def test_export_does_not_join_ids_across_threads_or_include_image_bytes():
     text = markdown([{"role": "user", "content": [{"type": "image_url", "image_url": {
         "url": "data:image/png;base64,PRIVATE_BYTES"}}], "provider_metadata": meta(thread="one")},
