@@ -36,6 +36,45 @@ class Host(App):
 
 
 @pytest.mark.asyncio
+async def test_host_calls_pair_by_scoped_id_with_late_and_duplicate_notifications():
+    app = Host()
+    async with app.run_test():
+        ui = CodexToolUI(app, thread_id="thread", turn_id="turn")
+        first = {
+            "type": "dynamicToolCall",
+            "id": "a",
+            "tool": "litetui_echo",
+            "arguments": {"text": "a"},
+        }
+        second = {**first, "id": "b", "arguments": {"text": "b"}}
+        await ui.item(first)
+        # Completion arriving before start must have unknown measured duration.
+        await ui.item(
+            {
+                **second,
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "b"}],
+            },
+            True,
+        )
+        await ui.item(second)
+        await ui.item({**first, "success": True, "durationMs": 500}, True)
+        await ui.item({**first, "success": True, "durationMs": 500}, True)
+        ui.finish()
+        results = [e for e in app.events if e["type"] == "tool_result"]
+        starts = [e for e in app.events if e["type"] == "tool_call"]
+        assert [e["id"] for e in starts] == ["a", "b"]
+        assert [e["id"] for e in results] == ["b", "a"]
+        assert results[0]["durationMs"] is None and results[1]["durationMs"] == 500
+        assert all(
+            e["threadId"] == "thread"
+            and e["turnId"] == "turn"
+            and e["eventVersion"] == 1
+            for e in app.events
+        )
+
+
+@pytest.mark.asyncio
 async def test_output_bursts_are_coalesced_and_completion_cancels_pending_render():
     import asyncio
 
@@ -51,7 +90,9 @@ async def test_output_bursts_are_coalesced_and_completion_cancels_pending_render
         await asyncio.sleep(0.12)
         assert len([e for e in app.events if e["type"] == "tool_progress"]) == 2
         ui.progress({"itemId": "burst", "delta": "late"})
-        await ui.item({**item, "status": "completed", "aggregatedOutput": "final"}, True)
+        await ui.item(
+            {**item, "status": "completed", "aggregatedOutput": "final"}, True
+        )
         count = len(app.events)
         await asyncio.sleep(0.12)
         assert len(app.events) == count
@@ -249,7 +290,8 @@ async def test_host_tool_card_and_interrupted_cleanup():
         card = next(iter(app.query(ToolMessage)))
         assert card.tool_name == "read" and not card._ok
         assert "missing file" in card._result
-        assert not app.events  # _execute_tool owns host RPC events
+        assert [e["type"] for e in app.events] == ["tool_call", "tool_result"]
+        assert all(e["id"] == "host" for e in app.events)
         await ui.item(
             {
                 "type": "commandExecution",
@@ -262,3 +304,5 @@ async def test_host_tool_card_and_interrupted_cleanup():
         await pilot.pause()
         assert not app.running and not ui.calls
         assert all(not card.expanded for card in app.query(ToolMessage))
+        assert app.events[-1]["id"] == "pending"
+        assert app.events[-1]["status"] == "interrupted"

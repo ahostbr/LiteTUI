@@ -1,0 +1,12 @@
+{
+  "starts": 1,
+  "results": 1,
+  "identities_match": true,
+  "unique_starts": true,
+  "unique_results": true,
+  "complete_identity": true,
+  "text_alias_matches": true,
+  "durations_reported": true,
+  "manual_compaction_pair": true,
+  "manual_compaction_success": true
+}

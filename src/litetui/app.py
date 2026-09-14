@@ -2063,7 +2063,9 @@ class LiteTUI(App):
 
     async def _execute_tool(self, name: str, args: dict, *, hooks_enabled=True) -> tuple[str, bool]:
         """The one host authorization door before any tool side effect."""
-        self._rpc_emit({"type": "tool_call", "name": name, "args": args})
+        from litetui.tool_events import external_lifecycle
+        if not external_lifecycle():
+            self._rpc_emit({"type": "tool_call", "name": name, "args": args})
         # THE TOGGLE IS ENFORCED HERE, BEFORE RESOLUTION, so a disabled tool
         # cannot run even if another branch is added above the policy gate.
         # ok=False because nothing executed — callers use that flag to record

@@ -256,6 +256,9 @@ class AppServerTransport:
             )
             if not reference:
                 raise ProviderError("Start a Codex conversation before compacting it.")
+            if isinstance(self.server, AppServer) and self.server.native_bridge is None:
+                from litetui.codex_hook_bridge import NativeHookBridge
+                await NativeHookBridge(self.app).install(self.server)
             await self.server.start()
             if self.thread_id != reference or self.process is not self.server.process:
                 await self.server.request("thread/resume", {"threadId": reference})
@@ -265,9 +268,50 @@ class AppServerTransport:
             from litetui.codex_usage import NativeUsage
 
             compact_usage = NativeUsage()
+            from litetui.codex_tool_ui import CodexToolUI
+
+            def record_compaction(record):
+                record["turnId"] = self.turn_id
+                for index in range(len(self.app.conversation) - 1, -1, -1):
+                    meta = self.app.conversation[index].get("provider_metadata") or {}
+                    if meta.get("app_server_thread_id") == reference:
+                        trace = meta.setdefault(
+                            "display_trace", {"version": 1, "items": []}
+                        )
+                        trace["items"] = [
+                            r for r in trace["items"] if r.get("id") != record["id"]
+                        ] + [record]
+                        if hasattr(self.app, "_edit"):
+                            self.app._edit(index, "Codex compaction display updated")
+                        break
+
+            ui = (
+                CodexToolUI(
+                    self.app,
+                    record_compaction,
+                    thread_id=reference,
+                    automatic_compaction=False,
+                )
+                if hasattr(self.app, "_rpc_emit")
+                else None
+            )
+            interrupted = False
             try:
                 while True:
-                    event = await self.server.events.get()
+                    if (
+                        getattr(self.app, "_stop_requested", False)
+                        and self.turn_id
+                        and not interrupted
+                    ):
+                        await self.server.request(
+                            "turn/interrupt",
+                            {"threadId": reference, "turnId": self.turn_id},
+                        )
+                        interrupted = True
+                    try:
+                        event = await asyncio.wait_for(self.server.events.get(), 0.2)
+                    except TimeoutError:
+                        continue
                     if isinstance(event, Exception):
                         raise event
                     if "id" in event and "method" in event:
@@ -277,17 +321,43 @@ class AppServerTransport:
                     if payload.get("threadId") != reference:
                         continue
                     if event.get("method") == "thread/tokenUsage/updated":
-                        compact_usage.update(payload.get("tokenUsage") or {})
+                        usage = compact_usage.update(payload.get("tokenUsage") or {})
+                        if usage is not None and hasattr(self.app, "_record_usage"):
+                            self.app._record_usage(usage)
+                            self.app.ctx_used = usage.context_tokens
+                            if usage.max_context_tokens is not None:
+                                self.app.ctx_max = usage.max_context_tokens
+                                self.app.ctx_loaded = True
                     if event.get("method") == "turn/started":
                         self.turn_id = payload["turn"]["id"]
+                        if ui:
+                            ui.turn_id = self.turn_id
+                            await ui.item(
+                                {
+                                    "type": "contextCompaction",
+                                    "id": "compact:" + self.turn_id,
+                                }
+                            )
                     if event.get("method") == "turn/completed":
                         finished = True
                         if payload.get("turn", {}).get("status") != "completed":
                             raise ProviderError(
                                 "Codex compaction did not complete; the local transcript was preserved."
                             )
+                        self.turn_id = payload["turn"]["id"]
+                        if ui:
+                            ui.turn_id = self.turn_id
+                            await ui.item(
+                                {
+                                    "type": "contextCompaction",
+                                    "id": "compact:" + self.turn_id,
+                                },
+                                True,
+                            )
                         return
             finally:
+                if ui:
+                    ui.finish()
                 # Compaction can rebase counters. Never subtract the old user
                 # turn's total from a post-compaction snapshot on the next turn.
                 for index in range(len(self.app.conversation) - 1, -1, -1):
@@ -301,7 +371,7 @@ class AppServerTransport:
                                 index, "Codex compaction usage baseline updated"
                             )
                         break
-                if not finished and self.turn_id:
+                if not finished and self.turn_id and not interrupted:
                     await self.server.request(
                         "turn/interrupt",
                         {"threadId": reference, "turnId": self.turn_id},
@@ -317,20 +387,15 @@ class AppServerTransport:
                 if getattr(self.app, "_stop_requested", False):
                     output, success = "[cancelled] turn stopped", False
                 else:
-                    output, success = await self.app._execute_tool(
-                        name, params.get("arguments", {})
-                    )
+                    from litetui.tool_events import native_lifecycle
+
+                    with native_lifecycle():
+                        output, success = await self.app._execute_tool(
+                            name, params.get("arguments", {})
+                        )
                 output = sanitize.redact_secrets(sanitize.strip_escapes(str(output)))
                 if not getattr(self.app, "_rpc", False):
                     sanitize.reset_terminal_modes()
-                self.app._rpc_emit(
-                    {
-                        "type": "tool_result",
-                        "name": name,
-                        "result": output,
-                        "ok": success,
-                    }
-                )
             else:
                 output, success = "Host tools are unavailable in this request.", False
             result = {
@@ -394,11 +459,12 @@ class AppServerTransport:
             )
         elif method == "item/tool/requestUserInput":
             from litetui.question_result import capture_answers, native_answers
+            from litetui.tool_events import native_lifecycle
 
             result = {"answers": {}}
             if self.app:
                 questions = params.get("questions", [])
-                with capture_answers() as captured:
+                with capture_answers() as captured, native_lifecycle():
                     _, success = await self.app._execute_tool(
                         "ask_user_question",
                         {
@@ -622,7 +688,12 @@ class AppServerTransport:
                 if self.app is not None and record_index is not None:
                     self.app._edit(record_index, "Codex display trace updated")
 
-            tool_ui = CodexToolUI(self.app, on_record=record_display)
+            tool_ui = CodexToolUI(
+                self.app,
+                on_record=record_display,
+                thread_id=self.thread_id,
+                turn_id=self.turn_id,
+            )
             from litetui.codex_usage import NativeUsage
 
             usage_tracker = NativeUsage(previous_usage, fresh=reference is None)
@@ -646,6 +717,7 @@ class AppServerTransport:
 
                         def save_steering():
                             from litetui.codex_steering import save_at
+
                             save_at(self.app, record_index)
 
                         steering = HostSteering(

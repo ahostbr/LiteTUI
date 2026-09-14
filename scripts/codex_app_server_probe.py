@@ -23,6 +23,7 @@ async def main():
     parser.add_argument("--deferred-tool", action="store_true")
     parser.add_argument("--compact", action="store_true")
     parser.add_argument("--usage-evidence", type=Path)
+    parser.add_argument("--event-evidence", type=Path)
     args = parser.parse_args()
     server = AppServer()
     transport = AppServerTransport(server)
@@ -35,6 +36,7 @@ async def main():
     tools = []
     tool_calls = []
     usage_evidence = []
+    rpc_events = []
     if args.host_tool or args.deferred_tool:
 
         async def execute(name, arguments):
@@ -48,7 +50,7 @@ async def main():
             _active_tool_profile="scheduled",
             _execute_tool=execute,
             plugins=NS(deferred_specs=list),
-            _rpc_emit=lambda event: None,
+            _rpc_emit=rpc_events.append,
             _edit=lambda *args: None,
             _rpc=True,
         )
@@ -101,17 +103,22 @@ async def main():
                 extra_body={"reasoning_effort": effort},
                 stream=True,
             )
+
             async def observed(source=stream, level=effort):
                 async for chunk in source:
                     usage = getattr(chunk, "usage", None)
                     if usage is not None:
-                        usage_evidence.append({
-                            "effort": level,
-                            "context_tokens": getattr(usage, "context_tokens", None),
-                            "latest": getattr(usage, "latest_request_usage", None),
-                            "cumulative": getattr(usage, "thread_usage", None),
-                            "turn": getattr(usage, "turn_usage", None),
-                        })
+                        usage_evidence.append(
+                            {
+                                "effort": level,
+                                "context_tokens": getattr(
+                                    usage, "context_tokens", None
+                                ),
+                                "latest": getattr(usage, "latest_request_usage", None),
+                                "cumulative": getattr(usage, "thread_usage", None),
+                                "turn": getattr(usage, "turn_usage", None),
+                            }
+                        )
                     yield chunk
 
             response = await collect(observed())
@@ -148,13 +155,16 @@ async def main():
         if args.compact:
             if transport.app is None:
                 transport.app = NS(conversation=messages, tools_enabled=False)
-            before = json.dumps(messages)
+            before = [(m.get("role"), m.get("content")) for m in messages]
             await transport.compact()
             print(
                 json.dumps(
                     {
                         "compaction_completed": True,
-                        "transcript_preserved": json.dumps(messages) == before,
+                        "transcript_preserved": [
+                            (m.get("role"), m.get("content")) for m in messages
+                        ]
+                        == before,
                     }
                 ),
                 flush=True,
@@ -162,7 +172,47 @@ async def main():
     finally:
         await server.close()
     if args.usage_evidence:
-        args.usage_evidence.write_text(json.dumps(usage_evidence, indent=2) + "\n", encoding="utf-8")
+        args.usage_evidence.write_text(
+            json.dumps(usage_evidence, indent=2) + "\n", encoding="utf-8"
+        )
+    if args.event_evidence:
+        starts = [e for e in rpc_events if e["type"] == "tool_call"]
+        ends = [e for e in rpc_events if e["type"] == "tool_result"]
+
+        def identity(event):
+            return event.get("threadId"), event.get("turnId"), event.get("id")
+
+        paired = {identity(e) for e in starts} == {identity(e) for e in ends}
+        result = {
+            "starts": len(starts),
+            "results": len(ends),
+            "identities_match": paired,
+            "unique_starts": len({identity(e) for e in starts}) == len(starts),
+            "unique_results": len({identity(e) for e in ends}) == len(ends),
+            "complete_identity": all(all(identity(e)) for e in starts + ends),
+            "text_alias_matches": all(e.get("text") == e.get("result") for e in ends),
+            "durations_reported": all(
+                isinstance(e.get("durationMs"), (int, float)) for e in ends
+            ),
+        }
+        if args.compact:
+            compact_starts = [e for e in rpc_events if e["type"] == "compaction_start"]
+            compact_ends = [e for e in rpc_events if e["type"] == "compaction_end"]
+            result["manual_compaction_pair"] = len(compact_starts) == len(
+                compact_ends
+            ) == 1 and identity(compact_starts[0]) == identity(compact_ends[0])
+            result["manual_compaction_success"] = (
+                bool(compact_ends)
+                and compact_ends[0].get("outcome") == "success"
+                and compact_ends[0].get("will_resume") is False
+            )
+        assert starts and all(
+            v for k, v in result.items() if k not in ("starts", "results")
+        ), result
+        args.event_evidence.write_text(
+            json.dumps(result, indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps(result))
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ class Server:
                                 "outputTokens": 5 * self.turn,
                                 "cachedInputTokens": 1800 * self.turn,
                                 "totalTokens": 2005 * self.turn,
-                            }
+                            },
                         },
                     },
                 }
@@ -374,7 +374,23 @@ async def test_host_output_cleanup_and_staged_images(monkeypatch):
     result = server.replies[-1]["result"]
     text = result["contentItems"][0]["text"]
     assert "synthetic-secret" not in text and "\x1b" not in text
-    assert events[-1]["result"] == text
+    assert events == []  # Native item notifications own the RPC lifecycle.
+    from litetui.codex_tool_ui import CodexToolUI
+
+    ui = CodexToolUI(app, thread_id="thread", turn_id="turn")
+    await ui.item(
+        {
+            "type": "dynamicToolCall",
+            "id": "call",
+            "tool": "litetui_view_image",
+            "arguments": {},
+            "status": "completed",
+            **result,
+        },
+        True,
+    )
+    assert text in events[-1]["result"]
+    assert "synthetic-secret" not in events[-1]["result"]
     assert result["contentItems"][1] == {
         "type": "inputImage",
         "imageUrl": "data:image/png;base64,aW1hZ2U=",

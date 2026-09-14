@@ -196,3 +196,27 @@ host-hook bridge contract; validate steering/inventory boundaries independently.
   added disk-reload test in a 13-test steering run. Full interactive approval-wait,
   abrupt process restart, multiple queued images and rendered resume acceptance
   still require validation; C6 and the overall release gate remain open.
+
+## Tool event ownership and compaction checkpoint
+
+- Codex's item stream now owns RPC lifecycles for both native and host dynamic
+  tools. Task-local suppression prevents the host dispatcher emitting a duplicate
+  start. Starts/results/progress carry version, provider, thread, turn and item
+  identity. Interrupted tools settle over RPC. Completion-first and duplicate/late
+  notifications do not create extra cards or fabricated durations.
+- Tool results carry equal `result` and `text` fields for current LiteGUI/LiteSuite
+  compatibility. Native question callbacks no longer emit orphan legacy tool starts;
+  their dedicated shared question events remain active.
+- Manual compaction now uses the shared card, elapsed clock, saved display record,
+  native context snapshot and stop handling. Automatic/manual RPC ends carry the
+  outcome/will_resume fields existing consumers expect. Interrupted compactions
+  settle in RPC mode even when no Textual card exists.
+- Live `tool-events-probe.json`: two starts and two results, unique complete scoped
+  identities, matching aliases and measured durations. Live
+  `compaction-events-probe.json`: one matched manual compaction pair, success, no
+  automatic continuation, displayed conversation preserved. 51 focused tests pass.
+- Contract: `Docs/codex-tool-event-contract.md`. Consumer parity remains open.
+  Sentinel authorized REL-20260914-C5-SUITE in the existing Suite release worktree,
+  limited to LiteTuiAdapter and focused tests/helpers, with no commits or runtime
+  launches there. LiteGUI stays excluded; a separate proposed diff/report against
+  its dirty baseline is required for Sentinel's consolidated user scope decision.

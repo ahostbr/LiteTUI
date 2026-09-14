@@ -20,8 +20,18 @@ def clean(value):
 
 
 class CodexToolUI:
-    def __init__(self, app, on_record=None):
+    def __init__(
+        self,
+        app,
+        on_record=None,
+        *,
+        thread_id=None,
+        turn_id=None,
+        automatic_compaction=True,
+    ):
         self.app = app
+        self.thread_id, self.turn_id = thread_id, turn_id
+        self.automatic_compaction = automatic_compaction
         self.on_record = on_record
         self.records = {}
         self.finished = set()
@@ -31,6 +41,21 @@ class CodexToolUI:
         self.progress_at = {}
         self.plan_card = None
         self.compactions = {}
+        self.compaction_started = {}
+
+    def emit(self, event):
+        if event.get("type") == "tool_result":
+            # LiteSuite's existing adapter reads text; LiteGUI reads result.
+            event = {**event, "text": event.get("result", "")}
+        self.app._rpc_emit(
+            {
+                "eventVersion": 1,
+                "provider": "codex",
+                "threadId": self.thread_id,
+                "turnId": self.turn_id,
+                **event,
+            }
+        )
 
     def record(self, key, **fields):
         record = self.records.setdefault(key, {"id": key})
@@ -80,9 +105,7 @@ class CodexToolUI:
         if widget:
             widget.set_progress(text)
             self.app._scroll_down()
-        self.app._rpc_emit(
-            {"type": "tool_progress", "id": key, "name": name, "text": text}
-        )
+        self.emit({"type": "tool_progress", "id": key, "name": name, "text": text})
 
     async def plan(self, payload):
         if not self.app:
@@ -99,7 +122,7 @@ class CodexToolUI:
                 await self.app.query_one("#chat-log").mount(self.plan_card)
             self.plan_card.body.content = Text(clean(text))
             self.app._scroll_down()
-        self.app._rpc_emit(
+        self.emit(
             {
                 "type": "plan_update",
                 "threadId": payload.get("threadId"),
@@ -117,12 +140,15 @@ class CodexToolUI:
 
     async def compaction(self, item, completed):
         key = item["id"]
+        if not completed and key not in self.compactions:
+            self.compactions[key] = None
+            self.compaction_started[key] = time.monotonic()
         card = self.compactions.get(key)
         if card is None and not getattr(self.app, "_rpc", False):
             card = CompactionCard(
                 "Codex is compacting its native context",
                 "Managed by the official Codex engine.",
-                auto=True,
+                auto=self.automatic_compaction,
             )
             await self.app.query_one("#chat-log").mount(card)
             self.compactions[key] = card
@@ -132,14 +158,30 @@ class CodexToolUI:
                 elapsed.ensure_running()
         if completed and card:
             card.finish("Native context compacted; displayed conversation preserved.")
-            self.compactions.pop(key, None)
             if getattr(self.app, "_compact_card", None) is card:
                 self.app._compact_card = None
-        self.app._rpc_emit(
+        started = self.compaction_started.get(key)
+        duration = (
+            round((time.monotonic() - started) * 1000) if started is not None else None
+        )
+        if completed:
+            self.compactions.pop(key, None)
+            self.compaction_started.pop(key, None)
+        self.emit(
             {
                 "type": "compaction_end" if completed else "compaction_start",
                 "id": key,
                 "provider": "codex",
+                "automatic": self.automatic_compaction,
+                **(
+                    {
+                        "outcome": "success",
+                        "will_resume": self.automatic_compaction,
+                        "durationMs": duration,
+                    }
+                    if completed
+                    else {}
+                ),
             }
         )
         self.record(
@@ -152,6 +194,7 @@ class CodexToolUI:
             else "Compacting native context",
             state="completed" if completed else "running",
             ok=completed,
+            durationMs=duration if completed else None,
         )
 
     async def item(self, item, completed=False):
@@ -167,10 +210,12 @@ class CodexToolUI:
                 state="completed" if completed else "running",
             )
             return
+        if key in self.finished:
+            return
         if kind == "contextCompaction":
             await self.compaction(item, completed)
-            return
-        if key in self.finished:
+            if completed:
+                self.finished.add(key)
             return
         name = item.get("tool") or {
             "commandExecution": "command",
@@ -207,22 +252,26 @@ class CodexToolUI:
                 self.app._tool_begin(widget)
                 widget.set_args(clean(args))
                 self.app._scroll_down()
-            state = self.calls[key] = (widget, time.monotonic(), name)
+            state = self.calls[key] = (
+                widget,
+                None if completed else time.monotonic(),
+                name,
+            )
             self.record(
                 key, name=clean(name), args=clean(args), state="running", kind=kind
             )
-            # Host tools already emit their RPC lifecycle through _execute_tool.
-            if kind != "dynamicToolCall":
-                self.app._rpc_emit(
-                    {
-                        "type": "tool_call",
-                        "id": key,
-                        "name": name,
-                        "args": json.loads(clean(args))
-                        if not isinstance(args, str)
-                        else clean(args),
-                    }
-                )
+            # Native items own the lifecycle, including host dynamic tools.
+            self.emit(
+                {
+                    "type": "tool_call",
+                    "id": key,
+                    "name": name,
+                    "status": "running",
+                    "args": json.loads(clean(args))
+                    if not isinstance(args, str)
+                    else clean(args),
+                }
+            )
         widget, started, name = state
         if not completed:
             return
@@ -270,29 +319,33 @@ class CodexToolUI:
             max(0, duration / 1000)
             if isinstance(duration, (int, float))
             else time.monotonic() - started
+            if started is not None
+            else None
         )
         if widget:
-            widget.set_result(result, ok, elapsed=elapsed)
+            widget.set_result(
+                result, ok, elapsed=elapsed, duration_unknown=elapsed is None
+            )
             self.app._tool_end(widget)
             self.app._scroll_down()
         self.record(
             key,
             result=result,
             ok=ok,
-            durationMs=round(elapsed * 1000),
+            durationMs=round(elapsed * 1000) if elapsed is not None else None,
             state="completed" if ok else "failed",
         )
-        if kind != "dynamicToolCall":
-            self.app._rpc_emit(
-                {
-                    "type": "tool_result",
-                    "id": key,
-                    "name": name,
-                    "result": result,
-                    "ok": ok,
-                    "durationMs": round(elapsed * 1000),
-                }
-            )
+        self.emit(
+            {
+                "type": "tool_result",
+                "id": key,
+                "name": name,
+                "result": result,
+                "ok": ok,
+                "status": "completed" if ok else "failed",
+                "durationMs": round(elapsed * 1000) if elapsed is not None else None,
+            }
+        )
         del self.calls[key]
         self.finished.add(key)
         self.output.pop(key, None)
@@ -308,7 +361,7 @@ class CodexToolUI:
                 and record.get("state") == "running"
             ):
                 self.record(key, state="interrupted")
-        for key, (widget, started, _) in self.calls.items():
+        for key, (widget, started, name) in self.calls.items():
             if widget:
                 widget.set_result(
                     "Tool ended without a completion event (turn stopped or connection closed).",
@@ -322,10 +375,42 @@ class CodexToolUI:
                 durationMs=round((time.monotonic() - started) * 1000),
                 state="interrupted",
             )
+            self.emit(
+                {
+                    "type": "tool_result",
+                    "id": key,
+                    "name": name,
+                    "result": "Tool ended without a completion event.",
+                    "ok": False,
+                    "status": "interrupted",
+                    "durationMs": round((time.monotonic() - started) * 1000),
+                }
+            )
+            self.finished.add(key)
         self.calls.clear()
         self.output.clear()
-        for card in self.compactions.values():
-            card.fail("Compaction ended without a completion event.")
-            if getattr(self.app, "_compact_card", None) is card:
+        for key, card in self.compactions.items():
+            if card:
+                card.fail("Compaction ended without a completion event.")
+            if card and getattr(self.app, "_compact_card", None) is card:
                 self.app._compact_card = None
+            self.emit(
+                {
+                    "type": "compaction_end",
+                    "id": key,
+                    "outcome": "cancelled"
+                    if getattr(self.app, "_stop_requested", False)
+                    else "error",
+                    "will_resume": False,
+                    "error": "Compaction ended without a completion event.",
+                }
+            )
+            self.record(
+                key,
+                state="interrupted",
+                ok=False,
+                result="Compaction ended without a completion event.",
+            )
+            self.finished.add(key)
         self.compactions.clear()
+        self.compaction_started.clear()
