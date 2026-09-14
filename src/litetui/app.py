@@ -3424,7 +3424,8 @@ class LiteTUI(App):
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
                 if self.tools_enabled:
-                    self._system(f"agent loop: up to {self.settings.tool_iterations} tool iterations per turn (/settings)")
+                    from litetui.codex_settings import loop_description
+                    self._system(loop_description(self.backend.name, self.settings.tool_iterations))
                 # The full model listing used to print HERE, on every launch.
                 # It is a catalogue, not a greeting: it pushed the splash and the
                 # first prompt off-screen to answer a question nobody asked at
@@ -3938,6 +3939,8 @@ class LiteTUI(App):
         for key, value in (getattr(self, "last_usage", None) or {}).items():
             if isinstance(value, (int, float)):
                 usage[key] = value
+            elif key in ("latest_request_usage", "thread_usage", "turn_usage") and isinstance(value, dict):
+                usage[key] = model_transport.numeric_usage(value)
         self._rpc_emit({"type": "usage", "usage": usage})
 
     def watch_ctx_used(self, value: int | None) -> None:
@@ -4475,7 +4478,8 @@ class LiteTUI(App):
                     # yields elapsed-only (the honest state).
                     self._elapsed.body.content = render_progress(
                         self._elapsed.body_t0, now,
-                        self._eta.estimate_tokens(), self._eta.learned_rate())
+                        None if hasattr(self.backend, "app_server") else self._eta.estimate_tokens(),
+                        None if hasattr(self.backend, "app_server") else self._eta.learned_rate())
                 if self._thinking_live is not None:
                     # The app owns the tps reactive; the block only renders it.
                     # The reasoning half of TpsState's partition — not a
@@ -5506,6 +5510,9 @@ class LiteTUI(App):
         terminal_widget: AssistantMessage | None = None
         compact_due = False
         stopped_early = False
+        native_loop = hasattr(self.backend, "app_server")
+        if native_loop:
+            self.tps = None
         for _iteration in range(self.settings.tool_iterations):
             if self._stop_requested:
                 # NOT the iteration cap. Reaching the bottom of this function
@@ -5621,7 +5628,13 @@ class LiteTUI(App):
                     if u is not None:
                         self._record_usage(u)
                         request_usage = dict(self.last_usage)
-                    if u is not None and getattr(u, "total_tokens", None):
+                        if native_loop:
+                            self.ctx_used = getattr(u, "context_tokens", None)
+                            window = getattr(u, "max_context_tokens", None)
+                            if window is not None:
+                                self.ctx_max = window
+                                self.ctx_loaded = True
+                    if not native_loop and u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
                         rate = self._tps.final(
                             int(getattr(u, "completion_tokens", 0) or 0))
@@ -5641,7 +5654,8 @@ class LiteTUI(App):
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
-                    self._eta.record_first_delta()
+                    if not native_loop:
+                        self._eta.record_first_delta()
                     # LM Studio streams the thinking trace as `reasoning_content`
                     # (some other OpenAI-compatible servers use `reasoning`).
                     token = getattr(delta, "reasoning_content", None) or getattr(
@@ -5651,7 +5665,7 @@ class LiteTUI(App):
                         # TAGGED as reasoning, so TpsState's partition can tell
                         # the thinking header's number from the footer's. Both
                         # branches call the same tick; only the tag differs.
-                        rate = self._tps.tick(reasoning=True)
+                        rate = None if native_loop else self._tps.tick(reasoning=True)
                         if rate is not None:
                             self.tps = rate
                         self._glassbox_rate("thinking")
@@ -5684,7 +5698,7 @@ class LiteTUI(App):
                         # read as "only scrolls when the message comes through".
                         self._scroll_down()
                     if delta.content:
-                        rate = self._tps.tick()
+                        rate = None if native_loop else self._tps.tick()
                         if rate is not None:
                             self.tps = rate
                         self._glassbox_rate("output")
@@ -6219,7 +6233,8 @@ class LiteTUI(App):
             key: model_transport.numeric_usage(getattr(usage, key, None))
             for key in ("prompt_tokens", "completion_tokens", "total_tokens",
                         "cached_tokens", "cache_write_tokens", "input_tokens_details",
-                        "usage_details")
+                        "usage_details", "context_tokens", "max_context_tokens",
+                        "latest_request_usage", "thread_usage", "turn_usage")
         }
 
     @work(exclusive=True, group="chat")

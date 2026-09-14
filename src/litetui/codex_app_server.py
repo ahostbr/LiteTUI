@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 
 from litetui import sanitize
-from litetui.model_transport import ProviderError, _chunk, _usage, collect
+from litetui.model_transport import ProviderError, _chunk, collect
 
 
 class AppServer:
@@ -259,6 +259,9 @@ class AppServerTransport:
                 self.thread_id, self.process = reference, self.server.process
             await self.server.request("thread/compact/start", {"threadId": reference})
             finished = False
+            from litetui.codex_usage import NativeUsage
+
+            compact_usage = NativeUsage()
             try:
                 while True:
                     event = await self.server.events.get()
@@ -270,6 +273,8 @@ class AppServerTransport:
                     payload = event.get("params", {})
                     if payload.get("threadId") != reference:
                         continue
+                    if event.get("method") == "thread/tokenUsage/updated":
+                        compact_usage.update(payload.get("tokenUsage") or {})
                     if event.get("method") == "turn/started":
                         self.turn_id = payload["turn"]["id"]
                     if event.get("method") == "turn/completed":
@@ -280,6 +285,15 @@ class AppServerTransport:
                             )
                         return
             finally:
+                # Compaction can rebase counters. Never subtract the old user
+                # turn's total from a post-compaction snapshot on the next turn.
+                for index in range(len(self.app.conversation) - 1, -1, -1):
+                    metadata = self.app.conversation[index].get("provider_metadata") or {}
+                    if metadata.get("app_server_thread_id") == reference:
+                        metadata["native_usage"] = compact_usage.previous
+                        if hasattr(self.app, "_edit"):
+                            self.app._edit(index, "Codex compaction usage baseline updated")
+                        break
                 if not finished and self.turn_id:
                     await self.server.request(
                         "turn/interrupt",
@@ -447,6 +461,7 @@ class AppServerTransport:
             )
             instructions_digest = hashlib.sha256(instructions.encode()).hexdigest()
             previous_digest = None
+            previous_usage = None
             reference, boundary = None, 0
             for index, message in enumerate(messages):
                 metadata = message.get("provider_metadata") or {}
@@ -455,6 +470,7 @@ class AppServerTransport:
                 ):
                     reference, boundary = metadata["app_server_thread_id"], index + 1
                     previous_digest = metadata.get("instructions_digest")
+                    previous_usage = (metadata.get("native_usage") or {}).get("total")
             if reference != self.thread_id or not reference:
                 if reference:
                     opened = await self.server.request(
@@ -573,6 +589,9 @@ class AppServerTransport:
                     self.app._edit(record_index, "Codex display trace updated")
 
             tool_ui = CodexToolUI(self.app, on_record=record_display)
+            from litetui.codex_usage import NativeUsage
+
+            usage_tracker = NativeUsage(previous_usage, fresh=reference is None)
             completed = False
             interrupt_sent = False
             last_message_id = None
@@ -614,6 +633,8 @@ class AppServerTransport:
                         await bridge.policy.completed(payload)
                     if payload.get("threadId") not in (None, self.thread_id):
                         continue
+                    if payload.get("turnId") not in (None, self.turn_id):
+                        continue
                     if method == "item/agentMessage/delta":
                         tool_ui.agent_delta(payload)
                         item_id = payload.get("itemId")
@@ -627,20 +648,15 @@ class AppServerTransport:
                     ):
                         yield _chunk(reasoning=payload.get("delta", ""))
                     elif method == "thread/tokenUsage/updated":
-                        last = (payload.get("tokenUsage") or {}).get("last", {})
-                        yield _chunk(
-                            usage=_usage(
-                                {
-                                    "input_tokens": last.get("inputTokens", 0),
-                                    "output_tokens": last.get("outputTokens", 0),
-                                    "input_tokens_details": {
-                                        "cached_tokens": last.get("cachedInputTokens")
-                                    },
-                                },
-                                "codex",
-                            )
-                        )
+                        usage = usage_tracker.update(payload.get("tokenUsage") or {})
+                        if usage is not None:
+                            metadata["native_usage"] = usage_tracker.previous
+                            if self.app is not None and record_index is not None:
+                                self.app._edit(record_index, "Codex usage snapshot updated")
+                            yield _chunk(usage=usage, metadata=metadata)
                     elif method in ("item/started", "item/completed"):
+                        if payload.get("item", {}).get("type") == "contextCompaction":
+                            usage_tracker.rebased = True
                         await tool_ui.item(
                             payload.get("item", {}),
                             completed=method == "item/completed",

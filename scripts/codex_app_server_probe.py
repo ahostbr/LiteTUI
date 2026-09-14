@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import time
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 from litetui.codex_app_server import AppServer, AppServerTransport
@@ -21,6 +22,7 @@ async def main():
     parser.add_argument("--host-tool", action="store_true")
     parser.add_argument("--deferred-tool", action="store_true")
     parser.add_argument("--compact", action="store_true")
+    parser.add_argument("--usage-evidence", type=Path)
     args = parser.parse_args()
     server = AppServer()
     transport = AppServerTransport(server)
@@ -32,6 +34,7 @@ async def main():
     ]
     tools = []
     tool_calls = []
+    usage_evidence = []
     if args.host_tool or args.deferred_tool:
 
         async def execute(name, arguments):
@@ -98,7 +101,20 @@ async def main():
                 extra_body={"reasoning_effort": effort},
                 stream=True,
             )
-            response = await collect(stream)
+            async def observed(source=stream, level=effort):
+                async for chunk in source:
+                    usage = getattr(chunk, "usage", None)
+                    if usage is not None:
+                        usage_evidence.append({
+                            "effort": level,
+                            "context_tokens": getattr(usage, "context_tokens", None),
+                            "latest": getattr(usage, "latest_request_usage", None),
+                            "cumulative": getattr(usage, "thread_usage", None),
+                            "turn": getattr(usage, "turn_usage", None),
+                        })
+                    yield chunk
+
+            response = await collect(observed())
             message = response.choices[0].message
             if (args.host_tool or args.deferred_tool) and "echo" not in tool_calls:
                 raise RuntimeError("The requested synthetic host tool was not called.")
@@ -145,6 +161,8 @@ async def main():
             )
     finally:
         await server.close()
+    if args.usage_evidence:
+        args.usage_evidence.write_text(json.dumps(usage_evidence, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

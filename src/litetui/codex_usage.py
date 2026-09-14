@@ -1,0 +1,84 @@
+"""Snapshot accounting; native context occupancy is not cumulative token spend."""
+
+from types import SimpleNamespace
+
+FIELDS = (
+    "inputTokens",
+    "outputTokens",
+    "totalTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "reasoningOutputTokens",
+)
+
+
+def counts(value):
+    value = value if isinstance(value, dict) else {}
+    return {
+        key: value[key]
+        for key in FIELDS
+        if type(value.get(key)) is int and value[key] >= 0
+    }
+
+
+class NativeUsage:
+    def __init__(self, previous=None, *, fresh=False):
+        self.baseline = (
+            counts(previous)
+            if previous is not None
+            else ({key: 0 for key in FIELDS} if fresh else {})
+        )
+        self.previous = None
+        self.rebased = False
+
+    def update(self, payload):
+        latest, cumulative = counts(payload.get("last")), counts(payload.get("total"))
+        snapshot = {
+            "last": latest,
+            "total": cumulative,
+            "modelContextWindow": payload.get("modelContextWindow"),
+        }
+        if snapshot == self.previous:
+            return None
+        if self.previous and any(
+            cumulative[k] < v
+            for k, v in self.previous["total"].items()
+            if k in cumulative
+        ):
+            self.rebased = True
+        if any(cumulative[k] < v for k, v in self.baseline.items() if k in cumulative):
+            self.rebased = True
+        self.previous = snapshot
+        aggregate = (
+            {}
+            if self.rebased
+            else {
+                k: v - self.baseline[k]
+                for k, v in cumulative.items()
+                if k in self.baseline and v >= self.baseline[k]
+            }
+        )
+        # Retain absent fields as unknown, including cache writes. A cache hit
+        # changes billing/reuse, never the occupied context size.
+        context = latest.get("totalTokens")
+        if context is None and "inputTokens" in latest and "outputTokens" in latest:
+            context = latest["inputTokens"] + latest["outputTokens"]
+        window = payload.get("modelContextWindow")
+        window = window if type(window) is int and window > 0 else None
+        return SimpleNamespace(
+            prompt_tokens=aggregate.get("inputTokens"),
+            completion_tokens=aggregate.get("outputTokens"),
+            total_tokens=aggregate.get("totalTokens"),
+            cached_tokens=aggregate.get("cachedInputTokens"),
+            cache_write_tokens=aggregate.get("cacheWriteInputTokens"),
+            input_tokens_details={
+                "cached_tokens": aggregate.get("cachedInputTokens"),
+                "cache_write_tokens": aggregate.get("cacheWriteInputTokens"),
+            },
+            context_tokens=context,
+            max_context_tokens=window,
+            latest_request_usage=latest,
+            thread_usage=cumulative,
+            turn_usage=aggregate,
+            usage_details={"last": latest, "total": cumulative, "turn": aggregate},
+        )

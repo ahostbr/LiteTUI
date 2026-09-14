@@ -224,8 +224,17 @@ class SettingsBody(Widget):
 
     # ── Builders ─────────────────────────────────────────────────────────────
 
+    def _backend_control(self, name):
+        from litetui.codex_settings import control
+
+        backend = getattr(getattr(self.app, "backend", None), "name", self._start.backend)
+        return control(backend, name)
+
     def _text_row(self, name: str, label: str, help_text: str, placeholder: str = ""):
         locked = settings_mod.source_of(name)
+        capability = self._backend_control(name)
+        if capability:
+            help_text = capability.help
         value = getattr(self._start, name)
         shown = "" if value is None else (
             ",".join(value) if isinstance(value, list) else str(value)
@@ -236,7 +245,7 @@ class SettingsBody(Widget):
                 value=shown,
                 placeholder=placeholder or "unset — server default",
                 id=f"f-{name}",
-                disabled=locked is not None,
+                disabled=locked is not None or bool(capability and not capability.editable),
                 classes="set-input",
             )
             note = help_text
@@ -245,9 +254,13 @@ class SettingsBody(Widget):
             yield Static(note, classes="set-help")
 
     def _switch_row(self, name: str, label: str, help_text: str):
+        capability = self._backend_control(name)
+        if capability:
+            help_text = capability.help
         with Vertical(classes="set-row"):
             with Horizontal(classes="set-switchline"):
-                yield Switch(value=bool(getattr(self._start, name)), id=f"f-{name}")
+                yield Switch(value=bool(getattr(self._start, name)), id=f"f-{name}",
+                             disabled=bool(capability and not capability.editable))
                 yield Label(label, classes="set-label-inline")
             yield Static(help_text, classes="set-help")
 
@@ -264,6 +277,9 @@ class SettingsBody(Widget):
 
     def _select_row(self, name: str, label: str, choices, help_text: str):
         locked = settings_mod.source_of(name)
+        capability = self._backend_control(name)
+        if capability:
+            help_text = capability.help
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
@@ -271,7 +287,7 @@ class SettingsBody(Widget):
                 value=getattr(self._start, name),
                 id=f"f-{name}",
                 allow_blank=False,
-                disabled=locked is not None,
+                disabled=locked is not None or bool(capability and not capability.editable),
             )
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
@@ -279,6 +295,9 @@ class SettingsBody(Widget):
     def _model_pick_row(self, name: str, label: str, sentinel: str, help_text: str):
         """One picker, two fields (T640) — the subagent's and the fold's."""
         locked = settings_mod.source_of(name)
+        capability = self._backend_control(name)
+        if capability:
+            help_text = capability.help
         current = getattr(self._start, name)
         choices = loop_model_choices(
             self._models, self._loaded, self._remote, sentinel, current

@@ -113,3 +113,35 @@ host-hook bridge contract; validate steering/inventory boundaries independently.
   duplicate IDs are suppressed and missing durations remain unknown. Authoritative
   native history reconciliation, output throttling and RPC consumer parity remain
   open. This is a checkpoint, not C1–C10 or release acceptance.
+
+## Settings and usage checkpoint
+
+- `codex_settings.py` classifies the exposed generation/loop controls. Engine-owned
+  or unsupported local controls are disabled with an explanation; their saved
+  values survive. Host-tool output/subagent/background controls explain their
+  limited scope. The Codex startup banner no longer claims a local iteration cap.
+  Mounted settings tests cover Codex and LM Studio, including save preservation.
+- `codex_usage.py` separates latest request, native cumulative and per-turn delta
+  snapshots. Duplicate snapshots are ignored. Context uses the latest request's
+  total, including cached input. Missing fields, missing resume baselines and
+  detected counter rebases retain unknown aggregates. Manual compaction replaces
+  or invalidates the next-turn baseline; automatic compaction invalidates the
+  current turn's aggregate pending stronger response-level accounting.
+- Native stream TPS and local prompt-evaluation ETA are suppressed because no
+  measured native generation-only denominator is exposed by this adapter.
+- `usage-snapshots.json` captures only numeric counters from two live synthetic
+  host-tool turns, low then medium. Each turn produced two native request snapshots.
+  First-turn context ended at 28,801 while aggregate usage was 57,571; second-turn
+  context ended at 35,390 while aggregate usage was 70,749. Cumulative totals
+  reconcile across both turns. Cached input was 28,544 then 35,200 for those turns.
+  These observations demonstrate reuse, not a promised hit rate.
+- Source: [matching native TokenUsageInfo implementation](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/protocol/src/protocol.rs)
+  accumulates completed responses into total and replaces last; its context/error
+  paths can rebase counters. Live compaction/resume accounting, full six-mode
+  acceptance, all client settings surfaces and packaging remain open.
+- Validation: 66 focused tests pass; another 22 usage/cache/ETA tests pass. The
+  broader OAuth/footer selection has 32 passes and six `test_footer_fields.py`
+  failures. Loading committed `ce5ed3c` app.py reproduced those same six failures:
+  the tests expect all footer fields at the default narrow test width, while the
+  current responsive footer omits them. This baseline remains to reconcile with
+  explicit wide/narrow acceptance; it is not a passing full-suite claim.

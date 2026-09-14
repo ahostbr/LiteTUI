@@ -63,6 +63,13 @@ class Server:
                                 "inputTokens": 2000,
                                 "outputTokens": 5,
                                 "cachedInputTokens": 1800,
+                                "totalTokens": 2005,
+                            },
+                            "total": {
+                                "inputTokens": 2000 * self.turn,
+                                "outputTokens": 5 * self.turn,
+                                "cachedInputTokens": 1800 * self.turn,
+                                "totalTokens": 2005 * self.turn,
                             }
                         },
                     },
@@ -287,6 +294,9 @@ async def test_real_tui_stream_persists_codex_reference_and_cache_usage():
         assert replies[-1]["content"] == "OK"
         assert replies[-1]["provider_metadata"]["app_server_thread_id"] == "thread-1"
         assert app.last_usage["cached_tokens"] == 1800
+        assert app.ctx_used == 2005
+        assert app.tps is None
+        assert app.last_usage["thread_usage"]["totalTokens"] == 2005
         assert app._autocompact_due() is None
 
 
