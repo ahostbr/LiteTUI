@@ -11,6 +11,27 @@ from litetui.question_result import capture_answers, question_lifetime, question
 from litetui.tool_events import native_lifecycle
 
 
+def latest_question(app, ident, thread_id):
+    """Prefer newer revisions; old unversioned terminal copies beat pending ones."""
+    found = None
+    rank = None
+    for index, message in enumerate(getattr(app, "conversation", [])):
+        metadata = message.get("provider_metadata") or {}
+        entries = metadata.get("async_questions", [])
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict) or entry.get("id") != ident:
+                continue
+            if entry.get("threadId") != thread_id:
+                continue
+            revision = entry.get("revision", 0)
+            if not isinstance(revision, int):
+                revision = 0
+            candidate = (revision, entry.get("state") != "pending", index)
+            if rank is None or candidate >= rank:
+                found, rank = (metadata, entry), candidate
+    return found
+
+
 def answer_text(questions, payload):
     """Only explicitly submitted answers become a user message."""
     if payload.get("action") != "submit":
@@ -149,6 +170,7 @@ class AsyncQuestions:
             text = answer_text(entry["questions"], payload) if success else None
             if text is None:
                 entry["state"] = payload.get("action") or "unanswered"
+                entry["revision"] = entry.get("revision", 0) + 1
                 save_at(app, index)
                 return
             self.queue_answer(entry, metadata, index, text)
@@ -175,6 +197,9 @@ class AsyncQuestions:
 
     def queue_answer(self, entry, metadata, index, text):
         app = self.transport.app
+        latest = latest_question(app, entry["id"], entry.get("threadId"))
+        if latest is not None and latest[1] is not entry:
+            raise ProviderError("A newer saved question state superseded this answer.")
         if app.conversation[index].get("provider_metadata") is not metadata:
             raise ProviderError(
                 "The question's conversation changed before its answer was saved."
@@ -201,7 +226,9 @@ class AsyncQuestions:
                 "instructions_digest": metadata.get("instructions_digest"),
             }
             entries.append(delivery)
-        entry.update(state="answered", deliveryId=ident)
+        entry.update(
+            state="answered", deliveryId=ident, revision=entry.get("revision", 0) + 1
+        )
         # Persist question outcome and queue entry together BEFORE queue visibility.
         save_at(app, index)
         if delivery["state"] in ("accepted", "denied") or any(

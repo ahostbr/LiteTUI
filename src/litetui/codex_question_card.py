@@ -25,6 +25,13 @@ class SavedQuestionCard(FoldBlock):
         self.set_interval(0.2, self.refresh_state)
 
     def refresh_state(self):
+        from litetui.codex_async_questions import latest_question
+
+        latest = latest_question(self.app, self.entry["id"], self.entry.get("threadId"))
+        if latest is not None and latest[1] is not self.entry:
+            self.answer.label = "Question superseded"
+            self.answer.disabled = True
+            return
         state = self.entry.get("state")
         if state != "pending":
             self.answer.label = (
@@ -39,6 +46,17 @@ class SavedQuestionCard(FoldBlock):
     def answer_saved(self, event):
         event.stop()
         app = self.app
+        from litetui.codex_async_questions import AsyncQuestions, latest_question
+
+        latest = latest_question(app, self.entry["id"], self.entry.get("threadId"))
+        if (
+            self.entry.get("state") != "pending"
+            or latest is None
+            or latest[1] is not self.entry
+        ):
+            self.answer.disabled = True
+            app.notify("This saved question is no longer current.", severity="warning")
+            return
         if not hasattr(app.backend, "app_server"):
             app.notify(
                 "Reconnect the Codex backend to answer this question.",
@@ -58,7 +76,6 @@ class SavedQuestionCard(FoldBlock):
                 "This question belongs to another conversation.", severity="warning"
             )
             return
-        from litetui.codex_async_questions import AsyncQuestions
         from litetui.model_transport import for_app
 
         transport = for_app(app)

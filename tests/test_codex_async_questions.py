@@ -63,6 +63,39 @@ ITEM = {
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_first", [False, True])
+async def test_replay_ignores_pending_snapshot_when_an_answered_copy_exists(terminal_first):
+    from textual.app import App
+    from textual.containers import VerticalScroll
+
+    from litetui.codex_question_card import SavedQuestionCard
+    from litetui.codex_trace import replay
+
+    class ReviewApp(App):
+        def compose(self):
+            yield VerticalScroll(id="chat-log")
+
+    pending = {
+        "app_server_thread_id": "native",
+        "async_questions": [{
+            "version": 1, "id": "same", "threadId": "native",
+            "state": "pending", "questions": ITEM["questions"],
+        }],
+    }
+    answered = copy.deepcopy(pending)
+    answered["async_questions"][0]["state"] = "answered"
+    snapshots = [answered, pending] if terminal_first else [pending, answered]
+    app = ReviewApp()
+    app.conversation = [{"provider_metadata": metadata} for metadata in snapshots]
+    async with app.run_test() as pilot:
+        seen = set()
+        for metadata in snapshots:
+            replay(app, metadata, seen)
+        await pilot.pause()
+        assert not app.query(SavedQuestionCard)
+
+
+@pytest.mark.asyncio
 async def test_answer_after_native_turn_ends_is_persisted_before_queue_and_uses_admission():
     manager, metadata, emitted, saved = fixture()
     app = manager.transport.app
@@ -279,6 +312,18 @@ async def test_resume_is_read_only_until_saved_question_button_is_pressed():
         finally:
             manager.cancel()
             await eventually(lambda: not manager.active)
+        # A card already on screen must not answer an obsolete pending snapshot.
+        latest = copy.deepcopy(metadata)
+        latest["async_questions"][0].update(state="answered", revision=1)
+        app.conversation.append({"role": "assistant", "provider_metadata": latest})
+        card.refresh_state()
+        card.answer.press()
+        await pilot.pause()
+        assert calls == ["ask_user_question", "ask_user_question"]
+        assert card.answer.disabled
+        with pytest.raises(ProviderError, match="superseded"):
+            manager.queue_answer(metadata["async_questions"][0], metadata, 0, "late")
+        assert not app._pending_input
 
 
 @pytest.mark.asyncio

@@ -45,10 +45,19 @@ The negative control did not repeat a real provider call.
 
 ## Remaining acceptance work
 
+Follow-up replay validation: **61 focused tests passed in 4.67s** using the same
+command above. Saved question transitions now carry revisions. Replay resolves
+duplicate snapshots by revision, terminal state, and stored order; unversioned
+answered copies defeat stale pending copies in either order. Already-mounted stale
+buttons and late answer delivery reject a superseded copy. Real Textual tests cover
+both snapshot orders and an already-mounted card. Ruff passed on the four changed
+source/test files. This closes the duplicate-question snapshot edge only, not the
+broader native history reconciliation gate.
+
 - Verify native async-question behavior with an intentional isolated runtime probe.
 - Carry origin identity through all client question/reply surfaces and provide
   explicit restore UX beyond the Textual card.
-- Reconcile duplicate persisted metadata snapshots and authoritative native history.
+- Reconcile authoritative native history beyond saved question snapshot selection.
 - Audit persistence-failure recovery UX and broader restart/approval interactions.
 - Complete remaining C1-C10 and all-client/package gates. LiteGUI remains report-only
   pending Ryan's separately routed scope decision. Suite source remains uncommitted

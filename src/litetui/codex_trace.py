@@ -24,6 +24,10 @@ def replay(app, metadata, seen):
         key = (thread, "async-question", entry.get("id"))
         if entry.get("state") != "pending" or not entry.get("id") or key in seen:
             continue
+        from litetui.codex_async_questions import latest_question
+        latest = latest_question(app, entry["id"], entry.get("threadId"))
+        if latest is not None and latest[1] is not entry:
+            continue
         seen.add(key)
         from litetui.codex_question_card import SavedQuestionCard
         app.query_one("#chat-log").mount(SavedQuestionCard(metadata, entry))
