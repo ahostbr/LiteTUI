@@ -3,7 +3,7 @@
 import json
 
 from litetui.llm_backend import BackendError, ModelRow
-from litetui.model_transport import credential_path
+from litetui.model_transport import ProviderError, credential_path
 
 
 class OAuthBackend:
@@ -15,6 +15,7 @@ class OAuthBackend:
         self.settings = settings
         self.models = {}
         from litetui.codex_app_server import AppServer
+
         self.app_server = AppServer()
 
     def base_url(self):
@@ -28,7 +29,9 @@ class OAuthBackend:
         await self.app_server.start()
         account = await self.app_server.request("account/read", {"refreshToken": False})
         if (account.get("account") or {}).get("type") != "chatgpt":
-            raise BackendError("Run `codex login` with your ChatGPT subscription, then /reconnect.")
+            raise BackendError(
+                "Run `codex login` with your ChatGPT subscription, then /reconnect."
+            )
         return "ok"
 
     def shutdown(self):
@@ -43,17 +46,63 @@ class OAuthBackend:
                     encoding="utf-8"
                 )
             )
-            self.models = {
-                m["slug"]: m
-                for m in obj["models"]
-                if m.get("visibility", "list") == "list" and m.get("context_window")
-            }
+            cached = {m["slug"]: m for m in obj["models"]}
         except (OSError, ValueError, KeyError, TypeError):
-            self.models = {}
-        if not self.models:
+            cached = {}
+        models, cursors = {}, set()
+        cursor = None
+        try:
+            await self.app_server.start()
+            while True:
+                page = await self.app_server.request(
+                    "model/list",
+                    {"includeHidden": False, **({"cursor": cursor} if cursor else {})},
+                )
+                for model in page["data"]:
+                    if model.get("hidden"):
+                        continue
+                    key = model["model"]
+                    supplemental = cached.get(key, {})
+                    models[key] = {
+                        **{
+                            field: supplemental[field]
+                            for field in (
+                                "context_window",
+                                "effective_context_window_percent",
+                            )
+                            if field in supplemental
+                        },
+                        "slug": key,
+                        "display_name": model.get("displayName", key),
+                        "default_reasoning_level": model["defaultReasoningEffort"],
+                        "supported_reasoning_levels": [
+                            {
+                                "effort": option["reasoningEffort"],
+                                "description": option.get("description", ""),
+                            }
+                            for option in model["supportedReasoningEfforts"]
+                        ],
+                        "input_modalities": model.get("inputModalities") or ["text"],
+                        "service_tiers": model.get("serviceTiers", []),
+                        "default_service_tier": model.get("defaultServiceTier"),
+                        "multi_agent_version": model.get("multiAgentVersion"),
+                        "metadata_source": "codex-app-server",
+                    }
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
+                if cursor in cursors:
+                    raise ValueError("Repeated model catalog cursor")
+                cursors.add(cursor)
+        except (ProviderError, OSError, ValueError, KeyError, TypeError) as error:
             raise BackendError(
-                "Codex model metadata is unavailable. Start `codex` once to refresh its model list, then /reconnect."
+                "Codex app-server model metadata is unavailable. Reconnect to refresh it."
+            ) from error
+        if not models:
+            raise BackendError(
+                "Codex app-server returned no available models. Reconnect to refresh it."
             )
+        self.models = models
         return [
             ModelRow(
                 key=k,
@@ -67,7 +116,7 @@ class OAuthBackend:
 
     async def model_info(self, key):
         model = self.models.get(key)
-        if not model:
+        if not model or not model.get("context_window"):
             return None
         window = (
             int(model["context_window"])
