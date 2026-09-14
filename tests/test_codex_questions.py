@@ -8,6 +8,22 @@ from litetui.codex_app_server import AppServerTransport
 from litetui.question_result import capture_answers, native_answers
 
 
+@pytest.mark.asyncio
+async def test_question_origin_is_task_local_and_does_not_leak_to_other_backends():
+    from litetui.question_result import question_origin, question_origin_fields
+
+    async def read_origin(ident):
+        with question_origin("thread", ident, "item", delivery="async"):
+            await asyncio.sleep(0)
+            result = await asyncio.to_thread(question_origin_fields)
+            result["provider"] = "mutated-copy"
+            assert question_origin_fields()["provider"] == "codex"
+            return result["turnId"]
+
+    assert await asyncio.gather(read_origin("one"), read_origin("two")) == ["one", "two"]
+    assert question_origin_fields() == {}
+
+
 def submitted(action="submit"):
     return {
         "action": action,

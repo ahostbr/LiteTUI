@@ -7,7 +7,12 @@ from threading import Event
 
 from litetui.codex_steering import SteeringLedger, save_at
 from litetui.model_transport import ProviderError
-from litetui.question_result import capture_answers, question_lifetime, question_slot
+from litetui.question_result import (
+    capture_answers,
+    question_lifetime,
+    question_origin,
+    question_slot,
+)
 from litetui.tool_events import native_lifecycle
 
 
@@ -123,6 +128,10 @@ class AsyncQuestions:
                 question_lifetime(cancelled),
                 capture_answers() as captured,
                 native_lifecycle(),
+                question_origin(
+                    entry["threadId"], entry["turnId"], entry.get("itemId"),
+                    delivery="async",
+                ),
             ):
                 async with question_slot(app):
                     _, success = await app._execute_tool(

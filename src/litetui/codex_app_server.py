@@ -473,6 +473,7 @@ class AppServerTransport:
                 capture_answers,
                 native_answers,
                 question_cancelled,
+                question_origin,
                 question_slot,
             )
             from litetui.tool_events import native_lifecycle
@@ -480,7 +481,15 @@ class AppServerTransport:
             result = {"answers": {}}
             if self.app:
                 questions = params.get("questions", [])
-                with capture_answers() as captured, native_lifecycle():
+                with (
+                    capture_answers() as captured,
+                    native_lifecycle(),
+                    question_origin(
+                        params.get("threadId", self.thread_id),
+                        params.get("turnId", self.turn_id), params.get("itemId"),
+                        delivery="request",
+                    ),
+                ):
                     async with question_slot(self.app):
                         _, success = await self.app._execute_tool(
                             "ask_user_question",

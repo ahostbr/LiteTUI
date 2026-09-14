@@ -69,6 +69,12 @@ async def test_question_does_not_block_dispatch_and_close_releases_real_tool_thr
     assert manager.dispatch(request())
     await eventually(lambda: emitted)
     ident = emitted[0]["id"]
+    assert {key: emitted[0][key] for key in (
+        "eventVersion", "provider", "threadId", "turnId", "itemId", "delivery"
+    )} == {
+        "eventVersion": 1, "provider": "codex", "threadId": "thread",
+        "turnId": "turn", "itemId": "question", "delivery": "request",
+    }
     assert not replies
     assert manager.dispatch(request())  # no duplicate UI or execution
     assert calls == ["ask_user_question"]

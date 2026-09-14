@@ -37,6 +37,22 @@ v1 matching and documented; never match a v1 result solely by tool name. The
 producer retains both `result` (LiteGUI) and `text` (existing LiteSuite adapter)
 until consumers support the canonical payload consistently.
 
+## Native human question origin
+
+`user_input_requested` retains its shared `id` (the host answer handle) and
+`questions`. Native Codex requests additionally carry `eventVersion: 1`,
+`provider: codex`, `threadId`, `turnId`, `itemId`, and
+`delivery: request|async`. These identify the originating native item, even when
+the host turn has ended or another turn is active. The host answer handle remains
+the reply/cancellation key; do not replace it with itemId. Legacy other-backend
+events omit these added fields. `user_input_resolved` cancellation resolves by
+the previously registered host answer handle, never by the current turn.
+
+`delivery: request` answers a pending native JSON-RPC request. `delivery: async`
+is a native agent-message notification; its explicit human answer is queued as
+ordinary user input and must pass the shared admission path. Receiving the
+notification or cancelling its UI is not consent and must not create an answer.
+
 Evidence: `Docs/Plans/codex-host-parity-evidence/tool-events-probe.json` and
 `compaction-events-probe.json` are live synthetic checks with numeric/boolean
 results only. They establish producer behavior, not downstream client acceptance.

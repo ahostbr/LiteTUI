@@ -426,6 +426,13 @@ async def test_native_notification_reaches_shared_ui_and_reply_queue_after_turn_
         question = next(
             event for event in emitted if event["type"] == "user_input_requested"
         )
+        assert {
+            key: question[key]
+            for key in ("eventVersion", "provider", "threadId", "turnId", "itemId", "delivery")
+        } == {
+            "eventVersion": 1, "provider": "codex", "threadId": "thread-1",
+            "turnId": "1", "itemId": "ask-item", "delivery": "async",
+        }
         assert auq.resolve_over_rpc(app, question["id"], "submit", [{"selected": [0]}])
         await eventually(lambda: app._pending_input)
         assert len(app._pending_input) == 1

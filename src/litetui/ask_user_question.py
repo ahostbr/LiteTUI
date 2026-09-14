@@ -747,7 +747,7 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
     reason: `done` is never set when nobody answers, so the `is_running` check is
     the only thing that ever releases this thread.
     """
-    from litetui.question_result import current_lifetime
+    from litetui.question_result import current_lifetime, question_origin_fields
 
     lifetime = current_lifetime()
     ask_id = "ask-" + uuid4().hex[:12]
@@ -759,6 +759,7 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
             "type": "user_input_requested",
             "id": ask_id,
             "questions": [s.to_dict() for s in states],
+            **question_origin_fields(),
         })
         while not done.wait(timeout=0.1 if lifetime is not None else 5):
             if lifetime is not None and lifetime.is_set():

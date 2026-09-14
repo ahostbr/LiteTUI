@@ -8,6 +8,24 @@ from threading import Event
 
 _capture = ContextVar("question_result_capture", default=None)
 _lifetime = ContextVar("native_question_lifetime", default=None)
+_origin = ContextVar("native_question_origin", default=None)
+
+
+@contextmanager
+def question_origin(thread_id, turn_id, item_id, *, delivery):
+    """Keep wire request identity attached across the shared tool's worker thread."""
+    token = _origin.set({
+        "eventVersion": 1, "provider": "codex", "threadId": thread_id,
+        "turnId": turn_id, "itemId": item_id, "delivery": delivery,
+    })
+    try:
+        yield
+    finally:
+        _origin.reset(token)
+
+
+def question_origin_fields():
+    return dict(_origin.get() or {})
 
 
 @contextmanager

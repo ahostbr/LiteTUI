@@ -45,6 +45,20 @@ The negative control did not repeat a real provider call.
 
 ## Remaining acceptance work
 
+Producer origin follow-up: native `user_input_requested` now carries the original
+native thread/turn/item, v1/provider identity, and request versus async delivery.
+The existing ask ID remains the answer/cancellation handle. Task-local context
+crosses the actual shared tool worker thread and does not leak into other tasks or
+legacy backend events. The same seven-file pytest command above now reports
+**62 passed in 4.58s**. Six changed source/test files pass Ruff; the touched shared
+ask_user_question.py retains the same seven pre-existing findings as git HEAD
+(I001, F401, TRY004, F821 twice, RUF012, BLE001), with only a one-line location shift.
+The shared question UI test was also run with the question/native subset:
+**40 passed in 7.04s** before adding the task-isolation assertion. No provider call
+was made by these guarded synthetic tests. Suite consumer implementation is next,
+under Sentinel's explicit C7 follow-on fence; it is not established by this producer
+checkpoint.
+
 Follow-up replay validation: **61 focused tests passed in 4.67s** using the same
 command above. Saved question transitions now carry revisions. Replay resolves
 duplicate snapshots by revision, terminal state, and stored order; unversioned
