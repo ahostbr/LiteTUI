@@ -99,6 +99,7 @@ class QuestionState:
     #: being STATED, so a consumer that cannot see the widget knows what it is
     #: rendering. A model that wants one-of-N now says so.
     multi_select: bool = True
+    secret: bool = False
 
     @property
     def answered(self) -> bool:
@@ -124,6 +125,7 @@ class QuestionState:
             # silently by a whitelist rebuild — which is exactly how T634's
             # flag went missing in the first place, one process further on.
             "multiSelect": self.multi_select,
+            **({"isSecret": True} if self.secret else {}),
         }
 
 
@@ -152,7 +154,7 @@ def _parse_questions(args: dict) -> list[QuestionState]:
         if not question:
             raise ValueError(f"questions[{i}] is missing its `question` text")
         raw_opts = item.get("options")
-        if not isinstance(raw_opts, list) or not raw_opts:
+        if not isinstance(raw_opts, list) or (not raw_opts and not item.get("allowFreeText")):
             raise ValueError(f"questions[{i}] needs a non-empty `options` list")
         if len(raw_opts) > MAX_OPTIONS:
             raise ValueError(f"questions[{i}] has {len(raw_opts)} options; max is {MAX_OPTIONS}")
@@ -167,7 +169,7 @@ def _parse_questions(args: dict) -> list[QuestionState]:
                 continue
             if title:
                 opts.append({"title": title, "description": desc})
-        if not opts:
+        if not opts and not item.get("allowFreeText"):
             raise ValueError(f"questions[{i}] has no usable options (each needs a non-empty title)")
         states.append(
             QuestionState(
@@ -177,6 +179,7 @@ def _parse_questions(args: dict) -> list[QuestionState]:
                 # Absent means MULTI, which is this tool's long-standing
                 # behaviour; only an explicit `false` narrows it.
                 multi_select=item.get("multiSelect") is not False,
+                secret=bool(item.get("isSecret")),
             )
         )
     return states
@@ -184,6 +187,8 @@ def _parse_questions(args: dict) -> list[QuestionState]:
 
 def _serialize(payload: dict) -> str:
     """The full answer state as a string — what the model reads back."""
+    from litetui.question_result import publish
+    publish(payload)
     action = payload["action"]
     qs: list[dict] = payload["questions"]
     answered = sum(1 for q in qs if q["answered"])
@@ -444,7 +449,7 @@ class AskUserQuestionBody(Vertical):
                         id=f"auq-note-{i}",
                         classes="auq-row auq-note-row",
                     )
-        yield Input(placeholder="Type something…", id="auq-note-input")
+        yield Input(placeholder="Type something…", id="auq-note-input", password=self._states[0].secret)
         yield SwapButton()
         with Horizontal(id="auq-actions"):
             yield Button("Chat about this", id="auq-chat")
@@ -522,6 +527,7 @@ class AskUserQuestionBody(Vertical):
         for j, body in enumerate(self.query(".auq-qbody")):
             body.set_class(j == self._active, "active")
         self.query_one("#auq-note-input", Input).value = self._states[self._active].note
+        self.query_one("#auq-note-input", Input).password = self._states[self._active].secret
         self._refresh_steps()
         self._set_cursor()
         self._focus_body()
@@ -552,8 +558,10 @@ class AskUserQuestionBody(Vertical):
         if i in q.selected:
             q.selected.discard(i)
         else:
+            if not q.multi_select:
+                q.selected.clear()
             q.selected.add(i)
-        self._refresh_row(i)
+        self._refresh_all_rows(self._active)
         self._refresh_steps()
 
     # ── note field ─────────────────────────────────────────────────
@@ -685,6 +693,8 @@ def resolve_over_rpc(app: App, ask_id: str, action: str, answers: object) -> boo
                     j for j in picked
                     if isinstance(j, int) and 0 <= j < len(state.options)
                 }
+                if not state.multi_select and len(state.selected) > 1:
+                    state.selected = {next(j for j in picked if j in state.selected)}
             note = a.get("note")
             if isinstance(note, str):
                 state.note = note

@@ -45,7 +45,7 @@ from litetui.tool_policy import AUTONOMOUS
 
 SETTINGS_FILENAME = "settings.json"
 
-ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 
 @dataclass

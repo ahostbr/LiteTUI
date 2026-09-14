@@ -6,7 +6,10 @@ optional system message). The token ceiling is the app's own thinking-safe budge
 that for subagents its the same model running") — the knob the tool-result
 summariser side call reuses too, never a third literal.
 
-Thinking defaults to off locally and the minimum supported effort remotely. Pass think=true when chain-of-thought is wanted.
+Thinking defaults to off locally and the minimum supported effort remotely.
+`think=true` preserves the legacy medium remote request. Callers that need a
+specific Codex level pass `reasoning_effort` explicitly; it is never inherited
+from or applied to the parent turn.
 
 Files are read by the PLUGIN (not the model) and appended as fenced blocks —
 the prompt stays short and the tool_call renders instantly.
@@ -114,6 +117,7 @@ def _make_runner(app):
         except Exception as e:  # noqa: BLE001 - tool boundary returns failures as visible results
             return f"[error] {type(e).__name__}: {e}"
         think = bool(args.get("think", False))
+        effort = (args.get("reasoning_effort") or "").strip().lower() or None
         file_paths = args.get("files") or []
         cap = getattr(getattr(app, "settings", None), "compact_max_tokens", 12288) or 12288
         max_tokens = min(int(args.get("max_tokens") or cap), cap)
@@ -133,7 +137,12 @@ def _make_runner(app):
             "max_tokens": max_tokens,
             "stream": False,
         }
-        if not think:
+        if effort is not None:
+            # Explicit child-only effort. The transport validates it against
+            # this model's provider catalog; unsupported values refuse rather
+            # than silently falling back to medium.
+            payload["reasoning_effort"] = effort
+        elif not think:
             payload["reasoning_effort"] = "none"
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         try:
@@ -144,7 +153,11 @@ def _make_runner(app):
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         text = (msg.get("content") or "").strip()
-        if getattr(getattr(app, "backend", None), "remote", False) and not think:
+        if (
+            getattr(getattr(app, "backend", None), "remote", False)
+            and effort is None
+            and not think
+        ):
             text = "[Codex uses its minimum supported reasoning effort]\n" + text if text else text
         reasoning = (msg.get("reasoning_content") or "").strip()
         usage = data.get("usage") or {}

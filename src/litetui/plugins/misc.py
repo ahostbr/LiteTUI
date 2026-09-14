@@ -36,6 +36,20 @@ def _apply_thinking_level(app, level: str) -> None:
     way it would show up is a user picking a level from a menu and being told
     less than a user who typed it.
     """
+    if getattr(getattr(app, "backend", None), "name", "") == "codex":
+        from litetui.thinking_capabilities import set_thinking
+
+        try:
+            set_thinking(app, "default" if level == UNSET else level)
+        except ValueError as error:
+            app.system_message(str(error))
+            return
+        app.update_header()
+        app.system_message(
+            "Thinking level: " + (app.thinking_level or "backend default")
+            + (" — consumes usage limits faster" if level in ("max", "ultra") else "")
+        )
+        return
     if level == UNSET:
         app.thinking_level = None
         app.update_header()
@@ -73,6 +87,12 @@ def _thinking_rows(app) -> list[tuple[str, str]]:
     rather than assumed here, because it is a property of the probe and the
     probe is free to change.
     """
+    if getattr(getattr(app, "backend", None), "name", "") == "codex":
+        levels = app.backend.reasoning_levels(app.model_id)
+        return [(level, "Extra high" if level == "xhigh" else
+                 level.title() + (" · consumes usage limits faster"
+                                  if level in ("max", "ultra") else ""))
+                for level in levels] + [(UNSET, "Default · use the backend default")]
     model_levels = getattr(app, "_model_thinking_levels", None)
     levels = list(model_levels) if model_levels else list(THINKING_LEVELS)
     rows = [(lv, _level_label(app, lv)) for lv in levels]
@@ -115,17 +135,21 @@ def _cmd_think(app, name: str, arg: str) -> None:
         )
     elif arg.lower() in (UNSET, "default", "server"):
         _apply_thinking_level(app, UNSET)
-    elif arg.lower() in THINKING_LEVELS:
+    elif arg.lower() in [level for level, _ in _thinking_rows(app)]:
         _apply_thinking_level(app, arg.lower())
     else:
         app.system_message(
-            f"Unknown level: {arg}\nValid: {', '.join(THINKING_LEVELS)}, unset"
+            f"Unknown level: {arg}\nValid: {', '.join(level for level, _ in _thinking_rows(app))}"
         )
 
 
 def _print_thinking_levels(app) -> None:
     """The pre-T569 text listing, kept verbatim for the RPC transport."""
     current = app.thinking_level or UNSET
+    if getattr(getattr(app, "backend", None), "name", "") == "codex":
+        app.system_message(f"Thinking level: {current}\n" +
+                           "\n".join(label for _, label in _thinking_rows(app)))
+        return
     note = (
         "\nunset means the field is not sent at all — LM Studio then "
         "applies its OWN default, which is xhigh. 'unset' is not 'off'."

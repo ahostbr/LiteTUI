@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "subagent",
-    "description": "Delegate a self-contained, single-prompt job to a child model that runs independently on the active backend, in parallel with you. Use it whenever a step is prompt -> response with no tools needed: summarise or analyse a file or a long tool result, translate, classify, extract, draft a section, answer a question from given material. The child has NO tools and NO conversation history: everything it needs goes in `prompt` (the instruction) and `files` (paths it reads itself). Canonical call: {\"prompt\": \"Summarise this README in 3 bullets.\", \"files\": [\"README.md\"], \"background\": true}. Rules: (1) never read a file yourself only to hand its text over, and never paste file or tool output into `prompt` -- pass the path in `files` (the prompt is streamed token by token and a pasted body stalls you for seconds); (2) use background=true and keep working: the call returns a task id at once, the result arrives later as a message tagged [inbox from task], and the full text is in output/tasks/<id>.log (read it with the read tool); (3) leave max_tokens, think, model and system unset unless you have a specific reason. Not for: edits, shell commands, anything that needs tools or your conversation context -- do those yourself.",
+    "description": "Delegate a self-contained, single-prompt job to a child model that runs independently on the active backend, in parallel with you. Use it whenever a step is prompt -> response with no tools needed: summarise or analyse a file or a long tool result, translate, classify, extract, draft a section, answer a question from given material. The child has NO tools and NO conversation history: everything it needs goes in `prompt` (the instruction) and `files` (paths it reads itself). Canonical call: {\"prompt\": \"Summarise this README in 3 bullets.\", \"files\": [\"README.md\"], \"background\": true}. For an explicit Sol child at High reasoning, call {\"prompt\": \"...\", \"model\": \"gpt-5.6-sol\", \"reasoning_effort\": \"high\", \"background\": true}; `think=true` is the legacy medium request, not High. Rules: (1) never read a file yourself only to hand its text over, and never paste file or tool output into `prompt` -- pass the path in `files` (the prompt is streamed token by token and a pasted body stalls you for seconds); (2) use background=true and keep working: the call returns a task id at once, the result arrives later as a message tagged [inbox from task], and the full text is in output/tasks/<id>.log (read it with the read tool); (3) leave max_tokens, think, model, reasoning_effort and system unset unless you have a specific reason. Not for: edits, shell commands, anything that needs tools or your conversation context -- do those yourself.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -29,7 +29,12 @@
         },
         "think": {
           "type": "boolean",
-          "description": "Leave unset (false): the child requests the backend's lowest supported reasoning effort so more budget goes to content. true only for a job that genuinely needs multi-step reasoning."
+          "description": "Leave unset (false): the child requests the backend's lowest supported reasoning effort so more budget goes to content. true preserves the legacy medium request; it does not mean High."
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
+          "description": "Optional explicit child-only reasoning level. Use high with model gpt-5.6-sol when High reasoning is required. The selected model must advertise the requested level; unsupported levels fail instead of silently falling back. This does not change the parent turn."
         },
         "model": {
           "type": "string",

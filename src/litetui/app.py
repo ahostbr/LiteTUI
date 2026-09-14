@@ -1464,7 +1464,9 @@ class LiteTUI(App):
         parses markup out of a raw str content and a stray "[" would be eaten as
         a tag rather than drawn.
         """
-        self._system(LITETUI_SPLASH)
+        from litetui.splash import Splash
+
+        self.query_one("#chat-log", VerticalScroll).mount(Splash(LITETUI_SPLASH))
 
     def on_mount(self) -> None:
         state = hook_host.snapshot(self)
@@ -1568,6 +1570,11 @@ class LiteTUI(App):
         becoming a no-op.
         """
         await self._settle_before_teardown()
+        if getattr(getattr(self, "backend", None), "name", None) == "codex":
+            if hasattr(self.backend, "app_server"):
+                await self.backend.app_server.close()
+            else:
+                self.backend.shutdown()
         await super()._shutdown()
 
     async def on_unmount(self) -> None:
@@ -3175,7 +3182,7 @@ class LiteTUI(App):
         if model:
             self._model_id = model
         level = convo_settings_mod.resolved(cs, self.settings, "thinking_level")
-        self._thinking_level = None if level in (None, "off") else level
+        self._thinking_level = None if level in (None, "default") else level
         self._adopt_convo_backend(cs)
         # 🔴 `--tool-profile` OUTRANKS THE REMEMBERED CHOICE AND NEVER BECOMES
         # IT (T695, Sentinel's ruling). An explicit invocation beats a stored
@@ -3195,7 +3202,10 @@ class LiteTUI(App):
         if cs.reasoning_effort and self._model_id:
             overrides = dict(self.settings.model_infer_overrides)
             entry = dict(overrides.get(self._model_id, {}))
-            entry["reasoning_effort"] = cs.reasoning_effort
+            if cs.reasoning_effort == "default":
+                entry.pop("reasoning_effort", None)
+            else:
+                entry["reasoning_effort"] = cs.reasoning_effort
             overrides[self._model_id] = entry
             self.settings.model_infer_overrides = overrides
 
@@ -4143,6 +4153,8 @@ class LiteTUI(App):
         needs off the app. See that function for why each refusal to answer is
         load bearing.
         """
+        if hasattr(getattr(self, "backend", None), "app_server"):
+            return None  # Codex owns context and automatic compaction.
         return TurnEngine.autocompact_due(
             enabled=self.settings.autocompact_enabled,
             at_percent=self.settings.autocompact_at_percent,
@@ -5748,7 +5760,7 @@ class LiteTUI(App):
                                 "error": takeover or _plain_backend_error(e, self.backend.name)})
                 return
             finally:
-                if isinstance(stream, model_transport.ResponseStream):
+                if hasattr(stream, "close"):
                     await stream.close()
 
             self._elapsed.stop_body()
@@ -6203,6 +6215,17 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "") -> None:
+        if hasattr(getattr(self, "backend", None), "app_server"):
+            self._stop_requested = False
+            self._stop_reason = None
+            self._system("Codex is compacting its context…")
+            try:
+                await model_transport.for_app(self).compact()
+            except model_transport.ProviderError as error:
+                self._system(str(error))
+            else:
+                self._system("Codex context compacted. The displayed transcript is preserved.")
+            return
         # A new operation gets a fresh cancellation latch, not the prior turn's.
         # Keep _turn_abandoned: maintenance must not revive stopped user work.
         self._stop_requested = False
@@ -6423,7 +6446,7 @@ class LiteTUI(App):
             self._system(f"Compact failed — conversation unchanged.\n{_plain_backend_error(e, self.backend.name)}")
             return
         finally:
-            if isinstance(stream, model_transport.ResponseStream):
+            if hasattr(stream, "close"):
                 await stream.close()
 
         if not summary:

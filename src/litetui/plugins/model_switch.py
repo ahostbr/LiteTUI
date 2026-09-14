@@ -117,6 +117,8 @@ def _switch_backend(app, choice: str) -> None:
     # Deliberately NOT shutting the old engine down: a mid-session flip that
     # evicted the resident model would make flipping back cost a full reload.
     # VRAM is freed explicitly (/unload) or at app exit (atexit).
+    if hasattr(app.backend, "app_server"):
+        app.backend.shutdown()
     app.backend = llm_backend.make_backend(s)
     # The conversation is NOT touched — history survives an engine switch;
     # only the endpoint and the model list change.

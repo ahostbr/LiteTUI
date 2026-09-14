@@ -16,6 +16,8 @@ import sys
 import threading
 from typing import TYPE_CHECKING, Any
 
+from litetui.thinking_capabilities import set_thinking, thinking_capabilities
+
 if TYPE_CHECKING:
     from litetui.app import LiteTUI
 
@@ -290,23 +292,33 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     elif cmd_type == "get_settings":
         _respond(cmd_id, ok=True, result={
             "thinking_level": app.thinking_level,
+            "thinking_capabilities": thinking_capabilities(app),
             "tool_policy_profile": str(getattr(app, "_active_tool_profile", None)),
             "model": app.model_id,
         })
     elif cmd_type == "set_thinking":
         level = cmd.get("level")
-        app.thinking_level = level if level != "off" else None
+        try:
+            set_thinking(app, level)
+        except ValueError as exc:
+            _respond(cmd_id, ok=False, error=str(exc))
+            return
         _respond(cmd_id, ok=True, result={"level": app.thinking_level})
     elif cmd_type == "set_settings":
         patch = cmd.get("patch", {})
         if "thinking_level" in patch:
-            app.thinking_level = patch["thinking_level"] if patch["thinking_level"] != "off" else None
+            try:
+                set_thinking(app, patch["thinking_level"])
+            except ValueError as exc:
+                _respond(cmd_id, ok=False, error=str(exc))
+                return
         if "model" in patch:
             from litetui.plugins.model_switch import switch_model
 
             switch_model(app, str(patch["model"]))
         _respond(cmd_id, ok=True, result={
             "thinking_level": app.thinking_level,
+            "thinking_capabilities": thinking_capabilities(app),
             "model": app.model_id,
         })
     elif cmd_type == "list_commands":

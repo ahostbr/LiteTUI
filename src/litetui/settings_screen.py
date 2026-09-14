@@ -251,6 +251,17 @@ class SettingsBody(Widget):
                 yield Label(label, classes="set-label-inline")
             yield Static(help_text, classes="set-help")
 
+    def _thinking_choices(self, name="thinking_level"):
+        backend = getattr(self.app, "backend", None)
+        if getattr(backend, "name", "") == "codex":
+            choices = [(level.title() if level != "xhigh" else "Extra high", level)
+                       for level in backend.reasoning_levels(self.app.model_id)]
+            current = getattr(self._start, name)
+            if current not in [value for _, value in choices]:
+                choices.append((f"{current} (saved; not supported by this model)", current))
+            return choices
+        return THINKING_CHOICES
+
     def _select_row(self, name: str, label: str, choices, help_text: str):
         locked = settings_mod.source_of(name)
         with Vertical(classes="set-row"):
@@ -411,7 +422,7 @@ class SettingsBody(Widget):
                     with VerticalScroll(classes="set-scroll"):
 
                         yield from self._select_row(
-                            "thinking_level", "Thinking level", THINKING_CHOICES,
+                            "thinking_level", "Thinking level", self._thinking_choices(),
                             "A level THIS SERVER accepts is not always one the LOADED model "
                             "accepts — a virtual model drops an unsupported value with a 200 "
                             "and reasons at its own default instead.",
@@ -585,7 +596,7 @@ class SettingsBody(Widget):
                             "allowance before any summary was written.",
                         )
                         yield from self._select_row(
-                            "compact_thinking_level", "Compact thinking level", THINKING_CHOICES,
+                            "compact_thinking_level", "Compact thinking level", self._thinking_choices("compact_thinking_level"),
                             "'off' is cheapest but is the value most likely to be silently "
                             "dropped by a virtual model, which then reasons at ITS default.",
                         )

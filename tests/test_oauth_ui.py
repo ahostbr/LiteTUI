@@ -23,7 +23,9 @@ async def test_remote_compaction_uses_tool_door_and_preserves_transcript(
         clear_screen_after_compact=False,
     )
     monkeypatch.setattr(settings, "load", lambda: cfg)
-    monkeypatch.setattr(oauth_backend, "read_credentials", lambda p: None)
+    async def ready(self):
+        return "ok"
+    monkeypatch.setattr(oauth_backend.OAuthBackend, "ensure_running", ready)
     monkeypatch.setattr(
         mt, "read_credentials", lambda *a: mt.Credentials("test", "account")
     )
@@ -89,6 +91,9 @@ async def test_remote_compaction_uses_tool_door_and_preserves_transcript(
         ),
     )
     app = app_mod.LiteTUI()
+    # This arm exercises the retained raw Responses converter. The production
+    # Codex backend now delegates compaction to app-server (covered separately).
+    monkeypatch.delattr(app.backend, "app_server")
     async with app.run_test(size=(120, 38)) as pilot:
         await pilot.pause()
         app.conversation = [

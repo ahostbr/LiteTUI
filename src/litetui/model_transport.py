@@ -173,7 +173,7 @@ def codex_request(kwargs: dict) -> dict:
         "store": False,
         "stream": True,
         "include": ["reasoning.encrypted_content"],
-        "tool_choice": "auto",
+        "tool_choice": kwargs.get("tool_choice", "auto"),
         "parallel_tool_calls": True,
     }
     if kwargs.get("tools"):
@@ -184,6 +184,8 @@ def codex_request(kwargs: dict) -> dict:
     effort = (kwargs.get("extra_body") or {}).get("reasoning_effort")
     if effort:
         body["reasoning"] = {"effort": effort, "summary": "auto"}
+    if kwargs.get("prompt_cache_key"):
+        body["prompt_cache_key"] = kwargs["prompt_cache_key"]
     return body
 
 
@@ -517,12 +519,14 @@ async def collect(stream):
 
 class OAuthTransport:
     def __init__(
-        self, provider, *, credential_path=None, http_transport=None, models=None
+        self, provider, *, credential_path=None, http_transport=None, models=None,
+        prompt_cache_key=None
     ):
         self.provider = provider
         self.credential_path = credential_path
         self.http_transport = http_transport
         self.models = models
+        self.prompt_cache_key = prompt_cache_key
 
     def headers(self, credentials):
         headers = {
@@ -543,6 +547,8 @@ class OAuthTransport:
         return headers
 
     async def create(self, **kwargs):
+        if self.provider == "codex" and self.prompt_cache_key:
+            kwargs["prompt_cache_key"] = self.prompt_cache_key
         credentials = read_credentials(self.provider, self.credential_path)
         if self.models is not None:
             model = self.models.get(kwargs["model"])
@@ -621,7 +627,17 @@ class OpenAITransport:
 
 def for_app(app) -> ModelTransport:
     if getattr(getattr(app, "backend", None), "name", None) in OAUTH_PROVIDERS:
-        return OAuthTransport(app.backend.name, models=app.backend.models)
+        if hasattr(app.backend, "app_server"):
+            from litetui.codex_app_server import AppServerTransport
+            transport = getattr(app.backend, "_transport", None)
+            if transport is None:
+                transport = AppServerTransport(app.backend.app_server, app)
+                app.backend._transport = transport
+            return transport
+        return OAuthTransport(
+            app.backend.name, models=app.backend.models,
+            prompt_cache_key=getattr(app, "convo_id", None),
+        )
     return OpenAITransport(app.client)
 
 
@@ -645,10 +661,22 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
                 )
             # Local think=false means minimum thinking; Codex models may have
             # no no-thinking mode. The result explicitly labels this below.
-            request["extra_body"] = {
-                "reasoning_effort": levels[0] if effort == "none" else "medium"
-            }
-            result = await OAuthTransport(backend.name).create(**request)
+            wire_effort = levels[0] if effort == "none" else (effort or "medium")
+            if wire_effort not in levels:
+                raise ProviderError(
+                    f"This Codex model does not support reasoning effort "
+                    f"{wire_effort!r}; no fallback was used."
+                )
+            request["extra_body"] = {"reasoning_effort": wire_effort}
+            if hasattr(backend, "app_server"):
+                from litetui.codex_app_server import AppServer, AppServerTransport
+                server = AppServer()
+                try:
+                    result = await AppServerTransport(server).create(**request)
+                finally:
+                    await server.close()
+            else:
+                result = await OAuthTransport(backend.name).create(**request)
             msg = result.choices[0].message
             return {
                 "choices": [

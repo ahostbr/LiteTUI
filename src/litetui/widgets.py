@@ -747,10 +747,10 @@ class ToolMessage(FoldBlock):
         self._args = args_json
         self._update_display()
 
-    def set_result(self, result: str, ok: bool) -> None:
+    def set_result(self, result: str, ok: bool, *, elapsed: float | None = None) -> None:
         self._result = result
         self._ok = ok
-        self._took = time.monotonic() - self._t0
+        self._took = time.monotonic() - self._t0 if elapsed is None else elapsed
         self.set_expanded(False)
         self._update_display()
 

@@ -1,0 +1,129 @@
+{
+  "task": "REL-20260914-CODEX-PARITY",
+  "base": "8eeb5459918c19a09ee0f5afd87ce10634435d48",
+  "source": "C:\\Projects\\LiteTUI",
+  "candidate": "C:\\Projects\\.worktrees\\codex-host-parity",
+  "note": "Snapshot includes mixed preexisting edits; hashes establish bytes, not sole authorship. No root files changed.",
+  "files": [
+    {
+      "path": "src/litetui/app.py",
+      "sha256": "687ae0d67c0142c36378be5e2e25d29bda824a5332d00db79d55ee08177eaef7"
+    },
+    {
+      "path": "src/litetui/model_transport.py",
+      "sha256": "3eca316c4503894455c1ce4278b6e91ff80427d4663d12eaa6c46eb06ec6e857"
+    },
+    {
+      "path": "src/litetui/oauth_backend.py",
+      "sha256": "daf8edd0c13f8fcc613e1de4bdd5d3fed638823a6ae474cf8b64d5142c44c0fc"
+    },
+    {
+      "path": "src/litetui/plugins/misc.py",
+      "sha256": "31859dd22f0682026788833a8c1a3a8036085b43c0d0655b317f8cf2c87bcb55"
+    },
+    {
+      "path": "src/litetui/plugins/model_switch.py",
+      "sha256": "f95fdbffbc31447d6edc8c1166dc32ce3ad7ba0704c87d9cc34f0850dad0652f"
+    },
+    {
+      "path": "src/litetui/rpc.py",
+      "sha256": "92559c8dac6c899e00db984ff4ab03cc22e2d5904cbed52c88f9b1a7a928d0e1"
+    },
+    {
+      "path": "src/litetui/settings.py",
+      "sha256": "810d2c191b8e86f31c849e088d4bcffe72475d94044bfeb1852efad96e277c17"
+    },
+    {
+      "path": "src/litetui/settings_screen.py",
+      "sha256": "6e90462e979388a4d0e3d74e20309c6e68104fba8c2d2e3877b495d109360191"
+    },
+    {
+      "path": "src/litetui/turn_engine.py",
+      "sha256": "e8ed5d84fbcf408c512d1f851850b7fc49b274629007e1b2a3df56d5b7746e56"
+    },
+    {
+      "path": "src/litetui/widgets.py",
+      "sha256": "905363ac265b0c91d3a34f234d7dda1bfd39cc1377e1dbb9708e28c79dccb36f"
+    },
+    {
+      "path": "src/litetui/codex_app_server.py",
+      "sha256": "88ce2e3ac0281c92c3fc0063057db08a1f4fab028e3193598081dc572b759410"
+    },
+    {
+      "path": "src/litetui/codex_tool_ui.py",
+      "sha256": "75dd7503efc0c828692b90717eb0e83b414901a74dd84052d1c34d84767b4e06"
+    },
+    {
+      "path": "src/litetui/splash.py",
+      "sha256": "863d5ef31118c526b730290a29e98e52f23f9bdb8155a6c44bc34100a9d5ce14"
+    },
+    {
+      "path": "src/litetui/thinking_capabilities.py",
+      "sha256": "ad117ae92077bbd8b2b63f062aae1806271da1236559519efc06d403682a56cd"
+    },
+    {
+      "path": "tests/test_oauth_transport.py",
+      "sha256": "e69309ead779cb68915df88ff83d8a366666d7cd7a5fc6afdc0be6116b3d8a10"
+    },
+    {
+      "path": "tests/test_oauth_ui.py",
+      "sha256": "61670f34c7c0f92884b30e75d69261cece49c23398836a58cbe7b8f110500bb5"
+    },
+    {
+      "path": "tests/test_astra_codex_parity.py",
+      "sha256": "6629fb254ad3e3b52d02ca9e8ad1ac7c06025f40f162b9936f21e3bf1449e7b9"
+    },
+    {
+      "path": "tests/test_codex_app_server.py",
+      "sha256": "cd1aa77a04f5199232733f08a2496d6548207261c5f32043eefb5dc654d553ae"
+    },
+    {
+      "path": "tests/test_codex_tool_ui.py",
+      "sha256": "bc558d68089f4e72cc21276e445f99309005704d7a04c7f23d7881e1852e265f"
+    },
+    {
+      "path": "tests/test_thinking_capabilities.py",
+      "sha256": "6493e4426726a7b34c82f11b1c1e2895af9ef642b75c725e7476bed5eced27ac"
+    },
+    {
+      "path": "scripts/codex_app_server_probe.py",
+      "sha256": "43b56a609535bd18f98fb1af795474684ac5610c89900a99b6ac4a7d35a1ae42"
+    },
+    {
+      "path": "scripts/astra_cache_parity_probe.py",
+      "sha256": "54d17bcc645964ea4d706dd61b5320ed3e2f74574b694195dd864f542a0a40d6"
+    },
+    {
+      "path": "Docs/Plans/codex-host-parity.md",
+      "sha256": "301632e7b935149ecfec10b1a46518887aafe3fffa14b75c20b6c1d42e863470"
+    },
+    {
+      "path": "Docs/codex-host-integration-audit-2026-09-14.md",
+      "sha256": "907759ae56fe5d580cd90cce4d135fda7881c2aa6d401ccee44d8679a91d1c27"
+    },
+    {
+      "path": "Docs/codex-astra-parity-2026-09-14.md",
+      "sha256": "2ece093fa69cfa4a92ed8093f28cbd46e981ebed87a0aecd2c5e52e2cbc9c509"
+    },
+    {
+      "path": "Docs/Plans/codex-host-parity-evidence/codex-rs__core__src__tools__hook_names.rs",
+      "sha256": "ab0f235f27bc063feb6468d8d0d57201a08538798cfe45dd8008eab60d991553"
+    },
+    {
+      "path": "Docs/Plans/codex-host-parity-evidence/codex-rs__core__tests__suite__hooks.rs",
+      "sha256": "42af002a0b0d5bea837856644c1120e7436bb5d34d57584b4b7d3b6c5477b4f3"
+    },
+    {
+      "path": "Docs/Plans/codex-host-parity-evidence/codex-rs__hooks__src__events__pre_tool_use.rs",
+      "sha256": "11a421933eac6f78749470b221c4b30eeb71e5cd75e8f091f06067da7c1652e6"
+    },
+    {
+      "path": "Docs/Plans/codex-host-parity-evidence/config.schema.json",
+      "sha256": "2e1fcf1cbb20f255c3baca2e174b4a3c954cef577a130587b8935e2d12c8ade6"
+    },
+    {
+      "path": "Docs/Plans/codex-host-parity-evidence/protocol-smoke.json",
+      "sha256": "1b94436ecf4c3731f3ba34a5f3e3c48cdf2c7b944b8704a96f4b06f0a476a817"
+    }
+  ]
+}

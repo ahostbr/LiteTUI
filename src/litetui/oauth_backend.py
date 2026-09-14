@@ -1,9 +1,9 @@
-"""Cloud control plane. Model metadata comes from the official CLI cache."""
+"""Codex control plane; the official app-server owns login and agent execution."""
 
 import json
 
 from litetui.llm_backend import BackendError, ModelRow
-from litetui.model_transport import credential_path, read_credentials
+from litetui.model_transport import credential_path
 
 
 class OAuthBackend:
@@ -14,6 +14,8 @@ class OAuthBackend:
         self.name = settings.backend
         self.settings = settings
         self.models = {}
+        from litetui.codex_app_server import AppServer
+        self.app_server = AppServer()
 
     def base_url(self):
         # Identity only; remote inference never uses the OpenAI client.
@@ -23,11 +25,16 @@ class OAuthBackend:
         return self.base_url()
 
     async def ensure_running(self):
-        read_credentials(self.name)
+        await self.app_server.start()
+        account = await self.app_server.request("account/read", {"refreshToken": False})
+        if (account.get("account") or {}).get("type") != "chatgpt":
+            raise BackendError("Run `codex login` with your ChatGPT subscription, then /reconnect.")
         return "ok"
 
     def shutdown(self):
-        pass
+        server = getattr(self, "app_server", None)
+        if server is not None:
+            server.shutdown()
 
     async def list_models(self):
         try:
@@ -74,7 +81,6 @@ class OAuthBackend:
         )
 
     async def ensure_chat_ready(self, key):
-        read_credentials(self.name)
         if key not in self.models:
             raise BackendError("Choose an available Codex model with /model.")
 

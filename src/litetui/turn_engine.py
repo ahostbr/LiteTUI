@@ -199,6 +199,8 @@ class TurnEngine:
         # an advertisement.
         if tools is not None:
             kwargs["tools"] = tools
+        if backend_name == "codex" and not tools_enabled:
+            kwargs["tool_choice"] = "none"
         # reasoning_effort rides extra_body so the value lands in the JSON
         # verbatim: the client types it as a fixed Literal, and two of LM
         # Studio's six ("none", "xhigh") are not in it.

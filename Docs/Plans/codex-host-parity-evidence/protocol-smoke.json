@@ -1,0 +1,15 @@
+{
+  "hooks/list": {
+    "accepted": true,
+    "response_keys": [
+      "data"
+    ]
+  },
+  "model/list": {
+    "accepted": true,
+    "response_keys": [
+      "data",
+      "nextCursor"
+    ]
+  }
+}

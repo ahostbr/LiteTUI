@@ -393,6 +393,8 @@ async def test_cloud_backend_uses_cli_capabilities_and_rejects_local_controls(
         )
     )
     backend = make_backend(Settings(backend="codex"))
+    from test_codex_app_server import Server
+    backend.app_server = Server()
     assert await backend.ensure_running() == "ok"
     assert [m.key for m in await backend.list_models()] == ["gpt-test"]
     assert await backend.model_info("gpt-test") == (90000, "vlm", True)
