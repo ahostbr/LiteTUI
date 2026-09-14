@@ -1,0 +1,16 @@
+{
+  "initial_turn_completed": true,
+  "initial_host_calls": 1,
+  "first_process_closed": true,
+  "second_process_closed": true,
+  "recovered_items": 2,
+  "native_identities_preserved": true,
+  "tool_result_recovered": true,
+  "assistant_answer_recovered": true,
+  "disk_reload_matches": true,
+  "repeat_read_idempotent": true,
+  "recovery_turn_start_count": 0,
+  "recovery_thread_resume_count": 0,
+  "recovery_read_count": 2,
+  "temporary_home_removed": true
+}
