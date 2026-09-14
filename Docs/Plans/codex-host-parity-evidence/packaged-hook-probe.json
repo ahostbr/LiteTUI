@@ -1,0 +1,45 @@
+{
+  "wheel": "litetui-0.22.2-py3-none-any.whl",
+  "wheel_sha256": "6806da44d0bf8a67e380028471e898468819c540b05c318d5a0da667b5bca044",
+  "helper_sha256": "2c4d782da467f38c019d6b7396ccfce3b8cfd50dd33ac903ee3ee6537c95b5bf",
+  "path_with_spaces": true,
+  "pythonpath_removed": true,
+  "results": [
+    {
+      "shell": "cmd.exe",
+      "decision": "allow",
+      "exit_code": 0,
+      "verified": true
+    },
+    {
+      "shell": "cmd.exe",
+      "decision": "deny",
+      "exit_code": 0,
+      "verified": true
+    },
+    {
+      "shell": "cmd.exe",
+      "decision": "unavailable",
+      "exit_code": 0,
+      "verified": true
+    },
+    {
+      "shell": "powershell.exe",
+      "decision": "allow",
+      "exit_code": 0,
+      "verified": true
+    },
+    {
+      "shell": "powershell.exe",
+      "decision": "deny",
+      "exit_code": 0,
+      "verified": true
+    },
+    {
+      "shell": "powershell.exe",
+      "decision": "unavailable",
+      "exit_code": 0,
+      "verified": true
+    }
+  ]
+}

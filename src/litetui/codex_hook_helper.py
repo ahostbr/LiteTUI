@@ -26,10 +26,18 @@ def main():
         document = json.loads(reply)
         print(json.dumps(document))
     except (OSError, ValueError, KeyError):
-        # Exit 2 is Codex's explicit blocking failure contract. Never echo
-        # exception text: it could contain tool arguments or credentials.
-        print("LiteTUI native tool policy is unavailable.", file=sys.stderr)
-        return 2
+        # PowerShell maps a native exit 2 to exit 1. Use the universal hook
+        # stop response with exit zero so every shell preserves fail-closed intent.
+        # Never echo exception text: it may contain arguments or credentials.
+        print(
+            json.dumps(
+                {
+                    "continue": False,
+                    "stopReason": "LiteTUI native tool policy is unavailable.",
+                }
+            )
+        )
+        return 0
     return 0
 
 

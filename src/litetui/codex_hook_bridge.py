@@ -82,7 +82,7 @@ class NativeHookBridge:
             writer.write(json.dumps(reply).encode() + b"\n")
             await writer.drain()
         except Exception:  # noqa: BLE001, S110 - fail closed without logging hook payloads
-            # Closing without a valid response makes the helper exit 2.
+            # Closing without a valid response makes the helper emit a stop verdict.
             pass
         finally:
             if worker is not None:
