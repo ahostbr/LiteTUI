@@ -92,10 +92,9 @@ async def probe(wheel):
                     )
                     if decision == "unavailable":
                         assert process.returncode == 0 and not stderr
-                        assert json.loads(stdout) == {
-                            "continue": False,
-                            "stopReason": "LiteTUI native tool policy is unavailable.",
-                        }
+                        assert json.loads(stdout) == denial(
+                            "LiteTUI native tool policy is unavailable."
+                        )
                     else:
                         assert process.returncode == 0 and not stderr, (
                             shell,

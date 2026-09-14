@@ -1,0 +1,54 @@
+{
+  "startup_override": true,
+  "unavailable_policy": true,
+  "hook_hits": [
+    {
+      "event": "PreToolUse",
+      "helper_invoked": true
+    }
+  ],
+  "events": [
+    {
+      "method": "item/started",
+      "type": "userMessage",
+      "status": null
+    },
+    {
+      "method": "item/completed",
+      "type": "userMessage",
+      "status": null
+    },
+    {
+      "method": "item/started",
+      "type": "agentMessage",
+      "status": null
+    },
+    {
+      "method": "item/completed",
+      "type": "agentMessage",
+      "status": null
+    },
+    {
+      "method": "hook/started",
+      "type": null,
+      "status": "running"
+    },
+    {
+      "method": "hook/completed",
+      "type": null,
+      "status": "blocked"
+    },
+    {
+      "method": "item/started",
+      "type": "agentMessage",
+      "status": null
+    },
+    {
+      "method": "item/completed",
+      "type": "agentMessage",
+      "status": null
+    }
+  ],
+  "pre_tool_hook_executed": true,
+  "blocked_before_command": true
+}

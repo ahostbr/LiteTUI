@@ -9,13 +9,17 @@ LIMIT = 16 * 1024 * 1024
 
 
 def main():
+    event = {}
     try:
         payload = sys.stdin.buffer.read(LIMIT + 1)
         if len(payload) > LIMIT:
             raise ValueError("Hook input too large")
+        event = json.loads(payload)
+        if not isinstance(event, dict):
+            raise TypeError("Hook input must be an object")
         token = os.environ["LITETUI_CODEX_HOOK_KEY"]
         port = int(os.environ["LITETUI_CODEX_HOOK_PORT"])
-        request = {"token": token, "event": json.loads(payload)}
+        request = {"token": token, "event": event}
         with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
             client.settimeout(300)
             client.sendall(json.dumps(request).encode() + b"\n")
@@ -25,18 +29,23 @@ def main():
             raise ValueError("Missing hook response")
         document = json.loads(reply)
         print(json.dumps(document))
-    except (OSError, ValueError, KeyError):
-        # PowerShell maps a native exit 2 to exit 1. Use the universal hook
-        # stop response with exit zero so every shell preserves fail-closed intent.
+    except (OSError, ValueError, KeyError, TypeError):
+        # PowerShell maps a native exit 2 to exit 1. Return the event-specific
+        # denial with exit zero; PreToolUse rejects universal continue:false.
         # Never echo exception text: it may contain arguments or credentials.
-        print(
-            json.dumps(
-                {
-                    "continue": False,
-                    "stopReason": "LiteTUI native tool policy is unavailable.",
+        reason = "LiteTUI native tool policy is unavailable."
+        response = (
+            {"decision": "block", "reason": reason}
+            if isinstance(event, dict) and event.get("hook_event_name") == "PostToolUse"
+            else {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
                 }
-            )
+            }
         )
+        print(json.dumps(response))
         return 0
     return 0
 
