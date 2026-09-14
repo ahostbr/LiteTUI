@@ -73,6 +73,7 @@ async def main():
                 },
             }
         ]
+        app.plugins.tool_specs = lambda: tools
         if args.deferred_tool:
             deferred = tools
             app.plugins.deferred_specs = lambda: deferred

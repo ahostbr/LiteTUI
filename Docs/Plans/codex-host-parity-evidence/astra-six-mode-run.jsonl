@@ -1,0 +1,6 @@
+{"effort": "low", "completed": true, "seconds": 4.92, "host_tool_calls": 0, "prompt_tokens": 28062, "completion_tokens": 5, "cached_tokens": 8448, "cache_write_tokens": 0}
+{"effort": "medium", "completed": true, "seconds": 2.36, "host_tool_calls": 0, "prompt_tokens": 34593, "completion_tokens": 5, "cached_tokens": 8448, "cache_write_tokens": 0}
+{"effort": "high", "completed": true, "seconds": 2.08, "host_tool_calls": 0, "prompt_tokens": 34608, "completion_tokens": 5, "cached_tokens": 12544, "cache_write_tokens": 0}
+{"effort": "xhigh", "completed": true, "seconds": 2.19, "host_tool_calls": 0, "prompt_tokens": 34623, "completion_tokens": 5, "cached_tokens": 8448, "cache_write_tokens": 0}
+{"effort": "max", "completed": true, "seconds": 2.45, "host_tool_calls": 0, "prompt_tokens": 34638, "completion_tokens": 23, "cached_tokens": 7680, "cache_write_tokens": 0}
+{"effort": "ultra", "completed": true, "seconds": 1.83, "host_tool_calls": 0, "prompt_tokens": 34774, "completion_tokens": 5, "cached_tokens": 34432, "cache_write_tokens": 0}
