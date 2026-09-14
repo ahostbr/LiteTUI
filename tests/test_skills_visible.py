@@ -22,21 +22,10 @@ from litetui import skills as skills_mod
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-skills-"))
 
 
-#: The real ROOT, captured before any test moves it.
-_REAL_ROOT = paths.ROOT
-
-
-@pytest.fixture(autouse=True)
-def _restore_root():
-    """ROOT is a MODULE GLOBAL. Mutating it leaks into every other test module
-    in the same pytest process — the suite ran fine alone and collapsed when run
-    together. Always put it back."""
-    yield
-    paths.ROOT = _REAL_ROOT
-
-
-def _app_with(tmp_root: Path):
-    paths.ROOT = tmp_root
+def _app_with(tmp_root: Path, monkeypatch):
+    # Skills now live under the configured writable data root. Keep immutable
+    # resources at their normal anchor and isolate discovery through that seam.
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_root))
     a = app_mod.LiteTUI()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
@@ -68,7 +57,7 @@ def test_disabled_skills_yield_a_list_not_a_dict():
 
 
 @pytest.mark.asyncio
-async def test_slash_skills_names_what_was_SKIPPED():
+async def test_slash_skills_names_what_was_SKIPPED(monkeypatch):
     """The whole point. A folder without SKILL.md must be REPORTED, not hidden.
 
     This is the discriminating case: discovery already worked for valid skills,
@@ -80,7 +69,7 @@ async def test_slash_skills_names_what_was_SKIPPED():
     (base / "typo-folder").mkdir(parents=True)          # no SKILL.md
     (base / "another-mistake").mkdir(parents=True)      # no SKILL.md
 
-    a = _app_with(root)
+    a = _app_with(root, monkeypatch)
     msgs: list[str] = []
     pushed: list = []
     async with a.run_test() as pilot:
@@ -107,7 +96,7 @@ async def test_slash_skills_names_what_was_SKIPPED():
 
 
 @pytest.mark.asyncio
-async def test_slash_skills_actually_gives_the_body_to_the_model():
+async def test_slash_skills_actually_gives_the_body_to_the_model(monkeypatch):
     """/skills <name> must SEND the body, not print it.
 
     AMENDED 2026-08-22, and the old name is the evidence: this was
@@ -128,7 +117,7 @@ async def test_slash_skills_actually_gives_the_body_to_the_model():
         "---\nname: probe\ndescription: d\n---\n\nUNIQUE-BODY-MARKER-42\n", encoding="utf-8"
     )
 
-    a = _app_with(root)
+    a = _app_with(root, monkeypatch)
     msgs: list[str] = []
     bubbles: list[str] = []
     turns: list[int] = []
@@ -156,12 +145,12 @@ async def test_slash_skills_actually_gives_the_body_to_the_model():
 
 
 @pytest.mark.asyncio
-async def test_an_empty_directory_says_what_it_expects():
+async def test_an_empty_directory_says_what_it_expects(monkeypatch):
     """"0 skills" with no explanation sends you to read the source."""
     root = Path(tempfile.mkdtemp(prefix="skills-root3-"))
     (root / "skills").mkdir(parents=True)
 
-    a = _app_with(root)
+    a = _app_with(root, monkeypatch)
     msgs: list[str] = []
     pushed: list = []
     async with a.run_test() as pilot:
@@ -182,7 +171,7 @@ async def test_an_empty_directory_says_what_it_expects():
 
 
 @pytest.mark.asyncio
-async def test_disabled_says_so_rather_than_reporting_zero():
+async def test_disabled_says_so_rather_than_reporting_zero(monkeypatch):
     """"0 skills" and "skills are off" are different facts.
 
     Reporting the first when the second is true sends you hunting for a missing
@@ -193,7 +182,7 @@ async def test_disabled_says_so_rather_than_reporting_zero():
     root = Path(tempfile.mkdtemp(prefix="skills-root4-"))
     _make_skill(root / "skills", "present", "present", "d")
 
-    a = _app_with(root)
+    a = _app_with(root, monkeypatch)
     a.settings = Settings(skills_enabled=False)
     a.skills = []
     msgs: list[str] = []

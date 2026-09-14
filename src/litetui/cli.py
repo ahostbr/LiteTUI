@@ -59,6 +59,13 @@ def main() -> None:
     if args.cwd:
         os.chdir(args.cwd)
 
+    from litetui.paths import data_root
+    from litetui.shared_state import check_data_version
+    try:
+        check_data_version(data_root())
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
+
     from litetui.app import LiteTUI, wants_ansi_fallback
 
     app_kwargs: dict = {}

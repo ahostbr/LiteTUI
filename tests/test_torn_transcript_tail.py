@@ -30,6 +30,7 @@ def test_resume_append_replay_preserves_boundary(tmp_path, kind, tail):
     _, messages = ConversationRepository.read(path)
     assert messages == expected
     # A subsequent resume and append must not regress the repaired boundary.
+    repo.release()  # the prior writer exits before the next writer resumes
     again = ConversationRepository()
     again.adopt(path, "test")
     again.record_msg(first)

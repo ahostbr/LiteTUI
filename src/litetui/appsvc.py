@@ -85,11 +85,11 @@ def load_skills(app):
     """
     if not app.settings.skills_enabled:
         return ([], 0.0)
-    cached = skills_mod.read_cache(paths.ROOT)
+    cached = skills_mod.read_cache(paths.data_root())
     if cached is not None:
         return cached
-    found = skills_mod.discover_all(paths.ROOT, app.settings.skill_roots)
-    skills_mod.write_cache(paths.ROOT, found)
+    found = skills_mod.discover_all(paths.data_root(), app.settings.skill_roots)
+    skills_mod.write_cache(paths.data_root(), found)
     return (found, 0.0)
 
 def load_image_file(app, path: Path) -> str | None:

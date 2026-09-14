@@ -1338,7 +1338,7 @@ class LiteTUI(App):
         # `reload_configs()` is the file read only — no network — so /settings,
         # `describe()` and the /mcp dialog still list what is DECLARED from the
         # first frame. Only the CONNECT moves, into `_mcp_connect` after mount.
-        self.mcp = mcp_client.MCPManager(paths.ROOT)
+        self.mcp = mcp_client.MCPManager(paths.data_root())
         if self.settings.mcp_enabled:
             self.mcp.reload_configs()
         self._mcp_dispatch = self.mcp.dispatch()
@@ -1575,6 +1575,7 @@ class LiteTUI(App):
         hook_host.leave_conversation(self)
         hook_host.queue_lifecycle(self, "app_shutdown")
         await hook_host.drain_lifecycle(self)
+        self.store.release()
 
     @work(exclusive=True, group="mcp")
     async def _mcp_connect(self) -> None:
@@ -1730,6 +1731,8 @@ class LiteTUI(App):
         Queued rather than dropped when a turn is already running: mail that
         arrives mid-turn is exactly the mail worth not losing.
         """
+        if getattr(self, "_gui_quitting", False):
+            return  # controlled Quit retains persisted task outcomes without waking another turn
         text = harness_mod.format_message(msg)
         # 🔴 READS THE SETTING. It used to be a hardcoded SCHEDULED, so the
         # option labelled "every capability, UNATTENDED, never asks" did not
@@ -1758,7 +1761,40 @@ class LiteTUI(App):
         self._user_bubble(text, False)
         hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "harness"})
 
-    def _fire_job(self, job) -> None:
+    def _fire_job(self, job, *, manual: bool = False) -> None:
+        from litetui.shared_state import Lease, OwnershipError
+        if getattr(self, "_gui_schedules_paused", False):
+            return
+        try:
+            with Lease(paths.data_root() / ".scheduler.lease"):
+                from litetui.row_store import rows_on_disk
+                job_path = sched_mod.jobs_path(paths.data_root())
+                disk = next((r for r in rows_on_disk(job_path) if r.get("id") == job.id), None)
+                if not manual and disk is None and job_path.exists():
+                    return  # deleted after this process selected its candidate
+                if disk is not None:
+                    if not manual and disk.get("kind") == "loop" and disk.get("owner_convo_id") not in ("", None, self.convo_id):
+                        return  # a sibling must not pause the owning conversation's loop
+                    if not manual and not disk.get("enabled", True):
+                        return
+                    if not manual and disk.get("last_fired_slot") == sched_mod.slot_of(datetime.now()):  # noqa: DTZ005 - scheduler local wall time
+                        return
+                    # A competing scheduler may have advanced a loop while our
+                    # in-memory candidate was waiting for its lease.
+                    if (not manual and disk.get("kind") == "loop" and disk.get("next_run_at")
+                            and datetime.fromisoformat(disk["next_run_at"]) > datetime.now()):  # noqa: DTZ005 - scheduler local wall time
+                        return
+                    if not manual:
+                        for field in sched_mod.Job.__dataclass_fields__:
+                            if field in disk:
+                                setattr(job, field, disk[field])
+                        if not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
+                            return
+                return LiteTUI._fire_job_owned(self, job)
+        except OwnershipError:
+            return  # another scheduler owns this tick
+
+    def _fire_job_owned(self, job) -> bool | None:
         """Deliver a job as a real user turn, holding if one is running.
 
         The slot is stamped and PERSISTED BEFORE delivery, not after. If the
@@ -1776,12 +1812,15 @@ class LiteTUI(App):
                 pass
             self._system(blocked)
             return
+        prior_slot, prior_count = getattr(job, "last_fired_slot", None), job.run_count
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
             sched_mod.save(self.jobs, paths.data_root())
         except OSError:
-            pass  # an unwritable store must not stop the job from running
+            job.last_fired_slot, job.run_count = prior_slot, prior_count
+            self._system("Scheduled work was not delivered because its execution stamp could not be saved.")
+            return False
 
         label = job.label or job.id
         text = job.prompt
@@ -1821,9 +1860,10 @@ class LiteTUI(App):
             self._pending_input.append(
                 {"content": text, "text": banner, "tool_profile": profile, "source": "scheduled"}
             )
-            return
+            return True
         self._user_bubble(banner, False)
         hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "scheduled"})
+        return True
 
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
         """What this tool result contributes to the CONVERSATION (tool_context).
@@ -2411,6 +2451,7 @@ class LiteTUI(App):
             return
         if self.store.convo_dir is None or self.store.convo_path is None:
             return
+        self.store.acquire()
         self.store.pending = False   # cleared FIRST: write_record below would
                                      # otherwise see pending and skip its writes
         self.store.seed()
@@ -2652,6 +2693,11 @@ class LiteTUI(App):
             self._system(f"{path.name} holds no messages — not resuming.")
             return
 
+        try:
+            self.store.acquire(path.parent)
+        except OSError as exc:
+            self._system(f"Conversation is read-only: {exc}")
+            return
         hook_host.leave_conversation(self)
         self.conversation = msgs
         # The staged conversation is abandoned WITHOUT being written — that is
@@ -3224,6 +3270,23 @@ class LiteTUI(App):
         ):
             return True
 
+        if self._rpc and getattr(self, "_gui_rpc_enabled", False):
+            request_id = uuid.uuid4().hex
+            pending = getattr(self, "_gui_model_pending", None)
+            if pending is None:
+                self._gui_model_pending = pending = {}
+            future = asyncio.get_running_loop().create_future()
+            details = {"model": model, "sibling": sibling,
+                       "message": second_instance.warning_text(sibling, model)}
+            pending[request_id] = {"future": future, "details": details}
+            self._rpc_emit({"type": "model_load_requested", "request_id": request_id, **details})
+            try:
+                return await asyncio.wait_for(future, timeout=300)
+            except (TimeoutError, asyncio.CancelledError):
+                return False
+            finally:
+                pending.pop(request_id, None)
+
         if self._rpc:
             note = second_instance.refusal_text(sibling, model)
             self._system(note)
@@ -3271,6 +3334,7 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="init")
     async def connect(self) -> None:
+        self._gui_connection_success = False
         try:
             # The llama backend may spawn its own server here (never loading
             # a model) or attach to LiteSuite's — either way, say which.
@@ -3286,6 +3350,7 @@ class LiteTUI(App):
             if str(self.client.base_url).rstrip("/") != new_base:
                 self.client = AsyncOpenAI(base_url=new_base, api_key="litetui")
             rows = await self.backend.list_models()
+            self._gui_connection_success = True
             SKIP = {"embed", "embedding"}
             rows = [
                 r for r in rows
@@ -3390,7 +3455,17 @@ class LiteTUI(App):
         if not self._rpc:
             return
         from litetui.rpc import rpc_emit
+        if data.get("type") == "usage":
+            self._gui_usage = dict(data.get("usage", {}))
+        if data.get("type") == "tool_approval_requested":
+            if not hasattr(self, "_gui_approval_details"):
+                self._gui_approval_details = {}
+            self._gui_approval_details[data["id"]] = dict(data)
         rpc_emit(data)
+        if getattr(self, "_gui_rpc_enabled", False):
+            from litetui.gui_rpc import current_operation
+            rpc_emit({"type": "gui.event", "session_id": self.convo_id,
+                      "operation_id": current_operation(self), "event": data})
 
     def _rpc_model_state(self) -> dict:
         """The model/backend facts a headless host may display and switch.
@@ -3465,8 +3540,12 @@ class LiteTUI(App):
                 note = why
             elif action == "refuse":
                 note = why
+        from litetui.gui_rpc import OPERATIONS
         self._rpc_emit({
             "type": "ready",
+            "protocol_version": 1,
+            "management_protocols": [1],
+            "capabilities": list(OPERATIONS),
             "version": __version__,
             **self._rpc_model_state(),
             # T631: the host cannot derive this. LiteSuite spawns us with --rpc,
@@ -5163,13 +5242,14 @@ class LiteTUI(App):
 
         self.pending_image = None
         profile = self.chosen_tool_profile
+        correlation = {"operation_id": getattr(self, "_gui_next_operation_id", None)} if source == "rpc" else {}
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
                 bubble = self._user_bubble(text, has_image, queued=True)
                 self._pending_input.append(
                     {"content": content, "text": text, "bubble": bubble,
-                     "tool_profile": profile, "source": "rpc" if source == "rpc" else "queued"}
+                     "tool_profile": profile, "source": "rpc" if source == "rpc" else "queued", **correlation}
                 )
                 self.notify("Queued — sends when this turn ends", timeout=3)
                 return
@@ -5183,7 +5263,7 @@ class LiteTUI(App):
             # them. Same clause as the normal path below (T706).
             self._scroll_down(reader_acted=True)
             self._pending_input.insert(
-                0, {"content": content, "text": text, "tool_profile": profile, "source": "rpc" if source == "rpc" else "interrupted"}
+                0, {"content": content, "text": text, "tool_profile": profile, "source": "rpc" if source == "rpc" else "interrupted", **correlation}
             )
             self._stop_requested = True
             self.notify("Interrupting — your message sends next", timeout=3)
@@ -5193,7 +5273,7 @@ class LiteTUI(App):
         # choice. The one call that bypasses the follow check, and it RE-ENGAGES
         # the lock for the turn that follows (T706).
         self._scroll_down(reader_acted=True)
-        hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": source})
+        hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": source, **correlation})
 
     def _headless_model_decision(self) -> tuple[str, str | None, str]:
         """What a `--rpc` child may do about the model, without loading one.
@@ -5949,7 +6029,7 @@ class LiteTUI(App):
         # model this app is usually pointed at. The rest ride the next round,
         # and rounds are plentiful.
         item = self._pending_input.pop(0)
-        hook_host.accept_prompt(self, item)
+        hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
         return True
 
     def _flush_pending_input(self) -> None:
@@ -5979,8 +6059,8 @@ class LiteTUI(App):
         find-claude-skills" tells you the thing you just wrote was picked up.
         """
         before = {s.name for s in self.skills}
-        found = skills_mod.discover_all(paths.ROOT, self.settings.skill_roots)
-        skills_mod.write_cache(paths.ROOT, found)
+        found = skills_mod.discover_all(paths.data_root(), self.settings.skill_roots)
+        skills_mod.write_cache(paths.data_root(), found)
         self.skills = found
         self.skills_cached_at = 0.0
         after = {s.name for s in found}
@@ -6398,6 +6478,7 @@ class LiteTUI(App):
         if new is None:
             return
         old = self.settings
+        self._settings_persist_error = None
         self.settings = new
         # New/edited custom themes must exist in the registry BEFORE the
         # theme_name below tries to apply one of them.
@@ -6414,6 +6495,7 @@ class LiteTUI(App):
         try:
             path = settings_mod.save(new)
         except OSError as e:
+            self._settings_persist_error = str(e)
             # The raw OS error (WinError + path) goes to the sink; chat gets
             # what happened, in plain words.
             runtime_log.record_error(

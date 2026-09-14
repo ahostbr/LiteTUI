@@ -207,9 +207,11 @@ class ConversationRepository:
         # How a persistence failure reaches a human. The store cannot know --
         # it has no widgets -- so the app hands it a way to speak.
         self._on_error = on_error
+        self._lease = None
 
     def stage(self, convo_id: str) -> None:
         """Pick the id and the paths. Touch no disk."""
+        self.release()
         self.convo_id = convo_id
         self.convo_dir = paths.CONVO_DIR / convo_id
         self.convo_path = self.convo_dir / TRANSCRIPT_NAME
@@ -223,10 +225,33 @@ class ConversationRepository:
         also stops a later write from materialising the RESUMED store as if it
         were new.
         """
+        self.acquire(path.parent)
         self.pending = False
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = convo_id
+
+    @property
+    def owned(self) -> bool:
+        return self._lease is not None and self._lease.handle is not None
+
+    def acquire(self, directory: Path | None = None) -> None:
+        from litetui.shared_state import Lease, check_data_version
+        directory = directory or self.convo_dir
+        if directory is None:
+            return
+        target = directory / ".session.lease"
+        if self._lease is not None and self._lease.path == target:
+            return
+        check_data_version(directory.parent.parent)
+        lease = Lease(target).acquire()
+        self.release()
+        self._lease = lease
+
+    def release(self) -> None:
+        if getattr(self, "_lease", None) is not None:
+            self._lease.release()
+            self._lease = None
 
     def note_error(self, e: Exception) -> str | None:
         """Record the first persistence failure. Returns the text to show, once.
@@ -245,6 +270,7 @@ class ConversationRepository:
         if self.convo_dir is None:
             return
         try:
+            self.acquire()
             (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
             for fname, seed in CONVO_SEED_FILES.items():
                 f = self.convo_dir / fname
@@ -279,6 +305,7 @@ class ConversationRepository:
         if self.pending:
             return
         try:
+            self.acquire()
             self.convo_path.parent.mkdir(parents=True, exist_ok=True)
             payload = (json.dumps(rec, ensure_ascii=False, default=str) + "\n").encode("utf-8")
             with self.convo_path.open("a+b") as f:

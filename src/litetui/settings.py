@@ -76,6 +76,8 @@ class Settings:
     #: OUR router instance. 7470 sits in the ecosystem's 74xx block — the
     #: 8xxx range is crowded on dev machines (Ryan, 2026-08-21).
     llama_host: str = "http://localhost:7470"
+    #: Explicit installed executable. Empty selects the ecosystem default.
+    llama_executable: str = ""
     #: Probed IN ORDER before spawning; a healthy answer means attach, never
     #: spawn. Default is LiteSuite's own single-model server. An attached
     #: server belongs to whoever started it: we chat through it and refuse to
@@ -521,6 +523,15 @@ def save(s: Settings, root: Path | None = None) -> Path:
     `tasks.py` and `scheduler.py` already use; the target is never opened for
     writing at all.
     """
+    from litetui.shared_state import coordinated_write
+
+    p = settings_path(root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with coordinated_write(p):
+        return _save_locked(s, root)
+
+
+def _save_locked(s: Settings, root: Path | None = None) -> Path:
     p = settings_path(root)
     current = asdict(s)
     base = _baseline(s)

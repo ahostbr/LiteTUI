@@ -89,7 +89,7 @@ class CronService:
             # asking for it now, which is a different act from the schedule
             # coming round. It still stamps the slot, so an actual due-time
             # inside this same minute will not double up.
-            self._app._fire_job(job)
+            self._app._fire_job(job, manual=True)
             return
 
         self._app._system(
@@ -200,6 +200,7 @@ async def monitor(app) -> None:
     while True:
         await asyncio.sleep(sched_mod.TICK_SECONDS)
         try:
+            sched_mod.refresh(app.cron.jobs, paths.data_root())
             ready = sched_mod.due(app.cron.jobs, datetime.now())
         except Exception as e:
             # T065 producer #13. The approved list named this at app.py:1914;

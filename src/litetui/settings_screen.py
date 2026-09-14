@@ -361,6 +361,11 @@ class SettingsBody(Widget):
                             "live; this is the boot default.",
                         )
                         yield from self._text_row(
+                            "llama_executable", "llama-server executable",
+                            "Blank uses the existing LiteSuite-managed installation; choose another installed executable to override.",
+                            placeholder="C:/llama.cpp/llama-server.exe",
+                        )
+                        yield from self._text_row(
                             "llama_host", "llama.cpp host (ours)",
                             "Where LiteTUI's own router llama-server listens.",
                             placeholder="http://localhost:7470",

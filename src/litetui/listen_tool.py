@@ -64,7 +64,7 @@ API = f"http://127.0.0.1:{AUDIO_PORT}/v1/chat/completions"
 HEALTH = f"http://127.0.0.1:{AUDIO_PORT}/health"
 
 #: Working files (normalized wav, server log) — the designated junk dir.
-WORKDIR = Path(paths.ROOT) / "temp-working-dir"
+WORKDIR = paths.data_root() / "temp-working-dir"
 SERVER_LOG = WORKDIR / "llama_server.log"
 
 AUDIO_CTX = 8192                          # Qwen2-Audio maxContextLength (measured)

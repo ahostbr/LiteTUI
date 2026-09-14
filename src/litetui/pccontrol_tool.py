@@ -27,6 +27,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from litetui import paths
 from litetui import ttyguard
 from litetui import tool_schemas
 
@@ -36,7 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent  # repo root; src/ is below
 # from the model's list entirely — the capability just stops existing,
 # with nothing said. Moving this directory REQUIRES editing this line.
 SCRIPT = ROOT / "tools" / "pccontrol" / "pccontrol.py"
-SCREENSHOT = ROOT / "pccontrol" / "screenshot.ps1"
+SCREENSHOT = ROOT / "tools" / "pccontrol" / "screenshot.ps1"
 
 #: Verbs that move the mouse or press keys. Grouped so the description can warn
 #: about them as a class rather than one at a time.
@@ -117,15 +118,16 @@ def run(args: dict) -> str:
         mon_i, err = _int(mon, "monitor")
         if err:
             return err
+        shot = paths.data_root() / "pccontrol" / f"mon{mon_i}.jpg"
+        shot.parent.mkdir(parents=True, exist_ok=True)
         try:
             r = ttyguard.run(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", str(SCREENSHOT), "-Monitor", str(mon_i)],
+                 "-File", str(SCREENSHOT), "-Monitor", str(mon_i), "-Output", str(shot)],
                 timeout=90,
             )
         except Exception as e:
             return f"[error] pccontrol screenshot: {type(e).__name__}: {e}"
-        shot = ROOT / "pccontrol" / f"mon{mon_i}.jpg"
         if r.returncode != 0 or not shot.exists():
             return f"[error] pccontrol screenshot exit {r.returncode}: {(r.stderr or r.stdout or '').strip()[:200]}"
         # A path, not the picture: a tool result is a string and cannot carry an

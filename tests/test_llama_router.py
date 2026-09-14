@@ -159,7 +159,8 @@ def test_missing_exe_error_names_the_path(stub, tmp_path, monkeypatch):
     with pytest.raises(BackendError) as exc:
         _run(b.ensure_running())
     assert "Z:/nope" in str(exc.value).replace("\\", "/")
-    assert "Model Hub" in str(exc.value)
+    assert "Choose an installed llama-server executable" in str(exc.value)
+    assert "configure a supported server connection" in str(exc.value)
 
 
 def test_load_polls_until_loaded(stub, tmp_path):

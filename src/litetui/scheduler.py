@@ -423,3 +423,15 @@ def save(jobs: list[Job], root: Path) -> None:
         prefix=".jobs-",
         ensure_ascii=False,
     )
+
+
+def refresh(jobs: list[Job], root: Path) -> None:
+    """Observe shared edits before a tick, retaining live Job object identities."""
+    previous = {job.id: job for job in jobs}
+    current = []
+    for fresh in load(root):
+        held = previous.get(fresh.id, fresh)
+        for name in Job.__dataclass_fields__:
+            setattr(held, name, getattr(fresh, name))
+        current.append(held)
+    jobs[:] = current

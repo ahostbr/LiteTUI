@@ -138,8 +138,8 @@ def _cmd_backend(app, name: str, arg: str) -> None:
         return
     lms_mark = "installed" if shutil.which("lms") else "not detected"
     llama_mark = (
-        f"installed ({llm_backend.installed_build()})"
-        if llm_backend.llama_available() else "not installed — see LiteSuite's Model Hub"
+        f"installed ({llm_backend.configured_build(app.settings)})"
+        if llm_backend.llama_available(app.settings) else "not installed — choose an installed executable in Settings"
     )
     rows = [
         ("lmstudio", f"LM Studio desktop  · {lms_mark}"),
@@ -497,7 +497,7 @@ class ModelConfigBody(Widget):
     def compose(self) -> ComposeResult:
         app = self.app
         on_llama = app.backend.name == "llamacpp"
-        flags = llm_backend.installed_flags()
+        flags = llm_backend.configured_flags(app.settings)
         load_cfg = self._load_cfg()
         infer_cfg = self._infer_cfg()
         row = app.model_rows.get(self._key)
@@ -555,7 +555,7 @@ class ModelConfigBody(Widget):
                             flag = llm_backend.FLAG_FOR.get(key, "")
                             missing = bool(flags) and flag not in flags
                             note = (
-                                f"n/a in installed build ({llm_backend.installed_build()})"
+                                f"n/a in installed build ({llm_backend.configured_build(app.settings)})"
                                 if missing else
                                 ("" if editable else "LM Studio manages this")
                             )
@@ -935,7 +935,7 @@ def _activate(app) -> None:
     if settings_mod.source_of("backend"):
         return   # the environment already chose; a question would be a lie
     lms_present = bool(shutil.which("lms"))
-    llama_present = llm_backend.llama_available()
+    llama_present = llm_backend.llama_available(s) if getattr(s, "llama_executable", "") else llm_backend.llama_available()
     if not lms_present and not llama_present:
         return   # nothing to choose between; ask when one appears
     if lms_present != llama_present:
@@ -949,7 +949,7 @@ def _activate(app) -> None:
 
     rows = [
         ("lmstudio", "LM Studio desktop — the lms.exe you already run"),
-        ("llamacpp", f"llama.cpp — our own engine ({llm_backend.installed_build()})"),
+        ("llamacpp", f"llama.cpp — our own engine ({llm_backend.configured_build(app.settings)})"),
     ]
 
     def _picked(choice: str | None) -> None:

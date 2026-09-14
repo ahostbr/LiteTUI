@@ -40,7 +40,7 @@ def mcp_server_names(app) -> list[str]:
         # merged with the earlier file winning a collision. A toggle list
         # that missed one of the two files would leave its servers
         # un-toggleable from /settings.
-        servers, _errors = read_server_configs(config_files(paths.ROOT))
+        servers, _errors = read_server_configs(config_files(paths.data_root()))
         return sorted(servers.keys())
     except Exception:
         pass

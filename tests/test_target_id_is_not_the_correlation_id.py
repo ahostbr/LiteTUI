@@ -351,16 +351,21 @@ def test_CONTROL_approve_still_refuses_a_missing_allow(monkeypatch) -> None:
     assert "allow" in reply["error"]
 
 
-def test_CONTROL_a_command_with_no_target_is_unaffected(monkeypatch) -> None:
+def test_CONTROL_a_command_with_no_target_is_unaffected(monkeypatch, tmp_path) -> None:
     """`prompt` has one id and one meaning. An arm that only ever looked at
     answer/approve could not tell a separation from a change to every command."""
     replies: list[dict] = []
     monkeypatch.setattr(rpc_mod, "rpc_emit", lambda d: replies.append(d))
+    from litetui import paths
+    from litetui.conversation import ConversationRepository
+    monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
 
     class PromptApp(FakeRpcApp):
         def __init__(self) -> None:
             super().__init__()
             self.submitted: list[str] = []
+            self.store = ConversationRepository()
+            self.store.stage("fixture")
 
         def _submit_text(self, text: str, alt_chord: bool = False, *, source="typed") -> None:
             assert source == "rpc"

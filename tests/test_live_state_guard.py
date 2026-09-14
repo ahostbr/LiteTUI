@@ -52,6 +52,43 @@ def _snapshot(p: Path):
 # ── the guard ───────────────────────────────────────────────────────
 
 
+def test_data_root_leases_and_authoritative_jobs_stay_in_test_directory(tmp_path):
+    from litetui.row_store import rows_on_disk
+    from litetui.shared_state import Lease, check_data_version
+
+    root = paths.data_root()
+    # Fail before invoking a writer if the autouse isolation is absent.
+    assert root.is_relative_to(tmp_path), f"test data root escaped tmp_path: {root}"
+    before = {item.name for item in paths.ROOT.iterdir()}
+    check_data_version(root)
+    with Lease(root / ".scheduler.lease"):
+        job = sched_mod.Job(prompt="fixture", schedule="* * * * *")
+        sched_mod.save([job], root)
+        assert [row["id"] for row in rows_on_disk(sched_mod.jobs_path(root))] == [job.id]
+    assert (root / ".scheduler.lease").exists()
+    assert (root / ".litetui-data.json.lock").exists()
+    assert {item.name for item in paths.ROOT.iterdir()} == before
+
+
+@pytest.mark.parametrize("mutation", ["add", "change", "remove"])
+def test_checkout_root_guard_rejects_writes(tmp_path, mutation):
+    from conftest import _assert_checkout_root_unchanged, _checkout_root_listing
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    existing = checkout / "existing.json"
+    existing.write_text("original", encoding="utf-8")
+    before = _checkout_root_listing(checkout)
+    if mutation == "add":
+        (checkout / ".scheduler.lease").write_bytes(b"\0")
+    elif mutation == "change":
+        existing.write_text("changed content", encoding="utf-8")
+    else:
+        existing.unlink()
+    with pytest.raises(AssertionError, match="test wrote checkout root"):
+        _assert_checkout_root_unchanged(checkout, before)
+
+
 def test_saving_with_the_live_root_does_not_touch_the_live_store() -> None:
     before = _snapshot(_live_store())
     task = tasks_mod.new_task("bash", {"command": "sleep 300"}, "c1")

@@ -386,7 +386,7 @@ async def test_the_settings_sections_are_tabs():
         ]
 
 @pytest.mark.asyncio
-async def test_the_panel_is_centred_not_docked_top_left():
+async def test_the_panel_is_centred_not_docked_top_left(monkeypatch):
     """Geometry, not stylesheet text.
 
     The panel shipped docked to the top-left while the app's CSS already
@@ -398,6 +398,9 @@ async def test_the_panel_is_centred_not_docked_top_left():
     from litetui.settings_screen import SettingsScreen
 
     a = app_mod.LiteTUI()
+    # Geometry does not depend on a running model service. The settings command
+    # reads residency to decorate model rows before constructing this panel.
+    monkeypatch.setattr(a.backend, "loaded_models", lambda: set())
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None

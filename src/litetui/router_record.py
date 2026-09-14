@@ -217,7 +217,7 @@ def write(
     existing = read(p)
     if (
         existing is not None
-        and existing.owner != owner
+        and existing.pid != pid
         and existing.port != port
         and is_live(existing)
     ):

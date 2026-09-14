@@ -67,16 +67,15 @@ def test_a_live_foreign_owner_on_our_port_is_ATTACHED(_record_in_a_tmp_home, mon
     assert status == f"attached {HOST} (owner: litesuite)"
 
 
-def test_CONTROL_our_own_record_leaves_the_router_MANAGEABLE(
+def test_live_same_family_record_is_a_sibling_not_an_orphan(
     _record_in_a_tmp_home, monkeypatch
 ):
-    # A crashed LiteTUI leaves a live orphan and its own record. Attaching to
-    # it would lock the user out of loading anything until they killed it by
-    # hand — the behaviour the original rule was protecting.
+    # An app-family owner is not proof of this INSTANCE owning a server.
+    # A live legacy record cannot safely be claimed as a crashed orphan.
     _write(_record_in_a_tmp_home, owner="litetui", pid=os.getpid())
     backend = _backend(monkeypatch)
-    assert backend._ensure_running_sync() == "ok"
-    assert backend.attached is False
+    assert "attached" in backend._ensure_running_sync()
+    assert backend._attached_owner == "litetui"
 
 
 def test_CONTROL_a_dead_owner_is_stale_and_ignored(_record_in_a_tmp_home, monkeypatch):
