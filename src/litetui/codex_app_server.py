@@ -418,6 +418,7 @@ class AppServerTransport:
         method, params = message["method"], message.get("params", {})
         result = None
         if method == "item/tool/call":
+            executed = False
             name = params.get("tool", "").removeprefix("litetui_")
             if self.app:
                 from litetui.codex_inventory import dispatch_denial, registered_tools
@@ -431,6 +432,7 @@ class AppServerTransport:
                     from litetui.tool_events import native_lifecycle
 
                     with native_lifecycle(), registered_tools(getattr(self, "registered_inventory", None)):
+                        executed = True
                         output, success = await self.app._execute_tool(
                             name, params.get("arguments", {})
                         )
@@ -445,7 +447,7 @@ class AppServerTransport:
             }
             # The native loop does not reach LiteTUI's between-round image
             # drain. Return actual image content in this tool's response.
-            if self.app and getattr(self.app, "_pending_tool_images", None):
+            if executed and getattr(self.app, "_pending_tool_images", None):
                 staged, self.app._pending_tool_images = (
                     self.app._pending_tool_images,
                     [],
@@ -611,9 +613,12 @@ class AppServerTransport:
                 if metadata.get("provider") == "codex" and metadata.get(
                     "app_server_thread_id"
                 ):
+                    if metadata["app_server_thread_id"] != reference:
+                        registered_inventory = None
                     reference, boundary = metadata["app_server_thread_id"], index + 1
                     previous_digest = metadata.get("instructions_digest")
-                    registered_inventory = metadata.get("tool_inventory")
+                    if "tool_inventory" in metadata:
+                        registered_inventory = metadata["tool_inventory"]
                     previous_usage = (metadata.get("native_usage") or {}).get("total")
             if reference != self.thread_id or not reference:
                 if reference:

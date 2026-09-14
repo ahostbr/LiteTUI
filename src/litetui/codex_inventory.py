@@ -7,7 +7,8 @@ from contextvars import ContextVar
 
 from litetui.model_transport import ProviderError
 
-_registered = ContextVar("codex_registered_inventory", default=None)
+_NOT_NATIVE = object()
+_registered = ContextVar("codex_registered_inventory", default=_NOT_NATIVE)
 
 
 @contextmanager
@@ -20,7 +21,8 @@ def registered_tools(inventory):
 
 
 def current_dispatch_denial(app, name):
-    return dispatch_denial(_registered.get(), app, name)
+    inventory = _registered.get()
+    return None if inventory is _NOT_NATIVE else dispatch_denial(inventory, app, name)
 
 
 def fingerprint(value):
@@ -83,7 +85,7 @@ def build_inventory(specs, app=None):
 def dispatch_denial(registered, app, name):
     """Reject remembered schemas that no longer match the live gated registry."""
     if registered is None:
-        return None  # older native threads have no recorded snapshot; migration remains open
+        return "This Codex thread has no verified host-tool registration snapshot; the tool was not executed."
     if not isinstance(registered, dict) or registered.get("version") != 1:
         return "Codex tool registration metadata is unavailable or unsupported."
     schemas = registered.get("schemas")

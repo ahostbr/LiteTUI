@@ -26,6 +26,16 @@ def test_disabled_global_tools_exposes_neither_active_nor_deferred_specs():
     assert tools == [] and inventory["schemas"] == {}
 
 
+def test_unknown_native_registration_cannot_bypass_schema_guard_or_affect_other_backends():
+    from litetui.codex_inventory import current_dispatch_denial, registered_tools
+
+    host = app([])
+    assert current_dispatch_denial(host, "a") is None
+    with registered_tools(None):
+        assert "no verified" in current_dispatch_denial(host, "a")
+    assert current_dispatch_denial(host, "a") is None
+
+
 def test_order_and_dictionary_order_do_not_churn_registration_or_fingerprint():
     a = spec("a", {"properties": {}, "type": "object"})
     b = spec("b")
@@ -53,7 +63,7 @@ def test_identical_duplicates_coalesce_but_overlapping_different_schemas_refuse_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["schema", "disabled", "removed", "unregistered", "unchanged", "promoted"]
+    "change", ["schema", "disabled", "removed", "unregistered", "unknown", "unchanged", "promoted"]
 )
 async def test_native_dispatch_refuses_drift_before_shared_tool_execution(change):
     from test_codex_app_server import Server
@@ -83,7 +93,8 @@ async def test_native_dispatch_refuses_drift_before_shared_tool_execution(change
     host._rpc = True
     server = Server()
     transport = AppServerTransport(server, host)
-    transport.registered_inventory = registered
+    transport.registered_inventory = None if change == "unknown" else registered
+    host._pending_tool_images = [("stale.png", "c3RhbGU=")]
     await transport._server_request(
         {
             "id": 1,
@@ -97,10 +108,14 @@ async def test_native_dispatch_refuses_drift_before_shared_tool_execution(change
     allowed = change in ("unchanged", "promoted")
     assert bool(calls) is allowed
     assert server.replies[-1]["result"]["success"] is allowed
+    if not allowed:
+        assert len(server.replies[-1]["result"]["contentItems"]) == 1
+        assert host._pending_tool_images == [("stale.png", "c3RhbGU=")]
 
 
 @pytest.mark.asyncio
-async def test_resume_preserves_registered_fingerprint_instead_of_claiming_new_tools_were_registered():
+@pytest.mark.parametrize("same_thread", [True, False])
+async def test_resume_preserves_registered_fingerprint_instead_of_claiming_new_tools_were_registered(same_thread):
     from test_codex_app_server import Server
 
     from litetui.codex_app_server import AppServerTransport
@@ -114,18 +129,31 @@ async def test_resume_preserves_registered_fingerprint_instead_of_claiming_new_t
     original = first.choices[0].message.provider_metadata
     expected = build_inventory([spec("a")])[1]
     assert original["tool_inventory"] == expected
+    if not same_thread:
+        original = {**original, "app_server_thread_id": "different-thread"}
     messages.extend(
         [
             {"role": "assistant", "content": "OK", "provider_metadata": original},
             {"role": "user", "content": "synthetic next"},
         ]
     )
+    messages.insert(
+        -1,
+        {
+            "role": "assistant", "content": "legacy metadata",
+            "provider_metadata": {
+                "provider": "codex", "app_server_thread_id": "thread-1",
+            },
+        },
+    )
     # A fresh transport simulates reconnect to the persisted native thread.
     resumed = AppServerTransport(server)
     second = await resumed.create(
         model="gpt-6-astra", messages=messages, tools=[spec("b")]
     )
-    assert second.choices[0].message.provider_metadata["tool_inventory"] == expected
+    assert second.choices[0].message.provider_metadata.get("tool_inventory") == (
+        expected if same_thread else None
+    )
     assert (
         len([method for method, _ in server.requests if method == "thread/start"]) == 1
     )

@@ -218,15 +218,24 @@ async def test_deferred_tools_are_namespaced_deduplicated_and_dispatch_to_host()
 
 @pytest.mark.asyncio
 async def test_dynamic_tools_use_host_authorization_and_approval_cannot_autogrant():
+    from test_codex_inventory import app as inventory_app
+    from test_codex_inventory import spec
+
+    from litetui.codex_inventory import build_inventory
+
     calls = []
 
     async def execute(name, args):
         calls.append((name, args))
         return "denied", False
 
-    app = NS(_execute_tool=execute, _rpc_emit=lambda event: None, tools_enabled=False)
+    app = inventory_app([])
+    app.plugins.tool_specs = lambda: [spec("write")]
+    app._execute_tool = execute
+    app._rpc = True
     server = Server()
     transport = AppServerTransport(server, app)
+    transport.registered_inventory = build_inventory(app.plugins.tool_specs(), app)[1]
     await transport._server_request(
         {
             "id": 100,
@@ -236,6 +245,7 @@ async def test_dynamic_tools_use_host_authorization_and_approval_cannot_autogran
     )
     assert calls == [("write", {"path": "x"})]
     assert server.replies[-1]["result"]["success"] is False
+    app.tools_enabled = False
     await transport._server_request(
         {"id": 101, "method": "item/commandExecution/requestApproval", "params": {}}
     )
@@ -352,20 +362,30 @@ async def test_changed_instructions_are_an_appended_application_context():
 
 @pytest.mark.asyncio
 async def test_host_output_cleanup_and_staged_images(monkeypatch):
+    from test_codex_inventory import app as inventory_app
+    from test_codex_inventory import spec
+
+    from litetui.codex_inventory import build_inventory
+
     events = []
+    calls = []
 
     async def execute(name, args):
+        calls.append((name, args))
+        app._pending_tool_images.append(("test.png", "aW1hZ2U="))
         return "\x1b[31mOPENAI_API_KEY=synthetic-secret\x1b[0m", True
 
     monkeypatch.setattr("litetui.sanitize.reset_terminal_modes", lambda: None)
-    app = NS(
-        _execute_tool=execute,
-        _rpc_emit=events.append,
-        _pending_tool_images=[("test.png", "aW1hZ2U=")],
-        _rpc=True,
-    )
+    app = inventory_app([])
+    app.plugins.tool_specs = lambda: [spec("view_image")]
+    app._execute_tool = execute
+    app._rpc_emit = events.append
+    app._pending_tool_images = []
+    app._rpc = True
     server = Server()
-    await AppServerTransport(server, app)._server_request(
+    transport = AppServerTransport(server, app)
+    transport.registered_inventory = build_inventory(app.plugins.tool_specs(), app)[1]
+    await transport._server_request(
         {
             "id": 1,
             "method": "item/tool/call",
@@ -373,6 +393,8 @@ async def test_host_output_cleanup_and_staged_images(monkeypatch):
         }
     )
     result = server.replies[-1]["result"]
+    assert result["success"] is True
+    assert calls == [("view_image", {})]
     text = result["contentItems"][0]["text"]
     assert "synthetic-secret" not in text and "\x1b" not in text
     assert events == []  # Native item notifications own the RPC lifecycle.
