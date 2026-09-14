@@ -2751,8 +2751,9 @@ class LiteTUI(App):
         (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
         self._render_resumed(path)
+        self._native_history_worker = None
         if hasattr(self.backend, "app_server"):
-            self._refresh_native_history(path)
+            self._native_history_worker = self._refresh_native_history(path)
 
     @work(exclusive=True, group="native-history")
     async def _refresh_native_history(self, path: Path) -> None:

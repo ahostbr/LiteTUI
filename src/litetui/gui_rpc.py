@@ -587,6 +587,19 @@ async def async_dispatch(app, cmd):
 
 async def _async_dispatch(app, cmd):
     operation = cmd["type"]
+    if operation == "gui.conversations.open":
+        result = dispatch(app, cmd)
+        conversation = app.conversation
+        backend = app.backend
+        session_id = app.convo_id
+        worker = getattr(app, "_native_history_worker", None)
+        if worker is not None:
+            await worker.wait()
+            if (app.conversation is not conversation or app.backend is not backend
+                    or app.convo_id != session_id):
+                raise ValueError("Conversation changed while native history was loading")
+            return dispatch(app, {"type": "gui.conversations.read", "session_id": session_id})
+        return result
     if operation == "gui.models.reconnect":
         _idle(app)
         from litetui import llm_backend
