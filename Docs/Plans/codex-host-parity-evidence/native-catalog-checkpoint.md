@@ -29,3 +29,24 @@ Tests cover stale cached xhigh/default/visibility being overridden by the native
 catalog, pagination, no cache, failed catalog, unchanged saved effort and repeated
 cursor rejection. Full GUI/settings persistence and packaged acceptance remain open.
 This checkpoint does not close all of C9 or grant release clearance.
+
+## Conversation persistence follow-up
+
+Reproduced an actual restore mismatch before changing code: open a Codex conversation
+with XHigh, then an older file with thinking_level=medium but no reasoning_effort.
+The header became Medium while the per-model request override stayed XHigh. The
+regression failed with actual value xhigh versus expected medium.
+
+Restore now uses an older Codex conversation's explicit thinking_level when its
+separate reasoning_effort is absent. Default explicitly removes the stale override.
+When a Codex-specific saved effort exists it also determines the displayed level,
+so an old disagreement between fields cannot show one mode and send another.
+Restoring does not rewrite the conversation file. This does not change non-Codex
+restore precedence.
+
+Validation: PYTHONPATH=src `python -m pytest tests/test_codex_persistence.py tests/test_convo_settings.py tests/test_thinking_capabilities.py tests/test_codex_settings.py tests/test_codex_catalog.py -q`: **61 passed in 2.09s**.
+The tests exercise real app property setters, set_thinking, conversation JSON files
+and restore code across all six modes with a conflicting XHigh global default,
+older Medium/Default records and disagreeing saved fields. The new test file passes
+Ruff. No live provider calls. Graphical/released-client restore journeys remain a
+separate acceptance gate.

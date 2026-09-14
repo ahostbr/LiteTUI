@@ -3218,15 +3218,23 @@ class LiteTUI(App):
         if cs.llama_load and self._model_id:
             self.settings.llama_load_settings = {
                 **self.settings.llama_load_settings, self._model_id: dict(cs.llama_load)}
-        if cs.reasoning_effort and self._model_id:
+        effort = cs.reasoning_effort
+        is_codex = getattr(getattr(self, "_backend", None), "name", None) == "codex"
+        if is_codex and not effort:
+            # Older conversation files predate the separate Codex effort field.
+            # Their explicit level must replace the previous conversation's override.
+            effort = cs.thinking_level
+        if effort and self._model_id:
             overrides = dict(self.settings.model_infer_overrides)
             entry = dict(overrides.get(self._model_id, {}))
-            if cs.reasoning_effort == "default":
+            if effort == "default":
                 entry.pop("reasoning_effort", None)
             else:
-                entry["reasoning_effort"] = cs.reasoning_effort
+                entry["reasoning_effort"] = effort
             overrides[self._model_id] = entry
             self.settings.model_infer_overrides = overrides
+            if is_codex:
+                self._thinking_level = None if effort == "default" else effort
 
     def _adopt_convo_backend(self, cs) -> None:
         """Put this conversation back on the engine it was using.
