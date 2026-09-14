@@ -574,6 +574,7 @@ class AppServerTransport:
             instructions_digest = hashlib.sha256(instructions.encode()).hexdigest()
             previous_digest = None
             previous_usage = None
+            registered_inventory = None
             reference, boundary = None, 0
             for index, message in enumerate(messages):
                 metadata = message.get("provider_metadata") or {}
@@ -582,6 +583,7 @@ class AppServerTransport:
                 ):
                     reference, boundary = metadata["app_server_thread_id"], index + 1
                     previous_digest = metadata.get("instructions_digest")
+                    registered_inventory = metadata.get("tool_inventory")
                     previous_usage = (metadata.get("native_usage") or {}).get("total")
             if reference != self.thread_id or not reference:
                 if reference:
@@ -589,41 +591,9 @@ class AppServerTransport:
                         "thread/resume", {"threadId": reference}
                     )
                 else:
-                    tools = [
-                        {
-                            "type": "function",
-                            "name": "litetui_" + spec["function"]["name"],
-                            "description": spec["function"].get("description", ""),
-                            "inputSchema": spec["function"].get("parameters", {}),
-                        }
-                        for spec in kwargs.get("tools", [])
-                    ]
-                    if self.app:
-                        names = {tool["name"] for tool in tools}
-                        deferred_tools = []
-                        for spec in self.app.plugins.deferred_specs():
-                            function = spec["function"]
-                            name = "litetui_" + function["name"]
-                            if name not in names:
-                                deferred_tools.append(
-                                    {
-                                        "type": "function",
-                                        "name": name,
-                                        "description": function.get("description", ""),
-                                        "inputSchema": function.get("parameters", {}),
-                                        "deferLoading": True,
-                                    }
-                                )
-                                names.add(name)
-                        if deferred_tools:
-                            tools.append(
-                                {
-                                    "type": "namespace",
-                                    "name": "litetui",
-                                    "description": "Additional LiteTUI host tools available through tool search.",
-                                    "tools": deferred_tools,
-                                }
-                            )
+                    from litetui.codex_inventory import build_inventory
+
+                    tools, registered_inventory = build_inventory(kwargs.get("tools", []), self.app)
                     from litetui import paths
 
                     opened = await self.server.request(
@@ -710,6 +680,8 @@ class AppServerTransport:
                 "app_server_thread_id": self.thread_id,
                 "instructions_digest": instructions_digest,
             }
+            if registered_inventory is not None:
+                metadata["tool_inventory"] = registered_inventory
             from litetui.codex_tool_ui import CodexToolUI
 
             record_index = None
