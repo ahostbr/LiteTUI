@@ -2766,9 +2766,13 @@ class LiteTUI(App):
             return
         if (changed and self.conversation is conversation and self.backend is backend
                 and not self._chat_running()):
-            self._render_resumed(path)
+            self._render_resumed(path, preserve_view=True)
 
-    def _render_resumed(self, path: Path) -> None:
+    def _render_resumed(self, path: Path, *, preserve_view: bool = False) -> None:
+        from litetui.codex_trace import capture_view, restore_view
+
+        view = capture_view(self) if preserve_view else None
+        conversation = self.conversation
         log = self.query_one("#chat-log")
         log.remove_children()
         # 🔴 THE LOG IS NEW, SO THE ANCHOR IS MEANINGLESS (T706). `_scroll_down`
@@ -2822,6 +2826,12 @@ class LiteTUI(App):
             f"  appending to {self.convo_dir.name}/{path.name}"
         )
         self._scroll_down()
+
+        if view is not None:
+            def restore_reader():
+                if self.conversation is conversation and not self._chat_running():
+                    restore_view(self, view)
+            self.call_after_refresh(restore_reader)
 
 
     def update_header(self) -> None:

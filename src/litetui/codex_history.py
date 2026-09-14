@@ -41,7 +41,9 @@ async def reconcile(app, thread):
                     continue
                 terminal = item.get("status") in (
                     "completed", "failed", "declined", "cancelled", "interrupted")
-                if not terminal and (item.get("status") is not None
+                partial_message = (item.get("type") == "agentMessage"
+                                   and turn.get("status") in ("interrupted", "failed", "inProgress"))
+                if not terminal and not partial_message and (item.get("status") is not None
                                      or turn.get("status") != "completed"):
                     # Never turn an incomplete recovered item into success or
                     # start a fresh elapsed timer for historical work.
@@ -53,6 +55,9 @@ async def reconcile(app, thread):
                 key = (turn_id, item["id"])
                 previous = merged.get(key, {})
                 record = {**record, "turnId": turn_id}
+                if partial_message:
+                    record["state"] = ("running" if turn["status"] == "inProgress"
+                                       else turn["status"])
                 if (record.get("durationMs") is None and previous.get("durationMs") is not None
                         and previous.get("state") == record.get("state")):
                     record["durationMs"] = previous.get("durationMs")

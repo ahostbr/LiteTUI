@@ -160,7 +160,7 @@ async def test_reopen_worker_redraws_only_current_changed_history(monkeypatch, o
     app.backend = object()
     app._chat_running = lambda: False
     rendered, notes = [], []
-    app._render_resumed = rendered.append
+    app._render_resumed = lambda path, **kwargs: rendered.append(path)
     app._system = notes.append
 
     async def refresh():
@@ -174,3 +174,60 @@ async def test_reopen_worker_redraws_only_current_changed_history(monkeypatch, o
     await LiteTUI._refresh_native_history.__wrapped__(app, Path("conversation.jsonl"))
     assert len(rendered) == (1 if outcome == "changed" else 0)
     assert len(notes) == (1 if outcome == "error" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["interrupted", "failed", "inProgress"])
+async def test_partial_native_answer_is_recovered_without_claiming_completion(state):
+    app = host()
+    data = history({"id": "answer", "type": "agentMessage", "text": "Partial answer",
+                    "phase": "commentary"}, status=state)
+    assert await reconcile(app, data) == 1
+    record = app.conversation[0]["provider_metadata"]["display_trace"]["items"][0]
+    assert record["result"] == "Partial answer"
+    assert record["state"] == ("running" if state == "inProgress" else state)
+    assert record["phase"] == "commentary"
+    assert await reconcile(app, data) == 0
+
+
+@pytest.mark.asyncio
+async def test_rendered_recovery_replaces_saved_cards_without_duplicates(monkeypatch):
+    from test_deny_stops_the_turn import _app
+
+    from litetui.codex_app_server import AppServer
+    from litetui.widgets import ToolMessage
+
+    async def forbid_start(*args):
+        pytest.fail("offline render test attempted to start Codex")
+
+    monkeypatch.setattr(AppServer, "start", forbid_start)
+    app = _app(None)
+    async with app.run_test(size=(80, 30)) as pilot:
+        metadata = host(trace=[{"id": "cmd", "turnId": "turn", "kind": "commandExecution",
+                                "name": "command", "state": "interrupted",
+                                "result": "disconnected\n" * 60, "ok": False}]).conversation[0]["provider_metadata"]
+        app.conversation = ([{"role": "user", "content": f"Earlier message {i}"} for i in range(15)]
+                            + [{"role": "user", "content": "original", "provider_metadata": metadata}])
+        app._render_resumed(app.convo_path)
+        await pilot.pause()
+        assert len(app.query(ToolMessage)) == 1
+        next(iter(app.query(ToolMessage))).set_expanded(True)
+        await pilot.pause()
+        log = app.query_one("#chat-log")
+        log.scroll_to(y=5, animate=False, force=True)
+        await pilot.pause()
+        position = log.scroll_y
+        assert position > 0
+        await reconcile(app, history({"id": "cmd", "type": "commandExecution",
+                                      "command": "echo", "status": "completed",
+                                      "aggregatedOutput": "recovered\n" * 60, "exitCode": 0}))
+        app._render_resumed(app.convo_path, preserve_view=True)
+        await pilot.pause()
+        cards = list(app.query(ToolMessage))
+        assert len(cards) == 1 and cards[0]._ok is True
+        assert cards[0].expanded is True
+        assert log.scroll_y == position
+        assert "recovered" in cards[0]._result
+        app._render_resumed(app.convo_path)
+        await pilot.pause()
+        assert len(app.query(ToolMessage)) == 1

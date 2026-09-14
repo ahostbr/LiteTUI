@@ -48,6 +48,7 @@ def replay(app, metadata, seen):
             continue
         count += 1
         card = ToolMessage(record.get("name", "Codex tool"))
+        card.codex_trace_identity = key
         app.query_one("#chat-log").mount(card)
         card.set_args(record.get("args", ""))
         duration = record.get("durationMs")
@@ -61,3 +62,20 @@ def replay(app, metadata, seen):
             duration_unknown=not isinstance(duration, (int, float)),
         )
     return count
+
+
+def capture_view(app):
+    """Keep local reader state separately from persisted native activity."""
+    log = app.query_one("#chat-log")
+    folds = {card.codex_trace_identity: card.expanded for card in app.query(ToolMessage)
+             if hasattr(card, "codex_trace_identity")}
+    return log.scroll_y, folds
+
+
+def restore_view(app, view):
+    scroll_y, folds = view
+    for card in app.query(ToolMessage):
+        key = getattr(card, "codex_trace_identity", None)
+        if key in folds:
+            card.set_expanded(folds[key])
+    app.query_one("#chat-log").scroll_to(y=scroll_y, animate=False, force=True)
