@@ -16,5 +16,7 @@ and known duration are retained. Missing duration is marked unknown.
 
 Message and tool bodies are fenced as literal text. System instructions are not
 part of the visible transcript export. Image attachments receive a placeholder;
-this text export does not copy attachments or embed their bytes. Structured question
-cards are not yet included. The source conversation remains the full saved record.
+this text export does not copy attachments or embed their bytes. Saved Codex question
+cards include titles, options, latest state and known delivery state. Queued answers
+appear once; an answer already materialised as a user message is not repeated in
+the question card. The source conversation remains the full saved record.

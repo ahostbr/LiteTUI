@@ -69,3 +69,28 @@ def test_cli_export_returns_before_constructing_app(monkeypatch, tmp_path):
                                      "--export-output", str(destination)])
     cli.main()
     assert "hello" in destination.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("state", ["pending", "cancel", "unanswered", "answered"])
+def test_questions_use_latest_revision_and_keep_delivery_distinct(state):
+    pending = {"version": 1, "id": "question", "threadId": "thread", "state": "pending",
+               "questions": [{"title": "Choose a color", "options": ["Blue", "Green"]}]}
+    current = {**pending, "state": state, "revision": 2}
+    owner = {"async_questions": [current]}
+    if state == "answered":
+        current["deliveryId"] = "delivery"
+        owner["steering"] = [{"id": "delivery", "state": "queued", "item": {"content": "My answer"}}]
+    messages = [{"role": "user", "provider_metadata": owner},
+                {"role": "assistant", "provider_metadata": {"async_questions": [pending]}}]
+    before = copy.deepcopy(messages)
+    text = markdown(messages)
+    assert text.count("## Codex question") == 1
+    assert f"State: {state}" in text
+    assert "Option: Blue" in text
+    assert ("My answer" in text) == (state == "answered")
+    if state == "answered":
+        assert "Delivery: queued" in text
+        messages.append({"role": "user", "content": "My answer", "codex_delivery": {"id": "delivery"}})
+        assert markdown(messages).count("My answer") == 1
+        messages.pop()
+    assert messages == before
