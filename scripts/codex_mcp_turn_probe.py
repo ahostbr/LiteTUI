@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 from codex_mcp_catalog_probe import FIXTURE
 
 from litetui.codex_app_server import AppServer
+from litetui.codex_hook_bridge import own_hooks
 from litetui.model_transport import credential_path
 
 
@@ -22,14 +24,35 @@ def gate_program(log):
         "'mcp__catalog_probe__beta':'beta'}.get(name,'other')\n"
         "allow=category!='other'\n"
         f"with Path({str(log)!r}).open('a') as f: f.write(json.dumps({{'category':category,'allowed':allow}})+'\\n')\n"
-        "print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse',"
-        "'permissionDecision':'allow' if allow else 'deny',"
+        "print(json.dumps({} if allow else {'hookSpecificOutput':{'hookEventName':'PreToolUse',"
+        "'permissionDecision':'deny',"
         "'permissionDecisionReason':'Synthetic MCP inventory probe only'}}))\n"
     )
 
 
-async def probe(output):
-    evidence = {"accepted": False, "delegation_enabled": False, "turns": []}
+def gate_command(path):
+    # Bare executable name works in both CMD and PowerShell. A quoted executable
+    # path is only a string expression in PowerShell without its call operator.
+    return f'{Path(sys.executable).name} "{path}"'
+
+
+async def trust_gate(server, root, command):
+    hooks = own_hooks(await server.request("hooks/list", {"cwds": [str(root)]}), command)
+    if len(hooks) != 1:
+        raise AssertionError("The synthetic gate was not uniquely discovered")
+    before = hooks[0].get("trustStatus") == "trusted"
+    states = json.dumps(hooks[0]["key"]) + "={trusted_hash=" + json.dumps(hooks[0]["currentHash"]) + "}"
+    await server.close()
+    server.config_overrides += ("hooks.state={" + states + "}",)
+    await server.start()
+    hooks = own_hooks(await server.request("hooks/list", {"cwds": [str(root)]}), command)
+    if len(hooks) != 1 or hooks[0].get("trustStatus") != "trusted" or not hooks[0].get("enabled"):
+        raise AssertionError("The synthetic gate is not trusted and enabled")
+    return {"trusted_before": before, "trusted_after": True, "enabled": True}
+
+
+async def probe(output, refresh):
+    evidence = {"accepted": False, "delegation_enabled": False, "refresh": refresh, "turns": []}
     with tempfile.TemporaryDirectory(prefix="litetui-mcp-turn-") as directory:
         root = Path(directory)
         fixture, state, counts, gate, gates = [root / name for name in
@@ -38,19 +61,28 @@ async def probe(output):
         gate.write_text(gate_program(gates), encoding="utf-8")
         state.write_text("1", encoding="utf-8")
         shutil.copy2(credential_path("codex"), root / "auth.json")
-        (root / "config.toml").write_text(
-            '[mcp_servers.catalog_probe]\ncommand = ' + json.dumps(sys.executable)
-            + '\nargs = ' + json.dumps([str(fixture), str(state), str(counts)]) + '\n', encoding="utf-8")
+        def config(revision):
+            (root / "config.toml").write_text(
+                '[mcp_servers.catalog_probe]\ncommand = ' + json.dumps(sys.executable)
+                + '\nargs = ' + json.dumps([str(fixture), str(state), str(counts)])
+                + '\n[mcp_servers.catalog_probe.env]\nCATALOG_REVISION = '
+                + json.dumps(str(revision)) + '\n', encoding="utf-8")
+
+        config(1)
+        command = gate_command(gate)
         server = AppServer(config_overrides=["features.hooks=true", "features.multi_agent=false",
                                              "features.multi_agent_v2=false",
             'hooks.PreToolUse=[{matcher=".*",hooks=[{type="command",command='
-            + json.dumps(f'"{sys.executable}" "{gate}"') + ',timeout=10}]}]'])
+            + json.dumps(command) + ',timeout=10}]}]'])
         server.environment["CODEX_HOME"] = str(root)
+        server.environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
         thread = turn = None
         phase = "start"
         try:
             async with asyncio.timeout(150):
                 await server.start()
+                phase = "trust_gate"
+                evidence["hook_trust"] = await trust_gate(server, root, command)
                 opened = await server.request("thread/start", {
                     "model": "gpt-6-astra", "cwd": str(root), "approvalPolicy": "never", "sandbox": "read-only",
                     "baseInstructions": "You are testing synthetic MCP tools. Use only catalog_probe alpha/beta and tool search. Do not use shell, files, web, agents, or other tools. If tools are unavailable report unavailable and stop. After requested tool calls reply DONE.",
@@ -64,10 +96,13 @@ async def probe(output):
                     if index:
                         state.write_text("2", encoding="utf-8")
                         await asyncio.sleep(.3)
+                        if refresh == "config-revision":
+                            config(2)
+                            await server.request("config/mcpServer/reload", {})
                     started = await server.request("turn/start", {"threadId": thread,
                         "input": [{"type": "text", "text": prompt}], "effort": "medium"})
                     turn = started["turn"]["id"]
-                    row = {"turn_id": turn, "completed": False, "mcp_completed": 0, "mcp_items": [], "interactive_requests": 0}
+                    row = {"turn_id": turn, "completed": False, "mcp_completed": 0, "mcp_items": [], "interactive_requests": 0, "hook_statuses": []}
                     evidence["turns"].append(row)
                     while True:
                         event = await server.events.get()
@@ -79,6 +114,9 @@ async def probe(output):
                                 "code": -32601, "message": "Interactive requests are unavailable in this probe"}})
                             continue
                         params = event.get("params", {})
+                        if event.get("method") == "hook/completed":
+                            status = params.get("run", {}).get("status")
+                            row["hook_statuses"].append(status if status in ("completed", "failed", "blocked", "stopped") else "other")
                         if params.get("threadId") != thread:
                             continue
                         if event.get("method") == "thread/tokenUsage/updated":
@@ -118,6 +156,13 @@ async def probe(output):
             evidence["gates"] = [json.loads(line) for line in gates.read_text().splitlines()] if gates.exists() else []
             evidence["tools_list_versions"] = [int(line) for line in counts.read_text().splitlines()] if counts.exists() else []
     evidence["temporary_home_removed"] = not root.exists()
+    evidence["inventory_accepted"] = evidence["accepted"]
+    statuses = [status for row in evidence["turns"] for status in row.get("hook_statuses", [])]
+    evidence["hook_accepted"] = (len(evidence["gates"]) >= 3 and len(statuses) >= 3
+                                 and all(status == "completed" for status in statuses)
+                                 and all(gate["allowed"] for gate in evidence["gates"]))
+    evidence["accepted"] = (evidence["inventory_accepted"] and evidence["hook_accepted"]
+                            and evidence["app_server_closed"] and evidence["temporary_home_removed"])
     output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(evidence))
 
@@ -126,7 +171,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--refresh", choices=("notification", "config-revision"), default="notification")
     args = parser.parse_args()
     if not args.live:
         parser.error("--live required for the bounded two-turn inference probe")
-    asyncio.run(probe(args.output))
+    asyncio.run(probe(args.output, args.refresh))

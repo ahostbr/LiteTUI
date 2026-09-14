@@ -25,8 +25,8 @@ def gate_program(marker, diagnostics):
         "  allow=True\n except FileExistsError: allow=False\n"
         f"with Path({str(diagnostics)!r}).open('a') as f:\n"
         " f.write(json.dumps({'category':category,'allowed':allow})+'\\n')\n"
-        "print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse',"
-        "'permissionDecision':'allow' if allow else 'deny',"
+        "print(json.dumps({} if allow else {'hookSpecificOutput':{'hookEventName':'PreToolUse',"
+        "'permissionDecision':'deny',"
         "'permissionDecisionReason':'Bounded synthetic protocol probe'}}))\n"
     )
 

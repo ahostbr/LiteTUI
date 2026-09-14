@@ -23,7 +23,8 @@ def test_gate_diagnostics_preserve_one_spawn_bound_and_never_record_payloads(tmp
         result = subprocess.run([sys.executable, str(script)], input=json.dumps({
             "tool_name": name, "tool_input": {"prompt": "PRIVATE_PROMPT", "path": "PRIVATE_PATH"}}),
             text=True, capture_output=True, timeout=5, check=True)
-        outcomes.append(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"])
+        document = json.loads(result.stdout)
+        outcomes.append("allow" if document == {} else document["hookSpecificOutput"]["permissionDecision"])
         assert "PRIVATE" not in result.stdout
     assert outcomes == ["allow", "deny", "deny", "allow", "deny"]
     raw = diagnostics.read_text(encoding="utf-8")
