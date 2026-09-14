@@ -53,11 +53,26 @@ def main() -> None:
         help="plan: load ls-plan-w-quizmaster and ask through ask_user_question (T558)",
     )
     parser.add_argument("--convo", type=str, default=None, help="resume a conversation by id")
+    parser.add_argument("--export-conversation", type=str, help="export a saved convo.jsonl without starting the app")
+    parser.add_argument("--export-output", type=str, help="new Markdown file for --export-conversation")
 
     args, remaining = parser.parse_known_args()
 
     if args.cwd:
         os.chdir(args.cwd)
+
+    if args.export_conversation or args.export_output:
+        if not args.export_conversation or not args.export_output:
+            parser.error("--export-conversation and --export-output must be supplied together")
+        from pathlib import Path
+
+        from litetui.conversation_export import export
+
+        try:
+            export(Path(args.export_conversation), Path(args.export_output))
+        except OSError as exc:
+            parser.error(str(exc))
+        return
 
     from litetui.paths import data_root
     from litetui.shared_state import check_data_version
