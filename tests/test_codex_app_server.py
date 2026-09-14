@@ -166,6 +166,7 @@ async def test_deferred_tools_are_namespaced_deduplicated_and_dispatch_to_host()
     server = Server()
     app = NS(
         plugins=NS(
+            tool_specs=lambda: [spec("active")],
             deferred_specs=lambda: [
                 spec("active"),
                 spec("pccontrol"),

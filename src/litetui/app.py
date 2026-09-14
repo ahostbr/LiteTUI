@@ -2112,6 +2112,10 @@ class LiteTUI(App):
                                             profile=hook_profile, captured=hook_context)
             if not gate.allowed or self._stop_requested:
                 return f"[hook denied] {gate.reason}", False
+        # A human approval or before-hook may have changed the native inventory.
+        from litetui.codex_inventory import current_dispatch_denial
+        if inventory_denial := current_dispatch_denial(self, name):
+            return inventory_denial, False
         # BACKGROUND (T499): the model asked not to wait. Authorization above
         # is identical — the profile decision and any CONFIRM are taken HERE,
         # once, at fire time — and the door is still the one call below: the

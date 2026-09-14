@@ -395,12 +395,17 @@ class AppServerTransport:
         if method == "item/tool/call":
             name = params.get("tool", "").removeprefix("litetui_")
             if self.app:
+                from litetui.codex_inventory import dispatch_denial, registered_tools
+
+                denial = dispatch_denial(getattr(self, "registered_inventory", None), self.app, name)
                 if getattr(self.app, "_stop_requested", False):
                     output, success = "[cancelled] turn stopped", False
+                elif denial:
+                    output, success = denial, False
                 else:
                     from litetui.tool_events import native_lifecycle
 
-                    with native_lifecycle():
+                    with native_lifecycle(), registered_tools(getattr(self, "registered_inventory", None)):
                         output, success = await self.app._execute_tool(
                             name, params.get("arguments", {})
                         )
@@ -610,6 +615,7 @@ class AppServerTransport:
                         },
                     )
                 self.thread_id = opened["thread"]["id"]
+            self.registered_inventory = registered_inventory
             input_items = user_input(messages[boundary:])
             if not input_items:
                 raise ProviderError("No new user input for the Codex turn.")

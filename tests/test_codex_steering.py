@@ -22,6 +22,7 @@ async def test_live_transport_steers_while_host_tool_waits_and_retains_rejected_
     release = asyncio.Event()
     admissions, snapshots, launched = [], [], []
     messages = [{"role": "user", "content": "begin"}]
+    tools = [{"type": "function", "function": {"name": "echo", "parameters": {"type": "object"}}}]
     app = NS(
         conversation=messages,
         convo_id="local",
@@ -30,7 +31,7 @@ async def test_live_transport_steers_while_host_tool_waits_and_retains_rejected_
         tools_enabled=True,
         settings=NS(tool_policy_profile="scheduled"),
         backend=NS(models={}),
-        plugins=NS(deferred_specs=list),
+        plugins=NS(deferred_specs=list, tool_specs=lambda: tools),
         _rpc=True,
         _rpc_emit=lambda e: None,
         _append=messages.append,
@@ -102,7 +103,7 @@ async def test_live_transport_steers_while_host_tool_waits_and_retains_rejected_
 
     server = WaitingServer()
     transport = AppServerTransport(server, app)
-    stream = await transport.create(model="gpt-6-astra", messages=messages, stream=True)
+    stream = await transport.create(model="gpt-6-astra", messages=messages, tools=tools, stream=True)
     async for _ in stream:
         pass
     assert len(admissions) == 1
