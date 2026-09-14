@@ -1,0 +1,25 @@
+{
+  "accepted": false,
+  "sibling_isolation_tested": false,
+  "failure_type": "AssertionError",
+  "cleanup_interrupt_rejections": 1,
+  "process_closed": true,
+  "event_counts": {
+    "remoteControl/status/changed": 1,
+    "thread/started": 1,
+    "mcpServer/startupStatus/updated": 3,
+    "thread/settings/updated": 1,
+    "thread/status/changed": 2,
+    "turn/started": 1,
+    "item/started": 4,
+    "item/completed": 4,
+    "item/agentMessage/delta": 14,
+    "hook/started": 1,
+    "hook/completed": 1,
+    "thread/tokenUsage/updated": 2,
+    "account/rateLimits/updated": 2,
+    "turn/completed": 1
+  },
+  "agent_status_counts": {},
+  "temporary_home_removed": true
+}
