@@ -1,0 +1,124 @@
+{
+  "scope": "threadless and loaded-thread catalogs; no model input",
+  "model_turns": 0,
+  "accepted": true,
+  "thread_id": "01a0a247-f1d6-7991-bb25-f6f8163ce392",
+  "initial": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "loaded_initial": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "after_notification": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        }
+      }
+    },
+    "beta": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "loaded_after_notification": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        }
+      }
+    },
+    "beta": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "after_unchanged_reload": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        }
+      }
+    },
+    "beta": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "loaded_after_unchanged_reload": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        }
+      }
+    },
+    "beta": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "after_config_revision": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        }
+      }
+    },
+    "beta": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "loaded_after_config_revision": {
+    "alpha": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        }
+      }
+    },
+    "beta": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "tools_list_versions": [
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "app_server_closed": true,
+  "temporary_home_removed": true
+}
