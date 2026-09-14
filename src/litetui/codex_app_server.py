@@ -24,6 +24,7 @@ class AppServer:
         self.config_overrides = tuple(config_overrides)
         self.environment = {}
         self.native_bridge = None
+        self.async_questions = None
         self.process = None
         self.reader = None
         self.pending = {}
@@ -142,6 +143,8 @@ class AppServer:
         except (OSError, ValueError):
             pass
         finally:
+            if self.async_questions:
+                self.async_questions.cancel()
             error = ProviderError(
                 "Codex app-server connection ended. Reconnect before continuing."
             )
@@ -151,6 +154,8 @@ class AppServer:
             await self.events.put(error)
 
     def shutdown(self):
+        if self.async_questions:
+            self.async_questions.cancel()
         if self.native_bridge:
             self.native_bridge.close()
             self.config_overrides = self.native_bridge.original_overrides
@@ -468,6 +473,7 @@ class AppServerTransport:
                 capture_answers,
                 native_answers,
                 question_cancelled,
+                question_slot,
             )
             from litetui.tool_events import native_lifecycle
 
@@ -475,30 +481,31 @@ class AppServerTransport:
             if self.app:
                 questions = params.get("questions", [])
                 with capture_answers() as captured, native_lifecycle():
-                    _, success = await self.app._execute_tool(
-                        "ask_user_question",
-                        {
-                            "questions": [
-                                {
-                                    "label": question.get("header", "Question"),
-                                    "question": question["question"],
-                                    "multiSelect": False,
-                                    "allowFreeText": True,
-                                    "isSecret": bool(question.get("isSecret")),
-                                    "options": [
-                                        {
-                                            "title": option["label"],
-                                            "description": option.get(
-                                                "description", ""
-                                            ),
-                                        }
-                                        for option in question.get("options") or []
-                                    ],
-                                }
-                                for question in questions
-                            ]
-                        },
-                    )
+                    async with question_slot(self.app):
+                        _, success = await self.app._execute_tool(
+                            "ask_user_question",
+                            {
+                                "questions": [
+                                    {
+                                        "label": question.get("header", "Question"),
+                                        "question": question["question"],
+                                        "multiSelect": False,
+                                        "allowFreeText": True,
+                                        "isSecret": bool(question.get("isSecret")),
+                                        "options": [
+                                            {
+                                                "title": option["label"],
+                                                "description": option.get(
+                                                    "description", ""
+                                                ),
+                                            }
+                                            for option in question.get("options") or []
+                                        ],
+                                    }
+                                    for question in questions
+                                ]
+                            },
+                        )
                 if question_cancelled():
                     return
                 if success and captured:
@@ -715,6 +722,7 @@ class AppServerTransport:
             completed = False
             interrupt_sent = False
             last_message_id = None
+            streamed_message_ids = set()
             steering_worker = None
             steering_task = None
             from litetui.codex_question_requests import QuestionRequests
@@ -793,6 +801,8 @@ class AppServerTransport:
                     if method == "item/agentMessage/delta":
                         tool_ui.agent_delta(payload)
                         item_id = payload.get("itemId")
+                        if item_id:
+                            streamed_message_ids.add(item_id)
                         if item_id and last_message_id and item_id != last_message_id:
                             yield _chunk(text="\n\n")
                         last_message_id = item_id or last_message_id
@@ -812,7 +822,18 @@ class AppServerTransport:
                                 )
                             yield _chunk(usage=usage, metadata=metadata)
                     elif method in ("item/started", "item/completed"):
-                        if payload.get("item", {}).get("type") == "contextCompaction":
+                        item = payload.get("item", {})
+                        if (method == "item/completed" and item.get("type") == "agentMessage"
+                                and item.get("questions") and item.get("delivery") == "async"):
+                            if item.get("id") not in streamed_message_ids and item.get("text"):
+                                streamed_message_ids.add(item.get("id"))
+                                yield _chunk(text="\n\n" + item["text"])
+                            from litetui.codex_async_questions import AsyncQuestions
+                            manager = getattr(self.server, "async_questions", None)
+                            if manager is None:
+                                manager = AsyncQuestions(self)
+                            manager.open(item, metadata, record_index)
+                        if item.get("type") == "contextCompaction":
                             usage_tracker.rebased = True
                         await tool_ui.item(
                             payload.get("item", {}),

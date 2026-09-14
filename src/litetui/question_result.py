@@ -1,6 +1,7 @@
 """Capture structured question results without changing the legacy text tool API."""
 
-from contextlib import contextmanager
+import asyncio
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from threading import Event
@@ -26,6 +27,32 @@ def current_lifetime():
 def question_cancelled():
     lifetime = current_lifetime()
     return lifetime is not None and lifetime.is_set()
+
+
+@asynccontextmanager
+async def question_slot(app):
+    """RPC forms have separate IDs; Textual dialogs share one presentation slot."""
+    if getattr(app, "_rpc", False):
+        yield
+        return
+    lock = getattr(app, "_codex_question_ui_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        app._codex_question_ui_lock = lock
+    while True:
+        if question_cancelled():
+            raise asyncio.CancelledError
+        try:
+            await asyncio.wait_for(lock.acquire(), 0.1)
+            break
+        except TimeoutError:
+            continue
+    try:
+        if question_cancelled():
+            raise asyncio.CancelledError
+        yield
+    finally:
+        lock.release()
 
 
 @contextmanager

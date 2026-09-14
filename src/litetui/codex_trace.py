@@ -14,6 +14,19 @@ def records(metadata):
 def replay(app, metadata, seen):
     count = 0
     thread = metadata.get("app_server_thread_id")
+    questions = metadata.get("async_questions", [])
+    for entry in questions if isinstance(questions, list) else []:
+        if (not isinstance(entry, dict) or entry.get("version") != 1
+                or not isinstance(entry.get("questions"), list)
+                or not all(isinstance(q, dict) and isinstance(q.get("title"), str)
+                           for q in entry["questions"])):
+            continue
+        key = (thread, "async-question", entry.get("id"))
+        if entry.get("state") != "pending" or not entry.get("id") or key in seen:
+            continue
+        seen.add(key)
+        from litetui.codex_question_card import SavedQuestionCard
+        app.query_one("#chat-log").mount(SavedQuestionCard(metadata, entry))
     for record in records(metadata):
         key = (thread, record.get("turnId"), record.get("id"))
         if not record.get("id") or key in seen:
