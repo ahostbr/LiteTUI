@@ -638,6 +638,15 @@ class CompactionCard(Vertical):
     def set_status(self, text: str) -> None:
         self.status.content = Text(text)
 
+    def record_round(self, timing: dict) -> None:
+        """Retain each request/tool duration even after the final ledger replaces status."""
+        first = timing["first_chunk_s"]
+        first_text = f"{first:.2f}s" if first is not None else "unreported"
+        self.mount(Static(
+            f"Round {timing['round']}: model {timing['model_s']:.2f}s · "
+            f"first chunk {first_text} · tools {timing['tools_s']:.2f}s",
+            classes="compaction-round"), before=self.status)
+
     def finish(self, ledger: str) -> None:
         self._took = time.monotonic() - self._t0
         self.tick()

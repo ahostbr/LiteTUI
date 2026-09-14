@@ -205,7 +205,7 @@ def test_model_thinking_during_compaction_is_shown_in_a_thinking_block():
     _run(body())
 
 
-def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path):
+def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path, monkeypatch):
     """The most interesting part of a compaction is the model deciding what
     is durable and writing it to the store — previously invisible."""
     async def body():
@@ -221,6 +221,8 @@ def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path):
         ]
         create, calls = _scripted_create(rounds)
         a = _app()
+        records = []
+        monkeypatch.setattr(a.store, "write_record", records.append)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -250,6 +252,14 @@ def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path):
             assert "persisted" in status and "memory.md" in status, status
 
             # the second round's request carried the tool result back
+            metrics = next(r for r in records if r["type"] == "truncate")["measurements"]
+            assert metrics["store_files"] == ["memory.md"]
+            assert metrics["auto"] is False
+            assert len(metrics["rounds"]) == 2
+            assert metrics["rounds"][0]["tools_s"] > 0
+            assert len(card.query(".compaction-round")) == 2
+            assert all(row.size.height > 0 for row in card.query(".compaction-round"))
+            assert calls[0]["stream_options"] == {"include_usage": True}
             assert len(calls) == 2
             roles = [m.get("role") for m in calls[1]["messages"]]
             assert "tool" in roles

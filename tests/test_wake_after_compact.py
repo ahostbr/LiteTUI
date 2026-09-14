@@ -288,3 +288,79 @@ async def test_settings_screen_has_the_wake_switch():
         sw = pilot.app.screen.query_one("#f-wake_after_compact", Switch)
         assert sw.value is False, "the shipped default, on screen"
         sw.value = True
+
+
+@pytest.mark.asyncio
+async def test_compact_persists_measurements_and_keeps_tool_rounds(monkeypatch):
+    from types import SimpleNamespace
+    a = _app(wake_after_compact=False, compact_keep_recent=4)
+    _seed(a)
+    for i in range(4):
+        a.conversation.extend([
+            {"role": "assistant", "content": None, "tool_calls": [{"id": str(i)}]},
+            {"role": "tool", "tool_call_id": str(i), "content": "compile error"},
+        ])
+    expected_tail = a.conversation[-4:]
+    records = []
+    monkeypatch.setattr(a.store, "write_record", records.append)
+    async def create(**kw):
+        stream = _Stream("Task: fix the compiler errors.")
+        usage = _Chunk()
+        usage.choices = []
+        usage.usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110)
+        stream._chunks.append(usage)
+        return stream
+    a.client.chat.completions.create = create
+    async with a.run_test() as pilot:
+        a.ctx_used = 900
+        a.ctx_max = 1000
+        a._compact_is_auto = True
+        a._compact()
+        await _settle(a, pilot)
+        assert len(a.query(".compaction-round")) == 1
+    record = next(r for r in records if r["type"] == "truncate")
+    metrics = record["measurements"]
+    assert metrics["auto"] is True
+    assert metrics["ctx_used"] == 900
+    assert metrics["ctx_percent"] == 90
+    assert metrics["before_count"] == 13
+    assert metrics["after_count"] == 7
+    assert metrics["before_chars"] > 0 and metrics["after_chars"] > 0
+    assert metrics["tokens_after"] is None
+    assert metrics["tokens_after_estimate"] > 0
+    assert metrics["duration_s"] >= metrics["rounds"][0]["model_s"] >= 0
+    assert metrics["rounds"][0]["usage"]["prompt_tokens"] == 100
+    assert metrics["rounds"][0]["first_chunk_s"] is not None
+    assert metrics["store_files"] == []
+    assert a.conversation[-4:] == expected_tail
+
+
+def test_assistant_usage_is_row_metadata_and_never_enters_model_messages(monkeypatch):
+    a = _app()
+    records = []
+    monkeypatch.setattr(a.store, "write_record", records.append)
+    message = {"role": "assistant", "content": "done"}
+    a._append(message, usage={"prompt_tokens": 20, "completion_tokens": 5})
+    a._append({"role": "assistant", "content": "no usage reported"})
+    assert records[0]["usage"] == {"prompt_tokens": 20, "completion_tokens": 5}
+    assert records[0]["model"] == a.model_id
+    assert "usage" not in records[0]["message"]
+    assert "usage" not in records[1]
+    assert "usage" not in a.conversation[-2]
+
+
+@pytest.mark.parametrize("want", [1, 2, 3, 4, 7])
+def test_safe_tail_retains_complete_parallel_tool_round(want):
+    messages = [{"role": "user", "content": "task"}]
+    for n in range(4):
+        messages.extend([
+            {"role": "assistant", "tool_calls": [{"id": f"{n}a"}, {"id": f"{n}b"}]},
+            {"role": "tool", "tool_call_id": f"{n}b"},
+            {"role": "tool", "tool_call_id": f"{n}a"},
+        ])
+    tail = app_mod.LiteTUI._safe_tail(messages, want)
+    assert len(tail) >= want
+    assert tail[0]["role"] == "assistant"
+    assert tail[-3:] == messages[-3:]
+    assert app_mod.LiteTUI._safe_tail(messages, 0) == []
+    assert app_mod.LiteTUI._safe_tail(messages[:-1], 1) == []

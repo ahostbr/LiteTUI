@@ -107,8 +107,8 @@ def t_tail_starts_on_user():
         {"role": "tool", "tool_call_id": "c1", "content": "res"},
         {"role": "assistant", "content": "a1"},
     ]
-    # asking for 3 would start on the tool-calling assistant -> must trim forward
-    eq(A._safe_tail(msgs, 3), [])
+    # A complete assistant/tool round is safe without dropping it for a user boundary.
+    eq(A._safe_tail(msgs, 3), msgs[1:])
     eq(A._safe_tail(msgs, 4), msgs)
 
 
@@ -121,7 +121,7 @@ def t_tail_no_orphan_tool():
     ]
     for want in range(0, 5):
         tail = A._safe_tail(msgs, want)
-        assert not tail or tail[0]["role"] == "user", f"want={want} tail starts {tail[0]['role']}"
+        assert not tail or tail[0]["role"] != "tool", f"want={want} tail starts {tail[0]['role']}"
 
 
 # ── helpers ─────────────────────────────────────────────────────

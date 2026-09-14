@@ -2490,10 +2490,13 @@ class LiteTUI(App):
         # reads identically whoever noticed it first.
         self.store._raise_to_app(e)
 
-    def _append(self, msg: dict) -> None:
+    def _append(self, msg: dict, *, usage: dict | None = None) -> None:
         """Append to the live conversation AND to disk. Single choke point."""
         self.conversation.append(msg)
-        self.store.record_msg(msg)
+        if usage is not None:
+            self.store.record_msg(msg, usage=usage, model=self.model_id)
+        else:
+            self.store.record_msg(msg)
 
     def _append_to_system(self, text: str) -> None:
         """Extend the FIRST system message rather than adding another one.
@@ -2530,11 +2533,13 @@ class LiteTUI(App):
             return self._snapshot(reason)  # shouldn't happen; degrade safely
         self.store.record_edit(index, self.conversation[index], reason)
 
-    def _truncate(self, keep_from: int, prepend: list[dict], reason: str = "") -> None:
+    def _truncate(self, keep_from: int, prepend: list[dict], reason: str = "",
+                  *, measurements: dict | None = None) -> None:
         keeps_system = bool(
             self.conversation and self.conversation[0].get("role") == "system"
         )
-        self.store.record_truncate(keep_from, prepend, keeps_system, reason)
+        self.store.record_truncate(keep_from, prepend, keeps_system, reason,
+                                   measurements=measurements)
 
 
     @property
@@ -5513,6 +5518,7 @@ class LiteTUI(App):
             # per user turn. Keep both stamps so tool execution between rounds
             # cannot pollute the prompt-evaluation sample.
             request_started_at = time.monotonic()
+            request_usage = None
             widget = self._assistant_bubble()
             terminal_widget = widget
             self._active_turn_widget = widget
@@ -5593,6 +5599,7 @@ class LiteTUI(App):
                     u = getattr(chunk, "usage", None)
                     if u is not None:
                         self._record_usage(u)
+                        request_usage = dict(self.last_usage)
                     if u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
                         rate = self._tps.final(
@@ -5785,7 +5792,7 @@ class LiteTUI(App):
                         }
                         for i, slot in sorted(tool_acc.items())
                     ]
-                self._append(message)
+                self._append(message, usage=request_usage)
 
             if self._stop_requested:
                 self._system(
@@ -5985,17 +5992,31 @@ class LiteTUI(App):
 
     @staticmethod
     def _safe_tail(msgs: list[dict], want: int) -> list[dict]:
-        """Trim a tail forward until it starts on a user message.
-
-        A tail that begins with a `tool` message (or an assistant message that
-        made tool calls) references a tool_call_id whose assistant message we
-        are about to drop. LM Studio rejects that, and the failure arrives on
-        the NEXT turn, long after /compact reported success.
-        """
-        tail = msgs[-want:] if want else []
-        while tail and tail[0].get("role") != "user":
-            tail = tail[1:]
-        return tail
+        """Keep at least want messages, backing up to a complete tool boundary."""
+        if want <= 0:
+            return []
+        start = max(0, len(msgs) - want)
+        for index in range(start, -1, -1):
+            if msgs[index].get("role") == "tool":
+                continue
+            pending = set()
+            valid = True
+            for msg in msgs[index:]:
+                if msg.get("role") == "tool":
+                    call_id = msg.get("tool_call_id")
+                    if call_id not in pending:
+                        valid = False
+                        break
+                    pending.remove(call_id)
+                else:
+                    if pending:
+                        valid = False
+                        break
+                    pending.update(tc.get("id") for tc in msg.get("tool_calls", []))
+            if valid and not pending:
+                return msgs[index:]
+        # Malformed/incomplete histories cannot provide a safe verbatim suffix.
+        return []
 
     def _deliver_queued_input(self) -> bool:
         """Hand queued messages to the model at a ROUND boundary, mid-turn.
@@ -6206,6 +6227,8 @@ class LiteTUI(App):
             self._system("Nothing to compact — everything is already recent.")
             return
 
+        compact_started = time.perf_counter()
+        trigger_tokens = self.ctx_used
         before_chars = self._msg_chars(self.conversation)
         before_count = len(self.conversation)
         card = CompactionCard(
@@ -6239,6 +6262,7 @@ class LiteTUI(App):
         # writing files and nothing reaches disk.
         summary = ""
         writes: list[str] = []
+        rounds: list[dict] = []
         stream = None
         try:
             # ONCE, before the first round — the answer cannot change midway
@@ -6251,6 +6275,9 @@ class LiteTUI(App):
             card.set_status(f"checking {self.model_id} is ready")
             await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
             for round_no in range(1, self.settings.compact_max_tool_iters + 1):
+                round_started = time.perf_counter()
+                first_chunk_s = None
+                round_usage = None
                 kwargs = TurnEngine.compact_request(
                     model_id=self.model_id,
                     messages=ask,
@@ -6263,6 +6290,7 @@ class LiteTUI(App):
                     graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                 )
 
+                kwargs["stream_options"] = {"include_usage": True}
                 stream = await model_transport.for_app(self).create(**kwargs)
                 provider_metadata = None
                 text_full = ""
@@ -6273,6 +6301,14 @@ class LiteTUI(App):
                 # because it reuses the same chunk shapes and widgets.
                 async for chunk in stream:
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
+                    if first_chunk_s is None:
+                        first_chunk_s = time.perf_counter() - round_started
+                    usage = getattr(chunk, "usage", None)
+                    if usage is not None:
+                        round_usage = {
+                            key: model_transport.numeric_usage(getattr(usage, key, None))
+                            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                        }
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -6306,8 +6342,14 @@ class LiteTUI(App):
                         if argued_now and idx in tool_msgs:
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
 
+                model_s = time.perf_counter() - round_started
+                timing = {"round": round_no, "model_s": model_s,
+                          "first_chunk_s": first_chunk_s, "tools_s": 0.0,
+                          "usage": round_usage}
+                rounds.append(timing)
                 card.thinking_done()
                 if not tool_acc:
+                    card.record_round(timing)
                     summary = text_full.strip()
                     break
 
@@ -6333,6 +6375,7 @@ class LiteTUI(App):
                 card.set_status(
                     f"round {round_no} \u00b7 running {len(tool_acc)} tool call(s)"
                 )
+                tools_started = time.perf_counter()
                 for i, slot in sorted(tool_acc.items()):
                     fname = slot["name"]
                     ok = True
@@ -6357,6 +6400,8 @@ class LiteTUI(App):
                         "name": fname,
                         "content": str(result),
                     })
+                timing["tools_s"] = time.perf_counter() - tools_started
+                card.record_round(timing)
                 self._scroll_down()
                 if self._stop_requested:
                     self._turn_abandoned = True
@@ -6407,7 +6452,20 @@ class LiteTUI(App):
 
         # Record BEFORE swapping self.conversation: keep_from indexes the list
         # as it stands on disk, which is the pre-compaction one.
-        self._truncate(len(self.conversation) - len(tail), pair, "compact")
+        self._truncate(len(self.conversation) - len(tail), pair, "compact", measurements={
+            "model": self.model_id, "auto": auto,
+            "before_chars": before_chars, "after_chars": self._msg_chars(rebuilt),
+            "before_count": before_count, "after_count": len(rebuilt),
+            "tokens_before": trigger_tokens, "tokens_after": None,
+            "tokens_before_estimate": (before_chars + 3) // 4,
+            "tokens_after_estimate": (self._msg_chars(rebuilt) + 3) // 4,
+            "token_estimate_method": "chars/4; excludes request tools and live store",
+            "ctx_used": trigger_tokens, "ctx_max": self.ctx_max,
+            "ctx_percent": (trigger_tokens * 100 / self.ctx_max
+                            if trigger_tokens is not None and self.ctx_max else None),
+            "duration_s": time.perf_counter() - compact_started,
+            "summary_chars": len(summary), "store_files": writes, "rounds": rounds,
+        })
         self.conversation = rebuilt
         # Succeeded: forget any earlier failure so a later window that
         # happens to land on the same token count is not blocked by it.

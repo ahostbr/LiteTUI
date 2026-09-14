@@ -322,8 +322,10 @@ class ConversationRepository:
             # than none at all: you find out at /resume, when it is too late.
             self._raise_to_app(e)
 
-    def record_msg(self, msg: dict) -> None:
-        self.write_record({"type": "msg", "ts": time.time(), "message": msg})
+    def record_msg(self, msg: dict, *, usage: dict | None = None,
+                   model: str | None = None) -> None:
+        self.write_record({"type": "msg", "ts": time.time(), "message": msg,
+                           **({"usage": usage, "model": model} if usage is not None else {})})
 
     def record_snapshot(self, messages: list[dict], reason: str = "") -> None:
         """Full-list record. Kept for readability of older files; prefer edit."""
@@ -346,12 +348,14 @@ class ConversationRepository:
         })
 
     def record_truncate(self, keep_from: int, prepend: list[dict],
-                        keep_system: bool, reason: str = "") -> None:
+                        keep_system: bool, reason: str = "", *,
+                        measurements: dict | None = None) -> None:
         """Record 'drop the head, splice these in front of what remains'."""
         self.write_record({
             "type": "truncate", "ts": time.time(), "reason": reason,
             "keep_from": keep_from, "keep_system": keep_system,
             "prepend": prepend,
+            **({"measurements": measurements} if measurements is not None else {}),
         })
 
     def record_meta(self, model: str, seat_name=None, seat_id=None) -> None:

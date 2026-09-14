@@ -37,11 +37,13 @@ async def test_cache_details_reach_app_record(tmp_path, streamed, details):
 
 
 @pytest.mark.asyncio
-async def test_stream_consumer_records_usage_without_subtracting_cache():
+async def test_stream_consumer_records_usage_without_subtracting_cache(monkeypatch):
     from test_deny_stops_the_turn import _app, _Chunk, _ToolCallStream, _turn
     usage = mt._usage({"input_tokens": 12000, "output_tokens": 100,
                        "input_tokens_details": {"cached_tokens": 10000}}, "codex")
     a = _app(None)
+    records = []
+    monkeypatch.setattr(a.store, "write_record", records.append)
 
     async def create(**kwargs):
         stream = _ToolCallStream(0)
@@ -55,6 +57,16 @@ async def test_stream_consumer_records_usage_without_subtracting_cache():
         await _turn(a, pilot)
         assert a.last_usage["cached_tokens"] == 10000
         assert a.ctx_used == 12100
+        row = next(r for r in records if r["type"] == "msg" and r["message"]["role"] == "assistant")
+        assert row["usage"]["prompt_tokens"] == 12000
+        assert row["usage"]["completion_tokens"] == 100
+        assert row["usage"]["cached_tokens"] == 10000
+        assert "usage" not in row["message"]
+        usage = None
+        await _turn(a, pilot)
+        rows = [r for r in records if r["type"] == "msg" and r["message"]["role"] == "assistant"]
+        assert len(rows) == 2
+        assert "usage" not in rows[-1], "missing usage must not reuse the preceding request"
 
 
 def test_usage_details_never_keep_content():
