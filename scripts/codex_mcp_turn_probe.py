@@ -45,6 +45,13 @@ def mcp_overrides(fixture, state, counts, revision):
     )
 
 
+def thread_mcp_config(fixture, state, counts, revision):
+    return {"mcp_servers": {"catalog_probe": {
+        "command": sys.executable, "args": [str(fixture), str(state), str(counts)],
+        "env": {"CATALOG_REVISION": str(revision)},
+    }}}
+
+
 async def trust_gate(server, root, command):
     hooks = own_hooks(await server.request("hooks/list", {"cwds": [str(root)]}), command)
     if len(hooks) != 1:
@@ -77,7 +84,7 @@ async def probe(output, refresh):
                 + '\n[mcp_servers.catalog_probe.env]\nCATALOG_REVISION = '
                 + json.dumps(str(revision)) + '\n', encoding="utf-8")
 
-        if refresh == "session-restart":
+        if refresh in ("session-restart", "thread-config"):
             (root / "config.toml").write_text("# User configuration remains unchanged.\n", encoding="utf-8")
         else:
             config(1)
@@ -101,9 +108,17 @@ async def probe(output, refresh):
                 opened = await server.request("thread/start", {
                     "model": "gpt-6-astra", "cwd": str(root), "approvalPolicy": "never", "sandbox": "read-only",
                     "baseInstructions": "You are testing synthetic MCP tools. Use only catalog_probe alpha/beta and tool search. Do not use shell, files, web, agents, or other tools. If tools are unavailable report unavailable and stop. After requested tool calls reply DONE.",
+                    **({"config": thread_mcp_config(fixture, state, counts, 1)} if refresh == "thread-config" else {}),
                 })
                 thread = opened["thread"]["id"]
                 evidence["thread_id"] = thread
+                if refresh == "thread-config":
+                    catalog = await server.request("mcpServerStatus/list", {"threadId": thread, "detail": "toolsAndAuthOnly"})
+                    evidence["initial_thread_config_present"] = any(row.get("name") == "catalog_probe"
+                                                                    and "alpha" in row.get("tools", {})
+                                                                    for row in catalog.get("data", []))
+                    if not evidence["initial_thread_config_present"]:
+                        raise AssertionError("Thread config did not register the synthetic inventory")
                 prompts = ["Find catalog_probe alpha and call it with value 'first'.",
                            "The synthetic MCP inventory has changed. Find catalog_probe beta and call it once, then call catalog_probe alpha with value 7 using its current schema."]
                 for index, prompt in enumerate(prompts):
@@ -131,6 +146,17 @@ async def probe(output, refresh):
                             saved = await read(server, thread)
                             evidence["prior_turn_visible"] = any(
                                 row["id"] == evidence["turns"][0]["turn_id"] for row in saved.get("turns", []))
+                            phase = "turn_2"
+                        elif refresh == "thread-config":
+                            phase = "thread_config"
+                            process = server.process
+                            resumed = await server.request("thread/resume", {
+                                "threadId": thread, "config": thread_mcp_config(fixture, state, counts, 2),
+                            })
+                            evidence["resumed_thread_same"] = resumed["thread"]["id"] == thread
+                            evidence["process_unchanged"] = server.process is process and process.returncode is None
+                            if not evidence["resumed_thread_same"]:
+                                raise AssertionError("Native resume changed thread identity")
                             phase = "turn_2"
                     started = await server.request("turn/start", {"threadId": thread,
                         "input": [{"type": "text", "text": prompt}], "effort": "medium"})
@@ -200,6 +226,9 @@ async def probe(output, refresh):
     if refresh == "session-restart":
         evidence["accepted"] = (evidence["accepted"] and evidence.get("resumed_thread_same")
                                 and evidence.get("prior_turn_visible") and evidence["config_file_unchanged"])
+    if refresh == "thread-config":
+        evidence["accepted"] = (evidence["accepted"] and evidence.get("resumed_thread_same")
+                                and evidence.get("process_unchanged") and evidence["config_file_unchanged"])
     output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(evidence))
 
@@ -208,7 +237,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--refresh", choices=("notification", "config-revision", "session-restart"), default="notification")
+    parser.add_argument("--refresh", choices=("notification", "config-revision", "session-restart", "thread-config"), default="notification")
     args = parser.parse_args()
     if not args.live:
         parser.error("--live required for the bounded two-turn inference probe")
