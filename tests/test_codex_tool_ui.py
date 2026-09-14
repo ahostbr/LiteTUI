@@ -36,6 +36,26 @@ class Host(App):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["interrupted", "cancelled", "declined", "failed"])
+async def test_native_terminal_outcome_survives_storage_and_rpc(status):
+    app = Host()
+    app._rpc = True
+    saved = []
+    ui = CodexToolUI(app, on_record=saved.append, thread_id="thread", turn_id="turn")
+    item = {"type": "commandExecution", "id": "call", "command": "echo",
+            "status": status, "durationMs": 0}
+    await ui.item(item, completed=True)
+    await ui.item(item, completed=True)
+    ui.finish()
+    assert saved[-1]["state"] == status
+    results = [event for event in app.events if event["type"] == "tool_result"]
+    assert len(results) == 1
+    assert results[0]["status"] == status
+    assert results[0]["ok"] is False
+    assert results[0]["durationMs"] == 0
+
+
+@pytest.mark.asyncio
 async def test_host_calls_pair_by_scoped_id_with_late_and_duplicate_notifications():
     app = Host()
     async with app.run_test():

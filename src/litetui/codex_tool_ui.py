@@ -286,6 +286,9 @@ class CodexToolUI:
             and not item.get("error")
             and item.get("exitCode") in (None, 0)
         )
+        outcome = item.get("status")
+        if outcome not in ("failed", "declined", "cancelled", "interrupted"):
+            outcome = "completed" if ok else "failed"
         details = {
             k: v
             for k, v in item.items()
@@ -333,7 +336,7 @@ class CodexToolUI:
             result=result,
             ok=ok,
             durationMs=round(elapsed * 1000) if elapsed is not None else None,
-            state="completed" if ok else "failed",
+            state=outcome,
         )
         self.emit(
             {
@@ -342,7 +345,7 @@ class CodexToolUI:
                 "name": name,
                 "result": result,
                 "ok": ok,
-                "status": "completed" if ok else "failed",
+                "status": outcome,
                 "durationMs": round(elapsed * 1000) if elapsed is not None else None,
             }
         )
