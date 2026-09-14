@@ -426,6 +426,10 @@ async def test_native_notification_reaches_shared_ui_and_reply_queue_after_turn_
         question = next(
             event for event in emitted if event["type"] == "user_input_requested"
         )
+        start = next(event for event in emitted if event["type"] == "native_turn_started")
+        assert start["threadId"] == question["threadId"]
+        assert start["turnId"] == question["turnId"]
+        assert emitted.index(start) < emitted.index(question)
         assert {
             key: question[key]
             for key in ("eventVersion", "provider", "threadId", "turnId", "itemId", "delivery")

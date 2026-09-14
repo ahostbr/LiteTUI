@@ -39,6 +39,12 @@ until consumers support the canonical payload consistently.
 
 ## Native human question origin
 
+The producer emits `native_turn_started` with `eventVersion: 1`, `provider: codex`,
+`threadId`, and `turnId` after the native turn/start response and before question
+notifications. Consumers bind this explicit start to their active host turn once.
+A question with an unknown native origin stays unbound; do not guess that it belongs
+to a newer active host turn.
+
 `user_input_requested` retains its shared `id` (the host answer handle) and
 `questions`. Native Codex requests additionally carry `eventVersion: 1`,
 `provider: codex`, `threadId`, `turnId`, `itemId`, and

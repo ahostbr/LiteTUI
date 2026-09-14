@@ -698,6 +698,12 @@ class AppServerTransport:
             for message in deliveries:
                 message_state(self.app, message, "accepted")
             self.turn_id = started["turn"]["id"]
+            if self.app is not None and hasattr(self.app, "_rpc_emit"):
+                self.app._rpc_emit({
+                    "type": "native_turn_started", "eventVersion": 1,
+                    "provider": "codex", "threadId": self.thread_id,
+                    "turnId": self.turn_id,
+                })
             metadata = {
                 "provider": "codex",
                 "model": model,
