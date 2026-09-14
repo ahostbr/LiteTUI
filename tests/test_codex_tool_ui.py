@@ -36,6 +36,34 @@ class Host(App):
 
 
 @pytest.mark.asyncio
+async def test_mcp_attachments_do_not_enter_cards_rpc_or_saved_display_trace():
+    from copy import deepcopy
+
+    app = Host()
+    app._rpc = True
+    saved = []
+    ui = CodexToolUI(app, on_record=saved.append, thread_id="thread", turn_id="turn")
+    item = {"id": "attachments", "type": "mcpToolCall", "tool": "inspect", "server": "synthetic",
+            "arguments": {}, "status": "completed", "result": {"content": [
+                {"type": "text", "text": "Visible explanation"},
+                {"type": "image", "data": "PRIVATE_IMAGE_BYTES", "mimeType": "image/png"},
+                {"type": "audio", "data": "PRIVATE_AUDIO_BYTES", "mimeType": "audio/wav"},
+                {"type": "resource", "resource": {"uri": "synthetic://asset", "blob": "PRIVATE_BLOB_BYTES",
+                                                    "mimeType": "application/octet-stream"}},
+                {"type": "resource", "resource": {"uri": "synthetic://text", "text": "Visible resource"}},
+            ], "structuredContent": {"count": 3}}}
+    before = deepcopy(item)
+    await ui.item(item, True)
+    assert item == before  # Presentation never changes the native/model result.
+    for text in (saved[-1]["result"], app.events[-1]["result"]):
+        assert "PRIVATE" not in text
+        assert "Image returned to Codex" in text and "Audio returned to Codex" in text
+        assert "Binary resource returned to Codex" in text
+        assert "Visible explanation" in text and "Visible resource" in text
+        assert "synthetic://asset" in text and '"count": 3' in text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["interrupted", "cancelled", "declined", "failed"])
 async def test_native_terminal_outcome_survives_storage_and_rpc(status):
     app = Host()

@@ -19,6 +19,28 @@ def clean(value):
     return sanitize.redact_secrets(sanitize.strip_escapes(text))
 
 
+def mcp_display_result(result):
+    """Keep standard MCP attachments out of display/persistence text."""
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        return result
+    content = []
+    for entry in result["content"]:
+        if not isinstance(entry, dict):
+            content.append(entry)
+        elif entry.get("type") in ("image", "audio"):
+            content.append({"type": entry["type"], "mimeType": entry.get("mimeType"),
+                            "text": f"[{entry['type'].title()} returned to Codex]"})
+        elif entry.get("type") == "resource" and isinstance(entry.get("resource"), dict):
+            resource = entry["resource"]
+            if "blob" in resource:
+                resource = {key: value for key, value in resource.items() if key != "blob"}
+                resource["attachment"] = "[Binary resource returned to Codex]"
+            content.append({**entry, "resource": resource})
+        else:
+            content.append(entry)
+    return {**result, "content": content}
+
+
 class CodexToolUI:
     def __init__(
         self,
@@ -349,7 +371,9 @@ class CodexToolUI:
                 else clean(content.get("text", content))
             )
         if item.get("result") is not None:
-            sections.append(clean(item["result"]))
+            result_value = (mcp_display_result(item["result"])
+                            if kind == "mcpToolCall" else item["result"])
+            sections.append(clean(result_value))
         result = "\n\n".join(sections)
         duration = item.get("durationMs")
         elapsed = (
