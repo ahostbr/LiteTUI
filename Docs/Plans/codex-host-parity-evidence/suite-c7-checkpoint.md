@@ -18,24 +18,24 @@ Answer ACK settles once. Failed send retains the pending request. Concurrent ans
 sends are refused. Native cancellation wins an in-flight ACK race and cannot become
 a successful answer. Abort ACK closes only explicitly named cancelled_asks captured
 before sending the abort, not newer questions or all requests on a generic ACK.
-Process death settles remaining requests. Runtime schema retains required answers
-and adds optional cancelled; cancellation uses answers:{} and cancelled:true, with
+Legacy Stop closes only local UI before waiting for an abort response, even for a wedged child. Native requests require evidence and remain recoverable after failed Stop. Process death settles remaining requests. Runtime schema retains required answers
+and adds optional cancelled and cancellationSource (host/native/process); cancellation uses answers:{} and cancelled:true, with
 truthful cancellation activity text. Empty answers alone do not mean cancellation.
 
 ## Scope and SHA-256 snapshot
 
 | Suite-relative file | SHA-256 |
 | --- | --- |
-| apps/server/src/provider/Layers/LiteTuiAdapter.ts | 52A76A073510BEF679959A7361B5933F4779842D42D754B250A5BB3723047746 |
-| apps/server/src/provider/Layers/LiteTuiQuestionEvents.ts | E7D840516ABA8489E0EBDA3A6894A51D9489E94390D9DBEB9B515C09B63D7546 |
-| apps/server/src/provider/Layers/LiteTuiQuestionEvents.test.ts | F17AE03BDC34AFE0CC9C74AB048C9FA63CCEBAAB3934D719447F2B1543C2C98E |
-| apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts | 59EE73389FAAD38E7C07DB2413505CB3848C14C8AEC8556F60A33182E57AF804 |
-| packages/contracts/src/providerRuntime.ts | 6A2198CB454F23BDADFAD31BF5AC7B1022593BBC32274675893A9F9B33003F59 |
-| apps/web/src/session-logic.test.ts | 5D598A44741504B71A65A9AA4964F86B77AC6D4DFDF75621CF4613812662EC06 |
+| apps/server/src/provider/Layers/LiteTuiAdapter.ts | 3142057BA13C8768FA4A783EAD7CF192C54DC807085ED09E426C7AAE7AC7937F |
+| apps/server/src/provider/Layers/LiteTuiQuestionEvents.ts | BCE761514337F6CF03D7F6C9B6412C2297D9D72129C2139CF5BF262BC70E8831 |
+| apps/server/src/provider/Layers/LiteTuiQuestionEvents.test.ts | 53217C5E22BBC6CAE45DB5C6D0E4F0C6AC9266AB11349D12FCD5C926F678A28D |
+| apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts | 23E723A04F036E8E8C1540D40BDDC6DFF8D94F940F2F757D4956DB1284A476BA |
+| packages/contracts/src/providerRuntime.ts | 82488E3B2B4C886ED1FCB33B1973E25AFA18D5BD58B4109F257D3554606C7C97 |
+| apps/web/src/session-logic.test.ts | FA0EAF70EEDCB9D1A0D88C897A3464DC8D970568D93A7892FA842FD627B54D9C |
 
 ## Validation
 
-- apps/server: `bun run test -- src/provider/Layers/LiteTuiQuestionEvents.test.ts src/provider/Layers/LiteTuiToolEvents.test.ts`: 21 passed (9 question, 12 tool).
+- apps/server: `bun run test -- src/provider/Layers/LiteTuiQuestionEvents.test.ts src/provider/Layers/LiteTuiToolEvents.test.ts`: 21 passed (9 question, 12 tool) at initial checkpoint. Follow-up question-only run: 15 passed, covering the extracted production Stop path.
 - packages/contracts: `bun run test -- src/providerRuntime.test.ts src/providerRuntime.turnCompleted.test.ts`: 8 passed.
 - apps/web: `bun run test -- src/session-logic.test.ts`: 49 passed.
 - `bun run typecheck` in apps/server, packages/contracts, and apps/web passed. Server retains
@@ -53,3 +53,26 @@ no tsconfig weakening or test-only production shim was introduced.
 
 Full adapter runtime, packaged transport, GUI restore/reply flows and remaining
 C1-C10 gates are not established by these isolated tests. No release clearance.
+
+
+## Stop compatibility follow-up
+
+Sentinel found that the initial evidence-only Stop implementation regressed older
+children that never acknowledge abort. The adapter now calls the tested production
+`LiteTuiQuestionEvents.interrupt` path. It closes legacy question UI locally before
+sending, captures the request set, and preserves native questions on generic ACK or
+timeout. Delayed answer ACK cannot replace local cancellation with consent. New
+questions are not included in an older Stop. Failed Stop still rejects through the
+adapter's ProviderAdapterProcessError; the existing ProviderCommandReactor records
+provider.turn.interrupt.failed (source inspection, not a live failure probe).
+
+Cancellation origin is explicit through schema and ingestion: host -> User input
+cancelled locally; native -> User input cancelled; process -> User input closed
+after process termination. Successful answers retain their prior payload shape.
+Old cancellation payloads without source still decode. Malformed versioned requests
+are rejected rather than downgraded to legacy. The compatibility boundary is per
+request wire version, not a guessed installed runtime version.
+
+Follow-up: 15 question helper/control-path tests, 49 web session-logic tests, and 8
+runtime contract tests pass. Server, contracts and web typechecks pass. These are
+synthetic tests, with no child/provider launches. Suite edits remain uncommitted.
