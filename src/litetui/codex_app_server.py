@@ -249,6 +249,39 @@ class AppServerTransport:
         stream = AppServerStream(self._stream(kwargs))
         return stream if kwargs.get("stream", False) else await collect(stream)
 
+    async def refresh_history(self):
+        """Read saved native history without resuming or starting a model turn."""
+        if self.app is None:
+            return 0
+        conversation = self.app.conversation
+        length = len(conversation)
+        backend = self.app.backend
+        reference = next((m.get("provider_metadata", {}).get("app_server_thread_id")
+                          for m in reversed(conversation)
+                          if m.get("provider_metadata", {}).get("provider") == "codex"), None)
+        if not reference:
+            return 0
+
+        def current():
+            return (self.app.conversation is conversation and len(conversation) == length
+                    and self.app.backend is backend
+                    and not getattr(self.app, "_chat_running", lambda: False)())
+
+        async with self.lock:
+            if not current():
+                return 0
+            await self.server.start()
+            history = await self.server.request(
+                "thread/read", {"threadId": reference, "includeTurns": True})
+            if not current():
+                return 0
+            thread = history.get("thread", {})
+            if thread.get("id") != reference:
+                raise ProviderError("Codex returned history for a different thread.")
+            from litetui.codex_history import reconcile
+
+            return await reconcile(self.app, thread)
+
     async def compact(self):
         async with self.lock:
             reference = next(

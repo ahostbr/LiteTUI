@@ -2750,6 +2750,25 @@ class LiteTUI(App):
         self._sync_fleet_identity()
         (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
+        self._render_resumed(path)
+        if hasattr(self.backend, "app_server"):
+            self._refresh_native_history(path)
+
+    @work(exclusive=True, group="native-history")
+    async def _refresh_native_history(self, path: Path) -> None:
+        conversation = self.conversation
+        backend = self.backend
+        try:
+            changed = await model_transport.for_app(self).refresh_history()
+        except (model_transport.ProviderError, OSError, TimeoutError):
+            if self.conversation is conversation and self.backend is backend:
+                self._system("Native history could not be refreshed; saved activity is still available.")
+            return
+        if (changed and self.conversation is conversation and self.backend is backend
+                and not self._chat_running()):
+            self._render_resumed(path)
+
+    def _render_resumed(self, path: Path) -> None:
         log = self.query_one("#chat-log")
         log.remove_children()
         # 🔴 THE LOG IS NEW, SO THE ANCHOR IS MEANINGLESS (T706). `_scroll_down`
@@ -2764,7 +2783,7 @@ class LiteTUI(App):
         users = assistants = tools = 0
         native_tools = 0
         native_seen = set()
-        for m in msgs:
+        for m in self.conversation:
             role = m.get("role")
             text = self._flatten(m.get("content"))
             if role == "user":

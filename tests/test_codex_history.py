@@ -112,3 +112,65 @@ async def test_real_transport_resume_reconciles_without_resending_history():
     sent = next(params for method, params in server.requests if method == "turn/start")
     assert sent["input"] == [{"type": "text", "text": "next", "text_elements": []}]
     await stream.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("race", [None, "switch", "append", "backend", "chat"])
+async def test_refresh_reads_only_and_discards_stale_results(race):
+    from test_codex_app_server import Server
+
+    from litetui.codex_app_server import AppServerTransport
+
+    app = host()
+    app.backend = object()
+    app._chat_running = lambda: False
+    original = app.conversation
+
+    class ReadServer(Server):
+        async def request(self, method, params):
+            self.requests.append((method, params))
+            assert method == "thread/read"
+            assert params == {"threadId": "thread", "includeTurns": True}
+            if race == "switch":
+                app.conversation = []
+            elif race == "append":
+                app.conversation.append({"role": "user", "content": "new"})
+            elif race == "backend":
+                app.backend = object()
+            elif race == "chat":
+                app._chat_running = lambda: True
+            return {"thread": history({"id": "a", "type": "agentMessage", "text": "done"})}
+
+    server = ReadServer()
+    changed = await AppServerTransport(server, app).refresh_history()
+    assert changed == (1 if race is None else 0)
+    assert len(server.requests) == 1
+    assert ("display_trace" in original[0]["provider_metadata"]) == (race is None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["changed", "unchanged", "error", "switched"])
+async def test_reopen_worker_redraws_only_current_changed_history(monkeypatch, outcome):
+    from pathlib import Path
+
+    from litetui import model_transport
+    from litetui.app import LiteTUI
+
+    app = host()
+    app.backend = object()
+    app._chat_running = lambda: False
+    rendered, notes = [], []
+    app._render_resumed = rendered.append
+    app._system = notes.append
+
+    async def refresh():
+        if outcome == "error":
+            raise model_transport.ProviderError("unavailable")
+        if outcome == "switched":
+            app.conversation = []
+        return 0 if outcome == "unchanged" else 1
+
+    monkeypatch.setattr(model_transport, "for_app", lambda value: SimpleNamespace(refresh_history=refresh))
+    await LiteTUI._refresh_native_history.__wrapped__(app, Path("conversation.jsonl"))
+    assert len(rendered) == (1 if outcome == "changed" else 0)
+    assert len(notes) == (1 if outcome == "error" else 0)
