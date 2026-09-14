@@ -3690,7 +3690,7 @@ class LiteTUI(App):
         time one of them learns about a new chip.
         """
         s = self.settings
-        subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
+        subs, bg = tasks_mod.live_for_app(self)
         items = ["authority"]  # never hidden — see the note in ctx_label_text
         # PLAN SITS WHERE IT IS DRAWN, second. This list and the renderer are
         # the same order on purpose: Left/Right that walks a different sequence
@@ -3864,7 +3864,7 @@ class LiteTUI(App):
         # is built by things that are not a whole app (the FakeApp in
         # tests/test_footer.py is one), and a readout that CRASHES because a
         # registry has not been constructed is worse than one that shows nothing.
-        subs, bg = tasks_mod.split_live(getattr(self, "bg_tasks", {}).values())
+        subs, bg = tasks_mod.live_for_app(self)
         if s.footer_show_bg and bg:
             add("bg", f"bg:{len(bg)}", "#7aa2f7", chip="bg")
         if s.footer_show_subagents and subs:

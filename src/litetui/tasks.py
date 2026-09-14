@@ -352,6 +352,15 @@ def live(tasks) -> list:
     )
 
 
+def live_for_app(app):
+    """Shared visible rows; provider rows never enter the host process store."""
+    host = list(getattr(app, "bg_tasks", {}).values())
+    native = [row for row in getattr(app, "codex_native_activity", {}).values()
+              if row.convo_id == getattr(app, "convo_id", None)
+              and getattr(getattr(app, "backend", None), "name", None) == "codex"]
+    return split_live([*host, *native])
+
+
 def split_live(tasks) -> tuple[list, list]:
     """(subagents, background processes), both running, both newest first.
 

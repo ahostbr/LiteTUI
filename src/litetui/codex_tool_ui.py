@@ -44,6 +44,9 @@ class CodexToolUI:
         self.compaction_started = {}
 
     def emit(self, event):
+        from litetui.codex_tasks import update
+
+        update(self.app, {"threadId": self.thread_id, "turnId": self.turn_id, **event})
         if event.get("type") == "tool_result":
             # LiteSuite's existing adapter reads text; LiteGUI reads result.
             event = {**event, "text": event.get("result", "")}

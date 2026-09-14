@@ -31,7 +31,7 @@ async def reconcile(app, thread):
                 continue
             # The existing presentation mapper has no execution capability.
             # A sink suppresses RPC and widget mounting during reconciliation.
-            sink = SimpleNamespace(_rpc=True, _rpc_emit=lambda event: None)
+            sink = SimpleNamespace(_rpc=True, _rpc_emit=lambda event: None, _native_activity_disabled=True)
             ui = CodexToolUI(sink, thread_id=thread["id"], turn_id=turn_id)
             native_order = []
             for item in turn.get("items", []):

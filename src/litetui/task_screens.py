@@ -58,7 +58,7 @@ def _live(app) -> tuple[list, list]:
     reason the footer uses it: these bodies are built against apps that are not
     a whole app, and a panel that CRASHES on a missing registry is worse than
     one that shows nothing."""
-    return tasks_mod.split_live(getattr(app, "bg_tasks", {}).values())
+    return tasks_mod.live_for_app(app)
 
 
 def _clip(text: str, lines: int = PROMPT_LINES) -> str:
@@ -75,6 +75,10 @@ def _clip(text: str, lines: int = PROMPT_LINES) -> str:
 def bg_row(task) -> str:
     """One background process: what it is, how long it has been at it."""
     label = task.label or "(no command)"
+    if hasattr(task, "thread_id"):
+        return (f"{task.id}  Codex-owned operation · {fmt_dur(task.seconds)} · {task.state}\n"
+                f"{label}\nThread: {task.thread_id}\nTurn: {task.turn_id}\nItem: {task.item_id}\n"
+                "Stop Codex turn stops all sibling operations in this turn.")
     return f"{task.id}  {task.tool}  ·  {fmt_dur(task.seconds)}  ·  {task.state}\n{label}"
 
 
@@ -160,6 +164,8 @@ class _LiveTaskBody(Widget):
                     markup=False,
                 )
         with Horizontal(classes="lt-buttons"):
+            if any(hasattr(task, "thread_id") for task in rows):
+                yield Button("Stop Codex turn", variant="warning", classes="lt-stop-codex")
             yield Button("Close", variant="primary", classes="lt-close")
             yield SwapButton(classes="inline")
 
@@ -211,13 +217,18 @@ class _LiveTaskBody(Widget):
     def _close(self) -> None:
         close_dialog(self, None)
 
+    @on(Button.Pressed, ".lt-stop-codex")
+    def _stop_codex(self) -> None:
+        if any(hasattr(task, "thread_id") for task in self.rows()):
+            self.app.action_stop_turn()
+
 
 class BackgroundProcessesBody(_LiveTaskBody):
     """Named `*Body`, not `*Screen`, because it is host-agnostic like every other
     dialog here (`LoopListBody`, `MCPListBody`): `side_panel` decides whether it
     lands in a modal or the sidebar."""
 
-    TITLE = "Background processes"
+    TITLE = "Background and Codex activity"
     EMPTY = (
         "Nothing running in the background. A tool call becomes one when it is "
         "asked to (background=true) or when it outlives "
