@@ -5,6 +5,50 @@ from types import SimpleNamespace
 
 from litetui.codex_tool_ui import CodexToolUI
 from litetui.codex_trace import records
+from litetui.model_transport import ProviderError
+
+
+async def hydrate(server, thread):
+    """Honor the native thread's persisted legacy/paginated history contract."""
+    if thread.get("historyMode", "legacy") != "paginated":
+        return thread
+    turns, cursors = {}, set()
+    cursor = None
+    while True:
+        params = {"threadId": thread["id"], "itemsView": "full", "sortDirection": "asc", "limit": 100}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = await server.request("thread/turns/list", params)
+        data = page.get("data")
+        if not isinstance(data, list):
+            raise ProviderError("Codex returned an invalid history page.")
+        for turn in data:
+            if (not isinstance(turn, dict) or not isinstance(turn.get("id"), str)
+                    or not isinstance(turn.get("items"), list)
+                    or turn.get("itemsView", "full") != "full"):
+                raise ProviderError("Codex returned incomplete turn history.")
+            turns[turn["id"]] = turn
+        cursor = page.get("nextCursor")
+        if cursor is None:
+            break
+        if not isinstance(cursor, str) or not cursor or cursor in cursors:
+            raise ProviderError("Codex history pagination did not advance.")
+        cursors.add(cursor)
+    return {**thread, "turns": list(turns.values())}
+
+
+async def read(server, reference):
+    response = await server.request("thread/read", {"threadId": reference, "includeTurns": False})
+    thread = response.get("thread", {})
+    if thread.get("id") != reference:
+        raise ProviderError("Codex returned history for a different thread.")
+    if thread.get("historyMode", "legacy") == "paginated":
+        return await hydrate(server, thread)
+    response = await server.request("thread/read", {"threadId": reference, "includeTurns": True})
+    thread = response.get("thread", {})
+    if thread.get("id") != reference:
+        raise ProviderError("Codex returned history for a different thread.")
+    return thread
 
 
 async def reconcile(app, thread):

@@ -271,15 +271,11 @@ class AppServerTransport:
             if not current():
                 return 0
             await self.server.start()
-            history = await self.server.request(
-                "thread/read", {"threadId": reference, "includeTurns": True})
+            from litetui.codex_history import read, reconcile
+
+            thread = await read(self.server, reference)
             if not current():
                 return 0
-            thread = history.get("thread", {})
-            if thread.get("id") != reference:
-                raise ProviderError("Codex returned history for a different thread.")
-            from litetui.codex_history import reconcile
-
             return await reconcile(self.app, thread)
 
     async def compact(self):
@@ -626,9 +622,9 @@ class AppServerTransport:
                     )
                     if opened.get("thread", {}).get("id") != reference:
                         raise ProviderError("Codex resumed a different thread than requested.")
-                    from litetui.codex_history import reconcile
+                    from litetui.codex_history import hydrate, reconcile
 
-                    await reconcile(self.app, opened["thread"])
+                    await reconcile(self.app, await hydrate(self.server, opened["thread"]))
                 else:
                     from litetui.codex_inventory import build_inventory
 

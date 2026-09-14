@@ -83,7 +83,8 @@ async def test_missing_tool_is_inserted_before_saved_final_answer():
 
 
 @pytest.mark.asyncio
-async def test_real_transport_resume_reconciles_without_resending_history():
+@pytest.mark.parametrize("history_mode", ["legacy", "paginated"])
+async def test_real_transport_resume_reconciles_without_resending_history(history_mode):
     from test_codex_app_server import Server
 
     from litetui.codex_app_server import AppServerTransport
@@ -92,7 +93,14 @@ async def test_real_transport_resume_reconciles_without_resending_history():
         async def request(self, method, params):
             if method == "thread/resume":
                 self.requests.append((method, params))
-                return {"thread": history({"id": "a", "type": "agentMessage", "text": "old"})}
+                thread = history({"id": "a", "type": "agentMessage", "text": "old"})
+                thread["historyMode"] = history_mode
+                if history_mode == "paginated":
+                    thread["turns"] = []
+                return {"thread": thread}
+            if method == "thread/turns/list":
+                self.requests.append((method, params))
+                return {"data": history({"id": "a", "type": "agentMessage", "text": "old"})["turns"]}
             return await super().request(method, params)
 
     app = host()
@@ -130,7 +138,7 @@ async def test_refresh_reads_only_and_discards_stale_results(race):
         async def request(self, method, params):
             self.requests.append((method, params))
             assert method == "thread/read"
-            assert params == {"threadId": "thread", "includeTurns": True}
+            assert params == {"threadId": "thread", "includeTurns": len(self.requests) == 2}
             if race == "switch":
                 app.conversation = []
             elif race == "append":
@@ -144,7 +152,7 @@ async def test_refresh_reads_only_and_discards_stale_results(race):
     server = ReadServer()
     changed = await AppServerTransport(server, app).refresh_history()
     assert changed == (1 if race is None else 0)
-    assert len(server.requests) == 1
+    assert len(server.requests) == 2
     assert ("display_trace" in original[0]["provider_metadata"]) == (race is None)
 
 
@@ -192,6 +200,7 @@ async def test_partial_native_answer_is_recovered_without_claiming_completion(st
 
 @pytest.mark.asyncio
 async def test_rendered_recovery_replaces_saved_cards_without_duplicates(monkeypatch):
+    from _settle import settle_until
     from test_deny_stops_the_turn import _app
 
     from litetui.codex_app_server import AppServer
@@ -215,14 +224,16 @@ async def test_rendered_recovery_replaces_saved_cards_without_duplicates(monkeyp
         await pilot.pause()
         log = app.query_one("#chat-log")
         log.scroll_to(y=5, animate=False, force=True)
-        await pilot.pause()
+        assert await settle_until(pilot, lambda: log.scroll_y == 5)
         position = log.scroll_y
         assert position > 0
         await reconcile(app, history({"id": "cmd", "type": "commandExecution",
                                       "command": "echo", "status": "completed",
                                       "aggregatedOutput": "recovered\n" * 60, "exitCode": 0}))
         app._render_resumed(app.convo_path, preserve_view=True)
-        await pilot.pause()
+        assert await settle_until(pilot, lambda: log.scroll_y == position
+                                  and len(app.query(ToolMessage)) == 1
+                                  and next(iter(app.query(ToolMessage)))._ok is True)
         cards = list(app.query(ToolMessage))
         assert len(cards) == 1 and cards[0]._ok is True
         assert cards[0].expanded is True
