@@ -591,6 +591,11 @@ class AppServerTransport:
                     opened = await self.server.request(
                         "thread/resume", {"threadId": reference}
                     )
+                    if opened.get("thread", {}).get("id") != reference:
+                        raise ProviderError("Codex resumed a different thread than requested.")
+                    from litetui.codex_history import reconcile
+
+                    await reconcile(self.app, opened["thread"])
                 else:
                     from litetui.codex_inventory import build_inventory
 
@@ -680,6 +685,7 @@ class AppServerTransport:
                 "provider": "codex",
                 "model": model,
                 "app_server_thread_id": self.thread_id,
+                "app_server_turn_id": self.turn_id,
                 "instructions_digest": instructions_digest,
             }
             if registered_inventory is not None:
