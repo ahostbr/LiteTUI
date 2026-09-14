@@ -81,11 +81,11 @@ async def reconcile(app, thread):
             for item in turn.get("items", []):
                 if not isinstance(item, dict) or not item.get("id"):
                     continue
-                if item.get("type") in ("userMessage", "reasoning", "plan"):
+                if item.get("type") in ("userMessage", "reasoning"):
                     continue
                 terminal = item.get("status") in (
                     "completed", "failed", "declined", "cancelled", "interrupted")
-                partial_message = (item.get("type") == "agentMessage"
+                partial_message = (item.get("type") in ("agentMessage", "plan")
                                    and turn.get("status") in ("interrupted", "failed", "inProgress"))
                 if not terminal and not partial_message and (item.get("status") is not None
                                      or turn.get("status") != "completed"):

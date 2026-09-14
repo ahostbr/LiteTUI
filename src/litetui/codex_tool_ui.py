@@ -40,6 +40,8 @@ class CodexToolUI:
         self.progress_timers = {}
         self.progress_at = {}
         self.plan_card = None
+        self.proposed_plan_cards = {}
+        self.proposed_plan_text = {}
         self.compactions = {}
         self.compaction_started = {}
 
@@ -141,6 +143,32 @@ class CodexToolUI:
             state="completed",
         )
 
+    async def proposed_plan(self, item, completed=False, *, delta=False):
+        key = item.get("itemId") if delta else item.get("id")
+        if not self.app or not key or key in self.finished:
+            return
+        if not delta and not completed and key in self.records:
+            return  # A late/replayed start cannot erase streamed content.
+        text = ((self.proposed_plan_text.get(key, "") + item.get("delta", ""))
+                if delta else item.get("text", ""))
+        self.proposed_plan_text[key] = text
+        displayed = clean(text)
+        if not getattr(self.app, "_rpc", False):
+            card = self.proposed_plan_cards.get(key)
+            if card is None:
+                card = FoldBlock("Codex proposed plan", "", expanded=True)
+                self.proposed_plan_cards[key] = card
+                await self.app.query_one("#chat-log").mount(card)
+            card.body.content = Text(displayed)
+            self.app._scroll_down()
+        state = "completed" if completed else "running"
+        self.record(key, kind="plan", name="Codex proposed plan", result=displayed, state=state)
+        self.emit({"type": "plan_update", "id": key, "planType": "proposed",
+                   "text": displayed, "status": state})
+        if completed:
+            self.finished.add(key)
+            self.proposed_plan_text.pop(key, None)
+
     async def compaction(self, item, completed):
         key = item["id"]
         if not completed and key not in self.compactions:
@@ -202,7 +230,10 @@ class CodexToolUI:
 
     async def item(self, item, completed=False):
         kind, key = item.get("type"), item.get("id")
-        if not self.app or not key or kind in ("userMessage", "reasoning", "plan"):
+        if not self.app or not key or kind in ("userMessage", "reasoning"):
+            return
+        if kind == "plan":
+            await self.proposed_plan(item, completed)
             return
         if kind == "agentMessage":
             self.record(
@@ -363,10 +394,15 @@ class CodexToolUI:
         self.progress_at.clear()
         for key, record in list(self.records.items()):
             if (
-                record.get("kind") == "agentMessage"
+                record.get("kind") in ("agentMessage", "plan")
                 and record.get("state") == "running"
             ):
                 self.record(key, state="interrupted")
+                if record.get("kind") == "plan":
+                    self.emit({"type": "plan_update", "id": key, "planType": "proposed",
+                               "text": record.get("result", ""), "status": "interrupted"})
+                    self.finished.add(key)
+        self.proposed_plan_text.clear()
         for key, (widget, started, name) in self.calls.items():
             if widget:
                 widget.set_result(

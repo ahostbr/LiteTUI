@@ -42,9 +42,9 @@ def replay(app, metadata, seen):
                 card.body.set_markdown(record["result"])
             continue
         if record.get("kind") == "plan":
-            app.query_one("#chat-log").mount(
-                FoldBlock("Codex plan", record.get("result", ""), expanded=False)
-            )
+            card = FoldBlock(record.get("name", "Codex plan"), record.get("result", ""), expanded=False)
+            card.codex_trace_identity = key
+            app.query_one("#chat-log").mount(card)
             continue
         count += 1
         card = ToolMessage(record.get("name", "Codex tool"))
@@ -67,14 +67,14 @@ def replay(app, metadata, seen):
 def capture_view(app):
     """Keep local reader state separately from persisted native activity."""
     log = app.query_one("#chat-log")
-    folds = {card.codex_trace_identity: card.expanded for card in app.query(ToolMessage)
+    folds = {card.codex_trace_identity: card.expanded for card in app.query(FoldBlock)
              if hasattr(card, "codex_trace_identity")}
     return log.scroll_y, folds
 
 
 def restore_view(app, view):
     scroll_y, folds = view
-    for card in app.query(ToolMessage):
+    for card in app.query(FoldBlock):
         key = getattr(card, "codex_trace_identity", None)
         if key in folds:
             card.set_expanded(folds[key])

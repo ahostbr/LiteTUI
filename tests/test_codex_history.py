@@ -204,7 +204,7 @@ async def test_rendered_recovery_replaces_saved_cards_without_duplicates(monkeyp
     from test_deny_stops_the_turn import _app
 
     from litetui.codex_app_server import AppServer
-    from litetui.widgets import ToolMessage
+    from litetui.widgets import FoldBlock, ToolMessage
 
     async def forbid_start(*args):
         pytest.fail("offline render test attempted to start Codex")
@@ -215,12 +215,20 @@ async def test_rendered_recovery_replaces_saved_cards_without_duplicates(monkeyp
         metadata = host(trace=[{"id": "cmd", "turnId": "turn", "kind": "commandExecution",
                                 "name": "command", "state": "interrupted",
                                 "result": "disconnected\n" * 60, "ok": False}]).conversation[0]["provider_metadata"]
+        metadata["display_trace"]["items"].extend([
+            {"id": "plan:turn", "turnId": "turn", "kind": "plan", "result": "First plan"},
+            {"id": "plan:other", "turnId": "other", "kind": "plan", "result": "Second plan"},
+        ])
         app.conversation = ([{"role": "user", "content": f"Earlier message {i}"} for i in range(15)]
                             + [{"role": "user", "content": "original", "provider_metadata": metadata}])
         app._render_resumed(app.convo_path)
         await pilot.pause()
         assert len(app.query(ToolMessage)) == 1
         next(iter(app.query(ToolMessage))).set_expanded(True)
+        plans = [card for card in app.query(FoldBlock) if not isinstance(card, ToolMessage)]
+        assert len(plans) == 2
+        plans[0].set_expanded(True)
+        assert plans[1].expanded is False
         await pilot.pause()
         log = app.query_one("#chat-log")
         log.scroll_to(y=5, animate=False, force=True)
@@ -237,6 +245,8 @@ async def test_rendered_recovery_replaces_saved_cards_without_duplicates(monkeyp
         cards = list(app.query(ToolMessage))
         assert len(cards) == 1 and cards[0]._ok is True
         assert cards[0].expanded is True
+        plans = [card for card in app.query(FoldBlock) if not isinstance(card, ToolMessage)]
+        assert [card.expanded for card in plans] == [True, False]
         assert log.scroll_y == position
         assert "recovered" in cards[0]._result
         app._render_resumed(app.convo_path)

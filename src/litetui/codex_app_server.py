@@ -876,6 +876,8 @@ class AppServerTransport:
                         tool_ui.progress(payload)
                     elif method == "turn/plan/updated":
                         await tool_ui.plan(payload)
+                    elif method == "item/plan/delta":
+                        await tool_ui.proposed_plan(payload, delta=True)
                     elif (
                         method == "turn/completed"
                         and payload.get("turn", {}).get("id") == self.turn_id
