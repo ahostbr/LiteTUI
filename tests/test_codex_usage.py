@@ -63,3 +63,30 @@ def test_missing_baseline_and_counter_reset_do_not_fabricate_usage():
     assert u.turn_usage == {}
     u = meter.update({})
     assert u.context_tokens is None and u.cache_write_tokens is None
+
+
+def test_counter_reset_is_detected_across_missing_usage_snapshots():
+    meter = NativeUsage(fresh=True)
+    meter.update(snapshot(2000, 100, 1800))
+    missing = meter.update({"last": {"totalTokens": 50}})
+    assert missing.total_tokens is None and missing.context_tokens == 50
+    reset = meter.update(snapshot(500, 20, 300))
+    assert reset.turn_usage == {}
+    assert reset.total_tokens is None
+    assert reset.context_tokens == 520
+
+
+def test_partial_snapshot_does_not_forget_counter_history():
+    meter = NativeUsage(fresh=True)
+    meter.update(snapshot(2000, 100, 1800))
+    partial = meter.update({"total": {"inputTokens": 2200}, "last": {"totalTokens": 2200}})
+    assert partial.prompt_tokens == 2200 and partial.completion_tokens is None
+    reset = meter.update({"total": {"inputTokens": 2500, "outputTokens": 50},
+                          "last": {"totalTokens": 550}})
+    assert reset.turn_usage == {} and reset.context_tokens == 550
+
+    growing = NativeUsage(fresh=True)
+    growing.update(snapshot(2000, 100, 1800))
+    growing.update({})
+    valid = growing.update(snapshot(2500, 150, 2000))
+    assert valid.total_tokens == 2650 and valid.cached_tokens == 2000

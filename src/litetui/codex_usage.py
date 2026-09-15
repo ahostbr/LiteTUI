@@ -28,6 +28,7 @@ class NativeUsage:
             if previous is not None
             else ({key: 0 for key in FIELDS} if fresh else {})
         )
+        self.observed_totals = dict(self.baseline)
         self.previous = None
         self.rebased = False
 
@@ -40,14 +41,16 @@ class NativeUsage:
         }
         if snapshot == self.previous:
             return None
-        if self.previous and any(
+        if any(
             cumulative[k] < v
-            for k, v in self.previous["total"].items()
+            for k, v in self.observed_totals.items()
             if k in cumulative
         ):
             self.rebased = True
-        if any(cumulative[k] < v for k, v in self.baseline.items() if k in cumulative):
-            self.rebased = True
+        # An omitted counter is unknown in this snapshot, not forgotten history.
+        # Keep prior observations solely for reset detection; never fill missing
+        # output fields from them or fabricate a current cumulative value.
+        self.observed_totals.update(cumulative)
         self.previous = snapshot
         aggregate = (
             {}
