@@ -18,6 +18,50 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-09-15
+
+The native Codex path. 0.22.x could drive Codex through the CLI; this release
+makes the official app-server a first-class transport rather than a second-best
+one, and most of the work is the unglamorous half — the counters, the history,
+the question lifecycle and the tool contract that the CLI path already had and
+the native path quietly did not.
+
+### Added
+- Async human questions survive turn completion, carry their origin through
+  shared RPC events, and their saved state reaches conversation exports.
+- Conversation exports retain embedded images and native activity.
+- Native history refreshes when a conversation is reopened, and saved display
+  traces reconcile on resume.
+- Provider-owned operations appear in shared task views.
+- Queued input steering with durable acceptance tracking.
+- Structured LiteGUI management and shared ownership in the runtime.
+
+### Fixed
+- **tok/s on the native path, which never had any.** A counter reset now
+  rebaselines the meter instead of blinding it, and usage publishes
+  independently of context changes.
+- Native thread history hydrates every page; recovery keeps partial history and
+  reader state instead of discarding both.
+- Tool registration is gated and fingerprinted, schema drift is refused before
+  host execution, and unknown native tools are rejected outright.
+- Compaction validates native identity first; tool events and the compaction
+  lifecycle are unified; cancellation latches scope to the new operation.
+- Delivery recovery no longer retries itself or crosses conversation switches.
+- MCP binary payloads stay out of display traces.
+- Hook failure verdicts survive Windows shells; native-supported denial is used
+  when hook policy is unavailable.
+- Background shells stop before process attachment, and process ownership
+  survives shell promotion.
+
+### Notes
+Verified in part. Live carry-forward was observed (output 10 cumulative / 5 per
+turn; cached 41728 cumulative / 29184 per turn) and per-turn `completion_tokens`
+was confirmed against production `NativeUsage`, which is rebuilt per turn from
+prior metadata. **Real reconnect and real compaction are untested**, the counter
+reset proof is synthetic, and the native rate has not been compared against the
+CLI rate. The scoped regression run was 419 pass / 7 fail; those 7 failures are
+unchanged relative to d798a6e but were **not** proven pre-existing on main.
+
 ## [0.22.2] — 2026-09-01
 
 Rendering hotfix: legacy consoles get a coherent scheme instead of broken
