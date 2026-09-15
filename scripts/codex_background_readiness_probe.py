@@ -12,8 +12,27 @@ from pathlib import Path
 from codex_mcp_turn_probe import gate_command, trust_gate
 
 from litetui.codex_app_server import AppServer
+from litetui.codex_history import read
 from litetui.codex_runtime import restart_readiness
 from litetui.model_transport import credential_path
+
+
+def history_diagnostic(item):
+    kind = item.get("type")
+    text = json.dumps({key: item[key] for key in ("text", "output", "error", "aggregatedOutput") if key in item}).lower()
+    phrases = {
+        "unified_exec_unavailable": "unified exec is unavailable",
+        "command_not_found": "not recognized", "file_not_found": "no such file",
+        "permission_denied": "permission denied", "sandbox": "sandbox",
+        "spawn_failure": "failed to spawn", "launch_failure": "failed to create",
+        "setup": "setup", "environment": "environment", "disabled": "disabled",
+        "timeout": "timeout", "windows": "windows", "unsupported": "unsupported",
+        "failed": "failed", "access": "access", "os_error": "os error",
+        "spawn": "spawn", "createprocess": "createprocess", "unavailable": "unavailable",
+        "policy": "policy",
+    }
+    return {"kind": kind if kind in ("functionCallOutput", "commandExecution", "agentMessage", "userMessage", "reasoning") else "other",
+            "signals": [name for name, phrase in phrases.items() if phrase in text]}
 
 
 def gate_program(command, marker, log):
@@ -45,7 +64,7 @@ async def probe(output):
         gate.write_text(gate_program(command, marker, log), encoding="utf-8")
         shutil.copy2(credential_path("codex"), root / "auth.json")
         hook_command = gate_command(gate)
-        server = AppServer(config_overrides=["features.hooks=true", "features.multi_agent=false", "features.multi_agent_v2=false",
+        server = AppServer(config_overrides=["features.hooks=true", "features.unified_exec=true", "features.multi_agent=false", "features.multi_agent_v2=false",
             'hooks.PreToolUse=[{matcher=".*",hooks=[{type="command",command='
             + json.dumps(hook_command) + ',timeout=10}]}]'])
         server.environment.update(CODEX_HOME=str(root), PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
@@ -91,6 +110,11 @@ async def probe(output):
                         break
                 evidence["pending_after_turn"] = len(server.runtime_activity.commands)
                 evidence["readiness_after_turn"] = await restart_readiness(server)
+                if not evidence["pending_after_turn"]:
+                    saved = await read(server, thread)
+                    evidence["history_diagnostics"] = [history_diagnostic(item)
+                        for row in saved.get("turns", []) if row.get("id") == evidence["turn_id"]
+                        for item in row.get("items", [])]
                 print(json.dumps({"phase": "turn_finished", "pending_commands": evidence["pending_after_turn"]}), flush=True)
                 phase = "await_native_exit"
                 while server.runtime_activity.commands:
@@ -112,6 +136,14 @@ async def probe(output):
             await server.close()
             evidence["app_server_closed"] = server.process is None or server.process.returncode is not None
             evidence["gates"] = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            diagnostics = []
+            for path in root.glob("sessions/**/*.jsonl"):
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    record = json.loads(line)
+                    payload = record.get("payload") or {}
+                    if record.get("type") == "response_item" and payload.get("type") == "function_call_output":
+                        diagnostics.append(history_diagnostic({"type": "functionCallOutput", "output": payload.get("output")}))
+            evidence["rollout_output_diagnostics"] = diagnostics
     evidence["temporary_home_removed"] = not root.exists()
     output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(evidence))

@@ -105,3 +105,6 @@ def test_background_probe_gate_allows_exactly_one_fixed_command(tmp_path, monkey
         allowed.append(json.loads(result.stdout) == {})
     assert allowed == [False, True, False, False, False]
     assert "PRIVATE" not in log.read_text()
+    diagnostic = module.history_diagnostic({"type": "functionCallOutput", "output": "PRIVATE: unified exec is unavailable in this session"})
+    assert diagnostic == {"kind": "functionCallOutput", "signals": ["unified_exec_unavailable", "unavailable"]}
+    assert module.history_diagnostic({"type": "PRIVATE", "arguments": "sandbox PRIVATE"}) == {"kind": "other", "signals": []}
