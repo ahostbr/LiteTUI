@@ -1,0 +1,12 @@
+{
+  "model_turn_started": false,
+  "environments": [
+    {
+      "status": "ready"
+    }
+  ],
+  "selection_reported": true,
+  "selected_count": 1,
+  "app_server_closed": true,
+  "temporary_home_removed": true
+}
