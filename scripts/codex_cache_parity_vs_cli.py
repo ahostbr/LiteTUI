@@ -31,8 +31,18 @@ TURNS = (FILLER + "\nReply with OK only.", "Reply with OK only.")
 
 
 async def collect(stream):
-    usage = []
+    """Returns (usage snapshots, last provider_metadata).
+
+    🔴 The metadata is not decoration. codex_app_server.py:633 recovers
+    `previous_usage` from `provider_metadata["native_usage"]["total"]` on the
+    PREVIOUS assistant message, and :760 uses it to baseline the next turn's
+    meter. A probe that drops it makes every turn look like turn one — turn
+    usage equals cumulative usage — and silently stops testing the per-turn
+    delta at all.
+    """
+    usage, metadata = [], None
     async for chunk in stream:
+        metadata = getattr(chunk, "provider_metadata", None) or metadata
         u = getattr(chunk, "usage", None)
         if u is not None:
             usage.append(
@@ -46,7 +56,7 @@ async def collect(stream):
                     "cache_write_tokens": getattr(u, "cache_write_tokens", None),
                 }
             )
-    return usage
+    return usage, metadata
 
 
 async def litetui_side():
@@ -62,13 +72,16 @@ async def litetui_side():
             stream = await transport.create(
                 model=MODEL, messages=messages, tools=[], stream=True
             )
-            usage = await collect(stream)
+            usage, metadata = await collect(stream)
             elapsed = time.monotonic() - started
             final = usage[-1] if usage else {}
             produced = final.get("completion_tokens")
             turns.append(
                 {
                     "snapshots": len(usage),
+                    "carried_baseline": bool(
+                        (metadata or {}).get("native_usage", {}).get("total")
+                    ),
                     "final": final,
                     "elapsed_s": round(elapsed, 3),
                     # 🔴 NOT the footer's number. The app's TpsState clock
@@ -84,7 +97,12 @@ async def litetui_side():
                     ),
                 }
             )
-            messages.append({"role": "assistant", "content": "OK"})
+            # Production-equivalent carry-forward: the app stores this metadata
+            # on the assistant record, and the NEXT turn baselines its meter on
+            # it. Without it the probe cannot exercise the per-turn delta.
+            messages.append(
+                {"role": "assistant", "content": "OK", "provider_metadata": metadata}
+            )
     finally:
         await server.close()
     return turns
