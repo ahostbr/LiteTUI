@@ -25,7 +25,20 @@ HOST_OUTPUT = Control(
     "host",
     "Applies to LiteTUI host-tool results. Codex built-in tool results remain managed by its engine.",
 )
+LOCAL_SERVER = Control(
+    "unsupported",
+    "Configures a local model server, not the Codex app-server. Saved values are preserved for local backends.",
+)
 CONTROLS = {
+    **dict.fromkeys(
+        (
+            "default_context_length", "lm_host", "lms_load_timeout_s",
+            "lmstudio_graded_thinking_models", "llama_executable", "llama_host",
+            "llama_attach_hosts", "llama_scan_litesuite", "llama_scan_lmstudio",
+            "llama_scan_hf_cache", "llama_models_dirs", "llama_models_max",
+        ),
+        LOCAL_SERVER,
+    ),
     **dict.fromkeys(
         (
             "temperature",

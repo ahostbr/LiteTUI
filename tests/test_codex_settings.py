@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 import pytest
 from textual.app import App
 
-from litetui.codex_settings import CONTROLS, loop_description
+from litetui.codex_settings import CONTROLS, LOCAL_SERVER, loop_description
 from litetui.settings import Settings
 from litetui.settings_screen import SettingsBody, SettingsScreen
 
@@ -11,7 +11,13 @@ from litetui.settings_screen import SettingsBody, SettingsScreen
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["codex", "lmstudio"])
 async def test_settings_explain_native_scope_and_preserve_local_values(backend):
-    settings = Settings(backend=backend, temperature=0.85, tool_iterations=123)
+    settings = Settings(
+        backend=backend, temperature=0.85, tool_iterations=123,
+        default_context_length=65536, lm_host="http://localhost:1235",
+        lms_load_timeout_s=333, llama_models_max=3, llama_scan_litesuite=False,
+        llama_models_dirs=["C:/synthetic models"],
+        lmstudio_graded_thinking_models=["synthetic/model"],
+    )
 
     class Host(App):
         model_id = "gpt-6-astra"
@@ -43,6 +49,9 @@ async def test_settings_explain_native_scope_and_preserve_local_values(backend):
         assert saved.temperature == 0.85
         assert saved.tool_iterations == 123
         assert saved.thinking_level == "medium"
+        for name, capability in CONTROLS.items():
+            if capability is LOCAL_SERVER:
+                assert getattr(saved, name) == getattr(settings, name), name
 
 
 def test_loop_description_does_not_claim_a_local_cap_for_codex():
