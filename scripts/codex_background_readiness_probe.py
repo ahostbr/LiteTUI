@@ -30,9 +30,31 @@ def history_diagnostic(item):
         "failed": "failed", "access": "access", "os_error": "os error",
         "spawn": "spawn", "createprocess": "createprocess", "unavailable": "unavailable",
         "policy": "policy",
+        "rejected": "rejected", "blocked": "blocked", "approval": "approval",
     }
     return {"kind": kind if kind in ("functionCallOutput", "commandExecution", "agentMessage", "userMessage", "reasoning") else "other",
             "signals": [name for name, phrase in phrases.items() if phrase in text]}
+
+
+def rollout_diagnostics(root, reported):
+    paths = []
+    if isinstance(reported, str):
+        candidate = Path(reported).resolve()
+        if candidate.is_relative_to(root.resolve()) and candidate.is_file():
+            paths.append(candidate)
+    paths.extend(path for path in root.glob("sessions/**/*.jsonl") if path not in paths)
+    diagnostics = []
+    for path in paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            payload = record.get("payload") or {}
+            if record.get("type") == "response_item" and payload.get("type") in (
+                "function_call_output", "custom_tool_call_output"
+            ):
+                diagnostic = history_diagnostic({"type": "functionCallOutput", "output": payload.get("output")})
+                diagnostic["custom_tool"] = payload["type"] == "custom_tool_call_output"
+                diagnostics.append(diagnostic)
+    return {"files_read": len(paths), "outputs": diagnostics}
 
 
 def gate_program(command, marker, log):
@@ -69,15 +91,18 @@ async def probe(output):
             + json.dumps(hook_command) + ',timeout=10}]}]'])
         server.environment.update(CODEX_HOME=str(root), PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
         thread = turn = None
+        rollout_path = None
         phase = "setup"
         try:
             async with asyncio.timeout(100):
                 await server.start()
                 evidence["hook_trust"] = await trust_gate(server, root, hook_command)
-                thread = (await server.request("thread/start", {
+                opened = await server.request("thread/start", {
                     "model": "gpt-6-astra", "cwd": str(root), "approvalPolicy": "never", "sandbox": "read-only",
                     "baseInstructions": "This is a synthetic command lifecycle test. Execute only the exact supplied command once with exec_command, yield_time_ms 1000. Immediately reply DONE after the tool yields a running session. Do not poll, wait, inspect files, use write_stdin, or run any other command. Never delegate.",
-                }))["thread"]["id"]
+                })
+                thread = opened["thread"]["id"]
+                rollout_path = opened["thread"].get("path")
                 phase = "model_turn"
                 turn = (await server.request("turn/start", {"threadId": thread, "effort": "medium",
                     "input": [{"type": "text", "text": "Run this exact command once, yield_time_ms=1000, then immediately reply DONE: " + command}],
@@ -136,14 +161,7 @@ async def probe(output):
             await server.close()
             evidence["app_server_closed"] = server.process is None or server.process.returncode is not None
             evidence["gates"] = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
-            diagnostics = []
-            for path in root.glob("sessions/**/*.jsonl"):
-                for line in path.read_text(encoding="utf-8").splitlines():
-                    record = json.loads(line)
-                    payload = record.get("payload") or {}
-                    if record.get("type") == "response_item" and payload.get("type") == "function_call_output":
-                        diagnostics.append(history_diagnostic({"type": "functionCallOutput", "output": payload.get("output")}))
-            evidence["rollout_output_diagnostics"] = diagnostics
+            evidence["rollout_output_diagnostics"] = rollout_diagnostics(root, rollout_path)
     evidence["temporary_home_removed"] = not root.exists()
     output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(evidence))

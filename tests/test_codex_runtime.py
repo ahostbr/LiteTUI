@@ -108,3 +108,24 @@ def test_background_probe_gate_allows_exactly_one_fixed_command(tmp_path, monkey
     diagnostic = module.history_diagnostic({"type": "functionCallOutput", "output": "PRIVATE: unified exec is unavailable in this session"})
     assert diagnostic == {"kind": "functionCallOutput", "signals": ["unified_exec_unavailable", "unavailable"]}
     assert module.history_diagnostic({"type": "PRIVATE", "arguments": "sandbox PRIVATE"}) == {"kind": "other", "signals": []}
+
+
+def test_background_diagnostic_reads_custom_outputs_only_inside_probe_home(tmp_path, monkeypatch):
+    import importlib
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    module = importlib.import_module("codex_background_readiness_probe")
+    root = tmp_path / "probe"
+    root.mkdir()
+    payload = json.dumps({"type": "response_item", "payload": {
+        "type": "custom_tool_call_output", "output": "PRIVATE CreateProcess rejected: blocked by policy"}})
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(payload)
+    assert module.rollout_diagnostics(root, str(outside)) == {"files_read": 0, "outputs": []}
+    own = root / "reported-rollout.jsonl"
+    own.write_text(payload)
+    result = module.rollout_diagnostics(root, str(own))
+    assert result == {"files_read": 1, "outputs": [{"kind": "functionCallOutput", "custom_tool": True,
+                                                    "signals": ["createprocess", "policy", "rejected", "blocked"]}]}
+    assert "PRIVATE" not in json.dumps(result)
