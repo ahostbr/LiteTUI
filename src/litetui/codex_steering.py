@@ -265,10 +265,10 @@ async def recover_queue_head(app, server):
         return False
     if entry["state"] != "accepted":
         try:
+            from litetui.codex_history import read
+
             await server.start()
-            history = await server.request(
-                "thread/read", {"threadId": entry["threadId"], "includeTurns": True}
-            )
+            history = {"thread": await read(server, entry["threadId"])}
         except (ProviderError, TimeoutError, OSError):
             return False
         if not item["_codex_ledger"].reconcile(entry, history):
@@ -294,13 +294,13 @@ def message_state(app, message, state):
 
 
 async def reconcile_messages(app, server, messages):
+    from litetui.codex_history import read
+
     for message in messages:
         delivery = message.get("codex_delivery") or {}
         if delivery.get("state") != "sending":
             continue
-        history = await server.request(
-            "thread/read", {"threadId": delivery["threadId"], "includeTurns": True}
-        )
+        history = {"thread": await read(server, delivery["threadId"])}
         accepted = history.get("thread", {}).get("id") == delivery["threadId"] and any(
             item.get("type") == "userMessage" and item.get("clientId") == delivery["id"]
             for turn in history.get("thread", {}).get("turns", [])

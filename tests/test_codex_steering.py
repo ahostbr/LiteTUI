@@ -338,7 +338,7 @@ async def test_uncertain_fallback_is_not_resent_without_matching_thread_identity
         }
 
     server = NS(request=request)
-    with pytest.raises(ProviderError, match="uncertain delivery"):
+    with pytest.raises(ProviderError, match="different thread"):
         await reconcile_messages(None, server, [message])
     assert message["codex_delivery"]["state"] == "sending"
     actual = "wanted"
@@ -407,3 +407,58 @@ async def test_uncertain_delivery_survives_actual_conversation_store_reload(tmp_
         assert restored["admission"]["source"] == "queued"
     finally:
         store.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["queue", "message"])
+@pytest.mark.parametrize("broken", [False, True])
+async def test_delivery_recovery_honors_paginated_history(route, broken):
+    from types import SimpleNamespace as NS
+
+    from litetui.codex_steering import (
+        reconcile_messages,
+        recover_queue_head,
+        restore_queue,
+    )
+
+    entry = {"id": "client", "threadId": "thread", "turnId": "turn", "state": "sending",
+             "item": {"content": "explicit answer"}}
+    messages = [{"role": "user", "content": "original", "provider_metadata": {"steering": [entry]}}]
+    app = NS(conversation=messages, _pending_input=[], _edit=lambda *args: None,
+             _append=messages.append, settings=NS(tool_policy_profile="scheduled"))
+    restore_queue(app)
+    materialized = {"role": "user", "content": "explicit answer",
+                    "codex_delivery": {"id": "client", "threadId": "thread", "state": "sending"}}
+    calls = []
+
+    async def start():
+        pass
+
+    async def request(method, params):
+        calls.append((method, params))
+        assert params["threadId"] == "thread"
+        if method == "thread/read":
+            assert params["includeTurns"] is False
+            return {"thread": {"id": "thread", "historyMode": "paginated", "turns": []}}
+        assert method == "thread/turns/list"  # Recovery must never resend input.
+        assert params["itemsView"] == "full"
+        if "cursor" not in params:
+            return {"data": [{"id": "older", "items": []}], "nextCursor": "second"}
+        assert params["cursor"] == "second"
+        if broken:
+            return {"data": None}
+        return {"data": [{"id": "turn", "items": [{"type": "userMessage", "clientId": "client"}]}]}
+
+    server = NS(start=start, request=request)
+    if route == "queue":
+        assert await recover_queue_head(app, server) is (not broken)
+        assert len(app._pending_input) == (1 if broken else 0)
+        assert len(messages) == (1 if broken else 2)
+    elif broken:
+        with pytest.raises(ProviderError, match="invalid history page"):
+            await reconcile_messages(None, server, [materialized])
+        assert materialized["codex_delivery"]["state"] == "sending"
+    else:
+        await reconcile_messages(None, server, [materialized])
+        assert materialized["codex_delivery"]["state"] == "accepted"
+    assert len(calls) == 3
