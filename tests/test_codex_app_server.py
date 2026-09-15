@@ -90,6 +90,48 @@ class Server:
 
 
 @pytest.mark.asyncio
+async def test_usage_reset_and_next_turn_baseline_through_transport(monkeypatch):
+    from litetui.codex_app_server import AppServer
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Usage regression must not start native inference")
+
+    monkeypatch.setattr(AppServer, "start", forbidden)
+
+    # Unlike a mocked meter, this drives the transport queue, metadata carried
+    # between calls, and collected response usage. No real process is allowed.
+    class UsageServer(Server):
+        async def request(self, method, params):
+            if method == "turn/start":
+                if self.turn == 0:
+                    for usage in ({"last": {"totalTokens": 10000}, "total": {"totalTokens": 10000}}, {}):
+                        await self.events.put({"method": "thread/tokenUsage/updated", "params": {
+                            "threadId": "thread-1", "tokenUsage": usage}})
+                else:
+                    await self.events.put({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": "unrelated", "tokenUsage": {"total": {"totalTokens": 999999}}}})
+            return await super().request(method, params)
+
+    server = UsageServer()
+    transport = AppServerTransport(server)
+    assert not isinstance(transport.server, AppServer)
+    messages = [{"role": "user", "content": "First"}]
+    first = await transport.create(model="gpt-6-astra", messages=messages)
+    assert first.usage.total_tokens is None
+    assert first.usage.context_tokens == 2005
+    metadata = first.choices[0].message.provider_metadata
+    assert metadata["native_usage"]["total"]["totalTokens"] == 2005
+    messages += [{"role": "assistant", "content": "OK", "provider_metadata": metadata},
+                 {"role": "user", "content": "Second"}]
+    second = await transport.create(model="gpt-6-astra", messages=messages)
+    assert second.usage.total_tokens == 2005
+    assert second.usage.cached_tokens == 1800
+    assert second.usage.context_tokens == 2005
+    assert second.usage.thread_usage["totalTokens"] == 4010
+    await transport.server.close()
+
+
+@pytest.mark.asyncio
 async def test_ultra_is_owned_by_codex_and_history_is_append_only():
     server = Server()
     transport = AppServerTransport(server)
