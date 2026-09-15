@@ -6712,7 +6712,11 @@ class LiteTUI(App):
 
         # Apply the ones with immediate effect.
         self.tools_enabled = new.tools_enabled
-        if new.thinking_level != old.thinking_level:
+        codex_default_changed = (
+            new.thinking_level != old.thinking_level
+            and getattr(getattr(self, "backend", None), "name", old.backend) == "codex"
+        )
+        if new.thinking_level != old.thinking_level and not codex_default_changed:
             self.thinking_level = new.thinking_level
             self._reasoning_ignored_warned = False  # re-arm: it is per-config
         self._update_header()
@@ -6739,6 +6743,8 @@ class LiteTUI(App):
                                                 "skills_enabled")]
         if deferred:
             note += ("\n  Applies on next /reconnect: " + ", ".join(deferred))
+        if codex_default_changed:
+            note += "\n  Thinking default applies to new conversations; this conversation retains its chosen mode."
         self._system(note)
 
     @staticmethod
