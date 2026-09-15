@@ -6,6 +6,25 @@ from textual.widgets import Button
 from litetui.widgets import FoldBlock
 
 
+def delivery_label(metadata, entry, *, persist_error=False):
+    if persist_error:
+        return "Answer state not saved"
+    ident = entry.get("deliveryId")
+    entries = metadata.get("steering", [])
+    entries = entries if isinstance(entries, list) else []
+    delivery = next((value for value in entries
+                     if isinstance(value, dict) and isinstance(ident, str) and ident
+                     and value.get("id") == ident
+                     and value.get("threadId") == entry.get("threadId")), None)
+    labels = {
+        "queued": "Answer queued", "admitting": "Answer awaiting admission",
+        "admitted": "Answer ready to send", "sending": "Answer being sent",
+        "accepted": "Answer accepted by Codex", "denied": "Answer not sent",
+        "next_turn": "Answer queued for next turn", "uncertain": "Answer delivery unconfirmed",
+    }
+    return labels.get(delivery.get("state") if delivery else None, "Answer delivery unconfirmed")
+
+
 class SavedQuestionCard(FoldBlock):
     def __init__(self, metadata, entry):
         self.metadata, self.entry = metadata, entry
@@ -35,7 +54,9 @@ class SavedQuestionCard(FoldBlock):
         state = self.entry.get("state")
         if state != "pending":
             self.answer.label = (
-                "Answer queued" if state == "answered" else "Question closed"
+                delivery_label(self.metadata, self.entry,
+                               persist_error=bool(getattr(getattr(self.app, "store", None), "persist_error", None)))
+                if state == "answered" else "Question closed"
             )
             self.answer.disabled = True
         elif self.manager is not None and self.entry["id"] not in self.manager.active:

@@ -63,6 +63,38 @@ ITEM = {
 
 
 @pytest.mark.asyncio
+async def test_saved_question_card_tracks_delivery_outcome():
+    from textual.app import App
+
+    from litetui.codex_question_card import SavedQuestionCard
+
+    entry = {"id": "question", "threadId": "native", "state": "answered",
+             "deliveryId": "delivery", "questions": ITEM["questions"]}
+    delivery = {"id": "delivery", "threadId": "native", "state": "queued"}
+    metadata = {"async_questions": [entry], "steering": [delivery]}
+    app = App()
+    app.conversation = [{"provider_metadata": metadata}]
+    app.store = NS(persist_error=None)
+    async with app.run_test() as pilot:
+        card = SavedQuestionCard(metadata, entry)
+        await app.mount(card)
+        await pilot.pause()
+        for state, label in (("queued", "Answer queued"), ("accepted", "Answer accepted by Codex"),
+                             ("denied", "Answer not sent"), ("uncertain", "Answer delivery unconfirmed")):
+            delivery["state"] = state
+            card.refresh_state()
+            assert str(card.answer.label) == label
+            assert card.answer.disabled
+        app.store.persist_error = "synthetic disk failure"
+        card.refresh_state()
+        assert str(card.answer.label) == "Answer state not saved"
+        app.store.persist_error = None
+        delivery.update(state="accepted", threadId="other")
+        card.refresh_state()
+        assert str(card.answer.label) == "Answer delivery unconfirmed"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("terminal_first", [False, True])
 async def test_replay_ignores_pending_snapshot_when_an_answered_copy_exists(terminal_first):
     from textual.app import App
