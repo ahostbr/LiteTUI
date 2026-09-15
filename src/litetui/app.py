@@ -6163,16 +6163,31 @@ class LiteTUI(App):
             self._system("Queued Codex input belongs to another conversation and remains retained there.")
             return
         if entry and entry.get("state") not in ("queued", "admitted", "next_turn"):
+            if getattr(self, "_codex_recovery_pending", False):
+                return
+            self._codex_recovery_pending = True
+            conversation, conversation_id, backend = self.conversation, self.convo_id, self.backend
+
             async def recover():
                 from litetui.codex_steering import recover_queue_head
-                if not hasattr(self.backend, "app_server"):
-                    self._system("Queued Codex input is retained until its native delivery is reconciled.")
-                    return
-                if await recover_queue_head(self, self.backend.app_server):
-                    self.call_after_refresh(self._flush_pending_input)
-                else:
-                    self._system("Queued Codex input is retained: delivery is unconfirmed. Reconnect to reconcile it before retrying.")
-            self.run_worker(recover(), group="chat", exclusive=False, exit_on_error=False)
+                try:
+                    if (self.conversation is not conversation or self.convo_id != conversation_id
+                            or self.backend is not backend):
+                        return
+                    recovered = await recover_queue_head(self, backend.app_server)
+                except (model_transport.ProviderError, OSError, TimeoutError):
+                    recovered = False
+                finally:
+                    self._codex_recovery_pending = False
+                if (self.conversation is conversation and self.convo_id == conversation_id
+                        and self.backend is backend):
+                    if recovered:
+                        self.call_after_refresh(self._flush_pending_input)
+                    else:
+                        self._system("Queued Codex input is retained: delivery recovery is unconfirmed or could not be saved. Reconnect to reconcile it before retrying.")
+            # A chat-worker completion automatically flushes the queue. Using
+            # that group here would endlessly retry an unconfirmed delivery.
+            self.run_worker(recover(), group="codex-recovery", exclusive=False, exit_on_error=False)
             return
         item = self._pending_input.pop(0)
         hook_host.start_prompt(self, item)
