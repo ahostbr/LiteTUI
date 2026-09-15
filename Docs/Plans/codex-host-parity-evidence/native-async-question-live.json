@@ -1,0 +1,14 @@
+{
+  "accepted": true,
+  "async_question_observed": true,
+  "delegation_enabled": false,
+  "hook_trust": {
+    "trusted_before": false,
+    "trusted_after": true,
+    "enabled": true
+  },
+  "question_matches": true,
+  "turn_completed": true,
+  "app_server_closed": true,
+  "temporary_home_removed": true
+}
