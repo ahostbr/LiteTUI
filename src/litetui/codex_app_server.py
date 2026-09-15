@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from litetui import sanitize
+from litetui.codex_runtime import RuntimeActivity
 from litetui.model_transport import ProviderError, _chunk, collect
 
 
@@ -32,6 +33,7 @@ class AppServer:
         self.serial = 0
         self.start_lock = asyncio.Lock()
         self.closer = None
+        self.runtime_activity = RuntimeActivity()
 
     async def start(self):
         async with self.start_lock:
@@ -73,6 +75,7 @@ class AppServer:
             for override in self.config_overrides:
                 args.extend(["-c", override])
             self.events = asyncio.Queue()
+            self.runtime_activity = RuntimeActivity()
             self.process = await asyncio.create_subprocess_exec(
                 *args,
                 stdin=asyncio.subprocess.PIPE,
@@ -107,6 +110,8 @@ class AppServer:
             )
         self.process.stdin.write((json.dumps(message) + "\n").encode())
         await self.process.stdin.drain()
+        if "method" not in message and "id" in message:
+            self.runtime_activity.replied(message["id"])
 
     async def request(self, method, params):
         self.serial += 1
@@ -123,6 +128,7 @@ class AppServer:
         try:
             while line := await self.process.stdout.readline():
                 message = json.loads(line)
+                self.runtime_activity.observe(message)
                 if "method" not in message and message.get("id") in self.pending:
                     future = self.pending[message["id"]]
                     if not future.done():
@@ -143,6 +149,7 @@ class AppServer:
         except (OSError, ValueError):
             pass
         finally:
+            self.runtime_activity.disconnected()
             if self.async_questions:
                 self.async_questions.cancel()
             error = ProviderError(
