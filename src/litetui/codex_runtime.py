@@ -34,7 +34,7 @@ class RuntimeActivity:
         if identity in self.finished:
             return
         if method == "item/started":
-            self.commands[identity] = item.get("processId")
+            self.commands[identity] = item.get("processId") or self.commands.get(identity)
         elif item.get("exitCode") is not None or item.get("status") == "declined":
             self.finished.add(identity)
             self.commands.pop(identity, None)
@@ -47,7 +47,7 @@ class RuntimeActivity:
         else:
             # Item completion/turn completion without process exit is not proof
             # that a native background PTY has terminated.
-            self.commands[identity] = item.get("processId", self.commands.get(identity))
+            self.commands[identity] = item.get("processId") or self.commands.get(identity)
 
     def replied(self, ident):
         if ident in self.requests:

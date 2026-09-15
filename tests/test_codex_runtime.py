@@ -17,6 +17,8 @@ def test_turn_end_and_item_completion_do_not_claim_background_process_exited():
     state = RuntimeActivity()
     state.observe(command("item/started", processId="opaque"))
     state.observe(command("item/completed", status="completed", processId="opaque", exitCode=None))
+    state.observe(command("item/started", processId=None))
+    state.observe(command("item/completed", status="completed", processId=None, exitCode=None))
     state.observe({"method": "turn/completed", "params": {"threadId": "parent"}})
     assert state.commands == {("parent", "turn", "call"): "opaque"}
     state.observe(command("item/completed", thread="child", item="wait", processId="opaque", exitCode=0))
@@ -77,3 +79,29 @@ async def test_protocol_reader_tracks_late_activity_without_consuming_display_ev
     server.runtime_activity.replied(71)
     assert not server.runtime_activity.requests
     assert not server.runtime_activity.connected
+
+
+def test_background_probe_gate_allows_exactly_one_fixed_command(tmp_path, monkeypatch):
+    import importlib
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    module = importlib.import_module("codex_background_readiness_probe")
+    script, marker, log = tmp_path / "gate.py", tmp_path / "used", tmp_path / "log"
+    script.write_text(module.gate_program("synthetic fixed command", marker, log), encoding="utf-8")
+    inputs = [
+        {"tool_name": "exec_command", "tool_input": {"cmd": "PRIVATE_OTHER_COMMAND"}},
+        {"tool_name": "Bash", "tool_input": {"command": "synthetic fixed command"}},
+        {"tool_name": "exec_command", "tool_input": {"cmd": "synthetic fixed command"}},
+        {"tool_name": "spawn_agent", "tool_input": {}},
+        {"tool_name": "exec_command", "tool_input": ["PRIVATE"]},
+    ]
+    allowed = []
+    for payload in inputs:
+        result = subprocess.run([sys.executable, str(script)], input=json.dumps(payload),
+                                capture_output=True, text=True, check=True, timeout=5)
+        allowed.append(json.loads(result.stdout) == {})
+    assert allowed == [False, True, False, False, False]
+    assert "PRIVATE" not in log.read_text()

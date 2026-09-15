@@ -1,0 +1,36 @@
+{
+  "accepted": false,
+  "delegation_enabled": false,
+  "commands": [],
+  "hook_statuses": [
+    "completed"
+  ],
+  "hook_trust": {
+    "trusted_before": false,
+    "trusted_after": true,
+    "enabled": true
+  },
+  "thread_id": "01a0a261-8468-7073-9758-ec53fc42a026",
+  "turn_id": "01a0a261-847e-7581-81eb-2e2bcf145df6",
+  "turn_completed": true,
+  "pending_after_turn": 0,
+  "readiness_after_turn": {
+    "ready": true,
+    "reason": "observed_idle",
+    "revision": 4
+  },
+  "readiness_after_exit": {
+    "ready": true,
+    "reason": "observed_idle",
+    "revision": 4
+  },
+  "app_server_closed": true,
+  "gates": [
+    {
+      "is_exec": true,
+      "matched": true,
+      "allowed": true
+    }
+  ],
+  "temporary_home_removed": true
+}
