@@ -117,20 +117,20 @@ async def test_clickable_header_uses_same_expanded_state_transition() -> None:
 
 
 @pytest.mark.asyncio
-async def test_running_tick_updates_elapsed_without_collapsing() -> None:
+async def test_running_tick_updates_elapsed_without_collapsing(monkeypatch) -> None:
     app = _app()
     async with app.run_test(size=(100, 35)) as pilot:
         card = ToolMessage("bash")
         app.query_one("#chat-log").mount(card)
         await pilot.pause()
-        card._t0 -= 3.25
-
-        card._tick()
-        await pilot.pause()
-
-        assert card.expanded is True
-        assert "3.3s" in _plain(card.header.content)
-        assert "…" in _plain(card.header.content)
+        # Freeze only the synchronous tick: wall-clock scheduling may cross
+        # a formatting boundary, and freezing across await would stall Textual.
+        with monkeypatch.context() as clock:
+            clock.setattr("litetui.widgets.time.monotonic", lambda: card._t0 + 3.3)
+            card._tick()
+            assert card.expanded is True
+            assert "3.3s" in _plain(card.header.content)
+            assert "…" in _plain(card.header.content)
 
 
 @pytest.mark.asyncio

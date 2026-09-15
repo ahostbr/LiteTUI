@@ -105,7 +105,13 @@ class CodexToolUI:
         if not state:
             return
         delta = payload.get("delta", payload.get("message", ""))
-        text = self.output.get(key, "") + str(delta)
+        if not isinstance(delta, str) or not delta:
+            return
+        previous = self.output.get(key, "")
+        # Command deltas are fragments; MCP progress messages are distinct
+        # updates. Keep the latter readable without altering streamed bytes.
+        separator = "\n" if "delta" not in payload and previous and not previous.endswith("\n") else ""
+        text = previous + separator + delta
         if len(text) > 32768:
             text = (
                 "[Earlier live output omitted; final result follows]\n" + text[-32768:]

@@ -36,6 +36,26 @@ class Host(App):
 
 
 @pytest.mark.asyncio
+async def test_mcp_progress_messages_are_separated_but_command_fragments_are_not():
+    app = Host()
+    app._rpc = True
+    ui = CodexToolUI(app)
+    await ui.item({"type": "mcpToolCall", "id": "mcp", "server": "synthetic", "tool": "inspect", "arguments": {}})
+    await ui.item({"type": "commandExecution", "id": "cmd", "command": "synthetic"})
+    for message in ("Reading files", "Checking results", "", None):
+        ui.progress({"itemId": "mcp", "message": message})
+    for delta in ("par", "tial", "\nnext", "", None):
+        ui.progress({"itemId": "cmd", "delta": delta})
+    ui.flush_progress("mcp")
+    ui.flush_progress("cmd")
+    assert ui.output == {"mcp": "Reading files\nChecking results", "cmd": "partial\nnext"}
+    progress = [event for event in app.events if event["type"] == "tool_progress"]
+    assert [event["text"] for event in progress[-2:]] == ["Reading files\nChecking results", "partial\nnext"]
+    ui.finish()
+    assert not ui.progress_timers
+
+
+@pytest.mark.asyncio
 async def test_mcp_attachments_do_not_enter_cards_rpc_or_saved_display_trace():
     from copy import deepcopy
 
