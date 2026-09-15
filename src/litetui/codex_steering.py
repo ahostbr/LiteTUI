@@ -258,6 +258,9 @@ async def recover_queue_head(app, server):
     if not app._pending_input:
         return False
     item = app._pending_input[0]
+    conversation = app.conversation
+    conversation_id = getattr(app, "convo_id", None)
+    backend = getattr(app, "backend", None)
     entry = item.get("_codex_entry")
     if not entry:
         return False
@@ -270,6 +273,11 @@ async def recover_queue_head(app, server):
             await server.start()
             history = {"thread": await read(server, entry["threadId"])}
         except (ProviderError, TimeoutError, OSError):
+            return False
+        if (app.conversation is not conversation
+                or getattr(app, "convo_id", None) != conversation_id
+                or getattr(app, "backend", None) is not backend
+                or not app._pending_input or app._pending_input[0] is not item):
             return False
         if not item["_codex_ledger"].reconcile(entry, history):
             return False
@@ -296,11 +304,20 @@ def message_state(app, message, state):
 async def reconcile_messages(app, server, messages):
     from litetui.codex_history import read
 
+    conversation = getattr(app, "conversation", None)
+    conversation_id = getattr(app, "convo_id", None)
+    backend = getattr(app, "backend", None)
     for message in messages:
         delivery = message.get("codex_delivery") or {}
         if delivery.get("state") != "sending":
             continue
         history = {"thread": await read(server, delivery["threadId"])}
+        if app is not None and (
+            getattr(app, "conversation", None) is not conversation
+            or getattr(app, "convo_id", None) != conversation_id
+            or getattr(app, "backend", None) is not backend
+        ):
+            raise ProviderError("The conversation changed during Codex delivery recovery; its input remains retained.")
         accepted = history.get("thread", {}).get("id") == delivery["threadId"] and any(
             item.get("type") == "userMessage" and item.get("clientId") == delivery["id"]
             for turn in history.get("thread", {}).get("turns", [])

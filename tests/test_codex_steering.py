@@ -462,3 +462,58 @@ async def test_delivery_recovery_honors_paginated_history(route, broken):
         await reconcile_messages(None, server, [materialized])
         assert materialized["codex_delivery"]["state"] == "accepted"
     assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["conversation", "identity", "backend", "queue"])
+async def test_queue_recovery_does_not_save_after_scope_changes(change):
+    from types import SimpleNamespace as NS
+
+    from litetui.codex_steering import recover_queue_head, restore_queue
+
+    entry = {"id": "client", "threadId": "thread", "turnId": "turn", "state": "sending",
+             "conversationId": "original", "item": {"content": "answer"}}
+    edits = []
+    app = NS(convo_id="original", backend=object(), _pending_input=[],
+             conversation=[{"provider_metadata": {"steering": [entry]}}],
+             _edit=lambda *args: edits.append(args))
+    restore_queue(app)
+
+    async def start():
+        pass
+
+    async def request(method, params):
+        if params["includeTurns"]:
+            if change == "conversation":
+                app.conversation = []
+            elif change == "identity":
+                app.convo_id = "other"
+            elif change == "backend":
+                app.backend = object()
+            else:
+                app._pending_input = []
+        return {"thread": {"id": "thread", "turns": [{"id": "turn", "items": [
+            {"type": "userMessage", "clientId": "client"}]}]}}
+
+    assert not await recover_queue_head(app, NS(start=start, request=request))
+    assert entry["state"] == "sending" and edits == []
+
+
+@pytest.mark.asyncio
+async def test_materialized_delivery_recovery_stops_on_conversation_switch():
+    from types import SimpleNamespace as NS
+
+    from litetui.codex_steering import reconcile_messages
+
+    message = {"codex_delivery": {"id": "client", "threadId": "thread", "state": "sending"}}
+    app = NS(convo_id="original", conversation=[message])
+
+    async def request(method, params):
+        if params["includeTurns"]:
+            app.conversation = []
+        return {"thread": {"id": "thread", "turns": [{"items": [{"type": "userMessage", "clientId": "client"}]}]}}
+
+    with pytest.raises(ProviderError, match="conversation changed"):
+        await reconcile_messages(app, NS(request=request), [message])
+    assert message["codex_delivery"]["state"] == "sending"
+    assert "provider_metadata" not in message
