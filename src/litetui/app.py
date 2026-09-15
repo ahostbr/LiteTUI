@@ -5700,6 +5700,30 @@ class LiteTUI(App):
                             request_started_at,
                             is_reliable_rate_sample,
                         )
+                    elif native_loop and u is not None:
+                        # The Codex backend published NO tok/s at all: its
+                        # deltas skipped the clock, so t0 was never set and the
+                        # settle above is unreachable behind `not native_loop`.
+                        # ctx_used and the ETA stay where they are — this
+                        # settles tok/s ONLY.
+                        #
+                        # completion_tokens is a genuine PER-TURN delta:
+                        # codex_app_server.py:760 builds NativeUsage once per
+                        # turn, baselined on the previous turn's cumulative
+                        # total from provider metadata (:633). Several snapshots
+                        # arrive per turn, each carrying the turn's RUNNING
+                        # total, so re-settling on each one converges on the
+                        # whole turn. It already INCLUDES reasoningOutputTokens
+                        # (measured: max is in=34638 out=23 reasoning=16
+                        # total=34661, and 34638+23 == 34661), so nothing is
+                        # added on top. A rebased turn yields None -> 0 -> no
+                        # rate, which is the honest outcome after a compaction.
+                        rate = self._tps.final(
+                            int(getattr(u, "completion_tokens", 0) or 0))
+                        if rate is not None:
+                            self.tps = rate
+                            final_turn_tps = rate
+                            self._active_turn_tps = rate
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -5714,7 +5738,13 @@ class LiteTUI(App):
                         # TAGGED as reasoning, so TpsState's partition can tell
                         # the thinking header's number from the footer's. Both
                         # branches call the same tick; only the tag differs.
-                        rate = None if native_loop else self._tps.tick(reasoning=True)
+                        # Tick on BOTH paths so the clock starts. The native
+                        # loop's LIVE estimate is still withheld — its deltas
+                        # are not tokens — but without a t0 `final` could never
+                        # settle the server's own figure either, which is why
+                        # the Codex backend showed no tok/s at all.
+                        live = self._tps.tick(reasoning=True)
+                        rate = None if native_loop else live
                         if rate is not None:
                             self.tps = rate
                         self._glassbox_rate("thinking")
@@ -5747,7 +5777,8 @@ class LiteTUI(App):
                         # read as "only scrolls when the message comes through".
                         self._scroll_down()
                     if delta.content:
-                        rate = None if native_loop else self._tps.tick()
+                        live = self._tps.tick()
+                        rate = None if native_loop else live
                         if rate is not None:
                             self.tps = rate
                         self._glassbox_rate("output")

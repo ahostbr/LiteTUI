@@ -51,29 +51,49 @@ def test_output_tokens_already_include_reasoning_so_tps_must_not_add_them():
             assert inp + out + reasoning != total, row["effort"]
 
 
-def test_turn_usage_is_measured_from_the_conversation_baseline_not_the_turn():
-    """🔴 THE FIELD IS NOT WHAT ITS NAME SAYS, and this is why no TPS numerator
-    can be taken from it.
+def test_completion_tokens_is_a_per_turn_delta_because_the_meter_is_per_turn():
+    """🔴 THE TPS NUMERATOR, and the reading that is easy to get wrong.
 
-    `turn_usage` / `completion_tokens` are the delta from the CONVERSATION
-    baseline captured when the meter was constructed — they grow monotonically
-    for the whole conversation. Dividing that by one turn's elapsed seconds
-    would report a tok/s that climbs every turn and is wrong by the ratio of
-    conversation length to turn length. A per-turn output delta does not exist
-    on this object; see the caching handoff before wiring native tok/s.
+    A meter built with `fresh=True` baselines at ZERO, so its aggregate looks
+    like a conversation total and invites the conclusion that no per-turn figure
+    exists. Production never builds it that way: `codex_app_server.py:760` does
+    `NativeUsage(previous_usage)` once PER TURN, where `previous_usage` is the
+    PREVIOUS turn's cumulative `total` recovered from provider metadata
+    (`:633`). The baseline is therefore the turn boundary, and the aggregate is
+    this turn's delta — the correct numerator for tok/s.
+
+    Within a turn several snapshots arrive; each reports the turn's RUNNING
+    total, so settling on the last one measures the whole turn.
     """
-    meter = NativeUsage(fresh=True)
-    first = meter.update(snapshot(1000, 10, reasoning=4))
-    assert first.completion_tokens == 10
-    second = meter.update(
-        snapshot(1200, 8, total={"inputTokens": 2200, "outputTokens": 33,
-                                 "reasoningOutputTokens": 20, "totalTokens": 2233})
+    first_turn = NativeUsage(fresh=True)
+    first_turn.update(snapshot(1000, 40))
+    carried = first_turn.previous["total"]          # what metadata hands on
+
+    turn = NativeUsage(carried)                     # exactly production's shape
+    early = turn.update(
+        snapshot(300, 7, total={"inputTokens": 1300, "outputTokens": 55,
+                                "reasoningOutputTokens": 12, "totalTokens": 1355})
     )
-    # 33 since the baseline — NOT 23, which is what a per-turn reading implies.
-    assert second.completion_tokens == 33
-    assert second.turn_usage["reasoningOutputTokens"] == 20
-    # The only per-request figure the server gives us, for contrast.
-    assert second.latest_request_usage["outputTokens"] == 8
+    assert early.completion_tokens == 15            # 55 - 40, not 55
+    late = turn.update(
+        snapshot(300, 9, total={"inputTokens": 1300, "outputTokens": 70,
+                                "reasoningOutputTokens": 20, "totalTokens": 1370})
+    )
+    assert late.completion_tokens == 30             # 70 - 40, the running turn total
+    # Reasoning rides inside that figure; it is never added on top.
+    assert late.turn_usage["reasoningOutputTokens"] == 20
+    assert late.latest_request_usage["outputTokens"] == 9
+
+
+def test_a_rebased_turn_yields_no_completion_count_so_tps_stays_silent():
+    """A compaction mid-turn (codex_app_server sets `rebased` on a
+    contextCompaction item) must not publish a rate from a broken delta."""
+    turn = NativeUsage({"inputTokens": 1000, "outputTokens": 40, "totalTokens": 1040})
+    turn.rebased = True                             # what the compaction item does
+    usage = turn.update(snapshot(100, 5))
+    assert usage.completion_tokens is None
+    assert int(usage.completion_tokens or 0) == 0   # what the caller passes to final()
+    assert TpsState().final(0) is None              # ...and final() publishes nothing
 
 
 def test_final_cannot_settle_a_rate_without_a_started_clock():
