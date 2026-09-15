@@ -90,6 +90,45 @@ class Server:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hosted", [False, True])
+async def test_native_workspace_survives_package_location_and_resume(tmp_path, monkeypatch, hosted):
+    from litetui import paths
+    from litetui.codex_app_server import AppServer
+    from litetui.model_transport import collect
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Workspace regression must not start native inference")
+
+    monkeypatch.setattr(AppServer, "start", forbidden)
+    project = tmp_path / "selected project"
+    project.mkdir()
+    package = tmp_path / "installed package"
+    package.mkdir()
+    monkeypatch.setattr(paths, "ROOT", package)
+    monkeypatch.chdir(project)
+    app = NS(_hook_workspace=project, tools_enabled=False, backend=NS(models={}),
+             conversation=[], _rpc=True, _rpc_emit=lambda event: None) if hosted else None
+    if hosted:
+        # The initialized host workspace remains authoritative if process cwd moves.
+        monkeypatch.chdir(package)
+    server = Server()
+    messages = [{"role": "user", "content": "First"}]
+    transport = AppServerTransport(server, app)
+    first = await collect(await transport.create(model="gpt-6-astra", messages=messages, stream=True))
+    messages += [{"role": "assistant", "content": "OK",
+                  "provider_metadata": first.choices[0].message.provider_metadata},
+                 {"role": "user", "content": "Second"}]
+    reopened = AppServerTransport(server, app)
+    await collect(await reopened.create(model="gpt-6-astra", messages=messages, stream=True))
+    starts = [p for method, p in server.requests if method == "thread/start"]
+    turns = [p for method, p in server.requests if method == "turn/start"]
+    assert len(starts) == 1 and starts[0]["cwd"] == str(project.resolve())
+    assert len(turns) == 2 and all(p["cwd"] == str(project.resolve()) for p in turns)
+    assert all(p["threadId"] == "thread-1" for p in turns)
+    assert turns[1]["input"] == [{"type": "text", "text": "Second", "text_elements": []}]
+
+
+@pytest.mark.asyncio
 async def test_usage_reset_and_next_turn_baseline_through_transport(monkeypatch):
     from litetui.codex_app_server import AppServer
 

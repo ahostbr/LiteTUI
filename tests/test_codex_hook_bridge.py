@@ -58,7 +58,8 @@ async def test_native_policy_can_await_a_textual_approval_dialog():
         settings = NS(tools_disabled=[])
         plugins = NS(policy_for=lambda name: None)
 
-        async def _authorize_action(self, name, args, policy):
+        async def _authorize_action(self, name, args, policy, *, workspace=None):
+            assert workspace is not None
             assert await self.push_screen_wait(Approval())
 
     app = Host()

@@ -23,6 +23,24 @@ def host(**overrides):
 
 
 @pytest.mark.asyncio
+async def test_native_policy_uses_captured_host_workspace(tmp_path, monkeypatch):
+    project = tmp_path / "selected project"
+    project.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    checked = []
+
+    async def authorize(name, args, policy, **kwargs):
+        checked.append(kwargs["workspace"])
+
+    app, _ = host(_hook_workspace=project, _authorize_action=authorize)
+    assert await NativePolicy(app).handle({"hook_event_name": "PreToolUse",
+                                          "tool_name": "apply_patch"}) == {}
+    assert checked == [project.resolve()]
+
+
+@pytest.mark.asyncio
 async def test_native_shell_uses_shared_policy_and_disabled_alias():
     app, calls = host()
     policy = NativePolicy(app)

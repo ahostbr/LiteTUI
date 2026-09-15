@@ -3,6 +3,7 @@
 import json
 
 from litetui import hook_host, sanitize, tool_policy
+from litetui.codex_workspace import workspace
 
 
 def denial(reason):
@@ -93,7 +94,7 @@ class NativePolicy:
         profile = getattr(self.app, "_active_tool_profile", None)
         registered = self.app.plugins.policy_for(name)
         refusal = await self.app._authorize_action(
-            canonical, args, registered or policy
+            canonical, args, registered or policy, workspace=workspace(self.app)
         )
         if refusal:
             return denial(str(refusal[0]))

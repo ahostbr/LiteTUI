@@ -17,6 +17,7 @@ from pathlib import Path
 
 from litetui import sanitize
 from litetui.codex_runtime import RuntimeActivity
+from litetui.codex_workspace import workspace
 from litetui.model_transport import ProviderError, _chunk, collect
 
 
@@ -644,15 +645,13 @@ class AppServerTransport:
                     from litetui.codex_inventory import build_inventory
 
                     tools, registered_inventory = build_inventory(kwargs.get("tools", []), self.app)
-                    from litetui import paths
-
                     opened = await self.server.request(
                         "thread/start",
                         {
                             "model": kwargs["model"],
                             "allowProviderModelFallback": False,
                             "ephemeral": self.app is None,
-                            "cwd": str(paths.ROOT),
+                            "cwd": str(workspace(self.app)),
                             "approvalPolicy": "on-request",
                             "sandbox": "workspace-write",
                             "developerInstructions": instructions,
@@ -677,6 +676,7 @@ class AppServerTransport:
             )
             params = {
                 "threadId": self.thread_id,
+                "cwd": str(workspace(self.app)),
                 "input": input_items,
                 "model": model,
                 "effort": effort or "medium",

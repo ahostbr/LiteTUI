@@ -20,7 +20,7 @@ async def probe():
             hooks.append({"event": event, "tool": data["tool"], "ok": data.get("ok")})
             return NS(allowed=True, reason="")
 
-        async def authorize(name, args, policy, decisions=decisions):
+        async def authorize(name, args, policy, *, workspace=None, decisions=decisions):
             decision = tool_policy.evaluate(
                 "autonomous", policy, args, Path.cwd(), tool_name=name
             )
