@@ -62,7 +62,7 @@ async def saved_answer(server, root, thread, turn, item):
         store.release()
 
 
-async def probe(output, reply=False):
+async def probe(output, reply=False, history_pages=False):
     evidence = {"accepted": False, "async_question_observed": False, "delegation_enabled": False}
     with tempfile.TemporaryDirectory(prefix="litetui-async-question-") as directory:
         root = Path(directory)
@@ -86,6 +86,7 @@ async def probe(output, reply=False):
                 await server.start()
                 evidence["hook_trust"] = await trust_gate(server, root, command)
                 thread = (await server.request("thread/start", {"model": "gpt-6-astra", "cwd": str(root),
+                    **({"historyMode": "paginated"} if history_pages else {}),
                     "approvalPolicy": "never", "sandbox": "read-only",
                     "baseInstructions": "Synthetic async question test. Use only request_user_input_async and tool_search. Never execute commands, access files or delegate. Ask the requested question then end the turn; do not infer an answer."}))["thread"]["id"]
                 turn = (await server.request("turn/start", {"threadId": thread, "effort": "medium",
@@ -132,10 +133,35 @@ async def probe(output, reply=False):
                             text += params.get("delta", "")
                         if event.get("method") == "turn/completed" and params.get("turn", {}).get("id") == turn:
                             evidence["reply_completed"] = params["turn"].get("status") == "completed"
+                            reply_turn = turn
                             turn = None
                             break
                     evidence["reply_matches"] = text.strip() == "BLUE_ACK"
                     evidence["accepted"] = evidence["reply_completed"] and evidence["reply_matches"]
+                    if history_pages:
+                        from litetui.codex_history import read
+
+                        pages = []
+
+                        async def paged_request(method, params):
+                            if method == "thread/turns/list":
+                                params = {**params, "limit": 1}
+                            result = await server.request(method, params)
+                            if method == "thread/turns/list":
+                                pages.append(len(result.get("data", [])))
+                            return result
+
+                        history = await read(NS(request=paged_request), thread)
+                        turns = {value["id"]: value for value in history.get("turns", [])}
+                        evidence["history_pages"] = pages
+                        evidence["history_mode"] = history.get("historyMode")
+                        evidence["both_turns_recovered"] = question_turn in turns and reply_turn in turns
+                        evidence["async_question_recovered"] = any(
+                            value.get("delivery") == "async" and value.get("questions") == question_item["questions"]
+                            for value in turns.get(question_turn, {}).get("items", []))
+                        evidence["accepted"] = bool(evidence["accepted"] and len(pages) >= 2
+                            and all(size <= 1 for size in pages) and evidence["history_mode"] == "paginated"
+                            and evidence["both_turns_recovered"] and evidence["async_question_recovered"])
         except Exception as exc:  # noqa: BLE001 - fixed metadata only
             evidence["failure_type"] = type(exc).__name__
         finally:
@@ -155,8 +181,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--reply", action="store_true")
+    parser.add_argument("--history-pages", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not args.live:
         parser.error("--live required")
-    asyncio.run(probe(args.output, args.reply))
+    if args.history_pages and not args.reply:
+        parser.error("--history-pages requires --reply")
+    asyncio.run(probe(args.output, args.reply, args.history_pages))
