@@ -61,6 +61,17 @@ class NativeUsage:
                 if k in self.baseline and v >= self.baseline[k]
             }
         )
+        if self.rebased:
+            # A reconnect or a compaction restarts the native counters. THIS
+            # snapshot cannot express a turn delta and stays unknown above —
+            # but the run that follows is monotonic again, so re-baseline onto
+            # it instead of reporting unknown for the rest of the conversation.
+            # observed_totals is REPLACED, not updated: a key absent from the
+            # reset snapshot would otherwise keep its pre-reset high-water mark
+            # and make the next snapshot that carries it look like a new reset.
+            self.baseline = dict(cumulative)
+            self.observed_totals = dict(cumulative)
+            self.rebased = False
         # Retain absent fields as unknown, including cache writes. A cache hit
         # changes billing/reuse, never the occupied context size.
         context = latest.get("totalTokens")
