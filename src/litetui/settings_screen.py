@@ -227,8 +227,7 @@ class SettingsBody(Widget):
     def _backend_control(self, name):
         from litetui.codex_settings import control
 
-        backend = getattr(getattr(self.app, "backend", None), "name", self._start.backend)
-        return control(backend, name)
+        return control(getattr(self.app, "backend", None), name)
 
     def _text_row(self, name: str, label: str, help_text: str, placeholder: str = ""):
         locked = settings_mod.source_of(name)
@@ -389,6 +388,13 @@ class SettingsBody(Widget):
                              ("Codex (OAuth subscription)", "codex")],
                             "Which engine serves the chat. /backend switches "
                             "live; this is the boot default.",
+                        )
+                        yield from self._switch_row(
+                            "codex_native_engine", "Codex: official app-server owns the loop",
+                            "Off (default): LiteTUI's own tools, compaction and conversations "
+                            "drive Codex over the Responses API with prompt caching. On: the "
+                            "official Codex engine owns tools, history and compaction. "
+                            "Applies on /reconnect.",
                         )
                         yield from self._text_row(
                             "llama_executable", "llama-server executable",

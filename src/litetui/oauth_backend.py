@@ -1,9 +1,17 @@
-"""Codex control plane; the official app-server owns login and agent execution."""
+"""Codex control plane.
+
+Two engines behind one backend, chosen by ``settings.codex_native_engine``:
+the default is LiteTUI's own loop over the Responses API (credentials and
+model metadata from the official CLI's files); with the flag on, the official
+app-server owns login and agent execution and this object grows an
+``app_server`` attribute — that attribute is the discriminator every other
+module checks (``hasattr(backend, "app_server")``).
+"""
 
 import json
 
 from litetui.llm_backend import BackendError, ModelRow
-from litetui.model_transport import ProviderError, credential_path
+from litetui.model_transport import ProviderError, credential_path, read_credentials
 
 
 class OAuthBackend:
@@ -14,9 +22,10 @@ class OAuthBackend:
         self.name = settings.backend
         self.settings = settings
         self.models = {}
-        from litetui.codex_app_server import AppServer
+        if getattr(settings, "codex_native_engine", False):
+            from litetui.codex_app_server import AppServer
 
-        self.app_server = AppServer()
+            self.app_server = AppServer()
 
     def base_url(self):
         # Identity only; remote inference never uses the OpenAI client.
@@ -26,6 +35,9 @@ class OAuthBackend:
         return self.base_url()
 
     async def ensure_running(self):
+        if not hasattr(self, "app_server"):
+            read_credentials(self.name)
+            return "ok"
         await self.app_server.start()
         account = await self.app_server.request("account/read", {"refreshToken": False})
         if (account.get("account") or {}).get("type") != "chatgpt":
@@ -49,6 +61,17 @@ class OAuthBackend:
             cached = {m["slug"]: m for m in obj["models"]}
         except (OSError, ValueError, KeyError, TypeError):
             cached = {}
+        if not hasattr(self, "app_server"):
+            # LiteTUI-loop path: the CLI's cache is the whole catalogue.
+            self.models = {
+                k: m for k, m in cached.items()
+                if m.get("visibility", "list") == "list" and m.get("context_window")
+            }
+            if not self.models:
+                raise BackendError(
+                    "Codex model metadata is unavailable. Start `codex` once to refresh its model list, then /reconnect."
+                )
+            return self._rows()
         models, cursors = {}, set()
         cursor = None
         try:
@@ -103,6 +126,9 @@ class OAuthBackend:
                 "Codex app-server returned no available models. Reconnect to refresh it."
             )
         self.models = models
+        return self._rows()
+
+    def _rows(self):
         return [
             ModelRow(
                 key=k,
@@ -130,6 +156,8 @@ class OAuthBackend:
         )
 
     async def ensure_chat_ready(self, key):
+        if not hasattr(self, "app_server"):
+            read_credentials(self.name)
         if key not in self.models:
             raise BackendError("Choose an available Codex model with /model.")
 

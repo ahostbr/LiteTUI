@@ -110,11 +110,16 @@ CONTROLS = {
 }
 
 
+def native(backend):
+    """True only when the official app-server owns the loop (0.23.1: opt-in)."""
+    return hasattr(backend, "app_server")
+
+
 def control(backend, name):
-    return CONTROLS.get(name) if backend == "codex" else None
+    return CONTROLS.get(name) if native(backend) else None
 
 
 def loop_description(backend, iterations):
-    if backend == "codex":
+    if native(backend):
         return "agent loop: managed by the official Codex engine"
     return f"agent loop: up to {iterations} tool iterations per turn (/settings)"

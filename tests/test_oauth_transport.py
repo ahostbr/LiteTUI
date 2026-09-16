@@ -393,9 +393,10 @@ async def test_cloud_backend_uses_cli_capabilities_and_rejects_local_controls(
             }
         )
     )
+    # 0.23.1: the default codex backend is LiteTUI's own loop — no app_server,
+    # capabilities come from the CLI's models_cache.json exactly as asserted here.
     backend = make_backend(Settings(backend="codex"))
-    from test_codex_app_server import Server
-    backend.app_server = Server()
+    assert not hasattr(backend, "app_server")
     assert await backend.ensure_running() == "ok"
     assert [m.key for m in await backend.list_models()] == ["gpt-test"]
     assert await backend.model_info("gpt-test") == (90000, "vlm", True)
