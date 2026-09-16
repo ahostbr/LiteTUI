@@ -33,6 +33,9 @@ async def test_settings_explain_native_scope_and_preserve_local_values(backend):
                     "max",
                     "ultra",
                 ],
+                # Ownership follows the ENGINE (0.23.1): only a native codex
+                # backend carries app_server, and only it locks these rows.
+                **({"app_server": object()} if backend == "codex" else {}),
             )
             self.push_screen(SettingsScreen(settings))
 
@@ -55,8 +58,10 @@ async def test_settings_explain_native_scope_and_preserve_local_values(backend):
 
 
 def test_loop_description_does_not_claim_a_local_cap_for_codex():
-    assert "123" not in loop_description("codex", 123)
-    assert "123" in loop_description("lmstudio", 123)
+    assert "123" not in loop_description(NS(name="codex", app_server=object()), 123)
+    assert "123" in loop_description(NS(name="lmstudio"), 123)
+    # 0.23.1: codex under LiteTUI's own loop reports LiteTUI's cap.
+    assert "123" in loop_description(NS(name="codex"), 123)
 
 
 @pytest.mark.asyncio

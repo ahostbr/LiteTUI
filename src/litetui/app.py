@@ -3475,7 +3475,7 @@ class LiteTUI(App):
                     self.call_after_refresh(self._flush_pending_input)
                 if self.tools_enabled:
                     from litetui.codex_settings import loop_description
-                    self._system(loop_description(self.backend.name, self.settings.tool_iterations))
+                    self._system(loop_description(self.backend, self.settings.tool_iterations))
                 # The full model listing used to print HERE, on every launch.
                 # It is a catalogue, not a greeting: it pushed the splash and the
                 # first prompt off-screen to answer a question nobody asked at

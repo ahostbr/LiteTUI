@@ -73,6 +73,12 @@ class Settings:
     #: The first-boot picker ran (it shows once, and only when BOTH engines
     #: are detected). Esc leaves this False so the question returns.
     backend_chosen: bool = False
+    #: Codex only. False (default) = LiteTUI's own agent loop drives Codex over
+    #: the Responses API — our tools, our compaction, our conversations, with
+    #: prompt_cache_key sent on every request. True = the official app-server
+    #: owns the loop, tools, history and compaction (0.23.0 behaviour).
+    #: Takes effect on /reconnect or the next launch.
+    codex_native_engine: bool = False
     #: OUR router instance. 7470 sits in the ecosystem's 74xx block — the
     #: 8xxx range is crowded on dev machines (Ryan, 2026-08-21).
     llama_host: str = "http://localhost:7470"

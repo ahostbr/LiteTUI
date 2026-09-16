@@ -18,7 +18,22 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
-## [0.23.0] — 2026-09-15
+## [0.23.1] — 2026-09-16
+
+The harness is back in the driver's seat. 0.23.0 shipped the official Codex
+app-server as the ONLY codex path, which meant Codex's engine — not LiteTUI's —
+owned tools, the agent loop, compaction and conversation history. Ryan: "all the
+good parts of the caching without losing our harness."
+
+### Changed
+- **`codex_native_engine` (Settings → Engine), default OFF.** Off, Codex runs
+  through LiteTUI's own loop over the Responses API: our tools, our compaction,
+  our conversations, `prompt_cache_key` on every request, cached-token
+  accounting in the usage record. On, the official app-server owns the loop
+  exactly as 0.23.0 did. Applies on /reconnect. Nothing from 0.23.0 is removed.
+- Settings ownership labels ("Managed by the official Codex engine") and the
+  "agent loop: managed by …" banner follow the engine actually in use, not the
+  backend name.
 
 The native Codex path. 0.22.x could drive Codex through the CLI; this release
 makes the official app-server a first-class transport rather than a second-best
