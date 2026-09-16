@@ -1,0 +1,308 @@
+{
+ "data_root": "C:\\Users\\Ryan\\AppData\\Local\\Temp\\t751-live-buulqqca",
+ "turns": [
+  {
+   "prompt": "Use the bash tool to run exactly: python -c \"print(6*7)\"  \u2014 then reply with only the number it printed.",
+   "seconds": 8.0,
+   "roles_after": [
+    "system",
+    "user",
+    "assistant",
+    "tool",
+    "assistant"
+   ],
+   "assistant_tail": "42",
+   "last_usage": {
+    "prompt_tokens": 4677,
+    "completion_tokens": 5,
+    "total_tokens": 4682,
+    "cached_tokens": 1536,
+    "cache_write_tokens": 0,
+    "input_tokens_details": {
+     "cache_write_tokens": 0,
+     "cached_tokens": 1536
+    },
+    "usage_details": {
+     "attribution": {
+      "items": {
+       "msg_08958cc0f75879fd016aab2973b12487d29aa5ebca7f20faa9": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 33,
+        "output_tokens": 0
+       },
+       "fc_08958cc0f75879fd016aab2973b0ec87d2ba8d8e8bc2a90fac": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 30,
+        "output_tokens": 0
+       },
+       "fc_08958cc0f75879fd016aab2973b10c87d296b6ff1b189968e1": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 11,
+        "output_tokens": 0
+       },
+       "msg_08958cc0f75879fd016aab2977b68c87d2934efa25b8843071": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2,
+        "output_tokens": 5
+       }
+      },
+      "request_fields": {
+       "tools": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 1536,
+        "input_tokens": 2227,
+        "output_tokens": 0
+       },
+       "instructions": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2374,
+        "output_tokens": 0
+       }
+      }
+     },
+     "input_tokens": 4677,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 1536
+     },
+     "output_tokens": 5,
+     "output_tokens_details": {
+      "reasoning_tokens": 0
+     },
+     "total_tokens": 4682
+    },
+    "context_tokens": null,
+    "max_context_tokens": null,
+    "latest_request_usage": null,
+    "thread_usage": null,
+    "turn_usage": null
+   },
+   "ctx_used": 4682,
+   "tps": 12.315270935879372,
+   "system_lines": [
+    "harness seat online \u00b7 LiteTUI \u00b7 288c7205"
+   ]
+  },
+  {
+   "prompt": "What number did the tool print? Reply with only the number.",
+   "seconds": 2.6,
+   "roles_after": [
+    "system",
+    "user",
+    "assistant",
+    "tool",
+    "assistant",
+    "user",
+    "assistant"
+   ],
+   "assistant_tail": "42",
+   "last_usage": {
+    "prompt_tokens": 4701,
+    "completion_tokens": 5,
+    "total_tokens": 4706,
+    "cached_tokens": 0,
+    "cache_write_tokens": 0,
+    "input_tokens_details": {
+     "cache_write_tokens": 0,
+     "cached_tokens": 0
+    },
+    "usage_details": {
+     "attribution": {
+      "items": {
+       "msg_0749349d98bef63a016aab29792d5887d1993a4aefeba464a2": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 33,
+        "output_tokens": 0
+       },
+       "fc_0749349d98bef63a016aab29792cec87d19da8f704a9b41ec5": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 30,
+        "output_tokens": 0
+       },
+       "fc_0749349d98bef63a016aab29792d1487d19318de214c435153": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 11,
+        "output_tokens": 0
+       },
+       "msg_0749349d98bef63a016aab29792d6487d1953ba7eac238972a": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 7,
+        "output_tokens": 0
+       },
+       "msg_0749349d98bef63a016aab29792d7087d1bea3756d5a0c96c0": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 17,
+        "output_tokens": 0
+       },
+       "msg_0749349d98bef63a016aab297a7d5487d1978635bc2f547500": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2,
+        "output_tokens": 5
+       }
+      },
+      "request_fields": {
+       "tools": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2227,
+        "output_tokens": 0
+       },
+       "instructions": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2374,
+        "output_tokens": 0
+       }
+      }
+     },
+     "input_tokens": 4701,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+     },
+     "output_tokens": 5,
+     "output_tokens_details": {
+      "reasoning_tokens": 0
+     },
+     "total_tokens": 4706
+    },
+    "context_tokens": null,
+    "max_context_tokens": null,
+    "latest_request_usage": null,
+    "thread_usage": null,
+    "turn_usage": null
+   },
+   "ctx_used": 4706,
+   "tps": 45.45454545430493,
+   "system_lines": []
+  },
+  {
+   "prompt": "In five words, what did we do so far?",
+   "seconds": 2.7,
+   "roles_after": [
+    "system",
+    "user",
+    "assistant",
+    "assistant",
+    "user",
+    "assistant"
+   ],
+   "assistant_tail": "Ran Python; printed forty-two.",
+   "last_usage": {
+    "prompt_tokens": 4722,
+    "completion_tokens": 11,
+    "total_tokens": 4733,
+    "cached_tokens": 0,
+    "cache_write_tokens": 0,
+    "input_tokens_details": {
+     "cache_write_tokens": 0,
+     "cached_tokens": 0
+    },
+    "usage_details": {
+     "attribution": {
+      "items": {
+       "msg_0dad2e14da434567016aab2987179087d2864f9443df5564b0": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 82,
+        "output_tokens": 0
+       },
+       "msg_0dad2e14da434567016aab298717a487d2980f6d3f5d4f4ef7": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 15,
+        "output_tokens": 0
+       },
+       "msg_0dad2e14da434567016aab298717b487d284e3afe6a6780bb8": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 7,
+        "output_tokens": 0
+       },
+       "msg_0dad2e14da434567016aab298717c087d2bb2efc902d32c409": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 15,
+        "output_tokens": 0
+       },
+       "msg_0dad2e14da434567016aab2987fdbc87d28a49bac0f08b5e89": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2,
+        "output_tokens": 11
+       }
+      },
+      "request_fields": {
+       "tools": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2227,
+        "output_tokens": 0
+       },
+       "instructions": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "input_tokens": 2374,
+        "output_tokens": 0
+       }
+      }
+     },
+     "input_tokens": 4722,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+     },
+     "output_tokens": 11,
+     "output_tokens_details": {
+      "reasoning_tokens": 0
+     },
+     "total_tokens": 4733
+    },
+    "context_tokens": null,
+    "max_context_tokens": null,
+    "latest_request_usage": null,
+    "thread_usage": null,
+    "turn_usage": null
+   },
+   "ctx_used": 4733,
+   "tps": 27.027027027077278,
+   "system_lines": []
+  }
+ ],
+ "connect": [
+  "Connected \u2014 model: gpt-5.5",
+  "agent loop: up to 4 tool iterations per turn (/settings)"
+ ],
+ "backend": "OAuthBackend",
+ "has_app_server": false,
+ "model": "gpt-5.5",
+ "convo_id": "bbbe2d00-e676-4d13-9e9f-4d55e51d45a1",
+ "compact_system_lines": [
+  "Compacted: 7 messages \u2192 4 (8,877 \u2192 9,075 chars, \u2212-2%). Kept the last 1. Scrollback above is untouched \u2014 it shows messages the model can no longer see.\n  persisted: handoff.md"
+ ],
+ "roles_after_compact": [
+  "system",
+  "user",
+  "assistant",
+  "assistant"
+ ],
+ "transports": [
+  "OAuthTransport(prompt_cache_key='bbbe2d00-e676-4d13-9e9f-4d55e51d45a1')",
+  "OAuthTransport(prompt_cache_key='bbbe2d00-e676-4d13-9e9f-4d55e51d45a1')",
+  "OAuthTransport(prompt_cache_key='bbbe2d00-e676-4d13-9e9f-4d55e51d45a1')",
+  "OAuthTransport(prompt_cache_key='bbbe2d00-e676-4d13-9e9f-4d55e51d45a1')",
+  "OAuthTransport(prompt_cache_key='bbbe2d00-e676-4d13-9e9f-4d55e51d45a1')",
+  "OAuthTransport(prompt_cache_key='bbbe2d00-e676-4d13-9e9f-4d55e51d45a1')"
+ ]
+}
