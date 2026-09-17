@@ -5767,7 +5767,8 @@ class LiteTUI(App):
                 f"holding the app for it. It will be retried."
             ) from None
 
-    def _emit_turn_end(self, stop_reason: str, tps: float | None, **extra) -> None:
+    def _emit_turn_end(self, stop_reason: str, tps: float | None,
+                       tps_source: str | None = None, **extra) -> None:
         """One door for `turn_end`, so the event and the stop line agree.
 
         🔴 THE SETTLED tok/s REACHED THE TUI AND NOTHING ELSE (T806).
@@ -5794,7 +5795,7 @@ class LiteTUI(App):
         from a version that never sent it.
         """
         self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
-                        "tps": tps, **extra})
+                        "tps": tps, "tpsSource": tps_source, **extra})
 
     @work(exclusive=True, group="chat")
     async def _stream(self) -> None:
@@ -5834,6 +5835,22 @@ class LiteTUI(App):
         # including all tool rounds. The footer intentionally retains its last
         # rate; this local starts empty so a no-rate turn cannot reuse it.
         final_turn_tps: float | None = None
+        # 🔴 WHICH CLOCK PRODUCED THE FIGURE, PUBLISHED BESIDE IT (T806).
+        # `TpsState.final` prefers the engine's `timings.predicted_per_second`
+        # and otherwise divides the server's token count by the CLIENT's wall
+        # clock -- and BOTH land in `final_turn_tps`, so the number alone cannot
+        # say which. Measuring NInfer, that ambiguity had to be resolved by
+        # arithmetic on two figures (implied elapsed vs. an observed stream
+        # window) to argue the 155.0 could not be a client clock, because a
+        # client clock would have had to prefill 6471 tokens in 0.097s.
+        #
+        #     A MEASUREMENT WHOSE INSTRUMENT IS UNKNOWN CANNOT BE COMPARED
+        #     ACROSS ENGINES, and comparing across engines is the whole point
+        #     of the number (Ryan: *"66toks is less than lmstudio etc"*).
+        #
+        # ⬜ "engine" | "client" | None. None means no figure at all, so there
+        # was no clock to name.
+        final_turn_tps_source: str | None = None
         terminal_widget: AssistantMessage | None = None
         compact_due = False
         stopped_early = False
@@ -5944,7 +5961,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=True,
                 )
-                self._emit_turn_end("error", final_turn_tps,
+                self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
                                      error=takeover or _plain_backend_error(e, self.backend.name))
                 return
 
@@ -5970,6 +5987,8 @@ class LiteTUI(App):
                         if rate is not None:
                             self.tps = rate
                             final_turn_tps = rate
+                            final_turn_tps_source = (
+                                "engine" if chunk_rate else "client")
                             self._active_turn_tps = rate
                         # ETA: this is the end of the turn -- the usage chunk
                         # carries prompt_tokens, so fold this turn into the
@@ -6004,6 +6023,8 @@ class LiteTUI(App):
                         if rate is not None:
                             self.tps = rate
                             final_turn_tps = rate
+                            final_turn_tps_source = (
+                                "engine" if chunk_rate else "client")
                             self._active_turn_tps = rate
                     if not chunk.choices:
                         continue
@@ -6140,7 +6161,7 @@ class LiteTUI(App):
                 # T526: the open-failure branch above emits this; this branch
                 # did not, so an rpc client (LiteSuite's LiteTuiAdapter) that
                 # saw turn_start waited forever on a mid-stream 400.
-                self._emit_turn_end("error", final_turn_tps,
+                self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
                                      error=takeover or _plain_backend_error(e, self.backend.name))
                 return
             finally:
@@ -6207,7 +6228,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=True,
                 )
-                self._emit_turn_end("cancelled", final_turn_tps)
+                self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
                 self.call_after_refresh(self._maybe_autocompact)
                 return
 
@@ -6216,7 +6237,7 @@ class LiteTUI(App):
                 if verdict == "retry":
                     continue
                 if verdict == "pause":
-                    self._emit_turn_end("hook_denied", final_turn_tps)
+                    self._emit_turn_end("hook_denied", final_turn_tps, final_turn_tps_source)
                     return
                 # Only an answer accepted by the completion gate is terminal.
                 # Retried and paused drafts deliberately never receive a line.
@@ -6231,7 +6252,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=False,
                 )
-                self._emit_turn_end("stop", final_turn_tps)
+                self._emit_turn_end("stop", final_turn_tps, final_turn_tps_source)
                 self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
                 return  # plain answer — agent loop done
@@ -6342,7 +6363,7 @@ class LiteTUI(App):
                 if pct is not None
                 else "[pausing to compact between tool iterations]"
             )
-            self._emit_turn_end("cancelled", final_turn_tps)
+            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
             self.call_after_refresh(self._maybe_autocompact)
             return
 
@@ -6359,7 +6380,7 @@ class LiteTUI(App):
                 final_tps=final_turn_tps,
                 stopped=True,
             )
-            self._emit_turn_end("cancelled", final_turn_tps)
+            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
             return
 
         self._settle_turn_stop_line(
@@ -6368,7 +6389,7 @@ class LiteTUI(App):
             final_tps=final_turn_tps,
             stopped=True,
         )
-        self._emit_turn_end("tools_cap", final_turn_tps)
+        self._emit_turn_end("tools_cap", final_turn_tps, final_turn_tps_source)
         self._system(
             f"[stopped \u2014 reached {self.settings.tool_iterations} tool iterations in one turn — raise it in /settings]"
         )
