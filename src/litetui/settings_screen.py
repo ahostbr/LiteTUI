@@ -371,6 +371,13 @@ class SettingsBody(Widget):
                             placeholder="http://localhost:1234",
                         )
                         yield from self._text_row(
+                            "ninfer_host", "NInfer host",
+                            "Blank discovers the engine LiteSuite started (its config "
+                            "registers the port). Set it only for a ninfer-serve you "
+                            "started by hand. LiteTUI attaches; it never starts one.",
+                            placeholder="http://127.0.0.1:49260",
+                        )
+                        yield from self._text_row(
                             "lmstudio_graded_thinking_models",
                             "Graded thinking works on (LM Studio)",
                             "Comma-separated model ids. On LM Studio a graded level is "
@@ -385,6 +392,7 @@ class SettingsBody(Widget):
                             "backend", "Engine",
                             [("LM Studio desktop", "lmstudio"),
                              ("llama.cpp (our own llama-server)", "llamacpp"),
+                             ("NInfer (NVFP4 5090 engine, attached)", "ninfer"),
                              ("Codex (OAuth subscription)", "codex")],
                             "Which engine serves the chat. /backend switches "
                             "live; this is the boot default.",

@@ -243,6 +243,21 @@ def test_no_registered_engine_says_where_to_start_one(tmp_path, monkeypatch):
     assert "never starts one" in message
 
 
+def test_an_explicit_ninfer_host_wins_over_discovery(tmp_path, monkeypatch):
+    """T806 delta: a hand-started engine has nothing to register itself in, so
+    settings.ninfer_host (LITETUI_NINFER_HOST) names it and discovery is not
+    consulted. Env is redirected so the arm never reads the real machine."""
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path))  # no config -> discovery = None
+    seen: list[str] = []
+    monkeypatch.setattr(NInferBackend, "_health", staticmethod(lambda host, timeout=2.0: seen.append(host) or True))
+    settings = _Settings()
+    settings.ninfer_host = "http://127.0.0.1:49260/"
+    backend = NInferBackend(settings)
+    assert run(backend.ensure_running()) == "ok"
+    assert seen == ["http://127.0.0.1:49260"]          # trailing slash stripped, discovery skipped
+    assert backend.base_url() == "http://127.0.0.1:49260/v1"
+
+
 def test_the_backend_is_always_attached():
     """🔴 THERE IS NO STATE IN WHICH THIS IS FALSE, and that is the design.
 

@@ -54,6 +54,11 @@ class Settings:
 
     # ── Connection ───────────────────────────────────────────────────────────
     lm_host: str = "http://localhost:1234"
+    #: T806 delta — an EXPLICIT NInfer address ("http://127.0.0.1:49260"). Empty
+    #: means discover it from LiteSuite's config (extraEndpoints). Set this when
+    #: ninfer-serve was started by hand and no LiteSuite is running: LiteTUI
+    #: still only ATTACHES — this names an engine, it never starts one.
+    ninfer_host: str = ""
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
@@ -390,6 +395,7 @@ class Settings:
 #: Both pre-existing knobs are preserved by name so nothing that worked breaks.
 ENV_OVERRIDES: dict[str, str] = {
     "lm_host": "LITETUI_LM_HOST",
+    "ninfer_host": "LITETUI_NINFER_HOST",
     "backend": "LITETUI_BACKEND",
     "llama_host": "LITETUI_LLAMA_HOST",
     "tool_iterations": "LM_TOOL_ITERS",

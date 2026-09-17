@@ -223,12 +223,17 @@ class NInferBackend(_VramGate):
         return await asyncio.to_thread(self._ensure_running_sync)
 
     def _ensure_running_sync(self) -> str:
-        host = discover_ninfer_host()
+        # An explicit address wins over discovery: a hand-started ninfer-serve
+        # with no LiteSuite around has nothing to register itself in.
+        explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
+        host = explicit or discover_ninfer_host()
         if host is None:
             raise BackendError(
                 "no NInfer engine is registered — start it from LiteSuite's "
-                "Model Hub (Settings → NInfer), then try again. LiteTUI attaches "
-                "to that engine and never starts one itself."
+                "Model Hub (Settings → NInfer), or set ninfer_host "
+                "(LITETUI_NINFER_HOST) to a ninfer-serve you started by hand, "
+                "then try again. LiteTUI attaches to that engine and never "
+                "starts one itself."
             )
         if not self._health(host):
             raise BackendError(
