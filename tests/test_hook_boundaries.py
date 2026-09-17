@@ -315,5 +315,17 @@ async def test_real_stream_rejected_completion_never_finalizes(app, tmp_path, mo
             await pilot.pause(.05)
         assert len(requests) == (2 if accept_after else 4)
         assert finalized == ([1] if accept_after else [])
-        assert ({"type": "turn_end", "stopReason": "stop"} in emitted) == bool(accept_after)
-        assert ({"type": "turn_end", "stopReason": "hook_denied"} in emitted) != bool(accept_after)
+        # 🔴 THE stopReason, NOT DICT IDENTITY (T816). These were exact-dict
+        # membership tests, so `9ca2d46` adding `tps` (and `77faa4d` adding
+        # `tpsSource`) to every `turn_end` made both of them False — the event
+        # was correct and the assertion could not say so.
+        #
+        #     AN EXACT-DICT MATCH ON AN EVENT PAYLOAD BREAKS ON EVERY
+        #     LEGITIMATE FIELD ADDITION, and it fails in the direction that
+        #     looks like the feature regressed.
+        #
+        # What this arm is actually about is WHICH stopReason a rejected
+        # completion produces, so it asks that and nothing else.
+        reasons = [e.get("stopReason") for e in emitted if e.get("type") == "turn_end"]
+        assert ("stop" in reasons) == bool(accept_after)
+        assert ("hook_denied" in reasons) != bool(accept_after)
