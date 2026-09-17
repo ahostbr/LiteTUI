@@ -66,9 +66,11 @@ class Settings:
     pin_default_model: bool = False
 
     # ── Backend (which engine serves the chat) ───────────────────────────────
-    #: "lmstudio" (LM Studio desktop at lm_host) or "llamacpp" (our own
-    #: llama-server in router mode — the engine LiteSuite's Model Hub
-    #: installs). The default preserves existing behavior exactly.
+    #: "lmstudio" (LM Studio desktop at lm_host), "llamacpp" (our own
+    #: llama-server in router mode — the engine LiteSuite's Model Hub installs),
+    #: "ninfer" (T806: the NVFP4 5090 engine, ATTACHED — LiteSuite starts it and
+    #: LiteTUI never does) or "codex". The default preserves existing behavior
+    #: exactly.
     backend: str = "lmstudio"
     #: The first-boot picker ran (it shows once, and only when BOTH engines
     #: are detected). Esc leaves this False so the question returns.
