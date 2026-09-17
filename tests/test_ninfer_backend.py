@@ -242,7 +242,7 @@ def test_no_registered_engine_says_where_to_start_one(tmp_path, monkeypatch):
         run(backend.ensure_running())
     message = str(excinfo.value)
     assert "Model Hub" in message
-    assert "never starts one" in message
+    assert "/engine start" in message          # Ryan a-35456da0: LiteTUI may start it
 
 
 def test_an_explicit_ninfer_host_wins_over_discovery(tmp_path, monkeypatch):
@@ -323,3 +323,213 @@ def test_an_unknown_backend_still_names_the_valid_ones():
     with pytest.raises(BackendError) as excinfo:
         llm_backend.make_backend(S())
     assert "ninfer" in str(excinfo.value)
+
+
+# ── the reuse seams (T806 delta) ─────────────────────────────────────────────
+
+
+def test_the_engines_own_rate_is_one_function_not_two_parsers():
+    """⬜ THE STATUS LINE AND THE tok/s FIELD READ THE SAME NUMBER.
+
+    `format_timings` renders what `decode_rate_from_timings` returns. Two
+    parsers over one object is the drift class this repo already records under
+    "two counts of one thing that must agree".
+    """
+    from litetui.ninfer_backend import decode_rate_from_timings
+
+    timings = {"predicted_per_second": 151.2, "prompt_per_second": 812.4}
+    assert decode_rate_from_timings(timings) == pytest.approx(151.2)
+    assert "151.2 tok/s" in (format_timings(timings) or "")
+
+
+@pytest.mark.parametrize(
+    "timings",
+    [None, {}, "nope", {"predicted_per_second": 0}, {"predicted_per_second": True}],
+)
+def test_no_reported_rate_leaves_the_clients_estimate_standing(timings):
+    """🔴 None, NOT ZERO — because the caller treats None as "I have nothing"
+    and publishes its own arithmetic instead. A 0.0 would REPLACE a working
+    estimate with a wrong one.
+
+    `True` is in the list because `isinstance(True, int)` is True in Python: a
+    bool would sail through a numeric check and publish a rate of 1.0.
+    """
+    from litetui.ninfer_backend import decode_rate_from_timings
+
+    assert decode_rate_from_timings(timings) is None
+
+
+def test_the_rate_publisher_prefers_the_engines_figure():
+    """🔴 THE SEAM WAS ALREADY THERE AND ITS DOCSTRING SAID SO.
+
+    `TpsState.final` divides the server's token count by the CLIENT's wall
+    clock, so queueing and admission are charged to the model — a busy engine
+    reads slower than it ran. Its own words are "settle to the exact figure the
+    server reports"; the engine's decode-loop figure is a more exact one.
+    """
+    import time
+
+    from litetui.turnstats import TpsState
+
+    state = TpsState()
+    state.t0 = time.monotonic() - 10.0  # ten seconds of wall clock
+    # 100 tokens / 10 s = 10 tok/s by the clock; the engine says it ran at 151.2.
+    assert state.final(100) == pytest.approx(10.0, rel=0.05)
+    assert state.final(100, reported_rate=151.2) == pytest.approx(151.2)
+
+
+def test_a_reported_rate_does_not_skip_the_existing_guards():
+    """⬜ A TURN THAT NEVER STARTED, OR PRODUCED NOTHING, IS STILL NOTHING TO
+    PUBLISH. The new argument is a better answer to the same question, not a
+    way around the two conditions that were already right."""
+    from litetui.turnstats import TpsState
+
+    fresh = TpsState()  # t0 is None: no turn in flight
+    assert fresh.final(100, reported_rate=151.2) is None
+
+    import time
+
+    started = TpsState()
+    started.t0 = time.monotonic() - 1.0
+    assert started.final(0, reported_rate=151.2) is None
+
+
+# ── thinking (the feature Ryan named) ────────────────────────────────────────
+
+
+def test_the_thinking_levels_come_from_the_engines_contract():
+    """🔴 FOUR, NOT LiteTUI'S FIVE — read from `serving.md`, not from our own
+    vocabulary. A recognised effort-capable template exposes low/medium/xhigh,
+    and `none` disables thinking. `high` would 400 on the artifact we ship."""
+    backend = NInferBackend(_Settings())
+    assert backend.reasoning_levels("qwen3.8-27b") == ["none", "low", "medium", "xhigh"]
+    assert "high" not in backend.reasoning_levels(None)
+    assert "max" not in backend.reasoning_levels(None)
+
+
+def test_thinking_capabilities_asks_the_backend_and_adds_no_ninfer_arm():
+    """🔴 THE WHOLE INTEGRATION, AND IT IS A METHOD RATHER THAN A BRANCH.
+
+    RYAN, 12:1x: *"were writing the same code to do the same thing in a slightly
+    different way over and over for each backend."* `thinking_capabilities`
+    checks `backend.reasoning_levels` FIRST and only falls through to name
+    branches when a backend does not answer. This asserts the source string —
+    "backend model metadata" — so an edit that added an `elif name == "ninfer"`
+    beside the other two would still pass a levels-only assertion and fail here.
+    """
+    from litetui import thinking_capabilities as tc
+
+    class App:
+        backend = NInferBackend(_Settings())
+        model_id = "qwen3.8-27b"
+        settings = _Settings()
+
+    caps = tc.thinking_capabilities(App())
+    assert caps["source"] == "backend model metadata"
+    # "none" is rendered as "off" by the shared resolver — not by us.
+    assert caps["levels"] == ["default", "off", "low", "medium", "xhigh"]
+
+
+def test_thinking_capabilities_has_no_ninfer_name_branch():
+    """⬜ THE STRUCTURAL HALF OF THE ARM ABOVE. Source text, because a name
+    branch that shadowed the seam would produce identical levels and the
+    behavioural arm could not tell."""
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "litetui" / "thinking_capabilities.py"
+    ).read_text(encoding="utf-8")
+    assert "ninfer" not in src.lower()
+
+
+def test_the_levels_are_sent_verbatim_and_off_becomes_none():
+    """🔴 VERIFIED, NOT ASSUMED. `turn_engine._resolve_reasoning_effort` is the
+    one place a level becomes a wire value, and ninfer takes the non-lmstudio
+    arm: verbatim, with `off` -> `"none"`, which is the engine's own spelling
+    for thinking disabled."""
+    from litetui.turn_engine import _resolve_reasoning_effort
+
+    assert _resolve_reasoning_effort("off", "ninfer") == "none"
+    for level in ("low", "medium", "xhigh"):
+        assert _resolve_reasoning_effort(level, "ninfer") == level
+    assert _resolve_reasoning_effort(None, "ninfer") is None
+
+
+def test_an_unsupported_level_is_named_rather_than_read_as_a_broken_engine():
+    """🔴 THE ONLY WAY THE LEVEL SET EVER GETS NARROWED.
+
+    Nothing advertises which efforts a loaded template exposes, so an effort it
+    lacks comes back as a 400 BEFORE prompt preparation. Without its own
+    sentence that reads as the engine failing, when it means "this model has no
+    Extra High".
+    """
+    code, action = classify_ninfer_error('{"code":"reasoning_effort_not_supported"}')
+    assert action == "thinking-level"
+    assert "/thinking" in ninfer_error_sentence('{"code":"' + code + '"}', "raw")
+
+
+def test_the_recovery_breadcrumb_does_not_hand_out_an_lms_command():
+    """🔴 THE FALLBACK WAS A DECISION ABOUT US, AND IT WAS WRONG.
+
+    `seat_guard._write_breadcrumb` writes the note a human finds when a resume
+    failed and the agent's brain is gone. Its own docstring says the instruction
+    "must match the ENGINE the seat lives on" — then it branched on `llamacpp`
+    and sent everything else to LM Studio's CLI. An NInfer seat got `lms load`
+    for a program that has never heard of a `.ninfer` artifact.
+    """
+    backend = NInferBackend(_Settings())
+    hint = backend.reload_hint({"identifier": "qwen3.8-27b"})
+    assert "lms" not in hint
+    assert "Model Hub" in hint
+
+
+def test_seat_guard_asks_the_backend_before_its_own_branches():
+    """⬜ DUCK-TYPED, SO THE OTHER TWO BACKENDS ARE UNTOUCHED. A backend that
+    does not answer keeps exactly the behaviour it had — which is why this reads
+    the source rather than only the NInfer path: the ORDER is the fix."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "litetui" / "seat_guard.py").read_text(
+        encoding="utf-8"
+    )
+    asked = src.index('getattr(backend, "reload_hint", None)')
+    branched = src.index('getattr(backend, "name", "") == "llamacpp"')
+    assert asked < branched, "the name branch still wins over the backend's own answer"
+
+
+def test_the_model_screen_labels_the_engine_it_is_actually_on():
+    """🔴 A TWO-WAY LABEL IN A FOUR-BACKEND APP CALLED EVERYTHING ELSE "LM
+    Studio". On NInfer the Model screen said LM Studio at the top while refusing
+    every LM Studio verb underneath."""
+    from litetui.llm_backend import BACKEND_NAMES, backend_label
+
+    # The label comes from the ONE registry (llm_backend.BACKENDS), the same
+    # table /backend, the Settings select and gui_rpc read — no fourth copy.
+    assert "ninfer" in BACKEND_NAMES
+    assert "NInfer" in backend_label("ninfer")
+    assert backend_label("lmstudio") != backend_label("ninfer")
+    assert backend_label("something-new") == "something-new"   # unknown degrades to its own name
+
+
+def test_applying_load_settings_is_no_longer_a_silent_no_op():
+    """🔴 TWO NAME BRANCHES MEANT EVERY OTHER BACKEND FELL OFF THE END.
+
+    The settings were SAVED to disk and never sent anywhere, with no message
+    either way — Ryan's *"all 3 buttons are unclickable"* complaint one app
+    along, in its quieter form. The new arm asks the backend and shows what it
+    says; NInfer's refusal is already a sentence naming where the control lives.
+
+    Source text, because the failure is a MISSING branch: no behavioural arm can
+    observe a path that does not execute.
+    """
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "litetui" / "plugins" / "model_switch.py"
+    ).read_text(encoding="utf-8")
+    assert "elif load_cfg != prior_load:" in src, "backends without a name branch still no-op"
+    # And the refusal it will surface is a real sentence, not an empty string.
+    backend = NInferBackend(_Settings())
+    with pytest.raises(BackendError) as excinfo:
+        run(backend.apply_load_settings("qwen3.8-27b", {"ctx": 8192}))
+    assert "restart the engine" in str(excinfo.value)

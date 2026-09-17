@@ -106,6 +106,14 @@ NINFER_ERROR_ACTION = {
     "server_overloaded": "backoff",
     "request_queue_timeout": "retry",
     "service_unavailable": "relaunch",
+    # 🔴 THE ONE THE THINKING LEVELS CAN PRODUCE (T806). The engine accepts the
+    # FIELD by protocol and the loaded TEMPLATE decides which values it exposes,
+    # so an effort the template does not carry is a 400 raised BEFORE prompt
+    # preparation (`ninfer/docs/serving.md:194`). Nothing advertises the exposed
+    # set, so this error is the only way to learn it — which makes a clear
+    # sentence here the difference between "this model has no Extra High" and "the
+    # engine is broken".
+    "reasoning_effort_not_supported": "thinking-level",
 }
 
 #: The sentence each action turns into for a person reading a TUI.
@@ -116,6 +124,10 @@ _ACTION_TEXT = {
     "relaunch": (
         "the engine has stopped serving and must be restarted from LiteSuite's "
         "Model Hub — LiteTUI does not start it."
+    ),
+    "thinking-level": (
+        "this model's chat template does not offer that thinking level — "
+        "/thinking to pick another, or default to use the template's own."
     ),
 }
 
@@ -156,6 +168,29 @@ def ninfer_error_sentence(body: str | dict | None, fallback: str) -> str:
 # ── the timings line ─────────────────────────────────────────────────────────
 
 
+def decode_rate_from_timings(timings: object) -> float | None:
+    """The engine's OWN decode rate, or None.
+
+    🔴 BETTER THAN THE ONE LiteTUI COMPUTES, AND THAT IS WHY IT IS REUSED RATHER
+    THAN ADDED BESIDE IT. `TpsState.final` divides the server's token count by
+    the CLIENT's wall clock, so queueing and admission are charged to the model:
+    on a busy engine the turn reads slower than it ran. `predicted_per_second`
+    is measured inside the decode loop (`ninfer/docs/serving.md:238`).
+
+    Its docstring already says "settle to the exact figure the server reports" —
+    this is a more exact figure arriving at a seam that was built for it.
+
+    ⬜ ONE FUNCTION, SO THE STATUS LINE AND THE tok/s FIELD CANNOT DISAGREE.
+    `format_timings` renders what this returns; nothing parses the object twice.
+    """
+    if not isinstance(timings, dict):
+        return None
+    rate = timings.get("predicted_per_second")
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        return None
+    return float(rate) if rate > 0 else None
+
+
 def format_timings(timings: object) -> str | None:
     """The llama.cpp-compatible `timings` object as one status line.
 
@@ -171,7 +206,7 @@ def format_timings(timings: object) -> str | None:
     """
     if not isinstance(timings, dict):
         return None
-    decode = timings.get("predicted_per_second")
+    decode = decode_rate_from_timings(timings)
     prompt = timings.get("prompt_per_second")
     parts: list[str] = []
     if isinstance(prompt, (int, float)) and prompt > 0:
@@ -179,6 +214,27 @@ def format_timings(timings: object) -> str | None:
     if isinstance(decode, (int, float)) and decode > 0:
         parts.append(f"decode {decode:.1f} tok/s")
     return " · ".join(parts) if parts else None
+
+
+#: The reasoning efforts `ninfer-serve` accepts on the wire.
+#:
+#: 🔴 READ FROM THE CONTRACT, NOT FROM LiteTUI's OWN VOCABULARY.
+#: `ninfer/docs/serving.md` is explicit twice over: `reasoning_effort: "none"`
+#: disables thinking; a recognised effort-capable template exposes `low`,
+#: `medium` and `xhigh`; and the other OpenAI values (`minimal`, `high`, `max`)
+#: "are parsed but rejected when the loaded template does not expose them".
+#:
+#: So this is FOUR, not LiteTUI's five — offering `high` would offer a level
+#: that 400s on the artifact we ship.
+#:
+#: ⚠️ AND IT IS A CLAIM ABOUT THE PROTOCOL, NOT ABOUT THE LOADED TEMPLATE.
+#: Nothing advertises which efforts a template actually exposes — there is no
+#: discovery endpoint and the engine says so — so the honest position is that
+#: these are the values the ENGINE accepts, and a template that lacks one
+#: answers `reasoning_effort_not_supported` BEFORE prompt preparation
+#: (`serving.md:194`). That error has its own sentence in the table above,
+#: because it is the only way this set ever gets narrowed.
+NINFER_REASONING_LEVELS = ("none", "low", "medium", "xhigh")
 
 
 # ── the backend ──────────────────────────────────────────────────────────────
@@ -239,8 +295,7 @@ class NInferBackend(_VramGate):
                 "no NInfer engine is registered — start it from LiteSuite's "
                 "Model Hub (Settings → NInfer), or set ninfer_host "
                 "(LITETUI_NINFER_HOST) to a ninfer-serve you started by hand, "
-                "then try again. LiteTUI attaches to that engine and never "
-                "starts one itself."
+                "or /engine start to have LiteTUI start one (Ryan a-35456da0)."
             )
         if not self._health(host):
             raise BackendError(
@@ -386,6 +441,60 @@ class NInferBackend(_VramGate):
                 f"{key!r} is not what this NInfer engine serves (it serves {only}). "
                 "One artifact per process — start a different one from LiteSuite's Model Hub."
             )
+
+    # -- capabilities -----------------------------------------------------
+
+    def reasoning_levels(self, model: str | None = None) -> list[str]:
+        """The thinking levels this engine takes — THE SEAM THAT ALREADY EXISTED.
+
+        🔴 RYAN, 12:1x: *"agents have seem to try to rebuild every system for
+        every backend over and again ... were writing the same code to do the
+        same thing in a slightly different way over and over for each backend."*
+
+        `thinking_capabilities()` asks `backend.reasoning_levels(model)` FIRST
+        and only falls through to `name == "llamacpp"` / `name == "lmstudio"`
+        branches when a backend does not answer. Those two branches exist
+        because neither backend ever implemented this — not because the seam was
+        missing. Implementing it is the whole of the thinking integration: no
+        arm is added to `thinking_capabilities`, no `ninfer` name appears there,
+        and the /thinking screen renders from what this returns.
+
+        ⬜ `_resolve_reasoning_effort` ALREADY SENDS THESE VERBATIM, and I
+        verified rather than assumed: `turn_engine.py:81` is
+        `if backend_name != "lmstudio": return level`, with `off` mapped to
+        `"none"` one line above — which is exactly the engine's own spelling for
+        thinking disabled.
+
+        ⬜ THE MODEL ARGUMENT IS ACCEPTED AND UNUSED, DELIBERATELY. One artifact
+        per process: the model cannot differ from the one this engine serves, so
+        a per-model answer would be the same answer with a false implication
+        that it varies.
+        """
+        return list(NINFER_REASONING_LEVELS)
+
+    def reload_hint(self, rec: dict | None = None) -> str:
+        """What a human should do to bring this seat's model back (T806).
+
+        🔴 THE DEFAULT WAS AN `lms load` LINE, WHICH RESTORES NOTHING HERE.
+        `seat_guard._write_breadcrumb` writes a recovery note for the case where
+        a resume failed and the agent's own brain is gone — and its own docstring
+        says the instruction "must match the ENGINE the seat lives on". It
+        branched on `name == "llamacpp"` and sent everything else to LM Studio's
+        CLI, so an NInfer seat got a command for a program that has never heard
+        of a `.ninfer` artifact.
+
+            A FALLBACK IS A DECISION ABOUT EVERY BACKEND THAT DOES NOT HAVE A
+            BRANCH, INCLUDING THE ONES THAT DO NOT EXIST YET.
+
+        ⬜ DUCK-TYPED ON PURPOSE. `seat_guard` asks `getattr(backend,
+        "reload_hint", None)`, so the other two backends keep their existing
+        behaviour with no edit to `llm_backend.py` — the file Sentinel is adding
+        the BACKENDS registry to this hour.
+        """
+        return (
+            "start the NInfer engine from LiteSuite's Model Hub (Settings → NInfer); "
+            "LiteTUI attaches to it and cannot start it itself"
+        )
 
     # -- control, which this engine does not have -------------------------
 

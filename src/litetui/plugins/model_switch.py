@@ -543,13 +543,19 @@ class ModelConfigBody(Widget):
     def compose(self) -> ComposeResult:
         app = self.app
         on_llama = app.backend.name == "llamacpp"
+        # 🔴 T806 — THE LABEL WAS A TWO-WAY CHOICE IN A FOUR-BACKEND APP, so
+        # every backend that was not llama.cpp was captioned "LM Studio". On
+        # NInfer the Model screen said LM Studio at the top while refusing every
+        # LM Studio verb underneath. Read the backend's own name instead of
+        # inferring it from one comparison.
+        engine_label = llm_backend.backend_label(app.backend.name)
         flags = llm_backend.configured_flags(app.settings)
         load_cfg = self._load_cfg()
         infer_cfg = self._infer_cfg()
         row = app.model_rows.get(self._key)
 
         with Vertical(id="set-box"):
-            engine = "llama.cpp" if on_llama else "LM Studio"
+            engine = engine_label
             yield Static(f"Model: {self._key}  ·  {engine}", id="set-title")
             yield Static(
                 "Esc cancels · Ctrl+S applies (a loaded model reloads — "
@@ -905,6 +911,32 @@ class ModelConfigBody(Widget):
                 if key == app.model_id:
                     app.fetch_context_window()
             app.run_worker(_apply_lms(), group="modelctl", exclusive=True)
+        elif load_cfg != prior_load:
+            # 🔴 T806 — WITHOUT THIS ARM THE SCREEN ACCEPTED THE CHANGE AND DID
+            # NOTHING. Two name branches in a four-backend app means every other
+            # backend falls off the end: the settings were SAVED to disk above
+            # and never sent anywhere, with no message either way.
+            #
+            #     RYAN, on the Model Hub: *"its saying install ninfer and
+            #     download the model still ... but all 3 buttons are unclickable
+            #     showing a general prohibition sign"*. This is the same defect
+            #     one app along — a control that looks like it worked.
+            #
+            # ⬜ ASK THE BACKEND AND SHOW WHAT IT SAYS. NInfer refuses by name
+            # ("every setting is fixed at startup ... change it in LiteSuite's
+            # Model Hub and restart the engine there"), so routing through the
+            # callee turns a silent no-op into the reason. A backend that CAN
+            # apply them applies them, with no new branch here.
+            async def _apply_backend() -> None:
+                try:
+                    await app.backend.apply_load_settings(key, load_cfg)
+                except llm_backend.BackendError as e:
+                    app.system_message(str(e))
+                    return
+                app.system_message(f"{key}: load settings applied")
+                if key == app.model_id:
+                    app.fetch_context_window()
+            app.run_worker(_apply_backend(), group="modelctl", exclusive=True)
 
         app.system_message(f"Saved model config for {key}")
         close_dialog(self, None)

@@ -137,7 +137,17 @@ def _write_breadcrumb(rec: dict, backend) -> None:
     own brain is missing. The reload instruction must match the ENGINE the
     seat lives on — an `lms load` line for a llama-served seat restores
     nothing."""
-    if backend is not None and getattr(backend, "name", "") == "llamacpp":
+    # 🔴 ASK THE BACKEND FIRST (T806). This branched on `llamacpp` and sent
+    # everything else to LM Studio's CLI — so an NInfer seat was handed an
+    # `lms load` line for a program that has never heard of a `.ninfer`
+    # artifact. A FALLBACK IS A DECISION ABOUT EVERY BACKEND THAT DOES NOT HAVE
+    # A BRANCH, INCLUDING THE ONES THAT DO NOT EXIST YET.
+    #
+    # ⬜ Duck-typed: a backend that does not answer keeps the behaviour it had.
+    own_hint = getattr(backend, "reload_hint", None) if backend is not None else None
+    if callable(own_hint):
+        reload_hint = own_hint(rec)
+    elif backend is not None and getattr(backend, "name", "") == "llamacpp":
         reload_hint = (f"/load {rec['identifier']} in LiteTUI "
                        f"(or POST /models/load to {backend.host()})")
     else:
