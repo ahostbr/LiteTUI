@@ -41,6 +41,23 @@ MENTIONS_BUT_IS_NOT_A_PATH = [
     'the spec says IMAGE_EXTS = {".png", ".jpg"} which is fine',
     'here is the traceback:\n  File "x.py"\n  loading assets/logo.png failed',
     "should I use webp or a.gif for this",
+    # 🔴 THE RESIDUE T822 LEFT BEHIND, MEASURED 2026-09-17 ON T823. Each of
+    # these is ONE `\S+` token ending in an image extension, so the "the first
+    # token is the file" rule matched it and the message was refused with
+    # "check the path exists" — about a file that was never on this disk.
+    # The whole class was still silently unsendable after the T822 fix.
+    "https://example.com/hero.png why is this 404ing?",
+    "http://a.io/x.jpg",
+    "https://raw.githubusercontent.com/o/r/main/docs/diagram.png explain this",
+    "ftp://host/a.png",
+    '"https://example.com/hero.png" what is this',
+    "'http://a.io/x.jpg' is 404ing",
+    # ⬜ A `file://` URL names a local image, so this one is a judgement call.
+    # It is PROSE here: `_split_image_path` never opened it either (a `file://`
+    # string is not a path `Path.exists()` can resolve), so before this change
+    # the only thing it produced was a wrong warning. Sending it to the model
+    # at least lets the model say what it is. Flagged, not buried.
+    "file:///C:/x.png",
 ]
 
 IS_A_PATH_ATTEMPT = [
@@ -51,6 +68,14 @@ IS_A_PATH_ATTEMPT = [
     "./rel/pic.jpeg",
     "~/Pictures/a.webp describe",
     "/tmp/x.gif",
+    # ⬜ THE CONTROLS FOR THE URL GUARD ABOVE, and the reason it tests the
+    # SCHEME'S LENGTH rather than just a colon: a Windows drive is exactly one
+    # letter before the colon, RFC 3986 requires two or more for a scheme. A
+    # guard that excluded `X:` would have taken every drive-letter path with it.
+    "D:/shots/a.png",
+    "d:\\shots\\a.png",
+    "\\\\server\\share\\a.png",
+    "..\\pics\\b.bmp",
 ]
 
 
