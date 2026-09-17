@@ -314,7 +314,10 @@ def start(settings, *, healthy, spawn=ttyguard.popen) -> OwnedEngine:
     if artifact is None or not artifact.is_file():
         raise BackendError("no NInfer artifact chosen — set ninfer_artifact to a .ninfer file (LiteSuite's Model Hub pulls one).")
     directory = read_artifact_directory(artifact)
-    model_id = artifact_model_id(directory)
+    # 14:2x 2026-09-17: the 35B-A3B header carries no model_id; the pinned fallback made the
+    # running MoE advertise itself as qwen3.8-27b in every picker. The file's own name is
+    # the honest label when the header says nothing.
+    model_id = artifact_model_id(directory, fallback=artifact.stem)
     port = free_port()
     host = f"http://127.0.0.1:{port}"
     ctx = getattr(settings, "ninfer_max_context", None)
@@ -328,25 +331,28 @@ def start(settings, *, healthy, spawn=ttyguard.popen) -> OwnedEngine:
     log_file = open(lp, "a", encoding="utf-8", errors="replace")  # noqa: SIM115 - the process writes here for its whole life
     log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')} ---\n{exe} {' '.join(args)}\n")
     log_file.flush()
+    # 14:1x 2026-09-17: the log is APPENDED across spawns, so a marker from an earlier run
+    # must not count — only bytes written after this spawn's header are this engine's.
+    start_off = lp.stat().st_size
     proc = spawn(
         [str(exe), *args],
         stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
         cwd=str(exe.parent),  # the CUDA DLLs live beside the exe
     )
     deadline = time.monotonic() + NINFER_START_TIMEOUT_S
-    seen = 0
     while time.monotonic() < deadline:
         try:
-            text = lp.read_text(encoding="utf-8", errors="replace")
+            with open(lp, "rb") as f:
+                f.seek(start_off)
+                fresh = f.read().decode("utf-8", "replace")
         except OSError:
-            text = ""
-        fresh = text[seen:] if seen <= len(text) else text
+            fresh = ""
         for marker in NINFER_FAILURE_MARKERS:
             if marker in fresh:
                 _kill(proc)
                 log_file.close()
                 raise BackendError(f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
-        if NINFER_READY_MARKER in text or healthy(host):
+        if NINFER_READY_MARKER in fresh or healthy(host):
             owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file, model_id=model_id)
             register_host(host)
             atexit.register(stop, owned)

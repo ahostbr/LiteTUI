@@ -183,6 +183,34 @@ def test_start_spawns_litesuites_argv_and_registers_the_port(tmp_path, monkeypat
     assert eng.registered_host() is None
 
 
+def test_an_earlier_runs_ready_line_does_not_count(tmp_path, monkeypatch):
+    """14:1x 2026-09-17: the log is appended across spawns; the 12:xx run's "listening on"
+    made start() return at SPAWN while 20.6 GiB were still loading, and the caller's
+    first request killed the engine. Only bytes after THIS spawn's header count."""
+    s, spawn, _ = _ready_engine(tmp_path, monkeypatch, log_text="loading weights | 20.6 GiB\n")
+    lp = eng.log_path(); lp.parent.mkdir(parents=True, exist_ok=True)
+    lp.write_text("--- litetui spawn earlier ---\nlistening on http://127.0.0.1:1\n", encoding="utf-8")
+    monkeypatch.setattr(eng, "NINFER_START_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(eng, "_kill", lambda proc: None)
+    with pytest.raises(BackendError) as excinfo:
+        eng.start(s, healthy=lambda h: False, spawn=spawn)
+    assert "did not become ready" in str(excinfo.value)
+    assert eng.registered_host() is None
+
+
+def test_a_header_without_a_model_id_names_the_engine_after_the_file(tmp_path, monkeypatch):
+    """The 35B-A3B artifact's header has no model_id; the pinned fallback advertised the MoE
+    as qwen3.8-27b in LiteSuite's picker (Ryan's screenshot, 14:2x 2026-09-17)."""
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    monkeypatch.setattr(eng, "read_artifact_directory", lambda p: {"components": {"text": {}}})
+    monkeypatch.setattr(eng.atexit, "register", lambda *a, **k: None)
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn)
+    stem = Path(s.ninfer_artifact).stem
+    assert owned.model_id == stem and stem != "qwen3.8-27b"
+    assert spawned["cmd"][spawned["cmd"].index("--model-id") + 1] == stem
+    eng.stop(owned)
+
+
 def test_a_failure_line_ends_the_wait_now(tmp_path, monkeypatch):
     s, spawn, _ = _ready_engine(tmp_path, monkeypatch, log_text="server listen failed\n")
     monkeypatch.setattr(eng, "_kill", lambda proc: None)
