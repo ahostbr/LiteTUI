@@ -1882,6 +1882,23 @@ def set_vram_gate(gate) -> None:
     _DEFAULT_VRAM_GATE = gate
 
 
+#: THE backend list — the one door. /backend, the Settings "Engine" select,
+#: gui_rpc validation and make_backend all read this; none carries its own copy
+#: (Ryan 2026-09-17: "modular reusable pieces that connect", not a fourth
+#: if-chain per backend). Order is display order.
+BACKENDS: tuple[tuple[str, str], ...] = (
+    ("lmstudio", "LM Studio desktop"),
+    ("llamacpp", "llama.cpp (our own llama-server)"),
+    ("ninfer", "NInfer (NVFP4 5090 engine)"),
+    ("codex", "Codex (OAuth subscription)"),
+)
+BACKEND_NAMES: tuple[str, ...] = tuple(name for name, _ in BACKENDS)
+
+
+def backend_label(name: str) -> str:
+    return dict(BACKENDS).get(name, name)
+
+
 def make_backend(settings):
     """THE factory. app.py calls this once at boot and again on /backend."""
     backend = _make_backend(settings)
@@ -1907,7 +1924,7 @@ def _make_backend(settings):
         return NInferBackend(settings)
     if settings.backend != "lmstudio":
         raise BackendError(
-            "That backend is unavailable. Choose lmstudio, llamacpp, ninfer, or codex; "
+            f"That backend is unavailable. Choose one of {', '.join(BACKEND_NAMES)}; "
             "no fallback was used."
         )
     return LMStudioBackend(settings)

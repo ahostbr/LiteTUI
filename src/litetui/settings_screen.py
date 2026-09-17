@@ -46,6 +46,7 @@ from textual.widgets import (
 )
 
 from litetui.hooks_screen import HooksEditor
+from litetui import llm_backend
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
@@ -378,6 +379,21 @@ class SettingsBody(Widget):
                             placeholder="http://127.0.0.1:49260",
                         )
                         yield from self._text_row(
+                            "ninfer_executable", "NInfer: ninfer-serve executable",
+                            "Blank uses LiteSuite's install. /engine start runs this.",
+                            placeholder="C:/Users/you/.litesuite/llm/ninfer/ninfer-serve.exe",
+                        )
+                        yield from self._text_row(
+                            "ninfer_artifact", "NInfer: model artifact (.ninfer)",
+                            "Blank uses the one file LiteSuite pulled. /engine start serves this.",
+                            placeholder="C:/Users/you/.litesuite/llm/ninfer-models/qwen3_8_27b_nvfp4.ninfer",
+                        )
+                        yield from self._text_row(
+                            "ninfer_max_context", "NInfer: context length (--max-context)",
+                            "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",
+                            placeholder="32768",
+                        )
+                        yield from self._text_row(
                             "lmstudio_graded_thinking_models",
                             "Graded thinking works on (LM Studio)",
                             "Comma-separated model ids. On LM Studio a graded level is "
@@ -390,10 +406,7 @@ class SettingsBody(Widget):
                         # ── Backend (engine selection) ───────────────────────
                         yield from self._select_row(
                             "backend", "Engine",
-                            [("LM Studio desktop", "lmstudio"),
-                             ("llama.cpp (our own llama-server)", "llamacpp"),
-                             ("NInfer (NVFP4 5090 engine, attached)", "ninfer"),
-                             ("Codex (OAuth subscription)", "codex")],
+                            [(label, name) for name, label in llm_backend.BACKENDS],
                             "Which engine serves the chat. /backend switches "
                             "live; this is the boot default.",
                         )

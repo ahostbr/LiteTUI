@@ -130,13 +130,56 @@ def _switch_backend(app, choice: str) -> None:
     app.connect()
 
 
+def _ninfer_mark(app) -> str:
+    from litetui import ninfer_engine
+    from litetui.ninfer_backend import discover_ninfer_host
+    reg = str(getattr(app.settings, "ninfer_host", "") or "").strip() or discover_ninfer_host()
+    if reg:
+        return f"engine registered at {reg}"
+    return ("installed — /engine start" if ninfer_engine.ninfer_executable(app.settings).is_file()
+            else "not installed — LiteSuite's Model Hub installs it")
+
+
+def _cmd_engine(app, name: str, arg: str) -> None:
+    """/engine start|stop|status — the NInfer process LiteTUI may own."""
+    backend = app.backend
+    if getattr(backend, "name", "") != "ninfer":
+        app.system_message("/engine drives the NInfer backend — /backend ninfer first.")
+        return
+    verb = (arg.strip().lower() or "status").split()[0]
+    if verb == "status":
+        app.system_message(backend.engine_status())
+        return
+    if verb == "stop":
+        app.system_message(backend.stop_engine())
+        return
+    if verb != "start":
+        app.system_message("/engine start | stop | status")
+        return
+    if getattr(app, "_chat_running", lambda: False)():
+        app.system_message("Finish or stop the current turn before starting the engine.")
+        return
+    app.system_message("Starting ninfer-serve — weights take about ten seconds…")
+
+    async def _go():
+        try:
+            msg = await backend.start_engine()
+        except llm_backend.BackendError as e:
+            app.system_message(str(e))
+            return
+        app.system_message(msg)
+        app.connect()
+
+    app.run_worker(_go(), exclusive=False, name="ninfer-engine-start")
+
+
 def _cmd_backend(app, name: str, arg: str) -> None:
     choice = arg.strip().lower()
-    if choice in ("lmstudio", "llamacpp", *model_transport.OAUTH_PROVIDERS):
+    if choice in llm_backend.BACKEND_NAMES or choice in model_transport.OAUTH_PROVIDERS:
         _switch_backend(app, choice)
         return
     if choice:
-        app.system_message(f"Unknown backend {choice!r} — lmstudio, llamacpp or codex")
+        app.system_message(f"Unknown backend {choice!r} — {', '.join(llm_backend.BACKEND_NAMES)}")
         return
     lms_mark = "installed" if shutil.which("lms") else "not detected"
     llama_mark = (
@@ -146,6 +189,7 @@ def _cmd_backend(app, name: str, arg: str) -> None:
     rows = [
         ("lmstudio", f"LM Studio desktop  · {lms_mark}"),
         ("llamacpp", f"llama.cpp (our engine)  · {llama_mark}"),
+        ("ninfer", f"NInfer (5090 engine)  · {_ninfer_mark(app)}"),
         ("codex", f"Codex subscription  · {model_transport.auth_status('codex')}"),
     ]
 
@@ -985,6 +1029,13 @@ def _register(ctx) -> None:
         help="Lost the model server? Try again.",
         group="backend",
         order=60,
+    )
+    ctx.command(
+        ("/engine",), _cmd_engine,
+        palette="NInfer engine",
+        help="Start, stop or check the NInfer engine LiteTUI may own.",
+        group="backend",
+        order=55,
     )
     ctx.command(
         ("/backend",), _cmd_backend,

@@ -44,6 +44,7 @@ import urllib.request
 from pathlib import Path
 
 from .llm_backend import BackendError, ModelRow, _VramGate
+from . import ninfer_engine
 
 #: Where LiteSuite keeps the config that names the live engine. The env var is
 #: LiteSuite's own override, honoured so a test (or a second install) points
@@ -199,6 +200,9 @@ class NInferBackend(_VramGate):
         self._settings = settings
         self._host: str | None = None
         self._model_id: str | None = None
+        #: The engine WE started via /engine start (Ryan a-35456da0: "LiteTUI may
+        #: start it"), else None = attached to one somebody else runs.
+        self._owned: ninfer_engine.OwnedEngine | None = None
 
     # -- discovery --------------------------------------------------------
 
@@ -215,14 +219,17 @@ class NInferBackend(_VramGate):
 
     @property
     def attached(self) -> bool:
-        # 🔴 ALWAYS. See the module docstring: we never spawn, so the process is
-        # never ours, so there is no state in which this is False.
-        return True
+        """True unless /engine start made the process ours. The ownership rule
+        stays: the ONLY engine shutdown() will ever stop is one we started."""
+        return self._owned is None
 
     async def ensure_running(self) -> str:
         return await asyncio.to_thread(self._ensure_running_sync)
 
     def _ensure_running_sync(self) -> str:
+        if self._owned is not None and self._owned.alive and self._health(self._owned.host):
+            self._host = self._owned.host
+            return f"ok (engine started by LiteTUI, pid {getattr(self._owned.proc, 'pid', '?')})"
         # An explicit address wins over discovery: a hand-started ninfer-serve
         # with no LiteSuite around has nothing to register itself in.
         explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
@@ -255,16 +262,47 @@ class NInferBackend(_VramGate):
             return False
 
     def shutdown(self) -> None:
-        """Nothing to stop.
+        """Stop the engine ONLY if /engine start made it ours; otherwise nothing.
 
-        🔴 DELIBERATELY EMPTY, AND THE COMMENT IS THE POINT. A `shutdown` that
-        killed the engine would take down a process LiteSuite owns, that Ryan
-        approved separately, and that another client may be using — from a TUI
-        closing a tab.
+        🔴 A shutdown that killed an engine LiteSuite (or Ryan, by hand) started
+        would take down a process approved separately, that another client may be
+        using — from a TUI closing a tab. Attached = leave it. Owned = ours to stop.
         """
+        owned, self._owned = self._owned, None
+        if owned is not None:
+            ninfer_engine.stop(owned)
         self._host = None
 
-    # -- read -------------------------------------------------------------
+    # -- owning the engine (Ryan a-35456da0: "LiteTUI may start it") ----------
+
+    async def start_engine(self) -> str:
+        """Spawn ninfer-serve under LiteTUI's VRAM gate; refuse if any engine is up."""
+        key = "ninfer-serve"
+        async with self.vram_guard(key):
+            owned = await asyncio.to_thread(ninfer_engine.start, self._settings, healthy=self._health)
+        self._owned = owned
+        self._host = owned.host
+        return f"started ninfer-serve pid {getattr(owned.proc, 'pid', '?')} at {owned.host} ({owned.model_id})"
+
+    def stop_engine(self) -> str:
+        if self._owned is None:
+            reg = discover_ninfer_host()
+            if reg:
+                return f"the engine at {reg} was not started by LiteTUI — stop it where it was started (LiteSuite's Model Hub, or the shell that ran it)."
+            return "no engine is running."
+        host = self._owned.host
+        self.shutdown()
+        return f"stopped the engine LiteTUI started at {host}."
+
+    def engine_status(self) -> str:
+        if self._owned is not None:
+            alive = self._owned.alive and self._health(self._owned.host)
+            return f"LiteTUI-owned engine at {self._owned.host}: {'answering' if alive else 'NOT answering'} (log {self._owned.log_path})"
+        explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
+        reg = explicit or discover_ninfer_host()
+        if reg is None:
+            return "no engine registered — /engine start (LiteTUI starts one), or start it from LiteSuite's Model Hub."
+        return f"attached engine at {reg}: {'answering' if self._health(reg) else 'NOT answering'}"
 
     async def list_models(self) -> list[ModelRow]:
         return await asyncio.to_thread(self._list_sync)

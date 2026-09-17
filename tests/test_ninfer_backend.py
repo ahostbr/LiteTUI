@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 
+import io
 import pytest
+from pathlib import Path
 
 from litetui.llm_backend import BackendError
 from litetui.ninfer_backend import (
@@ -258,14 +260,33 @@ def test_an_explicit_ninfer_host_wins_over_discovery(tmp_path, monkeypatch):
     assert backend.base_url() == "http://127.0.0.1:49260/v1"
 
 
-def test_the_backend_is_always_attached():
-    """🔴 THERE IS NO STATE IN WHICH THIS IS FALSE, and that is the design.
-
-    The llama.cpp backend needs ownership rules because it spawns; a backend
-    that cannot spawn cannot orphan VRAM. If this ever returns False, something
-    has taught this class to start a process.
+def test_the_backend_is_attached_unless_it_started_the_engine():
+    """Attached by default; owned only after /engine start (Ryan a-35456da0:
+    "LiteTUI may start it"). The rule that survives: shutdown() stops ONLY an
+    engine this backend started — an attached one is left alone.
     """
-    assert NInferBackend(_Settings()).attached is True
+    from litetui import ninfer_engine
+
+    backend = NInferBackend(_Settings())
+    assert backend.attached is True
+    backend.shutdown()                      # attached: nothing to stop, no error
+
+    class _Proc:
+        pid = 4242
+        def poll(self):
+            return None
+    owned = ninfer_engine.OwnedEngine(proc=_Proc(), host="http://127.0.0.1:1", log_path=Path("x.log"),
+                                      log_file=io.StringIO(), model_id="m")
+    backend._owned = owned
+    assert backend.attached is False
+    stopped = []
+    monkey = ninfer_engine.stop
+    ninfer_engine.stop = lambda o: stopped.append(o.host)
+    try:
+        backend.shutdown()
+    finally:
+        ninfer_engine.stop = monkey
+    assert stopped == ["http://127.0.0.1:1"] and backend.attached is True
 
 
 # ── the factory ──────────────────────────────────────────────────────────────

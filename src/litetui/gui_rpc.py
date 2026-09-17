@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, get_args, get_origin, get_type_hints
 
-from litetui import paths, tasks
+from litetui import llm_backend, paths, tasks
 from litetui import settings as settings_mod
 from litetui.shared_state import DATA_VERSION, Lease, OwnershipError, check_data_version
 
@@ -153,7 +153,7 @@ def _validate(app, patch):
             from litetui.tool_policy import selectable_profile_names
             if value not in selectable_profile_names():
                 raise ValueError(f"{name}: unsupported profile")
-        if name == "backend" and value not in ("lmstudio", "llamacpp", "ninfer", "codex"):
+        if name == "backend" and value not in llm_backend.BACKEND_NAMES:
             raise ValueError("backend: unsupported backend")
         if name in ("lm_host", "llama_host") and not value.startswith(("http://", "https://")):
             raise ValueError(f"{name}: expected an http(s) server URL")

@@ -59,6 +59,13 @@ class Settings:
     #: ninfer-serve was started by hand and no LiteSuite is running: LiteTUI
     #: still only ATTACHES — this names an engine, it never starts one.
     ninfer_host: str = ""
+    #: /engine start (Ryan a-35456da0 "LiteTUI may start it"): blank = LiteSuite's
+    #: install (~/.litesuite/llm/ninfer/ninfer-serve.exe) and the ONE .ninfer it
+    #: pulled. Set these for a standalone install. Context is the engine's
+    #: --max-context (LiteSuite's ruling: 32k, fp8 KV).
+    ninfer_executable: str = ""
+    ninfer_artifact: str = ""
+    ninfer_max_context: int = 32768
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
@@ -396,6 +403,8 @@ class Settings:
 ENV_OVERRIDES: dict[str, str] = {
     "lm_host": "LITETUI_LM_HOST",
     "ninfer_host": "LITETUI_NINFER_HOST",
+    "ninfer_executable": "LITETUI_NINFER_EXE",
+    "ninfer_artifact": "LITETUI_NINFER_ARTIFACT",
     "backend": "LITETUI_BACKEND",
     "llama_host": "LITETUI_LLAMA_HOST",
     "tool_iterations": "LM_TOOL_ITERS",
