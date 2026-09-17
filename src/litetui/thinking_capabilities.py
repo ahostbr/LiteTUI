@@ -3,6 +3,48 @@ from litetui.settings import THINKING_LEVELS
 from litetui.turn_engine import _resolve_reasoning_effort
 
 
+def _as_choices(levels) -> list[str]:
+    """Wire spellings -> the spellings a person picks from.
+
+    `none` is what the ENGINE takes and `off` is what the UI says, and that
+    translation must exist in exactly one place: it is the difference
+    between the two vocabularies agreeing and only looking like they do.
+    """
+    return list(dict.fromkeys("off" if level == "none" else level
+                              for level in levels if isinstance(level, str)))
+
+
+def backend_levels(app) -> list[str] | None:
+    """What the ACTIVE BACKEND says it takes, or None when it says nothing.
+
+    🔴 ONE QUESTION, ONE ANSWER, TWO CALLERS. `/think` and `set_thinking`
+    used to decide this separately and they DISAGREED. Measured 2026-09-17
+    on ninfer with a stub app:
+
+        /think offered  ['off','minimal','low','medium','high','xhigh']
+        set_thinking    ['off','low','medium','xhigh']
+
+    so `/think high` was accepted while `set_thinking("high")` answered
+    "not supported by the active backend/model" -- for the same level, the
+    same model and the same backend, in the same second. `/think` never
+    asked the backend at all (it fell back to `settings.THINKING_LEVELS`,
+    a global list), while `thinking_capabilities` did.
+
+    ⚠️ AND FIXING ONLY THE TABLE WOULD HAVE FLIPPED THE GAP RATHER THAN
+    CLOSING IT: with NInfer's seven levels restored, `set_thinking("max")`
+    works while `/think max` is refused, because THINKING_LEVELS has six
+    and lacks `max`. Two lists cannot be kept equal by editing one of them.
+
+    None, not `[]`, when the backend does not answer: the callers have
+    fallbacks for a backend that reports nothing, and an empty list would
+    read as "this backend supports no levels", which is a different claim.
+    """
+    metadata = getattr(getattr(app, "backend", None), "reasoning_levels", None)
+    if not callable(metadata):
+        return None
+    return _as_choices(metadata(getattr(app, "model_id", None))) or None
+
+
 def thinking_capabilities(app):
     backend = getattr(app, "backend", None)
     name = getattr(backend, "name", "")
@@ -23,8 +65,7 @@ def thinking_capabilities(app):
             levels = [level for level in discovered
                       if _resolve_reasoning_effort(level, name, model, seed) is not None]
             source = "cached model discovery/configuration and adapter"
-    choices = list(dict.fromkeys("off" if level == "none" else level
-                                for level in levels if isinstance(level, str)))
+    choices = _as_choices(levels)
     return {"levels": ["default", *choices], "source": source,
             "note": ("Model support has not been reported; use the backend default."
                      if source == "unavailable" else

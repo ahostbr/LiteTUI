@@ -257,7 +257,29 @@ def format_timings(timings: object) -> str | None:
 #: answers `reasoning_effort_not_supported` BEFORE prompt preparation
 #: (`serving.md:194`). That error has its own sentence in the table above,
 #: because it is the only way this set ever gets narrowed.
-NINFER_REASONING_LEVELS = ("none", "low", "medium", "xhigh")
+#: The engine's own vocabulary, in the engine's own order.
+#:
+#: 🔴 THIS WAS FOUR OF SEVEN, AND THE THREE THAT WERE MISSING WERE REFUSED
+#: WITH A SENTENCE THAT WAS FALSE ABOUT THEM. Measured 2026-09-17 against
+#: ninfer-serve (35B-A3B): the engine NAMES its vocabulary in its own 400,
+#: and `high` -- one of the three this tuple omitted -- returned HTTP 200
+#: with 723 characters of reasoning_content.
+#:
+#:     POST /v1/chat/completions {..., "reasoning_effort": "ultra"} -> 400
+#:     {"error":{"code":null,
+#:       "message":"reasoning_effort must be one of none, minimal, low,
+#:                   medium, high, xhigh, or max",
+#:       "param":"reasoning_effort","type":"invalid_request_error"}}
+#:
+#: So `set_thinking` answered "Thinking level is not supported by the active
+#: backend/model" for `minimal`, `high` and `max` -- three levels the active
+#: backend supports. The refusal machinery was right; the table was short.
+#:
+#: ⬜ ORDER IS THE ENGINE'S, ascending effort, because this tuple is what the
+#: /thinking picker renders: a set would lose it and an alphabetical list
+#: would put `high` between `default` and `low`.
+NINFER_REASONING_LEVELS = ("none", "minimal", "low", "medium", "high",
+                           "xhigh", "max")
 
 
 # ── the backend ──────────────────────────────────────────────────────────────
