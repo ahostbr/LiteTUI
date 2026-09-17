@@ -23,6 +23,7 @@ that some coroutine was scheduled.
 """
 from __future__ import annotations
 
+import json
 import socket
 import sys
 import time
@@ -35,6 +36,13 @@ pytestmark = pytest.mark.real_mcp_load
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
 from litetui import app as m
+from litetui import paths
+
+#: `.mcp.json` rather than `mcp.json`: both are read (mcp_client
+#: MCP_CONFIG_NAMES), and this is the one `add` writes, so the arms exercise
+#: the file a user would actually end up with.
+MCP_CONFIG_NAME = ".mcp.json"
+SERVER_NAME = "a-declared-server"
 
 #: The measured refusal, rounded down. The bound below has to sit well under it
 #: or a pass would be consistent with the defect still being present.
@@ -56,6 +64,46 @@ REFUSAL_SECONDS = 4.0
 #: cannot pass with a refused connect in the constructor. The negative control
 #: below is what keeps that second half honest.
 BOUND_MS = 1000
+
+
+@pytest.fixture(autouse=True)
+def _declare_one_unreachable_server(tmp_path):
+    """Put a server in the data root these tests actually read.
+
+    🔴 WITHOUT THIS, THREE ARMS IN THIS FILE COULD NOT PASS AND ONE PASSED
+    VACUOUSLY. `conftest.py`'s autouse `_never_write_the_live_data_root`
+    sets `LITETUI_DATA_ROOT` to `tmp_path` for EVERY test, and `MCPManager`
+    is constructed with `paths.data_root()` (app.py) -- so the manager looked
+    in an empty temp directory, found nothing, and
+    `test_the_configs_are_still_read_at_construction` asserted against the
+    repo's own `.mcp.json`, which it can never see.
+
+        AND THE BOUND ARM WAS THE WORSE HALF: with NO server declared there
+        was nothing for the constructor to dial, so
+        `test_construction_does_not_wait_for_an_unreachable_server` was
+        timing a constructor with no work to skip. It measured the fix and
+        the defect identically. This fixture is what gives it a subject.
+
+    ⬜ THE COUPLING IS ASSERTED, NOT ASSUMED. `tmp_path` is the same object
+    the conftest fixture redirected the data root to; if that ever stops
+    being true this fails HERE, by name, instead of the arms below quietly
+    going back to measuring nothing.
+
+    ⬜ AND THE PORT IS ONE NOTHING LISTENS ON, chosen by binding 0 and
+    closing: 7423 is LiteSuite's bridge and may be UP on this box, which
+    would make 'unreachable' false exactly when the developer is working.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    (tmp_path / MCP_CONFIG_NAME).write_text(
+        json.dumps({"mcpServers": {SERVER_NAME: {
+            "url": f"http://127.0.0.1:{port}/mcp", "type": "http"}}}),
+        encoding="utf-8")
+    assert paths.data_root() == tmp_path, (
+        "the conftest no longer redirects LITETUI_DATA_ROOT to tmp_path, so "
+        "these arms are reading a different root than they write")
+    return port
 
 
 def make_app():
@@ -88,9 +136,10 @@ def test_the_configs_are_still_read_at_construction():
     clothes, and one that only shows on a slow server.
     """
     a = make_app()
-    assert a.mcp.configs, (
-        "no server configs after construction — .mcp.json at the repo root "
-        "declares at least one, and the dialog reads this"
+    assert SERVER_NAME in a.mcp.configs, (
+        "no server configs after construction, though this test declared one "
+        "in the data root. /settings, describe() and the /mcp dialog all read "
+        f"this map: {a.mcp.configs!r}"
     )
 
 
