@@ -261,16 +261,36 @@ class TpsState:
             return self.n / elapsed
         return None
 
-    def final(self, completion_tokens: int) -> float | None:
+    def final(
+        self, completion_tokens: int, *, reported_rate: float | None = None
+    ) -> float | None:
         """Settle to the exact figure the server reports, or None to leave the
         live estimate standing.
 
         The live number counts STREAM DELTAS, which are only approximately
         tokens. `usage.completion_tokens` is the server's own count and includes
         reasoning tokens, so it matches what the model actually generated.
+
+        🔴 `reported_rate` IS A MORE EXACT FIGURE ARRIVING AT A SEAM BUILT FOR
+        ONE (T806). The arithmetic below divides the server's token count by the
+        CLIENT's wall clock, so queueing and admission are charged to the model
+        and a busy engine reads slower than it ran. An engine that measures its
+        own decode loop — llama.cpp and NInfer both publish `timings.
+        predicted_per_second` — already knows the answer.
+
+            RYAN: *"66toks is less than lmstudio etc"* / *"whole point is a toks
+            improvement"*. A comparison between engines is only worth making if
+            the number is of the same thing, and the engine's own figure is the
+            one that is.
+
+        ⬜ IT DOES NOT SKIP THE GUARDS BELOW. A reported rate on a turn that
+        never started, or that produced no tokens, is still nothing to publish —
+        the same two conditions, for the same reasons, whoever measured.
         """
         if self.t0 is None or not completion_tokens:
             return None
+        if reported_rate is not None and reported_rate > 0:
+            return float(reported_rate)
         elapsed = time.monotonic() - self.t0
         if elapsed > 0:
             return completion_tokens / elapsed
