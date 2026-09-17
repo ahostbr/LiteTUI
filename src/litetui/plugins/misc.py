@@ -9,6 +9,7 @@ from functools import partial
 
 from litetui.picker import pick
 from litetui.settings import THINKING_LEVELS
+from litetui.thinking_capabilities import backend_levels
 
 from litetui.plugins import PluginManifest
 
@@ -87,14 +88,25 @@ def _thinking_rows(app) -> list[tuple[str, str]]:
     rather than assumed here, because it is a property of the probe and the
     probe is free to change.
     """
+    # T839: ASK THE BACKEND FIRST, for every backend, not just codex. This
+    # branch already did the right thing and only codex benefited from it;
+    # everything else fell through to a global list and disagreed with
+    # `set_thinking`. `backend_levels` is the one answer both now read.
+    reported = backend_levels(app)
     if getattr(getattr(app, "backend", None), "name", "") == "codex":
-        levels = app.backend.reasoning_levels(app.model_id)
+        levels = reported or []
         return [(level, "Extra high" if level == "xhigh" else
                  level.title() + (" · consumes usage limits faster"
                                   if level in ("max", "ultra") else ""))
                 for level in levels] + [(UNSET, "Default · use the backend default")]
-    model_levels = getattr(app, "_model_thinking_levels", None)
-    levels = list(model_levels) if model_levels else list(THINKING_LEVELS)
+    if reported is not None:
+        levels = reported
+    else:
+        # A backend that reports nothing keeps the old behaviour exactly:
+        # the model's discovered list, else the global vocabulary, both
+        # shown with `_level_label`'s caveats rather than filtered away.
+        model_levels = getattr(app, "_model_thinking_levels", None)
+        levels = list(model_levels) if model_levels else list(THINKING_LEVELS)
     rows = [(lv, _level_label(app, lv)) for lv in levels]
     rows.append((UNSET, "unset  · the field is not sent — LM Studio applies xhigh"))
     return rows

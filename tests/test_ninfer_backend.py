@@ -398,13 +398,31 @@ def test_a_reported_rate_does_not_skip_the_existing_guards():
 
 
 def test_the_thinking_levels_come_from_the_engines_contract():
-    """🔴 FOUR, NOT LiteTUI'S FIVE — read from `serving.md`, not from our own
-    vocabulary. A recognised effort-capable template exposes low/medium/xhigh,
-    and `none` disables thinking. `high` would 400 on the artifact we ship."""
+    """🔴 SEVEN. THIS ARM USED TO SAY FOUR, AND ITS OWN PROSE DEFENDED THE
+    DEFECT: *"`high` would 400 on the artifact we ship"*, citing serving.md.
+
+    It is wrong, and three independent sources say so (2026-09-17):
+
+      1. `serving.md:216-217` — the document it cited — reads: *"`none`
+         requests disabled thinking. The selected template interprets the
+         other standard values (`minimal`, `low`, `medium`, `high`,
+         `xhigh`, `max`)."*
+      2. The live engine NAMES its own vocabulary when refused:
+         `reasoning_effort: "ultra"` -> HTTP 400 *"reasoning_effort must be
+         one of none, minimal, low, medium, high, xhigh, or max"*.
+      3. `high` — the level this docstring said would 400 — returned HTTP
+         200 with 723 characters of reasoning_content from that engine.
+
+        A TEST CAN DEFEND THE BUG. A green assertion and a confident
+        docstring held a false claim in place, and the only thing that
+        dislodged it was running the engine.
+    """
     backend = NInferBackend(_Settings())
-    assert backend.reasoning_levels("qwen3.8-27b") == ["none", "low", "medium", "xhigh"]
-    assert "high" not in backend.reasoning_levels(None)
-    assert "max" not in backend.reasoning_levels(None)
+    seven = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    # The model argument is accepted and unused by design (one artifact per
+    # process), so both spellings must give the same answer.
+    assert backend.reasoning_levels("qwen3.8-27b") == seven
+    assert backend.reasoning_levels(None) == seven
 
 
 def test_thinking_capabilities_asks_the_backend_and_adds_no_ninfer_arm():
@@ -427,19 +445,41 @@ def test_thinking_capabilities_asks_the_backend_and_adds_no_ninfer_arm():
     caps = tc.thinking_capabilities(App())
     assert caps["source"] == "backend model metadata"
     # "none" is rendered as "off" by the shared resolver — not by us.
-    assert caps["levels"] == ["default", "off", "low", "medium", "xhigh"]
+    assert caps["levels"] == ["default", "off", "minimal", "low", "medium",
+                              "high", "xhigh", "max"]
 
 
 def test_thinking_capabilities_has_no_ninfer_name_branch():
-    """⬜ THE STRUCTURAL HALF OF THE ARM ABOVE. Source text, because a name
-    branch that shadowed the seam would produce identical levels and the
-    behavioural arm could not tell."""
+    """⬜ THE STRUCTURAL HALF OF THE ARM ABOVE. A name branch that shadowed
+    the seam would produce identical levels, so the behavioural arm could
+    not tell — this one reads the source.
+
+    🔴 IT CHECKS THE CODE, NOT THE PROSE. It used to be
+    `assert "ninfer" not in src.lower()` over the raw file, which forbade
+    the WORD — so documenting the measurement that produced T839 turned it
+    red while adding no branch at all.
+
+        A TEXT GATE COUNTS THE PROSE *ABOUT* THE THING. Docstrings are
+        stripped and comments never reach the AST, so what is left is the
+        thing the arm was always trying to forbid.
+    """
+    import ast
     from pathlib import Path
 
     src = (
         Path(__file__).resolve().parents[1] / "src" / "litetui" / "thinking_capabilities.py"
     ).read_text(encoding="utf-8")
-    assert "ninfer" not in src.lower()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef,
+                                 ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        first = node.body[0] if node.body else None
+        if (isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            first.value.value = ""
+    assert "ninfer" not in ast.dump(tree).lower()
 
 
 def test_the_levels_are_sent_verbatim_and_off_becomes_none():
@@ -450,7 +490,11 @@ def test_the_levels_are_sent_verbatim_and_off_becomes_none():
     from litetui.turn_engine import _resolve_reasoning_effort
 
     assert _resolve_reasoning_effort("off", "ninfer") == "none"
-    for level in ("low", "medium", "xhigh"):
+    # Every level the backend advertises, not a sample of three: a level
+    # added to the tuple and silently dropped on the wire is exactly the
+    # class of defect T839 was.
+    from litetui.ninfer_backend import NINFER_REASONING_LEVELS
+    for level in (lv for lv in NINFER_REASONING_LEVELS if lv != "none"):
         assert _resolve_reasoning_effort(level, "ninfer") == level
     assert _resolve_reasoning_effort(None, "ninfer") is None
 
