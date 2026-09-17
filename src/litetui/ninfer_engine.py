@@ -208,15 +208,22 @@ def registered_host() -> str | None:
     return None
 
 
-def register_host(base_url: str) -> bool:
-    """Add `{baseUrl, kind: ninfer}` to LiteSuite's config; False when the file is not writable."""
+def register_host(base_url: str, *, pid: int | None = None) -> bool:
+    """Add `{baseUrl, kind: ninfer, owner: "litetui", pid}` to LiteSuite's config; False when
+    the file is not writable. `owner`/`pid` are the vocabulary NeonRack and NeonRelay agreed for
+    the Model Hub (T819/T820, 2026-09-17): the hub labels an answering engine LiteSuite | LiteTUI
+    | external by WHO WROTE THE ENTRY and may only Stop its own; an entry without `owner` reads
+    as external. Every reader keys on baseUrl + kind only, so older readers are unaffected."""
     path = _config_path()
     try:
         body = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"version": 1}
         if not isinstance(body, dict):
             body = {"version": 1}
         entries = [e for e in (body.get("extraEndpoints") or []) if not (isinstance(e, dict) and e.get("kind") == "ninfer")]
-        entries.append({"baseUrl": base_url, "kind": "ninfer"})
+        entry: dict = {"baseUrl": base_url, "kind": "ninfer", "owner": "litetui"}
+        if pid is not None:
+            entry["pid"] = pid
+        entries.append(entry)
         body["extraEndpoints"] = entries
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
@@ -354,7 +361,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen) -> OwnedEngine:
                 raise BackendError(f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
         if NINFER_READY_MARKER in fresh or healthy(host):
             owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file, model_id=model_id)
-            register_host(host)
+            register_host(host, pid=getattr(proc, "pid", None))
             atexit.register(stop, owned)
             return owned
         if getattr(proc, "poll", lambda: None)() is not None:

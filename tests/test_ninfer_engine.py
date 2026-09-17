@@ -179,6 +179,8 @@ def test_start_spawns_litesuites_argv_and_registers_the_port(tmp_path, monkeypat
     assert owned.host == "http://127.0.0.1:49260" and owned.model_id == "qwen3.8-27b"
     assert spawned["cmd"][0].endswith("ninfer-serve.exe") and "--spec" in spawned["cmd"]
     assert eng.registered_host() == "http://127.0.0.1:49260"
+    entry = next(e for e in json.loads((tmp_path / "config.json").read_text())["extraEndpoints"] if e["kind"] == "ninfer")
+    assert entry["owner"] == "litetui" and entry["pid"] == 777   # the hub's owner label (T819)
     eng.stop(owned)
     assert eng.registered_host() is None
 
