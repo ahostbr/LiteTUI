@@ -679,17 +679,41 @@ def test_every_unguarded_backend_call_is_implemented():
         and `seat_resume` missing on the image/audio VRAM path
         (`studio_tool.py:262`, `listen_tool.py:415`).
 
-    ⚠️ THIS ARM READS SOURCE, SO IT IS SCOPED TO WHAT IT READS. A reach through
-    an alias (`b = self.backend; b.foo()`) is invisible to it. It catches the
-    direct spelling, which is what every site above uses.
+    ⚠️ THIS ARM READS SOURCE, SO IT IS SCOPED TO WHAT IT READS — AND ITS SCOPE
+    HAS LET ONE THROUGH ALREADY. Two known blind spots, both measured, not
+    imagined:
+
+      1. AN ALIAS. `b = self.backend; b.foo()` does not match the pattern.
+      2. 🔴 `getattr`. `model_residency.py:63` is
+         `getattr(backend, "loaded_models", None)`, so the missing
+         `loaded_models` did NOT show up here — this arm stayed green while
+         Ryan's `/settings` raised. Verified by deleting the method: 61 passed.
+
+    Blind spot 2 cannot simply be pattern-matched away, because `getattr` with
+    a default is ALSO how a genuinely optional capability is read (`app_server`,
+    `reload_hint`), and flagging those would make this arm cry wolf until
+    somebody widened the exemption list instead of the implementation.
+
+        SO THE STRUCTURAL PROTECTION FOR A `getattr` SEAM IS NOT THIS ARM — IT
+        IS MAKING THE FALLBACK SURVIVABLE. `model_residency` now guards its
+        `asyncio.run` fallback (`tests/test_residency_loop_guard.py`), so a
+        backend missing that method degrades to the snapshot instead of
+        crashing the dialog. A specific arm below pins the method itself.
     """
     import re
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "src" / "litetui"
     called: dict[str, str] = {}
+    # 🔴 THIS LIST IS THE ARM'S SCOPE, AND IT IS WHERE ONE GOT THROUGH.
+    # `loaded_models` was missing and this arm passed, because
+    # `model_residency.py` and `plugins/settings_ui.py` were not read -- Ryan
+    # found it by typing `/settings`. Widened; a file added to the turn or
+    # dialog path must be added here too, or the arm silently narrows.
     for rel in ("app.py", "turn_engine.py", "gui_rpc.py", "seat_guard.py",
-                "thinking_capabilities.py", "plugins/model_switch.py"):
+                "thinking_capabilities.py", "plugins/model_switch.py",
+                "model_residency.py", "plugins/settings_ui.py",
+                "listen_tool.py", "studio_tool.py"):
         path = root / rel
         if not path.exists():
             continue
@@ -742,3 +766,42 @@ def test_seat_snapshot_is_resident_or_absent(monkeypatch):
     # Resume is a question, not an assumption — it asks the engine.
     assert b.seat_resume({"identifier": "qwen3.8-27b"}) is None
     assert "no longer serving" in (b.seat_resume({"identifier": "gone"}) or "")
+
+
+def test_loaded_models_exists_because_the_residency_read_is_a_getattr():
+    """🔴 NAMED EXPLICITLY, BECAUSE THE DERIVED ARM ABOVE CANNOT SEE IT.
+
+    `model_residency.resident_models` reads this with
+    `getattr(backend, "loaded_models", None)` (`model_residency.py:63`) and
+    falls back to `asyncio.run(list_models())` — which raises inside Textual's
+    loop. Ryan typed `/settings` on this backend and got that traceback instead
+    of the dialog.
+
+    ⬜ SYNC ON PURPOSE. The caller is a command handler; an async answer is the
+    one thing it cannot use.
+    """
+    import inspect
+
+    from litetui import model_residency
+
+    assert hasattr(NInferBackend, "loaded_models")
+    assert not inspect.iscoroutinefunction(NInferBackend.loaded_models)
+    # The spelling the caller actually uses, so a rename on either side is red.
+    assert getattr(NInferBackend, "loaded_models", None) is not None
+    assert "loaded_models" in inspect.getsource(model_residency.resident_models)
+
+
+def test_loaded_models_is_the_served_row_and_survives_a_dead_engine(monkeypatch):
+    """⬜ One artifact per process, so the served id IS the resident set; and a
+    backend that cannot reach its engine reports NOTHING rather than raising
+    into a dialog that is already being built."""
+    assert _served(monkeypatch).loaded_models() == ["qwen3.8-27b"]
+
+    dead = NInferBackend(_Settings())
+    dead._host = "http://127.0.0.1:1"
+
+    def refuse(self, url, timeout=10.0):
+        raise BackendError("engine is down")
+
+    monkeypatch.setattr(NInferBackend, "_get_json", refuse)
+    assert dead.loaded_models() == []
