@@ -526,7 +526,20 @@ async def test_no_model_selected_still_sends_the_local_model_sentinel():
     assert a.backend.asked == [], (
         "the probe must not be asked about a model the request will not name"
     )
-    assert sent == ["local-model"], f"the sentinel was not sent: {sent!r}"
+    # EVERY request, not just the first. The finished turn now also fires the
+    # one-line card-summary side call (T:card-summary, 2026-09-16), which goes
+    # through this same client - so this asserts the sentinel convention holds
+    # for every call site rather than that only one exists. Strictly stronger
+    # than the previous `sent == ["local-model"]`.
+    assert sent, "no request was sent at all"
+    # Pin the MAIN call by position, not just by membership: all() over an empty
+    # or summary-only list would otherwise pass. sent[0] is _stream's request,
+    # which is the one this file is about. Per-call-site cardinality for the
+    # summary lives in test_card_summary.py, where it is not timing-dependent.
+    assert sent[0] == "local-model", f"the stream did not send the sentinel: {sent!r}"
+    assert all(m == "local-model" for m in sent), (
+        f"the sentinel was not sent by every call site: {sent!r}"
+    )
     assert "answered" in shown, f"an unselected model stopped working: {shown!r}"
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -77,6 +78,7 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AssistantMessage,
     CancelToolButton,
     ChatMessage,
+    UserMessage,
     Completion,
     CompactionCard,
     ConfirmStop,
@@ -101,7 +103,7 @@ from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import tool_policy
-from litetui.turn_engine import TurnEngine
+from litetui.turn_engine import TurnEngine, _resolve_reasoning_effort
 from litetui import thinking_probe
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -191,6 +193,9 @@ GLASSBOX_MIN_INTERVAL_S = 0.2
 
 # Loaded from prompts/compact.md — edit the FILE; it is read at import.
 COMPACT_PROMPT = load_prompt("compact")
+# Loaded at import so a missing file fails at boot, not on the first finished
+# turn. The {answer} placeholder is substituted per call.
+CARD_SUMMARY_PROMPT = load_prompt("card-summary")
 
 # The post-compaction ping. User role on purpose: it is the nudge that says
 # "keep going", and the standing-by exit is what keeps the model from
@@ -500,6 +505,14 @@ class LiteTUI(App):
         border-title-align: left;
     }
 
+    .user-msg.collapsed > * {
+        display: none;
+    }
+
+    .user-msg.collapsed {
+        padding: 0 2;
+    }
+
     .assistant-msg {
         height: auto;
         background: $surface;
@@ -509,6 +522,21 @@ class LiteTUI(App):
         border: round $success-darken-2;
         border-title-color: $success;
         border-title-align: left;
+    }
+
+    /* Folded card. The children are hidden, NOT the card: hiding the card
+       would take the border with it, and the border is where the header
+       lives. Vertical padding goes to zero in the same rule or the fold
+       still costs two blank rows, which reads as a rendering bug rather
+       than a collapsed card. Textual 8.0.2 has no :not(), so this is a
+       positive `collapsed` class instead of the .expanded shape the
+       thinking block uses. */
+    .assistant-msg.collapsed > * {
+        display: none;
+    }
+
+    .assistant-msg.collapsed {
+        padding: 0 2;
     }
 
     .turn-stop-line {
@@ -2785,6 +2813,12 @@ class LiteTUI(App):
         # trivially following", which is the truth about a log just emptied.
         self._follow_anchor = None
         self._next_follow_generation()
+        # Read HERE, not in `_resume`. On the branch this came from, resume and
+        # render were one method, so the lookup sat beside the `read()` call;
+        # main has since split rendering into its own method, and carrying the
+        # local across the split would have been a NameError on every resume —
+        # invisible to a symbol check, and only found by reading the result.
+        restored_summaries = ConversationRepository.card_summaries(path)
         users = assistants = tools = 0
         native_tools = 0
         native_seen = set()
@@ -2800,10 +2834,16 @@ class LiteTUI(App):
                                   for r in codex_trace_records(m.get("provider_metadata")))
                 if text and not native_text:
                     w = self._assistant_bubble()
-                    try:
-                        w.body.set_markdown(text)
-                    except Exception:
-                        w.body.content = Text(text)
+                    w.set_answer(text)
+                    # A restored turn is finished by definition, so it can fold
+                    # like any other. Its summary comes from the store, and
+                    # summary_done stops the reopen from re-asking the model for
+                    # a line it already has - Ryan asked for exactly that.
+                    w.settled = True
+                    stored = restored_summaries.get(self._card_summary_key(text))
+                    if stored:
+                        w.set_summary(stored)
+                        w.summary_done = True
                     assistants += 1
             elif role == "tool":
                 tools += 1
@@ -4358,7 +4398,7 @@ class LiteTUI(App):
             parts.append("[Image attached]")
         if text:
             parts.append(text)
-        w = ChatMessage(Text("\n".join(parts)), classes="user-msg")
+        w = UserMessage("\n".join(parts), queued=queued)
         # A message that silently waits is indistinguishable from one that was
         # dropped — the title is the visibility.
         w.border_title = "You · queued" if queued else "You"
@@ -4401,6 +4441,15 @@ class LiteTUI(App):
         """
         if self._rpc or getattr(self, "_turn_stop_line_settled", False):
             return
+        # THE TURN IS OVER WHETHER OR NOT A STOP LINE IS DRAWN. `show_stop_line`
+        # is a display preference and `format_turn_stop_line` returns None when
+        # it is off, returning early a few lines down. Marking the card settled
+        # after that point would leave auto-collapse permanently dead for anyone
+        # who turned the line off - a display toggle silently disabling an
+        # unrelated behaviour.
+        if widget is not None:
+            widget.settled = True
+            self._kick_card_summary(widget)
         line = format_turn_stop_line(
             started_at=started_at,
             final_tps=final_tps,
@@ -4414,6 +4463,7 @@ class LiteTUI(App):
         if widget is None:
             widget = self._assistant_bubble()
             widget.body.styles.display = "none"
+            widget.settled = True
         widget.set_stop_line(line)
         self._scroll_down()
 
@@ -4656,6 +4706,154 @@ class LiteTUI(App):
             # over-eager scroll is a visual nit; a dead autoscroll is this bug.
             return True
 
+    # ── one-line card summary ────────────────────────────────────────────
+    #
+    # RYAN, 2026-09-16: when a response finishes, ask the SAME model for a
+    # one-line summary with reasoning off and title the collapsed card
+    # "<summary> - <model>".
+    #
+    # It is a SIDE CALL, on the same terms as the tool-summary fold above: its
+    # messages are built here and never appended to `self.conversation`, so the
+    # model is not told it said something it did not, and the next turn is not
+    # blocked waiting for it.
+
+    def _kick_card_summary(self, card) -> None:
+        """Fire-and-forget the summary for one finished card."""
+        if card is None or getattr(card, "summary_done", False):
+            return
+        if card.summary:                      # restored from the store already
+            card.summary_done = True
+            return
+        answer = (getattr(card, "answer_text", "") or "").strip()
+        if not answer:                        # pure tool turn, or cancelled empty
+            return
+        card.summary_done = True
+        # 🔴 NOT group "chat". `_stream` is exclusive there, so a worker started
+        # in that group would CANCEL the very turn that just finished and asked
+        # for this summary. Its own group, non-exclusive, so several summaries
+        # can be in flight while the user carries on typing.
+        self.run_worker(
+            self._summarise_card(card, card.model_name, answer),
+            group="card-summary", exclusive=False, exit_on_error=False,
+        )
+
+    async def _summarise_card(self, card, model: str, answer: str) -> None:
+        """Ask `model` for one line about `answer`, then title `card` with it.
+
+        ⬜ THE CARD AND THE MODEL ARE ARGUMENTS, NOT LOOKUPS. This completes
+        asynchronously, so by the time it returns the user may have switched
+        models or sent three more turns. Reading `self.model_id` or "the last
+        card" here is exactly how a late reply stamps the wrong card. Both are
+        captured at kick time and the result goes back to that card alone.
+
+        Any failure leaves the model-name header standing. A summary is a
+        convenience; it must never be able to break a finished turn.
+        """
+        try:
+            # Reasoning OFF through the backend's own knob, not a literal:
+            # lmstudio omits the field, llamacpp wants "none" (T539).
+            effort = _resolve_reasoning_effort("off", self.backend.name)
+            extra = {"reasoning_effort": effort} if effort else {}
+            resp = await model_transport.for_app(self).create(
+                # Same sentinel the main paths use: with nothing selected,
+                # name "local-model" and let the server resolve it. Sending ""
+                # here would make the side call the one request in the app that
+                # does not follow that convention.
+                model=model or self.model_id or "local-model",
+                messages=[{
+                    "role": "user",
+                    "content": CARD_SUMMARY_PROMPT.replace("{answer}", answer),
+                }],
+                # Reuses the compact budget rather than minting another literal,
+                # same reasoning as the tool-summary fold.
+                max_tokens=self.settings.compact_max_tokens,
+                extra_body=extra,
+            )
+            text = (resp.choices[0].message.content or "").strip()
+        except Exception as exc:
+            runtime_log.record("card_summary.failed", error=str(exc)[:200])
+            return
+        if not card.is_mounted:        # conversation cleared while it was in flight
+            return
+        card.set_summary(text)
+        self._persist_card_summary(card, text)
+
+    @staticmethod
+    def _card_summary_key(answer: str) -> str:
+        """Stable id for a summary: a hash of the answer it describes.
+
+        Not the message index - compaction and /truncate renumber the list, and
+        an index would re-point a stored summary at a different reply.
+        """
+        return hashlib.sha1((answer or "").strip().encode("utf-8")).hexdigest()[:16]
+
+    def _persist_card_summary(self, card, summary: str) -> None:
+        """Keep the summary so reopening does not pay for it twice."""
+        answer = (getattr(card, "answer_text", "") or "").strip()
+        if not (answer and summary):
+            return
+        try:
+            self.store.record_card_summary(
+                self._card_summary_key(answer), summary, card.model_name
+            )
+        except Exception as exc:
+            # A summary that cannot be filed is still a summary on screen.
+            runtime_log.record("card_summary.persist_failed", error=str(exc)[:200])
+
+    def _autocollapse_offscreen(self, log) -> None:
+        """Fold settled cards that have scrolled above the viewport.
+
+        RYAN, 2026-09-16: *"it should auto colapse in the same frame that the
+        autoscroll would have naturally occured anyways to make it seemless."*
+        That is why this is called from inside `_scroll_down`'s deferred action
+        and not from a timer, a resize handler or a scroll event. The frame is
+        already moving content; a height change folded into it is invisible.
+        Collapsing on its own frame is what produces the jump.
+
+        Two properties fall out of living here rather than anywhere else:
+
+        * IT INHERITS THE FOLLOW LOCK. `_scroll_down` has already returned if
+          autoscroll is off or the reader has scrolled up, so a reader reading
+          history can never have a card fold out from under them. No separate
+          permission check, and no second definition of "is the reader busy".
+        * IT CANNOT OSCILLATE. Folding only ever REMOVES height above the
+          viewport, `autocollapse()` latches per card, and nothing here reads a
+          height that this pass just changed.
+
+        THE FOLD LINE IS WHERE THE SCROLL IS ABOUT TO LAND, NOT WHERE IT IS.
+        This runs before `scroll_end`, so `scroll_offset.y` is still the
+        PRE-scroll position - on the first frame of a new turn that is usually
+        still 0, nothing measures as off screen, and the fold silently slipped
+        to the NEXT autoscroll. Measured: four cards, one scroll, nothing
+        collapsed; three more scrolls and three collapsed. One frame late is
+        exactly the seam Ryan asked to remove.
+
+        `max_scroll_y` is a layout property, already correct before the move,
+        and it IS the y this scroll will settle at. Comparing against it folds
+        in the same frame with post-scroll geometry. When the conversation fits
+        on screen `max_scroll_y` is 0, nothing is above it, and the check
+        correctly folds nothing - the short-conversation case needs no special
+        branch.
+        """
+        try:
+            cards = list(log.query(AssistantMessage))
+        except Exception:
+            return
+        if len(cards) < 2:
+            return
+        # Where scroll_end will settle, not where we are right now.
+        top = max(getattr(log, "max_scroll_y", 0), log.scroll_offset.y)
+        # The newest card is never auto-folded: it is the one being read.
+        for card in cards[:-1]:
+            if card._autocollapsed or not card.settled:
+                continue
+            try:
+                region = card.virtual_region
+            except Exception:
+                continue
+            if region.y + region.height <= top:
+                card.autocollapse()
+
     def _scroll_down(self, *, reader_acted: bool = False) -> None:
         """Scroll the conversation log to the bottom — IF THE READER IS FOLLOWING.
 
@@ -4712,6 +4910,11 @@ class LiteTUI(App):
         def scroll_if_current() -> None:
             if generation != self._follow_generation:
                 return
+
+            # Same frame as the scroll, before it: layout has settled, so the
+            # regions are real, and the fold is absorbed by a move the reader
+            # is already expecting.
+            self._autocollapse_offscreen(log)
 
             # Layout has now settled, so immediate=True uses the current end.
             # Textual still schedules on_complete separately; validate there as
@@ -5872,10 +6075,11 @@ class LiteTUI(App):
             # already ended it) and stops the header timer with the stream.
             self._thinking_done()
             if text_full:
-                try:
-                    widget.body.set_markdown(text_full)
-                except Exception:
-                    widget.body.content = Text(text_full)
+                # set_answer also KEEPS the source, which is what the one-line
+                # card summary is made from. Summarising the rendered widget
+                # instead would summarise a Markdown object; summarising the
+                # reasoning would describe work the card never shows.
+                widget.set_answer(text_full)
             else:
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.
                 if thinking is None:

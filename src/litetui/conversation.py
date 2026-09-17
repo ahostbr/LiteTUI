@@ -327,6 +327,55 @@ class ConversationRepository:
         self.write_record({"type": "msg", "ts": time.time(), "message": msg,
                            **({"usage": usage, "model": model} if usage is not None else {})})
 
+    def record_card_summary(self, key: str, summary: str, model: str = "") -> None:
+        """Persist one card's one-line summary.
+
+        ITS OWN RECORD TYPE, NOT A FIELD ON THE MESSAGE. The message dicts in
+        this file are replayed straight into the model's context, so a display
+        string parked inside one would either be sent to the API as an unknown
+        field or need stripping on every path that reads history. `read()`
+        ignores record types it does not know, so this is invisible to every
+        existing reader and to older builds of the app.
+
+        KEYED BY CONTENT, NOT BY INDEX. Compaction and /truncate renumber the
+        message list, so an index would silently re-point a summary at somebody
+        else's reply. A hash of the answer text moves with the text and stops
+        matching if the text ever changes, which is the correct failure.
+        """
+        self.write_record({
+            "type": "card_summary", "ts": time.time(),
+            "key": key, "summary": summary, "model": model,
+        })
+
+    @staticmethod
+    def card_summaries(path: Path) -> dict[str, str]:
+        """{answer-key: summary} for one conversation file.
+
+        A separate narrow pass rather than another return value from `read()`:
+        that signature has several callers and none of them want this. Last
+        record wins, matching the append-only replay rule the rest of the file
+        follows.
+        """
+        out: dict[str, str] = {}
+        try:
+            with path.open("rb") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or b'"card_summary"' not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    if rec.get("type") != "card_summary":
+                        continue
+                    key, summary = rec.get("key"), rec.get("summary")
+                    if isinstance(key, str) and isinstance(summary, str):
+                        out[key] = summary
+        except OSError:
+            return {}
+        return out
+
     def record_snapshot(self, messages: list[dict], reason: str = "") -> None:
         """Full-list record. Kept for readability of older files; prefer edit."""
         self.write_record({

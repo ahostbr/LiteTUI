@@ -242,6 +242,44 @@ class ChatMessage(Static):
     pass
 
 
+class UserMessage(Vertical):
+    """User prompt with a compact, manually foldable header; no model call."""
+
+    def __init__(self, text: str, queued: bool = False) -> None:
+        super().__init__(classes="user-msg")
+        self.body = Static(Text(text))
+        self.queued = queued
+        preview = " ".join(text.split())
+        self.preview = preview if len(preview) <= 80 else preview[:77].rstrip() + "..."
+        self.refresh_header()
+
+    def compose(self) -> ComposeResult:
+        yield self.body
+
+    @property
+    def collapsed(self) -> bool:
+        return self.has_class("collapsed")
+
+    def refresh_header(self) -> None:
+        marker = "▸" if self.collapsed else "▾"
+        label = "You · queued" if self.queued else "You"
+        preview = f" · {self.preview}" if self.collapsed and self.preview else ""
+        self.border_title = f"{marker} {label}{preview}"
+
+    def set_collapsed(self, value: bool) -> None:
+        self.set_class(value, "collapsed")
+        self.refresh_header()
+
+    def mark_delivered(self) -> None:
+        self.queued = False
+        self.refresh_header()
+
+    def on_click(self, event) -> None:
+        if event.y == 0:
+            event.stop()
+            self.set_collapsed(not self.collapsed)
+
+
 def _at_bottom(widget, slack: int = 2) -> bool:
     """Is this scrollable already parked at (or within `slack` lines of) the end?
 
@@ -293,7 +331,12 @@ class ThinkingHeader(Static):
     def __init__(self) -> None:
         super().__init__("\u25be Thinking", classes="thinking-header")
 
-    def on_click(self) -> None:
+    def on_click(self, event) -> None:
+        # STOP THE BUBBLE. Click bubbles, and this header now sits inside an
+        # AssistantMessage that folds on its own click. Without stop(), one
+        # click on "Thinking" would fold the trace AND the whole card - the
+        # opposite of the independent inner collapse Ryan asked to preserve.
+        event.stop()
         block = self.parent
         if isinstance(block, ThinkingBlock):
             block.set_expanded(not block.expanded)
@@ -465,7 +508,10 @@ def _mark_delivered(item: dict) -> None:
     if bubble is None:
         return
     try:
-        bubble.border_title = "You"
+        if isinstance(bubble, UserMessage):
+            bubble.mark_delivered()
+        else:
+            bubble.border_title = "You"
     except Exception:
         pass
 
@@ -516,6 +562,14 @@ class _FoldHeader(Static):
         self.label = label
 
     def on_click(self) -> None:
+        # No event.stop() here, deliberately. A FoldBlock is only ever mounted
+        # into #chat-log (tool cards, app.py:5785/6434, codex_tool_ui.py:63) or
+        # into a CompactionCard - never inside an AssistantMessage, which is the
+        # only parent that folds on a bubbled click. ThinkingHeader DOES need
+        # stop(), because a ThinkingBlock is mounted into the card itself
+        # (app.py:5729). Adding it here too was symmetry guarding a nesting that
+        # does not exist, and it broke four call sites that invoke the handler
+        # directly.
         block = self.parent
         if isinstance(block, FoldBlock):
             block.set_expanded(not block.expanded)
@@ -661,7 +715,23 @@ class CompactionCard(Vertical):
 
 
 class AssistantMessage(Vertical):
-    """Assistant bubble — optional thinking, answer, then terminal stop line."""
+    """Assistant bubble - optional thinking, answer, then terminal stop line.
+
+    The WHOLE card folds, like a thinking block (Ryan, 2026-09-16). Two things
+    make that unlike the ThinkingBlock next door:
+
+    * The header is the widget's own ``border_title``, not a child row, so it
+      survives when every child is hidden. A child header would disappear
+      together with the body it exists to re-open.
+    * Folding is driven by a POSITIVE ``collapsed`` class. Textual 8.0.2 has no
+      ``:not()`` pseudo-class - it raises TokenError naming the nine it does
+      accept - so the ``.thinking-block.expanded .thinking-body`` shape cannot
+      simply be inverted here.
+
+    ``_autocollapsed`` is a LATCH, not a state flag. Auto-collapse fires at most
+    once per card, so a card the reader re-opens by hand is never folded shut
+    behind them, and a height change can never feed back into a second collapse.
+    """
 
     def __init__(self) -> None:
         super().__init__(classes="assistant-msg")
@@ -669,10 +739,96 @@ class AssistantMessage(Vertical):
         self.body = AnswerBody("...", id="answer-body")
         self.stop_line = Static("", classes="turn-stop-line")
         self.stop_line.styles.display = "none"
+        self.model_name: str = ""
+        self.summary: str | None = None
+        self.settled: bool = False        # the turn stopped, however it stopped
+        self._autocollapsed: bool = False
+        # The VISIBLE answer, kept so the one-line summary can be made from what
+        # the reader can see. Deliberately not the reasoning trace: a summary of
+        # hidden thinking would describe work the card does not show.
+        self.answer_text: str = ""
+        self.summary_done: bool = False   # asked once, whatever came back
 
     def compose(self) -> ComposeResult:
         yield self.body
         yield self.stop_line
+
+    # -- header ------------------------------------------------------------
+    #
+    # While generating, the header is the MODEL NAME, so a reader can see which
+    # model is answering without opening settings. Once a one-line summary
+    # lands it becomes "<summary> - <model>". The model name is the fallback at
+    # every other moment: summary pending, failed, empty, or cancelled.
+
+    MARK_OPEN = "▾"
+    MARK_SHUT = "▸"
+
+    @property
+    def collapsed(self) -> bool:
+        return self.has_class("collapsed")
+
+    def _header_text(self) -> str:
+        marker = self.MARK_SHUT if self.collapsed else self.MARK_OPEN
+        label = self.model_name or "AI"
+        if self.summary:
+            label = f"{self.summary} - {label}"
+        return f"{marker} {label}"
+
+    def refresh_header(self) -> None:
+        self.border_title = self._header_text()
+
+    def set_model_name(self, name: str | None) -> None:
+        self.model_name = (name or "").strip()
+        self.refresh_header()
+
+    #: A border title cannot wrap, so an over-long summary would be clipped by
+    #: the frame at whatever width the terminal happens to be. Cap it here
+    #: instead, where the ellipsis is deliberate. Mirrors ToolMessage.
+    MAX_SUMMARY_CHARS = 90
+
+    def set_summary(self, text: str | None) -> None:
+        """Bind a one-line summary. Blank leaves the model-name fallback standing.
+
+        Whitespace is collapsed rather than trusted: the header is one line, and
+        a model that answers with two would otherwise break the frame.
+        """
+        text = " ".join((text or "").split())
+        if text.lower() in ("none", "none."):   # the prompt's "nothing to say"
+            text = ""
+        if len(text) > self.MAX_SUMMARY_CHARS:
+            text = text[: self.MAX_SUMMARY_CHARS - 1].rstrip() + "…"
+        self.summary = text or None
+        self.refresh_header()
+
+    def set_answer(self, text: str) -> None:
+        """Render the finished answer and keep its source for summarising."""
+        self.answer_text = text or ""
+        try:
+            self.body.set_markdown(text)
+        except Exception:
+            self.body.content = Text(text)
+
+    def set_collapsed(self, value: bool) -> None:
+        if value:
+            self.add_class("collapsed")
+        else:
+            self.remove_class("collapsed")
+        self.refresh_header()
+
+    def autocollapse(self) -> bool:
+        """Fold once, on the way off screen. True if this call is what folded it."""
+        if self._autocollapsed or self.collapsed or not self.settled:
+            return False
+        self._autocollapsed = True
+        self.set_collapsed(True)
+        return True
+
+    def on_click(self, event) -> None:
+        # y == 0 is the top border row, i.e. the title bar. Anywhere else is
+        # the card's content, where a click means "select text", not "fold".
+        if event.y == 0:
+            event.stop()
+            self.set_collapsed(not self.collapsed)
 
     def set_stop_line(self, text: str | None) -> None:
         """Settle the bubble without putting display text in answer markdown."""
