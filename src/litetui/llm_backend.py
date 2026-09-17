@@ -1898,6 +1898,16 @@ def _make_backend(settings):
         return OAuthBackend(settings)
     if settings.backend == "llamacpp":
         return LlamaCppBackend(settings)
+    if settings.backend == "ninfer":
+        # 🔴 T806 — RYAN: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER"*.
+        # Imported here rather than at module scope so a broken NInfer install
+        # cannot stop the other three backends from booting, the same reason
+        # the codex import is lazy one branch up.
+        from litetui.ninfer_backend import NInferBackend
+        return NInferBackend(settings)
     if settings.backend != "lmstudio":
-        raise BackendError("That backend is unavailable. Choose lmstudio, llamacpp, or codex; no fallback was used.")
+        raise BackendError(
+            "That backend is unavailable. Choose lmstudio, llamacpp, ninfer, or codex; "
+            "no fallback was used."
+        )
     return LMStudioBackend(settings)
