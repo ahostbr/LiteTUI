@@ -4986,9 +4986,56 @@ class LiteTUI(App):
 
     _IMG_RE = r"(?:png|jpe?g|gif|webp|bmp)"
 
+    #: What the FRONT of a message must look like for it to be a path attempt:
+    #: a drive (`C:\`), a UNC (`\\`), a separator, `./`, `../` or `~/`.
+    _PATHY = r"(?:[A-Za-z]:[\\/]|\\\\|[\\/]|\.{1,2}[\\/]|~[\\/])"
+
     @classmethod
     def _looks_like_image_path(cls, text: str) -> bool:
-        return bool(re.search(rf"\.{cls._IMG_RE}\b", text, re.I))
+        """Did the user TRY to give us an image path? Not: does the text mention one.
+
+        🔴 THIS WAS AN UNANCHORED `re.search` OVER THE WHOLE MESSAGE, AND IT
+        SILENTLY REFUSED ANY MESSAGE CONTAINING AN IMAGE EXTENSION. The caller
+        (`_submit_text`) prints "That looks like an image path but I could not
+        open it" and RETURNS -- so the turn never happened, no worker started,
+        and no rpc event was emitted:
+
+            "why does my icon.png look blurry?"    -> never reached the model
+            "convert foo.jpg to webp"              -> refused
+            any pasted traceback naming a .png     -> refused
+
+        Found by an 86,149-char prompt that contained `.png` at offset 4778 --
+        inside THIS FILE's own `IMAGE_EXTS = {".png", ...}` line, which the test
+        payload had been built from. Four measured runs stalled on it; py-spy
+        showed the child fully idle with no chat worker, and the driver already
+        holding an `ok: true` acceptance.
+
+            A GREP MATCHES SYNTAX; THIS QUESTION IS ABOUT POSITION. "Is this
+            message a path" and "does this message contain a path-shaped
+            substring" are different questions, and only the first one should
+            ever refuse to send.
+
+        ⬜ WHY THE CALLER COULD NOT JUST ASK `_split_image_path`: it returns
+        `(None, text)` for BOTH "a quoted path that does not exist" and "there
+        is no path here", so the one answer cannot distinguish a failed ATTEMPT
+        from ordinary prose. That collapse is what pushed the caller into using
+        a substring grep. This predicate answers the attempt question directly,
+        anchored at the start, and mirrors that function's three shapes WITHOUT
+        its `.exists()` requirement -- because a path that does not exist is
+        exactly the case worth warning about.
+        """
+        s = text.strip()
+        ext = cls._IMG_RE
+        return bool(
+            # a quoted span ending at an image extension
+            re.match(rf"""^(["'])[^"']*?\.{ext}\1""", s, re.I)
+            # the FIRST token is the file -- "shot.png what is this"
+            or re.match(rf"^\S+\.{ext}\b", s, re.I)
+            # a path with separators, which may contain spaces --
+            # "C:\My Folder\shot.png what is this". Bounded to the first line
+            # so a pasted document cannot match across it.
+            or re.match(rf"^{cls._PATHY}[^\r\n]*?\.{ext}\b", s, re.I)
+        )
 
     @classmethod
     def _split_image_path(cls, text: str) -> tuple[Path | None, str]:
@@ -5506,9 +5553,30 @@ class LiteTUI(App):
         inp.value = ""
         self._submit_text(value, alt_chord=True)
 
+    def _refuse_submit(self, reason: str, detail: str = "") -> None:
+        """A submit that will not become a turn must SAY SO ON THE WIRE.
+
+        🔴 A SILENT `return` IS WHY FOUR MEASURED RUNS TOLD ME NOTHING.
+        `gui.prompt.submit` answers `{"accepted": true}` the moment the text is
+        handed to `_submit_text`, and every early return below then dropped it
+        with only a chat message -- which a headless host (LiteSuite's
+        LiteTuiAdapter, my measurement driver) cannot see. From outside, a
+        refused prompt and a slow turn are the same observation: nothing.
+
+            AN ACCEPTANCE FOLLOWED BY A SILENT DROP IS WORSE THAN A REFUSAL.
+            The host waits for a `turn_end` that is never coming.
+
+        ⬜ `reason` is a STABLE CODE for a host to branch on; `detail` is prose
+        for a human. The chat line is unchanged -- this adds a channel, it does
+        not move one.
+        """
+        self._rpc_emit({"type": "submit_refused", "reason": reason,
+                        "detail": detail})
+
     def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
         text = value.strip()
         if not text and not self.pending_image:
+            self._refuse_submit("empty", "nothing to send")
             return
 
         try:
@@ -5531,15 +5599,21 @@ class LiteTUI(App):
                     self.notify(f"Image loaded: {path.name}", timeout=2)
                 else:
                     self._system(f"Could not read image: {path}")
+                    self._refuse_submit("image_unreadable", str(path))
                     return
             elif self._looks_like_image_path(text):
                 # Loud, because the silent version is what sent a bare path to
                 # the model as TEXT: it cannot see the file, says so, and the
                 # user reads that as the model being unable to view images.
+                # The path itself, not the whole message: this branch can be
+                # reached by a long input and echoing all of it back buried the
+                # sentence that says what to do.
+                head = text.splitlines()[0][:200] if text else ""
                 self._system(
-                    f"That looks like an image path but I could not open it:\n  {text}\n"
+                    f"That looks like an image path but I could not open it:\n  {head}\n"
                     "Check the path exists. Quotes are fine; a question after the path is fine."
                 )
+                self._refuse_submit("image_path_unopenable", head)
                 return
 
         has_image = image_b64 is not None
