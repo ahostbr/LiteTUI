@@ -559,6 +559,90 @@ class NInferBackend(_VramGate):
             "LiteTUI attaches to it and cannot start it itself"
         )
 
+    # -- per-request, and the seat -----------------------------------------
+    #
+    # 🔴 EVERY METHOD BELOW IS CALLED WITHOUT A `hasattr` GUARD, so a
+    # backend that omits one does not degrade -- it raises AttributeError from
+    # inside a Textual worker and takes the turn (or the tool) with it. That is
+    # how `request_overrides` was found: the FIRST turn ever driven through this
+    # backend died at `app.py:5901` with
+    # `'NInferBackend' object has no attribute 'request_overrides'`, after 57
+    # arms had passed.
+    #
+    #     A MISSING METHOD IS NOT A MISSING FEATURE HERE. It is a crash, and the
+    #     surface is discoverable: diff what the app calls on `backend.` against
+    #     `dir(NInferBackend)` rather than waiting for each one to fire.
+
+    def request_overrides(self, key: str | None) -> dict:
+        """Global sampling defaults plus this model's Inference-tab overrides.
+
+        ⬜ THE SIBLINGS' EXACT CALL, REUSED RATHER THAN RESTATED.
+        `llm_backend.py:1480` and `:1732` are both `return
+        _merged_overrides(self._settings, key)`; this engine speaks the same
+        OpenAI-compatible request, so a third spelling of one rule would be the
+        duplication Ryan named: *"were writing the same code to do the same
+        thing in a slightly different way over and over for each backend."*
+        """
+        from litetui.llm_backend import _merged_overrides
+
+        return _merged_overrides(self._settings, key)
+
+    def seat_snapshot(self, model_id: str) -> dict | None:
+        """The seat's live load config, or None when this engine is not it.
+
+        ⬜ RESIDENT OR ABSENT, NEVER "IDLE BUT UNLOADED". One artifact per
+        process, loaded at startup and served for life -- so "is it loaded" and
+        "is this the model this engine serves" are THE SAME QUESTION here, and
+        `model_info` already answers it.
+        """
+        try:
+            info = self._model_info_sync(model_id)
+        except BackendError:
+            return None
+        if info is None:
+            return None
+        window, _type, _loaded = info
+        return {
+            "identifier": model_id,
+            "context": window,
+            # No `--parallel` on this engine: the option does not exist, and
+            # reporting 1 would imply a knob that could be something else.
+            "parallel": None,
+            "status": "idle",
+            "queued": 0,
+        }
+
+    def seat_suspend(self, rec: dict) -> str | None:
+        """Refuse by name. THE PROCESS IS THE MODEL -- there is no unload.
+
+        ⬜ THE REFUSAL IS THE DESIGNED PATH, NOT A FAILURE.
+        `seat_guard.suspend` returns this sentence to the caller
+        (`studio_tool.py:273`, `listen_tool.py:424`), which then decides whether
+        to generate without freeing the seat -- exactly what an ATTACHED llama
+        server does today (`llm_backend.py:1455`). Raising instead, or returning
+        None as though VRAM had been freed, would both be lies: the second one
+        would let an image job start against a full card.
+        """
+        return (
+            "suspend unsupported: ninfer-serve holds its artifact for the life "
+            "of the process — stop the engine itself (LiteSuite's Model Hub) to "
+            "free that VRAM"
+        )
+
+    def seat_resume(self, rec: dict) -> str | None:
+        """None when the engine is still serving it; a sentence when it is not.
+
+        ⬜ REACHABLE EVEN THOUGH `seat_suspend` ALWAYS REFUSES. `resume` runs
+        from the breadcrumb path too, after a crash nobody here observed -- so
+        "nothing was suspended" is an assumption, not a fact, and this asks.
+        """
+        if self.seat_snapshot(rec.get("identifier") or "") is not None:
+            return None
+        return (
+            "the NInfer engine is no longer serving "
+            f"{rec.get('identifier')!r} — " + self.reload_hint(rec)
+        )
+
     # -- control, which this engine does not have -------------------------
 
     async def load(self, key: str, *, ctx: int | None = None) -> None:

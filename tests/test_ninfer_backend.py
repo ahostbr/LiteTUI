@@ -643,3 +643,102 @@ def test_list_models_refuses_an_engine_that_serves_nothing(monkeypatch):
     b = _served(monkeypatch, {"data": []})
     with pytest.raises(BackendError):
         run(b.list_models())
+
+
+# ── the surface the app calls without a guard ────────────────────────────────
+
+
+#: Attributes reached on `backend.` that this backend is NOT required to have,
+#: each with the reason it is exempt. An exemption list that grows is the
+#: signal to stop exempting and start implementing.
+_NOT_OURS = {
+    # Codex-only: every reach is behind `name == "codex"` (app.py:1644) or the
+    # native-loop branch (app.py:6490, model_transport.py:634).
+    "app_server",
+    # `@property.setter` — a decorator artifact in the source, not a call.
+    "setter",
+    # llama.cpp's owned-server recovery, and app.py:3480 wraps it in try/except
+    # precisely because not every backend has one.
+    "recover_owner_exit",
+}
+
+
+def test_every_unguarded_backend_call_is_implemented():
+    """🔴 THE ARM FOR THE WHOLE CLASS, NOT FOR ONE MISSING METHOD.
+
+    `app.py:5901` is `self.backend.request_overrides(self.model_id)` with NO
+    `hasattr` guard, so omitting it did not degrade — it raised
+    `AttributeError: 'NInferBackend' object has no attribute
+    'request_overrides'` from inside the chat worker and killed the FIRST turn
+    ever driven through this backend. 57 arms were green at that moment,
+    because every one of them called a method that existed.
+
+        A MISSING METHOD IS NOT A MISSING FEATURE. It is a crash, and the
+        surface is DERIVABLE — so derive it, rather than waiting for each one
+        to fire in turn. The same sweep found `seat_snapshot`, `seat_suspend`
+        and `seat_resume` missing on the image/audio VRAM path
+        (`studio_tool.py:262`, `listen_tool.py:415`).
+
+    ⚠️ THIS ARM READS SOURCE, SO IT IS SCOPED TO WHAT IT READS. A reach through
+    an alias (`b = self.backend; b.foo()`) is invisible to it. It catches the
+    direct spelling, which is what every site above uses.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "litetui"
+    called: dict[str, str] = {}
+    for rel in ("app.py", "turn_engine.py", "gui_rpc.py", "seat_guard.py",
+                "thinking_capabilities.py", "plugins/model_switch.py"):
+        path = root / rel
+        if not path.exists():
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in re.finditer(r"\bbackend\.([A-Za-z_]\w*)", line):
+                called.setdefault(m.group(1), f"{rel}:{n}")
+
+    missing = {a: where for a, where in called.items()
+               if a not in _NOT_OURS and not hasattr(NInferBackend, a)}
+    assert not missing, (
+        "NInferBackend is missing attributes the app calls unguarded: "
+        + ", ".join(f"{a} ({where})" for a, where in sorted(missing.items()))
+    )
+
+
+def test_request_overrides_is_the_siblings_merge_not_a_third_spelling(monkeypatch):
+    """⬜ Global sampling defaults + this model's Inference-tab overrides, and
+    an override of None REMOVES the global rather than sending null — the rule
+    `_merged_overrides` already encodes for the other two backends."""
+    from litetui.settings import Settings
+
+    st = Settings()
+    st.model_infer_overrides = {"qwen3.8-27b": {"top_k": 7, "temperature": None}}
+    b = NInferBackend(st)
+    got = b.request_overrides("qwen3.8-27b")
+    assert got.get("top_k") == 7
+    assert "temperature" not in got
+
+
+def test_the_seat_cannot_be_suspended_and_says_why(monkeypatch):
+    """🔴 REFUSE BY NAME; NEVER REPORT VRAM FREED THAT IS NOT.
+
+    `seat_guard.suspend` hands this sentence to `studio_tool`/`listen_tool`,
+    which then decide whether to run anyway. Returning None would claim the
+    card was freed and let an image job start against a full one.
+    """
+    b = _served(monkeypatch)
+    err = b.seat_suspend({"identifier": "qwen3.8-27b"})
+    assert err and "life of the process" in err
+
+
+def test_seat_snapshot_is_resident_or_absent(monkeypatch):
+    """⬜ One artifact per process: "is it loaded" and "is this the model this
+    engine serves" are the same question, so there is no cold row to report."""
+    b = _served(monkeypatch)
+    rec = b.seat_snapshot("qwen3.8-27b")
+    assert rec == {"identifier": "qwen3.8-27b", "context": 32768,
+                   "parallel": None, "status": "idle", "queued": 0}
+    assert b.seat_snapshot("something-else") is None
+    # Resume is a question, not an assumption — it asks the engine.
+    assert b.seat_resume({"identifier": "qwen3.8-27b"}) is None
+    assert "no longer serving" in (b.seat_resume({"identifier": "gone"}) or "")
