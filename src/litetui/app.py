@@ -363,6 +363,21 @@ def _connection_family(exc: BaseException) -> bool:
             stack.append(cur.__cause__)
         elif not cur.__suppress_context__ and cur.__context__ is not None:
             stack.append(cur.__context__)
+    # 3. A STATUS CODE PROVES THE SERVER ANSWERED, so it is definitively not
+    #    a connection failure and the textual sniff below must not see it.
+    #
+    #    THE SNIFF IS A HEURISTIC OVER PROSE AND THE ENGINE'S PROSE COLLIDES
+    #    WITH IT. `refused`, `timed out` and `timeout` are all ordinary words
+    #    in a 400 body: `request_queue_timeout` is in NInfer's own error table
+    #    (ninfer_backend.NINFER_ERROR_ACTION) and its sentence says the engine
+    #    'did not admit the request in time'. Without this guard that answer
+    #    reads as 'The model server seems closed', which tells the user to
+    #    restart an engine that is up and replying.
+    #
+    #        A HEURISTIC MUST NOT OUTRANK A FACT. status_code is present only
+    #        when a response came back; APIConnectionError carries none.
+    if isinstance(getattr(exc, "status_code", None), int):
+        return False
     if not isinstance(exc, llm_backend.BackendError):
         text = str(exc).lower()
         needles = ("winerror 10061", "refused", "timed out", "timeout",
@@ -390,7 +405,64 @@ def _plain_backend_error(e: BaseException, backend_name: str | None = None) -> s
         return "The model server seems closed — start it, or check /backend."
     if isinstance(e, llm_backend.BackendError):
         return str(e)
+    # THE ENGINE'S OWN REASON, WHICH USED TO DIE HERE (T824).
+    # An error the ENGINE raises mid-stream arrives as an `openai`
+    # exception, NOT a BackendError: `_get_json`'s table only covers the
+    # control-plane calls LiteTUI makes itself. So every engine 400 fell
+    # through to the sentence below, and Ryan's `view_image` on a
+    # no-vision artifact read as 'Something went wrong talking to the
+    # model server.'
+    #
+    #     I NAMED THIS GAP IN T806's OWN COMMIT BODY -- 'errors raised by
+    #     the OpenAI CLIENT during streaming are not BackendErrors and
+    #     carry their body elsewhere, so the table does not reach those'
+    #     -- and then left it open. A DOCUMENTED DEFECT IS NOT A HANDLED
+    #     DEFECT.
+    #
+    # MEASURED, NOT GUESSED: on openai 2.26.0 `APIError.__init__` stores
+    # `body` verbatim and derives code/param/type from it when it is a
+    # dict; `APIStatusError` adds `status_code`. `ninfer_error_sentence`
+    # already reads both the top-level and error-nested shapes, so the
+    # body goes to the code that owns the table rather than growing a
+    # second one.
+    body = getattr(e, "body", None)
+    if body is not None:
+        try:
+            from litetui.ninfer_backend import ninfer_error_sentence
+        except Exception:  # noqa: BLE001 - a message must never fail a turn
+            pass
+        else:
+            sentence = ninfer_error_sentence(body, "")
+            if sentence:
+                return sentence
+    # A status with no code we recognise: say the status rather than
+    # nothing. '400' tells a reader it was REFUSED, not dropped.
+    status = getattr(e, "status_code", None)
+    if isinstance(status, int):
+        detail = str(getattr(e, "message", "") or "").strip()
+        return (f"the model server refused the request (HTTP {status})"
+                + (f": {detail}" if detail else "."))
     return "Something went wrong talking to the model server."
+
+
+def _media_refused_for_good(e: object) -> bool:
+    """True when the engine will refuse this media for the life of the process.
+
+    ninfer/docs/serving.md:49 is explicit: 'A later request cannot enable a
+    capability omitted at startup.' So a part rejected with `vision_disabled`
+    can never succeed here, however many times it is resent.
+
+    NARROW ON PURPOSE. `media_budget_exceeded` and `request_too_large` are
+    about SIZE, and a smaller image would go through, so stubbing those would
+    destroy content the user could still have used. Only the capability
+    refusal is permanent, so only it earns a stub.
+    """
+    try:
+        from litetui.ninfer_backend import classify_ninfer_error
+    except Exception:  # noqa: BLE001 - never fail a turn over a message
+        return False
+    code, _action = classify_ninfer_error(getattr(e, "body", None))
+    return code == "vision_disabled"
 
 
 def _decode_rate(timings: object) -> float | None:
@@ -5841,6 +5913,43 @@ class LiteTUI(App):
                 f"holding the app for it. It will be retried."
             ) from None
 
+    def _stub_refused_media(self) -> int:
+        """Replace image parts in history with a text stub. Returns the count.
+
+        THE SECOND HALF OF RYAN'S view_image REPORT (T824). The engine 400s,
+        and the part STAYS in `self.conversation`, so `_request_messages`
+        re-sends it on the next turn, and the next, and every one after.
+        ONE refusal became a conversation that could never answer again.
+
+            A FAILED REQUEST IS AN EVENT; A POISONED HISTORY IS A STATE.
+            Reporting the first without clearing the second leaves the user
+            reading an accurate message beside a thread that stays broken.
+
+        A TEXT STUB, NOT A DELETION: the transcript still shows an image was
+        offered. An attachment that silently vanishes is how someone concludes
+        the app never received it.
+        """
+        stubbed = 0
+        for message in self.conversation:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            parts = []
+            found = False
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    found = True
+                    stubbed += 1
+                    parts.append({
+                        "type": "text",
+                        "text": "[image removed: this engine has no vision]",
+                    })
+                else:
+                    parts.append(part)
+            if found:
+                message["content"] = parts
+        return stubbed
+
     def _emit_turn_end(self, stop_reason: str, tps: float | None,
                        tps_source: str | None = None, **extra) -> None:
         """One door for `turn_end`, so the event and the stop line agree.
@@ -6025,6 +6134,17 @@ class LiteTUI(App):
                 # or switch backends" is advice for a situation that is not the
                 # user's, and by the time they read it we can already be serving.
                 takeover = self._llama_takeover_note()
+                # T824: clear the media the engine will never accept, and say
+                # so on its own line -- what FAILED and what was DONE about it
+                # are two facts, and one sentence carrying both is how the
+                # second gets lost in the first.
+                if _media_refused_for_good(e):
+                    dropped = self._stub_refused_media()
+                    if dropped:
+                        self._system(
+                            f"Removed {dropped} image(s) from this conversation "
+                            "so the next message can go through."
+                        )
                 widget.body.content = Text(
                     takeover or _plain_backend_error(e, self.backend.name), style="bold red"
                 )
@@ -6222,6 +6342,17 @@ class LiteTUI(App):
                 # or switch backends" is advice for a situation that is not the
                 # user's, and by the time they read it we can already be serving.
                 takeover = self._llama_takeover_note()
+                # T824: clear the media the engine will never accept, and say
+                # so on its own line -- what FAILED and what was DONE about it
+                # are two facts, and one sentence carrying both is how the
+                # second gets lost in the first.
+                if _media_refused_for_good(e):
+                    dropped = self._stub_refused_media()
+                    if dropped:
+                        self._system(
+                            f"Removed {dropped} image(s) from this conversation "
+                            "so the next message can go through."
+                        )
                 widget.body.content = Text(
                     takeover or _plain_backend_error(e, self.backend.name), style="bold red"
                 )

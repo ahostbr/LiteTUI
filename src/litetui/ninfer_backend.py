@@ -114,6 +114,19 @@ NINFER_ERROR_ACTION = {
     # sentence here the difference between "this model has no Extra High" and "the
     # engine is broken".
     "reasoning_effort_not_supported": "thinking-level",
+    # THE MEDIA CODES (T824). Read from ninfer/docs/serving.md, not guessed:
+    # :44 'media requests and token-count requests fail with HTTP 400
+    # vision_disabled', :331 media_budget_exceeded, and HTTP 413
+    # request_too_large. Ryan hit the first with view_image on an artifact
+    # started without --vision, and LiteTUI said only 'Something went wrong
+    # talking to the model server.'
+    #
+    # The same page decides the history fix: 'A later request cannot enable
+    # a capability omitted at startup' (:49). So a media part refused with
+    # vision_disabled can NEVER succeed in this process.
+    "vision_disabled": "vision-off",
+    "media_budget_exceeded": "media-too-big",
+    "request_too_large": "media-too-big",
 }
 
 #: The sentence each action turns into for a person reading a TUI.
@@ -124,6 +137,16 @@ _ACTION_TEXT = {
     "relaunch": (
         "the engine has stopped serving and must be restarted from LiteSuite's "
         "Model Hub — LiteTUI does not start it."
+    ),
+    "vision-off": (
+        "this engine was started without vision, so it cannot look at "
+        "images at all, and it cannot be switched on for one request. "
+        "Restart it with vision enabled (LiteSuite's Model Hub) to send "
+        "pictures."
+    ),
+    "media-too-big": (
+        "the engine refused that attachment as too large: send a smaller "
+        "image, or fewer of them in one message."
     ),
     "thinking-level": (
         "this model's chat template does not offer that thinking level — "
