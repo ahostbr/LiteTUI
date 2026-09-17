@@ -5074,6 +5074,18 @@ class LiteTUI(App):
     #: a drive (`C:\`), a UNC (`\\`), a separator, `./`, `../` or `~/`.
     _PATHY = r"(?:[A-Za-z]:[\\/]|\\\\|[\\/]|\.{1,2}[\\/]|~[\\/])"
 
+    #: 🔴 A URL IS NOT A FILESYSTEM PATH. `https://cdn.example.com/hero.png why
+    #: is this 404ing?` is one `\S+` token ending in an image extension, so the
+    #: "first token is the file" rule below matched it and the message was
+    #: refused with "check the path exists" — for a file that was never on this
+    #: disk. Measured on every scheme tried (http, https, ftp).
+    #:
+    #: ⚠️ THE DISCRIMINATOR IS THE SCHEME'S LENGTH, and `C:\` is why. A Windows
+    #: drive is exactly ONE letter before the colon; RFC 3986 requires TWO or
+    #: more for a scheme. Requiring `//` after it as well keeps `foo:bar` (an
+    #: NTFS alternate data stream) on the path side, where it belongs.
+    _URL = r"[A-Za-z][A-Za-z0-9+.\-]+://"
+
     @classmethod
     def _looks_like_image_path(cls, text: str) -> bool:
         """Did the user TRY to give us an image path? Not: does the text mention one.
@@ -5110,11 +5122,14 @@ class LiteTUI(App):
         """
         s = text.strip()
         ext = cls._IMG_RE
+        url = cls._URL
         return bool(
             # a quoted span ending at an image extension
-            re.match(rf"""^(["'])[^"']*?\.{ext}\1""", s, re.I)
-            # the FIRST token is the file -- "shot.png what is this"
-            or re.match(rf"^\S+\.{ext}\b", s, re.I)
+            re.match(rf"""^(["'])(?!{url})[^"']*?\.{ext}\1""", s, re.I)
+            # the FIRST token is the file -- "shot.png what is this". The
+            # lookahead is the URL guard: a remote image is a thing to talk
+            # ABOUT, never a file to open.
+            or re.match(rf"""^(?!["']?{url})\S+\.{ext}\b""", s, re.I)
             # a path with separators, which may contain spaces --
             # "C:\My Folder\shot.png what is this". Bounded to the first line
             # so a pasted document cannot match across it.
