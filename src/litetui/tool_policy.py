@@ -571,6 +571,24 @@ _CMD_POSITION = r"(?:^|[;&|]\s*|\bsudo\s+)"
 #:               `git checkout main` move a branch, they destroy nothing.
 #: `shred` and `mkfs` are left unanchored: neither is an ordinary word, and
 #: anchoring them would miss `find . | xargs shred`.
+#:
+#: 🔴 `git restore` IS THE ONE PATTERN WITH A MODE, added 2026-09-17 on
+#: Sentinel's ruling: it discards working-tree edits exactly as
+#: `git checkout -- <pathspec>` does, so the class Ryan named covers it -- but
+#: ONLY in some of its modes, and a flat `\bgit\s+restore\b` would put an
+#: unskippable prompt on the harmless one:
+#:
+#:   git restore <pathspec>              DESTRUCTIVE (overwrites the worktree)
+#:   git restore --worktree <pathspec>   DESTRUCTIVE (the same, spelled out)
+#:   git restore --staged --worktree x   DESTRUCTIVE (both trees)
+#:   git restore --staged <pathspec>     HARMLESS   (unstages; the file is
+#:                                                   untouched on disk)
+#:   git restore                         HARMLESS   (no pathspec, git errors)
+#:
+#: ⚠️ THE SHORT FLAGS ARE CASE-SENSITIVE AND THE PATTERN IS `(?i)`. `-S` is
+#: `--staged` but `-s` is `--source`, and `git restore -s HEAD~1 x` DOES
+#: overwrite the worktree -- so an `(?i)` test for `-S` would have excused the
+#: destructive one. Both short flags are matched inside `(?-i:...)`.
 _DESTRUCTIVE_COMMAND = re.compile(
     r"(?ix)(?:"
     r"\brm\s+(?:-[a-z]*[rf][a-z]*|--recursive|--force|--no-preserve-root)\b|"
@@ -584,7 +602,11 @@ _DESTRUCTIVE_COMMAND = re.compile(
     r"\bmkfs(?:\.[a-z0-9]+)?\b|"
     + _CMD_POSITION + r"truncate\b|"
     + _CMD_POSITION + r"dd\s+(?:[^;&|]*\s)?of=|"
-    r"\bfind\b[^;&|]*\s-delete\b"
+    r"\bfind\b[^;&|]*\s-delete\b|"
+    r"\bgit\s+restore\b(?:"
+    r"[^;&|]*(?:--worktree\b|(?-i:\s-W\b))|"
+    r"(?![^;&|]*(?:--staged\b|(?-i:\s-S\b)))\s+[^;&|]*\S"
+    r")"
     r")"
 )
 

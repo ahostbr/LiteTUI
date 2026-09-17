@@ -243,6 +243,17 @@ DESTRUCTIVE = [
     "dd if=/dev/zero of=/dev/sda bs=1M", "dd of={}/keep.txt",
     "find {} -name '*.txt' -delete",
     "git checkout -- .", "git checkout -- {}/keep.txt",
+    # 🔴 `git restore`, ADDED ON SENTINEL'S RULING (msg 6782c076): it discards
+    # working-tree edits exactly as `git checkout -- <pathspec>` does. These
+    # are the modes that DO overwrite the worktree; the modes that do not are
+    # in HARMLESS below, and the pair is the whole point of the arm.
+    "git restore .", "git restore -- .", "git restore {}/keep.txt",
+    "git restore --worktree {}/keep.txt",
+    "git restore --staged --worktree {}/keep.txt",
+    # ⚠️ `-W` is `--worktree`; `-s` is `--source`, NOT `--staged`, and this
+    # command overwrites the worktree from that source. The pattern is `(?i)`,
+    # so an `(?i)` test for `-S` would have excused this one.
+    "git restore -W {}/keep.txt", "git restore -s HEAD~1 {}/keep.txt",
 ]
 
 #: 🔴 THE HALF THAT THE FLOOR MADE EXPENSIVE. Each of these used to classify as
@@ -261,6 +272,12 @@ HARMLESS = [
     "python -c 'f.truncate(0)'", "grep -n truncate app.log",
     "echo shredder", "git checkout -b feature/x", "git checkout main",
     "find . -name '*.pyc'", "find . -type f | wc -l",
+    # 🔴 THE OTHER MODE OF THE PATTERN ABOVE. `--staged` alone only unstages —
+    # the file on disk is untouched — and a flat `\bgit\s+restore\b` would have
+    # put an unskippable prompt on it. `-S` is its short form. Bare
+    # `git restore` has no pathspec and git errors out.
+    "git restore --staged README.md", "git restore --staged .",
+    "git restore -S README.md", "git restore",
 ]
 
 
