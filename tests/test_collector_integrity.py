@@ -41,9 +41,7 @@ def _files() -> list[Path]:
     return sorted(TESTS.glob("test_*.py"))
 
 
-def _is_collected(path: Path) -> bool:
-    """Mirrors conftest.collect_ignore: no `def test_` means pytest skips it."""
-    return "def test_" in path.read_text(encoding="utf-8", errors="ignore")
+
 
 
 def test_no_collected_file_runs_itself_on_import():
@@ -57,8 +55,10 @@ def test_no_collected_file_runs_itself_on_import():
     for path in _files():
         if path.name == Path(__file__).name:
             continue
-        if not _is_collected(path):
-            continue  # a script, and conftest never imports it
+        # NO SKIP ANY MORE, AND THAT IS STRICTER (T838). This used to pass
+        # over files conftest would not import. conftest ignores nothing
+        # now, so pytest imports EVERY test_*.py and every one of them has
+        # to be safe to import. Deleting the net widened this guard.
         hit = MODULE_LEVEL_CALL.search(path.read_text(encoding="utf-8", errors="ignore"))
         if hit:
             offenders.append(f"{path.name}: module-level {hit.group(0)!r}")
@@ -67,45 +67,7 @@ def test_no_collected_file_runs_itself_on_import():
         "These files define `def test_` (so pytest imports them) AND run "
         "themselves at import. Importing one aborts collection for the whole "
         "repo:\n  " + "\n  ".join(offenders) +
-        "\nEither move the module-level call under `if __name__ == \"__main__\":`, "
-        "or drop `def test_` so conftest treats the file as a script."
-    )
-
-
-def test_every_test_file_is_classified_and_the_split_is_real():
-    """Both kinds must be non-empty, or the rule has quietly stopped working.
-
-    If `collected` ever hits zero the suite is dead and every other test in it
-    is vacuously silent -- the 2026-08-21 state. If `scripts` hits zero the
-    conftest rule has stopped recognising them, which is how they get imported
-    and the crash returns.
-    """
-    files = _files()
-    collected = [p.name for p in files if _is_collected(p)]
-    scripts = [p.name for p in files if not _is_collected(p)]
-
-    assert len(collected) + len(scripts) == len(files)
-    assert collected, "pytest collects NOTHING -- the suite is unreachable"
-    assert scripts, "no script-style files found; the conftest rule matches nothing"
-    # Print the population rather than asserting a magic number: a fixture that
-    # asserts a state is empty when the state holds is how a pass gets reported
-    # by code that never ran.
-    print(f"\n{len(collected)} pytest modules collected, {len(scripts)} scripts skipped")
-
-
-def test_conftest_actually_ignores_the_scripts():
-    """The rule must be WIRED, not merely written.
-
-    conftest could define `collect_ignore` and still not populate it -- a
-    remedy that exists and is never invoked looks identical to one that works,
-    right up until the collector dies again.
-    """
-    import conftest
-
-    ignored = set(getattr(conftest, "collect_ignore", []))
-    expected = {p.name for p in _files() if not _is_collected(p)}
-    assert ignored == expected, (
-        f"conftest.collect_ignore is out of step with the files on disk.\n"
-        f"  ignored but shouldn't be: {sorted(ignored - expected)}\n"
-        f"  should be ignored but isn't: {sorted(expected - ignored)}"
+        "\nMove the module-level call under `if __name__ == \"__main__\":`. "
+        "Dropping `def test_` is NO LONGER a way out: conftest ignores "
+        "nothing since T838, so an uncollectable file is still imported."
     )

@@ -439,19 +439,19 @@ def pytest_configure(config):
 # slower, noisier, and touching whatever the script touches. It would look like
 # a fix and change nothing that matters. Don't collect them at all.
 #
-# 🔴 DERIVED, NOT LISTED. A hardcoded filename list drifts the day someone adds
-# a script, and drifts silently, because the symptom is an INTERNALERROR that
-# blames the new file rather than the stale list. The rule below is the actual
-# distinction: a pytest module defines `def test_`; a script does not.
-def _is_script_style(path: Path) -> bool:
-    """True when the file has no `def test_` -- i.e. nothing pytest can call."""
-    try:
-        return "def test_" not in path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return False
-
-
-collect_ignore = sorted(
-    p.name for p in Path(__file__).resolve().parent.glob("test_*.py")
-    if _is_script_style(p)
-)
+# 🔴 THE RULE IS GONE, AND ITS ABSENCE IS THE RECORD (T838).
+#
+# There was a `collect_ignore` here that skipped script-style files -- any
+# `test_*.py` with no `def test_`. It had NO MEMBERS LEFT: T699 and T700
+# converted every one of them into a real pytest module, so the rule matched
+# nothing and the two arms guarding it had become vacuous --
+# `test_conftest_actually_ignores_the_scripts` was asserting
+# `set() == set()`, which is true however broken the rule is.
+#
+#     A GUARD WITH NO MEMBERS CANNOT BE DISTINGUISHED FROM A BROKEN ONE.
+#     0-of-0 and 0-of-318 are the same digit.
+#
+# If a script-style file ever comes back, the collector collects it and
+# FAILS LOUDLY -- which is the 2026-08-21 signal, and a better one than a
+# silent skip. `test_collector_integrity.py` still guards the edge that
+# actually bites: a collected file that runs itself at import.
