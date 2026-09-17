@@ -62,6 +62,15 @@ EXPECTED_EVENTS = {
     # every `runtime_log.record` in the tree, not every failure, and an
     # exemption for "lifecycle" would be a hole the next producer walks through.
     "task.started",
+    # T838 (f2571bf, 2026-09-16, card-summary/card-collapse). Two producers
+    # from ONE commit, and the second is the more interesting of the pair:
+    # a summary that fails to RENDER and a summary that fails to PERSIST are
+    # different failures with different remedies, and folding them into one
+    # event would have made the log unable to tell them apart.
+    # Third dotted family here, after llama.* and task.* — the warning above
+    # about needing more than one grep pattern now understates it.
+    "card_summary.failed",
+    "card_summary.persist_failed",
 }
 PROHIBITED = {
     "prompt",
@@ -83,7 +92,7 @@ def _producer_calls() -> list[ast.Call]:
     calls: list[ast.Call] = []
     for path in PRODUCER_FILES:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        calls.extend(
+        found = [
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
@@ -91,8 +100,26 @@ def _producer_calls() -> list[ast.Call]:
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "runtime_log"
             and node.func.attr == "record"
-        )
+        ]
+        for node in found:
+            # The file, carried on the node, so a failure can NAME the
+            # producer instead of only counting it.
+            node._file = path.name
+        calls += found
     return calls
+
+
+def _located(calls):
+    """(file, line, event) per producer, for a failure message that NAMES
+    them. The gate could always count; it could never say which.
+    """
+    rows = []
+    for call in calls:
+        event = (call.args[0].value
+                 if call.args and isinstance(call.args[0], ast.Constant)
+                 else "<computed>")
+        rows.append((getattr(call, "_file", "?"), call.lineno, event))
+    return sorted(rows)
 
 
 def test_exactly_the_approved_producers_exist_and_no_body_key_is_present() -> None:
@@ -116,7 +143,26 @@ def test_exactly_the_approved_producers_exist_and_no_body_key_is_present() -> No
     #   - "task." + task.state   ADDED    b541181/T499   +1
     # Re-derive with: python -c on ast.walk over
     #   sorted((ROOT/"src"/"litetui").rglob("*.py")), same predicate as below.
-    assert len(calls) == 19
+    #
+    # 19 -> 21 (T838). BOTH from one commit, traced with
+    #   git log -1 --format='%h %ad %s' --date=short -L <line>,<line>:<file>
+    # rather than absorbed into a new number:
+    #   card_summary.failed          app.py:4901  f2571bf  2026-09-16
+    #   card_summary.persist_failed  app.py:4928  f2571bf  2026-09-16
+    #   (f2571bf: 'feat(cards): land card-summary/card-collapse on 0.23.1')
+    #
+    # 🔴 THE FOURTH TIME THIS GATE WENT RED FOR THIS REASON (16 -> 18 -> 19
+    # -> 21), and the pattern is the gate's, not the authors': a scalar that
+    # only a human can update is a gate that fails AFTER the change lands,
+    # naming the count and never the producer. The failure message below is
+    # the smallest fix for that — it does the tracing FOR the next reader
+    # instead of making them re-derive it, which is what the comments above
+    # record three people doing.
+    assert len(calls) == 21, (
+        "the producer count moved. Name each delta and its commit before changing "
+        "this number — the list is:\n  "
+        + "\n  ".join(f"{f}:{n} {e}" for f, n, e in _located(calls))
+    )
     events = {
         call.args[0].value
         for call in calls
