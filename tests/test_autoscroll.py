@@ -120,6 +120,13 @@ class FakeApp:
     # shipping logic, so these assertions test the product, not a model of it.
     _still_following = app_mod.LiteTUI._still_following
 
+    # Same rule for the auto-collapse pass that now rides this frame: bind the
+    # REAL method, so these tests exercise the shipping fold logic instead of a
+    # stub that is free to drift from it. On the fake log it returns early --
+    # the log double has no `query` -- which is exactly the behaviour wanted
+    # here: these assertions are about the follow lock, not about folding.
+    _autocollapse_offscreen = app_mod.LiteTUI._autocollapse_offscreen
+
     def _next_follow_generation(self):
         self._follow_generation += 1
         return self._follow_generation
@@ -244,7 +251,15 @@ def test_stream_branches_scroll():
     # branch's call instead of this one.
     # ⬜ T706: the spelling moved (the follow check became the default and the
     # kwarg is gone) and the CLAIM did not — this branch must still scroll.
-    m = re.search(r"if delta\.content:(.{0,600})", src, re.S)
+    # ⬜ T753: widened 600 -> 800 for the same reason as the 400 -> 600 above,
+    # and it MISSED BY THREE CHARACTERS. Landing card-summary on 0.23.1 put
+    # `set_answer` in this branch; the scroll call now STARTS at 584 and is 19
+    # chars long, so it ended at 603 and fell outside a 600-char window while
+    # plainly still being there. Re-verified before widening, the same way the
+    # last widening was: exactly ONE `self._scroll_down()` in the following
+    # 1,200 chars (the next `if delta.content:` is ~720 lines away), so a wider
+    # window still cannot pass by matching a different branch's call.
+    m = re.search(r"if delta\.content:(.{0,800})", src, re.S)
     assert m and "self._scroll_down()" in m.group(1), "answer-content branch scrolls"
 
 
