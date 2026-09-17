@@ -45,8 +45,32 @@ them. Both sides of it are pinned below.
 from types import SimpleNamespace
 
 from litetui.app import LiteTUI
+from litetui.plugins.model_switch import switch_model
 
 picked = LiteTUI.on_model_picked
+
+#: 🔴 TWO SUBJECTS SINCE T838, AND THE SPLIT IS THE POINT.
+#:
+#: `on_model_picked` used to call `switch_model` directly, so driving the
+#: callback drove the effects. It now issues `/model <name>` through
+#: `_handle_command`, because `test_plugin_dogfood` forbids app.py importing
+#: a plugin submodule at all -- deferred or not -- and that rule is stated
+#: at app.py's `think` chip: "THE REGISTRY, NOT AN IMPORT."
+#:
+#: So the callback can no longer be unit-driven against a double: resolving
+#: `/model` needs the whole command registry. THE WRONG FIX WOULD BE TO GIVE
+#: `PickDouble` A `_handle_command` THAT CALLS `switch_model` -- that double
+#: would pass even if the registry did not route `/model` at all, which is
+#: this file's own warning about `backend = SimpleNamespace(name='x')`
+#: turned on its head.
+#:
+#: Instead: the effect arms drive `switch_model`, which is where every one
+#: of those effects lives and always did; the callback gets ONE arm, on the
+#: only thing it still does. The END-TO-END path (picker -> command ->
+#: switch) is covered on a real app by
+#: `test_modals.py::test_model_opens_a_clickable_picker_and_keyboard_selects`,
+#: which asserts `a.model_id == "c-model"` after a keyboard pick.
+switch = switch_model
 
 
 class PickDouble(SimpleNamespace):
@@ -118,7 +142,7 @@ class PickDouble(SimpleNamespace):
 
 def test_picking_a_new_model_switches_and_drives_all_four_effects():
     d = PickDouble("alpha")
-    picked(d, "beta")
+    switch(d, "beta")
     assert d.model_id == "beta"
     assert (d.headers, d.fetches, d.applied) == (1, 1, 1)
     assert d.said == ["Switched to: beta"]
@@ -129,30 +153,17 @@ def test_the_announcement_names_the_new_model_not_the_old():
     announcement above the assignment would still print a plausible line --
     naming the model you just left."""
     d = PickDouble("alpha")
-    picked(d, "beta")
+    switch(d, "beta")
     assert "beta" in d.said[0] and "alpha" not in d.said[0]
 
 
-def test_escaping_the_picker_changes_nothing():
-    """PickerScreen dismisses with None when the user presses Esc."""
-    d = PickDouble("alpha")
-    picked(d, None)
-    assert d.model_id == "alpha"
-    assert (d.headers, d.fetches, d.applied, d.said) == (0, 0, 0, [])
-
-
-def test_an_empty_choice_changes_nothing():
-    d = PickDouble("alpha")
-    picked(d, "")
-    assert d.model_id == "alpha"
-    assert (d.headers, d.fetches, d.applied, d.said) == (0, 0, 0, [])
 
 
 def test_repicking_the_current_model_does_not_reload_it():
     """The whole point of the second guard arm: on llama.cpp a re-apply evicts
     the resident weights, so picking what you already have must be free."""
     d = PickDouble("alpha")
-    picked(d, "alpha")
+    switch(d, "alpha")
     assert d.applied == 0
     assert (d.headers, d.fetches, d.said) == (0, 0, [])
 
@@ -162,7 +173,7 @@ def test_lmstudio_reprobes_thinking_levels_for_the_model_just_picked():
     so switching model on LM Studio has to go and ask again. `_probe_thinking`
     is what asks."""
     d = PickDouble("alpha", backend="lmstudio")
-    picked(d, "beta")
+    switch(d, "beta")
     assert d.probes == 1
 
 
@@ -172,14 +183,45 @@ def test_a_non_lmstudio_backend_does_not_probe():
     deleting the `if` and probing unconditionally, which would put a probe on a
     backend that cannot answer it."""
     d = PickDouble("alpha", backend="llamacpp")
-    picked(d, "beta")
+    switch(d, "beta")
     assert d.probes == 0
     # and the switch itself still happened -- the guard narrows one effect, not all
     assert d.model_id == "beta"
     assert (d.headers, d.fetches, d.applied) == (1, 1, 1)
 
 
-def test_the_picker_goes_through_the_ONE_switch_path() -> None:
+class CommandDouble(SimpleNamespace):
+    """Records the command the callback issues. It resolves NOTHING -- that
+    is deliberate: a double that also routed `/model` would be asserting its
+    own routing, not the app's."""
+
+    def __init__(self):
+        super().__init__(commands=[])
+
+    def _handle_command(self, text):
+        self.commands.append(text)
+
+
+def test_the_callback_issues_the_switch_as_a_COMMAND() -> None:
+    """🔴 T838: the callback's whole remaining job. It must go through the
+    registry door rather than importing the plugin, and it must pass the
+    model through intact -- a picker that issued `/model` with no argument
+    would open the picker again, from inside the picker's own callback.
+    """
+    d = CommandDouble()
+    picked(d, "beta")
+    assert d.commands == ["/model beta"]
+
+
+def test_the_callback_issues_NOTHING_for_an_empty_choice() -> None:
+    """Esc dismisses with None; the guard folds None and "" together."""
+    for choice in (None, ""):
+        d = CommandDouble()
+        picked(d, choice)
+        assert d.commands == [], choice
+
+
+def test_the_switch_path_refuses_a_model_the_server_does_not_have() -> None:
     """🔴 T698: `on_model_picked` was a second copy of `switch_model`.
 
     Seven effects written out twice, so every future change to a switch had to
@@ -194,7 +236,7 @@ def test_the_picker_goes_through_the_ONE_switch_path() -> None:
     is now declined instead of naming a model the server does not have.
     """
     d = PickDouble("alpha")
-    picked(d, "gamma")          # never offered, not available
+    switch(d, "gamma")          # never offered, not available
 
     assert d.model_id == "alpha", "a model the server does not have was selected"
     assert (d.headers, d.fetches, d.applied, d.said) == (0, 0, 0, [])

@@ -5302,15 +5302,32 @@ class LiteTUI(App):
         path loses anything — a stale pick is now declined instead of naming a
         model the server does not have.
 
-        The local import mirrors `rpc.py`: the plugin is imported at call time,
-        not at module scope, so app.py keeps no import-time dependency on a
-        plugin that is loaded through the registry.
+        🔴 AND IT REACHES IT THROUGH THE REGISTRY, NOT AN IMPORT (T838).
+        This used to be `from litetui.plugins.model_switch import switch_model`
+        at call time, defended right here as "no import-time dependency" --
+        but `test_plugin_dogfood` forbids the SPELLING, not the timing, and
+        it was red for exactly this line. The rule is stated 1,400 lines
+        above, at the `think` chip: "THE REGISTRY, NOT AN IMPORT ... app.py
+        owns the substrate and nothing below it." A deferred import is still
+        app.py reaching into a plugin.
+
+        `_handle_command` is the door the keyboard already uses, and
+        `/model <name>` resolves to the same `switch_model` body through
+        `_cmd_model` -- one behaviour by a route that cannot invert the
+        layering.
+
+        ⚠️ ONE USER-VISIBLE CHANGE, AND IT IS THE POINT OF THE ROUTE.
+        `switch_model` returns False for a target that is not in
+        `available_models` and this body DISCARDED that, so a stale pick was
+        declined in SILENCE. `/model <name>` says "Model not found: <name>".
+        A control that accepts input and appears to do nothing is the shape
+        `test_no_dead_controls` exists to forbid; this is the same shape at
+        a different door. UNVERIFIED BY RYAN -- he will see a line where he
+        saw nothing.
         """
         if not model_id:
             return
-        from litetui.plugins.model_switch import switch_model
-
-        switch_model(self, model_id)
+        self._handle_command(f"/model {model_id}")
 
     # ⚠️ `_on_` IS NOT A "HIDDEN FROM TEXTUAL" PREFIX. MessagePump dispatch does
     # `cls.__dict__.get(f"_{method_name}") or cls.__dict__.get(method_name)` —

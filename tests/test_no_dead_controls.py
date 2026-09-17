@@ -30,14 +30,43 @@ from litetui.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root: tests/ is one level down
 APP = (ROOT / "src" / "litetui" / "app.py").read_text(encoding="utf-8")
-# Readers may live in plugin modules since the plugin split — the gate's
-# claim is about the RUNTIME, so its scope is app.py plus every plugin,
-# plus the backend core module: the dual-backend seam reads its settings
-# there (constructor-injected), exactly as app.py reads its own.
-_SOURCES = [APP] + [
+
+#: THE ONE FILE THAT CANNOT BE EVIDENCE, and the reason it is an EXCLUSION
+#: rather than the scope being an inclusion list.
+#:
+#: `settings_screen.py` walks `fields(Settings)` and renders every one, so a
+#: scan that included it would report EVERY field as read and
+#: `test_no_setting_is_read_only_by_the_settings_screen` — the arm whose
+#: whole subject is that difference — would pass vacuously.
+SCREEN_ONLY = {"settings_screen.py"}
+
+#: 🔴 THE SCOPE WAS A HAND-LISTED SUBSET AND IT WENT STALE. It was app.py +
+#: plugins/** + llm_backend.py, with a comment explaining why those three
+#: were the runtime. Then backends became their own modules, and FOUR live
+#: settings were reported dead — "these settings render in /settings and
+#: change nothing" — while their readers sat in files the scan never opened:
+#:
+#:   ninfer_executable    ninfer_engine.py:74   getattr(settings, ...)
+#:   ninfer_artifact      ninfer_engine.py:84   getattr(settings, ...)
+#:   ninfer_max_context   ninfer_engine.py:337  getattr(settings, ...)
+#:   codex_native_engine  oauth_backend.py:25   getattr(settings, ...)
+#:
+#: The remedy this gate PRINTS is "either wire them or delete them", so a
+#: false DEAD report is an instruction to delete working behaviour — and
+#: three of those four are how LiteTUI starts the NInfer engine at all.
+#:
+#:     AN ENUMERATED SCOPE IS A CLAIM ABOUT WHERE CODE LIVES, AND CODE
+#:     MOVES. The detector's own docstring already learned this about the
+#:     access CHANNEL (`getattr` by string); the same lesson had not reached
+#:     its SOURCE SET one screen above.
+#:
+#: Derived now: every module under the package, minus the one that cannot
+#: be evidence. A new runtime file is in scope the day it exists.
+_SOURCES = [
     p.read_text(encoding="utf-8")
-    for p in sorted((ROOT / "src" / "litetui" / "plugins").rglob("*.py"))
-] + [(ROOT / "src" / "litetui" / "llm_backend.py").read_text(encoding="utf-8")]
+    for p in sorted((ROOT / "src" / "litetui").rglob("*.py"))
+    if p.name not in SCREEN_ONLY
+]
 RUNTIME = "".join(_SOURCES)
 
 
@@ -187,12 +216,42 @@ def test_detector_can_still_fail():
     assert _reads("tool_iterations", "x = self.settings.tool_iterations")
 
 
+def test_the_screen_is_genuinely_excluded_and_the_exclusion_is_not_vacuous():
+    """🔴 ADDED BECAUSE A MUTANT SURVIVED. Emptying `SCREEN_ONLY` — putting
+    the panel that renders EVERY field back into the evidence — changed no
+    result, because no field happens to be screen-only today. So the
+    exclusion was preventive and unobservable, which is a docstring, not an
+    assertion.
+
+    Two things make it observable: the screen is really out of scope, and it
+    really would have been evidence if left in. Without the second half this
+    arm would pass against a screen that read nothing at all.
+    """
+    screen_path = ROOT / "src" / "litetui" / "settings_screen.py"
+    screen = screen_path.read_text(encoding="utf-8")
+    assert screen not in _SOURCES, (
+        "settings_screen.py is in the evidence set; every field it renders "
+        "would then read as live"
+    )
+    # NOT VACUOUS: the screen does reach fields by name, so including it
+    # would genuinely change verdicts.
+    named = [f.name for f in fields(Settings) if _reads(f.name, screen)]
+    assert len(named) > 10, (
+        f"the screen names only {len(named)} settings — either it stopped "
+        "rendering them by name, in which case this exclusion protects "
+        "nothing, or the detector stopped seeing them"
+    )
+
+
 def test_no_setting_is_read_only_by_the_settings_screen():
     """A field the SCREEN reads but the APP never does is still dead.
 
     The screen renders every field by construction, so it can never be the
     evidence that a field does something.
     """
+    # Read HERE and nowhere else: SCREEN_ONLY keeps it out of RUNTIME, which
+    # is what makes `_reads` below a statement about the app rather than
+    # about the panel that renders every field by construction.
     screen = (ROOT / "src" / "litetui" / "settings_screen.py").read_text(encoding="utf-8")
     assert "f-{name}" in screen or "f-" in screen  # sanity: the screen builds ids
     for f in fields(Settings):
