@@ -5767,6 +5767,35 @@ class LiteTUI(App):
                 f"holding the app for it. It will be retried."
             ) from None
 
+    def _emit_turn_end(self, stop_reason: str, tps: float | None, **extra) -> None:
+        """One door for `turn_end`, so the event and the stop line agree.
+
+        🔴 THE SETTLED tok/s REACHED THE TUI AND NOTHING ELSE (T806).
+        `_settle_turn_stop_line` renders it into the terminal widget
+        (`turnstats.py:73`, `" · {final_tps:.1f} tok/s"`), and every
+        `turn_end` carried only a stopReason -- so a HEADLESS host could not
+        read the one number the turn exists to produce. Item 6 asks for the
+        engine's rate through LiteTUI; without this there is no wire to read
+        it off.
+
+            RYAN: *"66toks is less than lmstudio etc"* / *"whole point is a
+            toks improvement"*. A figure only a human eye can reach cannot
+            answer that question.
+
+        ⬜ A HELPER RATHER THAN EIGHT EDITS, BECAUSE THE INVARIANT IS
+        STRUCTURAL. `_stream` ends in eight places; a ninth added later must
+        not be able to forget the rate. One door means the event and the line
+        are two renderings of ONE value, which is this repo's own rule about
+        two counts of one thing that must agree.
+
+        ⬜ None IS PUBLISHED AS None, NOT DROPPED. A cancelled turn, a turn
+        that produced no tokens, and a backend that publishes no rate are all
+        "no figure" -- and a host that sees the key absent cannot tell those
+        from a version that never sent it.
+        """
+        self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
+                        "tps": tps, **extra})
+
     @work(exclusive=True, group="chat")
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
@@ -5915,8 +5944,8 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=True,
                 )
-                self._rpc_emit({"type": "turn_end", "stopReason": "error",
-                                "error": takeover or _plain_backend_error(e, self.backend.name)})
+                self._emit_turn_end("error", final_turn_tps,
+                                     error=takeover or _plain_backend_error(e, self.backend.name))
                 return
 
             try:
@@ -6111,8 +6140,8 @@ class LiteTUI(App):
                 # T526: the open-failure branch above emits this; this branch
                 # did not, so an rpc client (LiteSuite's LiteTuiAdapter) that
                 # saw turn_start waited forever on a mid-stream 400.
-                self._rpc_emit({"type": "turn_end", "stopReason": "error",
-                                "error": takeover or _plain_backend_error(e, self.backend.name)})
+                self._emit_turn_end("error", final_turn_tps,
+                                     error=takeover or _plain_backend_error(e, self.backend.name))
                 return
             finally:
                 if hasattr(stream, "close"):
@@ -6178,7 +6207,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=True,
                 )
-                self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
+                self._emit_turn_end("cancelled", final_turn_tps)
                 self.call_after_refresh(self._maybe_autocompact)
                 return
 
@@ -6187,7 +6216,7 @@ class LiteTUI(App):
                 if verdict == "retry":
                     continue
                 if verdict == "pause":
-                    self._rpc_emit({"type": "turn_end", "stopReason": "hook_denied"})
+                    self._emit_turn_end("hook_denied", final_turn_tps)
                     return
                 # Only an answer accepted by the completion gate is terminal.
                 # Retried and paused drafts deliberately never receive a line.
@@ -6202,7 +6231,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=False,
                 )
-                self._rpc_emit({"type": "turn_end", "stopReason": "stop"})
+                self._emit_turn_end("stop", final_turn_tps)
                 self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
                 return  # plain answer — agent loop done
@@ -6313,7 +6342,7 @@ class LiteTUI(App):
                 if pct is not None
                 else "[pausing to compact between tool iterations]"
             )
-            self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
+            self._emit_turn_end("cancelled", final_turn_tps)
             self.call_after_refresh(self._maybe_autocompact)
             return
 
@@ -6330,7 +6359,7 @@ class LiteTUI(App):
                 final_tps=final_turn_tps,
                 stopped=True,
             )
-            self._rpc_emit({"type": "turn_end", "stopReason": "cancelled"})
+            self._emit_turn_end("cancelled", final_turn_tps)
             return
 
         self._settle_turn_stop_line(
@@ -6339,7 +6368,7 @@ class LiteTUI(App):
             final_tps=final_turn_tps,
             stopped=True,
         )
-        self._rpc_emit({"type": "turn_end", "stopReason": "tools_cap"})
+        self._emit_turn_end("tools_cap", final_turn_tps)
         self._system(
             f"[stopped \u2014 reached {self.settings.tool_iterations} tool iterations in one turn — raise it in /settings]"
         )

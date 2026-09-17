@@ -262,16 +262,57 @@ class NInferBackend(_VramGate):
 
     # -- discovery --------------------------------------------------------
 
+    #: What `base_url()` answers when no engine can be found. A port nothing
+    #: can listen on, so a request cannot silently reach the wrong server.
+    DEAD_HOST = "http://127.0.0.1:0"
+
+    def _resolve_host(self) -> str | None:
+        """Explicit setting, then discovery. Re-asked every time on purpose.
+
+        🔴 RESOLVED LAZILY BECAUSE THE ENGINE OUTLIVES NEITHER SIDE'S ORDER.
+        The app is CONSTRUCTED before anything calls `ensure_running`, and the
+        engine may be started after LiteTUI is already open. Caching the answer
+        at `__init__` would pin "no engine" for the life of the process.
+        """
+        explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
+        return explicit or self._host or discover_ninfer_host()
+
     def host(self) -> str:
-        if self._host is None:
+        host = self._resolve_host()
+        if host is None:
             raise BackendError(
                 "no NInfer engine is registered — start it from LiteSuite's "
-                "Model Hub, then /model to pick it up."
+                "Model Hub, or set ninfer_host (LITETUI_NINFER_HOST), then "
+                "/model to pick it up."
             )
-        return self._host
+        return host
 
     def base_url(self) -> str:
-        return f"{self.host()}/v1"
+        """The OpenAI client's address — AND IT MUST NEVER RAISE.
+
+        🔴 THIS IS WHY THE APP COULD NOT BOOT ON THIS BACKEND, and no unit arm
+        could see it. `LiteTUI.__init__` builds its `AsyncOpenAI` client from
+        `backend.base_url()` at CONSTRUCTION (`app.py:1381`), long before
+        anything calls `ensure_running`. The first version raised there when no
+        engine was registered, so selecting this backend with the engine down
+        did not produce a message — it produced a traceback before the TUI
+        existed.
+
+            EVERY ARM CONSTRUCTED THE BACKEND DIRECTLY AND NONE BOOTED THE APP.
+            The defect lived in the one line between the two, and driving a real
+            turn is what found it.
+
+        The other two backends cannot hit this: their host is a SETTING, present
+        whether or not anything is listening. Ours is discovered, so absence is
+        a state they never have.
+
+        ⬜ A DEAD PORT, NOT A PLAUSIBLE ONE. Returning some default would let a
+        request reach whatever happens to be on it; port 0 cannot be connected
+        to, so the failure is immediate and belongs to no other server.
+        `ensure_running` still runs before turns and gives the sentence that
+        names where to start one.
+        """
+        return f"{self._resolve_host() or self.DEAD_HOST}/v1"
 
     @property
     def attached(self) -> bool:
@@ -394,20 +435,42 @@ class NInferBackend(_VramGate):
     async def model_info(self, key: str):
         return await asyncio.to_thread(self._model_info_sync, key)
 
-    def _model_info_sync(self, key: str) -> dict:
+    def _model_info_sync(self, key: str) -> tuple[int | None, str | None, bool] | None:
+        """``(window, type, loaded)``, or None when this server does not serve it.
+
+        🔴 A TUPLE, NOT A DICT, AND THAT SHAPE IS THE WHOLE CONTRACT.
+        The first version of this returned a four-key dict. Every caller in the
+        app unpacks three values -- ``app.py:4205``
+        ``self.ctx_max, self.model_type, self.ctx_loaded = got``,
+        ``app.py:4148`` ``cur, _typ, is_loaded = info``, ``app.py:3418``
+        ``info[2]`` -- so a dict of four keys raised
+        ``ValueError: too many values to unpack (expected 3)`` INSIDE the
+        ``ctx`` worker, and that killed the app a moment after ``connect()``
+        had listed the model successfully.
+
+            THE CRASH DID NOT LOOK LIKE THIS DEFECT. It looked like
+            ``"models": []``, because the only measurement anyone had taken was
+            a ``gui.state`` read that raced ``connect()`` and then found a dead
+            process. The empty list was the RACE; the app dying was this line.
+
+        ⬜ NO TYPE, RATHER THAN A PLAUSIBLE ONE. ``/v1/models`` carries no
+        ``type`` field -- there is no llm/vlm discriminator on this wire -- and
+        the app reads that value only to refuse ``view_image`` with an LM
+        Studio-shaped sentence (``app.py:5373``). Reporting ``"llm"`` here
+        would be inventing a fact the server never stated in order to produce a
+        message about a different program. None is what the engine said.
+
+        ⬜ ``loaded`` IS TRUE BY CONSTRUCTION. One artifact per process,
+        loaded at startup and served for life -- there is no cold row here, so
+        the ceiling-vs-window trap the other two backends guard against cannot
+        arise: ``max_model_len`` IS the live window.
+        """
         body = self._get_json(f"{self.host()}/v1/models")
         for entry in body.get("data", []):
             if isinstance(entry, dict) and entry.get("id") == key:
                 window = entry.get("max_model_len")
-                return {
-                    "id": key,
-                    "loaded": True,
-                    # The LIVE window, named as such. LiteSuite's own trim reads
-                    # the same field for the same reason.
-                    "context_length": window if isinstance(window, int) else None,
-                    "max_context_length": window if isinstance(window, int) else None,
-                }
-        raise BackendError(f"{key!r} is not the model this NInfer engine serves.")
+                return (window if isinstance(window, int) else None, None, True)
+        return None
 
     def _get_json(self, url: str, timeout: float = 10.0) -> dict:
         try:
@@ -494,6 +557,90 @@ class NInferBackend(_VramGate):
         return (
             "start the NInfer engine from LiteSuite's Model Hub (Settings → NInfer); "
             "LiteTUI attaches to it and cannot start it itself"
+        )
+
+    # -- per-request, and the seat -----------------------------------------
+    #
+    # 🔴 EVERY METHOD BELOW IS CALLED WITHOUT A `hasattr` GUARD, so a
+    # backend that omits one does not degrade -- it raises AttributeError from
+    # inside a Textual worker and takes the turn (or the tool) with it. That is
+    # how `request_overrides` was found: the FIRST turn ever driven through this
+    # backend died at `app.py:5901` with
+    # `'NInferBackend' object has no attribute 'request_overrides'`, after 57
+    # arms had passed.
+    #
+    #     A MISSING METHOD IS NOT A MISSING FEATURE HERE. It is a crash, and the
+    #     surface is discoverable: diff what the app calls on `backend.` against
+    #     `dir(NInferBackend)` rather than waiting for each one to fire.
+
+    def request_overrides(self, key: str | None) -> dict:
+        """Global sampling defaults plus this model's Inference-tab overrides.
+
+        ⬜ THE SIBLINGS' EXACT CALL, REUSED RATHER THAN RESTATED.
+        `llm_backend.py:1480` and `:1732` are both `return
+        _merged_overrides(self._settings, key)`; this engine speaks the same
+        OpenAI-compatible request, so a third spelling of one rule would be the
+        duplication Ryan named: *"were writing the same code to do the same
+        thing in a slightly different way over and over for each backend."*
+        """
+        from litetui.llm_backend import _merged_overrides
+
+        return _merged_overrides(self._settings, key)
+
+    def seat_snapshot(self, model_id: str) -> dict | None:
+        """The seat's live load config, or None when this engine is not it.
+
+        ⬜ RESIDENT OR ABSENT, NEVER "IDLE BUT UNLOADED". One artifact per
+        process, loaded at startup and served for life -- so "is it loaded" and
+        "is this the model this engine serves" are THE SAME QUESTION here, and
+        `model_info` already answers it.
+        """
+        try:
+            info = self._model_info_sync(model_id)
+        except BackendError:
+            return None
+        if info is None:
+            return None
+        window, _type, _loaded = info
+        return {
+            "identifier": model_id,
+            "context": window,
+            # No `--parallel` on this engine: the option does not exist, and
+            # reporting 1 would imply a knob that could be something else.
+            "parallel": None,
+            "status": "idle",
+            "queued": 0,
+        }
+
+    def seat_suspend(self, rec: dict) -> str | None:
+        """Refuse by name. THE PROCESS IS THE MODEL -- there is no unload.
+
+        ⬜ THE REFUSAL IS THE DESIGNED PATH, NOT A FAILURE.
+        `seat_guard.suspend` returns this sentence to the caller
+        (`studio_tool.py:273`, `listen_tool.py:424`), which then decides whether
+        to generate without freeing the seat -- exactly what an ATTACHED llama
+        server does today (`llm_backend.py:1455`). Raising instead, or returning
+        None as though VRAM had been freed, would both be lies: the second one
+        would let an image job start against a full card.
+        """
+        return (
+            "suspend unsupported: ninfer-serve holds its artifact for the life "
+            "of the process — stop the engine itself (LiteSuite's Model Hub) to "
+            "free that VRAM"
+        )
+
+    def seat_resume(self, rec: dict) -> str | None:
+        """None when the engine is still serving it; a sentence when it is not.
+
+        ⬜ REACHABLE EVEN THOUGH `seat_suspend` ALWAYS REFUSES. `resume` runs
+        from the breadcrumb path too, after a crash nobody here observed -- so
+        "nothing was suspended" is an assumption, not a fact, and this asks.
+        """
+        if self.seat_snapshot(rec.get("identifier") or "") is not None:
+            return None
+        return (
+            "the NInfer engine is no longer serving "
+            f"{rec.get('identifier')!r} — " + self.reload_hint(rec)
         )
 
     # -- control, which this engine does not have -------------------------

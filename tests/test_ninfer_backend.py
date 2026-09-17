@@ -533,3 +533,212 @@ def test_applying_load_settings_is_no_longer_a_silent_no_op():
     with pytest.raises(BackendError) as excinfo:
         run(backend.apply_load_settings("qwen3.8-27b", {"ctx": 8192}))
     assert "restart the engine" in str(excinfo.value)
+
+
+def test_base_url_never_raises_so_the_app_can_boot(tmp_path, monkeypatch):
+    """🔴 THE APP COULD NOT BOOT ON THIS BACKEND AND NO UNIT ARM COULD SEE IT.
+
+    `LiteTUI.__init__` builds its `AsyncOpenAI` client from `backend.base_url()`
+    at CONSTRUCTION (app.py:1381), long before anything calls `ensure_running`.
+    The first version raised there when no engine was registered, so selecting
+    this backend with the engine down produced a TRACEBACK before the TUI
+    existed — not a message.
+
+        EVERY ARM CONSTRUCTED THE BACKEND DIRECTLY AND NONE BOOTED THE APP. The
+        defect lived in the one line between the two, and driving a real turn is
+        what found it.
+
+    The other two backends cannot hit this: their host is a SETTING, present
+    whether or not anything is listening. Ours is discovered, so absence is a
+    state they never have.
+    """
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path))
+    backend = NInferBackend(_Settings())
+    url = backend.base_url()  # must not raise
+    assert url.endswith("/v1")
+    # ⬜ A DEAD PORT, NOT A PLAUSIBLE ONE: port 0 cannot be connected to, so a
+    # request cannot silently reach whatever else is listening locally.
+    assert ":0/" in url
+
+    # …and `host()` still refuses loudly, because its callers need a real one.
+    with pytest.raises(BackendError):
+        backend.host()
+
+
+def test_the_host_is_resolved_lazily_so_a_later_start_is_picked_up(tmp_path, monkeypatch):
+    """🔴 THE ENGINE OUTLIVES NEITHER SIDE'S ORDER. The app is constructed
+    before `ensure_running`, and the engine may be started after LiteTUI is
+    already open. Caching the answer at `__init__` would pin "no engine" for the
+    life of the process — which is what a constructor-time read does."""
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path))
+    backend = NInferBackend(_Settings())
+    assert ":0/" in backend.base_url()
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"extraEndpoints": [{"baseUrl": "http://127.0.0.1:63177", "kind": "ninfer"}]}),
+        encoding="utf-8",
+    )
+    assert backend.base_url() == "http://127.0.0.1:63177/v1"
+
+
+# ── /v1/models: the shape the app unpacks ────────────────────────────────────
+
+
+_MODELS_BODY = {"data": [{"id": "qwen3.8-27b", "max_model_len": 32768}]}
+
+
+def _served(monkeypatch, body=_MODELS_BODY):
+    b = NInferBackend(_Settings())
+    b._host = "http://127.0.0.1:63177"
+    monkeypatch.setattr(NInferBackend, "_get_json", lambda self, url, timeout=10.0: body)
+    return b
+
+
+def test_model_info_is_the_three_tuple_the_app_unpacks(monkeypatch):
+    """🔴 THE ARM THAT WOULD HAVE CAUGHT THE APP DYING ON EVERY NINFER BOOT.
+
+    `model_info` returned a four-key DICT. `app.py:4205` is
+    `self.ctx_max, self.model_type, self.ctx_loaded = got`, so the `ctx` worker
+    raised `ValueError: too many values to unpack (expected 3)` and killed the
+    app moments after `connect()` had listed the model correctly — which
+    surfaced only as `gui.state` reporting `"models": []`.
+
+    The assertion is the UNPACK itself, in the app's own spelling, because that
+    is the thing that broke: a dict of exactly three keys would satisfy a
+    `len() == 3` check and still crash here differently.
+    """
+    b = _served(monkeypatch)
+    got = run(b.model_info("qwen3.8-27b"))
+    window, model_type, loaded = got            # app.py:4205, verbatim
+    assert (window, loaded) == (32768, True)
+    # No llm/vlm discriminator on this wire — None is what the engine said.
+    assert model_type is None
+    # app.py:4148 and :3418 index it; prove those readings too.
+    assert got[2] is True and got[0] == 32768
+
+
+def test_model_info_is_none_for_a_model_this_engine_does_not_serve(monkeypatch):
+    """⬜ None, not an exception — the contract every other backend keeps.
+
+    `app.py:4201` wraps the CALL in try/except but unpacks OUTSIDE it, so a
+    raise here is survivable and a wrong SHAPE is not. Both siblings
+    (`llm_backend.py:1582`, `:1151`) return None; so does this.
+    """
+    b = _served(monkeypatch)
+    assert run(b.model_info("something-else")) is None
+
+
+def test_list_models_reports_the_one_artifact_as_loaded(monkeypatch):
+    """⬜ One artifact per process, resident from startup — `loaded` is a fact
+    here, not a guess, and it is what `connect()` prefers when it picks."""
+    b = _served(monkeypatch)
+    rows = run(b.list_models())
+    assert [(r.key, r.loaded, r.source) for r in rows] == [("qwen3.8-27b", True, "server")]
+
+
+def test_list_models_refuses_an_engine_that_serves_nothing(monkeypatch):
+    """⬜ An up-but-empty engine is a contradiction, not an empty catalogue:
+    returning `[]` would put the app on the "no chat model available" path and
+    blame the model folder for a serving fault."""
+    b = _served(monkeypatch, {"data": []})
+    with pytest.raises(BackendError):
+        run(b.list_models())
+
+
+# ── the surface the app calls without a guard ────────────────────────────────
+
+
+#: Attributes reached on `backend.` that this backend is NOT required to have,
+#: each with the reason it is exempt. An exemption list that grows is the
+#: signal to stop exempting and start implementing.
+_NOT_OURS = {
+    # Codex-only: every reach is behind `name == "codex"` (app.py:1644) or the
+    # native-loop branch (app.py:6490, model_transport.py:634).
+    "app_server",
+    # `@property.setter` — a decorator artifact in the source, not a call.
+    "setter",
+    # llama.cpp's owned-server recovery, and app.py:3480 wraps it in try/except
+    # precisely because not every backend has one.
+    "recover_owner_exit",
+}
+
+
+def test_every_unguarded_backend_call_is_implemented():
+    """🔴 THE ARM FOR THE WHOLE CLASS, NOT FOR ONE MISSING METHOD.
+
+    `app.py:5901` is `self.backend.request_overrides(self.model_id)` with NO
+    `hasattr` guard, so omitting it did not degrade — it raised
+    `AttributeError: 'NInferBackend' object has no attribute
+    'request_overrides'` from inside the chat worker and killed the FIRST turn
+    ever driven through this backend. 57 arms were green at that moment,
+    because every one of them called a method that existed.
+
+        A MISSING METHOD IS NOT A MISSING FEATURE. It is a crash, and the
+        surface is DERIVABLE — so derive it, rather than waiting for each one
+        to fire in turn. The same sweep found `seat_snapshot`, `seat_suspend`
+        and `seat_resume` missing on the image/audio VRAM path
+        (`studio_tool.py:262`, `listen_tool.py:415`).
+
+    ⚠️ THIS ARM READS SOURCE, SO IT IS SCOPED TO WHAT IT READS. A reach through
+    an alias (`b = self.backend; b.foo()`) is invisible to it. It catches the
+    direct spelling, which is what every site above uses.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "litetui"
+    called: dict[str, str] = {}
+    for rel in ("app.py", "turn_engine.py", "gui_rpc.py", "seat_guard.py",
+                "thinking_capabilities.py", "plugins/model_switch.py"):
+        path = root / rel
+        if not path.exists():
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in re.finditer(r"\bbackend\.([A-Za-z_]\w*)", line):
+                called.setdefault(m.group(1), f"{rel}:{n}")
+
+    missing = {a: where for a, where in called.items()
+               if a not in _NOT_OURS and not hasattr(NInferBackend, a)}
+    assert not missing, (
+        "NInferBackend is missing attributes the app calls unguarded: "
+        + ", ".join(f"{a} ({where})" for a, where in sorted(missing.items()))
+    )
+
+
+def test_request_overrides_is_the_siblings_merge_not_a_third_spelling(monkeypatch):
+    """⬜ Global sampling defaults + this model's Inference-tab overrides, and
+    an override of None REMOVES the global rather than sending null — the rule
+    `_merged_overrides` already encodes for the other two backends."""
+    from litetui.settings import Settings
+
+    st = Settings()
+    st.model_infer_overrides = {"qwen3.8-27b": {"top_k": 7, "temperature": None}}
+    b = NInferBackend(st)
+    got = b.request_overrides("qwen3.8-27b")
+    assert got.get("top_k") == 7
+    assert "temperature" not in got
+
+
+def test_the_seat_cannot_be_suspended_and_says_why(monkeypatch):
+    """🔴 REFUSE BY NAME; NEVER REPORT VRAM FREED THAT IS NOT.
+
+    `seat_guard.suspend` hands this sentence to `studio_tool`/`listen_tool`,
+    which then decide whether to run anyway. Returning None would claim the
+    card was freed and let an image job start against a full one.
+    """
+    b = _served(monkeypatch)
+    err = b.seat_suspend({"identifier": "qwen3.8-27b"})
+    assert err and "life of the process" in err
+
+
+def test_seat_snapshot_is_resident_or_absent(monkeypatch):
+    """⬜ One artifact per process: "is it loaded" and "is this the model this
+    engine serves" are the same question, so there is no cold row to report."""
+    b = _served(monkeypatch)
+    rec = b.seat_snapshot("qwen3.8-27b")
+    assert rec == {"identifier": "qwen3.8-27b", "context": 32768,
+                   "parallel": None, "status": "idle", "queued": 0}
+    assert b.seat_snapshot("something-else") is None
+    # Resume is a question, not an assumption — it asks the engine.
+    assert b.seat_resume({"identifier": "qwen3.8-27b"}) is None
+    assert "no longer serving" in (b.seat_resume({"identifier": "gone"}) or "")
