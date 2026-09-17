@@ -18,6 +18,34 @@ import asyncio
 from typing import Any
 
 
+def _loop_running() -> bool:
+    """True when we are already inside an event loop.
+
+    🔴 `asyncio.run` RAISES IF A LOOP IS ALREADY RUNNING, so the
+    `list_models` branch below was not a slow path -- it was a CRASH on every
+    caller that lives in the UI. Ryan hit it by typing `/settings` on the NInfer
+    backend: `settings_ui.py:60` -> here -> `RuntimeError: asyncio.run() cannot
+    be called from a running event loop`, and the dialog never opened.
+
+        A BRANCH THAT ONLY WORKS OFF THE EVENT LOOP IS A BRANCH THAT CANNOT BE
+        REACHED FROM THE UI. It was reachable only by a backend with no
+        `loaded_models`, which is why three backends never found it.
+
+    ⬜ THE FALLBACK WAS ALREADY CORRECT AND ALREADY HAD THE ANSWER.
+    `app.model_rows` is built by `connect()` from this same `list_models` call
+    and carries `loaded` per row -- Ryan's own traceback shows
+    `{'qwen3_6_35b_a3b': ModelRow(..., loaded=True)}` sitting in the locals
+    while the line above it raised. So on-loop callers lose nothing but the
+    freshness of a re-query, and off-loop callers (the side-call resolver, which
+    runs in a worker thread) keep it.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def resident_models(app: Any) -> tuple[set[str], bool]:
     """(what is loaded right now, is the backend remote).
 
@@ -36,7 +64,7 @@ def resident_models(app: Any) -> tuple[set[str], bool]:
         listing = getattr(backend, "list_models", None)
         if resident is not None:
             return {m for m in resident() if m}, remote
-        if listing is not None:
+        if listing is not None and not _loop_running():
             return {r.key for r in asyncio.run(listing()) if r.loaded}, remote
     return {key for key, row in rows.items() if getattr(row, "loaded", False)}, remote
 

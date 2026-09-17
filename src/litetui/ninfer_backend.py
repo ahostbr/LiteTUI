@@ -587,6 +587,32 @@ class NInferBackend(_VramGate):
 
         return _merged_overrides(self._settings, key)
 
+    def loaded_models(self) -> list[str]:
+        """Ids resident right now. Read-only; starts nothing.
+
+        🔴 ITS ABSENCE CRASHED `/settings` ON THIS BACKEND.
+        `model_residency.resident_models` prefers this method and falls back to
+        `asyncio.run(list_models())`, which RAISES inside the Textual loop --
+        so a backend without it makes the Settings dialog unopenable rather
+        than slightly slower. llama.cpp and LM Studio both have it
+        (`llm_backend.py:1584`), which is why nobody had met the fallback.
+
+            THIS IS THE SAME CLASS AS THE FOUR METHODS IN 61e98a2, AND MY
+            SURFACE ARM MISSED IT because its file list did not include
+            `model_residency.py` or `plugins/settings_ui.py`. The arm's own
+            docstring says it is scoped to what it reads; that scope is where
+            this got through. The list is widened with this commit.
+
+        ⬜ SYNC, AND THAT IS THE WHOLE POINT -- an async answer here is what
+        the caller cannot use. One artifact per process, resident from startup,
+        so the served id IS the resident set.
+        """
+        try:
+            rows = self._list_sync()
+        except BackendError:
+            return []
+        return [r.key for r in rows if r.loaded]
+
     def seat_snapshot(self, model_id: str) -> dict | None:
         """The seat's live load config, or None when this engine is not it.
 
