@@ -179,9 +179,17 @@ SCHEDULED_PROFILE = ToolProfile(
 #: refusing something. Fail-safe, but it would mean the profile quietly stopped
 #: meaning what it says.
 #:
-#: ⚠️ THIS PROFILE HAS NO CONFIRM STEP, SO THE ONLY THING BETWEEN IT AND ANY
-#: TOOL IS A STANDING `deny` RULE. Those still win — the deny gate runs before
-#: the profile is consulted at all — and that is the one brake left.
+#: ⚠️ THIS PROFILE HAS NO CONFIRM STEP OF ITS OWN. A standing `deny` rule
+#: still wins — the deny gate runs before the profile is consulted at all.
+#:
+#: 🔴 AND SINCE T844 IT IS NO LONGER THE ONLY BRAKE. Ryan, 2026-09-17:
+#: "Keep autonomous, but destructive_irreversible ALWAYS confirms (a floor
+#: no profile removes)". That floor lives in `decide()`, not here, and
+#: `allow=CAPABILITIES` below does NOT reach past it: this profile grants
+#: every capability and still asks before an irreversible one. Everything
+#: else about it is unchanged, which is the point — the row exists because
+#: Ryan killed his own agent seat rather than keep answering the modal, and
+#: a floor that asked about `ls` would earn the same fate.
 AUTONOMOUS_PROFILE = ToolProfile(
     AUTONOMOUS,
     allow=CAPABILITIES,
@@ -401,6 +409,45 @@ def evaluate(
             capabilities,
             f"{profile.name} profile does not grant {', '.join(sorted(outside))}",
         )
+    # 🔴🔴 THE FLOOR. RYAN, 2026-09-17 (liteask a-584e69c0), verbatim:
+    #     "Keep autonomous, but destructive_irreversible ALWAYS confirms
+    #      (a floor no profile removes)"
+    #
+    # WHAT IT COST TO LEARN. Measuring the tool path on a real engine, a
+    # model was asked to delete a directory and ran `rm -rf * .[a-zA-Z]*`
+    # with ZERO approval events. It emptied a git worktree. Nothing was
+    # broken: `classify_shell` returned destructive_irreversible,
+    # `interactive` confirms exactly that, and `bash` carries SHELL_POLICY.
+    # `autonomous` simply has an EMPTY confirm set, and it is the DEFAULT
+    # (settings.py) -- so every guard was correct and none of them ran.
+    #
+    #     A PROFILE THAT CAN OPT OUT OF A CONFIRMATION IS NOT A POLICY, IT
+    #     IS A PREFERENCE. The authority to skip a question and the
+    #     authority to destroy the workspace were the same switch.
+    #
+    # IT SITS HERE, ABOVE THE PROFILE'S OWN CONFIRM TEST, AND BELOW BOTH
+    # DENY PATHS. A standing `deny` rule still wins (an explicit refusal the
+    # human wrote down), and a capability the profile does not grant at all
+    # is still DENIED rather than softened to a prompt -- both of those are
+    # stricter than this floor, so putting it under them changes nothing
+    # they decide.
+    #
+    # ⚠️ `always_allow` DOES NOT LIFT IT, AND THAT IS A DECISION, NOT AN
+    # OVERSIGHT. Everywhere else an allow rule turns CONFIRM into ALLOW.
+    # Here it would have to, permanently, for a `rule_key` that is (tool,
+    # capability set) -- so one click on one `rm -rf` would silence EVERY
+    # destructive shell command for that tool, for good. "ALWAYS confirms"
+    # is the ruling's own word. If Ryan wants a remembered yes here, it
+    # needs to be keyed on something narrower than a capability set.
+    if DESTRUCTIVE_IRREVERSIBLE in capabilities:
+        return PolicyDecision(
+            CONFIRM,
+            profile.name,
+            capabilities,
+            f"destructive and irreversible; confirmation is required in every "
+            f"profile ({names})",
+        )
+
     # 🔴 A PROFILE WITH AN EMPTY `confirm` SET NEVER OPENS A MODAL, and that
     # guard is `profile.confirm and ...` rather than the capability test alone.
     # `confirm_always` (MCP_UNKNOWN_POLICY) forces a prompt REGARDLESS of
@@ -485,15 +532,59 @@ def classify_write(args: Mapping[str, object], workspace: Path) -> Iterable[str]
     return (WORKSPACE_WRITE,) if _inside(target, workspace) else (EXTERNAL_WRITE,)
 
 
+#: Where a COMMAND can begin: the start of the string, after a shell
+#: separator, or after `sudo`. Only the bare verbs that are also ordinary
+#: words need it.
+_CMD_POSITION = r"(?:^|[;&|]\s*|\bsudo\s+)"
+
+#: 🔴 EVERY MATCH IS NOW AN UNSKIPPABLE PROMPT, so this pattern is held to
+#: BOTH polarities. Before the floor a false positive cost an extra confirm
+#: on a profile that was already confirming; after it, no profile can
+#: silence one -- which is the modal Ryan killed a seat over. Measured,
+#: both directions, in tests/test_destructive_floor.py.
+#:
+#: TWO CHANGES, EACH FROM A MEASUREMENT (2026-09-17):
+#:
+#:   FALSE POSITIVE, FIXED. `\bformat\b` matched `npm run format`,
+#:   `npm run format:check`, `git log --format=%h` and `printf 'format'`.
+#:   `format` now has to be at a command position; a disk wipe is
+#:   `format C:`, never the third word of a script name.
+#:
+#:   MISSES, FIXED. `rm -rf` with no target (the trailing `\s+` made the
+#:   argument mandatory) and the long flags `rm --recursive --force`. Both
+#:   are the same command by another spelling.
+#:
+#: SIX MORE ADDED 2026-09-17 ON RYAN'S WORD (liteask a-d8c7d600, "Go"): every
+#: one classified as HARMLESS before this, and each is a way to destroy work
+#: that no `rm` pattern can see. `git checkout -- .` is the one that has
+#: already cost something here -- it silently discarded an uncommitted fix on
+#: this seat the same day.
+#:
+#: ⚠️ FOUR OF THE SIX ARE CONSTRAINED, NOT BARE, and the reason is the
+#: `format` lesson above -- a match is now a prompt nobody can skip:
+#:   `dd`        needs a command position AND an `of=` argument, because
+#:               `\bdd\b` alone matches the `dd` of `yyyy-mm-dd`.
+#:   `truncate`  needs a command position; it is also a SQL verb and a
+#:               Python method name.
+#:   `find`      needs `-delete` in the SAME command (no `;&|` between).
+#:   `checkout`  needs the `--` pathspec separator: `git checkout -b x` and
+#:               `git checkout main` move a branch, they destroy nothing.
+#: `shred` and `mkfs` are left unanchored: neither is an ordinary word, and
+#: anchoring them would miss `find . | xargs shred`.
 _DESTRUCTIVE_COMMAND = re.compile(
     r"(?ix)(?:"
-    r"\brm\s+(?:-[a-z]*[rf][a-z]*\s+)+|"
+    r"\brm\s+(?:-[a-z]*[rf][a-z]*|--recursive|--force|--no-preserve-root)\b|"
     r"\b(?:del|erase|rmdir|rd)\b|"
     r"\bremove-item\b|"
-    r"\bformat(?:\.com)?\b|"
+    + _CMD_POSITION + r"format(?:\.com)?\b|"
     r"\bdiskpart\b|"
-    r"\bgit\s+(?:clean\b|reset\s+--hard\b)|"
-    r"\b(?:shutdown|restart-computer|stop-computer)\b"
+    r"\bgit\s+(?:clean\b|reset\s+--hard\b|checkout\s+--\s)|"
+    r"\b(?:shutdown|restart-computer|stop-computer)\b|"
+    r"\bshred\b|"
+    r"\bmkfs(?:\.[a-z0-9]+)?\b|"
+    + _CMD_POSITION + r"truncate\b|"
+    + _CMD_POSITION + r"dd\s+(?:[^;&|]*\s)?of=|"
+    r"\bfind\b[^;&|]*\s-delete\b"
     r")"
 )
 
