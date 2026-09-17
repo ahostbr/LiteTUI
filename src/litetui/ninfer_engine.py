@@ -165,6 +165,16 @@ def free_port(host: str = "127.0.0.1") -> int:
         return int(s.getsockname()[1])
 
 
+def engine_process_alive() -> bool:
+    """Is any ninfer-serve process running? (tasklist; True on doubt so we never double-spawn)."""
+    try:
+        out = ttyguard.run(["tasklist", "/FI", "IMAGENAME eq ninfer-serve.exe", "/NH"], timeout=10)
+        text = str(getattr(out, "stdout", out))
+        return "ninfer-serve" in text.lower()
+    except Exception:  # noqa: BLE001 - cannot ask -> assume alive, refuse to spawn
+        return True
+
+
 def gpu_free_mib() -> int | None:
     """`nvidia-smi` free memory, or None when it cannot be asked (then we do not refuse on it)."""
     try:
@@ -272,8 +282,15 @@ def refuse_reason(settings, *, healthy) -> str | None:
     if reg is not None:
         if healthy(reg):
             return f"an NInfer engine is already registered and answering at {reg} — attach to it; nothing was started."
-        return (f"an NInfer engine is registered at {reg} but not answering — it may still be loading, "
-                "or LiteSuite may have stopped it without unregistering. Stop it from where it was started, then try again.")
+        if engine_process_alive():
+            # A process exists and is not answering yet: it is LOADING (weights take
+            # ~8 s, the port binds after). Starting a second one now is the VRAM bug.
+            return (f"an NInfer engine is registered at {reg} and still loading (a ninfer-serve process "
+                    "exists) — wait for it, then attach; nothing was started.")
+        # Registered, silent, and NO process: a stale entry. Measured 2026-09-17 13:2x — a
+        # holder killed with TerminateProcess never ran its atexit, so the dead port stayed
+        # in LiteSuite's config and would have refused every start forever.
+        unregister_host(reg)
     free = gpu_free_mib()
     if free is not None and free < NINFER_MIN_FREE_MIB:
         return (f"only {free} MiB free on the GPU; the engine needs about {NINFER_MIN_FREE_MIB} MiB "

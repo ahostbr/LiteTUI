@@ -102,12 +102,26 @@ def test_refuses_when_an_engine_is_registered_and_answering(tmp_path, monkeypatc
     assert reason and "already registered and answering" in reason
 
 
-def test_refuses_when_an_engine_is_registered_but_silent(tmp_path, monkeypatch):
-    """Silence is not permission: it may be loading, or a stale registration."""
+def test_refuses_when_an_engine_is_registered_silent_and_loading(tmp_path, monkeypatch):
+    """Silent + a live ninfer-serve process = LOADING (the port binds after the weights).
+    A second start here is the VRAM bug, so it refuses."""
     monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(eng, "engine_process_alive", lambda: True)
     eng.register_host("http://127.0.0.1:7")
     reason = eng.refuse_reason(_Settings(), healthy=lambda h: False)
-    assert reason and "not answering" in reason
+    assert reason and "still loading" in reason
+    assert eng.registered_host() == "http://127.0.0.1:7"          # left alone
+
+
+def test_a_stale_registration_with_no_process_is_cleared_not_obeyed(tmp_path, monkeypatch):
+    """Measured 2026-09-17: a holder killed with TerminateProcess skipped atexit and left
+    the dead port registered; refusing on it would have blocked every start forever."""
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(eng, "engine_process_alive", lambda: False)
+    monkeypatch.setattr(eng, "gpu_free_mib", lambda: None)
+    eng.register_host("http://127.0.0.1:7")
+    assert eng.refuse_reason(_Settings(), healthy=lambda h: False) is None
+    assert eng.registered_host() is None                            # stale entry removed
 
 
 def test_refuses_when_the_explicit_host_answers(tmp_path, monkeypatch):
@@ -119,6 +133,7 @@ def test_refuses_when_the_explicit_host_answers(tmp_path, monkeypatch):
 
 def test_refuses_on_a_full_card(tmp_path, monkeypatch):
     monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(eng, "engine_process_alive", lambda: False)
     monkeypatch.setattr(eng, "gpu_free_mib", lambda: 4000)
     reason = eng.refuse_reason(_Settings(), healthy=lambda h: False)
     assert reason and "free on the GPU" in reason
@@ -144,6 +159,7 @@ def _ready_engine(tmp_path, monkeypatch, *, log_text: str):
     monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(eng, "gpu_free_mib", lambda: 30000)
+    monkeypatch.setattr(eng, "engine_process_alive", lambda: False)
     monkeypatch.setattr(eng, "free_port", lambda host="127.0.0.1": 49260)
     exe = tmp_path / "ninfer" / "ninfer-serve.exe"; exe.parent.mkdir(); exe.write_bytes(b"MZ")
     art = _artifact(tmp_path, {"model_id": "qwen3.8-27b", "components": {"text": {}, "mtp": {}}})
@@ -179,6 +195,7 @@ def test_a_failure_line_ends_the_wait_now(tmp_path, monkeypatch):
 def test_start_refuses_before_touching_the_exe(tmp_path, monkeypatch):
     """A refusal never spawns — the mutation that matters for VRAM."""
     monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(eng, "engine_process_alive", lambda: True)
     eng.register_host("http://127.0.0.1:7")
     calls = []
     with pytest.raises(BackendError):
