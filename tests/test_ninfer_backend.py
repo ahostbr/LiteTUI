@@ -533,3 +533,49 @@ def test_applying_load_settings_is_no_longer_a_silent_no_op():
     with pytest.raises(BackendError) as excinfo:
         run(backend.apply_load_settings("qwen3.8-27b", {"ctx": 8192}))
     assert "restart the engine" in str(excinfo.value)
+
+
+def test_base_url_never_raises_so_the_app_can_boot(tmp_path, monkeypatch):
+    """🔴 THE APP COULD NOT BOOT ON THIS BACKEND AND NO UNIT ARM COULD SEE IT.
+
+    `LiteTUI.__init__` builds its `AsyncOpenAI` client from `backend.base_url()`
+    at CONSTRUCTION (app.py:1381), long before anything calls `ensure_running`.
+    The first version raised there when no engine was registered, so selecting
+    this backend with the engine down produced a TRACEBACK before the TUI
+    existed — not a message.
+
+        EVERY ARM CONSTRUCTED THE BACKEND DIRECTLY AND NONE BOOTED THE APP. The
+        defect lived in the one line between the two, and driving a real turn is
+        what found it.
+
+    The other two backends cannot hit this: their host is a SETTING, present
+    whether or not anything is listening. Ours is discovered, so absence is a
+    state they never have.
+    """
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path))
+    backend = NInferBackend(_Settings())
+    url = backend.base_url()  # must not raise
+    assert url.endswith("/v1")
+    # ⬜ A DEAD PORT, NOT A PLAUSIBLE ONE: port 0 cannot be connected to, so a
+    # request cannot silently reach whatever else is listening locally.
+    assert ":0/" in url
+
+    # …and `host()` still refuses loudly, because its callers need a real one.
+    with pytest.raises(BackendError):
+        backend.host()
+
+
+def test_the_host_is_resolved_lazily_so_a_later_start_is_picked_up(tmp_path, monkeypatch):
+    """🔴 THE ENGINE OUTLIVES NEITHER SIDE'S ORDER. The app is constructed
+    before `ensure_running`, and the engine may be started after LiteTUI is
+    already open. Caching the answer at `__init__` would pin "no engine" for the
+    life of the process — which is what a constructor-time read does."""
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path))
+    backend = NInferBackend(_Settings())
+    assert ":0/" in backend.base_url()
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"extraEndpoints": [{"baseUrl": "http://127.0.0.1:63177", "kind": "ninfer"}]}),
+        encoding="utf-8",
+    )
+    assert backend.base_url() == "http://127.0.0.1:63177/v1"

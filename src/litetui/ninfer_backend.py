@@ -262,16 +262,57 @@ class NInferBackend(_VramGate):
 
     # -- discovery --------------------------------------------------------
 
+    #: What `base_url()` answers when no engine can be found. A port nothing
+    #: can listen on, so a request cannot silently reach the wrong server.
+    DEAD_HOST = "http://127.0.0.1:0"
+
+    def _resolve_host(self) -> str | None:
+        """Explicit setting, then discovery. Re-asked every time on purpose.
+
+        🔴 RESOLVED LAZILY BECAUSE THE ENGINE OUTLIVES NEITHER SIDE'S ORDER.
+        The app is CONSTRUCTED before anything calls `ensure_running`, and the
+        engine may be started after LiteTUI is already open. Caching the answer
+        at `__init__` would pin "no engine" for the life of the process.
+        """
+        explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
+        return explicit or self._host or discover_ninfer_host()
+
     def host(self) -> str:
-        if self._host is None:
+        host = self._resolve_host()
+        if host is None:
             raise BackendError(
                 "no NInfer engine is registered — start it from LiteSuite's "
-                "Model Hub, then /model to pick it up."
+                "Model Hub, or set ninfer_host (LITETUI_NINFER_HOST), then "
+                "/model to pick it up."
             )
-        return self._host
+        return host
 
     def base_url(self) -> str:
-        return f"{self.host()}/v1"
+        """The OpenAI client's address — AND IT MUST NEVER RAISE.
+
+        🔴 THIS IS WHY THE APP COULD NOT BOOT ON THIS BACKEND, and no unit arm
+        could see it. `LiteTUI.__init__` builds its `AsyncOpenAI` client from
+        `backend.base_url()` at CONSTRUCTION (`app.py:1381`), long before
+        anything calls `ensure_running`. The first version raised there when no
+        engine was registered, so selecting this backend with the engine down
+        did not produce a message — it produced a traceback before the TUI
+        existed.
+
+            EVERY ARM CONSTRUCTED THE BACKEND DIRECTLY AND NONE BOOTED THE APP.
+            The defect lived in the one line between the two, and driving a real
+            turn is what found it.
+
+        The other two backends cannot hit this: their host is a SETTING, present
+        whether or not anything is listening. Ours is discovered, so absence is
+        a state they never have.
+
+        ⬜ A DEAD PORT, NOT A PLAUSIBLE ONE. Returning some default would let a
+        request reach whatever happens to be on it; port 0 cannot be connected
+        to, so the failure is immediate and belongs to no other server.
+        `ensure_running` still runs before turns and gives the sentence that
+        names where to start one.
+        """
+        return f"{self._resolve_host() or self.DEAD_HOST}/v1"
 
     @property
     def attached(self) -> bool:
