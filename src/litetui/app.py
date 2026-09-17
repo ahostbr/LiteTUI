@@ -4405,6 +4405,18 @@ class LiteTUI(App):
             # the compaction was still in flight. It guarded the scheduling
             # call, never the compaction. Ask the worker manager, which knows,
             # rather than a flag that races the thing it guards.
+            #
+            # T825: SAY SO. A due compaction that is waiting for the turn to
+            # finish is a state a host can show; silence here is
+            # indistinguishable from 'not due'.
+            #
+            # ONLY THIS RETURN EMITS, NOT the `pct is None` one above it:
+            # that fires after EVERY turn in the ordinary case, and an event
+            # per turn saying nothing happened is noise a host would have to
+            # filter back out.
+            self._emit_compaction("deferred_busy",
+                                  tokens_before=self.ctx_used,
+                                  tokens_before_exact=self.ctx_used is not None)
             return
         self._system(
             f"Auto-compacting - context at {pct}% of "
@@ -5950,6 +5962,48 @@ class LiteTUI(App):
                 message["content"] = parts
         return stubbed
 
+    def _emit_compaction(self, reason: str, *, tokens_before=None,
+                         tokens_after=None, tokens_before_exact=False,
+                         tokens_after_exact=False, messages_dropped=0,
+                         messages_summarised=0, kept_recent=0) -> None:
+        """One door for the `compaction` rpc event (T825).
+
+        THE COMPACTION WAS INVISIBLE TO EVERY HOST. `_compact` said what it
+        did with `_system` lines and nothing else, so LiteSuite's Frontier
+        Chat could not show Ryan a compaction, a decline, or a failure --
+        which is his own question, 'why is it not compacting'.
+
+        I MET THAT BLINDNESS AS A MEASURER BEFORE IT WAS A CARD: four runs
+        watched for a `turn_end` the compaction never sends, and their
+        silence read as 'it did not fire' when it is silence either way.
+        AN INSTRUMENT SILENT ON BOTH OUTCOMES CANNOT REPORT EITHER.
+
+        TWO EXACTNESS FLAGS, NOT ONE (ruling 0dcd7777). `tokens_before` is
+        the engine's own count from the last usage payload; `tokens_after`
+        cannot be -- the post-compaction total is not known until the NEXT
+        request returns, so only a chars/4 estimate exists, and its own
+        method string says it excludes request tools and the live store.
+        One bool over two numbers of different provenance would either
+        mislabel one or drop the qualifier from both; the renderer marks
+        each figure on its own.
+
+        `messages_summarised` IS NOT DERIVABLE FROM `messages_dropped`, and
+        that is why it is sent. A failed compact produces no summary while
+        dropping nothing, and deriving would dress that failure as a
+        completed compaction. 0 is a real answer.
+        """
+        self._rpc_emit({
+            "type": "compaction",
+            "reason": reason,
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+            "tokens_before_exact": bool(tokens_before_exact),
+            "tokens_after_exact": bool(tokens_after_exact),
+            "messages_dropped": messages_dropped,
+            "messages_summarised": messages_summarised,
+            "kept_recent": kept_recent,
+        })
+
     def _emit_turn_end(self, stop_reason: str, tps: float | None,
                        tps_source: str | None = None, **extra) -> None:
         """One door for `turn_end`, so the event and the stop line agree.
@@ -6904,12 +6958,21 @@ class LiteTUI(App):
         body = self.conversation[1:] if system else list(self.conversation)
         if len(body) < 3:
             self._system("Nothing to compact yet — have a conversation first.")
+            self._emit_compaction("too_short", kept_recent=len(body))
             return
 
         tail = self._safe_tail(body, self.settings.compact_keep_recent)
         head = body[: len(body) - len(tail)] if tail else body
         if not head:
             self._system("Nothing to compact — everything is already recent.")
+            # THE ONE THAT COST ME FOUR MEASUREMENT RUNS. A window filled by
+            # the NEWEST message is a window compaction must PRESERVE, so it
+            # can never shrink it -- and with no event, a host cannot tell
+            # that from a compaction that never ran. See T827.
+            self._emit_compaction("already_recent",
+                                  tokens_before=self.ctx_used,
+                                  tokens_before_exact=self.ctx_used is not None,
+                                  kept_recent=len(tail))
             return
 
         compact_started = time.perf_counter()
@@ -7106,6 +7169,10 @@ class LiteTUI(App):
             )
             card.fail("failed \u2014 conversation unchanged")
             self._system(f"Compact failed — conversation unchanged.\n{_plain_backend_error(e, self.backend.name)}")
+            self._emit_compaction("failed",
+                                  tokens_before=self.ctx_used,
+                                  tokens_before_exact=self.ctx_used is not None,
+                                  kept_recent=len(tail))
             return
         finally:
             if hasattr(stream, "close"):
@@ -7152,6 +7219,15 @@ class LiteTUI(App):
             "summary_chars": len(summary), "store_files": writes, "rounds": rounds,
         })
         self.conversation = rebuilt
+        # AFTER the swap, so the counts describe what the conversation now IS.
+        self._emit_compaction("compacted",
+                              tokens_before=trigger_tokens,
+                              tokens_after=(self._msg_chars(rebuilt) + 3) // 4,
+                              tokens_before_exact=trigger_tokens is not None,
+                              tokens_after_exact=False,
+                              messages_dropped=len(head),
+                              messages_summarised=len(head),
+                              kept_recent=len(tail))
         # Succeeded: forget any earlier failure so a later window that
         # happens to land on the same token count is not blocked by it.
         self._autocompact_failed_at = None
