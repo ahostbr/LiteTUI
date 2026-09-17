@@ -579,3 +579,67 @@ def test_the_host_is_resolved_lazily_so_a_later_start_is_picked_up(tmp_path, mon
         encoding="utf-8",
     )
     assert backend.base_url() == "http://127.0.0.1:63177/v1"
+
+
+# ── /v1/models: the shape the app unpacks ────────────────────────────────────
+
+
+_MODELS_BODY = {"data": [{"id": "qwen3.8-27b", "max_model_len": 32768}]}
+
+
+def _served(monkeypatch, body=_MODELS_BODY):
+    b = NInferBackend(_Settings())
+    b._host = "http://127.0.0.1:63177"
+    monkeypatch.setattr(NInferBackend, "_get_json", lambda self, url, timeout=10.0: body)
+    return b
+
+
+def test_model_info_is_the_three_tuple_the_app_unpacks(monkeypatch):
+    """🔴 THE ARM THAT WOULD HAVE CAUGHT THE APP DYING ON EVERY NINFER BOOT.
+
+    `model_info` returned a four-key DICT. `app.py:4205` is
+    `self.ctx_max, self.model_type, self.ctx_loaded = got`, so the `ctx` worker
+    raised `ValueError: too many values to unpack (expected 3)` and killed the
+    app moments after `connect()` had listed the model correctly — which
+    surfaced only as `gui.state` reporting `"models": []`.
+
+    The assertion is the UNPACK itself, in the app's own spelling, because that
+    is the thing that broke: a dict of exactly three keys would satisfy a
+    `len() == 3` check and still crash here differently.
+    """
+    b = _served(monkeypatch)
+    got = run(b.model_info("qwen3.8-27b"))
+    window, model_type, loaded = got            # app.py:4205, verbatim
+    assert (window, loaded) == (32768, True)
+    # No llm/vlm discriminator on this wire — None is what the engine said.
+    assert model_type is None
+    # app.py:4148 and :3418 index it; prove those readings too.
+    assert got[2] is True and got[0] == 32768
+
+
+def test_model_info_is_none_for_a_model_this_engine_does_not_serve(monkeypatch):
+    """⬜ None, not an exception — the contract every other backend keeps.
+
+    `app.py:4201` wraps the CALL in try/except but unpacks OUTSIDE it, so a
+    raise here is survivable and a wrong SHAPE is not. Both siblings
+    (`llm_backend.py:1582`, `:1151`) return None; so does this.
+    """
+    b = _served(monkeypatch)
+    assert run(b.model_info("something-else")) is None
+
+
+def test_list_models_reports_the_one_artifact_as_loaded(monkeypatch):
+    """⬜ One artifact per process, resident from startup — `loaded` is a fact
+    here, not a guess, and it is what `connect()` prefers when it picks."""
+    b = _served(monkeypatch)
+    rows = run(b.list_models())
+    assert [(r.key, r.loaded, r.source) for r in rows] == [("qwen3.8-27b", True, "server")]
+
+
+def test_list_models_refuses_an_engine_that_serves_nothing(monkeypatch):
+    """⬜ An up-but-empty engine is a contradiction, not an empty catalogue:
+    returning `[]` would put the app on the "no chat model available" path and
+    blame the model folder for a serving fault."""
+    b = _served(monkeypatch, {"data": []})
+    with pytest.raises(BackendError):
+        run(b.list_models())

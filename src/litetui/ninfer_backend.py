@@ -435,20 +435,42 @@ class NInferBackend(_VramGate):
     async def model_info(self, key: str):
         return await asyncio.to_thread(self._model_info_sync, key)
 
-    def _model_info_sync(self, key: str) -> dict:
+    def _model_info_sync(self, key: str) -> tuple[int | None, str | None, bool] | None:
+        """``(window, type, loaded)``, or None when this server does not serve it.
+
+        🔴 A TUPLE, NOT A DICT, AND THAT SHAPE IS THE WHOLE CONTRACT.
+        The first version of this returned a four-key dict. Every caller in the
+        app unpacks three values -- ``app.py:4205``
+        ``self.ctx_max, self.model_type, self.ctx_loaded = got``,
+        ``app.py:4148`` ``cur, _typ, is_loaded = info``, ``app.py:3418``
+        ``info[2]`` -- so a dict of four keys raised
+        ``ValueError: too many values to unpack (expected 3)`` INSIDE the
+        ``ctx`` worker, and that killed the app a moment after ``connect()``
+        had listed the model successfully.
+
+            THE CRASH DID NOT LOOK LIKE THIS DEFECT. It looked like
+            ``"models": []``, because the only measurement anyone had taken was
+            a ``gui.state`` read that raced ``connect()`` and then found a dead
+            process. The empty list was the RACE; the app dying was this line.
+
+        ⬜ NO TYPE, RATHER THAN A PLAUSIBLE ONE. ``/v1/models`` carries no
+        ``type`` field -- there is no llm/vlm discriminator on this wire -- and
+        the app reads that value only to refuse ``view_image`` with an LM
+        Studio-shaped sentence (``app.py:5373``). Reporting ``"llm"`` here
+        would be inventing a fact the server never stated in order to produce a
+        message about a different program. None is what the engine said.
+
+        ⬜ ``loaded`` IS TRUE BY CONSTRUCTION. One artifact per process,
+        loaded at startup and served for life -- there is no cold row here, so
+        the ceiling-vs-window trap the other two backends guard against cannot
+        arise: ``max_model_len`` IS the live window.
+        """
         body = self._get_json(f"{self.host()}/v1/models")
         for entry in body.get("data", []):
             if isinstance(entry, dict) and entry.get("id") == key:
                 window = entry.get("max_model_len")
-                return {
-                    "id": key,
-                    "loaded": True,
-                    # The LIVE window, named as such. LiteSuite's own trim reads
-                    # the same field for the same reason.
-                    "context_length": window if isinstance(window, int) else None,
-                    "max_context_length": window if isinstance(window, int) else None,
-                }
-        raise BackendError(f"{key!r} is not the model this NInfer engine serves.")
+                return (window if isinstance(window, int) else None, None, True)
+        return None
 
     def _get_json(self, url: str, timeout: float = 10.0) -> dict:
         try:
