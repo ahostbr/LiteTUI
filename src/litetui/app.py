@@ -5637,6 +5637,56 @@ class LiteTUI(App):
         inp.value = ""
         self._submit_text(value, alt_chord=True)
 
+    def _oversize_refusal(self, content) -> str | None:
+        """A sentence when this ONE message cannot fit, else None.
+
+        COMPACTION CANNOT HELP HERE, AND THAT IS THE WHOLE POINT. It
+        summarises OLD history and KEEPS the recent tail, so a window filled
+        by the newest message is a window it is required to preserve.
+        Measured (T806 item 6): one 85,384-char message put the context at
+        86.0% of 32,768; `_safe_tail` kept all four messages of that
+        conversation, `head` was empty, and the compaction declined with
+        'Nothing to compact - everything is already recent.' The next
+        request then carries the same oversized message and the engine
+        answers 400 context_length_exceeded.
+
+            SO THE USER GETS A REASSURING 'Auto-compacting...' LINE, THEN AN
+            UNRELATED-SOUNDING FAILURE, AND NOTHING NAMES THE REAL PROBLEM:
+            THIS ONE MESSAGE DOES NOT FIT.
+
+        ONE MESSAGE, NOT THE TOTAL. A total over budget is the ORDINARY case
+        that trimming and compaction exist to fix; refusing on that would
+        break every long conversation. Only the newest message alone is
+        unfixable.
+
+        NO SECOND NOTION OF 'USABLE': the reserve is the same
+        `max_tokens_tools`/`max_tokens_chat` pair `TurnEngine.chat_request`
+        sends, chosen the same way, and the estimate is the chars/4 this
+        file already uses for `tokens_*_estimate` in the truncate record.
+
+        REFUSES ONLY ON NUMBERS IT HAS. An unknown window returns None:
+        guessing one would refuse a message that might have been fine.
+        """
+        window = getattr(self, "ctx_max", None)
+        if not window or not getattr(self, "ctx_loaded", False):
+            return None
+        reserve = (self.settings.max_tokens_tools if self.tools_enabled
+                   else self.settings.max_tokens_chat)
+        usable = window - (reserve or 0)
+        if usable <= 0:
+            return None
+        message = {"role": "user", "content": content}
+        estimate = (self._msg_chars([message]) + 3) // 4
+        if estimate <= usable:
+            return None
+        return (
+            f"That message is about {estimate:,} tokens. The window is "
+            f"{window:,} with {reserve:,} reserved for the reply, so "
+            f"{usable:,} is the most one message can use. Compaction only "
+            "summarises OLDER messages, so it cannot make room for this "
+            "one - shorten it, or attach it as a file."
+        )
+
     def _refuse_submit(self, reason: str, detail: str = "") -> None:
         """A submit that will not become a turn must SAY SO ON THE WIRE.
 
@@ -5725,6 +5775,15 @@ class LiteTUI(App):
             ]
         else:
             content = text
+
+        # T827: the LAST moment nothing has been committed. Before this the
+        # message is still only a local; after it, it is queued or streamed
+        # and a refusal would have to undo state instead of declining.
+        oversize = self._oversize_refusal(content)
+        if oversize is not None:
+            self._system(oversize)
+            self._refuse_submit("message_over_budget", oversize)
+            return
 
         self.pending_image = None
         profile = self.chosen_tool_profile
