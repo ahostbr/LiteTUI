@@ -140,6 +140,7 @@ def build_ninfer_args(
     draft_tokens: int | None = None,
     kv_dtype: str = NINFER_DEFAULT_KV_DTYPE,
     preserve_thinking: bool = True,
+    vision: bool = True,
 ) -> list[str]:
     """LiteSuite's buildNInferArgs, flag for flag. Pure, so it has an arm."""
     args = [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id]
@@ -155,6 +156,12 @@ def build_ninfer_args(
     args += ["--kv-dtype", kv_dtype]
     if preserve_thinking:
         args.append("--preserve-thinking")
+    # 15:0x 2026-09-17, Ryan's screenshot: the 35B-A3B carries a `vision` component, the
+    # engine was started without --vision, and the first view_image put a media part in the
+    # history -> every request after it was `HTTP 400 vision disabled` (serving.md:43-45).
+    # Gated on the artifact like --spec: the flag on a text-only artifact fails at load.
+    if vision and "vision" in components:
+        args.append("--vision")
     return args
 
 

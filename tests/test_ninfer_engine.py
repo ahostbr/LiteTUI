@@ -45,6 +45,15 @@ def test_argv_is_litesuites_with_the_ruled_defaults():
     assert args[args.index("--kv-dtype") + 1] == "fp8" and args[-1] == "--preserve-thinking"
 
 
+def test_vision_is_enabled_only_for_an_artifact_that_carries_it():
+    """Ryan 15:0x 2026-09-17: view_image on the 35B -> HTTP 400 vision disabled on every
+    request after it, because the engine was started without --vision."""
+    with_v = eng.build_ninfer_args(Path("a.ninfer"), 1, "m", components=("text", "vision", "mtp"))
+    without = eng.build_ninfer_args(Path("a.ninfer"), 1, "m", components=("text", "mtp"))
+    assert "--vision" in with_v and "--vision" not in without
+    assert "--vision" not in eng.build_ninfer_args(Path("a"), 1, "m", components=("vision",), vision=False)
+
+
 def test_spec_is_gated_on_the_artifact_not_the_flag_parser():
     """The engine parses --spec dflash2 whether or not the file carries it; the
     failure lands at model load after the user waited (ninfer-args.ts)."""
