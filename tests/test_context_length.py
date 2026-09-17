@@ -291,11 +291,29 @@ def test_the_picker_only_DELEGATES() -> None:
     )
     assert fn is not None, "on_model_picked is gone — the picker has no callback"
 
+    # T838: the callback reaches the shared body through the REGISTRY now,
+    # so the thing to pin is the ROUTE, not a bare name. It used to look for
+    # a Call to the Name `switch_model`; app.py may no longer say that name,
+    # because `test_plugin_dogfood` forbids app.py importing a plugin
+    # submodule at all -- deferred or not. `_handle_command("/model ...")`
+    # resolves to `_cmd_model` -> `switch_model`, which is the same one body.
+    #
+    # ⚠️ THIS IS A WEAKER ASSERTION THAN THE ONE IT REPLACES AND THAT IS
+    # STATED RATHER THAN HIDDEN: a method call cannot be resolved to its
+    # target by AST. What still holds it down is the BEHAVIOURAL arm in
+    # tests/test_model_picked.py, which drives the callback and checks the
+    # switch's effects -- including that a model the server does not have is
+    # refused. A structural arm that can only see the door plus a
+    # behavioural arm that walks through it is the pair that works here.
+    methods = [
+        n.func.attr for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    ]
     calls = [
         n.func.id for n in ast.walk(fn)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
     ]
-    assert "switch_model" in calls, (
+    assert "switch_model" in calls or "_handle_command" in methods, (
         "the picker does not reach the shared switch path — if it grew its own "
         "body again, it needs its own announcement and its own apply, and the "
         "floor above needs raising to match"
