@@ -155,6 +155,29 @@ def ninfer_error_sentence(body: str | dict | None, fallback: str) -> str:
 # ── the timings line ─────────────────────────────────────────────────────────
 
 
+def decode_rate_from_timings(timings: object) -> float | None:
+    """The engine's OWN decode rate, or None.
+
+    🔴 BETTER THAN THE ONE LiteTUI COMPUTES, AND THAT IS WHY IT IS REUSED RATHER
+    THAN ADDED BESIDE IT. `TpsState.final` divides the server's token count by
+    the CLIENT's wall clock, so queueing and admission are charged to the model:
+    on a busy engine the turn reads slower than it ran. `predicted_per_second`
+    is measured inside the decode loop (`ninfer/docs/serving.md:238`).
+
+    Its docstring already says "settle to the exact figure the server reports" —
+    this is a more exact figure arriving at a seam that was built for it.
+
+    ⬜ ONE FUNCTION, SO THE STATUS LINE AND THE tok/s FIELD CANNOT DISAGREE.
+    `format_timings` renders what this returns; nothing parses the object twice.
+    """
+    if not isinstance(timings, dict):
+        return None
+    rate = timings.get("predicted_per_second")
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        return None
+    return float(rate) if rate > 0 else None
+
+
 def format_timings(timings: object) -> str | None:
     """The llama.cpp-compatible `timings` object as one status line.
 
@@ -170,7 +193,7 @@ def format_timings(timings: object) -> str | None:
     """
     if not isinstance(timings, dict):
         return None
-    decode = timings.get("predicted_per_second")
+    decode = decode_rate_from_timings(timings)
     prompt = timings.get("prompt_per_second")
     parts: list[str] = []
     if isinstance(prompt, (int, float)) and prompt > 0:

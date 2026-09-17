@@ -153,7 +153,12 @@ def _validate(app, patch):
             from litetui.tool_policy import selectable_profile_names
             if value not in selectable_profile_names():
                 raise ValueError(f"{name}: unsupported profile")
-        if name == "backend" and value not in ("lmstudio", "llamacpp", "codex"):
+        # T806: the fourth engine. ⚠️ THIS LIST IS A SECOND COPY OF THE ONE IN
+        # `model_switch._cmd_backend` and a third of `_make_backend`'s branches;
+        # an arm below pins that they agree, because a backend the factory
+        # builds and the rpc refuses is selectable from the TUI and not from
+        # the GUI, which is the kind of split nobody notices until a user does.
+        if name == "backend" and value not in ("lmstudio", "llamacpp", "ninfer", "codex"):
             raise ValueError("backend: unsupported backend")
         if name in ("lm_host", "llama_host") and not value.startswith(("http://", "https://")):
             raise ValueError(f"{name}: expected an http(s) server URL")

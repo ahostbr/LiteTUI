@@ -287,3 +287,115 @@ def test_an_unknown_backend_still_names_the_valid_ones():
     with pytest.raises(BackendError) as excinfo:
         llm_backend.make_backend(S())
     assert "ninfer" in str(excinfo.value)
+
+
+# ── the reuse seams (T806 delta) ─────────────────────────────────────────────
+
+
+def test_the_engines_own_rate_is_one_function_not_two_parsers():
+    """⬜ THE STATUS LINE AND THE tok/s FIELD READ THE SAME NUMBER.
+
+    `format_timings` renders what `decode_rate_from_timings` returns. Two
+    parsers over one object is the drift class this repo already records under
+    "two counts of one thing that must agree".
+    """
+    from litetui.ninfer_backend import decode_rate_from_timings
+
+    timings = {"predicted_per_second": 151.2, "prompt_per_second": 812.4}
+    assert decode_rate_from_timings(timings) == pytest.approx(151.2)
+    assert "151.2 tok/s" in (format_timings(timings) or "")
+
+
+@pytest.mark.parametrize(
+    "timings",
+    [None, {}, "nope", {"predicted_per_second": 0}, {"predicted_per_second": True}],
+)
+def test_no_reported_rate_leaves_the_clients_estimate_standing(timings):
+    """🔴 None, NOT ZERO — because the caller treats None as "I have nothing"
+    and publishes its own arithmetic instead. A 0.0 would REPLACE a working
+    estimate with a wrong one.
+
+    `True` is in the list because `isinstance(True, int)` is True in Python: a
+    bool would sail through a numeric check and publish a rate of 1.0.
+    """
+    from litetui.ninfer_backend import decode_rate_from_timings
+
+    assert decode_rate_from_timings(timings) is None
+
+
+def test_the_rate_publisher_prefers_the_engines_figure():
+    """🔴 THE SEAM WAS ALREADY THERE AND ITS DOCSTRING SAID SO.
+
+    `TpsState.final` divides the server's token count by the CLIENT's wall
+    clock, so queueing and admission are charged to the model — a busy engine
+    reads slower than it ran. Its own words are "settle to the exact figure the
+    server reports"; the engine's decode-loop figure is a more exact one.
+    """
+    import time
+
+    from litetui.turnstats import TpsState
+
+    state = TpsState()
+    state.t0 = time.monotonic() - 10.0  # ten seconds of wall clock
+    # 100 tokens / 10 s = 10 tok/s by the clock; the engine says it ran at 151.2.
+    assert state.final(100) == pytest.approx(10.0, rel=0.05)
+    assert state.final(100, reported_rate=151.2) == pytest.approx(151.2)
+
+
+def test_a_reported_rate_does_not_skip_the_existing_guards():
+    """⬜ A TURN THAT NEVER STARTED, OR PRODUCED NOTHING, IS STILL NOTHING TO
+    PUBLISH. The new argument is a better answer to the same question, not a
+    way around the two conditions that were already right."""
+    from litetui.turnstats import TpsState
+
+    fresh = TpsState()  # t0 is None: no turn in flight
+    assert fresh.final(100, reported_rate=151.2) is None
+
+    import time
+
+    started = TpsState()
+    started.t0 = time.monotonic() - 1.0
+    assert started.final(0, reported_rate=151.2) is None
+
+
+def test_every_list_of_backend_names_agrees():
+    """🔴 FOUR PLACES NAME THE BACKENDS AND NOTHING BOUND THEM.
+
+    `_make_backend`'s branches, `/backend`'s accepted words, its picker rows and
+    `gui_rpc`'s validator are four hand-written lists of one set. A backend the
+    factory builds and the rpc refuses is selectable from the TUI and not from
+    the GUI — the kind of split nobody notices until a user does, and exactly
+    what `stt-provider-tables-agree` was written for one repo over.
+
+    Source text is the instrument because none of the four is an exhaustive
+    type: a green typecheck here means "nothing was type-linked".
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "litetui"
+    picker = (root / "plugins" / "model_switch.py").read_text(encoding="utf-8")
+    rpc = (root / "gui_rpc.py").read_text(encoding="utf-8")
+    factory = (root / "llm_backend.py").read_text(encoding="utf-8")
+
+    assert '"ninfer"' in factory, "the factory cannot build it"
+    assert '("ninfer", ' in picker, "the picker does not offer it"
+    assert '"ninfer"' in rpc, "the rpc validator refuses what the factory builds"
+
+
+def test_the_picker_reports_whether_an_engine_is_RUNNING(tmp_path, monkeypatch):
+    """🔴 NOT "installed" — THE OTHER THREE ROWS' WORD IS THE WRONG ONE HERE.
+
+    LiteTUI attaches and never starts NInfer, so an installed-but-stopped engine
+    is not selectable in any useful sense. A row saying "installed" would send
+    the user to a backend that refuses every turn.
+    """
+    from litetui.plugins.model_switch import _ninfer_mark
+
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path))
+    assert "not running" in _ninfer_mark()
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"extraEndpoints": [{"baseUrl": "http://127.0.0.1:49962", "kind": "ninfer"}]}),
+        encoding="utf-8",
+    )
+    assert "49962" in _ninfer_mark()

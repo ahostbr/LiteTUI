@@ -393,6 +393,43 @@ def _plain_backend_error(e: BaseException, backend_name: str | None = None) -> s
     return "Something went wrong talking to the model server."
 
 
+def _decode_rate(timings: object) -> float | None:
+    """The engine's own decode rate, when the chunk carries one (T806).
+
+    ⬜ LAZY IMPORT, like `oauth_backend` in the factory: a broken NInfer install
+    must not stop the app booting, and this runs on the LAST chunk of a turn
+    rather than at import time. The function is llama.cpp-shaped, not
+    NInfer-specific — `timings` is llama.cpp's object and both engines emit it —
+    so it costs nothing on the other backends, which simply never set the field.
+    """
+    if timings is None:
+        return None
+    try:
+        from litetui.ninfer_backend import decode_rate_from_timings
+    except Exception:  # noqa: BLE001 - a status figure must never fail a turn
+        return None
+    return decode_rate_from_timings(timings)
+
+
+# T806 — NO `_ninfer_error_text` HELPER HERE, AND ITS ABSENCE IS THE DESIGN.
+#
+# Sentinel's card asked for `ninfer_error_sentence` at the three
+# `_ensure_chat_ready` sites. I wrote the helper, then found it had no caller —
+# because the mapping ALREADY reaches the user one layer down:
+# `ninfer_backend._get_json` turns the engine's `code` into a sentence AT THE
+# SOURCE and raises `BackendError` carrying it, and `_plain_backend_error`
+# above returns a BackendError's message verbatim (T137: "its message was
+# cleaned at source").
+#
+#     A FUNCTION NOTHING CALLS IS DEAD CODE, NOT COVERAGE. Shipping it would
+#     have looked like the wiring was done while every error took the other path.
+#
+# ⚠️ ONE GAP, NAMED RATHER THAN PAPERED OVER: errors raised by the OpenAI
+# CLIENT during streaming are not BackendErrors and carry their body elsewhere,
+# so the code table does not reach those. That is its own card — it needs the
+# client's exception shape measured, not guessed.
+
+
 def key_label(key: str) -> str:
     """A Textual key name as a human reads it: "ctrl+p" -> "Ctrl+P"."""
     if not key:
@@ -5880,6 +5917,10 @@ class LiteTUI(App):
                 async for chunk in stream:
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
+                    # T806: llama.cpp-compatible engines publish their OWN
+                    # decode rate on the final chunk. One read, both settle
+                    # sites — see `decode_rate_from_timings`.
+                    chunk_rate = _decode_rate(getattr(chunk, "timings", None))
                     if u is not None:
                         if native_loop:
                             self._record_native_usage(u)
@@ -5889,7 +5930,8 @@ class LiteTUI(App):
                     if not native_loop and u is not None and getattr(u, "total_tokens", None):
                         self.ctx_used = int(u.total_tokens)
                         rate = self._tps.final(
-                            int(getattr(u, "completion_tokens", 0) or 0))
+                            int(getattr(u, "completion_tokens", 0) or 0),
+                            reported_rate=chunk_rate)
                         if rate is not None:
                             self.tps = rate
                             final_turn_tps = rate
@@ -5922,7 +5964,8 @@ class LiteTUI(App):
                         # added on top. A rebased turn yields None -> 0 -> no
                         # rate, which is the honest outcome after a compaction.
                         rate = self._tps.final(
-                            int(getattr(u, "completion_tokens", 0) or 0))
+                            int(getattr(u, "completion_tokens", 0) or 0),
+                            reported_rate=chunk_rate)
                         if rate is not None:
                             self.tps = rate
                             final_turn_tps = rate

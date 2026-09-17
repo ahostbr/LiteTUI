@@ -130,13 +130,37 @@ def _switch_backend(app, choice: str) -> None:
     app.connect()
 
 
+def _ninfer_mark() -> str:
+    """What the picker says beside NInfer, and it is a LIVE fact (T806).
+
+    🔴 THE OTHER THREE ROWS SAY WHETHER THE ENGINE IS INSTALLED. NInfer's honest
+    equivalent is whether one is RUNNING, because LiteTUI attaches and never
+    starts it: an installed-but-stopped engine is not selectable in any useful
+    sense, and a row that said "installed" would send the user to a backend that
+    refuses every turn.
+
+    ⬜ RYAN, 12:1x: *"agents have seem to try to rebuild every system for every
+    backend over and again instead of making modular resuable pieces that
+    connect."* This reuses `discover_ninfer_host` — the same function the
+    backend attaches with — rather than adding a second way to ask.
+    """
+    try:
+        from litetui.ninfer_backend import discover_ninfer_host
+    except Exception:  # noqa: BLE001 - the picker must open regardless
+        return "unavailable"
+    host = discover_ninfer_host()
+    return f"running at {host}" if host else "not running — start it in LiteSuite"
+
+
 def _cmd_backend(app, name: str, arg: str) -> None:
     choice = arg.strip().lower()
-    if choice in ("lmstudio", "llamacpp", *model_transport.OAUTH_PROVIDERS):
+    if choice in ("lmstudio", "llamacpp", "ninfer", *model_transport.OAUTH_PROVIDERS):
         _switch_backend(app, choice)
         return
     if choice:
-        app.system_message(f"Unknown backend {choice!r} — lmstudio, llamacpp or codex")
+        app.system_message(
+            f"Unknown backend {choice!r} — lmstudio, llamacpp, ninfer or codex"
+        )
         return
     lms_mark = "installed" if shutil.which("lms") else "not detected"
     llama_mark = (
@@ -146,6 +170,7 @@ def _cmd_backend(app, name: str, arg: str) -> None:
     rows = [
         ("lmstudio", f"LM Studio desktop  · {lms_mark}"),
         ("llamacpp", f"llama.cpp (our engine)  · {llama_mark}"),
+        ("ninfer", f"NInfer NVFP4 (RTX 5090)  · {_ninfer_mark()}"),
         ("codex", f"Codex subscription  · {model_transport.auth_status('codex')}"),
     ]
 
