@@ -7261,6 +7261,13 @@ class LiteTUI(App):
         ]
         rebuilt: list[dict] = ([system] if system else []) + pair + tail
 
+        # T832: ONE number for the size this conversation now is. It used to
+        # be spelled out twice from the same expression and the METER was fed
+        # by neither, so the chip kept the pre-compaction figure (measured on
+        # the 35B: the event said 6,695 -> 2,955 and gui.state.usage still
+        # read 6,695 afterwards). A local is what stops them disagreeing.
+        tokens_after = (self._msg_chars(rebuilt) + 3) // 4
+
         # Record BEFORE swapping self.conversation: keep_from indexes the list
         # as it stands on disk, which is the pre-compaction one.
         self._truncate(len(self.conversation) - len(tail), pair, "compact", measurements={
@@ -7269,7 +7276,7 @@ class LiteTUI(App):
             "before_count": before_count, "after_count": len(rebuilt),
             "tokens_before": trigger_tokens, "tokens_after": None,
             "tokens_before_estimate": (before_chars + 3) // 4,
-            "tokens_after_estimate": (self._msg_chars(rebuilt) + 3) // 4,
+            "tokens_after_estimate": tokens_after,
             "token_estimate_method": "chars/4; excludes request tools and live store",
             "ctx_used": trigger_tokens, "ctx_max": self.ctx_max,
             "ctx_percent": (trigger_tokens * 100 / self.ctx_max
@@ -7281,12 +7288,36 @@ class LiteTUI(App):
         # AFTER the swap, so the counts describe what the conversation now IS.
         self._emit_compaction("compacted",
                               tokens_before=trigger_tokens,
-                              tokens_after=(self._msg_chars(rebuilt) + 3) // 4,
+                              tokens_after=tokens_after,
                               tokens_before_exact=trigger_tokens is not None,
                               tokens_after_exact=False,
                               messages_dropped=len(head),
                               messages_summarised=len(head),
                               kept_recent=len(tail))
+        # 🔴 THE METER MOVES WITH THE CONVERSATION, FROM THE SAME NUMBER THE
+        # EVENT PUBLISHED. Nothing here used to touch `ctx_used`, so the
+        # footer chip (app.py `_footer_chunks`) kept the pre-compaction
+        # figure -- and its red/amber threshold with it -- until the NEXT
+        # turn's native usage arrived. Ryan's own words on this feature were
+        # "why is it not compacting", and a chip still reading 86% straight
+        # after a compaction is exactly that picture.
+        #
+        # ONE ASSIGNMENT REACHES ALL THREE READERS, because they are all
+        # downstream of the reactive: `watch_ctx_used` repaints the label,
+        # emits the host's `usage` (T645), and drives the glassbox
+        # `window_fill`. A per-reader fix would have been three ways to
+        # drift apart.
+        #
+        # ⚠️ IT IS AN ESTIMATE AND THE EVENT ALREADY SAYS SO
+        # (`tokens_after_exact: False`). The exact total is not knowable
+        # until the next request returns; the NEXT turn's native usage
+        # overwrites this. An estimate that is close beats a figure that is
+        # known to be wrong by 3.5x.
+        #
+        # ONLY THIS EXIT. `already_recent`, `too_short`, `failed` and
+        # `deferred_busy` did not change the conversation, so the occupancy
+        # they report is still the truth.
+        self.ctx_used = tokens_after
         # Succeeded: forget any earlier failure so a later window that
         # happens to land on the same token count is not blocked by it.
         self._autocompact_failed_at = None

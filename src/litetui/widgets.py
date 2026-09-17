@@ -403,7 +403,7 @@ class ThinkingBlock(Vertical):
         # A finished block keeps its readout across toggles (Ryan): the frozen
         # stats re-render with the new marker instead of being wiped to a label.
         text = self._frozen_text(marker) or f"{marker} Thinking"
-        self.query_one(ThinkingHeader).content = text
+        self._set_header(text)
 
     def append(self, token: str) -> None:
         self._buffer += token
@@ -434,6 +434,38 @@ class ThinkingBlock(Vertical):
     # so they are testable without a live app; the tps number is the
     # app's single reactive, never a second one.
 
+    def _set_header(self, text) -> None:
+        """THE ONE PLACE THIS BLOCK WRITES ITS HEADER, AND SO THE ONE GUARD.
+
+        A ThinkingBlock stamps its own `_t0` at CONSTRUCTION, but its
+        children do not exist until Textual composes it -- so any writer
+        reached in that gap raises NoMatches on `query_one`.
+
+        🔴 TWO OF THE FOUR WRITERS HAD THE GUARD AND TWO DID NOT, AND ONE OF
+        THE TWO RUNS FROM A TIMER. `reset_header` and `freeze_header` each
+        carried their own copy with a comment naming the race;
+        `repaint_header` -- six lines from one of them, called every 0.25 s
+        from the app's `_elapsed_repaint` -- had none, and neither did
+        `set_expanded`. Measured on the 35B (a reasoning model, so every
+        turn builds one of these): 6 unretrieved
+        `textual.css.query.NoMatches` tracebacks in a single 7-minute
+        session, from app.py `_elapsed_repaint` -> `repaint_header`.
+
+            A COMMENT THAT STATES A RULE DOES NOT TRANSFER TO THE SIBLING IT
+            NEVER NAMES. The rule had to become a function to reach them.
+
+        Deliberately still `except Exception`, not a narrowed QueryError:
+        that is the tolerance the two existing guards already chose, and
+        narrowing it here would turn something currently swallowed into a
+        crash in the repaint timer -- the exact failure this removes.
+        """
+        try:
+            self.query_one(ThinkingHeader).content = text
+        except Exception:
+            # Not composed yet. A true no-op: compose() renders the header
+            # from the same state, and the next tick or toggle paints it.
+            pass
+
     def repaint_header(self, tps: float | None,
                        tokens: int | None = None) -> None:
         """One repaint tick from the app's _elapsed_repaint loop. tps and
@@ -445,21 +477,14 @@ class ThinkingBlock(Vertical):
         existing caller and double keeps working untouched."""
         if self._t0 is None:
             return
-        self.query_one(ThinkingHeader).content = thinking_header_text(
-            self._marker, self._t0, time.monotonic(), tps, tokens)
+        self._set_header(thinking_header_text(
+            self._marker, self._t0, time.monotonic(), tps, tokens))
 
     def reset_header(self) -> None:
         """The trace stopped streaming: back to a plain header, no timer.
         The app calls it once, inside _thinking_done (idempotent there)."""
         self._t0 = None
-        try:
-            self.query_one(ThinkingHeader).content = f"{self._marker} Thinking"
-        except Exception:
-            # Not composed yet — a fast stream (compaction's tool-call chunk
-            # right behind the first reasoning token) can end the trace before
-            # the block's children exist. A pre-compose reset is a true no-op:
-            # compose() renders the header with exactly this text anyway.
-            pass
+        self._set_header(f"{self._marker} Thinking")
 
     def _frozen_text(self, marker: str) -> str | None:
         """The finished readout with `marker` applied, or None while live.
@@ -484,12 +509,7 @@ class ThinkingBlock(Vertical):
         tokens = self._toks or None
         avg = (tokens / elapsed) if (tokens and elapsed > 0) else None
         self._frozen = (elapsed, tokens, avg)
-        try:
-            self.query_one(ThinkingHeader).content = self._frozen_text(self._marker)
-        except Exception:
-            # Not composed yet — same no-op class as reset_header's guard. The
-            # numbers are kept either way; the next toggle paints them.
-            pass
+        self._set_header(self._frozen_text(self._marker))
         self._t0 = None
 
 
