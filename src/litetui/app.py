@@ -399,14 +399,13 @@ def _connection_family(exc: BaseException) -> bool:
 def _backend_remedy(backend) -> str:
     """What this backend says to do when it cannot be reached (T862).
 
-    Imported inside the call so a message can never be the thing that fails —
-    the lesson from T858, where a log line took the whole turn down with it.
+    `llm_backend.backend_hint` is the backend layer's own answer — a module
+    app.py already imports, so no plugin module crosses the re-accretion
+    boundary (T889). It never raises: the hint is read by getattr and a
+    raising hint falls back to today's words, so a message can never be the
+    thing that fails (the lesson from T858).
     """
-    try:
-        from litetui.plugins.model_switch import backend_hint
-        return backend_hint(backend)
-    except Exception:  # noqa: BLE001
-        return "try /reconnect"
+    return llm_backend.backend_hint(backend)
 
 
 def _plain_backend_error(e: BaseException, backend: object | None = None) -> str:
@@ -3807,12 +3806,14 @@ class LiteTUI(App):
                 else:
                     # Anything else names ITSELF and asks IT what to do — the
                     # remedy channel T860 built, rather than a third literal
-                    # that the next backend would also outgrow.
-                    from litetui.plugins.model_switch import _empty_state_hint
+                    # that the next backend would also outgrow. The answer
+                    # lives in the backend layer (llm_backend.backend_hint),
+                    # which app.py already imports — no plugin module crosses
+                    # the re-accretion boundary (T889).
                     label = getattr(self.backend, "label", None) or self.backend.name
                     self._system(
                         f"No chat model available from {label} — "
-                        f"{_empty_state_hint(self)}"
+                        f"{llm_backend.backend_hint(self.backend)}"
                     )
         except Exception as e:
             runtime_log.record(
@@ -4804,7 +4805,12 @@ class LiteTUI(App):
         if prior and not prior[-1].settled:
             prior[-1].settled = True
         w = AssistantMessage()
-        w.border_title = "AI"
+        # THE MODEL NAME HAD NO WRITER. `set_model_name` existed, the header
+        # test drove it through a fixture, and no production path ever
+        # called it - so every real card read "AI", and Ryan's
+        # "<summary> - <model>" title (2026-09-16) never showed the model.
+        # Seen on his screen 2026-09-18 12:0x. Empty model_id keeps "AI".
+        w.set_model_name(self.model_id)
         log.mount(w)
         self._scroll_down()
         return w

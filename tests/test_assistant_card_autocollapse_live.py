@@ -42,6 +42,20 @@ async def test_header_shows_the_model_not_the_word_AI() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_real_bubble_stamps_the_model_name() -> None:
+    """The arm above injects `model=` through the fixture and could not see
+    that no production path ever called set_model_name: every real card read
+    "AI" (Ryan's screen, 2026-09-18). This one drives the real constructor."""
+    app = _app()
+    app.model_id = "qwen3-30b"
+    async with app.run_test(size=(100, 20)) as pilot:
+        card = app._assistant_bubble()
+        await pilot.pause()
+        assert "qwen3-30b" in card.border_title
+        assert "AI" not in card.border_title
+
+
+@pytest.mark.asyncio
 async def test_card_on_screen_stays_expanded() -> None:
     """A short conversation fits, so scroll_y is 0 and nothing is above the fold.
 
