@@ -399,13 +399,14 @@ def _connection_family(exc: BaseException) -> bool:
 def _backend_remedy(backend) -> str:
     """What this backend says to do when it cannot be reached (T862).
 
-    `llm_backend.backend_hint` is the backend layer's own answer — a module
-    app.py already imports, so no plugin module crosses the re-accretion
-    boundary (T889). It never raises: the hint is read by getattr and a
-    raising hint falls back to today's words, so a message can never be the
-    thing that fails (the lesson from T858).
+    Imported inside the call so a message can never be the thing that fails —
+    the lesson from T858, where a log line took the whole turn down with it.
     """
-    return llm_backend.backend_hint(backend)
+    try:
+        from litetui.plugins.model_switch import backend_hint
+        return backend_hint(backend)
+    except Exception:  # noqa: BLE001
+        return "try /reconnect"
 
 
 def _plain_backend_error(e: BaseException, backend: object | None = None) -> str:
@@ -3806,14 +3807,12 @@ class LiteTUI(App):
                 else:
                     # Anything else names ITSELF and asks IT what to do — the
                     # remedy channel T860 built, rather than a third literal
-                    # that the next backend would also outgrow. The answer
-                    # lives in the backend layer (llm_backend.backend_hint),
-                    # which app.py already imports — no plugin module crosses
-                    # the re-accretion boundary (T889).
+                    # that the next backend would also outgrow.
+                    from litetui.plugins.model_switch import _empty_state_hint
                     label = getattr(self.backend, "label", None) or self.backend.name
                     self._system(
                         f"No chat model available from {label} — "
-                        f"{llm_backend.backend_hint(self.backend)}"
+                        f"{_empty_state_hint(self)}"
                     )
         except Exception as e:
             runtime_log.record(
