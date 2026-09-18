@@ -96,20 +96,12 @@ def _empty_state_hint(app) -> str:
     return backend_hint(app.backend)
 
 
-def backend_hint(backend) -> str:
-    """The same question, asked of a BACKEND rather than an app.
-
-    Split out for T862: `_plain_backend_error` in app.py is a pure function
-    with no app to hand, and it needs this channel too — a connection failure
-    on NInfer said "start it, or check /backend", and neither of those is a
-    step the user can take.
-    """
-    hint = getattr(backend, "empty_state_hint", None)
-    try:
-        text = hint() if callable(hint) else ""
-    except Exception:  # noqa: BLE001 - a hint must never break the command
-        text = ""
-    return str(text or "try /reconnect")
+# 🔴 T889. The BODY of this helper moved to `litetui.llm_backend.backend_hint`:
+# app.py must reach it without importing a plugin module (test_plugin_dogfood
+# gates exactly that), and the backend layer is the home it belongs in. This
+# alias keeps `model_switch.backend_hint` resolvable — so `_empty_state_hint`
+# below stays verbatim and any caller still naming it here is unaffected.
+backend_hint = llm_backend.backend_hint
 
 
 def _ninfer_artifact_rows(app) -> list[tuple[str, str]]:

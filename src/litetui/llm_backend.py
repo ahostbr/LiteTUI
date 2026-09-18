@@ -1956,6 +1956,33 @@ def backend_label(name: str) -> str:
     return dict(BACKENDS).get(name, name)
 
 
+def backend_hint(backend) -> str:
+    """The same question, asked of a BACKEND rather than an app: what to say
+    when it cannot be reached or has no models to offer.
+
+    Split out for T862: `_plain_backend_error` in app.py is a pure function
+    with no app to hand, and it needs this channel too — a connection failure
+    on NInfer said "start it, or check /backend", and neither of those is a
+    step the user can take.
+
+    🔴 T889: this lives in the BACKEND LAYER, not in the `model_switch`
+    plugin. app.py may import the plugin substrate and nothing below it
+    (test_plugin_dogfood gates that), and this is the one answer it must
+    reach for two user-facing messages — so its home must be a module app.py
+    already owns. It is NOT in the substrate `litetui/plugins/__init__`:
+    importing model_switch there would drag a plugin into package init and
+    invert the layering. Asked of the backend by `getattr`, not added to a
+    base class: a backend that says nothing keeps today's words exactly, which
+    is what stops this being a global find-and-replace.
+    """
+    hint = getattr(backend, "empty_state_hint", None)
+    try:
+        text = hint() if callable(hint) else ""
+    except Exception:  # noqa: BLE001 - a hint must never break the command
+        text = ""
+    return str(text or "try /reconnect")
+
+
 def make_backend(settings):
     """THE factory. app.py calls this once at boot and again on /backend."""
     backend = _make_backend(settings)
