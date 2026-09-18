@@ -196,3 +196,69 @@ def test_a_REQUESTED_profile_that_differs_from_the_active_one_is_visible():
         "interactive",
         "scheduled",
     )
+
+
+# ── T869 — the wait before `ready`, and what ends it ──────────────────────
+
+
+def _rounds(a, *, sleeps_then_models=None, monkeypatch=None) -> int:
+    """Run `_rpc_emit_ready` and count the poll rounds it actually slept.
+
+    ⭐ COUNTING ROUNDS, NOT SECONDS. A wall-clock assertion on a 10s loop is
+    a 10s test and a flaky one; the round count is the same fact measured
+    where it is exact.
+    """
+    rounds = 0
+    real_sleep = app_mod.asyncio.sleep
+
+    async def counting_sleep(delay):
+        nonlocal rounds
+        rounds += 1
+        if sleeps_then_models is not None and rounds >= sleeps_then_models:
+            a.available_models = ["qwen/a"]
+        await real_sleep(0)
+
+    monkeypatch.setattr(app_mod.asyncio, "sleep", counting_sleep)
+    _ready(a)
+    return rounds
+
+
+def _empty_app(**kw):
+    a = _app(**kw)
+    a.available_models = []
+    a.model_rows = {}
+    return a
+
+
+def test_ready_does_not_wait_once_connect_has_finished_without_models(monkeypatch):
+    """🔴 THE DEFECT. Measured against a real `--rpc` child on 2026-09-17 with
+    nothing loaded: `ready` at 11112ms, ~10s of it this poll running its full
+    twenty rounds for a list `connect` had already finished not-finding. Every
+    headless child paid it, and nothing in the output said a wait had happened.
+    """
+    a = _empty_app()
+    a._connect_settled = True
+
+    assert _rounds(a, monkeypatch=monkeypatch) == 0
+
+
+def test_the_wait_SURVIVES_for_the_case_it_exists_for(monkeypatch):
+    """CONTROL, and the reason the round count was not simply shortened.
+
+    While `connect` is still running the list may yet arrive, and this loop is
+    what gives it time to. An exit that fired here would be a faster boot that
+    announces a model list the child was about to have.
+    """
+    a = _empty_app()
+    a._connect_settled = False
+
+    assert _rounds(a, monkeypatch=monkeypatch) == 20
+
+
+def test_a_list_that_ARRIVES_mid_wait_still_ends_the_wait_immediately(monkeypatch):
+    """The third case, so neither arm above can pass on "always break" or
+    "never break": models appearing on round 3 must stop the poll at 3."""
+    a = _empty_app()
+    a._connect_settled = False
+
+    assert _rounds(a, sleeps_then_models=3, monkeypatch=monkeypatch) == 3

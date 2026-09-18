@@ -1386,6 +1386,13 @@ class LiteTUI(App):
         self._thinking_level: str | None = None
         self.model_id: str = ""
         self.available_models: list[str] = []
+        #: T869 — HAS `connect` FINISHED, success or failure. Empty
+        #: `available_models` means "none have arrived YET" while this is
+        #: False, and "none are coming until the next connect" once it is
+        #: True. Every waiter for the model list needs that difference: with
+        #: no engine registered the list is decided the moment connect
+        #: returns, and polling past it is a fixed tax priced as a timeout.
+        self._connect_settled: bool = False
         self.tools_enabled = self.settings.tools_enabled
         self.ctx_max: int | None = None  # effective context window (tokens), from LM Studio
         #: Is ctx_max the LOADED window, or merely the model's ceiling? Anything
@@ -3775,6 +3782,13 @@ class LiteTUI(App):
             )
             self.sub_title = "Disconnected"
             self._system(_plain_backend_error(e, self.backend))
+        finally:
+            # 🔴 T869 — IN `finally`, NOT AT THE END OF THE `try`. The case that
+            # pays the whole ten-second poll is the one where connect RAISED
+            # (no engine registered), and a flag set on the success path alone
+            # would leave exactly that case waiting for a list that can no
+            # longer arrive.
+            self._connect_settled = True
 
     _connect = connect          # arrival alias (PLAN §2b)
 
@@ -3851,9 +3865,22 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="cli-args-ready")
     async def _rpc_emit_ready(self) -> None:
-        """Emit the ready event once the model list is available."""
+        """Emit the ready event once the model list is available.
+
+        ⭐ T869 — THE POLL EXITS ON THE ANSWER BEING DECIDED, NOT ONLY ON THE
+        ANSWER BEING GOOD. Measured on 2026-09-17 with nothing loaded: a
+        `--rpc` child announced `ready` at 11112ms, of which ~10s was this
+        loop running its full twenty rounds for a list that connect had
+        already finished not-finding. Every headless child anyone spawns paid
+        that, and nothing in the output said a wait had happened.
+
+        ⬜ THE ROUND COUNT IS UNCHANGED ON PURPOSE. Shortening it would trade
+        one arbitrary number for another and break the case the wait exists
+        for — a list that IS still arriving. What was missing is the exit for
+        the case where it never will.
+        """
         for _ in range(20):
-            if self.available_models:
+            if self.available_models or getattr(self, "_connect_settled", False):
                 break
             await asyncio.sleep(0.5)
         from litetui.version import __version__
@@ -3898,9 +3925,11 @@ class LiteTUI(App):
     @work(exclusive=True, group="cli-args")
     async def _apply_cli_args(self) -> None:
         """T507-T1: apply --model, --system-prompt, --prompt after connect."""
-        # Wait for connect to populate available_models (up to 10s).
+        # Wait for connect to populate available_models (up to 10s) — or for
+        # connect to have finished without any, which is the same T869 tax on
+        # a second waiter: --model has nothing to apply against an empty list.
         for _ in range(20):
-            if self.available_models:
+            if self.available_models or getattr(self, "_connect_settled", False):
                 break
             await asyncio.sleep(0.5)
         if self._cli_initial_model:
