@@ -63,3 +63,6 @@ e2e/artifacts/
 artifacts/
 temp-working-dir/
 tools/screenshot.py
+# convo_search local index (77MB, rebuilt with `python tools/convo_search.py --reindex`);
+# -wal/-shm covered by the glob. (T888, 2026-09-18)
+tools/convo_search.db*
