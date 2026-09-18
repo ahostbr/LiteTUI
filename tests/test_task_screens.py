@@ -258,3 +258,44 @@ async def test_the_clock_moves_without_rebuilding_the_panel() -> None:
         await pilot.pause()
         assert row is panel.query_one(f"#lt-{t.id}"), "the row widget was replaced"
         assert "1m" in str(row.visual), "the clock did not move"
+
+
+# ── ✕ stop on every background row (Ryan, 2026-09-18) ──────────────────────
+#
+# "thats shows a bug in the bg tasks modal ... i have no way to stop them
+# myself if needed" — seven runaway sleep/cat polls on the 35B seat, and the
+# panel that listed them offered nothing to press. /tasks kill <id> existed the
+# whole time; the panel is now a door to the same body.
+
+@pytest.mark.asyncio
+async def test_every_background_row_has_a_stop_that_runs_the_kill() -> None:
+    a = make_app()
+    async with a.run_test(size=(120, 34)) as pilot:
+        a.settings.dialog_style = "modal"
+        t1 = task("bash", {"command": "sleep 300"})
+        t2 = task("bash", {"command": "sleep 420"})
+        add(a, t1, t2)
+        killed: list[str] = []
+        a._kill_background = lambda task_id: killed.append(task_id)   # the one body
+        a._footer_nav = "bg"
+        a.footer_nav_activate()
+        assert await settle_until(pilot, lambda: len(a.screen.query(ts._KillRow)) == 2), (
+            "two running tasks, two ✕ stop rows expected"
+        )
+        rows = {r.task_id: r for r in a.screen.query(ts._KillRow)}
+        rows[t2.id].on_click()
+        assert killed == [t2.id], "✕ must kill ITS row's task and nothing else"
+
+
+@pytest.mark.asyncio
+async def test_the_subagents_panel_offers_no_stop() -> None:
+    """A subagent is not a process this app owns; a ✕ there would be a control
+    that does nothing — the class of control this repo has shipped before."""
+    a = make_app()
+    async with a.run_test(size=(120, 34)) as pilot:
+        a.settings.dialog_style = "modal"
+        add(a, task("subagent", {"prompt": "count the leaves"}))
+        a._footer_nav = "agents"
+        a.footer_nav_activate()
+        assert await settle_until(pilot, lambda: bool(a.screen.query(ts.SubagentsBody)))
+        assert not a.screen.query(ts._KillRow)

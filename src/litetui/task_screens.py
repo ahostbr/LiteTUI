@@ -135,7 +135,12 @@ class _LiveTaskBody(Widget):
     _LiveTaskBody .lt-row { padding: 0 0 1 0; }
     _LiveTaskBody .lt-buttons { height: auto; align: center middle; padding: 1 0 0 0; }
     _LiveTaskBody .lt-buttons Button { margin: 0 1 0 0; }
+    _LiveTaskBody .lt-kill { width: auto; height: 1; margin: 0 0 1 2; background: $error 40%; }
+    _LiveTaskBody .lt-kill:hover { background: $error 70%; }
     """
+    #: Only the background panel's rows can be stopped from here; a subagent is
+    #: not a process this app owns.
+    KILLABLE = False
 
     def __init__(self) -> None:
         super().__init__()
@@ -163,6 +168,14 @@ class _LiveTaskBody(Widget):
                     classes="lt-row",
                     markup=False,
                 )
+                # RYAN, 2026-09-18 12:4x, seven runaway polls on the 35B seat:
+                # "thats shows a bug in the bg tasks modal ... i have no way to
+                # stop them myself if needed". The kill existed (/tasks kill
+                # <id>, app._kill_background) and this panel never offered it -
+                # a readout of things you cannot touch. One ✕ per row, the
+                # CancelToolButton shape, same body the command runs.
+                if self.KILLABLE:
+                    yield _KillRow(task.id)
         with Horizontal(classes="lt-buttons"):
             if any(hasattr(task, "thread_id") for task in rows):
                 yield Button("Stop Codex turn", variant="warning", classes="lt-stop-codex")
@@ -223,12 +236,24 @@ class _LiveTaskBody(Widget):
             self.app.action_stop_turn()
 
 
+class _KillRow(Static):
+    """✕ stop under one background row: kills that task's process tree."""
+
+    def __init__(self, task_id: str) -> None:
+        super().__init__(" ✕ stop ", classes="lt-kill", id=f"lt-kill-{task_id}")
+        self.task_id = task_id
+
+    def on_click(self) -> None:
+        self.app._kill_background(self.task_id)
+
+
 class BackgroundProcessesBody(_LiveTaskBody):
     """Named `*Body`, not `*Screen`, because it is host-agnostic like every other
     dialog here (`LoopListBody`, `MCPListBody`): `side_panel` decides whether it
     lands in a modal or the sidebar."""
 
     TITLE = "Background and Codex activity"
+    KILLABLE = True
     EMPTY = (
         "Nothing running in the background. A tool call becomes one when it is "
         "asked to (background=true) or when it outlives "
