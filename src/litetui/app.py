@@ -493,6 +493,13 @@ def _plain_backend_error(e: BaseException, backend: object | None = None) -> str
     return "Something went wrong talking to the model server."
 
 
+def _first_sentence(raw: object) -> str:
+    """The first sentence of a trace, one line, for a card that has no answer."""
+    text = " ".join(str(raw or "").split())
+    m = re.match(r"(.+?[.!?])(?:\s|$)", text)
+    return (m.group(1) if m else text).strip()
+
+
 def _detail_sentence(raw: object, *, limit: int = 200) -> str:
     """The server's detail as one line of PROSE, never as markup.
 
@@ -5147,7 +5154,19 @@ class LiteTUI(App):
             card.summary_done = True
             return
         answer = (getattr(card, "answer_text", "") or "").strip()
-        if not answer:                        # pure tool turn, or cancelled empty
+        if not answer:
+            # A THINKING-ONLY CARD TITLES ITSELF FROM ITS TRACE. Ryan,
+            # 2026-09-18: "we need to figure out the just thinking ones how
+            # to display something for those also". There is no answer to
+            # summarise, and a side call over hidden reasoning would describe
+            # work the card does not show - but the trace's first sentence
+            # IS the model saying what it is about to do, so it is the
+            # header, at no cost. A card with neither stays on the model
+            # name (pure tool turn, or cancelled empty).
+            thought = _first_sentence(getattr(card.thinking, "source", ""))
+            if thought:
+                card.set_summary(f"thinking: {thought}")
+                card.summary_done = True
             return
         card.summary_done = True
         # 🔴 NOT group "chat". `_stream` is exclusive there, so a worker started
@@ -6707,6 +6726,9 @@ class LiteTUI(App):
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
                             self._thinking_live = thinking
+                            # The card declares `thinking` and nothing set it,
+                            # so a thinking-only card could not title itself.
+                            widget.thinking = thinking
                             widget.mount(thinking, before=widget.body)
                             # Discrete event -> unconditional. See _scroll_down.
                             # AFTER the refresh, not during it: mount() has not
@@ -6874,6 +6896,20 @@ class LiteTUI(App):
                         for i, slot in sorted(tool_acc.items())
                     ]
                 self._append(message, usage=request_usage)
+
+            if tool_acc and terminal_widget is not None and not self._stop_requested:
+                # A TOOL ROUND ENDS THIS CARD - SETTLE AND SUMMARISE IT HERE.
+                # Ryan, 2026-09-18: "not all responses are getting a summary
+                # ... even ones that produce both thinking and a response".
+                # The settle path ran once per TURN, so every card that ended
+                # in a tool call kept its model-name header for good. This
+                # round's card is finished: its text is on screen and in the
+                # conversation, and it costs one side call while the tool
+                # runs. Not in `_assistant_bubble`: the round boundary there
+                # cannot tell a finished card from a draft the completion
+                # hook just rejected, and a rejected draft never gets a line.
+                terminal_widget.settled = True
+                self._kick_card_summary(terminal_widget)
 
             if self._stop_requested:
                 self._system(

@@ -425,6 +425,11 @@ class ThinkingBlock(Vertical):
     def finalize(self) -> None:
         self.text.content = reasoning_text(self._buffer)
 
+    @property
+    def source(self) -> str:
+        """The raw trace, for a header made from the model's own words."""
+        return self._buffer
+
     # -- header timer ------------------------------------------------------
     #
     # The block stamps its own t0 at construction (see __init__), the

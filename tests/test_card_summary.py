@@ -279,3 +279,158 @@ class TestCardinality:
                 await coro
             assert calls == [], f"a restored summary must not be regenerated: {calls!r}"
             assert card.summary == "already known"
+
+
+# ── every round, not only the last (Ryan, 2026-09-18) ──────────────────────
+#
+# "not all responses are getting a summary ... even ones that produce both
+# thinking and a response ... also we need to figure out the just thinking
+# ones how to display something for those also" — and, watching it: "it seems
+# like only messages he does a full stop on get the summary".
+#
+# The settle path ran once per TURN, so in an agentic turn every card that
+# ended in a tool call kept its model-name header for good, and a card that
+# held only a thinking block had nothing to title it at all.
+
+import asyncio
+from types import SimpleNamespace
+
+from litetui import paths
+from litetui.settings import Settings
+from litetui.tool_policy import SHELL_POLICY
+
+
+class TestThinkingOnly:
+    def test_a_thinking_only_card_titles_itself_from_its_trace(self, monkeypatch):
+        app = _app()
+        scheduled = []
+        monkeypatch.setattr(app, "run_worker", lambda *a, **k: scheduled.append(a))
+        card = AssistantMessage()
+        card.set_model_name("qwen3-30b")
+        card.thinking = SimpleNamespace(
+            source="I need to check the structure of a single conversation. Then size it.")
+        app._kick_card_summary(card)
+        assert scheduled == [], "a trace is never sent out for a side call"
+        assert card.summary == "thinking: I need to check the structure of a single conversation."
+        assert card.summary_done is True
+        assert card.border_title.endswith("- qwen3-30b")
+
+    def test_a_trace_without_punctuation_is_still_a_header(self):
+        assert app_mod._first_sentence("  just   thinking\n out loud ") == "just thinking out loud"
+        assert app_mod._first_sentence("") == ""
+
+
+# -- a three-round agentic turn, driven end to end -------------------------
+
+class _Fn:
+    def __init__(self, name=None, arguments=None):
+        self.name = name
+        self.arguments = arguments
+
+
+class _TC:
+    def __init__(self, index=0, id=None, name=None, arguments=None):
+        self.index = index
+        self.id = id
+        self.function = _Fn(name, arguments)
+
+
+class _Delta:
+    def __init__(self, content=None, reasoning_content=None, tool_calls=None):
+        self.content = content
+        self.reasoning_content = reasoning_content
+        self.reasoning = None
+        self.tool_calls = tool_calls
+
+
+class _Chunk:
+    def __init__(self, **kw):
+        self.choices = [type("C", (), {"delta": _Delta(**kw), "finish_reason": None})()]
+        self.usage = None
+
+
+class _Stream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __aiter__(self):
+        self._it = iter(self._chunks)
+        return self
+
+    async def __anext__(self):
+        # A real first token is a network round-trip away, and the new bubble
+        # has mounted by then. A fake that yields on the same tick reaches the
+        # thinking mount before the card is attached (MountError).
+        await asyncio.sleep(0.01)
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    async def close(self):
+        pass
+
+
+def _probe(n):
+    return [_Chunk(tool_calls=[_TC(0, id=f"c{n}", name="probe")]),
+            _Chunk(tool_calls=[_TC(0, arguments="{}")])]
+
+
+@pytest.mark.asyncio
+async def test_every_finished_card_in_a_turn_gets_its_line(monkeypatch, tmp_path):
+    """Round 1: answer + tool call. Round 2: thinking only + tool call.
+    Round 3: the final answer. Before: one side call, for round 3 alone."""
+    monkeypatch.setattr(paths, "CONVO_DIR", tmp_path)
+    app = _app()
+    app.settings = Settings(tools_enabled=True, tool_iterations=5,
+                            autocompact_enabled=False, wake_after_compact=False,
+                            clear_screen_after_compact=False)
+    app.tools_enabled = True
+    app.model_id = "fixture"
+    app.available_models = ["fixture"]
+    said = []
+    app._system = lambda msg, *a, **k: said.append(str(msg))
+
+    async def ready():
+        pass
+    app._ensure_chat_ready = ready
+    app.plugins.add_tool(
+        "test",
+        {"type": "function", "function": {"name": "probe", "description": "t",
+                                          "parameters": {"type": "object", "properties": {}}}},
+        lambda args: "ran", policy=SHELL_POLICY)
+
+    rounds = iter([
+        _Stream([_Chunk(content="Looking first.")] + _probe(1)),
+        _Stream([_Chunk(reasoning_content="Now the second probe. More follows.")] + _probe(2)),
+        _Stream([_Chunk(content="Done.")]),
+    ])
+    summaries = []
+
+    async def create(**kw):
+        purpose = kw.get("purpose", "turn")
+        if purpose == "card-summary":
+            summaries.append(kw["messages"][0]["content"])
+        if purpose != "turn":                 # every side call, one canned line
+            return _Resp("one line")
+        return next(rounds)
+    monkeypatch.setattr(app_mod.model_transport, "for_app",
+                        lambda _a: SimpleNamespace(create=create))
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        app._append({"role": "user", "content": "go"})
+        app._stream()
+        for _ in range(200):
+            await pilot.pause()
+            if not app._chat_running():
+                break
+        for _ in range(10):
+            await pilot.pause()
+        cards = list(app.query(AssistantMessage))
+
+    assert len(cards) == 3, ([c.answer_text for c in cards], said)
+    assert all(c.settled for c in cards)
+    assert len(summaries) == 2, summaries          # rounds 1 and 3, never the trace
+    assert "Looking first." in summaries[0]
+    assert "Done." in summaries[1]
+    assert cards[1].summary == "thinking: Now the second probe."
