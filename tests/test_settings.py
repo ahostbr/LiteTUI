@@ -381,8 +381,9 @@ async def test_the_settings_sections_are_tabs():
         await pilot.pause()
         panes = app.screen.query(TabPane)
         assert [pane.id for pane in panes] == [
-            "tab-model", "tab-ninfer", "tab-generation", "tab-agent", "tab-compaction",
-            "tab-capabilities", "tab-hooks", "tab-themes", "tab-interface",
+            "tab-model", "tab-ninfer", "tab-voice", "tab-generation", "tab-agent",
+            "tab-compaction", "tab-capabilities", "tab-hooks", "tab-themes",
+            "tab-interface",
         ]
 
 @pytest.mark.asyncio

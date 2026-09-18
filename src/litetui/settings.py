@@ -404,6 +404,23 @@ class Settings:
     footer_show_context_pct: bool = True
     footer_show_tps: bool = True
 
+    # ── Voice (TTS out) ───────────────────────────────────────────────────────
+    #: Speak the agent's replies aloud (Ryan 2026-09-18). OFF by default — opt-in.
+    #: Toggled by the footer button beside pause and by `tts_hotkey`.
+    tts_enabled: bool = False
+    #: "pyttsx3" (Windows SAPI direct, offline, no download — the default) or
+    #: "edge" (Microsoft cloud neural voices; needs edge-tts + playsound).
+    tts_engine: str = "pyttsx3"
+    #: SAPI voice NAME for the pyttsx3 engine (e.g. "Microsoft Zira Desktop");
+    #: blank = the system default voice.
+    tts_voice: str = ""
+    #: The voice id for the edge engine.
+    tts_edge_voice: str = "en-GB-SoniaNeural"
+    #: The key that toggles TTS from anywhere. Configurable in the Voice tab;
+    #: bound at runtime (App.bind) from this value, so a change takes effect
+    #: without a restart. Textual key spelling, e.g. "ctrl+space".
+    tts_hotkey: str = "ctrl+space"
+
 
 #: field name → environment variable that overrides it.
 #: Both pre-existing knobs are preserved by name so nothing that worked breaks.
@@ -419,6 +436,8 @@ ENV_OVERRIDES: dict[str, str] = {
     "max_tokens_tools": "LITETUI_MAX_TOKENS",
     "thinking_level": "LITETUI_THINKING",
     "seat_name": "LITETUI_SEAT_NAME",
+    "tts_engine": "LITETUI_TTS_ENGINE",
+    "tts_hotkey": "LITETUI_TTS_HOTKEY",
 }
 
 

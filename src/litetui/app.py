@@ -78,6 +78,7 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AssistantMessage,
     CancelToolButton,
     PauseButton,
+    TtsButton,
     ChatMessage,
     UserMessage,
     Completion,
@@ -902,6 +903,22 @@ class LiteTUI(App):
 
     .pause-button.paused {
         background: $error 60%;
+        color: $text;
+    }
+
+    .tts-button {
+        width: auto;
+        padding: 0 1;
+        background: $footer-background;
+        text-style: bold;
+    }
+
+    .tts-button:hover {
+        background: $accent 40%;
+    }
+
+    .tts-button.on {
+        background: $accent 60%;
         color: $text;
     }
 
@@ -1788,6 +1805,10 @@ class LiteTUI(App):
             if not f.exists():
                 self._system(f"[!] {label} missing: {f}\n    That section is absent from the model's context.")
         self._connect()
+        # Voice: bind the configurable TTS toggle hotkey (default ctrl+space)
+        # and reflect the saved enabled state on the footer speak button.
+        self._bind_tts_hotkey()
+        self.set_tts_enabled(self.settings.tts_enabled, announce=False)
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
         plugins_mod.activate_plugins(self, self.plugins, self._plugin_manifests)
@@ -3304,6 +3325,41 @@ class LiteTUI(App):
     def action_toggle_pause(self) -> None:
         """/pause and the ⏸ button: one body."""
         self.set_paused(not self.paused)
+
+    def set_tts_enabled(self, on: bool, *, announce: bool = True) -> None:
+        """Turn speak-replies on or off. The footer button, the hotkey and the
+        Voice settings tab all land here — ONE place owns the flag, the button
+        label, and the notice. The flag lives on `settings.tts_enabled`; the
+        turn-end hook reads it before speaking."""
+        on = bool(on)
+        self.settings.tts_enabled = on
+        try:
+            for btn in self.query(TtsButton):
+                btn.set_tts(on)
+        except Exception:
+            pass  # no footer yet (pre-compose) — the flag still holds
+        if announce:
+            self._system("[speak on — replies are read aloud]" if on
+                         else "[speak off]")
+
+    def action_toggle_tts(self) -> None:
+        """The footer speak button and the configurable hotkey: one body."""
+        self.set_tts_enabled(not self.settings.tts_enabled)
+
+    def _bind_tts_hotkey(self) -> None:
+        """Bind the TTS toggle to `settings.tts_hotkey` at runtime, so a change
+        in the Voice tab takes effect without a restart. ⚠️ Textual has no
+        unbind: rebinding to a new key leaves the old key also bound (both just
+        toggle, harmless). ctrl+space may not reach every terminal — the footer
+        button always works and the tab's Capture lets the user pick another."""
+        key = (self.settings.tts_hotkey or "ctrl+space").strip()
+        if key == getattr(self, "_tts_bound_key", None):
+            return
+        try:
+            self.bind(key, "toggle_tts", description="Toggle speak")
+            self._tts_bound_key = key
+        except Exception:
+            pass  # a malformed key spelling must never break startup
 
     def action_toggle_plan_mode(self) -> None:
         """ctrl+p: plan mode on or off (T558).
@@ -7074,6 +7130,21 @@ class LiteTUI(App):
                 await self.plugins.finalize_turn()
                 if not getattr(self, "_hooks_suppressed", False):
                     await hook_host.dispatch(self, "completion_after", {"answer": text_full or ""})
+                # Speak the reply if the toggle is on. Only a terminal answer
+                # reaches here (retried/paused drafts returned above), so a
+                # spoken line maps one-to-one to a real reply. Fire-and-forget
+                # in a child; never let it break a completed turn.
+                if self.settings.tts_enabled and text_full:
+                    try:
+                        from litetui import voice_backend
+                        voice_backend.speak(
+                            text_full,
+                            engine=self.settings.tts_engine,
+                            voice=(self.settings.tts_edge_voice
+                                   if self.settings.tts_engine == "edge"
+                                   else self.settings.tts_voice) or None)
+                    except Exception:
+                        pass
                 self._settle_turn_stop_line(
                     terminal_widget,
                     started_at=turn_started_at,
@@ -7911,6 +7982,14 @@ class LiteTUI(App):
         backend = getattr(self, "backend", None)
         if backend is not None and hasattr(backend, "set_settings"):
             backend.set_settings(new)
+        # Voice: the Voice tab may have flipped the toggle or changed the
+        # hotkey — reflect both without a restart.
+        try:
+            for btn in self.query(TtsButton):
+                btn.set_tts(new.tts_enabled)
+            self._bind_tts_hotkey()
+        except Exception:
+            pass
         # New/edited custom themes must exist in the registry BEFORE the
         # theme_name below tries to apply one of them.
         self._register_custom_themes()

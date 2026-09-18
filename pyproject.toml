@@ -30,6 +30,11 @@ dependencies = [
     # venv built from this file would lack it and the chrome tool dies with an
     # unexplained ModuleNotFoundError.
     "websockets>=15",
+    # TTS-out (Voice tab): pyttsx3 drives Windows SAPI directly — offline, no
+    # download, no MCI/playsound. The default engine, so it ships as a core dep.
+    # The optional "edge" engine's edge-tts + playsound are NOT pinned here:
+    # they are a cloud opt-in the Voice tab installs on demand.
+    "pyttsx3>=2.9",
 ]
 
 [project.scripts]

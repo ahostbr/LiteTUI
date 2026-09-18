@@ -46,7 +46,7 @@ from textual.widgets import (
 )
 
 from litetui.hooks_screen import HooksEditor
-from litetui import gpu_gate, llm_backend
+from litetui import gpu_gate, llm_backend, voice_backend
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
@@ -477,6 +477,46 @@ class SettingsBody(Widget):
                                 "Applies on the next /engine start; /engine status shows the running value.",
                                 placeholder="1",
                             )
+                with TabPane("Voice", id="tab-voice"):
+                    with VerticalScroll(classes="set-scroll"):
+                        yield from self._switch_row(
+                            "tts_enabled", "Speak replies aloud (TTS)",
+                            "Off by default. Toggle here, with the footer button "
+                            "beside pause, or the hotkey below.")
+                        yield from self._select_row(
+                            "tts_engine", "TTS engine",
+                            [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
+                             ("edge — Microsoft cloud neural voices (needs install)", "edge")],
+                            "pyttsx3 speaks through the built-in Windows voices with "
+                            "no download and no network. edge sounds better but calls "
+                            "Microsoft and needs the Install button below.")
+                        yield from self._select_row(
+                            "tts_voice", "pyttsx3 voice",
+                            [("System default", "")]
+                            + [(v, v) for v in voice_backend.list_sapi_voices()],
+                            "The Windows voice pyttsx3 speaks with. Add more in "
+                            "Windows Settings > Time & language > Speech.")
+                        yield from self._text_row(
+                            "tts_edge_voice", "edge voice",
+                            "The edge-tts voice id used when the engine is 'edge'.",
+                            placeholder="en-GB-SoniaNeural")
+                        with Vertical(classes="set-row"):
+                            yield Label("Toggle hotkey", classes="set-label")
+                            with Horizontal(classes="set-switchline"):
+                                yield Input(value=self._start.tts_hotkey,
+                                            id="f-tts_hotkey", classes="set-input",
+                                            placeholder="ctrl+space")
+                                yield Button("Capture key", id="voice-capture")
+                            yield Static(
+                                "The key that toggles TTS from anywhere. Type it "
+                                "(e.g. ctrl+space) or click Capture and press it. "
+                                "Applies on save.", classes="set-help")
+                        with Vertical(classes="set-row"):
+                            with Horizontal(classes="set-switchline"):
+                                yield Button("Test voice", id="voice-test")
+                                yield Button("Install edge support",
+                                             id="voice-install-edge")
+                            yield Static("", id="voice-status", classes="set-help")
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
 
@@ -1087,6 +1127,63 @@ class SettingsBody(Widget):
     @on(Button.Pressed, "#set-defaults")
     def _defaults(self) -> None:
         close_dialog(self, Settings())
+
+    # ── Voice tab ─────────────────────────────────────────────────────────────
+    #: True only between the Capture button and the next keypress, so on_key
+    #: leaves every other key to the Inputs untouched.
+    _capturing_hotkey = False
+
+    @on(Button.Pressed, "#voice-test")
+    def _voice_test(self) -> None:
+        engine = self.query_one("#f-tts_engine", Select).value
+        if engine == "edge":
+            voice = self.query_one("#f-tts_edge_voice", Input).value
+        else:
+            voice = self.query_one("#f-tts_voice", Select).value
+        ok = voice_backend.speak("This is the LiteTUI voice test.",
+                                 engine=engine, voice=voice or None)
+        self.query_one("#voice-status", Static).update(
+            "Speaking…" if ok
+            else "That engine is not installed — use Install, or pick pyttsx3.")
+
+    @on(Button.Pressed, "#voice-capture")
+    def _voice_capture(self) -> None:
+        self._capturing_hotkey = True
+        self.query_one("#voice-status", Static).update("Press the key combination…")
+
+    def on_key(self, event) -> None:
+        if not self._capturing_hotkey:
+            return  # not capturing — every key reaches the Inputs as normal
+        if event.key in ("ctrl", "shift", "alt", "meta", "super", "hyper"):
+            return  # a bare modifier is not a hotkey; wait for the real key
+        self.query_one("#f-tts_hotkey", Input).value = event.key
+        self._capturing_hotkey = False
+        self.query_one("#voice-status", Static).update(
+            f"Hotkey set to {event.key}. Save to apply.")
+        event.stop()
+        event.prevent_default()
+
+    @on(Button.Pressed, "#voice-install-edge")
+    def _voice_install_edge(self) -> None:
+        self.query_one("#voice-status", Static).update(
+            "Installing edge-tts + playsound…")
+        self.run_worker(self._do_install_edge, thread=True)
+
+    def _do_install_edge(self) -> None:
+        import subprocess
+        import sys
+
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "edge-tts",
+                 "playsound==1.2.2"],
+                check=True, capture_output=True, timeout=240)
+            msg = "edge support installed — pick 'edge' and Test."
+        except Exception as e:  # noqa: BLE001 - report every failure to the panel
+            msg = (f"install failed: {type(e).__name__} "
+                   "(try: uv pip install edge-tts playsound==1.2.2)")
+        self.app.call_from_thread(
+            self.query_one("#voice-status", Static).update, msg)
 
 
 class SettingsScreen(ModalScreen[Settings | None]):
