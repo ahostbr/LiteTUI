@@ -1229,16 +1229,19 @@ class LlamaCppBackend(_VramGate):
 
     # -- control ----------------------------------------------------------
 
-    async def load(self, key: str, *, ctx: int | None = None) -> None:
+    async def load(self, key: str, *, ctx: int | None = None, notice=None) -> None:
+        """`notice()` fires ON A WORKER THREAD, after every refusal, immediately
+        before the work — see the module note on T873. A UI caller marshals it
+        back itself (`App.call_from_thread`)."""
         async with self.vram_guard(key):
             if ctx is not None:
                 cfg = dict(self._settings.llama_load_settings.get(key, {}))
                 cfg["ctx"] = ctx
                 self._settings.llama_load_settings[key] = cfg
                 self._record_load_settings(key, cfg)
-                await self.apply_load_settings(key, cfg)
+                await self.apply_load_settings(key, cfg, notice=notice)
                 return
-            await asyncio.to_thread(self._load_sync, key)
+            await asyncio.to_thread(self._load_sync, key, notice)
 
     def _owner_label(self) -> str:
         """Who to name in a refusal. The record when there is one, and a
@@ -1325,11 +1328,19 @@ class LlamaCppBackend(_VramGate):
             "may be using it."
         )
 
-    def _load_sync(self, key: str) -> None:
+    def _load_sync(self, key: str, notice=None) -> None:
         self._refuse_if_attached("load a model")
         if key not in self._server_models():
             # New on disk since the ini was generated: rebuild the world.
             self._regen_ini()
+        # 🔴 T873. The caller used to print "Loading <key>…" BEFORE awaiting this,
+        # so on an adopted or single-model server the user read a promise and
+        # then `_refuse_if_attached`'s contradiction. Two guards can still refuse
+        # above this line (`_refuse_if_attached`, and `_regen_ini` on an adopted
+        # router), so the announcement belongs HERE — after them, before the
+        # request that is the work.
+        if notice is not None:
+            notice()
         try:
             _http_json(f"{self.host()}/models/load", {"model": key}, timeout=30)
         except urllib.error.HTTPError as e:
@@ -1385,12 +1396,12 @@ class LlamaCppBackend(_VramGate):
                 site="llm_backend")
             raise BackendError(f"could not unload {key!r} on the llama.cpp server — try again in a moment.") from e
 
-    async def apply_load_settings(self, key: str, cfg: dict) -> None:
+    async def apply_load_settings(self, key: str, cfg: dict, *, notice=None) -> None:
         # A reload IS a load: it puts the weights back with a new window.
         async with self.vram_guard(key):
-            await asyncio.to_thread(self._apply_sync, key, cfg)
+            await asyncio.to_thread(self._apply_sync, key, cfg, notice)
 
-    def _apply_sync(self, key: str, cfg: dict) -> None:
+    def _apply_sync(self, key: str, cfg: dict, notice=None) -> None:
         """Persist cfg for KEY, rewrite the ini, and bounce only that model.
         The settings dict is the durable truth; the ini is derived output.
 
@@ -1407,6 +1418,14 @@ class LlamaCppBackend(_VramGate):
         if info is not None and info.get("status", {}).get("value") == "loaded":
             self._unload_sync(key)   # evict while THIS router still knows it
         self._regen_ini()
+        # 🔴 T873, and AFTER `_regen_ini` on purpose. `_refuse_if_attached`
+        # RETURNS for an adopted router somebody signed for, and `_regen_ini`
+        # then refuses it anyway ("the preset belongs to it") — so a notice
+        # placed after the first guard alone would still be contradicted by the
+        # second. `_load_sync` is passed no notice: the reload below is this
+        # call's work, and it must not announce itself a second time.
+        if notice is not None:
+            notice()
         self._load_sync(key)
 
     def _regen_ini(self) -> None:
@@ -1640,10 +1659,17 @@ class LMStudioBackend(_VramGate):
 
     # -- control ----------------------------------------------------------
 
-    async def load(self, key: str, *, ctx: int | None = None) -> None:
+    async def load(self, key: str, *, ctx: int | None = None, notice=None) -> None:
         def _load() -> None:
             lms = self._sdk()
             config = {"contextLength": ctx} if ctx else None
+            # T873: after `_sdk()`, which is the last thing here that can refuse
+            # before the load itself. This backend has no attached-server guard
+            # — the promise was never wrong here — but the caller passes ONE
+            # notice to whichever backend answers, so it must fire on all of them
+            # or LM Studio users lose the line entirely.
+            if notice is not None:
+                notice()
             try:
                 lms.llm(key, config=config)
             except Exception as e:
@@ -1669,7 +1695,7 @@ class LMStudioBackend(_VramGate):
                 raise BackendError(f"could not unload {key!r} in LM Studio — try again in a moment.") from e
         await asyncio.to_thread(_unload)
 
-    async def apply_load_settings(self, key: str, cfg: dict) -> None:
+    async def apply_load_settings(self, key: str, cfg: dict, *, notice=None) -> None:
         """The SDK can drive context length (and load fresh); the rest of the
         Load tab is LM Studio's own UI's job — refused HONESTLY so the screen
         can grey those fields rather than fake them."""
@@ -1683,7 +1709,10 @@ class LMStudioBackend(_VramGate):
             )
         # No guard here: this delegates to `load`, which has one. Wrapping both
         # would ask twice for one action — see `_VramGate`.
-        await self.load(key, ctx=cfg.get("ctx"))
+        # The `rest` refusal above is already ahead of the notice `load` fires,
+        # so this path was never the T873 shape; the parameter only keeps the
+        # signature uniform for a caller that hands one to any backend.
+        await self.load(key, ctx=cfg.get("ctx"), notice=notice)
 
     # -- seat guard --------------------------------------------------------
 
