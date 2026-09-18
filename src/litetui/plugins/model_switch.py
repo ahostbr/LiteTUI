@@ -93,7 +93,18 @@ def _empty_state_hint(app) -> str:
     says nothing keeps today's words exactly, which is what stops this being a
     global find-and-replace.
     """
-    hint = getattr(app.backend, "empty_state_hint", None)
+    return backend_hint(app.backend)
+
+
+def backend_hint(backend) -> str:
+    """The same question, asked of a BACKEND rather than an app.
+
+    Split out for T862: `_plain_backend_error` in app.py is a pure function
+    with no app to hand, and it needs this channel too — a connection failure
+    on NInfer said "start it, or check /backend", and neither of those is a
+    step the user can take.
+    """
+    hint = getattr(backend, "empty_state_hint", None)
     try:
         text = hint() if callable(hint) else ""
     except Exception:  # noqa: BLE001 - a hint must never break the command

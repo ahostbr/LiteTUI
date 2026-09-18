@@ -396,7 +396,20 @@ def _connection_family(exc: BaseException) -> bool:
     return False
 
 
-def _plain_backend_error(e: BaseException, backend_name: str | None = None) -> str:
+def _backend_remedy(backend) -> str:
+    """What this backend says to do when it cannot be reached (T862).
+
+    Imported inside the call so a message can never be the thing that fails —
+    the lesson from T858, where a log line took the whole turn down with it.
+    """
+    try:
+        from litetui.plugins.model_switch import backend_hint
+        return backend_hint(backend)
+    except Exception:  # noqa: BLE001
+        return "try /reconnect"
+
+
+def _plain_backend_error(e: BaseException, backend: object | None = None) -> str:
     """The words the user reads when a backend call fails.
 
     Order matters and is deliberate:
@@ -406,12 +419,37 @@ def _plain_backend_error(e: BaseException, backend_name: str | None = None) -> s
       2. BackendError — its message was cleaned at source (T137);
       3. anything else gets one plain sentence, never a repr.
     """
+    # 🔴 `backend` IS THE OBJECT NOW, NOT ITS NAME (T862), because the fallback
+    # below has to ASK it what to do. The one-line normalisation keeps the
+    # fourteen existing call sites — and the arms that pass a bare "ninfer" —
+    # working unchanged; a caller with only a name gets the generic sentence,
+    # which is exactly what it could offer before.
+    backend_name = getattr(backend, "name", backend)
+
     if _connection_family(e):
         if backend_name == "lmstudio":
             return "LM Studio Seems Closed. Switch Backends Or Start LM Studio."
         if backend_name == "llamacpp":
             return ("The llama.cpp server seems closed — start it, or switch "
                     "backends (/backend).")
+        # 🔴 THE SIXTH SITE, AND IT PASSED THE T861 TEST (T862). Its default —
+        # "The model server seems closed — start it, or check /backend." —
+        # names NO specific backend, so the T861 discriminator ("does the
+        # default name a member it cannot know?") correctly cleared it and I
+        # left it. It fails the OTHER test: on NInfer with no engine, "start
+        # it" is not a step the user can take and /backend is the wrong
+        # surface. The remedy is /model then /engine start.
+        #
+        #     TWO DEFECT CLASSES CAN LIVE AT ONE SITE, AND A SITE CAN PASS ONE
+        #     TEST WHILE FAILING THE OTHER. "Does the default name a member it
+        #     cannot know?" and "is the remedy ACTIONABLE IN THE STATE THAT
+        #     PRODUCED IT?" are different questions about the same line.
+        #
+        # Found by DRIVING it, not by reading it: a card closed on reasoning
+        # stays closed on the reasoning.
+        remedy = _backend_remedy(backend)
+        if remedy and remedy != "try /reconnect":
+            return f"The model server seems closed — {remedy}"
         return "The model server seems closed — start it, or check /backend."
     if isinstance(e, llm_backend.BackendError):
         return str(e)
@@ -3736,7 +3774,7 @@ class LiteTUI(App):
                 exc=e,
             )
             self.sub_title = "Disconnected"
-            self._system(_plain_backend_error(e, self.backend.name))
+            self._system(_plain_backend_error(e, self.backend))
 
     _connect = connect          # arrival alias (PLAN §2b)
 
@@ -6365,7 +6403,7 @@ class LiteTUI(App):
                             "so the next message can go through."
                         )
                 widget.body.content = Text(
-                    takeover or _plain_backend_error(e, self.backend.name), style="bold red"
+                    takeover or _plain_backend_error(e, self.backend), style="bold red"
                 )
                 widget.border_title = "Error"
                 self._settle_turn_stop_line(
@@ -6375,7 +6413,7 @@ class LiteTUI(App):
                     stopped=True,
                 )
                 self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
-                                     error=takeover or _plain_backend_error(e, self.backend.name))
+                                     error=takeover or _plain_backend_error(e, self.backend))
                 return
 
             try:
@@ -6573,7 +6611,7 @@ class LiteTUI(App):
                             "so the next message can go through."
                         )
                 widget.body.content = Text(
-                    takeover or _plain_backend_error(e, self.backend.name), style="bold red"
+                    takeover or _plain_backend_error(e, self.backend), style="bold red"
                 )
                 widget.border_title = "Error"
                 self._settle_turn_stop_line(
@@ -6586,7 +6624,7 @@ class LiteTUI(App):
                 # did not, so an rpc client (LiteSuite's LiteTuiAdapter) that
                 # saw turn_start waited forever on a mid-stream 400.
                 self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
-                                     error=takeover or _plain_backend_error(e, self.backend.name))
+                                     error=takeover or _plain_backend_error(e, self.backend))
                 return
             finally:
                 if hasattr(stream, "close"):
@@ -7333,7 +7371,7 @@ class LiteTUI(App):
                 exc=e,
             )
             card.fail("failed \u2014 conversation unchanged")
-            self._system(f"Compact failed — conversation unchanged.\n{_plain_backend_error(e, self.backend.name)}")
+            self._system(f"Compact failed — conversation unchanged.\n{_plain_backend_error(e, self.backend)}")
             self._emit_compaction("failed",
                                   tokens_before=self.ctx_used,
                                   tokens_before_exact=self.ctx_used is not None,
