@@ -343,11 +343,17 @@ def refuse_reason(settings, *, healthy) -> str | None:
     return None
 
 
-def start(settings, *, healthy, spawn=ttyguard.popen) -> OwnedEngine:
+def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngine:
     """Spawn ninfer-serve with LiteSuite's argv, wait for its ready line, register it.
 
     `healthy(host) -> bool` and `spawn` are injected so the arms never touch the
     real card. Raises BackendError with the reason on every refusal or failure.
+
+    `notice()` is called ONCE, immediately before the spawn, for a caller that
+    wants to say "this will take a moment". It is here rather than in the caller
+    because ONLY THIS FUNCTION KNOWS THE START IS ACTUALLY HAPPENING (T865): five
+    conditions refuse above this line, and a caller announcing a start before
+    asking about them tells the user something the next line contradicts.
     """
     reason = refuse_reason(settings, healthy=healthy)
     if reason:
@@ -379,6 +385,8 @@ def start(settings, *, healthy, spawn=ttyguard.popen) -> OwnedEngine:
     # 14:1x 2026-09-17: the log is APPENDED across spawns, so a marker from an earlier run
     # must not count — only bytes written after this spawn's header are this engine's.
     start_off = lp.stat().st_size
+    if notice is not None:
+        notice()
     proc = spawn(
         [str(exe), *args],
         stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
