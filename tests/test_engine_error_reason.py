@@ -261,3 +261,67 @@ def test_a_real_connection_failure_is_still_recognised():
     dead = openai.APIConnectionError(request=request)
     assert getattr(dead, "status_code", None) is None
     assert "seems closed" in _plain_backend_error(dead, "ninfer")
+
+
+# ── the connection-family remedy must be reachable in that state (T862) ──────
+
+
+def test_a_dead_ninfer_names_a_remedy_the_user_can_actually_take():
+    """🔴 THE SIXTH SITE, AND IT PASSED THE T861 TEST.
+
+    `_plain_backend_error`'s connection-family fallback said "The model server
+    seems closed — start it, or check /backend." That default names NO specific
+    backend, so T861's discriminator ("does the default name a member it cannot
+    know?") cleared it and it was left in place, deliberately and on the record.
+
+    It fails a DIFFERENT question. On NInfer with no engine, "start it" is not a
+    step the user can take from this app and /backend is the wrong surface: the
+    remedy is /model to pick an artifact, then /engine start.
+
+        TWO DEFECT CLASSES CAN LIVE AT ONE SITE, AND A SITE CAN PASS ONE TEST
+        WHILE FAILING THE OTHER.
+
+    ⬜ Found by DRIVING it — an accidental empty turn produced this exact error
+    box — not by re-reading the file. A card closed on reasoning stays closed on
+    the reasoning.
+    """
+    import socket
+
+    from litetui.ninfer_backend import NInferBackend
+    from litetui.settings import Settings
+
+    dead = ConnectionRefusedError(socket.errno.ECONNREFUSED, "connection refused")
+    said = _plain_backend_error(dead, NInferBackend(Settings(ninfer_host="")))
+    assert "seems closed" in said
+    assert "/engine start" in said, said
+    assert "/backend" not in said, said
+
+
+def test_the_other_backends_connection_copy_is_byte_identical():
+    """🔴 THE HALF THAT STOPS THIS BEING A REWRITE. Both sentences are asserted
+    in full, because this is the one place where pinning the exact prose is
+    right: the claim IS that they did not change."""
+    import socket
+
+    dead = ConnectionRefusedError(socket.errno.ECONNREFUSED, "connection refused")
+
+    class _B:
+        def __init__(self, name):
+            self.name = name
+
+    assert _plain_backend_error(dead, _B("lmstudio")) == (
+        "LM Studio Seems Closed. Switch Backends Or Start LM Studio.")
+    assert _plain_backend_error(dead, _B("llamacpp")) == (
+        "The llama.cpp server seems closed — start it, or switch "
+        "backends (/backend).")
+
+
+def test_a_bare_name_still_works_and_gets_the_generic_sentence():
+    """⬜ Fourteen call sites passed a NAME before T862, and several arms still
+    do. A caller with only a string cannot be asked for a remedy, so it must get
+    exactly what it got before rather than an error."""
+    import socket
+
+    dead = ConnectionRefusedError(socket.errno.ECONNREFUSED, "connection refused")
+    assert _plain_backend_error(dead, "ninfer") == (
+        "The model server seems closed — start it, or check /backend.")
