@@ -75,17 +75,48 @@ def ninfer_executable(settings) -> Path:
     return Path(chosen) if chosen else litesuite_llm_dir() / "ninfer" / "ninfer-serve.exe"
 
 
+def artifacts_dir() -> Path:
+    """Where LiteSuite's Model Hub puts `.ninfer` containers."""
+    return litesuite_llm_dir() / "ninfer-models"
+
+
+def list_ninfer_artifacts() -> list[Path]:
+    """Every `.ninfer` on disk, sorted. THE MODEL LIST FOR THIS BACKEND.
+
+    🔴 ON NINFER THE MODEL IS NOT A CHOICE THE SERVER OFFERS. There is one
+    artifact per process, fixed when the engine starts, so `/model`'s usual
+    question — "which of the models this server has loaded?" — has no meaning
+    here. The real question is which FILE the next engine will serve, and until
+    T860 nothing in the TUI could ask it: `/model` and `/load` both list server
+    models, and the only way to choose was typing a path into /settings.
+
+    Extracted so the picker and `ninfer_artifact` below cannot disagree about
+    where artifacts live.
+    """
+    root = artifacts_dir()
+    return sorted(root.glob("*.ninfer")) if root.is_dir() else []
+
+
 def ninfer_artifact(settings) -> Path | None:
     """The artifact to serve: the setting, else the ONE `.ninfer` LiteSuite pulled.
 
     Two candidates and no choice is None, not a guess — the wrong 22 GB file is
     a long wait that ends in the wrong model.
+
+    ⚠️ AND THAT GUARD TOOK RYAN'S START PATH AWAY, SILENTLY, ON 2026-09-17.
+    Two artifacts existed that morning; a conversion run wrote a third at 20:1x
+    (qwen3_5_0_8b.ninfer). `len(found) == 1` stopped being true, so
+    `/engine start` began refusing — hours before he tried it, for a reason
+    that was nobody's mistake.
+
+        THE GUARD IS RIGHT AND STAYS. What was wrong is that the exit it leaves
+        had no door in the surface he was using. T860 gives `/model` the door;
+        this function is unchanged.
     """
     chosen = str(getattr(settings, "ninfer_artifact", "") or "").strip()
     if chosen:
         return Path(chosen)
-    root = litesuite_llm_dir() / "ninfer-models"
-    found = sorted(root.glob("*.ninfer")) if root.is_dir() else []
+    found = list_ninfer_artifacts()
     return found[0] if len(found) == 1 else None
 
 
