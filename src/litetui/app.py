@@ -6820,6 +6820,12 @@ class LiteTUI(App):
                             pp = _extra.get("prompt_progress")
                     if pp is not None:
                         self._eta.note_prefill(pp)
+                        # NInfer sends progress on a chunk that DOES carry a
+                        # choice with an EMPTY delta (not an empty choices list),
+                        # so it would fall through to record_first_delta below and
+                        # clear the prefill we just set. It is not an output token
+                        # — skip the rest of the loop for it.
+                        continue
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
