@@ -212,6 +212,12 @@ class TurnEngine:
         )
         if wire:
             extra["reasoning_effort"] = wire
+        # NInfer streams real prompt-processing progress when asked; LiteTUI
+        # reads the `prompt_progress` chunks and shows a measured prefill %
+        # instead of the previous-turn projection. Only NInfer serves it, so it
+        # is gated on the backend name (the same shape as the codex gate above).
+        if backend_name == "ninfer":
+            extra["return_progress"] = True
         if extra:
             kwargs["extra_body"] = extra
         return kwargs

@@ -5044,7 +5044,8 @@ class LiteTUI(App):
                     self._elapsed.body.content = render_progress(
                         self._elapsed.body_t0, now,
                         None if hasattr(self.backend, "app_server") else self._eta.estimate_tokens(),
-                        None if hasattr(self.backend, "app_server") else self._eta.learned_rate())
+                        None if hasattr(self.backend, "app_server") else self._eta.learned_rate(),
+                        prefill=self._eta.prefill_readout())
                 if self._thinking_live is not None:
                     # The app owns the tps reactive; the block only renders it.
                     # The reasoning half of TpsState's partition — not a
@@ -6633,6 +6634,7 @@ class LiteTUI(App):
             terminal_widget = widget
             self._active_turn_widget = widget
             self._elapsed.start(widget.body, started_at=turn_started_at)
+            self._eta.clear_prefill()  # NInfer prefill %, this request only
             thinking: ThinkingBlock | None = None
             text_full = ""
             reasoning = ""
@@ -6781,6 +6783,17 @@ class LiteTUI(App):
                             final_turn_tps_source = (
                                 "engine" if chunk_rate else "client")
                             self._active_turn_tps = rate
+                    # NInfer publishes prompt-processing progress as its own
+                    # chunks (return_progress=True) BEFORE the first output
+                    # delta and with no choices — read them here, ahead of the
+                    # no-choices skip that would otherwise drop them.
+                    pp = getattr(chunk, "prompt_progress", None)
+                    if pp is None:
+                        _extra = getattr(chunk, "model_extra", None)
+                        if _extra:
+                            pp = _extra.get("prompt_progress")
+                    if pp is not None:
+                        self._eta.note_prefill(pp)
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta

@@ -124,3 +124,18 @@ def test_set_result_settles_took():
     assert m._result == "all done"
     assert m._ok is True
     assert m._took is not None and 1.9 <= m._took < 3.0, m._took
+
+
+def test_render_progress_shows_measured_prefill_percent():
+    # A NInfer prefill readout (frac, processed, total) is the measured truth
+    # and REPLACES the est ~ projection.
+    line = render_progress(0, 1.0, prompt_tokens=999, learned_rate=999.0,
+                           prefill=(0.5, 71000, 112000))
+    assert "prefill 50%" in line, line
+    assert "71k/112k" in line, line
+    assert "est ~" not in line, line  # measurement wins over estimate
+
+
+def test_render_progress_falls_back_to_estimate_without_prefill():
+    line = render_progress(0, 1.0, prompt_tokens=4096, learned_rate=4096.0)
+    assert "est ~" in line, line

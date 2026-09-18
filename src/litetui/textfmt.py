@@ -215,16 +215,31 @@ def midturn_action(enter_interrupts: bool, alt_chord: bool) -> str:
     return "interrupt" if (enter_interrupts != alt_chord) else "queue"
 
 
-def render_progress(t0: float, now: float, prompt_tokens=None, learned_rate=None) -> str:
+def _compact_tokens(n: int) -> str:
+    """`112k` above a thousand, the plain count below — for the tight prefill
+    readout where `112,000 tok` would not fit."""
+    return f"{n / 1000:.0f}k" if n >= 1000 else str(n)
+
+
+def render_progress(t0: float, now: float, prompt_tokens=None, learned_rate=None,
+                    prefill=None) -> str:
     """Pure: the in-flight bubble text while no answer token has arrived yet.
     Elapsed since t0, always, with a trailing '…' to signal still working.
-    An ETA is appended ONLY when there is both a learned prompt-eval rate and a
-    prompt token count to apply it to; a None or zero rate (or a missing token
-    count) yields elapsed-only and never divides by zero. `prompt_tokens` is an
-    ESTIMATE (the previous turn's count), so the ETA is a projection, not a
+
+    `prefill` (a NInfer `EtaState.prefill_readout()`: fraction, processed, total)
+    is the MEASURED prompt-processing progress and wins when present — the
+    engine tells us exactly, so no estimate is shown. Otherwise an ETA is
+    appended ONLY when there is both a learned prompt-eval rate and a prompt
+    token count to apply it to; a None or zero rate (or a missing token count)
+    yields elapsed-only and never divides by zero. `prompt_tokens` is an
+    ESTIMATE (the previous turn's count), so that ETA is a projection, not a
     measurement of this turn. Inputs are optional so the pre-ETA callers
     (tool_display_parts, the pre-token answer bubble) keep working unchanged."""
     base = f"{fmt_dur(now - t0)} …"
+    if prefill is not None:
+        frac, processed, total = prefill
+        return (f"{base} · prefill {frac * 100:.0f}% · "
+                f"{_compact_tokens(processed)}/{_compact_tokens(total)}")
     if (learned_rate is not None and learned_rate > 0
             and prompt_tokens is not None and prompt_tokens > 0):
         eta_s = prompt_tokens / learned_rate

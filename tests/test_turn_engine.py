@@ -305,3 +305,13 @@ def test_a_delta_with_no_function_at_all_is_survivable():
     idx, named, argued = TurnEngine.accumulate_tool_call(acc, d)
     assert (named, argued) == (False, False)
     assert acc[0]["id"] == "call_1"
+
+
+def test_ninfer_asks_for_prompt_progress_others_do_not():
+    """return_progress rides extra_body ONLY for the ninfer backend, so the
+    engine streams real prefill progress. A blanket send would set a field
+    LM Studio / llama.cpp reject; not sending it for ninfer means the app is
+    back to the previous-turn projection this whole change replaces."""
+    assert _chat(backend_name="ninfer")["extra_body"]["return_progress"] is True
+    assert "extra_body" not in _chat(backend_name="lmstudio")
+    assert "extra_body" not in _chat(backend_name="")

@@ -91,6 +91,11 @@ class EtaState:
         self.samples: list[float] = []
         self.last_prompt_tokens: int | None = None
         self.first_delta: float | None = None
+        #: NInfer's `prompt_progress` for the in-flight turn, as
+        #: (processed, total, cache). None outside a prefill it reported —
+        #: only NInfer emits it, so every other backend leaves it None and
+        #: renders elapsed-only. Cleared at first output delta.
+        self.prefill: tuple[int, int, int] | None = None
 
     def record_first_delta(self) -> None:
         """Stamp the first delta of the current turn. first_token_s is then
@@ -98,6 +103,7 @@ class EtaState:
         it, so later deltas don't move it."""
         if self.first_delta is None:
             self.first_delta = time.monotonic()
+        self.prefill = None
 
     def learn(self, prompt_tokens, turn_started_at: float, is_reliable) -> None:
         """End of a turn: remember this turn's token count as the ESTIMATE for
@@ -134,6 +140,36 @@ class EtaState:
         """The token count the next turn's ETA is projected from: the most
         recent real count. None until the first turn reports usage."""
         return self.last_prompt_tokens
+
+    def note_prefill(self, pp) -> None:
+        """Fold one NInfer `prompt_progress` observation. `pp` is the raw dict
+        off the stream chunk ({total, cache, processed, time_ms}); a malformed
+        one is ignored rather than raised — a progress readout is never worth a
+        crashed turn."""
+        try:
+            self.prefill = (int(pp["processed"]), int(pp["total"]),
+                            int(pp["cache"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    def clear_prefill(self) -> None:
+        """New request: drop the previous turn's prefill so a stale 100% never
+        shows while the next prompt is still being sent."""
+        self.prefill = None
+
+    def prefill_readout(self):
+        """(fraction 0..1, processed, total) for the SUFFIX actually reprocessed,
+        i.e. (processed-cache)/(total-cache) per NInfer's serving spec, or None.
+        A full-cache hit (denominator 0) returns None: nothing was prefilled, so
+        there is no honest bar to paint."""
+        if self.prefill is None:
+            return None
+        processed, total, cache = self.prefill
+        denom = total - cache
+        if denom <= 0:
+            return None
+        frac = (processed - cache) / denom
+        return (max(0.0, min(1.0, frac)), processed, total)
 
 
 class ElapsedState:

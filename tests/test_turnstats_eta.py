@@ -106,3 +106,41 @@ def test_learned_rate_is_the_median_of_several_samples():
         e.learn(tokens, t0, _always)      # 500, 1500, 1000 tok/s
     assert sorted(e.samples) == [500.0, 1000.0, 1500.0]
     assert e.learned_rate() == 1000.0
+
+
+# --- prefill readout (NInfer return_progress) -------------------------------
+def test_prefill_readout_is_none_before_any_progress():
+    assert EtaState().prefill_readout() is None
+
+
+def test_prefill_readout_measures_the_reprocessed_suffix():
+    """(processed-cache)/(total-cache): a half-cached 8192-token prompt at
+    processed=6144 is (6144-4096)/(8192-4096) = 50%."""
+    e = EtaState()
+    e.note_prefill({"total": 8192, "cache": 4096, "processed": 6144, "time_ms": 41})
+    frac, processed, total = e.prefill_readout()
+    assert abs(frac - 0.5) < 1e-9, frac
+    assert (processed, total) == (6144, 8192)
+
+
+def test_prefill_readout_full_cache_hit_shows_nothing():
+    """cache == processed == total -> denominator 0 -> None (no synthetic bar)."""
+    e = EtaState()
+    e.note_prefill({"total": 8192, "cache": 8192, "processed": 8192, "time_ms": 0})
+    assert e.prefill_readout() is None
+
+
+def test_prefill_clamps_and_first_delta_clears_it():
+    e = EtaState()
+    e.note_prefill({"total": 100, "cache": 0, "processed": 100})
+    assert e.prefill_readout()[0] == 1.0
+    e.record_first_delta()          # first output token -> prefill is over
+    assert e.prefill_readout() is None
+
+
+def test_note_prefill_ignores_malformed_observation():
+    e = EtaState()
+    e.note_prefill({"total": 100})  # missing keys
+    assert e.prefill_readout() is None
+    e.note_prefill(None)
+    assert e.prefill_readout() is None
