@@ -325,3 +325,66 @@ def test_a_bare_name_still_works_and_gets_the_generic_sentence():
     dead = ConnectionRefusedError(socket.errno.ECONNREFUSED, "connection refused")
     assert _plain_backend_error(dead, "ninfer") == (
         "The model server seems closed — start it, or check /backend.")
+
+
+# ── the refusal that printed a web page (Ryan, 2026-09-18) ────────────────
+#
+# His compaction failed at 98% of a 100,096 window and the chat showed the
+# status followed by a whole HTML error document. His report: *"that error
+# doesnt tell you that in any meaninful way ... i know because i wrote the
+# app ... endusers wont"*. Two defects at one site: the detail was MARKUP,
+# and the two numbers that explained the refusal were never mentioned though
+# the app held both.
+
+#: Byte-for-byte what LM Studio answered, as it reached `message`.
+_LMSTUDIO_500_PAGE = (
+    '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+    "<title>Error</title>\n</head>\n<body>\n<pre>Internal Server Error</pre>\n"
+    "</body>\n</html>\n"
+)
+
+
+def test_an_html_error_page_is_reduced_to_its_sentence():
+    from litetui.app import _detail_sentence
+
+    out = _detail_sentence(_LMSTUDIO_500_PAGE)
+    assert "Internal Server Error" in out
+    assert "<" not in out and ">" not in out, "markup must never reach the chat"
+    assert "DOCTYPE" not in out.upper()
+    assert "\n" not in out, "the detail is one line, not a document"
+
+
+def test_plain_text_detail_is_returned_unchanged():
+    """The guard must not mangle a server that answers in prose."""
+    from litetui.app import _detail_sentence
+
+    assert _detail_sentence("model 'm1' is not loaded") == "model 'm1' is not loaded"
+
+
+def test_the_refusal_names_the_window_when_the_conversation_fills_it():
+    from litetui.app import _compaction_fit_note
+
+    note = _compaction_fit_note(98_105, 100_096, loaded=True)
+    assert "98,105" in note and "100,096" in note, "say the numbers, not 'too large'"
+    assert "98%" in note
+    assert "/truncate" in note, "a refusal without a remedy is half a message"
+    assert "PARALLEL" in note, "the pool split is the part a user cannot guess"
+
+
+def test_the_note_is_silent_when_there_is_room():
+    """Below the line a refusal means something else, and this sentence would
+    send the reader hunting for space that was never the problem."""
+    from litetui.app import _compaction_fit_note
+
+    assert _compaction_fit_note(20_000, 262_144, loaded=True) == ""
+
+
+def test_the_note_is_silent_when_the_window_is_only_the_models_ceiling():
+    """🔴 `ctx_max` may be the model's ceiling rather than the LOADED window.
+    A percentage computed against a ceiling the server is not honouring is
+    worse than silence."""
+    from litetui.app import _compaction_fit_note
+
+    assert _compaction_fit_note(98_105, 100_096, loaded=False) == ""
+    assert _compaction_fit_note(98_105, None, loaded=True) == ""
+    assert _compaction_fit_note(None, 100_096, loaded=True) == ""

@@ -211,6 +211,89 @@ async def test_saving_a_backend_setting_keeps_the_backend_on_the_new_object() ->
         assert a.backend._settings.ninfer_max_context == 100000
 
 
+@pytest.fixture
+def _no_settings_write(monkeypatch):
+    """`/backend`'s path PERSISTS the choice, which is right in production and
+    wrong in a suite: it rewrites the checkout's real settings.json. Caught by
+    conftest's `_guard_checkout_root_writes` on the first run of the arms
+    below. The arms assert the LIVE object, never the file, so the write is
+    stubbed rather than redirected."""
+    from litetui import settings as settings_mod
+
+    written: list = []
+    monkeypatch.setattr(settings_mod, "save", lambda s, *a, **k: written.append(s))
+    return written
+
+
+@pytest.mark.asyncio
+async def test_saving_a_changed_backend_actually_switches_the_engine(_no_settings_write) -> None:
+    """🔴 THE SAME DEFECT, ONE LAYER OUT — and the one Ryan hit hardest.
+
+    2026-09-18: *"i set the fucking backend to ninfer and loaded in vram and
+    its still talking to fucking lmstudio"*. Saving wrote `backend` to
+    settings.json and nothing else: `self.backend` is built by `make_backend`
+    at boot and was rebuilt ONLY by the `/backend` command, and `backend` was
+    not in the handler's `deferred` list either — so the control reported
+    success, changed nothing, and did not even say a /reconnect was needed.
+
+    The arm asserts the OBJECT changed, not just the string, because the
+    string was always right. That is what made it invisible.
+    """
+    from dataclasses import replace
+
+    from litetui import llm_backend
+
+    a = m.LiteTUI()
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    a._apply_context_length = lambda: None
+
+    async with a.run_test():
+        base = a.settings
+        base.backend = "lmstudio"
+        a.backend = llm_backend.make_backend(base)
+        assert a.backend.name == "lmstudio", "precondition: running on LM Studio"
+
+        reconnected: list[str] = []
+        a.connect = lambda: reconnected.append(a.backend.name)
+
+        a._on_settings_saved(replace(base, backend="ninfer"))
+
+        assert a.backend.name == "ninfer", (
+            "the saved backend must reach the LIVE engine, not just settings.json")
+        assert a.settings.backend == "ninfer"
+        assert reconnected == ["ninfer"], (
+            "a swapped backend must reconnect: `client` is built from "
+            "backend.base_url(), so a new object on the old endpoint is the "
+            "same bug one layer down")
+
+
+@pytest.mark.asyncio
+async def test_saving_with_the_backend_unchanged_does_not_reconnect(_no_settings_write) -> None:
+    """An unrelated save must not tear down a working connection."""
+    from dataclasses import replace
+
+    from litetui import llm_backend
+
+    a = m.LiteTUI()
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    a._apply_context_length = lambda: None
+
+    async with a.run_test():
+        base = a.settings
+        base.backend = "lmstudio"
+        a.backend = llm_backend.make_backend(base)
+
+        reconnected: list[str] = []
+        a.connect = lambda: reconnected.append(a.backend.name)
+
+        a._on_settings_saved(replace(base, tools_enabled=not base.tools_enabled))
+
+        assert reconnected == [], "only a CHANGED backend reconnects"
+        assert a.backend.name == "lmstudio"
+
+
 if __name__ == "__main__":
     asyncio.run(main())
     print(f"\n{sum(ok)}/{len(ok)} passed")

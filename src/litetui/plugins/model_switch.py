@@ -198,24 +198,13 @@ def _switch_backend(app, choice: str) -> None:
     if choice == app.backend.name:
         app.system_message(f"Already on {choice}")
         return
-    s = app.settings
-    s.backend = choice
-    s.backend_chosen = True
-    settings_mod.save(s)
-    # Deliberately NOT shutting the old engine down: a mid-session flip that
-    # evicted the resident model would make flipping back cost a full reload.
-    # VRAM is freed explicitly (/unload) or at app exit (atexit).
-    if hasattr(app.backend, "app_server"):
-        app.backend.shutdown()
-    app.backend = llm_backend.make_backend(s)
-    # The conversation is NOT touched — history survives an engine switch;
-    # only the endpoint and the model list change.
-    app.model_id = ""
-    app.available_models = []
-    app.model_rows = {}
-    app.update_header()
-    app.system_message(f"Backend → {choice}; reconnecting…")
-    app.connect()
+    # The SEQUENCE moved to `App.apply_backend_change` so /settings could reach
+    # it too — saving a changed `backend` used to write settings.json and stop
+    # there, leaving the app on the old engine (Ryan, 2026-09-18). It could not
+    # live here and be called from app.py: app.py may not import a plugin
+    # module, which `test_app_never_imports_a_plugin_module` enforces.
+    # The guards above stay here, where the user typed the command.
+    app.apply_backend_change(choice)
 
 
 def _ninfer_mark(app) -> str:

@@ -487,10 +487,67 @@ def _plain_backend_error(e: BaseException, backend: object | None = None) -> str
     # nothing. '400' tells a reader it was REFUSED, not dropped.
     status = getattr(e, "status_code", None)
     if isinstance(status, int):
-        detail = str(getattr(e, "message", "") or "").strip()
+        detail = _detail_sentence(getattr(e, "message", ""))
         return (f"the model server refused the request (HTTP {status})"
                 + (f": {detail}" if detail else "."))
     return "Something went wrong talking to the model server."
+
+
+def _detail_sentence(raw: object, *, limit: int = 200) -> str:
+    """The server's detail as one line of PROSE, never as markup.
+
+    RYAN, 2026-09-18, on the compaction failure that printed a whole error
+    page into the chat: *"that error doesnt tell you that in any meaninful
+    way ... i know because i wrote the app ... endusers wont"*.
+
+    A local model server answers a refused request with an HTML error
+    document, and `APIStatusError.message` carries it verbatim - so the one
+    useful token ("Internal Server Error") arrived wrapped in forty lines of
+    DOCTYPE, head, meta and body that pushed the status line off screen. The
+    markup is not detail; it is the absence of detail, formatted.
+
+    Tags out, whitespace collapsed, capped. A server that answers in plain
+    text is unaffected: nothing here matches, and the string is returned as
+    it arrived.
+    """
+    detail = str(raw or "").strip()
+    if not detail:
+        return ""
+    if detail[:1] == "<" or "<!DOCTYPE" in detail[:200].upper() or "</" in detail:
+        detail = re.sub(r"<[^>]*>", " ", detail)
+        detail = re.sub(r"\s+", " ", detail).strip()
+    if len(detail) > limit:
+        detail = detail[: limit - 1].rstrip() + "…"
+    return detail
+
+
+def _compaction_fit_note(used: int | None, mx: int | None, *, loaded: bool) -> str:
+    """Why a compaction was refused, in the numbers the app already holds.
+
+    A compaction sends the HISTORY PLUS a summary prompt, so it needs MORE
+    room than the conversation already occupies. Near the top of the window
+    that is arithmetically impossible, and the server answers 500 - a status
+    that describes the server's surprise and not the user's problem. The app
+    knew `ctx_used` and `ctx_max` the whole time and said neither.
+
+    🔴 `ctx_max` MAY BE THE MODEL'S CEILING RATHER THAN THE LOADED WINDOW, so
+    `loaded` gates every division here. A confident percentage computed
+    against a ceiling the server is not honouring is worse than silence: it
+    sends the reader to look for room that was never there.
+
+    Silent below 80%, where a refusal means something else and this sentence
+    would be a confident wrong lead.
+    """
+    if not (used and mx and loaded) or used < mx * 0.8:
+        return ""
+    return (
+        f"\nThe conversation is {used:,} tokens of a {mx:,} window ({used / mx:.0%}), and a "
+        f"compaction has to send the history PLUS a summary prompt — so it needs more room "
+        f"than the conversation already fills. That is what was refused.\n"
+        f"Free room with /truncate, or give the model a larger window. In LM Studio a "
+        f"PARALLEL setting of N splits the KV pool N ways, so each request gets 1/N of it — "
+        f"check that before raising the context size."
+    )
 
 
 def _media_refused_for_good(e: object) -> bool:
@@ -659,6 +716,15 @@ class LiteTUI(App):
     }
 
     .user-msg {
+        /* 🔴 `height: auto` OR THE BUBBLE EATS THE VIEWPORT. `UserMessage` is a
+           Vertical, and Textual's Vertical defaults to `height: 1fr` — so one
+           line of "hey buddy" rendered as a full-screen slab of background
+           with the text stranded at the top. `.assistant-msg` below has always
+           carried this line; `.user-msg` never did, which is why only the user
+           side showed it, and why a QUEUED bubble (mounted while the log still
+           has free rows to give away) looked completely empty.
+           Ryan, 2026-09-18: "queue message broken". */
+        height: auto;
         background: $primary-darken-3;
         color: $text;
         margin: 1 2 0 8;
@@ -4660,8 +4726,76 @@ class LiteTUI(App):
         self._scroll_down()
         return w
 
+    def apply_backend_change(self, choice: str) -> None:
+        """Move this app onto another engine. THE one place that does it.
+
+        🔴 IT LIVES HERE BECAUSE app.py MAY NOT IMPORT A PLUGIN. The first cut
+        of the settings fix called `plugins.model_switch._switch_backend`
+        directly and turned `test_app_never_imports_a_plugin_module` red — the
+        re-accretion guard, and it was right: the substrate does not reach down
+        into a command module. So the SEQUENCE lives in the substrate and
+        `/backend` calls down into it, which is the direction that was always
+        allowed. Its user-facing guards (a turn in flight, already on this
+        engine) stay in the command, where the user typed.
+
+        Swapping `self.backend` alone is not enough and that is the subtle
+        half: `self.client` is built from `backend.base_url()`, so a new object
+        on the old endpoint keeps talking to the old server. The reconnect is
+        part of the change, not a follow-up.
+        """
+        s = self.settings
+        s.backend = choice
+        s.backend_chosen = True
+        settings_mod.save(s)
+        # Deliberately NOT shutting the old engine down: a mid-session flip that
+        # evicted the resident model would make flipping back cost a full reload.
+        # VRAM is freed explicitly (/unload) or at app exit (atexit).
+        if hasattr(self.backend, "app_server"):
+            self.backend.shutdown()
+        self.backend = llm_backend.make_backend(s)
+        # The conversation is NOT touched — history survives an engine switch;
+        # only the endpoint and the model list change.
+        self.model_id = ""
+        self.available_models = []
+        self.model_rows = {}
+        self.update_header()
+        self.system_message(f"Backend → {choice}; reconnecting…")
+        self.connect()
+
     def _assistant_bubble(self) -> AssistantMessage:
         log = self.query_one("#chat-log")
+        # A CARD IS FINISHED WHEN THE NEXT ONE STARTS — settle the previous one
+        # HERE, not only in `_settle_turn_stop_line`.
+        #
+        # `settled` had exactly one live writer, and it fires ONCE PER TURN:
+        # `_settle_turn_stop_line` is guarded by `_turn_stop_line_settled`,
+        # reset at turn start. An agentic turn mounts one card per model ROUND,
+        # so every card but the last stayed unsettled forever - and both
+        # features that gate on it were dead for the whole turn:
+        # `_autocollapse_offscreen` skips `not card.settled`, `autocollapse()`
+        # bails on it, and `_kick_card_summary` is only reached from the settle
+        # path. Measured on Ryan's screen 2026-09-18: an 11m 17s autonomous
+        # turn, a dozen expanded cards, no summary on any of them. It works in
+        # single-round chat, which is the shape it was tested in on 09-16.
+        #
+        # Mounting the next bubble is the round boundary, and it needs no
+        # knowledge of WHY the round ended (tool call, cap, or answer).
+        #
+        # ⚠️ SETTLED ONLY — NO SUMMARY HERE. The first cut also called
+        # `_kick_card_summary`, which turned
+        # `test_real_stream_rejected_completion_never_finalizes` red: it counts
+        # card-summary requests by PURPOSE and saw 2 where 1 is right. That arm
+        # pins one summary per TURN on purpose, and it is also the economics —
+        # a summary is a model call, so one per tool ROUND would bill an
+        # autonomous turn a dozen times and describe a draft a hook may reject.
+        # Collapse needs `settled` and nothing else, and collapse is what was
+        # reported missing.
+        try:
+            prior = list(log.query(AssistantMessage))
+        except Exception:
+            prior = []
+        if prior and not prior[-1].settled:
+            prior[-1].settled = True
         w = AssistantMessage()
         w.border_title = "AI"
         log.mount(w)
@@ -4923,8 +5057,42 @@ class LiteTUI(App):
         return self._follow_generation
 
     def _reader_left_follow_tail(self) -> None:
-        """Give newer upward reader intent priority over deferred app work."""
+        """Give newer upward reader intent priority over deferred app work.
+
+        🔴 AND RECORD THAT THE READER LEFT, WHEN NOTHING ELSE WILL.
+
+        A cleared anchor means "follow" — right at boot, where nobody has
+        scrolled and the content simply outran a reader who never moved, and
+        WRONG after a rebuild, where the reader has a real position. Every
+        log-emptying site clears it (see `test_autoscroll`'s source arm), and
+        a compaction that FAILS clears it again on every retry.
+
+        RYAN, 2026-09-18, at 98% of the window with compaction looping:
+        *"i srolled to bottom to lock it but its flying up SMH WTF!"*.
+        Measured on a 100x20 pilot: reader parked at row 10, anchor cleared,
+        the next thing the turn mounted yanked them to 87 — over and over.
+
+        Geometry cannot fix this at the predicate: `scroll_y` well below
+        `max_scroll_y` is BOTH "scrolled up" and "outran by a thinking block",
+        and that ambiguity is the whole reason the anchor exists. Asking
+        `_at_bottom` there breaks `test_log_follows_a_filling_thinking_block`
+        (measured: scroll_y 0.0, max_scroll_y 88) — the flakiness
+        `_scroll_down`'s docstring warns about, reproduced.
+
+        The unambiguous signal is the WHEEL, which is the one event that only
+        a human produces. If it arrives while the anchor is unset, the reader
+        HAS moved, so plant one at the tail they are leaving and let the
+        ordinary comparison take over: below it they are reading, back at it
+        they are following again.
+        """
         self._next_follow_generation()
+        if self._follow_anchor is None:
+            try:
+                self._follow_anchor = self.query_one("#chat-log").max_scroll_y
+            except Exception:
+                # No log yet (boot), or no geometry: leave it unset. The old
+                # behaviour — trivially following — is the safe one here.
+                pass
 
     def _still_following(self, log) -> bool:
         """Has the READER moved, or has the CONTENT moved?
@@ -7404,7 +7572,12 @@ class LiteTUI(App):
                 exc=e,
             )
             card.fail("failed \u2014 conversation unchanged")
-            self._system(f"Compact failed — conversation unchanged.\n{_plain_backend_error(e, self.backend)}")
+            self._system(
+                f"Compact failed — conversation unchanged.\n"
+                f"{_plain_backend_error(e, self.backend)}"
+                + _compaction_fit_note(self.ctx_used, self.ctx_max,
+                                       loaded=getattr(self, "ctx_loaded", False))
+            )
             self._emit_compaction("failed",
                                   tokens_before=self.ctx_used,
                                   tokens_before_exact=self.ctx_used is not None,
@@ -7566,6 +7739,13 @@ class LiteTUI(App):
         old = self.settings
         self._settings_persist_error = None
         self.settings = new
+        # `new` is a DIFFERENT object than the one the backend captured at
+        # construction (`_collect` did `replace()`), so re-point it here or a
+        # saved backend setting — ninfer_max_context above all — stays on the
+        # stale object and never reaches the engine. See `_VramGate.set_settings`.
+        backend = getattr(self, "backend", None)
+        if backend is not None and hasattr(backend, "set_settings"):
+            backend.set_settings(new)
         # New/edited custom themes must exist in the registry BEFORE the
         # theme_name below tries to apply one of them.
         self._register_custom_themes()
@@ -7616,6 +7796,35 @@ class LiteTUI(App):
         if new.thinking_level != old.thinking_level and not codex_default_changed:
             self.thinking_level = new.thinking_level
             self._reasoning_ignored_warned = False  # re-arm: it is per-config
+        # 🔴 THE BACKEND CONTROL IN SETTINGS WAS SILENTLY INERT.
+        #
+        # RYAN, 2026-09-18: *"i set the fucking backend to ninfer and loaded in
+        # vram and its still talking to fucking lmstudio"*. He was right. Saving
+        # wrote `backend` to settings.json and stopped there: `self.backend` is
+        # built by `make_backend` at boot and rebuilt ONLY by `/backend` — the
+        # factory's own docstring says so. `backend` was not in the `deferred`
+        # list below either, so the save did not even say a /reconnect was
+        # needed. The control reported success and changed nothing.
+        #
+        # `_adopt_convo_backend` already names this exact failure one field
+        # over: *"silently answering on a different engine while the header
+        # names the old one is the failure this card exists to prevent"*.
+        #
+        # ROUTED THROUGH `/backend`'s OWN PATH, NOT A SECOND SWITCH. Swapping
+        # the object alone is the same bug one layer down: `self.client` is an
+        # AsyncOpenAI built from `backend.base_url()`, so the app would keep
+        # talking to the old endpoint through a new object. `_switch_backend`
+        # stops the old app_server, rebuilds through the factory (so the T690
+        # VRAM gate is stamped), clears the stale model id and rows, re-headers
+        # and reconnects — and it carries the mid-turn guard for free.
+        if new.backend != old.backend:
+            try:
+                self.apply_backend_change(new.backend)
+            except llm_backend.BackendError as e:
+                self._system(
+                    f"Cannot switch to {new.backend}: {e} — staying on "
+                    f"{getattr(self.backend, 'name', old.backend)}."
+                )
         self._update_header()
         self._refresh_ctx_label()
 
@@ -7640,6 +7849,15 @@ class LiteTUI(App):
                                                 "skills_enabled")]
         if deferred:
             note += ("\n  Applies on next /reconnect: " + ", ".join(deferred))
+        # NInfer's spawn-time knobs are read by `ninfer_engine.start`, not on
+        # /reconnect — a RUNNING engine keeps its current --max-context until it
+        # is restarted. Say that, or the control reads as broken.
+        spawn = [c for c in changed if c in ("ninfer_max_context", "ninfer_artifact",
+                                            "ninfer_executable")]
+        if spawn:
+            note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "
+                     "— stop the running engine first (/engine stop), or it keeps "
+                     "its current context.")
         if codex_default_changed:
             note += "\n  Thinking default applies to new conversations; this conversation retains its chosen mode."
         self._system(note)
@@ -7694,13 +7912,6 @@ class LiteTUI(App):
         text = self._mark_message(data)
         content: list = [
             {"type": "image_url",
-        # `new` is a DIFFERENT object than the one the backend captured at
-        # construction (`_collect` did `replace()`), so re-point it here or a
-        # saved backend setting — ninfer_max_context above all — stays on the
-        # stale object and never reaches the engine. See `_VramGate.set_settings`.
-        backend = getattr(self, "backend", None)
-        if backend is not None and hasattr(backend, "set_settings"):
-            backend.set_settings(new)
              "image_url": {"url": f"data:image/png;base64,{b64}"}},
             {"type": "text", "text": text},
         ]
@@ -7778,12 +7989,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        # NInfer's spawn-time knobs are read by `ninfer_engine.start`, not on
-        # /reconnect — a RUNNING engine keeps its current --max-context until it
-        # is restarted. Say that, or the control reads as broken.
-        spawn = [c for c in changed if c in ("ninfer_max_context", "ninfer_artifact",
-                                            "ninfer_executable")]
-        if spawn:
-            note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "
-                     "— stop the running engine first (/engine stop), or it keeps "
-                     "its current context.")

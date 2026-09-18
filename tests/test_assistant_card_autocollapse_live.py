@@ -143,3 +143,71 @@ async def test_fold_does_not_cascade_or_oscillate() -> None:
             await pilot.pause()
         assert [c.collapsed for c in cards] == first_pass, "fold must be a fixed point"
         assert cards[-1].collapsed is False, "the newest card is the one being read"
+
+
+# ── the round boundary ───────────────────────────────────────────────────
+#
+# 🔴 EVERY TEST ABOVE SETS `settled` ITSELF (`_card(..., settled=True)`), so
+# none of them can see whether the APP ever sets it. It did not, for any card
+# but a turn's last: `_settle_turn_stop_line` is guarded by
+# `_turn_stop_line_settled`, reset once per TURN, while an agentic turn mounts
+# one card per ROUND. Measured on Ryan's screen 2026-09-18 — an 11m 17s
+# autonomous turn, a dozen expanded cards — with the whole suite green.
+#
+# ⚠️ SETTLING ONLY. `_assistant_bubble` deliberately does NOT ask for a card
+# summary: `test_real_stream_rejected_completion_never_finalizes` pins one
+# summary per TURN, and a summary is a model call. Collapse is what needs
+# `settled`, and collapse is what was missing.
+
+
+@pytest.mark.asyncio
+async def test_a_new_bubble_settles_the_card_before_it() -> None:
+    app = _app()
+    async with app.run_test(size=(100, 20)) as pilot:
+        first = app._assistant_bubble()
+        await pilot.pause()
+        first.body.update("round one answer")
+        assert not first.settled, "a card is not settled while it is being written"
+
+        second = app._assistant_bubble()   # the next round begins
+        await pilot.pause()
+
+        assert first.settled, "mounting the next card must settle the one before it"
+        assert not second.settled, "the live card is never settled by its own mount"
+
+
+@pytest.mark.asyncio
+async def test_settling_at_the_round_boundary_costs_no_model_call() -> None:
+    """The guard on the narrowed fix: a dozen rounds must not bill a dozen
+    summaries."""
+    app = _app()
+    async with app.run_test(size=(100, 20)) as pilot:
+        kicked: list = []
+        app._kick_card_summary = kicked.append
+
+        for _ in range(3):
+            app._assistant_bubble()
+            await pilot.pause()
+
+        assert kicked == [], "the round boundary must not ask for a summary"
+
+
+@pytest.mark.asyncio
+async def test_a_mid_turn_card_can_now_actually_fold() -> None:
+    """The whole point: cards from earlier ROUNDS fold once they scroll away.
+    Before this, only a turn's last card ever could."""
+    app = _app()
+    async with app.run_test(size=(100, 14)) as pilot:
+        first = app._assistant_bubble()
+        await pilot.pause()
+        first.set_model_name("qwen3-30b")
+        first.body.update("FIRST\n" + "\n".join(f"line {i}" for i in range(40)))
+        second = app._assistant_bubble()
+        await pilot.pause()
+        second.body.update("SECOND\n" + "\n".join(f"line {i}" for i in range(40)))
+
+        app._scroll_down(reader_acted=True)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert first.collapsed, "a mid-turn card pushed above the viewport must fold"

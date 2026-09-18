@@ -131,8 +131,14 @@ class FakeApp:
         self._follow_generation += 1
         return self._follow_generation
 
-    def _reader_left_follow_tail(self):
-        self._next_follow_generation()
+    # 🔴 BOUND, NOT REIMPLEMENTED — for the reason stated above, and because a
+    # hand-written copy of this one hid a defect. It used to bump the
+    # generation and nothing else; the real method also PLANTS AN ANCHOR when
+    # none is set, which is what stops a rebuild-cleared anchor from reading as
+    # "following" and yanking a reader who has wheeled up (Ryan, 2026-09-18).
+    # A stub that only bumps the generation passes every arm below while the
+    # product drags the reader.
+    _reader_left_follow_tail = app_mod.LiteTUI._reader_left_follow_tail
 
     def __init__(self, log, autoscroll=True, follow_anchor=100.0):
         self._log = log
@@ -205,7 +211,15 @@ def test_streaming_follows_a_reader_at_the_tail():
 
 
 def test_unset_anchor_is_trivially_following():
-    """Nothing has been scrolled yet, so there is no reader movement to respect."""
+    """Nothing has been scrolled yet, so there is no reader movement to respect.
+
+    ⚠️ AND IT MUST STAY THAT WAY. The fix for Ryan's 2026-09-18 yank does NOT
+    live here: a first cut made this case ask `_at_bottom` instead, which
+    cannot tell "scrolled up" from "outran by a filling thinking block" and
+    turned `test_log_follows_a_filling_thinking_block` red (measured: scroll_y
+    0.0, max_scroll_y 88). The discriminator is the WHEEL — see
+    `_reader_left_follow_tail` and the arms at the end of this file.
+    """
     log = FakeScroll(40.0, 100.0)
     app_mod.LiteTUI._scroll_down(FakeApp(log, follow_anchor=None))
     assert log.scrolled is True
@@ -651,3 +665,71 @@ def test_emptying_the_log_clears_the_anchor():
             f"emptying the log did not invalidate already queued scroll work "
             f"(near offset {i})"
         )
+
+
+# ── a cleared anchor plus a wheel is a reader who left (Ryan, 2026-09-18) ────
+#
+# The source arm above pins that every log-emptying site CLEARS the anchor.
+# That is right — a position from a conversation just thrown away is
+# meaningless. What was wrong is what a cleared anchor then MEANT: it read as
+# "following", so the next thing the turn mounted scrolled the reader to the
+# end. A compaction clears it on every attempt, and a FAILING compaction
+# retries, so Ryan's seat cleared it in a loop at 98% of the window:
+#
+#     "i srolled to bottom to lock it but its flying up SMH WTF!"
+#
+# Measured on a 100x20 pilot before the fix: reader parked at row 10, anchor
+# cleared, next mount yanked them to 87.
+#
+# THE PREDICATE CANNOT DECIDE THIS. `scroll_y` below `max_scroll_y` is both
+# "scrolled up" and "outran by a filling thinking block", and telling those
+# apart is the entire reason the anchor exists — a first cut that asked
+# `_at_bottom` for the unset case turned
+# `test_log_follows_a_filling_thinking_block` red. The wheel is the one event
+# only a human produces, so that is where the fix lives.
+
+
+def test_a_wheel_with_no_anchor_plants_one_at_the_tail():
+    log = FakeScroll(100.0, 100.0)
+    app = FakeApp(log, follow_anchor=None)
+
+    app._reader_left_follow_tail()
+
+    assert app._follow_anchor == 100.0, (
+        "a reader wheeling up with no anchor left the tail — record it, or the "
+        "next mount reads 'no anchor' as 'following'")
+
+
+def test_after_that_wheel_a_parked_reader_is_not_dragged():
+    """The whole sequence, in the order Ryan hit it."""
+    log = FakeScroll(100.0, 100.0)
+    app = FakeApp(log, follow_anchor=None)   # a rebuild has just cleared it
+
+    app._reader_left_follow_tail()           # he wheels up…
+    log.scroll_y = 40.0                      # …and lands mid-history
+
+    app_mod.LiteTUI._scroll_down(app)        # the turn mounts the next card
+    assert log.scrolled is False, "the reader was dragged back to the tail"
+
+
+def test_a_wheel_does_not_overwrite_an_anchor_we_already_have():
+    """Only the UNSET case is a guess. An anchor we recorded ourselves is the
+    position we last scrolled to, and moving it to the current tail would
+    silently re-lock a reader who is still reading."""
+    log = FakeScroll(60.0, 100.0)
+    app = FakeApp(log, follow_anchor=55.0)
+
+    app._reader_left_follow_tail()
+
+    assert app._follow_anchor == 55.0
+
+
+def test_a_wheel_still_invalidates_queued_scroll_work():
+    """The behaviour this method already had, kept."""
+    log = FakeScroll(100.0, 100.0)
+    app = FakeApp(log, follow_anchor=None)
+    before = app._follow_generation
+
+    app._reader_left_follow_tail()
+
+    assert app._follow_generation > before
