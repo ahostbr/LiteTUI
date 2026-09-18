@@ -3670,9 +3670,30 @@ class LiteTUI(App):
             # the sink; chat gets plain words. The old line named the host so a
             # reader could blame it — T137 keeps that fact for debugging, out of
             # chat, where a URL tells nobody what to do.
+            # 🔴 `host()` RAISES, AND THIS IS THE ERROR PATH (T858). Ryan opened
+            # LiteTUI with the engine down and got a Textual WorkerFailed dump
+            # instead of the sentence three lines below, which the code had
+            # already written for exactly this case: `ensure_running` raised
+            # "no NInfer engine is registered...", and then THIS line raised a
+            # second BackendError out of the handler.
+            #
+            #     AN ERROR HANDLER RUNS ONLY WHEN SOMETHING IS ALREADY BROKEN,
+            #     SO IT MUST NOT ASK FOR ANYTHING THAT THE BREAKAGE REMOVES. On
+            #     this backend the most likely cause of the failure IS the thing
+            #     that makes `host()` raise.
+            #
+            # `base_url()` carries the same lesson in capitals at
+            # ninfer_backend.py:335 — it was fixed for the identical crash at
+            # construction. It was applied to one method and not to its
+            # neighbour. `host()` keeps raising: that contract is right for
+            # callers who need an address and cannot proceed without one.
+            try:
+                where = self.backend.host()
+            except Exception:  # noqa: BLE001 - a log line must never fail a turn
+                where = "no host"
             runtime_log.record_error(
                 "backend_connect_failed",
-                detail=f"connect to {self.backend.host()}: {type(e).__name__}: {e}",
+                detail=f"connect to {where}: {type(e).__name__}: {e}",
                 exc=e,
             )
             self.sub_title = "Disconnected"
