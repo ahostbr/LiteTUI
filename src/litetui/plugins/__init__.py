@@ -58,6 +58,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.ask_user_question",
     "litetui.plugins.studio",
     "litetui.plugins.listen",
+    "litetui.plugins.convo_search",   # T888: fleet-wide convo search (CLI dispatch)
     "litetui.plugins.skills_plugin",
     "litetui.plugins.harness_plugin",
     "litetui.plugins.mcp_plugin",

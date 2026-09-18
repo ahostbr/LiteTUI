@@ -1,0 +1,44 @@
+{
+  "type": "function",
+  "function": {
+    "name": "convo_search",
+    "description": "Ranked search over ALL LiteHarness conversations on this machine (C:\\Projects\\LiteTUI\\.convos, 400+ convos) — the fleet-wide memory of what every agent has ever discussed, decided or run. Backed by SQLite FTS5 (bm25, user/assistant messages weighted 10x tool output). Default view is ONE ROW PER CONVO ranked by its best match — it answers 'which conversation', use `messages=true` for the flat per-message view.\nquery: search terms, implicit AND, quoted phrases supported. Verify ground truth before trusting a no-hit: a word absent from every raw transcript genuinely returns nothing (grep for absence is the raw file, not this index).\nshow: dump one conversation's indexed messages (convo id or unique prefix).\nraw: grep the RAW on-disk convo.jsonl with a regex (convo id as `raw`, pattern as `query`) — for confirming what the index holds.\nstats: index health — convo/message/char counts by role. The index is incremental and current; no rebuild needed to search.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "search terms (implicit AND); with raw=, a regex pattern instead"
+        },
+        "show": {
+          "type": "string",
+          "description": "dump one convo's indexed messages (convo id or unique prefix)"
+        },
+        "raw": {
+          "type": "string",
+          "description": "grep the raw on-disk convo.jsonl for a convo (id or prefix); query becomes the regex"
+        },
+        "stats": {
+          "type": "boolean",
+          "description": "index health report and exit"
+        },
+        "agent": {
+          "type": "string",
+          "description": "only convos of this agent_name"
+        },
+        "since": {
+          "type": "number",
+          "description": "only convos created within N days"
+        },
+        "limit": {
+          "type": "number",
+          "description": "max results (default 10)"
+        },
+        "messages": {
+          "type": "boolean",
+          "description": "flat per-message view instead of one row per convo"
+        }
+      }
+    }
+  }
+}
