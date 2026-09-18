@@ -453,7 +453,23 @@ class NInferBackend(_VramGate):
 
     def stop_engine(self) -> str:
         if self._owned is None:
-            reg = discover_ninfer_host()
+            # 🔴 NO HANDLE IS NOT THE SAME AS NOT OURS. `self._owned` answers
+            # "did THIS PROCESS start it" and is lost on every restart; the
+            # registry entry LiteTUI wrote answers "did LITETUI start it" and
+            # carries the pid. Reading only the URL here is what told Ryan
+            # (2026-09-18) his own engine "was not started by LiteTUI" while
+            # the record beside it said `owner: "litetui"` — and left 10.7 GB
+            # resident with no way to stop it from the app that spawned it.
+            from litetui import ninfer_engine
+
+            entry = ninfer_engine.registered_entry()
+            if entry and entry.get("owner") == "litetui" and entry.get("pid"):
+                host = entry["baseUrl"]
+                if ninfer_engine.stop_registered(entry):
+                    return (f"stopped the engine LiteTUI started at {host} "
+                            f"(pid {entry['pid']}, from the registry — this "
+                            f"session did not hold its handle).")
+            reg = entry["baseUrl"] if entry else discover_ninfer_host()
             if reg:
                 return f"the engine at {reg} was not started by LiteTUI — stop it where it was started (LiteSuite's Model Hub, or the shell that ran it)."
             return "no engine is running."
@@ -466,6 +482,18 @@ class NInferBackend(_VramGate):
             alive = self._owned.alive and self._health(self._owned.host)
             return f"LiteTUI-owned engine at {self._owned.host}: {'answering' if alive else 'NOT answering'} (log {self._owned.log_path})"
         explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
+        if not explicit:
+            # Same correction as `stop_engine`: a LiteTUI-owned entry must not
+            # report as "attached", or status and stop disagree about who owns
+            # the engine and the user is told to go stop it somewhere else.
+            from litetui import ninfer_engine
+
+            entry = ninfer_engine.registered_entry()
+            if entry and entry.get("owner") == "litetui" and entry.get("pid"):
+                host = entry["baseUrl"]
+                return (f"LiteTUI-owned engine at {host} (pid {entry['pid']}, from the "
+                        f"registry — this session did not start it): "
+                        f"{'answering' if self._health(host) else 'NOT answering'} · /engine stop")
         reg = explicit or discover_ninfer_host()
         if reg is None:
             return "no engine registered — /engine start (LiteTUI starts one), or start it from LiteSuite's Model Hub."

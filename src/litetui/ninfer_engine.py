@@ -39,7 +39,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import ttyguard
+from . import jobkill, ttyguard
 from .llm_backend import BackendError
 
 NINFER_V3_MAGIC = b"NINFER\x00\x03"
@@ -231,9 +231,25 @@ def _config_path() -> Path:
     return litesuite_llm_dir() / "config.json"
 
 
-def registered_host() -> str | None:
-    """Same read as ninfer_backend.discover_ninfer_host, kept here so the launcher
-    can refuse on it without importing the backend."""
+def registered_entry() -> dict | None:
+    """The WHOLE ninfer entry, `owner` and `pid` included — not just its URL.
+
+    🔴 `register_host` WRITES `owner` AND `pid`, AND EVERY READER USED TO THROW
+    THEM AWAY. `stop_engine` re-read this file through a URL-only reader, found
+    no in-memory `OwnedEngine`, and told the user *"the engine at … was not
+    started by LiteTUI — stop it where it was started"* — about a record
+    LiteTUI had written itself, saying `owner: "litetui"`, with the pid beside
+    it.
+
+    RYAN, 2026-09-18: *"it spawned that ninfer server then refused to close it
+    with /engine stop saying it didnt spawn it ... killing litetui didnt close
+    the server"*. Measured: ninfer-serve.exe pid 269276, 10.7 GB resident,
+    parent already gone, entry still naming litetui as owner.
+
+    The in-memory handle answers "did THIS PROCESS start it". The registry
+    answers "did LiteTUI start it", which is the question the user is asking
+    and survives the restart that loses the handle.
+    """
     try:
         body = json.loads(_config_path().read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - no file, no entry, bad JSON: all mean "no engine"
@@ -242,8 +258,33 @@ def registered_host() -> str | None:
         if isinstance(entry, dict) and entry.get("kind") == "ninfer":
             base = entry.get("baseUrl")
             if isinstance(base, str) and base.strip():
-                return base.rstrip("/")
+                return {**entry, "baseUrl": base.rstrip("/")}
     return None
+
+
+def registered_host() -> str | None:
+    """Same read as ninfer_backend.discover_ninfer_host, kept here so the launcher
+    can refuse on it without importing the backend."""
+    entry = registered_entry()
+    return entry["baseUrl"] if entry else None
+
+
+def stop_registered(entry: dict) -> bool:
+    """Kill an engine LiteTUI registered but no longer holds a handle for.
+
+    Returns True when a process was actually signalled. `atexit` cannot cover
+    this: it does not run when LiteTUI is force-killed, which is exactly how
+    the 10.7 GB orphan above outlived its parent.
+    """
+    pid = entry.get("pid")
+    if not isinstance(pid, int):
+        return False
+    try:
+        ttyguard.run(["taskkill", "/T", "/F", "/PID", str(pid)], timeout=15)
+    except Exception:  # noqa: BLE001 - a dead pid is the outcome we wanted
+        pass
+    unregister_host(str(entry.get("baseUrl") or ""))
+    return True
 
 
 def register_host(base_url: str, *, pid: int | None = None) -> bool:
@@ -297,6 +338,14 @@ class OwnedEngine:
     log_path: Path
     log_file: object
     model_id: str
+    #: A KILL_ON_JOB_CLOSE job holding the engine. THE POINT IS WHAT HAPPENS
+    #: WHEN NOBODY RUNS ANY CODE: Windows closes a dead process's handles, so
+    #: the engine dies with LiteTUI even when LiteTUI is FORCE-KILLED and no
+    #: `atexit` ever runs. That is the case Ryan hit on 2026-09-18 —
+    #: *"killing litetui didnt close the server"* — leaving ninfer-serve.exe
+    #: pid 269276 resident with 10.7 GB. None on non-Windows or if the job
+    #: could not be made; `stop` then falls back to the taskkill walk.
+    job: int | None = None
 
     @property
     def alive(self) -> bool:
@@ -428,6 +477,28 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
         stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
         cwd=str(exe.parent),  # the CUDA DLLs live beside the exe
     )
+    # 🔴 ADOPT IT INTO A KILL_ON_JOB_CLOSE JOB, IMMEDIATELY — before the
+    # readiness wait, so an engine that hangs while loading 10 GB of weights is
+    # covered too, not only one that came up.
+    #
+    # `atexit` was the only cleanup here, and atexit does not run when the app
+    # is force-killed. Ryan, 2026-09-18: *"killing litetui didnt close the
+    # server"* — ninfer-serve.exe pid 269276, 10.7 GB, parent gone. A job needs
+    # nobody to run anything: the kernel kills every member when the last
+    # handle closes, and Windows closes our handles for us when we die however
+    # we die. Descendants inherit the job, so there is nothing to enumerate.
+    #
+    # `jobkill` already existed for `ttyguard` and `lifecycle_hooks`; this
+    # spawn simply never used it.
+    job = jobkill.create()
+    pid = getattr(proc, "pid", None)
+    if job is not None and isinstance(pid, int):
+        if not jobkill.assign(job, pid):
+            # Not fatal: `stop` still has the taskkill path. But say so, or a
+            # later orphan looks like the job silently failing to hold.
+            _log_event(f"job assign FAILED for pid {pid} — orphan protection is off for this engine")
+            jobkill.close(job)
+            job = None
     deadline = time.monotonic() + NINFER_START_TIMEOUT_S
     while time.monotonic() < deadline:
         try:
@@ -438,20 +509,37 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
             fresh = ""
         for marker in NINFER_FAILURE_MARKERS:
             if marker in fresh:
-                _kill(proc)
+                _abandon(proc, job)
                 log_file.close()
                 raise BackendError(f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
         if NINFER_READY_MARKER in fresh or healthy(host):
-            owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file, model_id=model_id)
-            register_host(host, pid=getattr(proc, "pid", None))
+            owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
+                                model_id=model_id, job=job)
+            register_host(host, pid=pid)
             atexit.register(stop, owned)
             return owned
         if getattr(proc, "poll", lambda: None)() is not None:
             break
         time.sleep(0.5)
-    _kill(proc)
+    _abandon(proc, job)
     log_file.close()
     raise BackendError(f"ninfer-serve did not become ready in {NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
+
+
+def _abandon(proc, job: int | None) -> None:
+    """Drop an engine that never became ready.
+
+    🔴 THESE ARE THE PATHS THAT LEAK. The engine is already holding its weights
+    by the time a failure marker appears or the readiness deadline passes — the
+    port binds LAST — so a start that fails is exactly when gigabytes are
+    resident with no `OwnedEngine` to stop them and no registry entry either
+    (`register_host` runs only on the success path). Closing the job takes the
+    whole tree with it; without one, fall back to the walk.
+    """
+    if job is not None:
+        jobkill.close(job)
+        return
+    _kill(proc)
 
 
 def _kill(proc) -> None:
@@ -465,8 +553,18 @@ def _kill(proc) -> None:
 
 
 def stop(owned: OwnedEngine) -> None:
-    """Stop ONLY the process we started, and take it out of the registry."""
-    if owned.alive:
+    """Stop ONLY the process we started, and take it out of the registry.
+
+    THE JOB IS THE KILL WHEN THERE IS ONE. Closing the last handle is atomic
+    over the whole tree and costs ~0.1ms; `taskkill /T` ENUMERATES the process
+    table and costs seconds — the same seconds whether or not the pid is still
+    alive (measured on this box: 3.4s/6.4s/43s live, 3.7s/6.6s/10.4s already
+    dead). So the walk is the FALLBACK, not a belt-and-braces second step.
+    """
+    if owned.job is not None:
+        jobkill.close(owned.job)
+        owned.job = None
+    elif owned.alive:
         _kill(owned.proc)
     unregister_host(owned.host)
     try:

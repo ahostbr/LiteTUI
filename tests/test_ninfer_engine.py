@@ -314,3 +314,74 @@ class _DeadProc:
 
 def _never_spawns(*a, **kw):
     return _DeadProc()
+
+
+# ── ownership survives the handle (Ryan, 2026-09-18) ────────────────────────
+#
+# "it spawned that ninfer server then refused to close it with /engine stop
+# saying it didnt spawn it ... killing litetui didnt close the server"
+#
+# Measured that morning: ninfer-serve.exe pid 269276, 10.7 GB resident, parent
+# gone, and the registry entry LiteTUI wrote still saying owner=litetui with
+# that pid. `register_host` had recorded both fields since T819/T820 and every
+# reader discarded them, so the app could not read its own receipt.
+
+
+def test_the_registry_entry_keeps_the_owner_and_pid_it_was_written_with(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:64977", pid=269276)
+
+    entry = eng.registered_entry()
+    assert entry is not None
+    assert entry["baseUrl"] == "http://127.0.0.1:64977"
+    assert entry["owner"] == "litetui", "LiteTUI must be able to read its own receipt"
+    assert entry["pid"] == 269276, "the pid is the only handle that survives a restart"
+
+
+def test_registered_host_still_answers_with_just_the_url(tmp_path, monkeypatch):
+    """The URL-only reader has other callers (the launcher refuses on it)."""
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:64977", pid=1)
+    assert eng.registered_host() == "http://127.0.0.1:64977"
+
+
+def test_stop_registered_kills_the_pid_and_clears_the_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:64977", pid=269276)
+
+    killed: list = []
+    monkeypatch.setattr(eng.ttyguard, "run", lambda cmd, **kw: killed.append(cmd))
+
+    assert eng.stop_registered(eng.registered_entry()) is True
+    assert killed and "269276" in killed[0], f"did not taskkill the pid: {killed}"
+    assert "/T" in killed[0], "the engine's children must go with it"
+    assert eng.registered_entry() is None, "a stopped engine must not stay registered"
+
+
+def test_stop_registered_refuses_an_entry_with_no_pid(tmp_path, monkeypatch):
+    """An entry written by something else — or by a version before the pid was
+    recorded — is not ours to kill."""
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:64977")          # no pid
+
+    killed: list = []
+    monkeypatch.setattr(eng.ttyguard, "run", lambda cmd, **kw: killed.append(cmd))
+
+    assert eng.stop_registered(eng.registered_entry()) is False
+    assert killed == [], "nothing may be killed without a recorded pid"
+    assert eng.registered_entry() is not None, "and the entry stays for its real owner"
+
+
+def test_stop_registered_clears_the_entry_even_when_the_pid_is_already_dead(tmp_path, monkeypatch):
+    """The 10.7 GB case ends with the user killing it by hand. The entry must
+    still go, or /engine start refuses forever on a ghost."""
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:64977", pid=269276)
+
+    def _boom(cmd, **kw):
+        raise OSError("no such process")
+
+    monkeypatch.setattr(eng.ttyguard, "run", _boom)
+
+    assert eng.stop_registered(eng.registered_entry()) is True
+    assert eng.registered_entry() is None
