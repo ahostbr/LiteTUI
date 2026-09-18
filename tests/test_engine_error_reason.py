@@ -109,8 +109,31 @@ def test_only_the_capability_refusal_is_permanent():
     assert _media_refused_for_good(ValueError("boom")) is False
 
 
+def _born_store(name="probe"):
+    """A REAL store on disk, not a recorder double.
+
+    🔴 THE ARM BELOW IS ABOUT REPLAY, so a double that remembers the calls I
+    made would prove only that I called it. What has to be true is that
+    `ConversationRepository.read` gives back a thread with no image in it, and
+    only the real append-only file can answer that.
+
+    ⬜ `paths.CONVO_DIR` is NOT set here: conftest's autouse fixture already
+    monkeypatches it to this test's own `tmp_path`, and assigning it again
+    would be a second, un-restored redirect of a module global that 48 sites
+    read.
+    """
+    from litetui.conversation import ConversationRepository
+
+    store = ConversationRepository()
+    store.stage(name)
+    store.convo_dir.mkdir(parents=True, exist_ok=True)
+    store.pending = False  # born, the way app.py does it at materialisation
+    return store
+
+
 def _app_with_an_image():
     a = app_mod.LiteTUI.__new__(app_mod.LiteTUI)
+    a.store = _born_store()
     a.conversation = [
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": [
@@ -121,10 +144,12 @@ def _app_with_an_image():
         {"role": "assistant", "content": "I cannot see it."},
         {"role": "user", "content": "what about now?"},
     ]
+    for message in a.conversation:
+        a.store.record_msg(message)
     return a
 
 
-def test_the_image_part_is_stubbed_and_the_question_survives():
+def test_the_image_part_is_stubbed_and_the_question_survives(tmp_path):
     """🔴 THE POISON, CLEARED. The image becomes text; everything else in the
     message — and every other message — is untouched."""
     a = _app_with_an_image()
@@ -141,8 +166,9 @@ def test_the_image_part_is_stubbed_and_the_question_survives():
     assert a.conversation[3]["content"] == "what about now?"
 
 
-def test_no_image_is_a_no_op_that_reports_zero():
+def test_no_image_is_a_no_op_that_reports_zero(tmp_path):
     a = app_mod.LiteTUI.__new__(app_mod.LiteTUI)
+    a.store = _born_store("noop")
     a.conversation = [{"role": "user", "content": "just text"},
                       {"role": "user", "content": [{"type": "text", "text": "parts"}]}]
     before = [dict(m) for m in a.conversation]
@@ -150,7 +176,7 @@ def test_no_image_is_a_no_op_that_reports_zero():
     assert a.conversation == before
 
 
-def test_every_image_in_the_thread_goes_not_just_the_newest():
+def test_every_image_in_the_thread_goes_not_just_the_newest(tmp_path):
     """⬜ The refusal is about the ENGINE, not about one message. Leaving an
     older image behind would fail the very next turn for the same reason."""
     a = _app_with_an_image()
@@ -163,6 +189,40 @@ def test_every_image_in_the_thread_goes_not_just_the_newest():
                  if isinstance(m.get("content"), list)
                  for p in m["content"] if p.get("type") == "image_url"]
     assert remaining == []
+
+
+def test_the_stub_SURVIVES_A_RELOAD_and_is_not_just_in_memory(tmp_path):
+    """🔴 THE HALF THE FIRST VERSION MISSED, AND IT PUT THE BUG BACK.
+
+    `_stub_refused_media` mutated `self.conversation` and nothing else. The
+    store is APPEND-ONLY, so the image was still in `convo.jsonl` — and
+    `/resume`, or the next launch, replays it straight back into the thread
+    that the stub had just cleaned. The next turn 400s again, for the reason
+    the stub exists to remove.
+
+        A FIX HELD ONLY IN MEMORY IS A FIX WITH A LIFETIME. The in-memory
+        assertions above are all TRUE on the broken build — measured, in
+        memory 1 -> 0 and on disk 1 -> 1 — so no arm in this file could see
+        it. Only a round trip through the real file can.
+
+    ⬜ THE MESSAGE COUNT IS ASSERTED TOO. `_edit` records ONE message; a
+    `record_truncate` or a snapshot would also make the image go away, and
+    would take the conversation with it.
+    """
+    from litetui.conversation import ConversationRepository
+
+    a = _app_with_an_image()
+    assert a._stub_refused_media() == 1
+
+    _meta, replayed = ConversationRepository.read(a.store.convo_path)
+    a.store.release()
+
+    images = [p for m in replayed if isinstance(m.get("content"), list)
+              for p in m["content"] if p.get("type") == "image_url"]
+    assert images == [], "the image came back on replay"
+    assert len(replayed) == 4, replayed
+    assert replayed[1]["content"][1]["text"] == "[view_image] shot.png"
+    assert replayed[3]["content"] == "what about now?"
 
 
 # ── a status code outranks the connection heuristic ──────────────────────────

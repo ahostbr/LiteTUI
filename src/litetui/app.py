@@ -6031,9 +6031,22 @@ class LiteTUI(App):
         A TEXT STUB, NOT A DELETION: the transcript still shows an image was
         offered. An attachment that silently vanishes is how someone concludes
         the app never received it.
+
+        🔴 AND IT IS WRITTEN DOWN, WHICH THE FIRST VERSION OF THIS DID NOT DO.
+        Mutating `self.conversation` fixes the process that is running and
+        NOTHING ELSE: the store is append-only, so the image is still in
+        `convo.jsonl` and `/resume` replays it straight back. Measured on this
+        build -- in memory 1 -> 0, on disk 1 -> 1 -- so the thread came back
+        poisoned and the next turn 400'd again, which is the bug this function
+        exists to end.
+
+            A FIX HELD ONLY IN MEMORY IS A FIX WITH A LIFETIME. `_append` is
+            the choke point for that exact reason and this write had no
+            equivalent; `_edit` is it, already used by `_append_to_system`,
+            and it records ONE message rather than snapshotting the file.
         """
         stubbed = 0
-        for message in self.conversation:
+        for index, message in enumerate(self.conversation):
             content = message.get("content")
             if not isinstance(content, list):
                 continue
@@ -6051,6 +6064,7 @@ class LiteTUI(App):
                     parts.append(part)
             if found:
                 message["content"] = parts
+                self._edit(index, "media refused: vision disabled")
         return stubbed
 
     def _emit_compaction(self, reason: str, *, tokens_before=None,
