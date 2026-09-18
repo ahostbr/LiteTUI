@@ -170,8 +170,8 @@ def _llama(monkeypatch, gate):
     b = llm_backend.LlamaCppBackend(cfg)
     b.vram_gate = gate
     # Nothing may reach a real server; the gate is what these arms measure.
-    monkeypatch.setattr(b, "_load_sync", lambda key: None)
-    monkeypatch.setattr(b, "_apply_sync", lambda key, c: None)
+    monkeypatch.setattr(b, "_load_sync", lambda key, notice=None: None)
+    monkeypatch.setattr(b, "_apply_sync", lambda key, c, notice=None: None)
     return b
 
 
@@ -205,7 +205,7 @@ async def test_a_refused_load_RAISES_and_does_not_touch_the_server(monkeypatch) 
     gate = _Gate(allow=False)
     b = _llama(monkeypatch, gate)
     loaded: list[str] = []
-    monkeypatch.setattr(b, "_load_sync", lambda key: loaded.append(key))
+    monkeypatch.setattr(b, "_load_sync", lambda key, notice=None: loaded.append(key))
 
     with pytest.raises(llm_backend.VramRefused):
         await b.load("qwen/a")

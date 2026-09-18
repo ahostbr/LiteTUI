@@ -156,8 +156,10 @@ def test_a_single_model_server_refuses_before_the_notice(monkeypatch):
 
 def test_the_notice_fires_immediately_before_the_load_request(monkeypatch):
     backend = _llama(monkeypatch)
+    # `attached` is a read-only property over `_attached_host`; an unattached
+    # router is the only state where the load is allowed to proceed at all.
+    backend._attached_host = None
     backend._attached_owner = None
-    monkeypatch.setattr(backend, "attached", False)
     order: list[str] = []
     monkeypatch.setattr(backend, "_server_models",
                         lambda: {"qwen": {"status": {"value": "loaded"}}})
@@ -181,10 +183,18 @@ def test_an_adopted_router_never_hears_the_promise(_record_in_a_tmp_home, monkey
     backend._ensure_running_sync()
     backend._refuse_if_attached("change load settings")   # must NOT raise
 
+    # Neither of these is the subject: `_apply_sync` asks the server whether the
+    # model is resident before it regenerates, and an unstubbed read fails with
+    # "could not read the model list" — a DIFFERENT refusal, which would leave
+    # `order == []` true for the wrong reason. Pinning the message is what
+    # caught that; the empty list alone would have passed.
+    monkeypatch.setattr(backend, "_server_models", lambda: {})
+    monkeypatch.setattr(backend, "_record_load_settings", lambda *a, **k: None)
+
     order: list[str] = []
     with pytest.raises(llm_backend.BackendError) as excinfo:
         backend._apply_sync("qwen", {"ctx": 8192}, lambda: order.append("notice"))
-    assert "preset" in str(excinfo.value)
+    assert "preset" in str(excinfo.value), str(excinfo.value)
     assert order == [], (
         "the promise was made between the two guards that can refuse it")
 
