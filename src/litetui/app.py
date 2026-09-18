@@ -253,7 +253,17 @@ LITETUI_SPLASH = (
     "  \u2588\u2588       \u2588\u2588     \u2588\u2588   \u2588\u2588\u2588\u2588\u2588    \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \n"
     "  \u2588\u2588       \u2588\u2588     \u2588\u2588   \u2588\u2588       \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \n"
     "  \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588   \u2588\u2588   \u2588\u2588\u2588\u2588\u2588\u2588   \u2588\u2588   \u2588\u2588\u2588\u2588\u2588\u2588 \u2588\u2588\u2588\u2588\u2588\u2588\n"
-    "      local-only coding agent \u00b7 LM Studio + llama.cpp \u00b7 /help\n"
+    # \ud83d\udd34 THE BANNER USED TO READ "LM Studio + llama.cpp" (T861). It named a
+    # backend SET that reality outgrew: NInfer and Codex both shipped after it
+    # was written, and nothing updates a string literal. Same defect as the
+    # header map two hundred lines below, in the same file, found only because
+    # the header sent someone looking.
+    #
+    #     THE SITE YOU CAN SEE IS NEVER THE ONLY ONE.
+    #
+    # It does not enumerate now. `/backend` renders the live list, which cannot
+    # fall behind because it IS the registry.
+    "      local-only coding agent \u00b7 /backend to choose an engine \u00b7 /help\n"
 )
 
 
@@ -3015,7 +3025,21 @@ class LiteTUI(App):
         home = str(Path.home())
         if cwd.startswith(home):
             cwd = "~" + cwd[len(home):]
-        engine = {"llamacpp": "llama.cpp", "codex": "Codex OAuth"}.get(self.backend.name, "LM Studio")
+        # 🔴 THE HEADER USED TO NAME THE WRONG BACKEND (T861). It was
+        #   {"llamacpp": ..., "codex": ...}.get(self.backend.name, "LM Studio")
+        # — a hand-listed map whose DEFAULT was the literal string "LM Studio".
+        # `ninfer` was not a key, so Ryan's NInfer session was announced as LM
+        # Studio in the title bar, and so would every backend added after that
+        # line was written.
+        #
+        #     A FALLBACK THAT NAMES ONE PARTICULAR THING IS NOT A FALLBACK, IT
+        #     IS A GUESS THAT CANNOT ADMIT IT IS GUESSING. `self.backend.name`
+        #     can never be wrong about which backend it is, so the truthful
+        #     default was always sitting in the argument.
+        #
+        # Each backend now carries its own `label`; anything without one reads
+        # its own name rather than somebody else's.
+        engine = getattr(self.backend, "label", None) or self.backend.name
         parts = [p for p in (engine, self.model_id, mode, think, cwd) if p]
         self.sub_title = " \u00b7 ".join(parts)
         # The footer carries the thinking level too, and it only refreshed on a
@@ -3646,16 +3670,31 @@ class LiteTUI(App):
                 # No URL here: a bare address tells a human nothing to DO. Name
                 # the action instead; which host was tried is in the log if it
                 # ever matters (no models means none on that server).
+                # 🔴 FOUND BY THE T861 SWEEP, and it is the same defect as the
+                # header: the `else` named llama.cpp, so on NInfer this told
+                # Ryan to add a folder of GGUF files — for an engine that does
+                # not read GGUF at all. Two branches that between them claimed
+                # to cover four backends.
                 if self.backend.name == "lmstudio":
                     self._system(
                         "No chat model available from LM Studio — download one "
                         "in LM Studio's Model Manager."
                     )
-                else:
+                elif self.backend.name == "llamacpp":
                     self._system(
                         "No chat model available from llama.cpp — add a folder "
                         "of GGUF files in /settings, or download one in "
                         "LiteSuite's Model Hub."
+                    )
+                else:
+                    # Anything else names ITSELF and asks IT what to do — the
+                    # remedy channel T860 built, rather than a third literal
+                    # that the next backend would also outgrow.
+                    from litetui.plugins.model_switch import _empty_state_hint
+                    label = getattr(self.backend, "label", None) or self.backend.name
+                    self._system(
+                        f"No chat model available from {label} — "
+                        f"{_empty_state_hint(self)}"
                     )
         except Exception as e:
             runtime_log.record(

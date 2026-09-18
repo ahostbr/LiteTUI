@@ -18,8 +18,13 @@ class OAuthBackend:
     remote = True
     attached = True
 
+    #: The name a HUMAN reads in the header (T861). An INSTANCE attribute below,
+    #: not a class one, because this class serves every OAuth provider and its
+    #: `name` comes from the setting — so the label has to follow the instance
+    #: rather than be fixed at class definition.
     def __init__(self, settings):
         self.name = settings.backend
+        self.label = {"codex": "Codex OAuth"}.get(self.name, self.name)
         self.settings = settings
         self.models = {}
         if getattr(settings, "codex_native_engine", False):
