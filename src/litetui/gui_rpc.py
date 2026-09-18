@@ -105,8 +105,15 @@ def _settings(app):
     effective = dict(getattr(app, "_gui_effective_settings", requested))
     deferred = {}
     metadata = []
+    from litetui import gpu_gate
+
+    hide_ninfer = not gpu_gate.is_rtx_5090()   # T893
     for field in fields(settings_mod.Settings):
         name = field.name
+        if hide_ninfer and name.startswith("ninfer_"):
+            requested.pop(name, None)
+            effective.pop(name, None)
+            continue
         apply = "restart" if name in RESTART else "reconnect" if name in RECONNECT else "immediate"
         if apply == "immediate":
             effective[name] = requested[name]

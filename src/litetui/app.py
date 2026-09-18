@@ -4805,6 +4805,14 @@ class LiteTUI(App):
         on the old endpoint keeps talking to the old server. The reconnect is
         part of the change, not a follow-up.
         """
+        if choice == "ninfer":
+            from litetui import gpu_gate
+
+            if not gpu_gate.is_rtx_5090():
+                # T893: typed by hand (/backend ninfer) or saved from /settings on
+                # the wrong box. Refuse BEFORE the save, with the reason.
+                self.system_message(gpu_gate.why_not())
+                return
         s = self.settings
         s.backend = choice
         s.backend_chosen = True

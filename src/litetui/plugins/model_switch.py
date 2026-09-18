@@ -276,6 +276,10 @@ def _cmd_backend(app, name: str, arg: str) -> None:
         ("ninfer", f"NInfer (5090 engine)  · {_ninfer_mark(app)}"),
         ("codex", f"Codex subscription  · {model_transport.auth_status('codex')}"),
     ]
+    from litetui import gpu_gate
+
+    if not gpu_gate.is_rtx_5090():
+        rows = [r for r in rows if r[0] != "ninfer"]   # T893: not a 5090 -> no such row
 
     def _picked(choice: str | None) -> None:
         if choice:
@@ -1172,13 +1176,16 @@ def _register(ctx) -> None:
         group="backend",
         order=60,
     )
-    ctx.command(
-        ("/engine",), _cmd_engine,
-        palette="NInfer engine",
-        help="Start, stop or check the NInfer engine LiteTUI may own.",
-        group="backend",
-        order=55,
-    )
+    from litetui import gpu_gate
+
+    if gpu_gate.is_rtx_5090():   # T893: the command is not shown, not even as a refusal
+        ctx.command(
+            ("/engine",), _cmd_engine,
+            palette="NInfer engine",
+            help="Start, stop or check the NInfer engine LiteTUI may own.",
+            group="backend",
+            order=55,
+        )
     ctx.command(
         ("/backend",), _cmd_backend,
         palette="Switch backend",

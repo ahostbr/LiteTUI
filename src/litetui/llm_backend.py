@@ -1956,6 +1956,16 @@ def backend_label(name: str) -> str:
     return dict(BACKENDS).get(name, name)
 
 
+def visible_backends() -> tuple[tuple[str, str], ...]:
+    """BACKENDS minus NInfer on a box that is not an RTX 5090 (T893 — Ryan:
+    "the user never sees anything about ninfer"). Every picker lists THIS."""
+    from litetui import gpu_gate
+
+    if gpu_gate.is_rtx_5090():
+        return BACKENDS
+    return tuple(b for b in BACKENDS if b[0] != "ninfer")
+
+
 def backend_hint(backend) -> str:
     """The same question, asked of a BACKEND rather than an app: what to say
     when it cannot be reached or has no models to offer.
@@ -2000,6 +2010,13 @@ def _make_backend(settings):
     if settings.backend == "llamacpp":
         return LlamaCppBackend(settings)
     if settings.backend == "ninfer":
+        from litetui import gpu_gate
+
+        if not gpu_gate.is_rtx_5090():
+            # T893: a settings.json carried over from a 5090 box. Not a 5090 ->
+            # nothing NInfer, not even a refusal line: boot the default engine.
+            settings.backend = "lmstudio"
+            return LMStudioBackend(settings)
         # 🔴 T806 — RYAN: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER"*.
         # Imported here rather than at module scope so a broken NInfer install
         # cannot stop the other three backends from booting, the same reason

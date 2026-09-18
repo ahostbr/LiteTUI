@@ -46,7 +46,7 @@ from textual.widgets import (
 )
 
 from litetui.hooks_screen import HooksEditor
-from litetui import llm_backend
+from litetui import gpu_gate, llm_backend
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
@@ -372,35 +372,6 @@ class SettingsBody(Widget):
                             placeholder="http://localhost:1234",
                         )
                         yield from self._text_row(
-                            "ninfer_host", "NInfer host",
-                            "Blank discovers the engine LiteSuite started (its config "
-                            "registers the port). Set it only for a ninfer-serve you "
-                            "started by hand. LiteTUI attaches; it never starts one.",
-                            placeholder="http://127.0.0.1:49260",
-                        )
-                        yield from self._text_row(
-                            "ninfer_executable", "NInfer: ninfer-serve executable",
-                            "Blank uses LiteSuite's install. /engine start runs this.",
-                            placeholder="C:/Users/you/.litesuite/llm/ninfer/ninfer-serve.exe",
-                        )
-                        yield from self._text_row(
-                            "ninfer_artifact", "NInfer: model artifact (.ninfer)",
-                            "Blank uses the one file LiteSuite pulled. /engine start serves this.",
-                            placeholder="C:/Users/you/.litesuite/llm/ninfer-models/qwen3_8_27b_nvfp4.ninfer",
-                        )
-                        yield from self._text_row(
-                            "ninfer_max_context", "NInfer: context length (--max-context)",
-                            "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",
-                            placeholder="32768",
-                        )
-                        yield from self._text_row(
-                            "ninfer_max_concurrency", "NInfer: concurrent requests (--max-concurrency)",
-                            "1..8 requests decoded in one batch — LM Studio's 'Parallel'. They share "
-                            "the context-length KV pool: no extra VRAM, less context each under load. "
-                            "Applies on the next /engine start; /engine status shows the running value.",
-                            placeholder="1",
-                        )
-                        yield from self._text_row(
                             "lmstudio_graded_thinking_models",
                             "Graded thinking works on (LM Studio)",
                             "Comma-separated model ids. On LM Studio a graded level is "
@@ -413,7 +384,7 @@ class SettingsBody(Widget):
                         # ── Backend (engine selection) ───────────────────────
                         yield from self._select_row(
                             "backend", "Engine",
-                            [(label, name) for name, label in llm_backend.BACKENDS],
+                            [(label, name) for name, label in llm_backend.visible_backends()],
                             "Which engine serves the chat. /backend switches "
                             "live; this is the boot default.",
                         )
@@ -471,6 +442,41 @@ class SettingsBody(Widget):
                         )
 
                         # ── Generation ───────────────────────────────────────────────
+                # T893 — RYAN: "ninfer settings should have their own new tab ... next to
+                # [the model tab]", and NOTHING NInfer on a box that is not an RTX 5090.
+                # `_collect` skips the ninfer_* fields when the tab is absent.
+                if gpu_gate.is_rtx_5090():
+                    with TabPane("NInfer", id="tab-ninfer"):
+                        with VerticalScroll(classes="set-scroll"):
+                            yield from self._text_row(
+                                "ninfer_host", "NInfer host",
+                                "Blank discovers the engine LiteSuite started (its config "
+                                "registers the port). Set it only for a ninfer-serve you "
+                                "started by hand. LiteTUI attaches; it never starts one.",
+                                placeholder="http://127.0.0.1:49260",
+                            )
+                            yield from self._text_row(
+                                "ninfer_executable", "NInfer: ninfer-serve executable",
+                                "Blank uses LiteSuite's install. /engine start runs this.",
+                                placeholder="C:/Users/you/.litesuite/llm/ninfer/ninfer-serve.exe",
+                            )
+                            yield from self._text_row(
+                                "ninfer_artifact", "NInfer: model artifact (.ninfer)",
+                                "Blank uses the one file LiteSuite pulled. /engine start serves this.",
+                                placeholder="C:/Users/you/.litesuite/llm/ninfer-models/qwen3_8_27b_nvfp4.ninfer",
+                            )
+                            yield from self._text_row(
+                                "ninfer_max_context", "NInfer: context length (--max-context)",
+                                "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",
+                                placeholder="32768",
+                            )
+                            yield from self._text_row(
+                                "ninfer_max_concurrency", "NInfer: concurrent requests (--max-concurrency)",
+                                "1..8 requests decoded in one batch — LM Studio's 'Parallel'. They share "
+                                "the context-length KV pool: no extra VRAM, less context each under load. "
+                                "Applies on the next /engine start; /engine status shows the running value.",
+                                placeholder="1",
+                            )
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
 
@@ -909,6 +915,8 @@ class SettingsBody(Widget):
                 continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
                 continue  # env owns it; the control is disabled
+            if name.startswith("ninfer_") and not gpu_gate.is_rtx_5090():
+                continue  # T893: no NInfer tab on this box; the values ride through `replace()`
             try:
                 widget = self.query_one(f"#f-{name}")
             except Exception:
