@@ -12,7 +12,7 @@ auto-builds the index once if the db is missing.
 import subprocess
 import sys
 
-from litetui import paths, tool_schemas
+from litetui import paths, tool_schemas, ttyguard
 from litetui.plugins import PluginManifest
 from litetui.tool_policy import READ_POLICY
 
@@ -61,10 +61,12 @@ def _run(args: dict) -> str:
         if args.get("messages"):
             cmd.append("--messages")
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=TIMEOUT,
-            encoding="utf-8", errors="replace",
-        )
+        # THE ENVELOPE, NOT A RAW SPAWN. ttyguard.run captures and decodes
+        # (errors="replace") exactly as the call it replaces did, and the
+        # child cannot inherit the TUI's console. test_ttyguard scans every
+        # plugin for a bare subprocess.run - it caught this one on the first
+        # full-suite run after the merge (c8d74f6).
+        proc = ttyguard.run(cmd, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return f"[error] convo_search: timed out after {TIMEOUT}s"
     out = proc.stdout or ""
