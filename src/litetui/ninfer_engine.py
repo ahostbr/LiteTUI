@@ -317,6 +317,34 @@ def log_path() -> Path:
     return data_root() / ".ninfer" / "litetui-ninfer-serve.log"
 
 
+def _log_event(text: str) -> None:
+    """Append one timestamped line to the engine log, for outcomes that never spawn.
+
+    🔴 T877. A REFUSED `/engine start` USED TO LEAVE NO TRACE ANYWHERE. Every
+    refusal raises above the `open(lp, "a")` in `start()`, so the log — the one
+    artefact anybody looks at afterwards — was written ONLY on the paths that got
+    as far as launching a process. Measured 2026-09-18 00:2x: Ryan ran `/model`
+    then `/engine start`, nothing happened, and the investigation had NOTHING to
+    read: no log line, no process, no registry entry, no VRAM movement. Three
+    agents guessed at four different causes for twenty minutes because the only
+    record of the refusal was a chat bubble that had scrolled away.
+
+        A FAILURE THAT WRITES NOTHING IS INDISTINGUISHABLE FROM A COMMAND THAT
+        NEVER RAN — and those two need completely different fixes.
+
+    Best-effort by construction: a logging failure must never be the reason a
+    start fails, so every error here is swallowed. The refusal still reaches the
+    user through the raised BackendError; this is the copy that survives.
+    """
+    try:
+        lp = log_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        with open(lp, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"--- litetui {time.strftime('%F %T')} | {text}\n")
+    except OSError:
+        pass
+
+
 def refuse_reason(settings, *, healthy) -> str | None:
     """Why a start must NOT happen, or None. Every path that puts a model in VRAM
     answers here first (Ryan 2026-09-10: check, ask, then load)."""
@@ -355,15 +383,23 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     conditions refuse above this line, and a caller announcing a start before
     asking about them tells the user something the next line contradicts.
     """
+    # T877 — every outcome below writes to the log, including the ones that never
+    # spawn. `_log_event`'s docstring carries the incident that earned this.
+    _log_event("engine start requested")
     reason = refuse_reason(settings, healthy=healthy)
     if reason:
+        _log_event(f"REFUSED: {reason}")
         raise BackendError(reason)
     exe = ninfer_executable(settings)
     if not exe.is_file():
-        raise BackendError(f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable.")
+        msg = f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable."
+        _log_event(f"REFUSED: {msg}")
+        raise BackendError(msg)
     artifact = ninfer_artifact(settings)
     if artifact is None or not artifact.is_file():
-        raise BackendError("no NInfer artifact chosen — set ninfer_artifact to a .ninfer file (LiteSuite's Model Hub pulls one).")
+        msg = "no NInfer artifact chosen — set ninfer_artifact to a .ninfer file (LiteSuite's Model Hub pulls one)."
+        _log_event(f"REFUSED: {msg} (ninfer_artifact={getattr(settings, 'ninfer_artifact', None)!r})")
+        raise BackendError(msg)
     directory = read_artifact_directory(artifact)
     # 14:2x 2026-09-17: the 35B-A3B header carries no model_id; the pinned fallback made the
     # running MoE advertise itself as qwen3.8-27b in every picker. The file's own name is

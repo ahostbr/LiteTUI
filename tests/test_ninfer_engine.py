@@ -240,3 +240,77 @@ def test_start_refuses_before_touching_the_exe(tmp_path, monkeypatch):
     with pytest.raises(BackendError):
         eng.start(_Settings(), healthy=lambda h: True, spawn=lambda *a, **k: calls.append(1))
     assert calls == []
+
+
+# ── T877: a refusal leaves a record ─────────────────────────────────────────
+#
+# Ryan, 2026-09-18 00:2x: `/model` then `/engine start`, and nothing happened.
+# There was nothing to read afterwards — no log line, no process, no registry
+# entry, no VRAM movement — because every refusal raises ABOVE the `open(lp)`
+# in `start()`. Three agents guessed at four causes for twenty minutes.
+#
+#     A FAILURE THAT WRITES NOTHING IS INDISTINGUISHABLE FROM A COMMAND THAT
+#     NEVER RAN — and those two need completely different fixes.
+
+def _log_text(tmp_path: Path) -> str:
+    p = eng.log_path()
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def test_a_full_card_refusal_is_written_to_the_log(tmp_path, monkeypatch):
+    """RED BEFORE T877: the refusal raised and the log did not exist at all."""
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(eng, "data_root", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(eng, "log_path", lambda: tmp_path / ".ninfer" / "engine.log")
+    monkeypatch.setattr(eng, "gpu_free_mib", lambda: 6441)
+    with pytest.raises(BackendError):
+        eng.start(_Settings(), healthy=lambda h: False, spawn=_never_spawns)
+    text = (tmp_path / ".ninfer" / "engine.log").read_text(encoding="utf-8")
+    assert "engine start requested" in text
+    assert "REFUSED" in text and "6441" in text
+
+
+def test_a_missing_exe_refusal_names_the_path_it_looked_at(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(eng, "log_path", lambda: tmp_path / ".ninfer" / "engine.log")
+    monkeypatch.setattr(eng, "gpu_free_mib", lambda: None)
+    monkeypatch.setattr(eng, "ninfer_executable", lambda s: tmp_path / "nope.exe")
+    with pytest.raises(BackendError):
+        eng.start(_Settings(), healthy=lambda h: False, spawn=_never_spawns)
+    text = (tmp_path / ".ninfer" / "engine.log").read_text(encoding="utf-8")
+    assert "REFUSED" in text and "nope.exe" in text
+
+
+def test_the_request_line_is_written_even_when_nothing_refuses_it(tmp_path, monkeypatch):
+    """CONTROL: the request marker is not a by-product of refusing.
+
+    Without this, 'engine start requested' could be written only on the refusal
+    paths and the arms above would still pass — an observable that exists only
+    when the thing under test fails is not a record of the thing.
+    """
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(eng, "log_path", lambda: tmp_path / ".ninfer" / "engine.log")
+    monkeypatch.setattr(eng, "gpu_free_mib", lambda: None)
+    exe = tmp_path / "ninfer-serve.exe"
+    exe.write_bytes(b"x")
+    monkeypatch.setattr(eng, "ninfer_executable", lambda s: exe)
+    monkeypatch.setattr(eng, "ninfer_artifact", lambda s: _artifact(tmp_path, {"components": ["text"]}))
+    with pytest.raises(BackendError):   # the fake spawn never becomes ready
+        eng.start(_Settings(), healthy=lambda h: False, spawn=_never_spawns)
+    text = (tmp_path / ".ninfer" / "engine.log").read_text(encoding="utf-8")
+    assert "engine start requested" in text
+    assert "REFUSED" not in text
+
+
+class _DeadProc:
+    pid = 4242
+    def poll(self):  # never exits, never becomes ready
+        return None
+    def terminate(self):
+        pass
+    def wait(self, timeout=None):
+        pass
+
+
+def _never_spawns(*a, **kw):
+    return _DeadProc()
