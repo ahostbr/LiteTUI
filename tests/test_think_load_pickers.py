@@ -36,7 +36,7 @@ class _Backend:
         self.remote = remote
         self.loaded: list[str] = []
 
-    async def load(self, target):
+    async def load(self, target, *, notice=None):
         self.loaded.append(target)
 
 

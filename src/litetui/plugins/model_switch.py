@@ -356,13 +356,23 @@ def _say_projector(app, key: str) -> None:
         )
 
 
+def _notice(app, text: str):
+    """A callback the backend fires from its worker thread once the work is
+    certain (T873). `call_from_thread` is required: every backend announces from
+    inside `asyncio.to_thread`, and Textual refuses a cross-thread write."""
+    return lambda: app.call_from_thread(app.system_message, text)
+
+
 def _start_load(app, target: str) -> None:
     """Load `target`. ONE body for the typed name and the picked one."""
 
     async def _go() -> None:
-        app.system_message(f"Loading {target}…")
+        # 🔴 T873. "Loading {target}…" was printed HERE, before the await, and
+        # llamacpp's `_load_sync` opens with `_refuse_if_attached`. On a server
+        # LiteTUI adopted or one started with a single -m <gguf>, the user read
+        # a promise and then its contradiction — T865's shape, one command over.
         try:
-            await app.backend.load(target)
+            await app.backend.load(target, notice=_notice(app, f"Loading {target}…"))
         except llm_backend.BackendError as e:
             app.system_message(str(e))
             return
@@ -996,9 +1006,14 @@ class ModelConfigBody(Widget):
         key = self._key
         if app.backend.name == "llamacpp" and load_cfg != prior_load:
             async def _apply() -> None:
-                app.system_message(f"Applying load settings to {key} (reload)…")
+                # T873, same shape: `_apply_sync` opens with
+                # `_refuse_if_attached` and `_regen_ini` refuses an adopted
+                # router after it, so the line fires from the backend once both
+                # have passed.
                 try:
-                    await app.backend.apply_load_settings(key, load_cfg)
+                    await app.backend.apply_load_settings(
+                        key, load_cfg,
+                        notice=_notice(app, f"Applying load settings to {key} (reload)…"))
                 except llm_backend.BackendError as e:
                     app.system_message(str(e))
                     return

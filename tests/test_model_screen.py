@@ -38,7 +38,7 @@ class _StubBackend:
     def host(self):
         return "http://localhost:7470"
 
-    async def apply_load_settings(self, key, cfg):
+    async def apply_load_settings(self, key, cfg, *, notice=None):
         self.applied.append((key, dict(cfg)))
 
     def request_overrides(self, key):

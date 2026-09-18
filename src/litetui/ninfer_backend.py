@@ -742,13 +742,19 @@ class NInferBackend(_VramGate):
 
     # -- control, which this engine does not have -------------------------
 
-    async def load(self, key: str, *, ctx: int | None = None) -> None:
+    # `notice` is accepted and NEVER called (T873): these three refuse without
+    # doing anything, so there is no work to announce. Taking the parameter
+    # keeps the signature uniform for a caller that hands one to whichever
+    # backend answers — a refusal path raising TypeError on the way to its own
+    # message is the defect class this card exists for.
+
+    async def load(self, key: str, *, ctx: int | None = None, notice=None) -> None:
         raise BackendError(self._frozen_reason("load a different model"))
 
     async def unload(self, key: str) -> None:
         raise BackendError(self._frozen_reason("unload the model"))
 
-    async def apply_load_settings(self, key: str, cfg: dict) -> None:
+    async def apply_load_settings(self, key: str, cfg: dict, *, notice=None) -> None:
         raise BackendError(self._frozen_reason("change the load settings"))
 
     @staticmethod
