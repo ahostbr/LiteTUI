@@ -1802,6 +1802,32 @@ class LiteTUI(App):
             from litetui import rpc as rpc_mod
             rpc_mod.start_rpc_reader(self)
             self._rpc_emit_ready()
+        # Background update check — the port of LiteSuite's desktop updater
+        # (litetui/update_check.py). 15 s after launch, daemon thread, silent
+        # on every failure; skips itself on a dev tree and on
+        # LITETUI_DISABLE_UPDATE_CHECK=1.
+        try:
+            from litetui import update_check as _update_check
+
+            _update_check.start_background_check(self)
+        except Exception:
+            pass  # an update check must never block or break a launch
+
+    def _update_available_notice(self, latest: str) -> None:
+        """Delivered by the background update check via call_from_thread
+        (update_check.py) — the port of the desktop app's UPDATE_STATUS
+        broadcast to the UI.
+
+        One system line: the new version and the exact command to get it.
+        No auto-install — the desktop updater keeps install explicit for the
+        same reason (updater.ts: an auto-retried failed install loops).
+        """
+        from litetui.version import __version__
+
+        self._system(
+            f"[update] LiteTUI {latest} is available — you are on {__version__}.\n"
+            "    pip install -U litetui   (takes effect on relaunch)"
+        )
 
     async def _settle_before_teardown(self) -> None:
         """Let anything mid-mount finish composing before Textual prunes it. T723.
