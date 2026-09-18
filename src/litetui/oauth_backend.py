@@ -32,6 +32,20 @@ class OAuthBackend:
 
             self.app_server = AppServer()
 
+    def set_settings(self, settings) -> None:
+        """Keep this backend on the App's current Settings object after a save
+        replaces it — the same stale-snapshot defect as `_VramGate.set_settings`,
+        stored here on the public `settings` attribute instead.
+
+        ⚠️ REBINDS THE SETTINGS ONLY. `app_server` is constructed once, in
+        `__init__`, and is the discriminator every other module tests with
+        `hasattr(backend, "app_server")` — building a second one here on a save
+        would strand the running server that `ensure_running` already started.
+        A backend whose ENGINE must change is replaced through the factory, not
+        mutated (see `_switch_backend`).
+        """
+        self.settings = settings
+
     def base_url(self):
         # Identity only; remote inference never uses the OpenAI client.
         return "https://chatgpt.com/backend-api/codex"

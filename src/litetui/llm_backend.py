@@ -650,6 +650,24 @@ class _VramGate:
     #: callee covers them with no list of callers to maintain.
     on_load_settings = None
 
+    def set_settings(self, settings) -> None:
+        """Re-point the captured Settings object at the App's current one.
+
+        🔴 THE BACKEND SNAPSHOT IS THE BUG THE SETTINGS SCREEN KEEPS REHITTING.
+        Every backend captures `settings` in `__init__` (the object the App
+        handed it at construction). But the save path does NOT mutate that
+        object — `SettingsBody._collect` builds a NEW one via `replace()` and
+        `_on_settings_saved` rebinds `app.settings` to it. The backend is left
+        holding the OLD object, so a saved `ninfer_max_context` never reaches
+        `ninfer_engine.start` (which reads `self._settings`), and the engine
+        spawns with the pre-save value — the "I set the context level and it
+        did nothing" defect. `make_backend(app.settings)` on `/reconnect`
+        rebuilds the reference, which is why the heavy path always worked and
+        the light one never did. Re-pointing here restores the invariant the
+        rest of the code relies on: `backend._settings is app.settings`.
+        """
+        self._settings = settings
+
     def _record_load_settings(self, key: str, cfg: dict) -> None:
         """Tell whoever is listening that `key` now loads with `cfg`."""
         hook = self.on_load_settings

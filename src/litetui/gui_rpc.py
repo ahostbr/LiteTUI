@@ -654,6 +654,10 @@ async def _async_dispatch(app, cmd):
                 candidate.llama_presets[str(preset)] = {"load": dict(load), "inference": dict(inference)}
             settings_mod.save(candidate)
             app.settings = candidate
+            # `candidate` is a fresh object; re-point the backend or these
+            # saved per-model settings stay on the stale object it captured.
+            if hasattr(app.backend, "set_settings"):
+                app.backend.set_settings(candidate)
             if cmd.get("apply_load", False) and prior != load:
                 await app.backend.apply_load_settings(key, load)
             return {"slug": key, "saved": True, "load_applied": bool(cmd.get("apply_load", False)),

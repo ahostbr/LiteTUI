@@ -7694,6 +7694,13 @@ class LiteTUI(App):
         text = self._mark_message(data)
         content: list = [
             {"type": "image_url",
+        # `new` is a DIFFERENT object than the one the backend captured at
+        # construction (`_collect` did `replace()`), so re-point it here or a
+        # saved backend setting — ninfer_max_context above all — stays on the
+        # stale object and never reaches the engine. See `_VramGate.set_settings`.
+        backend = getattr(self, "backend", None)
+        if backend is not None and hasattr(backend, "set_settings"):
+            backend.set_settings(new)
              "image_url": {"url": f"data:image/png;base64,{b64}"}},
             {"type": "text", "text": text},
         ]
@@ -7771,3 +7778,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+        # NInfer's spawn-time knobs are read by `ninfer_engine.start`, not on
+        # /reconnect — a RUNNING engine keeps its current --max-context until it
+        # is restarted. Say that, or the control reads as broken.
+        spawn = [c for c in changed if c in ("ninfer_max_context", "ninfer_artifact",
+                                            "ninfer_executable")]
+        if spawn:
+            note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "
+                     "— stop the running engine first (/engine stop), or it keeps "
+                     "its current context.")

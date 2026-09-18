@@ -168,6 +168,49 @@ async def test_the_live_settings_wiring_holds() -> None:
     assert failures == [], failures
 
 
+@pytest.mark.asyncio
+async def test_saving_a_backend_setting_keeps_the_backend_on_the_new_object() -> None:
+    """🔴 THE STALE-SETTINGS-REFERENCE DEFECT, PINNED.
+
+    Ryan set `ninfer_max_context` in /settings, saved it, and the engine still
+    spawned with the old value — "I can't set the context level." Root cause:
+    `_collect` builds a NEW Settings object (`replace()`) and `_on_settings_saved`
+    rebinds `app.settings` to it, but the backend had captured the OLD object in
+    `__init__` and `ninfer_engine.start` reads `self._settings`. The save handler
+    now re-points the backend; this proves it, through the real handler, so a
+    regression that drops the re-point fails here and not in production.
+    """
+    from dataclasses import replace
+
+    from litetui import llm_backend
+
+    a = m.LiteTUI()
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    a._apply_context_length = lambda: None
+
+    # The save handler renders through the live screen (_update_header), so it
+    # must run inside the pilot, exactly like the other arms in this file.
+    async with a.run_test():
+        # Put a NInfer backend in place, holding the live settings object.
+        base = a.settings
+        base.backend = "ninfer"
+        a.backend = llm_backend.make_backend(base)
+        assert a.backend.name == "ninfer"
+        assert a.backend._settings is a.settings, "precondition: backend holds the live object"
+        assert a.backend._settings.ninfer_max_context == 32768, "precondition: default context"
+
+        # User changes ninfer_max_context and saves — through the REAL handler.
+        new = replace(base, ninfer_max_context=100000)
+        assert new is not base, "precondition: the save path replaces the object"
+        a._on_settings_saved(new)
+
+        # The defect was: the backend stayed on `base` (32768). It must now
+        # track the saved object so the engine spawn reads 100000.
+        assert a.backend._settings is a.settings, "backend must follow the saved settings object"
+        assert a.backend._settings.ninfer_max_context == 100000
+
+
 if __name__ == "__main__":
     asyncio.run(main())
     print(f"\n{sum(ok)}/{len(ok)} passed")
