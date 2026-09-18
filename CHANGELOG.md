@@ -18,6 +18,53 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-09-18
+
+NInfer becomes a first-class engine LiteTUI can own, and the TUI grows the two
+controls Ryan kept reaching for: a pause button and a stop button.
+
+### Added
+- **`/engine start | stop | status | lanes N`** — LiteTUI starts and stops
+  ninfer-serve itself (Ryan: "LiteTUI may start it"), adopts it into a
+  KILL_ON_JOB_CLOSE job so the engine dies with the app even when the app is
+  force-killed, registers the port for LiteSuite's Model Hub, and reads the
+  running engine's `--max-concurrency` back from the process table for
+  `/engine status` — the argv, never the setting.
+- **`ninfer_max_concurrency`** (1..8) passed as `--max-concurrency`; lanes share
+  the `--max-context` KV pool, so they cost no VRAM and divide context under
+  load. Measured on the 35B-A3B: one lane serialises a second request (220 ms
+  queue), four lanes admit four at once.
+- **NInfer is 5090-only.** `nvidia-smi` decides — absent means no NVIDIA driver,
+  so not a 5090, cleanly. Off a 5090 nothing NInfer is shown: no `/engine`, no
+  backend row, no settings tab; a copied `backend: ninfer` boots LM Studio.
+- **NInfer settings tab** beside Model in `/settings`, only on a 5090.
+- **`/pause`** and a footer ⏸ button: the whole agent loop holds before its next
+  model round; ▶ resumes.
+- **✕ stop** under every row of the background-tasks panel.
+- **`/model` on NInfer picks the artifact** (the model IS the file).
+- `convo_search`: ranked cross-conversation search over `.convos` (FTS5).
+
+### Fixed
+- **tok/s under speculative decoding**: one SSE delta carries 1–4 accepted
+  tokens, so the live rate and the thinking header counted deltas (~55) while
+  the server said 152. Live count is `max(deltas, chars/4)`; headers settle on
+  the server's count.
+- Every finished card gets its summary line, not only the turn's last; thinking-
+  only cards read `thinking: <first sentence>`; the card header names the model.
+- A saved backend setting reaches the backend, not just settings.json; a refused
+  `/engine start` leaves a record and never promises a start it then refuses.
+- The engine's own error reason survives the client; a refused image stops
+  poisoning the thread; a message bigger than the window is refused before
+  sending; the context meter moves when a compaction shrinks the conversation.
+- Five TUI-surface defects from one morning (error text, backend switch,
+  user-bubble height, autoscroll re-lock, empty-state hint routing).
+- `codex` native engine: history restart, cache parity, packaged hooks — the
+  probes under `scripts/` document each.
+
+### Changed
+- `/backend` and the Engine select list only the backends this box can run.
+- Every backend names itself in the header instead of one naming the rest.
+
 ## [0.23.1] — 2026-09-16
 
 The harness is back in the driver's seat. 0.23.0 shipped the official Codex
