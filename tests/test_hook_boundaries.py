@@ -313,7 +313,46 @@ async def test_real_stream_rejected_completion_never_finalizes(app, tmp_path, mo
             if any(e.get("stopReason") in ("hook_denied", "stop") for e in emitted):
                 break
             await pilot.pause(.05)
-        assert len(requests) == (2 if accept_after else 4)
+        # 🔴 COUNT COMPLETIONS, NOT CALLS (T821). This arm asserted
+        # `len(requests)` and was CORRECT when it was written — 4e873f7,
+        # 2026-09-12. It went red on 2026-09-16 when `_kick_card_summary`
+        # (f2571bf, Ryan's collapsed-card title) started using the same
+        # transport for a one-message side call: "Summarise the assistant reply
+        # below in ONE short line, at most ten words."
+        #
+        #     AN ARM CAN BE CORRECT AT ITS TIMESTAMP AND WRONG AT YOURS WITHOUT
+        #     ANYONE EDITING EITHER SIDE. Nothing changed in the code it was
+        #     asserting about; a feature borrowed the transport underneath it.
+        #
+        #     A COUNTER OVER A SHARED TRANSPORT COUNTS EVERY FEATURE THAT USES
+        #     IT. The arm named "completion requests" and measured "calls
+        #     through the client", and the two were the same number on the day
+        #     it was written.
+        #
+        # ⚠️ NOT `== 3`, AND NOT A PROMPT-TEXT MATCH. A number that happens to
+        # be right today is the same defect one iteration later, and a string
+        # test against CARD_SUMMARY_PROMPT would be a text gate — this file
+        # already carries the T816 note about exactly that failure six lines
+        # below. The transport now names its own PURPOSE; the side call is
+        # excluded because of what it IS, not because of what it says or how
+        # many of it there are.
+        completions = [r for r in requests if r.get("purpose", "turn") == "turn"]
+        summaries = [r for r in requests if r.get("purpose") == "card-summary"]
+        assert len(completions) == (2 if accept_after else 4), (
+            f"completions={len(completions)} summaries={len(summaries)} "
+            f"total={len(requests)}")
+        # ⬜ THE FILTER MUST BE DOING WORK. Without this, a build where nothing
+        # tagged itself at all — every call defaulting to "turn" — would pass
+        # the line above by having nothing to exclude, and the arm would be
+        # green for the reason it was red. 0-of-0 and 0-of-1 are the same digit
+        # until you say which you expect.
+        if accept_after:
+            assert len(summaries) == 1, requests
+            assert len(requests) == 3, "a completion was mis-tagged"
+        else:
+            # A denied turn never finalizes, so no card finishes and nothing is
+            # summarised. That asymmetry is the point of the whole arm.
+            assert summaries == []
         assert finalized == ([1] if accept_after else [])
         # 🔴 THE stopReason, NOT DICT IDENTITY (T816). These were exact-dict
         # membership tests, so `9ca2d46` adding `tps` (and `77faa4d` adding

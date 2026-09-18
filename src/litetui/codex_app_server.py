@@ -241,7 +241,9 @@ class AppServerTransport:
         self.lock = asyncio.Lock()
         self.process = None
 
-    async def create(self, **kwargs):
+    async def create(self, *, purpose: str = "turn", **kwargs):
+        """`purpose` names what the call is for and never reaches the
+        wire — see model_transport.ModelTransport.create (T821)."""
         if (
             self.app is not None
             and not kwargs.get("stream")

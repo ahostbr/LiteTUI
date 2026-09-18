@@ -4980,6 +4980,10 @@ class LiteTUI(App):
             effort = _resolve_reasoning_effort("off", self.backend.name)
             extra = {"reasoning_effort": effort} if effort else {}
             resp = await model_transport.for_app(self).create(
+                # 🔴 NOT PART OF THE TURN (T821). This side call used to be
+                # indistinguishable from a completion at the transport, so a
+                # test counting `create` calls counted it as one.
+                purpose="card-summary",
                 # Same sentinel the main paths use: with nothing selected,
                 # name "local-model" and let the server resolve it. Sending ""
                 # here would make the side call the one request in the app that

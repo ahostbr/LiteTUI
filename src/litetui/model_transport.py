@@ -35,7 +35,7 @@ class ProviderError(BackendError):
 
 
 class ModelTransport(Protocol):
-    async def create(self, **kwargs): ...
+    async def create(self, *, purpose: str = "turn", **kwargs): ...
 
 
 @dataclass(frozen=True)
@@ -546,7 +546,23 @@ class OAuthTransport:
             )
         return headers
 
-    async def create(self, **kwargs):
+    async def create(self, *, purpose: str = "turn", **kwargs):
+        """`purpose` NAMES WHAT THIS CALL IS FOR, and it never reaches the wire.
+
+        🔴 T821. A test counted `create` calls to assert how many COMPLETIONS
+        one turn costs. It was right on 2026-09-12 (4e873f7) and red by
+        2026-09-16, when `_kick_card_summary` (f2571bf, Ryan's collapsed-card
+        title) started borrowing this same transport. Nothing on either side
+        was edited.
+
+            A COUNTER OVER A SHARED TRANSPORT COUNTS EVERY FEATURE THAT USES
+            IT. The arm named 'completion requests' and measured 'calls
+            through the client' — the same number on the day it was written,
+            which is exactly why nobody noticed.
+
+        Captured as a NAMED parameter so it cannot reach the HTTP client, and
+        defaulted to the turn, so an untagged caller keeps today's meaning.
+        """
         if self.provider == "codex" and self.prompt_cache_key:
             kwargs["prompt_cache_key"] = self.prompt_cache_key
         credentials = read_credentials(self.provider, self.credential_path)
@@ -616,7 +632,7 @@ class OpenAITransport:
     def __init__(self, client):
         self.client = client
 
-    async def create(self, **kwargs):
+    async def create(self, *, purpose: str = "turn", **kwargs):
         kwargs = dict(kwargs)
         kwargs["messages"] = [
             {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
