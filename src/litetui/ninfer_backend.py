@@ -436,11 +436,17 @@ class NInferBackend(_VramGate):
 
     # -- owning the engine (Ryan a-35456da0: "LiteTUI may start it") ----------
 
-    async def start_engine(self) -> str:
-        """Spawn ninfer-serve under LiteTUI's VRAM gate; refuse if any engine is up."""
+    async def start_engine(self, *, notice=None) -> str:
+        """Spawn ninfer-serve under LiteTUI's VRAM gate; refuse if any engine is up.
+
+        `notice()` is forwarded to the launcher, which calls it immediately before
+        the spawn and never on a refusal (T865). It runs on the worker thread, so a
+        UI caller must marshal it back itself.
+        """
         key = "ninfer-serve"
         async with self.vram_guard(key):
-            owned = await asyncio.to_thread(ninfer_engine.start, self._settings, healthy=self._health)
+            owned = await asyncio.to_thread(
+                ninfer_engine.start, self._settings, healthy=self._health, notice=notice)
         self._owned = owned
         self._host = owned.host
         return f"started ninfer-serve pid {getattr(owned.proc, 'pid', '?')} at {owned.host} ({owned.model_id})"

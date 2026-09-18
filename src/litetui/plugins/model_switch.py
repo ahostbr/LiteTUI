@@ -247,11 +247,26 @@ def _cmd_engine(app, name: str, arg: str) -> None:
     if getattr(app, "_chat_running", lambda: False)():
         app.system_message("Finish or stop the current turn before starting the engine.")
         return
-    app.system_message("Starting ninfer-serve — weights take about ten seconds…")
+    # 🔴 T865. This line used to be printed HERE, before the await. Five
+    # conditions refuse inside start() — an engine already registered, one still
+    # loading, a full card, no exe, no artifact — so on every one of them the
+    # user read a promise and then its contradiction:
+    #
+    #     Starting ninfer-serve — weights take about ten seconds…
+    #     ninfer-serve not installed at C:\… — install it from…
+    #
+    # Both sentences are correct alone and the end state is right, which is why
+    # no test saw it; what was wrong is the ORDER A PERSON READS THEM IN, and
+    # only Sentinel driving the exe-missing arm found it. The launcher calls this
+    # back immediately before the spawn, from its worker thread.
+    def _starting() -> None:
+        app.call_from_thread(
+            app.system_message,
+            "Starting ninfer-serve — weights take about ten seconds…")
 
     async def _go():
         try:
-            msg = await backend.start_engine()
+            msg = await backend.start_engine(notice=_starting)
         except llm_backend.BackendError as e:
             app.system_message(str(e))
             return
