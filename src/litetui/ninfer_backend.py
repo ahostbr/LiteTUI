@@ -296,6 +296,11 @@ class NInferBackend(_VramGate):
     """
 
     name = "ninfer"
+    #: The name a HUMAN reads in the header. Each backend carries its own
+    #: (T861) because the header used to pick it out of a hand-listed map whose
+    #: default was the literal string "LM Studio" — so NInfer, and anything
+    #: added after that line was written, was announced as LM Studio.
+    label = "NInfer"
 
     def __init__(self, settings) -> None:
         self._settings = settings
