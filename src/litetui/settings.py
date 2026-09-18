@@ -66,6 +66,13 @@ class Settings:
     ninfer_executable: str = ""
     ninfer_artifact: str = ""
     ninfer_max_context: int = 32768
+    #: The engine's --max-concurrency (1..8, serving.md:760): requests decoded in
+    #: ONE batch — LM Studio's "Parallel" (Ryan 2026-09-18: "does are ninfer backend
+    #: support parallel calls yet ? like lmstudio"). Lanes SHARE the --max-context KV
+    #: pool and a request is admitted only when its whole reservation fits
+    #: (serving.md:929-933, :949-955): no extra VRAM, less context each under load.
+    #: A startup flag — applies on the next /engine start.
+    ninfer_max_concurrency: int = 1
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.

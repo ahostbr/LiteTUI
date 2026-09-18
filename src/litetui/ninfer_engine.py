@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import jobkill, ttyguard
-from .llm_backend import BackendError
+from .llm_backend import BackendError, _arg_value
 
 NINFER_V3_MAGIC = b"NINFER\x00\x03"
 NINFER_V3_HEADER_BYTES = 32
@@ -61,6 +61,10 @@ NINFER_FAILURE_MARKERS = ("cannot bind", "server listen failed", "server failed 
 NINFER_START_TIMEOUT_S = 180
 #: Refuse to start when the card shows less than this free (see module note).
 NINFER_MIN_FREE_MIB = 26 * 1024
+#: `--max-concurrency N` — "valid range 1..8", default 1 (serving.md:760). Whether the
+#: engine refuses or clamps a value outside it is unmeasured, so it is clamped here the
+#: way the draft window is: the user's intent (more lanes) meets the widest legal value.
+NINFER_CONCURRENCY_RANGE = (1, 8)
 
 LITESUITE_LLM_DIR_ENV = "LITESUITE_LLM_DIR"
 
@@ -166,6 +170,7 @@ def build_ninfer_args(
     *,
     host: str = "127.0.0.1",
     max_context: int | None = None,
+    max_concurrency: int | None = None,
     spec: str | None = None,
     components: tuple[str, ...] = (),
     draft_tokens: int | None = None,
@@ -177,6 +182,11 @@ def build_ninfer_args(
     args = [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id]
     ctx = max_context if isinstance(max_context, int) and max_context > 0 else NINFER_DEFAULT_MAX_CONTEXT
     args += ["--max-context", str(ctx)]
+    # Passed only when chosen (None = the engine's own default of 1), clamped into
+    # NINFER_CONCURRENCY_RANGE. `bool` is an int; it is not a lane count.
+    if isinstance(max_concurrency, int) and not isinstance(max_concurrency, bool) and max_concurrency > 0:
+        lo, hi = NINFER_CONCURRENCY_RANGE
+        args += ["--max-concurrency", str(min(hi, max(lo, max_concurrency)))]
     want = spec or NINFER_DEFAULT_SPEC
     # 🔴 gated on the ARTIFACT, not on the flag parser: the failure otherwise
     # lands at model load, after the user has waited (ninfer-args.ts).
@@ -194,6 +204,35 @@ def build_ninfer_args(
     if vision and "vision" in components:
         args.append("--vision")
     return args
+
+
+def concurrency_in(args) -> int:
+    """The `--max-concurrency` an argv carries, or 1 — the engine's default when the
+    flag is absent (serving.md:760)."""
+    val = _arg_value(list(args or ()), "--max-concurrency")
+    return int(val) if isinstance(val, str) and val.isdigit() else 1
+
+
+def running_argv(port: int) -> list[str] | None:
+    """The command line of the ninfer-serve listening on `port`, from the process
+    table; None when none is visible (nothing running, or a host that is not this box).
+
+    ⬜ THE PROCESS TABLE, NOT THE SETTING. An ATTACHED engine was started by somebody
+    else with THEIR flags, and `/v1/models` does not carry capacity — so the only
+    honest source for "how many lanes is it running" is the argv of the live process.
+    Same query summarize.py's find_port used the day a brief's port went stale.
+    """
+    ps = "Get-CimInstance Win32_Process -Filter \"Name='ninfer-serve.exe'\" | % { $_.CommandLine }"
+    try:
+        out = ttyguard.run(["powershell", "-NoProfile", "-Command", ps], timeout=30)
+        text = str(getattr(out, "stdout", out) or "")
+    except Exception:  # noqa: BLE001 - cannot ask -> unknown, never a guess
+        return None
+    for line in text.splitlines():
+        toks = line.split()
+        if _arg_value(toks, "--port") == str(port):
+            return toks
+    return None
 
 
 def free_port(host: str = "127.0.0.1") -> int:
@@ -346,6 +385,11 @@ class OwnedEngine:
     #: pid 269276 resident with 10.7 GB. None on non-Windows or if the job
     #: could not be made; `stop` then falls back to the taskkill walk.
     job: int | None = None
+    #: The argv it was spawned with. `/engine status` and `seat_snapshot` read the
+    #: running capacity from HERE for an owned engine — the flags are startup-only
+    #: and no route reports them (ninfer http_server.cpp:480-497 passes id, time and
+    #: max_context only), so the setting is not the answer; the argv is.
+    args: tuple[str, ...] = ()
 
     @property
     def alive(self) -> bool:
@@ -457,9 +501,11 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     port = free_port()
     host = f"http://127.0.0.1:{port}"
     ctx = getattr(settings, "ninfer_max_context", None)
+    conc = getattr(settings, "ninfer_max_concurrency", None)
     args = build_ninfer_args(
         artifact, port, model_id,
         max_context=ctx if isinstance(ctx, int) else None,
+        max_concurrency=conc if isinstance(conc, int) else None,
         components=artifact_components(directory),
     )
     lp = log_path()
@@ -514,7 +560,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
                 raise BackendError(f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
         if NINFER_READY_MARKER in fresh or healthy(host):
             owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
-                                model_id=model_id, job=job)
+                                model_id=model_id, job=job, args=tuple(args))
             register_host(host, pid=pid)
             atexit.register(stop, owned)
             return owned

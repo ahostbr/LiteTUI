@@ -7964,12 +7964,12 @@ class LiteTUI(App):
         # NInfer's spawn-time knobs are read by `ninfer_engine.start`, not on
         # /reconnect — a RUNNING engine keeps its current --max-context until it
         # is restarted. Say that, or the control reads as broken.
-        spawn = [c for c in changed if c in ("ninfer_max_context", "ninfer_artifact",
-                                            "ninfer_executable")]
+        spawn = [c for c in changed if c in ("ninfer_max_context", "ninfer_max_concurrency",
+                                            "ninfer_artifact", "ninfer_executable")]
         if spawn:
             note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "
                      "— stop the running engine first (/engine stop), or it keeps "
-                     "its current context.")
+                     "its current flags.")
         if codex_default_changed:
             note += "\n  Thinking default applies to new conversations; this conversation retains its chosen mode."
         self._system(note)

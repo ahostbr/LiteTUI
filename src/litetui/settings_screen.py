@@ -394,6 +394,13 @@ class SettingsBody(Widget):
                             placeholder="32768",
                         )
                         yield from self._text_row(
+                            "ninfer_max_concurrency", "NInfer: concurrent requests (--max-concurrency)",
+                            "1..8 requests decoded in one batch — LM Studio's 'Parallel'. They share "
+                            "the context-length KV pool: no extra VRAM, less context each under load. "
+                            "Applies on the next /engine start; /engine status shows the running value.",
+                            placeholder="1",
+                        )
+                        yield from self._text_row(
                             "lmstudio_graded_thinking_models",
                             "Graded thinking works on (LM Studio)",
                             "Comma-separated model ids. On LM Studio a graded level is "

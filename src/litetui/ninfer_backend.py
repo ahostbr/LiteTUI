@@ -477,10 +477,33 @@ class NInferBackend(_VramGate):
         self.shutdown()
         return f"stopped the engine LiteTUI started at {host}."
 
+    def engine_concurrency(self) -> int | None:
+        """The `--max-concurrency` the RUNNING engine was started with, or None
+        when it cannot be read. Owned: our own argv. Attached: the process table.
+        The flag is startup-only and no route reports it, so the SETTING is not
+        the answer — an engine somebody else started carries their flags."""
+        if self._owned is not None:
+            return ninfer_engine.concurrency_in(self._owned.args)
+        host = self._resolve_host()
+        try:
+            port = int(str(host).rsplit(":", 1)[1])
+        except (ValueError, IndexError):
+            return None
+        argv = ninfer_engine.running_argv(port)
+        return ninfer_engine.concurrency_in(argv) if argv else None
+
+    def _capacity_note(self) -> str:
+        n = self.engine_concurrency()
+        if n is None:
+            return " · concurrency unknown (no ninfer-serve on that port in the process table)"
+        return (f" · concurrency {n} (--max-concurrency, a startup flag; lanes share "
+                "the --max-context KV pool)")
+
     def engine_status(self) -> str:
         if self._owned is not None:
             alive = self._owned.alive and self._health(self._owned.host)
-            return f"LiteTUI-owned engine at {self._owned.host}: {'answering' if alive else 'NOT answering'} (log {self._owned.log_path})"
+            return (f"LiteTUI-owned engine at {self._owned.host}: {'answering' if alive else 'NOT answering'}"
+                    f"{self._capacity_note()} (log {self._owned.log_path})")
         explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
         if not explicit:
             # Same correction as `stop_engine`: a LiteTUI-owned entry must not
@@ -493,11 +516,13 @@ class NInferBackend(_VramGate):
                 host = entry["baseUrl"]
                 return (f"LiteTUI-owned engine at {host} (pid {entry['pid']}, from the "
                         f"registry — this session did not start it): "
-                        f"{'answering' if self._health(host) else 'NOT answering'} · /engine stop")
+                        f"{'answering' if self._health(host) else 'NOT answering'}"
+                        f"{self._capacity_note()} · /engine stop")
         reg = explicit or discover_ninfer_host()
         if reg is None:
             return "no engine registered — /engine start (LiteTUI starts one), or start it from LiteSuite's Model Hub."
-        return f"attached engine at {reg}: {'answering' if self._health(reg) else 'NOT answering'}"
+        return (f"attached engine at {reg}: {'answering' if self._health(reg) else 'NOT answering'}"
+                f"{self._capacity_note()}")
 
     async def list_models(self) -> list[ModelRow]:
         return await asyncio.to_thread(self._list_sync)
@@ -730,9 +755,10 @@ class NInferBackend(_VramGate):
         return {
             "identifier": model_id,
             "context": window,
-            # No `--parallel` on this engine: the option does not exist, and
-            # reporting 1 would imply a knob that could be something else.
-            "parallel": None,
+            # `--max-concurrency` of the RUNNING process (T892): the argv we
+            # spawned, or the process table for an attached engine; None only
+            # when neither can be read. Never the setting — that is a wish.
+            "parallel": self.engine_concurrency(),
             "status": "idle",
             "queued": 0,
         }

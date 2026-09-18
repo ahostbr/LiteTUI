@@ -289,6 +289,31 @@ def test_the_backend_is_attached_unless_it_started_the_engine():
     assert stopped == ["http://127.0.0.1:1"] and backend.attached is True
 
 
+def test_engine_status_reports_the_running_concurrency_from_the_argv(monkeypatch):
+    """T892 — `/engine status` says how many lanes the RUNNING engine has, from the
+    argv it was spawned with (owned) or the process table (attached). The setting
+    is never the source: it is a wish until the next start."""
+    from litetui import ninfer_engine
+
+    class _Proc:
+        pid = 4242
+        def poll(self):
+            return None
+    backend = NInferBackend(_Settings())
+    monkeypatch.setattr(NInferBackend, "_health", staticmethod(lambda host, timeout=2.0: True))
+    backend._owned = ninfer_engine.OwnedEngine(
+        proc=_Proc(), host="http://127.0.0.1:1", log_path=Path("x.log"), log_file=io.StringIO(),
+        model_id="m", args=("m.ninfer", "--port", "1", "--max-concurrency", "2"))
+    assert "concurrency 2" in backend.engine_status()
+    assert backend.engine_concurrency() == 2
+    # Attached: nothing on the port -> unknown, said as such, never the setting.
+    backend._owned = None
+    backend._host = "http://127.0.0.1:63177"
+    monkeypatch.setattr(ninfer_engine, "running_argv", lambda port: None)
+    monkeypatch.setattr("litetui.ninfer_backend.discover_ninfer_host", lambda: "http://127.0.0.1:63177")
+    assert "concurrency unknown" in backend.engine_status()
+
+
 # ── the factory ──────────────────────────────────────────────────────────────
 
 
@@ -802,10 +827,22 @@ def test_the_seat_cannot_be_suspended_and_says_why(monkeypatch):
 def test_seat_snapshot_is_resident_or_absent(monkeypatch):
     """⬜ One artifact per process: "is it loaded" and "is this the model this
     engine serves" are the same question, so there is no cold row to report."""
+    from litetui import ninfer_engine
+
     b = _served(monkeypatch)
+    # T892: `parallel` is the RUNNING engine's --max-concurrency, read from the
+    # process table for an attached engine. Nothing visible on the port -> None.
+    monkeypatch.setattr(ninfer_engine, "running_argv", lambda port: None)
     rec = b.seat_snapshot("qwen3.8-27b")
     assert rec == {"identifier": "qwen3.8-27b", "context": 32768,
                    "parallel": None, "status": "idle", "queued": 0}
+    seen = {}
+    def _argv(port):
+        seen["port"] = port
+        return ["ninfer-serve.exe", "m.ninfer", "--port", str(port), "--max-concurrency", "4"]
+    monkeypatch.setattr(ninfer_engine, "running_argv", _argv)
+    assert b.seat_snapshot("qwen3.8-27b")["parallel"] == 4
+    assert seen["port"] == 63177          # the port of the host it is attached to
     assert b.seat_snapshot("something-else") is None
     # Resume is a question, not an assumption — it asks the engine.
     assert b.seat_resume({"identifier": "qwen3.8-27b"}) is None

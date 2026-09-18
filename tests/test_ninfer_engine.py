@@ -71,6 +71,42 @@ def test_a_chosen_context_wins_over_the_default():
     assert args[args.index("--max-context") + 1] == "65536"
 
 
+def test_concurrency_is_passed_only_when_chosen_and_clamped_to_the_engines_range():
+    """T892 — serving.md:760: `--max-concurrency N`, valid range 1..8, default 1.
+    Absent = the engine's own default; a chosen value is clamped like the draft window."""
+    assert "--max-concurrency" not in eng.build_ninfer_args(Path("a"), 1, "m")
+    four = eng.build_ninfer_args(Path("a"), 1, "m", max_concurrency=4)
+    assert four[four.index("--max-concurrency") + 1] == "4"
+    high = eng.build_ninfer_args(Path("a"), 1, "m", max_concurrency=12)
+    assert high[high.index("--max-concurrency") + 1] == "8"
+    assert "--max-concurrency" not in eng.build_ninfer_args(Path("a"), 1, "m", max_concurrency=0)
+    assert "--max-concurrency" not in eng.build_ninfer_args(Path("a"), 1, "m", max_concurrency=True)
+
+
+def test_concurrency_is_read_back_from_an_argv_with_the_engines_default_when_absent():
+    assert eng.concurrency_in(["x.ninfer", "--port", "1", "--max-concurrency", "4"]) == 4
+    assert eng.concurrency_in(["x.ninfer", "--port", "1"]) == 1
+    assert eng.concurrency_in(["x.ninfer", "--max-concurrency"]) == 1
+    assert eng.concurrency_in(None) == 1
+
+
+def test_running_argv_picks_the_process_on_the_port_from_the_table(monkeypatch):
+    """An attached engine carries SOMEBODY ELSE'S flags: the process table is the
+    only honest source (no route reports capacity). Port-matched, never first-row."""
+    class _Out:
+        stdout = ("C:\\n\\ninfer-serve.exe a.ninfer --host 127.0.0.1 --port 60915 --max-concurrency 3\n"
+                  "C:\\n\\ninfer-serve.exe b.ninfer --host 127.0.0.1 --port 56504\n")
+    monkeypatch.setattr(eng.ttyguard, "run", lambda cmd, timeout=30: _Out())
+    assert eng.concurrency_in(eng.running_argv(60915)) == 3
+    assert eng.concurrency_in(eng.running_argv(56504)) == 1
+    assert eng.running_argv(1) is None
+
+    def _boom(cmd, timeout=30):
+        raise OSError("no powershell")
+    monkeypatch.setattr(eng.ttyguard, "run", _boom)
+    assert eng.running_argv(60915) is None
+
+
 # ── the artifact header: read the FILE, not a sidecar ───────────────────────
 
 def test_reads_the_v3_directory_from_the_container_header(tmp_path):
@@ -192,6 +228,18 @@ def test_start_spawns_litesuites_argv_and_registers_the_port(tmp_path, monkeypat
     assert entry["owner"] == "litetui" and entry["pid"] == 777   # the hub's owner label (T819)
     eng.stop(owned)
     assert eng.registered_host() is None
+
+
+def test_start_passes_the_settings_concurrency_and_keeps_the_argv_on_the_handle(tmp_path, monkeypatch):
+    """T892: the setting reaches the spawn, and the handle keeps the argv so the
+    readout (/engine status, seat_snapshot) reports what RUNS, not what was wished."""
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    monkeypatch.setattr(eng.atexit, "register", lambda *a, **k: None)
+    s.ninfer_max_concurrency = 3
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn)
+    assert spawned["cmd"][spawned["cmd"].index("--max-concurrency") + 1] == "3"
+    assert eng.concurrency_in(owned.args) == 3
+    eng.stop(owned)
 
 
 def test_an_earlier_runs_ready_line_does_not_count(tmp_path, monkeypatch):
