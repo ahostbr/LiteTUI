@@ -77,7 +77,84 @@ def switch_model(app, target: str) -> bool:
     return True
 
 
+def _empty_state_hint(app) -> str:
+    """What THIS backend wants said when it has no models to offer.
+
+    🔴 THE SITES BELOW USED TO HARDCODE "/reconnect" AND "/model first" (T860).
+    On NInfer with no engine every one of those is a remedy the broken state has
+    removed: /reconnect reconnects to nothing, /model needs a discovered list
+    that cannot exist, /load needs a model the engine defines.
+
+        T858 WAS A HANDLER THAT *NEEDED* THE MISSING THING. THIS IS A HANDLER
+        THAT *RECOMMENDS* IT. One root — the message was written for the state
+        where the backend works.
+
+    Asked of the backend by `getattr`, not added to a base class: a backend that
+    says nothing keeps today's words exactly, which is what stops this being a
+    global find-and-replace.
+    """
+    hint = getattr(app.backend, "empty_state_hint", None)
+    try:
+        text = hint() if callable(hint) else ""
+    except Exception:  # noqa: BLE001 - a hint must never break the command
+        text = ""
+    return str(text or "try /reconnect")
+
+
+def _ninfer_artifact_rows(app) -> list[tuple[str, str]]:
+    from litetui.ninfer_engine import list_ninfer_artifacts
+
+    chosen = str(getattr(app.settings, "ninfer_artifact", "") or "").strip()
+    rows = []
+    for path in list_ninfer_artifacts():
+        mark = "  · current" if chosen and Path(chosen) == path else ""
+        size = ""
+        try:
+            size = f"  · {path.stat().st_size / 1_000_000_000:.1f} GB"
+        except OSError:
+            pass
+        rows.append((str(path), f"{path.stem}{size}{mark}"))
+    return rows
+
+
+def _pick_ninfer_artifact(app) -> None:
+    """`/model` on NInfer: choose the FILE the next engine will serve.
+
+    ⬜ THE MODEL IS THE ARTIFACT HERE, and that is not a wording difference. One
+    artifact per process, chosen before the engine starts, so there is no server
+    list to show and no load to perform. Ryan had three `.ninfer` files on disk,
+    `ninfer_artifact()` refuses to guess between them (rightly), and no command
+    in the TUI could make the choice — the only door was typing a path into
+    /settings. This is that door, on the surface he already reaches for.
+    """
+    rows = _ninfer_artifact_rows(app)
+    if not rows:
+        from litetui.ninfer_engine import artifacts_dir
+        app.system_message(
+            f"No .ninfer artifacts in {artifacts_dir()} — LiteSuite's Model Hub "
+            "pulls them, or set ninfer_artifact in /settings."
+        )
+        return
+
+    def _picked(choice: str | None) -> None:
+        if not choice:
+            return
+        import dataclasses
+        app._on_settings_saved(
+            dataclasses.replace(app.settings, ninfer_artifact=choice))
+        app.system_message(
+            f"NInfer artifact set to {Path(choice).stem} — /engine start to serve it."
+        )
+
+    pick(app, "Select a NInfer artifact (served on the next /engine start)",
+         rows, _picked,
+         current=str(getattr(app.settings, "ninfer_artifact", "") or ""))
+
+
 def _cmd_model(app, name: str, arg: str) -> None:
+    if not arg and getattr(app.backend, "name", "") == "ninfer":
+        _pick_ninfer_artifact(app)
+        return
     if arg:
         # Switch by number or name
         if arg.isdigit():
@@ -89,7 +166,7 @@ def _cmd_model(app, name: str, arg: str) -> None:
         elif not switch_model(app, arg):
             app.system_message(f"Model not found: {arg}")
     elif not app.available_models:
-        app.system_message("No models discovered — try /reconnect")
+        app.system_message(f"No models discovered — {_empty_state_hint(app)}")
     else:
         # Clickable picker. `/model <n>` and `/model <name>` are handled
         # above and still work, so scripting and muscle memory survive.
@@ -299,6 +376,16 @@ def _cmd_load(app, name: str, arg: str) -> None:
     if getattr(app.backend, "remote", False):
         app.system_message("Remote models need no loading. Select one with /model.")
         return
+    if getattr(app.backend, "name", "") == "ninfer":
+        # ⬜ A REFUSAL, NOT A RE-WORDING (T860). `/load` asks a server to bring a
+        # model into memory; NInfer serves ONE artifact per process, fixed
+        # before it starts, and has no `/models/load` at all. Re-phrasing the
+        # error would still imply the verb exists here.
+        app.system_message(
+            "NInfer serves one artifact per process — there is nothing to load. "
+            "/model picks the artifact, /engine start serves it."
+        )
+        return
 
     typed = arg.strip()
     interactive = not getattr(app, "_rpc", False) and bool(app.available_models)
@@ -320,7 +407,8 @@ def _cmd_load(app, name: str, arg: str) -> None:
             return
         target = app.model_id
         if not target:
-            app.system_message("No model selected — /model first, or /load <name>")
+            app.system_message(
+                f"No model selected — {_empty_state_hint(app)}")
             return
         _start_load(app, target)
         return
@@ -355,7 +443,7 @@ def _cmd_unload(app, name: str, arg: str) -> None:
         return
     target = arg.strip() or app.model_id
     if not target:
-        app.system_message("No model selected — /unload <name>")
+        app.system_message(f"No model selected — {_empty_state_hint(app)}")
         return
 
     async def _go() -> None:
@@ -991,7 +1079,7 @@ def _cmd_modelcfg(app, name: str, arg: str) -> None:
         return
     target = arg.strip() or app.model_id
     if not target:
-        app.system_message("No model selected — /model first, or /modelcfg <name>")
+        app.system_message(f"No model selected — {_empty_state_hint(app)}")
         return
     present_dialog(app, partial(ModelConfigBody, target),
                    partial(ModelConfigScreen, target))

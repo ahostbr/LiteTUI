@@ -322,6 +322,21 @@ class NInferBackend(_VramGate):
         explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
         return explicit or self._host or discover_ninfer_host()
 
+    def empty_state_hint(self) -> str:
+        """What to tell the user when this backend has no models to offer.
+
+        🔴 T860. The model commands used to hardcode "try /reconnect" and
+        "/model first". With no engine registered, every one of those is a
+        remedy this state has removed — and the two steps that DO work,
+        `/model` to choose an artifact and `/engine start` to serve it, were
+        named nowhere the user was looking.
+
+        Only this backend defines the method. The others are read through
+        `getattr` and keep today's words untouched, which is the difference
+        between a fix and a find-and-replace.
+        """
+        return "/model to pick an artifact, then /engine start"
+
     def host(self) -> str:
         host = self._resolve_host()
         if host is None:
