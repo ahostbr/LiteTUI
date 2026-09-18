@@ -4989,7 +4989,7 @@ class LiteTUI(App):
                     # separate tally, so it can never disagree with the
                     # footer's output count or with the rate.
                     self._thinking_live.repaint_header(
-                        self.tps, self._tps.reasoning)
+                        self.tps, self._tps.reasoning_estimate)
                 for tool in self._inflight_tools:
                     tool._tick()
                 if card_live:
@@ -6667,6 +6667,12 @@ class LiteTUI(App):
                             final_turn_tps_source = (
                                 "engine" if chunk_rate else "client")
                             self._active_turn_tps = rate
+                        if thinking is not None:
+                            # The trace's readout counted deltas; the server
+                            # has now said how many tokens the round really
+                            # was. Its share, by characters.
+                            thinking.settle(self._tps.split_reasoning(
+                                int(getattr(u, "completion_tokens", 0) or 0)))
                         # ETA: this is the end of the turn -- the usage chunk
                         # carries prompt_tokens, so fold this turn into the
                         # learned rate (gated) and remember its count as the
@@ -6722,7 +6728,7 @@ class LiteTUI(App):
                         # are not tokens — but without a t0 `final` could never
                         # settle the server's own figure either, which is why
                         # the Codex backend showed no tok/s at all.
-                        live = self._tps.tick(reasoning=True)
+                        live = self._tps.tick(reasoning=True, chars=len(token))
                         rate = None if native_loop else live
                         if rate is not None:
                             self.tps = rate
@@ -6759,7 +6765,7 @@ class LiteTUI(App):
                         # read as "only scrolls when the message comes through".
                         self._scroll_down()
                     if delta.content:
-                        live = self._tps.tick()
+                        live = self._tps.tick(chars=len(delta.content))
                         rate = None if native_loop else live
                         if rate is not None:
                             self.tps = rate

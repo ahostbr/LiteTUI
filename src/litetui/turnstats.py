@@ -225,6 +225,18 @@ class TpsState:
         self.reasoning = 0
         self.content = 0
         self.painted = 0.0
+        # Characters, because a delta is not a token. Under speculative
+        # decoding (ninfer --spec mtp, T806) the engine emits one delta per
+        # VERIFY STEP carrying every accepted draft token - measured 2026-09-18:
+        # 62 deltas/s for 245 tok/s on predictable text, 150 on unpredictable.
+        # Counting deltas read ~55 "tok/s" live while the settled figure read
+        # 152; Ryan: "burst at 150ish at the start ... then slow down ... and
+        # then that wall at 152 at the end". chars/4 is the app's own token
+        # estimate (the ctx meter uses it), and it is only ever used when it
+        # exceeds the delta count - an engine streaming one token per delta
+        # keeps its exact count.
+        self.chars = 0
+        self.reasoning_chars = 0
 
     def start(self) -> None:
         """A new turn: forget the previous one entirely."""
@@ -233,9 +245,31 @@ class TpsState:
         self.reasoning = 0
         self.content = 0
         self.painted = 0.0
+        self.chars = 0
+        self.reasoning_chars = 0
+
+    @property
+    def tokens_estimate(self) -> int:
+        """Live token count: the delta count when the engine streams a token
+        per delta, the chars/4 estimate when it batches several."""
+        return max(self.n, (self.chars + 3) // 4)
+
+    @property
+    def reasoning_estimate(self) -> int:
+        return max(self.reasoning, (self.reasoning_chars + 3) // 4)
+
+    def split_reasoning(self, completion_tokens: int) -> int | None:
+        """The reasoning share of the server's own count, split by characters.
+
+        `usage.completion_tokens` covers thinking and answer together; the
+        thinking block wants its own. A thinking-only round gets the whole
+        count exactly; a mixed round gets it by proportion of characters."""
+        if not self.reasoning_chars or not completion_tokens:
+            return None
+        return max(1, round(completion_tokens * self.reasoning_chars / max(self.chars, 1)))
 
     def tick(self, now: float | None = None, *,
-             reasoning: bool = False) -> float | None:
+             reasoning: bool = False, chars: int = 0) -> float | None:
         """One streamed delta arrived. Returns a live estimate to publish, or
         None — see `final` for the figure that supersedes it.
 
@@ -248,17 +282,19 @@ class TpsState:
             self.t0 = now
             return None         # nothing to divide by yet
         self.n += 1
+        self.chars += chars
         # THE SAME INCREMENT, PARTITIONED. Not a second tally: the split has
         # to sum to `n` or the header and the footer could disagree about a
         # turn nobody could then reconcile.
         if reasoning:
             self.reasoning += 1
+            self.reasoning_chars += chars
         else:
             self.content += 1
         elapsed = now - self.t0
         if elapsed >= 0.4 and now - self.painted >= 0.25:
             self.painted = now
-            return self.n / elapsed
+            return self.tokens_estimate / elapsed
         return None
 
     def final(

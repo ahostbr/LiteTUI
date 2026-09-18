@@ -379,7 +379,9 @@ class ThinkingBlock(Vertical):
         # reasoning token, so construction IS the trace's start:
         # stamp it here rather than having the app reach in.
         self._t0: float | None = time.monotonic()
-        self._toks = 0                 # appended tokens; freeze_header's own count
+        self._toks = 0                 # appended deltas; see _count
+        self._chars = 0                # a delta is not a token (spec decoding)
+        self._settled: int | None = None   # the server's own count, once known
         self._frozen: tuple | None = None   # (elapsed, tokens, avg) once done
         self._marker = "\u25be"      # expand glyph, kept in sync by set_expanded
         self.text = Static("", id="thinking-text")
@@ -405,9 +407,36 @@ class ThinkingBlock(Vertical):
         text = self._frozen_text(marker) or f"{marker} Thinking"
         self._set_header(text)
 
+    def _count(self) -> int:
+        """Tokens so far: the server's count once settled, else the delta
+        count or the chars/4 estimate, whichever is larger (TpsState has the
+        measurement - one delta carries several tokens under spec decoding)."""
+        # getattr: the header tests drive a bare double built without
+        # __init__, and this must not be the attribute that breaks them.
+        settled = getattr(self, "_settled", None)
+        if settled:
+            return settled
+        return max(self._toks, (getattr(self, "_chars", 0) + 3) // 4)
+
+    def settle(self, tokens: int | None) -> None:
+        """The server's own token count for this trace, from the round's usage.
+        Arrives after freeze on a mixed round (a content token ended the
+        thinking) and BEFORE it on a thinking-only round (the stream ends, then
+        _thinking_done freezes) - so it is kept either way and the frozen
+        readout is redone if it already exists."""
+        if not tokens:
+            return
+        self._settled = int(tokens)
+        if self._frozen is not None:
+            elapsed = self._frozen[0]
+            avg = (self._settled / elapsed) if elapsed > 0 else None
+            self._frozen = (elapsed, self._settled, avg)
+            self._set_header(self._frozen_text(self._marker))
+
     def append(self, token: str) -> None:
         self._buffer += token
         self._toks += 1
+        self._chars += len(token)
         # This never scrolled the VerticalScroll it owns, so the trace grew
         # below the fold with the viewport pinned at the top. Measure BEFORE
         # the content grows: afterwards we are no longer at the bottom by
@@ -511,7 +540,7 @@ class ThinkingBlock(Vertical):
         if self._t0 is None:
             return
         elapsed = time.monotonic() - self._t0
-        tokens = self._toks or None
+        tokens = self._count() or None
         avg = (tokens / elapsed) if (tokens and elapsed > 0) else None
         self._frozen = (elapsed, tokens, avg)
         self._set_header(self._frozen_text(self._marker))

@@ -326,8 +326,9 @@ def thinking_header_text(marker: str, t0: float, now: float,
     `marker` is the expand glyph, so a collapsed block keeps its own
     state in the same string.
 
-    `tokens` is the count of REASONING deltas this turn (T079, Ryan: "total
-    tokens thinking that turn"). It sits between the elapsed time and the rate
+    `tokens` is the REASONING token count this turn (T079, Ryan: "total
+    tokens thinking that turn") - live an estimate (deltas or chars/4,
+    TpsState.reasoning_estimate), settled from usage once the round ends. It sits between the elapsed time and the rate
     so the line reads as quantity-then-speed. Zero or None renders as absence,
     never "0 tok" — the docstring above already refuses that for tok/s and the
     same argument applies: a rendered zero is a claim about a number that has
