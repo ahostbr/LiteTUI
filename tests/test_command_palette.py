@@ -428,7 +428,11 @@ def test_every_clickable_footer_widget_owns_its_own_cells():
                     break
                 await pilot.pause()
             footer = a.screen.query_one(ContextFooter)
-            clickable = [c for c in footer.children
+            # DESCENDANTS, not children: the two footer buttons live in one
+            # right-docked Horizontal (widgets.ContextFooter.compose - two
+            # right-docked siblings share cells), and an arm that enumerated
+            # children only would measure nothing and say so.
+            clickable = [c for c in footer.query("*")
                          if hasattr(type(c), "on_click") and c.region.area]
             assert clickable, (
                 "no clickable footer widget was found laid out; this arm is "

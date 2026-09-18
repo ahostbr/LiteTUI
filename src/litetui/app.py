@@ -77,6 +77,7 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AnswerBody,
     AssistantMessage,
     CancelToolButton,
+    PauseButton,
     ChatMessage,
     UserMessage,
     Completion,
@@ -874,12 +875,34 @@ class LiteTUI(App):
        mounted, rendered, reported visible=True display=True, and measured
        Size(0, 0) -- its on_click worked when called directly and could
        never be reached by an actual click. Docked, it sizes to content. */
-    .palette-button {
+    .footer-buttons {
         dock: right;
+        width: auto;
+        height: 1;
+        background: $footer-background;
+    }
+
+    .palette-button {
         width: auto;
         padding: 0 2 0 1;
         background: $footer-background;
         text-style: bold;
+    }
+
+    .pause-button {
+        width: auto;
+        padding: 0 1;
+        background: $footer-background;
+        text-style: bold;
+    }
+
+    .pause-button:hover {
+        background: $error 40%;
+    }
+
+    .pause-button.paused {
+        background: $error 60%;
+        color: $text;
     }
 
     /* Every modal centres in the window. SettingsScreen was missing from this
@@ -1498,6 +1521,7 @@ class LiteTUI(App):
         # Staged-but-not-created. See _new_convo / _materialise_convo.
         self.last_usage: dict | None = None
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
+        self.paused = False           # /pause: the loop holds before its next model round
         # Presentation state for the turn in flight. App-owned (not only local
         # to _stream) so the second-Esc hard kill can settle before cancelling
         # the worker that owns the locals.
@@ -3224,6 +3248,36 @@ class LiteTUI(App):
             if getattr(binding, "action", None) == action:
                 return getattr(binding, "key", "") or ""
         return ""
+
+    def set_paused(self, on: bool, *, announce: bool = True) -> bool:
+        """/pause to an EXPLICIT value. True when it actually changed.
+
+        The command and the on-screen button both land here, so ONE place
+        knows what pausing involves: the flag the stream loop polls, the
+        button label, and the line that says which way it went. No footer
+        chip: it cost the footer a column at 100 wide and reordered the nav,
+        and the button already shows the state. The loop itself never needs telling - it reads the flag
+        before every model round."""
+        on = bool(on)
+        if on == self.paused:
+            return False
+        self.paused = on
+        try:
+            for btn in self.query(PauseButton):
+                btn.set_paused(on)
+        except Exception:
+            pass                       # no footer yet (pre-compose) - the flag still holds
+        if announce:
+            self._system(
+                "[paused — the loop holds before its next model round; "
+                "/pause or the ▶ button resumes]"
+                if on else "[resumed]"
+            )
+        return True
+
+    def action_toggle_pause(self) -> None:
+        """/pause and the ⏸ button: one body."""
+        self.set_paused(not self.paused)
 
     def action_toggle_plan_mode(self) -> None:
         """ctrl+p: plan mode on or off (T558).
@@ -6524,6 +6578,16 @@ class LiteTUI(App):
         if native_loop:
             self.tps = None
         for _iteration in range(self.settings.tool_iterations):
+            # /pause: THE WHOLE LOOP HOLDS HERE. Ryan, 2026-09-18: "the entire
+            # agent loop wrapped in a if not paused statement ... that i can
+            # toggle with /pause". One gate covers every model round AND a
+            # turn's first round, so a turn started while paused - typed,
+            # mail, scheduled - waits before its first call; tools already
+            # running finish, the next request does not go out. Esc still
+            # ends it: the wait wakes on _stop_requested and the check below
+            # takes it. Polled, not an Event: nothing to arm or forget.
+            while self.paused and not self._stop_requested:
+                await asyncio.sleep(0.25)
             if self._stop_requested:
                 # NOT the iteration cap. Reaching the bottom of this function
                 # prints "reached N tool iterations — raise it in /settings",

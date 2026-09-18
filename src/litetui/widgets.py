@@ -1129,13 +1129,35 @@ class PaletteButton(Static):
         self.app.action_command_palette()
 
 
+class PauseButton(Static):
+    """/pause as a mouse target, next to the palette button (Ryan, 2026-09-18:
+    "add a onscreen button also kinda like the tool cancel one"). Same body as
+    the command and the footer chip: `action_toggle_pause`, one definition."""
+
+    LABEL_RUN = " \u23f8 pause "
+    LABEL_PAUSED = " \u25b6 resume "
+
+    def __init__(self) -> None:
+        super().__init__(self.LABEL_RUN, classes="pause-button")
+
+    def set_paused(self, on: bool) -> None:
+        self.content = self.LABEL_PAUSED if on else self.LABEL_RUN
+        if on:
+            self.add_class("paused")
+        else:
+            self.remove_class("paused")
+
+    def on_click(self) -> None:
+        self.app.action_toggle_pause()
+
+
 class ContextFooter(Footer):
     """Textual's Footer plus a live context-window readout on the right."""
 
     def on_resize(self, _event) -> None:
         """Re-fit after this footer has received its new layout width."""
         palette_width = 12
-        buttons = list(self.query(".palette-button"))
+        buttons = list(self.query(".footer-buttons"))
         button_width = max((button.size.width for button in buttons), default=0)
         if button_width:
             palette_width = button_width
@@ -1158,7 +1180,14 @@ class ContextFooter(Footer):
         # edge stack in compose order, so the one yielded LAST sits
         # innermost -- and the label is the one that must keep the far
         # right, where the context readout has always been.
-        yield PaletteButton("☰ commands", classes="palette-button")
+        # ONE docked container for both buttons. `dock: right` does not stack:
+        # a second right-docked sibling lands on the SAME cells and, composed
+        # last, wins the hit test - the palette button rendered and could not
+        # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
+        # Inside a Horizontal each button owns its own cells.
+        with Horizontal(classes="footer-buttons"):
+            yield PauseButton()
+            yield PaletteButton("☰ commands", classes="palette-button")
 
 
 class LiteTUICommands(Provider):

@@ -207,6 +207,17 @@ def _cmd_tools(app, name: str, arg: str) -> None:
     open_dialog(app, ToolListBody)
 
 
+def _cmd_pause(app, name: str, arg: str) -> None:
+    """/pause — hold the agent loop before its next model round; again to resume.
+
+    Ryan, 2026-09-18: "i want the entire agent loop wrapped in a if not paused
+    statement ... that i can toggle with /pause". Bare /pause TOGGLES and
+    `set_paused` announces which way it landed - same shape as /plan, and for
+    the same reason: the palette row invokes this with no argument.
+    """
+    app.set_paused(not app.paused)
+
+
 def _cmd_plan(app, name: str, arg: str) -> None:
     """/plan — plan mode, from the keyboard or the palette (T573 piece 3).
 
@@ -337,6 +348,13 @@ def _register(ctx) -> None:
         help="Plan first, build after. It asks questions instead of writing code.",
         group="backend",
         order=75,          # beside Thinking level, which is the other how-it-works row
+    )
+    ctx.command(
+        ("/pause",), _cmd_pause,
+        palette="Pause loop",
+        help="Hold the agent loop before its next model round; /pause again to resume.",
+        group="backend",
+        order=76,
     )
     ctx.command(
         ("/keys",), _cmd_keys,
