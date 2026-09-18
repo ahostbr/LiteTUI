@@ -209,22 +209,55 @@ def _ninfer_mark(app) -> str:
             else "not installed — LiteSuite's Model Hub installs it")
 
 
+def _set_lanes(app, raw: str) -> str:
+    """`/engine lanes N` — the --max-concurrency of the NEXT start (T892).
+
+    RYAN, 2026-09-18 13:4x (liteask a-f30ad840): *"during the slash engine cmd in
+    litetui ... we need to be able to set this"*. Saved to settings, the same field
+    the NInfer tab edits; a running engine keeps its lanes until restarted, and the
+    reply says which it has. Out of range is refused with the range, not clamped:
+    the user typed a number and should learn the legal ones.
+    """
+    from litetui import ninfer_engine
+
+    lo, hi = ninfer_engine.NINFER_CONCURRENCY_RANGE
+    if not raw.isdigit() or not lo <= int(raw) <= hi:
+        return (f"/engine lanes N — N is {lo}..{hi}: requests the engine decodes together "
+                "(its --max-concurrency). They share the --max-context KV pool.")
+    s = app.settings
+    s.ninfer_max_concurrency = int(raw)
+    settings_mod.save(s)
+    running = getattr(app.backend, "engine_concurrency", lambda: None)()
+    tail = f"; the running engine has {running}" if running else ""
+    return (f"NInfer lanes set to {raw} — applies on the next /engine start{tail}. "
+            "Lanes share the --max-context KV pool: no extra VRAM to speak of, less context each under load.")
+
+
 def _cmd_engine(app, name: str, arg: str) -> None:
-    """/engine start|stop|status — the NInfer process LiteTUI may own."""
+    """/engine start [N]|stop|status|lanes N — the NInfer process LiteTUI may own."""
     backend = app.backend
     if getattr(backend, "name", "") != "ninfer":
         app.system_message("/engine drives the NInfer backend — /backend ninfer first.")
         return
-    verb = (arg.strip().lower() or "status").split()[0]
+    verb, *rest = (arg.strip().lower() or "status").split()
     if verb == "status":
         app.system_message(backend.engine_status())
         return
     if verb == "stop":
         app.system_message(backend.stop_engine())
         return
-    if verb != "start":
-        app.system_message("/engine start | stop | status")
+    if verb in ("lanes", "concurrency"):
+        app.system_message(_set_lanes(app, rest[0] if rest else ""))
         return
+    if verb != "start":
+        app.system_message("/engine start [lanes] | stop | status | lanes N")
+        return
+    if rest:
+        # `/engine start 4` — set the lanes, then start with them.
+        said = _set_lanes(app, rest[0])
+        app.system_message(said)
+        if said.startswith("/engine"):
+            return
     if getattr(app, "_chat_running", lambda: False)():
         app.system_message("Finish or stop the current turn before starting the engine.")
         return
@@ -1182,7 +1215,7 @@ def _register(ctx) -> None:
         ctx.command(
             ("/engine",), _cmd_engine,
             palette="NInfer engine",
-            help="Start, stop or check the NInfer engine LiteTUI may own.",
+            help="Start (optionally with N lanes), stop or check the NInfer engine LiteTUI may own; lanes N sets its --max-concurrency.",
             group="backend",
             order=55,
         )

@@ -92,6 +92,32 @@ class _Backend:
         return "started ninfer-serve pid 777 at http://127.0.0.1:49260 (m)"
 
 
+def test_engine_lanes_sets_the_next_starts_concurrency(monkeypatch):
+    """T892 — Ryan (liteask a-f30ad840): "during the slash engine cmd in litetui ...
+    we need to be able to set this". `/engine lanes N` saves the field the NInfer
+    tab edits; `/engine start N` sets it and starts; out of range refuses with the range."""
+    from litetui import settings as settings_mod
+    from litetui.settings import Settings
+
+    saved: list[int] = []
+    monkeypatch.setattr(settings_mod, "save", lambda s, *a, **k: saved.append(s.ninfer_max_concurrency))
+    app = _App(_Backend())
+    app.settings = Settings()
+    model_switch._cmd_engine(app, "engine", "lanes 4")
+    assert app.settings.ninfer_max_concurrency == 4 and saved == [4]
+    assert "next /engine start" in app.said[-1]
+    model_switch._cmd_engine(app, "engine", "lanes 9")
+    assert app.settings.ninfer_max_concurrency == 4 and "1..8" in app.said[-1]
+    model_switch._cmd_engine(app, "engine", "start 2")      # sets, then starts
+    assert app.settings.ninfer_max_concurrency == 2 and saved == [4, 2]
+    assert app.worker is not None
+    asyncio.run(app.worker)
+    assert app.connected == 1
+    app.worker = None
+    model_switch._cmd_engine(app, "engine", "start x")      # a bad number never starts
+    assert "1..8" in app.said[-1] and app.worker is None
+
+
 def _drive(app) -> None:
     model_switch._cmd_engine(app, "engine", "start")
     assert app.worker is not None, "the command did not start its worker"
