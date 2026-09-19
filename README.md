@@ -208,7 +208,7 @@ in VRAM**, and on a card that was already full that is an OOM. So whenever
 another LiteTUI is running, a load that would add a model you do not already have
 resident stops and asks first:
 
-> Another LiteTUI instance is running (OpenBolt).
+> Another LiteTUI instance is running (another session).
 > Loading a different model puts a second model in VRAM and can OOM depending on
 > your setup. Load qwen/qwen3-8b anyway? **[Load] [Cancel]**
 
