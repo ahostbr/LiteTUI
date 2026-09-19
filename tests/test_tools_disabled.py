@@ -68,6 +68,14 @@ class _Refused:
         """Record the lifecycle event instead of forbidding it."""
         self.emitted.append(data)
 
+    # commit-A loop breaker consults _loop_refusal at the seam, BEFORE
+    # dispatch. Stated no-op: this stub's job is to prove the enabled path
+    # reaches _dispatch_for, so the strict __getattr__ below must not catch
+    # the breaker's check first — that is exactly what broke the negative
+    # control when the breaker landed.
+    def _loop_refusal(self, name, args):
+        return None
+
     def _dispatch_for(self, name):          # noqa: D102
         self.looked_up.append(name)
         raise AssertionError(

@@ -2400,6 +2400,94 @@ class LiteTUI(App):
                 self._remember_tool_rule(name, decision.capabilities)
         return None
 
+    # ── Loop breaker ─────────────────────────────────────────────────────
+    #
+    # Measured 2026-09-19 (convo b4c93292): a 4b model called `chrome shot`
+    # 16+ times in one turn — same arguments, byte-identical result every
+    # time — after the real blocker (a filter below the fold, no scroll
+    # tool) stopped being reachable. Its reasoning even NAMED the loop
+    # ("I keep taking screenshots") while the action stayed fixed, and it
+    # confabulated a history it never had. Nothing between model and tool
+    # noticed, so nothing stopped it.
+    #
+    # Deliberately conservative, because the same shape is also legitimate:
+    # a poll (job status, relay wait, inbox check) repeats an identical
+    # call until the world changes. The one thing a stuck loop has that a
+    # live poll does not is an UNCHANGED answer — so the breaker only
+    # escalates while the results are byte-identical, and a changed result
+    # breaks the run.
+    #
+    # Escalation, then a wall: the 2nd-4th identical no-change call gets a
+    # note appended to its result — which also breaks the attractor, since
+    # the results stop being byte-identical for a model that was just
+    # pattern-matching (call, result) pairs. The 5th and on are refused
+    # before they run.
+
+    @staticmethod
+    def _loop_key(args: object) -> str:
+        if isinstance(args, dict):
+            try:
+                return json.dumps(args, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                return repr(sorted((k, str(v)) for k, v in args.items()))
+        return repr(args)
+
+    def _loop_run(self, name: str, key: str) -> list[str]:
+        """Trailing history results for this (tool, args) pair, newest first."""
+        hist = getattr(self, "_loop_history", None) or []
+        run = []
+        for h_name, h_key, h_result in reversed(hist):
+            if h_name == name and h_key == key:
+                run.append(h_result)
+            else:
+                break
+        return run
+
+    def _loop_refusal(self, name: str, args: object) -> str | None:
+        """Refuse a call that is deep in a no-change repetition, else None."""
+        run = self._loop_run(name, self._loop_key(args))
+        if len(run) >= 4 and len(set(run)) == 1:
+            return (
+                f"[loop-break] refused — this would be the {len(run) + 1}th call to "
+                f"`{name}` with the same arguments, and every one of the previous "
+                f"returned the SAME result. No state change is happening, so this "
+                f"call would do nothing new. Use a different tool or different "
+                f"arguments to move the state — or tell the user what is blocked, "
+                f"instead of calling again. If you are legitimately WAITING on "
+                f"this call, say so to the user and wait before checking again "
+                f"(e.g. `bash sleep 15`); any different call in between resets "
+                f"this guard."
+            )
+        return None
+
+    def _loop_warn(self, name: str, args: object, result: str) -> str:
+        """Escalating note appended after the call, so repeats read as NEW."""
+        run = self._loop_run(name, self._loop_key(args))  # includes this call
+        if not (2 <= len(run) <= 4 and len(set(run)) == 1):
+            return result
+        if len(run) == 2:
+            note = (
+                "\n[loop-watch] 2nd identical call to this tool with the same "
+                "result. If a change was expected, check it landed — or try a "
+                "different approach."
+            )
+        else:
+            note = (
+                f"\n[loop-watch] {len(run)}th identical call with the same result "
+                "— the state is not moving. The next such call will be refused. "
+                "Change the tool or the arguments, or report the blocker to the "
+                "user."
+            )
+        return result + note
+
+    def _loop_record(self, name: str, args: object, result: str) -> None:
+        hist = getattr(self, "_loop_history", None)
+        if hist is None:
+            self._loop_history = hist = []
+        hist.append((name, self._loop_key(args), result))
+        if len(hist) > 12:
+            del hist[: len(hist) - 12]
+
     async def _execute_tool(self, name: str, args: dict, *, hooks_enabled=True) -> tuple[str, bool]:
         """The one host authorization door before any tool side effect."""
         from litetui.tool_events import external_lifecycle
@@ -2432,6 +2520,11 @@ class LiteTUI(App):
         # the user switched off must not run even if a branch is added above.
         if name in (self.settings.tools_disabled or ()):
             return tool_denied("tool-disabled", name=name), False
+        # LOOP-BREAK (tracker above): a call deep in a no-change repetition is
+        # refused BEFORE it runs, so a stuck model spends its round reading the
+        # refusal instead of performing another dead action.
+        if loop_refusal := self._loop_refusal(name, args):
+            return loop_refusal, False
         fn = self._dispatch_for(name)
         if fn is None:
             return tool_denied("unknown-tool", name=name), False
@@ -2488,8 +2581,15 @@ class LiteTUI(App):
         try:
             result = str(fut.result())
         except Exception as e:
+            # A repeated FAILURE is a loop too (identical error strings), so it
+            # records as well.
+            self._loop_record(name, args, f"[error] {type(e).__name__}: {e}")
             return f"[error] {type(e).__name__}: {e}", False
-        return self._maybe_stage_shot(name, args, result), True
+        # Record the RAW result — the loop check compares tool output, not the
+        # notes we append below.
+        self._loop_record(name, args, result)
+        staged = self._maybe_stage_shot(name, args, result)
+        return self._loop_warn(name, args, staged), True
 
     async def _observe_tool_outcome(self, name, args, aw, profile, captured):
         result, ok, cancelled = "", False, False

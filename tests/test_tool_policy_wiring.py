@@ -56,6 +56,20 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=ONCE):
         # "no rules apply" by accident. Defaults are empty, so this host models
         # a machine where the human has never answered "always".
         settings=Settings(),
+        # commit-A loop breaker: _execute_tool consults _loop_refusal at the
+        # seam, then _loop_record/_loop_warn after the run; this double
+        # predates all three. Stated no-ops, not a getattr guard — a guard
+        # whose missing input silently disables the breaker in a double is a
+        # regression, and this host models the POLICY path, not loop-breaking.
+        _loop_refusal=lambda name, args: None,
+        _loop_record=lambda name, args, result: None,
+        _loop_warn=lambda name, args, result: result,
+        # e3957d9 (shot auto-stage) ends _execute_tool through
+        # _maybe_stage_shot; this double predates it too (verified red on
+        # clean HEAD — not a regression from the loop breaker). Stated
+        # pass-through: none of these tools is a chrome shot, so staging is
+        # a no-op by construction.
+        _maybe_stage_shot=lambda name, args, result: result,
     ), seen
 
 
