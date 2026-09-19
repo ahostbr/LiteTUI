@@ -62,3 +62,21 @@ def test_a_staging_failure_appends_the_error_and_keeps_the_path():
                         stager=lambda p: "[error] no such file: x")
     assert "Saved C:/x/chrome-shot.png." in out
     assert "attach" in out.lower()
+
+
+def test_an_identical_shot_is_not_staged_again(monkeypatch):
+    """Measured 2026-09-19: a stuck model re-shot the same viewport 16+ times
+    and every identical PNG was re-attached, costing tokens while saying
+    nothing. The tool result already explains why the picture is unchanged,
+    so an unchanged picture is not re-sent — the text stands on its own."""
+    from litetui import chrome_tool
+    monkeypatch.setattr(chrome_tool, "last_shot_identical", True)
+    out, calls = _maybe(
+        "vlm", "chrome", {"action": "shot"},
+        "Identical to the previous screenshot — the page has NOT changed "
+        "since your last shot, so shooting again will produce the same "
+        "picture. Act on what you already see — or change the page first "
+        "(scroll, click, navigate) and shoot again.",
+    )
+    assert calls == []
+    assert "NOT changed" in out

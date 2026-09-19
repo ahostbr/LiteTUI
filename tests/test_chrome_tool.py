@@ -87,6 +87,35 @@ def test_the_no_extension_hint_does_not_claim_the_relay_is_up():
     assert not chrome_tool._looks_like_no_extension("some other failure")
 
 
+def test_scroll_is_offered_and_documented():
+    assert "scroll" in chrome_tool.ACTIONS
+    props = chrome_tool.CHROME_TOOL_SPEC["function"]["parameters"]["properties"]
+    assert "scroll" in props["action"]["enum"]
+    for key in ("dy", "to"):
+        assert key in props, f"scroll parameter {key!r} is not declared"
+    assert "scroll" in chrome_tool.CHROME_TOOL_SPEC["function"]["description"]
+
+
+def test_scroll_refuses_without_dy_or_to():
+    """Neither `dy` nor `to` means there is nothing to move by — refuse before
+    spawning a child, like write_text refuses without text."""
+    out = chrome_tool.run({"action": "scroll"})
+    assert out.startswith("[error]")
+    assert "dy" in out and "to" in out
+
+
+def test_scroll_rejects_a_bad_to():
+    out = chrome_tool.run({"action": "scroll", "to": "middle"})
+    assert out.startswith("[error]")
+    assert "top" in out and "bottom" in out
+
+
+def test_scroll_rejects_a_non_numeric_dy():
+    out = chrome_tool.run({"action": "scroll", "dy": "a lot"})
+    assert out.startswith("[error]")
+    assert "pixels" in out
+
+
 def test_a_traceback_is_reduced_to_its_cause():
     # bridge.py surfaces failures as an uncaught ChromeError, so its stderr is a
     # dozen frames ending in the one line that says what happened.

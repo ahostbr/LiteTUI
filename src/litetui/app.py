@@ -6175,6 +6175,13 @@ class LiteTUI(App):
         if result.startswith("[error]") or self.model_type == "llm":
             return result
         from litetui import chrome_tool
+        # Measured 2026-09-19 (convo b4c93292): the stuck model re-shot the
+        # same viewport 16+ times, and every identical PNG was re-attached,
+        # costing tokens while saying nothing. An unchanged picture is not new
+        # evidence — the tool result already explains why, so keep the text
+        # and skip the attach.
+        if getattr(chrome_tool, "last_shot_identical", False):
+            return result
         err = self._stage_image_path(chrome_tool.SHOT_DIR / "chrome-shot.png")
         if err:
             return f"{result}\n{err.replace('[error] ', '[error] chrome shot attach: ')}"

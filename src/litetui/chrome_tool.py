@@ -1,8 +1,8 @@
 """Ryan's real Chrome as tool verbs, with its two confusing states explained.
 
 chrome-bridge/bridge.py already has the verbs (ping, tabs, nav, text, click,
-shot). Wrapping them is trivial; what earns its keep here is translating two
-states that read as failures and are not:
+scroll, shot). Wrapping them is trivial; what earns its keep here is
+translating two states that read as failures and are not:
 
   1. ERR_CONNECTION_REFUSED WHEN IDLE IS NORMAL. Python is the SERVER and the
      Chrome extension is the CLIENT. With no relay running, a connection error
@@ -21,6 +21,7 @@ in mouse-reporting mode or take its stdin.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ RELAY_DIR = SCRIPT.parent
 SHOT_DIR = RELAY_DIR
 
 ACTIONS = (
-    "ping", "tabs", "nav", "text", "click", "write_text", "shot",
+    "ping", "tabs", "nav", "text", "click", "write_text", "scroll", "shot",
     "start", "stop", "status",
 )
 
@@ -148,6 +149,50 @@ def _relay(call: str, timeout: int = 60) -> str:
     return out or "(no output)"
 
 
+# ── Stateful shot ───────────────────────────────────────────────────────
+#
+# Measured 2026-09-19 (convo b4c93292): a stuck model called `shot` 16+ times
+# and got the SAME STRING back every time, so each (call, result) pair
+# carried zero new information and the loop had no exit. The page rarely
+# changes between two shots taken seconds apart, so the honest second answer
+# is a different one: fingerprint each PNG and say plainly when it is
+# unchanged.
+#
+# `last_shot_identical` is read by App._maybe_stage_shot, which then skips
+# attaching the identical image — an unchanged picture costs tokens and says
+# nothing. Both states are per-process; a new TUI starts with no memory,
+# which is the right semantics (a different session legitimately re-shots).
+
+last_shot_identical = False
+_LAST_SHOT_HASH: str | None = None
+
+
+def _fingerprint(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _shot_result(out_path: Path) -> str:
+    """The text a successful shot returns, with the no-change detection."""
+    global _LAST_SHOT_HASH, last_shot_identical
+    fp = _fingerprint(out_path)
+    last_shot_identical = fp is not None and fp == _LAST_SHOT_HASH
+    _LAST_SHOT_HASH = fp
+    if last_shot_identical:
+        return (
+            "Identical to the previous screenshot — the page has NOT changed "
+            "since your last shot, so shooting again will produce the same "
+            "picture. Act on what you already see — or change the page first "
+            "(scroll, click, navigate) and shoot again."
+        )
+    # On a vision model the host attaches this PNG to the next message itself
+    # (App._maybe_stage_shot), so the model sees it with no second call. This
+    # text is the fallback a text-only model gets — it cannot receive an image.
+    return f"Saved {out_path}."
+
+
 def run(args: dict) -> str:
     """Dispatch the `chrome` tool. Never raises — every path returns text."""
     action = str(args.get("action") or "").strip().lower()
@@ -224,14 +269,41 @@ def run(args: dict) -> str:
             argv.append("--enter")
         return _run(argv)
 
+    if action == "scroll":
+        # The verb the 2026-09-19 stuck session was missing: a way to change
+        # what a viewport screenshot sees. Without it, "I can't see the rest
+        # of the page" had no answer except more identical screenshots.
+        if args.get("dy") is None and args.get("to") is None:
+            return (
+                "[error] chrome scroll: give `dy` (pixels, negative scrolls up), "
+                "`to` (top or bottom), or both. Neither means nothing to move by."
+            )
+        argv = ["scroll"]
+        if args.get("dy") is not None:
+            try:
+                argv += ["--dy", str(int(str(args["dy"]).strip()))]
+            except (TypeError, ValueError):
+                return (f"[error] chrome scroll: `dy` must be a whole number of "
+                        f"pixels, got {args.get('dy')!r}")
+        if args.get("to") is not None:
+            to = str(args["to"]).strip().lower()
+            if to not in ("top", "bottom"):
+                return "[error] chrome scroll: `to` must be `top` or `bottom`"
+            argv += ["--to", to]
+        if args.get("selector"):
+            argv += ["--selector", str(args["selector"])]
+        if args.get("tab_id") is not None:
+            argv += ["--tab-id", str(args["tab_id"])]
+        return _run(argv, timeout=30)
+
     # shot: a PATH, never the bytes. See the module docstring.
+    global last_shot_identical
     out_path = SHOT_DIR / "chrome-shot.png"
     res = _run(["shot", str(out_path)], timeout=120)
     if res.startswith("[error]"):
+        last_shot_identical = False
         return res
     if not out_path.exists():
+        last_shot_identical = False
         return f"[error] chrome shot: reported success but wrote nothing to {out_path}"
-    # On a vision model the host attaches this PNG to the next message itself
-    # (App._maybe_stage_shot), so the model sees it with no second call. This
-    # text is the fallback a text-only model gets — it cannot receive an image.
-    return f"Saved {out_path}."
+    return _shot_result(out_path)

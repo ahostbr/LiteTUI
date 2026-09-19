@@ -109,6 +109,13 @@ async function handle(cmd, a) {
         a.enter === true,
       ]);
 
+    case "scroll":
+      return await inject(await resolveTab(a.tab_id), scrollPage, [
+        a.selector || null,
+        a.dy === undefined || a.dy === null ? null : Number(a.dy),
+        a.to === undefined || a.to === null ? null : String(a.to),
+      ]);
+
     case "screenshot":
       return await screenshot(
         a.tab_id,
@@ -257,6 +264,41 @@ async function inject(tabId, func, args) {
 // ------------------------------------------------- injected into the page
 // These run in the page's world. They are serialized to source, so they cannot
 // close over anything above — everything they need arrives via args.
+
+function scrollPage(selector, dy, to) {
+  // The verb that makes a screenshot show new content. Without it, "I can't
+  // see the rest of the page" has no answer but another identical shot.
+  const el = selector
+    ? document.querySelector(selector)
+    : (document.scrollingElement || document.documentElement);
+  if (selector && !el) return { error: "selector not found: " + selector };
+  if (dy === null && !to) {
+    return { error: "scroll needs dy (pixels) or to (top|bottom)" };
+  }
+
+  const before = el.scrollTop;
+  if (to === "top") {
+    el.scrollTop = 0;
+  } else if (to === "bottom") {
+    el.scrollTop = el.scrollHeight;
+  } else {
+    el.scrollTop = Math.max(0, Math.min(el.scrollHeight, el.scrollTop + dy));
+  }
+
+  // Report the position, not just success: a scroll that moved nothing must
+  // say so, because "scrolled" followed by the same screenshot is exactly the
+  // dead end this verb exists to break.
+  return {
+    scrolled: true,
+    target: selector ? "element" : "page",
+    before,
+    after: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    moved: el.scrollTop !== before,
+    atTop: el.scrollTop === 0,
+    atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 1,
+  };
+}
 
 function readPage(selector) {
   const root = selector ? document.querySelector(selector) : document.body;

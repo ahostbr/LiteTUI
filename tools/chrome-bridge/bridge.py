@@ -170,6 +170,23 @@ class Chrome:
             "write", selector=selector, text=text, clear=clear, enter=enter, tab_id=tab_id
         )
 
+    def scroll(
+        self,
+        dy: int | None = None,
+        to: str | None = None,
+        selector: str | None = None,
+        tab_id: int | None = None,
+    ) -> dict:
+        """Scroll the page by dy pixels (negative = up), or jump to top/bottom.
+
+        With a selector, scrolls that element instead — the verb that makes a
+        viewport screenshot show new content, which a stuck model needs before
+        re-shooting instead of shooting the same pixels again.
+        """
+        return self._call(
+            "scroll", dy=dy, to=to, selector=selector, tab_id=tab_id
+        )
+
     def screenshot(
         self,
         path: str | None = None,
@@ -559,6 +576,12 @@ def _main(argv: list[str]) -> int:
     w.add_argument("--enter", action="store_true", help="press Enter afterwards")
     w.add_argument("--tab-id", type=int)
 
+    sc = sub.add_parser("scroll", help="scroll the page, or a scrollable element")
+    sc.add_argument("--dy", type=int, help="pixels to move; negative scrolls up")
+    sc.add_argument("--to", choices=("top", "bottom"), help="jump to an edge")
+    sc.add_argument("--selector", help="scroll this element instead of the page")
+    sc.add_argument("--tab-id", type=int)
+
     s = sub.add_parser("shot", help="screenshot the visible viewport")
     s.add_argument("path", nargs="?")
     s.add_argument("--tab-id", type=int)
@@ -590,6 +613,10 @@ def _main(argv: list[str]) -> int:
         elif a.cmd == "write":
             print(json.dumps(ch.write(
                 a.text, a.selector, clear=not a.append, enter=a.enter, tab_id=a.tab_id
+            )))
+        elif a.cmd == "scroll":
+            print(json.dumps(ch.scroll(
+                dy=a.dy, to=a.to, selector=a.selector, tab_id=a.tab_id
             )))
         elif a.cmd == "shot":
             shot = ch.screenshot(
