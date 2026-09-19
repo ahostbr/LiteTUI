@@ -2486,9 +2486,10 @@ class LiteTUI(App):
             return self._start_background(name, args, fut, promoted_after=limit,
                                           process_slot=process_slot), True
         try:
-            return str(fut.result()), True
+            result = str(fut.result())
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}", False
+        return self._maybe_stage_shot(name, args, result), True
 
     async def _observe_tool_outcome(self, name, args, aw, profile, captured):
         result, ok, cancelled = "", False, False
@@ -6011,6 +6012,38 @@ class LiteTUI(App):
             self.pending_image = None
             self.notify("Image removed", timeout=2)
 
+
+    def _stage_image_path(self, path: Path) -> str | None:
+        """Encode an image file and stage it for the model's NEXT message — the
+        same channel `view_image` drains. Returns an error string, or None on
+        success. The caller checks the vlm precondition first."""
+        if not path.exists():
+            return f"[error] no such file: {path}"
+        if not path.is_file():
+            return f"[error] not a file: {path}"
+        if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            return f"[error] {path.suffix or 'no extension'} is not a supported image type"
+        b64 = appsvc.load_image_file(self, path)
+        if b64 is None:
+            return f"[error] could not decode {path.name} as an image"
+        self._pending_tool_images.append((str(path), b64))
+        return None
+
+    def _maybe_stage_shot(self, name: str, args: dict, result: str) -> str:
+        """`chrome action=shot` writes a PNG and returns its path. When the model
+        can see images, attach that PNG to the next message automatically so the
+        model sees it without a second `view_image` call (Ryan: the shot should
+        return the picture). A text-only ('llm') model cannot receive an image at
+        all, so it keeps the path text unchanged."""
+        if name != "chrome" or str(args.get("action") or "").lower() != "shot":
+            return result
+        if result.startswith("[error]") or self.model_type == "llm":
+            return result
+        from litetui import chrome_tool
+        err = self._stage_image_path(chrome_tool.SHOT_DIR / "chrome-shot.png")
+        if err:
+            return f"{result}\n{err.replace('[error] ', '[error] chrome shot attach: ')}"
+        return "Screenshot attached — it is in the next message; look there, not here."
 
     def _tool_view_image(self, args: dict) -> str:
         """Stage an image for the model to actually see. Never raises.

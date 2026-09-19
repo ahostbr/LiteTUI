@@ -231,7 +231,7 @@ def run(args: dict) -> str:
         return res
     if not out_path.exists():
         return f"[error] chrome shot: reported success but wrote nothing to {out_path}"
-    return (
-        f"Saved {out_path}. Use view_image with that path to actually look at it — "
-        "this result is text and cannot carry the picture."
-    )
+    # On a vision model the host attaches this PNG to the next message itself
+    # (App._maybe_stage_shot), so the model sees it with no second call. This
+    # text is the fallback a text-only model gets — it cannot receive an image.
+    return f"Saved {out_path}."
