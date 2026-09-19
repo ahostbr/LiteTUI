@@ -13,12 +13,17 @@ from litetui.tool_approval import (
     ToolApprovalScreen,
 )
 from litetui.textfmt import tool_denied
-from litetui.tool_policy import INTERACTIVE, SHELL_POLICY, approval_preview, evaluate
+from litetui.tool_policy import SHELL_POLICY, STRICT, approval_preview, evaluate
 
 
 def _decision(tmp_path):
+    # STRICT, because that is the profile whose decision actually OPENS this
+    # screen: under INTERACTIVE a non-destructive `git status` is allowed
+    # without confirmation, so a decision rendered in these button tests
+    # should be the one that warrants the modal. (Ryan's ruling 2026-09-19:
+    # strict = approvals; auto = none; interactive = middle level.)
     return evaluate(
-        INTERACTIVE,
+        STRICT,
         SHELL_POLICY,
         {"command": "git status"},
         Path(tmp_path),
@@ -34,15 +39,17 @@ def _probe_app(monkeypatch):
     """
     tui = LiteTUI()
     tui._connect = lambda: None
-    # T084 moved the DEFAULT profile to `autonomous`, which never opens a
-    # modal. This test is about the CONFIRM machinery, so it states the
-    # profile it exercises instead of inheriting whatever the default is --
-    # depending on an ambient default is what made it break here at all.
-    tui.settings.tool_policy_profile = tool_policy.INTERACTIVE
+    # STRICT, stated rather than inherited: the CONFIRM machinery for shell
+    # lives there (PROCESS_EXECUTION is in its confirm set), and that is the
+    # mode the modal belongs in. T084 moved the DEFAULT profile to `autonomous`
+    # (never opens a modal), and INTERACTIVE only confirms DESTRUCTIVE-arg
+    # calls -- neither is a mode where `git status` prompts, so a test that
+    # inherits an ambient default cannot prove the modal at all.
+    tui.settings.tool_policy_profile = tool_policy.STRICT
     # BOTH, because `_active_tool_profile` is stamped from settings at
     # CONSTRUCTION and `_execute_tool` reads that, not the settings field.
     # Setting only the settings value leaves the door on the old profile.
-    tui._active_tool_profile = tool_policy.INTERACTIVE
+    tui._active_tool_profile = tool_policy.STRICT
     tui.settings.tool_always_allow = []
     tui.settings.tool_deny = []
     saved = []
@@ -178,15 +185,17 @@ async def test_deny_button_denies(tmp_path):
 async def test_real_worker_waits_for_the_modal_before_execution():
     tui = LiteTUI()
     tui._connect = lambda: None
-    # T084 moved the DEFAULT profile to `autonomous`, which never opens a
-    # modal. This test is about the CONFIRM machinery, so it states the
-    # profile it exercises instead of inheriting whatever the default is --
-    # depending on an ambient default is what made it break here at all.
-    tui.settings.tool_policy_profile = tool_policy.INTERACTIVE
+    # STRICT, stated rather than inherited: this test is about the CONFIRM
+    # machinery -- the modal must appear BEFORE the sensitive call executes.
+    # STRICT is the profile that confirms ordinary process execution
+    # (Ryan's ruling 2026-09-19: strict = approvals). Under INTERACTIVE the
+    # same `git status` is allowed without a prompt, so the modal-waits
+    # contract is only exercisable here under STRICT.
+    tui.settings.tool_policy_profile = tool_policy.STRICT
     # BOTH, because `_active_tool_profile` is stamped from settings at
     # CONSTRUCTION and `_execute_tool` reads that, not the settings field.
     # Setting only the settings value leaves the door on the old profile.
-    tui._active_tool_profile = tool_policy.INTERACTIVE
+    tui._active_tool_profile = tool_policy.STRICT
     calls = []
     tui.plugins.add_tool(
         "test",

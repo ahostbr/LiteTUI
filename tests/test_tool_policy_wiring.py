@@ -14,6 +14,7 @@ from litetui.tool_policy import (
     READ_POLICY,
     SCHEDULED,
     SHELL_POLICY,
+    STRICT,
     WRITE_POLICY,
 )
 
@@ -84,11 +85,23 @@ async def test_read_executes_without_a_modal():
 
 
 @pytest.mark.asyncio
-async def test_sensitive_interactive_call_requires_one_host_decision():
+async def test_sensitive_strict_call_requires_one_host_decision():
+    """STRICT is the approval level (Ryan's ruling 2026-09-19: "strict mode ...
+    auto ... none at all"): ordinary process execution is in its confirm set,
+    so the SAME call that runs freely under INTERACTIVE stops here for exactly
+    one host decision.
+
+    This is the arm the earlier `test_sensitive_interactive_call_requires_one_
+    host_decision` asserted under INTERACTIVE — where it was red, because
+    INTERACTIVE no longer confirms non-destructive shell. Retargeted, not
+    relaxed: the modal-waits-before-execution contract is now proven in the
+    mode that actually owns it.
+    """
     calls = []
     host, screens = _host(
         SHELL_POLICY,
         lambda args: calls.append(args) or "ran",
+        profile=STRICT,
         approve=ONCE,
     )
     result, ok = await app_mod.LiteTUI._execute_tool(
@@ -97,6 +110,52 @@ async def test_sensitive_interactive_call_requires_one_host_decision():
     assert (result, ok) == ("ran", True)
     assert len(screens) == 1 and isinstance(screens[0], ToolApprovalScreen)
     assert calls == [{"command": "git status"}]
+
+
+@pytest.mark.asyncio
+async def test_interactive_non_destructive_shell_call_needs_no_host_decision():
+    """INTERACTIVE is the middle level: a NON-destructive shell call runs
+    without any modal. PROCESS_EXECUTION is in its allow set, and a call that
+    stops here to ask would be the stale expectation the 2026-09-19 ruling
+    removed. The `screens == []` assertion is the point — an approval test
+    that only checks the result cannot distinguish "ran" from "asked, then
+    ran".
+    """
+    calls = []
+    host, screens = _host(
+        SHELL_POLICY,
+        lambda args: calls.append(args) or "ran",
+        profile=INTERACTIVE,
+    )
+    result, ok = await app_mod.LiteTUI._execute_tool(
+        host, "powershell", {"command": "git status"}
+    )
+    assert (result, ok) == ("ran", True)
+    assert screens == [], "a non-destructive call must not open a modal under INTERACTIVE"
+    assert calls == [{"command": "git status"}]
+
+
+@pytest.mark.asyncio
+async def test_interactive_destructive_shell_call_still_requires_one_host_decision():
+    """The INTERACTIVE escape hatch: a DESTRUCTIVE-arg call still confirms,
+    even though ordinary shell is allowed. classify_shell matches the
+    destructive pattern and returns destructive_irreversible, which IS in
+    INTERACTIVE's confirm set — so one approval of `git status` never
+    authorises `rm -rf`.
+    """
+    calls = []
+    host, screens = _host(
+        SHELL_POLICY,
+        lambda args: calls.append(args) or "ran",
+        profile=INTERACTIVE,
+        approve=DENIED,
+    )
+    result, ok = await app_mod.LiteTUI._execute_tool(
+        host, "powershell", {"command": "rm -rf ./build"}
+    )
+    assert not ok and "denied by user" in result
+    assert len(screens) == 1 and isinstance(screens[0], ToolApprovalScreen)
+    assert calls == [], "a destructive call ran without its own approval"
 
 
 @pytest.mark.asyncio
@@ -200,8 +259,8 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
     presents as "the automation silently stopped running" and NEVER as an error.
 
     The pairing is what makes it a measurement:
-      - `test_sensitive_interactive_call_requires_one_host_decision` fires the
-        SAME policy and the SAME tool under INTERACTIVE and gets exactly one
+      - `test_sensitive_strict_call_requires_one_host_decision` fires the
+        SAME policy and the SAME tool under STRICT and gets exactly one
         ToolApprovalScreen.
       - this one takes the profile a CRON actually delivered, with the
         conversation set to ask-first, and gets none.
