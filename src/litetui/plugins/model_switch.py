@@ -389,8 +389,17 @@ def _start_load(app, target: str) -> None:
         # llamacpp's `_load_sync` opens with `_refuse_if_attached`. On a server
         # LiteTUI adopted or one started with a single -m <gguf>, the user read
         # a promise and then its contradiction — T865's shape, one command over.
+        #
+        # The picker load must honour the configured context length, exactly as
+        # the /model path does (set_active_model -> apply_context_length). Without
+        # ctx=, LM Studio loads at the model's own default (8192) and the saved
+        # "Load with context length" is silently ignored — the picker was the one
+        # load path that skipped the apply the /model path has.
+        want = app.settings.default_context_length
+        _msg = (f"Loading {target} at {want:,} tokens…" if want
+                else f"Loading {target}…")
         try:
-            await app.backend.load(target, notice=_notice(app, f"Loading {target}…"))
+            await app.backend.load(target, ctx=want, notice=_notice(app, _msg))
         except llm_backend.BackendError as e:
             app.system_message(str(e))
             return
