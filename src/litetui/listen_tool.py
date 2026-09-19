@@ -54,7 +54,7 @@ LISTEN_TOOL_SPEC = tool_schemas.load("listen")
 #: Qwen2-Audio GGUFs — LM Studio downloaded them; llama-server reads the same
 #: files. The mmproj IS the audio encoder (1.2 GB f16).
 MODEL_DIR = Path(os.environ.get(
-    "LMSTUDIO_MODELS", r"C:\Users\Ryan\.lmstudio\models")) \
+    "LMSTUDIO_MODELS", os.path.expanduser("~/.lmstudio/models"))) \
     / "mradermacher" / "Qwen2-Audio-7B-Instruct-GGUF"
 GGUF = MODEL_DIR / "Qwen2-Audio-7B-Instruct.Q4_K_M.gguf"
 MMPROJ = MODEL_DIR / "Qwen2-Audio-7B-Instruct.mmproj-f16.gguf"

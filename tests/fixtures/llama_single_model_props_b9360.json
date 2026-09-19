@@ -1,6 +1,6 @@
 {
   "model_alias": "qwen3.5-0.8b-ablate-e2-opus46-postopus-runtime.Q4_K_M.gguf",
-  "model_path": "C:\\Users\\Ryan\\.lmstudio\\models\\amkkk\\Qwen3.5-0.8B-GGUF-uncensored-opus-distill\\qwen3.5-0.8b-ablate-e2-opus46-postopus-runtime.Q4_K_M.gguf",
+  "model_path": "C:\\lmstudio\\.lmstudio\\models\\amkkk\\Qwen3.5-0.8B-GGUF-uncensored-opus-distill\\qwen3.5-0.8b-ablate-e2-opus46-postopus-runtime.Q4_K_M.gguf",
   "modalities": {
     "vision": false,
     "audio": false

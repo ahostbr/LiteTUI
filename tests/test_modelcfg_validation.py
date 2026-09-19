@@ -7,7 +7,7 @@ projector path, and Ctrl+S wrote both into `.llama/litetui-models.ini` and
 RELOADED THE MODEL ON THEM:
 
     ctx-size = 819250000
-    mmproj   = noneC:/Users/Ryan/.lmstudio/models/unsloth/Qwen3.5-0.8B-GGUF/mmproj-F32.gguf
+    mmproj   = noneC:/lmstudio/models/unsloth/Qwen3.5-0.8B-GGUF/mmproj-F32.gguf
 
 The panel reported "Saved model config … load settings applied". Nothing
 validated either field. A 819-million context is an OOM request that the router
@@ -46,7 +46,7 @@ from textual.widgets import Input, Static
 
 #: Sentinel's two inputs, verbatim from the walk.
 BAD_CTX = "819250000"
-BAD_MMPROJ = ("noneC:/Users/Ryan/.lmstudio/models/unsloth/"
+BAD_MMPROJ = ("noneC:/lmstudio/models/unsloth/"
               "Qwen3.5-0.8B-GGUF/mmproj-F32.gguf")
 
 
