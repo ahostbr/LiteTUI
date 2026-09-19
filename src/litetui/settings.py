@@ -406,7 +406,7 @@ class Settings:
 
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
     #: Speak the agent's replies aloud (Ryan 2026-09-18). OFF by default — opt-in.
-    #: Toggled by the footer button beside pause and by `tts_hotkey`.
+    #: Toggled ONLY from this tab (the footer button is the mic, not speak).
     tts_enabled: bool = False
     #: "pyttsx3" (Windows SAPI direct, offline, no download — the default) or
     #: "edge" (Microsoft cloud neural voices; needs edge-tts + playsound).
@@ -416,10 +416,17 @@ class Settings:
     tts_voice: str = ""
     #: The voice id for the edge engine.
     tts_edge_voice: str = "en-GB-SoniaNeural"
-    #: The key that toggles TTS from anywhere. Configurable in the Voice tab;
-    #: bound at runtime (App.bind) from this value, so a change takes effect
-    #: without a restart. Textual key spelling, e.g. "ctrl+space".
-    tts_hotkey: str = "ctrl+space"
+
+    # ── Voice (STT in / dictation) ────────────────────────────────────────────
+    #: faster-whisper model size: "tiny.en" | "base.en" | "small.en". Downloaded
+    #: on first use (the opt-in). base.en is the ruling.
+    stt_model: str = "base.en"
+    #: Direct Show microphone NAME; blank = the first mic ffmpeg lists.
+    stt_mic: str = ""
+    #: The key that toggles voice recording (start/stop) from anywhere.
+    #: Configurable in the Voice tab; bound at runtime (App.bind) so a change
+    #: takes effect without a restart. Textual key spelling, e.g. "ctrl+space".
+    stt_hotkey: str = "ctrl+space"
 
 
 #: field name → environment variable that overrides it.
@@ -437,7 +444,8 @@ ENV_OVERRIDES: dict[str, str] = {
     "thinking_level": "LITETUI_THINKING",
     "seat_name": "LITETUI_SEAT_NAME",
     "tts_engine": "LITETUI_TTS_ENGINE",
-    "tts_hotkey": "LITETUI_TTS_HOTKEY",
+    "stt_model": "LITETUI_STT_MODEL",
+    "stt_hotkey": "LITETUI_STT_HOTKEY",
 }
 
 

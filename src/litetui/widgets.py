@@ -1151,26 +1151,27 @@ class PauseButton(Static):
         self.app.action_toggle_pause()
 
 
-class TtsButton(Static):
-    """Speak-replies toggle, beside pause (Ryan 2026-09-18: "a button ... that
-    toggles [TTS] ... near the pause button"). Same one-definition pattern as
-    PauseButton: the click and the hotkey both route to `action_toggle_tts`."""
+class MicButton(Static):
+    """Voice-in record toggle, beside pause (Ryan 2026-09-18: "replace that
+    speak button ... the keybinding ... a start stop toggle"). Click and the
+    record hotkey both route to `action_toggle_mic`. TTS speak on/off is NOT
+    here — it moved to the Voice settings tab, per the same ruling."""
 
-    LABEL_OFF = " ♪ speak off "
-    LABEL_ON = " ♪ speak on "
+    LABEL_IDLE = " ○ mic "
+    LABEL_REC = " ● rec "
 
     def __init__(self) -> None:
-        super().__init__(self.LABEL_OFF, classes="tts-button")
+        super().__init__(self.LABEL_IDLE, classes="mic-button")
 
-    def set_tts(self, on: bool) -> None:
-        self.content = self.LABEL_ON if on else self.LABEL_OFF
+    def set_recording(self, on: bool) -> None:
+        self.content = self.LABEL_REC if on else self.LABEL_IDLE
         if on:
-            self.add_class("on")
+            self.add_class("recording")
         else:
-            self.remove_class("on")
+            self.remove_class("recording")
 
     def on_click(self) -> None:
-        self.app.action_toggle_tts()
+        self.app.action_toggle_mic()
 
 
 class ContextFooter(Footer):
@@ -1208,10 +1209,7 @@ class ContextFooter(Footer):
         # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
         # Inside a Horizontal each button owns its own cells.
         with Horizontal(classes="footer-buttons"):
-            tts = TtsButton()
-            if getattr(self.app, "settings", None) and self.app.settings.tts_enabled:
-                tts.set_tts(True)
-            yield tts
+            yield MicButton()
             yield PauseButton()
             yield PaletteButton("☰ commands", classes="palette-button")
 

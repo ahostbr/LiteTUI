@@ -78,7 +78,7 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AssistantMessage,
     CancelToolButton,
     PauseButton,
-    TtsButton,
+    MicButton,
     ChatMessage,
     UserMessage,
     Completion,
@@ -906,19 +906,19 @@ class LiteTUI(App):
         color: $text;
     }
 
-    .tts-button {
+    .mic-button {
         width: auto;
         padding: 0 1;
         background: $footer-background;
         text-style: bold;
     }
 
-    .tts-button:hover {
+    .mic-button:hover {
         background: $accent 40%;
     }
 
-    .tts-button.on {
-        background: $accent 60%;
+    .mic-button.recording {
+        background: $error 70%;
         color: $text;
     }
 
@@ -1805,10 +1805,8 @@ class LiteTUI(App):
             if not f.exists():
                 self._system(f"[!] {label} missing: {f}\n    That section is absent from the model's context.")
         self._connect()
-        # Voice: bind the configurable TTS toggle hotkey (default ctrl+space)
-        # and reflect the saved enabled state on the footer speak button.
-        self._bind_tts_hotkey()
-        self.set_tts_enabled(self.settings.tts_enabled, announce=False)
+        # Voice-in: bind the configurable record hotkey (default ctrl+space).
+        self._bind_mic_hotkey()
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
         plugins_mod.activate_plugins(self, self.plugins, self._plugin_manifests)
@@ -3326,38 +3324,64 @@ class LiteTUI(App):
         """/pause and the ⏸ button: one body."""
         self.set_paused(not self.paused)
 
-    def set_tts_enabled(self, on: bool, *, announce: bool = True) -> None:
-        """Turn speak-replies on or off. The footer button, the hotkey and the
-        Voice settings tab all land here — ONE place owns the flag, the button
-        label, and the notice. The flag lives on `settings.tts_enabled`; the
-        turn-end hook reads it before speaking."""
-        on = bool(on)
-        self.settings.tts_enabled = on
-        try:
-            for btn in self.query(TtsButton):
-                btn.set_tts(on)
-        except Exception:
-            pass  # no footer yet (pre-compose) — the flag still holds
-        if announce:
-            self._system("[speak on — replies are read aloud]" if on
-                         else "[speak off]")
+    #: The running ffmpeg recorder, or None when idle. Its stdin is the stop
+    #: channel — see stt_backend.record_stop.
+    _mic_proc = None
 
-    def action_toggle_tts(self) -> None:
-        """The footer speak button and the configurable hotkey: one body."""
-        self.set_tts_enabled(not self.settings.tts_enabled)
+    def action_toggle_mic(self) -> None:
+        """The footer mic button and the record hotkey: start recording, or
+        stop-and-transcribe. The transcript APPENDS to the input box (Ryan
+        2026-09-18). TTS speak on/off is settings-only and is not touched here."""
+        from litetui import stt_backend
+        if self._mic_proc is None:
+            if not stt_backend.available():
+                self._system("[mic] voice-in needs faster-whisper + ffmpeg — "
+                             "install them from Settings > Voice.")
+                return
+            self._mic_proc = stt_backend.record_start(self.settings.stt_mic or None)
+            if self._mic_proc is None:
+                self._system("[mic] no microphone found — pick one in Settings > Voice.")
+                return
+            for btn in self.query(MicButton):
+                btn.set_recording(True)
+            self._system("[mic] recording — mic button or the hotkey again to stop.")
+        else:
+            proc, self._mic_proc = self._mic_proc, None
+            for btn in self.query(MicButton):
+                btn.set_recording(False)
+            wav = stt_backend.record_stop(proc)
+            if not wav:
+                self._system("[mic] nothing captured.")
+                return
+            self._system("[mic] transcribing…")
+            self.run_worker(lambda: self._transcribe_and_fill(wav), thread=True)
 
-    def _bind_tts_hotkey(self) -> None:
-        """Bind the TTS toggle to `settings.tts_hotkey` at runtime, so a change
-        in the Voice tab takes effect without a restart. ⚠️ Textual has no
-        unbind: rebinding to a new key leaves the old key also bound (both just
-        toggle, harmless). ctrl+space may not reach every terminal — the footer
-        button always works and the tab's Capture lets the user pick another."""
-        key = (self.settings.tts_hotkey or "ctrl+space").strip()
-        if key == getattr(self, "_tts_bound_key", None):
+    def _transcribe_and_fill(self, wav: str) -> None:
+        from litetui import stt_backend
+        text = stt_backend.transcribe(wav, self.settings.stt_model)
+        self.call_from_thread(self._append_transcript, text)
+
+    def _append_transcript(self, text: str) -> None:
+        if not text:
+            self._system("[mic] no speech recognised.")
+            return
+        box = self.query_one("#message-input", Input)
+        box.value = box.value + ((" " + text) if box.value else text)
+        box.focus()
+
+    def _bind_mic_hotkey(self) -> None:
+        """Bind the record toggle to `settings.stt_hotkey` (default ctrl+space)
+        at runtime, so a change in the Voice tab takes effect without a restart.
+        ⚠️ Textual has no unbind: a changed key leaves the old one also bound
+        (both toggle recording, harmless). ctrl+space may not reach every
+        terminal — the mic button always works and Capture lets the user pick
+        another."""
+        key = (self.settings.stt_hotkey or "ctrl+space").strip()
+        if key == getattr(self, "_mic_bound_key", None):
             return
         try:
-            self.bind(key, "toggle_tts", description="Toggle speak")
-            self._tts_bound_key = key
+            self.bind(key, "toggle_mic", description="Record voice")
+            self._mic_bound_key = key
         except Exception:
             pass  # a malformed key spelling must never break startup
 
@@ -7982,12 +8006,10 @@ class LiteTUI(App):
         backend = getattr(self, "backend", None)
         if backend is not None and hasattr(backend, "set_settings"):
             backend.set_settings(new)
-        # Voice: the Voice tab may have flipped the toggle or changed the
-        # hotkey — reflect both without a restart.
+        # Voice-in: the tab may have changed the record hotkey — rebind without
+        # a restart. (TTS enabled is read from settings at speak time.)
         try:
-            for btn in self.query(TtsButton):
-                btn.set_tts(new.tts_enabled)
-            self._bind_tts_hotkey()
+            self._bind_mic_hotkey()
         except Exception:
             pass
         # New/edited custom themes must exist in the registry BEFORE the

@@ -28,6 +28,8 @@ from dataclasses import fields, replace
 from functools import partial
 from typing import Any
 
+import importlib.util
+
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -46,7 +48,7 @@ from textual.widgets import (
 )
 
 from litetui.hooks_screen import HooksEditor
-from litetui import gpu_gate, llm_backend, voice_backend
+from litetui import gpu_gate, llm_backend, voice_backend, stt_backend
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
@@ -479,10 +481,12 @@ class SettingsBody(Widget):
                             )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
+                        yield Label("Speak — replies read aloud (TTS out)",
+                                    classes="set-label")
                         yield from self._switch_row(
                             "tts_enabled", "Speak replies aloud (TTS)",
-                            "Off by default. Toggle here, with the footer button "
-                            "beside pause, or the hotkey below.")
+                            "Off by default. This switch is the ONLY speak on/off "
+                            "— the footer button is the mic, not speak.")
                         yield from self._select_row(
                             "tts_engine", "TTS engine",
                             [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
@@ -501,21 +505,39 @@ class SettingsBody(Widget):
                             "The edge-tts voice id used when the engine is 'edge'.",
                             placeholder="en-GB-SoniaNeural")
                         with Vertical(classes="set-row"):
-                            yield Label("Toggle hotkey", classes="set-label")
-                            with Horizontal(classes="set-switchline"):
-                                yield Input(value=self._start.tts_hotkey,
-                                            id="f-tts_hotkey", classes="set-input",
-                                            placeholder="ctrl+space")
-                                yield Button("Capture key", id="voice-capture")
-                            yield Static(
-                                "The key that toggles TTS from anywhere. Type it "
-                                "(e.g. ctrl+space) or click Capture and press it. "
-                                "Applies on save.", classes="set-help")
-                        with Vertical(classes="set-row"):
                             with Horizontal(classes="set-switchline"):
                                 yield Button("Test voice", id="voice-test")
                                 yield Button("Install edge support",
                                              id="voice-install-edge")
+                        # ── Dictate (STT in) ──
+                        yield Label("Dictate — voice to text (STT in)",
+                                    classes="set-label")
+                        yield from self._select_row(
+                            "stt_model", "Voice-in model (faster-whisper)",
+                            [("base.en — ~140 MB, good", "base.en"),
+                             ("tiny.en — ~75 MB, snappy", "tiny.en"),
+                             ("small.en — ~465 MB, best", "small.en")],
+                            "Local speech-to-text for the mic button and the record "
+                            "hotkey. Downloaded on first use. Transcript appends to "
+                            "the input box.")
+                        yield from self._select_row(
+                            "stt_mic", "Microphone",
+                            [("First available", "")]
+                            + [(m, m) for m in stt_backend.list_mics()],
+                            "The Direct Show input the recorder captures from.")
+                        with Vertical(classes="set-row"):
+                            yield Label("Record hotkey", classes="set-label")
+                            with Horizontal(classes="set-switchline"):
+                                yield Input(value=self._start.stt_hotkey,
+                                            id="f-stt_hotkey", classes="set-input",
+                                            placeholder="ctrl+space")
+                                yield Button("Capture key", id="voice-capture")
+                            yield Static(
+                                "The key that starts/stops recording from anywhere. "
+                                "Type it (e.g. ctrl+space) or click Capture and press "
+                                "it. Applies on save.", classes="set-help")
+                        with Vertical(classes="set-row"):
+                            yield Button("Download voice-in model", id="voice-dl-stt")
                             yield Static("", id="voice-status", classes="set-help")
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
@@ -1156,10 +1178,10 @@ class SettingsBody(Widget):
             return  # not capturing — every key reaches the Inputs as normal
         if event.key in ("ctrl", "shift", "alt", "meta", "super", "hyper"):
             return  # a bare modifier is not a hotkey; wait for the real key
-        self.query_one("#f-tts_hotkey", Input).value = event.key
+        self.query_one("#f-stt_hotkey", Input).value = event.key
         self._capturing_hotkey = False
         self.query_one("#voice-status", Static).update(
-            f"Hotkey set to {event.key}. Save to apply.")
+            f"Record hotkey set to {event.key}. Save to apply.")
         event.stop()
         event.prevent_default()
 
@@ -1182,6 +1204,30 @@ class SettingsBody(Widget):
         except Exception as e:  # noqa: BLE001 - report every failure to the panel
             msg = (f"install failed: {type(e).__name__} "
                    "(try: uv pip install edge-tts playsound==1.2.2)")
+        self.app.call_from_thread(
+            self.query_one("#voice-status", Static).update, msg)
+
+    @on(Button.Pressed, "#voice-dl-stt")
+    def _voice_dl_stt(self) -> None:
+        size = self.query_one("#f-stt_model", Select).value
+        self.query_one("#voice-status", Static).update(f"Downloading {size}…")
+        self.run_worker(lambda: self._do_dl_stt(size), thread=True)
+
+    def _do_dl_stt(self, size: str) -> None:
+        import subprocess
+        import sys
+
+        try:
+            if importlib.util.find_spec("faster_whisper") is None:
+                subprocess.run([sys.executable, "-m", "pip", "install",
+                                "faster-whisper"],
+                               check=True, capture_output=True, timeout=600)
+            from faster_whisper import WhisperModel
+            WhisperModel(size, device="cpu", compute_type="int8")
+            msg = f"{size} ready — the mic button and record hotkey now work."
+        except Exception as e:  # noqa: BLE001 - report every failure to the panel
+            msg = (f"download failed: {type(e).__name__} "
+                   "(try: uv pip install faster-whisper)")
         self.app.call_from_thread(
             self.query_one("#voice-status", Static).update, msg)
 
