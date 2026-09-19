@@ -69,6 +69,17 @@ class _App:
     def fetch_context_window(self):
         pass
 
+    # /load now adopts the loaded model as active (set_active_model's tail), so
+    # the fake carries the same no-op refresh surface the real app has.
+    def update_header(self):
+        pass
+
+    def _probe_thinking(self):
+        pass
+
+    def _rpc_emit_model_state(self):
+        pass
+
 
 class _Backend:
     """A backend that refuses like llamacpp does — before any work."""
@@ -115,6 +126,16 @@ def test_a_load_that_happens_still_says_it_is_loading():
     loaded = [i for i, s in enumerate(app.said) if s.startswith("Loaded:")]
     assert len(promises) == 1, app.said
     assert loaded and promises[0] < loaded[0], app.said
+
+
+def test_a_load_adopts_the_loaded_model_as_active():
+    """A /load makes the loaded model the active one, so the footer (which tracks
+    model_id) shows the window just loaded — not a previously-active model that
+    this load evicted, which would read its ceiling."""
+    app = _App(_Backend())
+    app.model_id = "old-model"
+    _drive_load(app, "qwen3.5-9b")
+    assert app.model_id == "qwen3.5-9b", app.said
 
 
 def test_the_command_hands_the_line_down_rather_than_printing_it():

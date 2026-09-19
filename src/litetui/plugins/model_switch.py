@@ -415,10 +415,22 @@ def _start_load(app, target: str, ctx=_USE_DEFAULT) -> None:
             return
         app.system_message(f"Loaded: {target}")
         _say_projector(app, target)
-        if target == app.model_id:
-            app.fetch_context_window()
-        else:
-            app.connect()   # refresh the rows' loaded markers
+        # The model we just loaded becomes the active one, and the footer follows
+        # it. On LM Studio (one resident model) this load EVICTS whatever was
+        # active, so leaving the old model_id in place would point the
+        # conversation — and the footer's context window — at a model no longer in
+        # VRAM, which then reads its CEILING (262,144) instead of the window we
+        # just loaded. Adopt the target and refresh: set_active_model's tail minus
+        # the load we already did (no second, ctx-less load).
+        from litetui import thinking_probe
+        app.model_id = target
+        app._model_thinking_levels = None
+        thinking_probe.clear_cache(target)
+        app.update_header()
+        app.fetch_context_window()
+        if getattr(app.backend, "name", "") == "lmstudio":
+            app._probe_thinking()
+        app._rpc_emit_model_state()
 
     app.run_worker(_go(), group="modelctl", exclusive=True)
 
