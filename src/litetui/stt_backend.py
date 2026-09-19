@@ -17,10 +17,18 @@ import re
 import subprocess
 
 from litetui import paths
-from litetui.listen_tool import _ffmpeg, _first_dshow_device, _run
+from litetui.listen_tool import (
+    _check_not_silent, _ffmpeg, _first_dshow_device, _run,
+)
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DEFAULT_MODEL = "base.en"
+#: Whisper's stock output on silent/contentless audio — dropped so an empty
+#: take never injects phantom text into the input box.
+_HALLUCINATIONS = frozenset({
+    "you", "thank you", "thanks for watching", "thanks for watching!",
+    "bye", "bye.", "so", ".", "",
+})
 _WAV = paths.data_root() / "stt-record.wav"
 _model_cache: dict = {}
 
@@ -93,6 +101,16 @@ def transcribe(wav: str, model_size: str = DEFAULT_MODEL) -> str:
     """Transcribe a WAV with faster-whisper. Downloads the model on first use
     (the opt-in gate is the caller choosing to run this). Blocking — call it in
     a worker thread. Returns the text, or "" on any failure (never raises)."""
+    # Silence gate BEFORE whisper: base whisper hallucinates "You" / "Thank you"
+    # on a silent or ultra-short clip (measured 2026-09-18 — a quiet take
+    # printed "You"). listen_tool's volumedetect rejects it, so silence reads
+    # as "no speech" instead of phantom text (and flags a mis-picked mic).
+    try:
+        from pathlib import Path
+        if _check_not_silent(Path(wav)):
+            return ""
+    except Exception:
+        pass
     try:
         from faster_whisper import WhisperModel
     except Exception:
@@ -103,7 +121,12 @@ def transcribe(wav: str, model_size: str = DEFAULT_MODEL) -> str:
             model = WhisperModel(model_size, device="cpu", compute_type="int8")
             _model_cache[model_size] = model
         segments, _info = model.transcribe(wav, language="en")
-        return " ".join(s.text.strip() for s in segments).strip()
+        text = " ".join(s.text.strip() for s in segments).strip()
+        # Belt for borderline audio that passes the volume gate: whisper's
+        # stock hallucinations for "no real content" are a tiny closed set.
+        if text.lower().strip(" .!?,") in _HALLUCINATIONS:
+            return ""
+        return text
     except Exception:
         return ""
 
