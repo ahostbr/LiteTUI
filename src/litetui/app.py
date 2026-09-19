@@ -3333,6 +3333,11 @@ class LiteTUI(App):
         """The footer mic button and the record hotkey: start recording, or
         stop-and-transcribe. The transcript APPENDS to the input box (Ryan
         2026-09-18). TTS speak on/off is settings-only and is not touched here."""
+        import time
+        now = time.monotonic()
+        if now - getattr(self, "_mic_last_toggle", 0.0) < 0.4:
+            return  # debounce: a double-bound key or key-repeat must not stack
+        self._mic_last_toggle = now
         from litetui import stt_backend
         if self._mic_proc is None:
             if not stt_backend.available():
@@ -3345,17 +3350,38 @@ class LiteTUI(App):
                 return
             for btn in self.query(MicButton):
                 btn.set_recording(True)
+            self._play_cue("rec-start.wav")
             self._system("[mic] recording — mic button or the hotkey again to stop.")
         else:
             proc, self._mic_proc = self._mic_proc, None
             for btn in self.query(MicButton):
                 btn.set_recording(False)
+            self._play_cue("rec-stop.wav")
             wav = stt_backend.record_stop(proc)
             if not wav:
                 self._system("[mic] nothing captured.")
                 return
             self._system("[mic] transcribing…")
             self.run_worker(lambda: self._transcribe_and_fill(wav), thread=True)
+
+    def _play_cue(self, name: str) -> None:
+        """Short recording start/stop blip (reused from LiteSuite's warroom
+        cues, drone-spawn/despawn -> assets/rec-start.wav / rec-stop.wav).
+        Best-effort and non-blocking: winsound plays SYNC inside a daemon
+        thread, which keeps importlib's as_file path alive through playback
+        (so it works from a zip install too) without stalling the UI thread.
+        Any failure — non-Windows, missing asset, no audio — is silent and
+        never blocks the mic."""
+        def go() -> None:
+            try:
+                import winsound, importlib.resources as ir
+                res = ir.files("litetui").joinpath("assets", name)
+                with ir.as_file(res) as p:
+                    winsound.PlaySound(str(p), winsound.SND_FILENAME)
+            except Exception:
+                pass
+        import threading
+        threading.Thread(target=go, daemon=True).start()
 
     def _transcribe_and_fill(self, wav: str) -> None:
         from litetui import stt_backend
@@ -3380,11 +3406,20 @@ class LiteTUI(App):
         key = (self.settings.stt_hotkey or "ctrl+space").strip()
         if key == getattr(self, "_mic_bound_key", None):
             return
+        # ctrl+space physically arrives as NUL = ctrl+@ on a terminal without
+        # the kitty keyboard protocol (this box's Windows Terminal — measured
+        # 2026-08-21, same reason ctrl+enter needs the ctrl+j alias). The event
+        # key Textual delivers for it is "ctrl+@"; binding "ctrl+space" alone
+        # never fires here. Bind the ONE spelling the terminal delivers — NOT
+        # both: two bindings resolve to the same key and fire toggle_mic TWICE
+        # per press (start+stop in one keystroke = the runaway record/transcribe
+        # loop, 2026-09-18). action_toggle_mic also debounces as a backstop.
+        bindkey = "ctrl+@" if key == "ctrl+space" else key
         try:
-            self.bind(key, "toggle_mic", description="Record voice")
-            self._mic_bound_key = key
+            self.bind(bindkey, "toggle_mic", description="Record voice")
         except Exception:
             pass  # a malformed key spelling must never break startup
+        self._mic_bound_key = key
 
     def action_toggle_plan_mode(self) -> None:
         """ctrl+p: plan mode on or off (T558).

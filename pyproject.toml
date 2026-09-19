@@ -83,7 +83,7 @@ where = ["src"]
 # .py files, and an installed litetui crashes on first launch — harness.py's
 # module-level tool_schemas.load("harness") hits a FileNotFoundError because
 # tools/*.json was never in the zip (the repo-root fallback is not there either).
-litetui = ["schemas/*.json", "prompts/*.md", "PI_NOTICE.txt"]
+litetui = ["schemas/*.json", "prompts/*.md", "PI_NOTICE.txt", "assets/*.wav"]
 
 [tool.setuptools.dynamic]
 version = { attr = "litetui.version.__version__" }
