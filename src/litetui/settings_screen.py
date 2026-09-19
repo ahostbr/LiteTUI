@@ -1143,7 +1143,7 @@ class SettingsBody(Widget):
         ok = voice_backend.speak("This is the LiteTUI voice test.",
                                  engine=engine, voice=voice or None)
         self.query_one("#voice-status", Static).update(
-            "Speaking…" if ok
+            "Sent a test line — you should hear it now." if ok
             else "That engine is not installed — use Install, or pick pyttsx3.")
 
     @on(Button.Pressed, "#voice-capture")

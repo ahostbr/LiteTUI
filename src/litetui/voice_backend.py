@@ -20,6 +20,7 @@ own audio handle and dies when the clip ends — Popen returns immediately.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 
@@ -28,6 +29,21 @@ ENGINES = ("pyttsx3", "edge")
 DEFAULT_EDGE_VOICE = "en-GB-SoniaNeural"
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _speaker() -> tuple[str, int]:
+    """(interpreter, creationflags) for the speaking child. Prefer pythonw.exe:
+    measured 2026-09-18 — a `python.exe` child was SILENT (with or without a
+    console) while `pythonw.exe` (GUI subsystem) kept an audio session and was
+    the only one audible. It also has no console, so no flag and no flash.
+    Fall back to python.exe + CREATE_NO_WINDOW when pythonw is missing."""
+    exe = sys.executable or "python"
+    d, name = os.path.split(exe)
+    if name.lower() in ("python.exe", "python"):
+        cand = os.path.join(d, "pythonw.exe")
+        if os.path.exists(cand):
+            return cand, 0
+    return exe, _NO_WINDOW
 
 
 def _has(module: str) -> bool:
@@ -121,8 +137,9 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None) -> bo
         if not _has("pyttsx3"):
             return False
         child = _SAPI_CHILD.format(text=text, voice=voice or "")
+    py, flags = _speaker()
     try:
-        subprocess.Popen([sys.executable, "-c", child], creationflags=_NO_WINDOW)
+        subprocess.Popen([py, "-c", child], creationflags=flags)
         return True
     except Exception:
         return False
