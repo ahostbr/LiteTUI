@@ -27,7 +27,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Input, Label, Select, Static, TabbedContent, TabPane
+from textual.widgets import Input, Label, Select, Static, Switch, TabbedContent, TabPane
 
 from litetui import llm_backend
 from litetui import model_transport
@@ -381,8 +381,18 @@ def _notice(app, text: str):
     return lambda: app.call_from_thread(app.system_message, text)
 
 
-def _start_load(app, target: str) -> None:
-    """Load `target`. ONE body for the typed name and the picked one."""
+#: Sentinel for `_start_load(ctx=...)`: the caller chose no context, so fall back
+#: to the saved `default_context_length`. Distinct from an explicit ``None`` — the
+#: /load picker's toggle OFF means "load at the server's own default".
+_USE_DEFAULT = object()
+
+
+def _start_load(app, target: str, ctx=_USE_DEFAULT) -> None:
+    """Load `target`. ONE body for the typed name and the picked one.
+
+    ``ctx``: ``_USE_DEFAULT`` uses the saved ``default_context_length``; an int or
+    ``None`` (from the /load picker's context row) overrides it for this load.
+    """
 
     async def _go() -> None:
         # 🔴 T873. "Loading {target}…" was printed HERE, before the await, and
@@ -395,7 +405,7 @@ def _start_load(app, target: str) -> None:
         # ctx=, LM Studio loads at the model's own default (8192) and the saved
         # "Load with context length" is silently ignored — the picker was the one
         # load path that skipped the apply the /model path has.
-        want = app.settings.default_context_length
+        want = app.settings.default_context_length if ctx is _USE_DEFAULT else ctx
         _msg = (f"Loading {target} at {want:,} tokens…" if want
                 else f"Loading {target}…")
         try:
@@ -429,10 +439,47 @@ def _load_rows(app, first: list[str] | None = None) -> list[tuple[str, str]]:
 
 
 def _on_load_picked(app, model_id: str | None) -> None:
+    # The context row (if the picker showed one) stashed its choice on the app at
+    # selection; read and clear it whichever way this resolves.
+    ctx = getattr(app, "_load_ctx_override", _USE_DEFAULT)
+    app._load_ctx_override = _USE_DEFAULT
     # Esc resolves with None and the callback still fires — see picker.pick.
     if model_id is None:
         return
-    _start_load(app, model_id)
+    _start_load(app, model_id, ctx=ctx)
+
+
+def _load_ctx_row(app):
+    """The /load picker's context-length row: a toggle + a token count, pre-filled
+    from the saved default. Built HERE so the generic picker imports no load
+    widgets; `_read_load_ctx` reads it back at selection time."""
+    saved = app.settings.default_context_length
+    yield Horizontal(
+        Switch(value=bool(saved), id="load-ctx-on"),
+        Label("Load with context length", id="load-ctx-label"),
+        Input(value=(str(saved) if saved else ""), placeholder="e.g. 131072",
+              id="load-ctx-val"),
+        id="load-ctx-row",
+    )
+
+
+def _read_load_ctx(app, body) -> None:
+    """Stash the context row's choice on the app for `_on_load_picked`.
+    Toggle OFF -> None (load at the server's own default); ON + a number -> that
+    many tokens; ON + blank/garbage -> None (nothing to apply)."""
+    try:
+        on = body.query_one("#load-ctx-on", Switch).value
+        raw = body.query_one("#load-ctx-val", Input).value.strip().replace(",", "")
+    except Exception:
+        app._load_ctx_override = _USE_DEFAULT
+        return
+    if not on or not raw:
+        app._load_ctx_override = None
+        return
+    try:
+        app._load_ctx_override = int(raw)
+    except ValueError:
+        app._load_ctx_override = None
 
 
 def _cmd_load(app, name: str, arg: str) -> None:
@@ -466,6 +513,8 @@ def _cmd_load(app, name: str, arg: str) -> None:
                 _load_rows(app),
                 partial(_on_load_picked, app),
                 current=app.model_id,
+                extra_factory=partial(_load_ctx_row, app),
+                on_pick=partial(_read_load_ctx, app),
             )
             return
         target = app.model_id
@@ -494,6 +543,8 @@ def _cmd_load(app, name: str, arg: str) -> None:
             _load_rows(app, first=near),
             partial(_on_load_picked, app),
             current=app.model_id,
+            extra_factory=partial(_load_ctx_row, app),
+            on_pick=partial(_read_load_ctx, app),
         )
         return
 

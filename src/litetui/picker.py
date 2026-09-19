@@ -81,12 +81,21 @@ class PickerBody(Widget):
     """
 
     def __init__(self, title: str, rows: list[tuple[str, str]],
-                 current: str | None = None, hint: str = DEFAULT_HINT):
+                 current: str | None = None, hint: str = DEFAULT_HINT,
+                 extra_factory=None, on_pick=None):
         super().__init__()
         self._title = title
         self._rows = rows          # (id, label)
         self._current = current
         self._hint = hint
+        # Opt-in extra controls (e.g. the /load context-length row). `None` keeps
+        # every other picker BYTE-IDENTICAL: nothing extra is yielded, `_selected`
+        # takes the same one-line path. `extra_factory()` yields widgets built at
+        # the CALL SITE, so this generic widget imports no load-specific widgets;
+        # `on_pick(self)` runs at selection so the site can read those widgets'
+        # state before the dialog closes.
+        self._extra_factory = extra_factory
+        self._on_pick = on_pick
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
@@ -94,6 +103,8 @@ class PickerBody(Widget):
             yield OptionList(
                 *[Option(label, id=oid) for oid, label in self._rows], id="picker-list"
             )
+            if self._extra_factory is not None:
+                yield from self._extra_factory()
             yield Static(self._hint, id="picker-hint")
             # Swap host without answering. Styles itself (SwapButton owns
             # its own DEFAULT_CSS), so this needs no rule in picker CSS.
@@ -130,6 +141,10 @@ class PickerBody(Widget):
 
     @on(OptionList.OptionSelected)
     def _selected(self, event: OptionList.OptionSelected) -> None:
+        # Read any extra controls (their widgets vanish with the dialog) BEFORE
+        # closing, so the call site captures their state for the chosen row.
+        if self._on_pick is not None:
+            self._on_pick(self)
         close_dialog(self, event.option.id)
 
 
@@ -139,22 +154,26 @@ class PickerScreen(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(self, title: str, rows: list[tuple[str, str]], current: str | None = None,
-                 hint: str = DEFAULT_HINT):
+                 hint: str = DEFAULT_HINT, extra_factory=None, on_pick=None):
         super().__init__()
         self._title = title
         self._rows = rows
         self._current = current
         self._hint = hint
+        self._extra_factory = extra_factory
+        self._on_pick = on_pick
 
     def compose(self) -> ComposeResult:
-        yield PickerBody(self._title, self._rows, self._current, self._hint)
+        yield PickerBody(self._title, self._rows, self._current, self._hint,
+                         self._extra_factory, self._on_pick)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
 
 
 def pick(app, title: str, rows: list[tuple[str, str]], callback,
-         current: str | None = None, hint: str = DEFAULT_HINT) -> None:
+         current: str | None = None, hint: str = DEFAULT_HINT,
+         extra_factory=None, on_pick=None) -> None:
     """Open the picker in whichever host the setting names. ONE call per site.
 
     Both factories are built from ONE set of arguments here rather than at each
@@ -170,8 +189,8 @@ def pick(app, title: str, rows: list[tuple[str, str]], callback,
     """
     present_dialog(
         app,
-        partial(PickerBody, title, rows, current, hint),
-        partial(PickerScreen, title, rows, current, hint),
+        partial(PickerBody, title, rows, current, hint, extra_factory, on_pick),
+        partial(PickerScreen, title, rows, current, hint, extra_factory, on_pick),
         callback,
         # The title is the only HUMAN name a picker has — `_dialog_name` would
         # answer "PickerScreen" for all of them, and a headless refusal that
