@@ -194,3 +194,27 @@ Total branches: 160  ·  MERGED: 154  ·  UNMERGED: 6
 | `verify/astra-full` | LOCAL-ONLY | 2026-09-11 b270b14 fix(compact): scope cancellation latch to the new operation |
 | `verify/full-run` | LOCAL-ONLY | 2026-09-11 ff932ae merge(compact): integrate T621 â€” a stop from a previous turn no longe |
 | `verify/jobobject` | remote | 2026-08-23 c4d7738 Merge branch 'fix/tool-cancel-instrument' into verify/jobobject |
+
+## Scrub executed — 2026-09-19
+
+**Deleted 148 merged branches** (74 remote via `git push origin --delete`, 74 local via `git branch -d`).
+
+- **Public remote: ~93 → 9 branches.** Remaining: `main`, `develop`, `release/0.23.0`,
+  `verify/jobobject` (kept structural) + the 5 remote unmerged below.
+- **Local: 79 → 33.** `git branch -d` (safe) refused squash-merged-but-not-ancestor locals —
+  they're patch-id-merged but not deleted; `-D` would clear them (Ryan-gated). Local branches
+  don't touch the public repo, so left for now.
+- **1 local branch kept by force:** `codex/litegui-workspace-runtime` — checked out in the
+  `C:/Projects/LiteGUI/.runtime-dev` worktree, so `-d` correctly refused it.
+- **Stray ref:** `refs/remotes/localmain` — an orphaned remote-tracking ref (no `localmain`
+  remote exists); not on the public repo. Clear with `git update-ref -d refs/remotes/localmain`.
+
+### Still open — the 6 unmerged (decision needed; each has unique commits, not auto-dropped)
+| branch | recommend |
+|---|---|
+| `ci/advisory-scope` | drop (662 behind, dead lint pin) |
+| `probe/t632-real-child` | drop (test probe, 280 behind) |
+| `wip/ryan-0914` | verify absorbed by feat/t753, then drop |
+| `drive/t863-ninfer-free-column` | review → merge (recent NInfer work) |
+| `feat/t806b-ninfer-wiring` (local) | review → merge or drop (NInfer wiring WIP) |
+| `feat/subagent-sol-high` | review → merge or drop |
