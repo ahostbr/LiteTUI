@@ -114,7 +114,8 @@ def test_absence_renders_as_ABSENCE(missing):
 def test_the_cycle_is_ryans_order_and_wraps():
     """T085 cut it to TWO levels: "scheduled should not be its own mode"."""
     assert tool_policy.cycle(AUTONOMOUS) == INTERACTIVE
-    assert tool_policy.cycle(INTERACTIVE) == AUTONOMOUS
+    assert tool_policy.cycle(INTERACTIVE) == "strict"
+    assert tool_policy.cycle("strict") == AUTONOMOUS
 
 
 def test_scheduled_is_UNREACHABLE_from_the_keyboard():
@@ -128,7 +129,7 @@ def test_scheduled_is_UNREACHABLE_from_the_keyboard():
 def test_cycling_OFF_scheduled_lands_back_in_the_selectable_set():
     """An old settings.json can still hold it. One press must escape, not
     stick — and must land on the NARROWEST selectable level, never the widest."""
-    assert tool_policy.cycle(SCHEDULED) == INTERACTIVE
+    assert tool_policy.cycle(SCHEDULED) == "strict"
 
 
 def test_the_selectable_set_is_DERIVED_from_the_profile_flag(monkeypatch):
@@ -402,7 +403,7 @@ def test_a_stored_scheduled_level_does_not_CRASH_the_settings_screen(tmp_path):
     )
     loaded = settings_mod.load(tmp_path)
     assert loaded.tool_policy_profile in tool_policy.selectable_profile_names()
-    assert loaded.tool_policy_profile == INTERACTIVE, (
+    assert loaded.tool_policy_profile == "strict", (
         "landed somewhere other than the narrowest selectable level"
     )
 

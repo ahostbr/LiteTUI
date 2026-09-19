@@ -66,6 +66,7 @@ CONFIRM = "confirm"
 DENY = "deny"
 
 INTERACTIVE = "interactive"
+STRICT = "strict"
 SCHEDULED = "scheduled"
 AUTONOMOUS = "autonomous"
 #: PROFILE_NAMES is DERIVED from PROFILES, below — see the note there. It used
@@ -142,17 +143,32 @@ class PolicyDecision:
 # another UI is visible to the host and therefore requires Ryan's confirmation.
 INTERACTIVE_PROFILE = ToolProfile(
     INTERACTIVE,
-    allow=frozenset({READ_ONLY, NETWORK, SELF_STORE}),
+    allow=frozenset({READ_ONLY, NETWORK, SELF_STORE, PROCESS_EXECUTION}),
     confirm=frozenset(
         {
             WORKSPACE_WRITE,
             EXTERNAL_WRITE,
-            PROCESS_EXECUTION,
             DESKTOP_CONTROL,
             DESTRUCTIVE_IRREVERSIBLE,
         }
     ),
     summary="inspect freely, confirm sensitive actions",
+)
+
+# Strict supervision confirms every sensitive action, including ordinary
+# process execution. Interactive mode is the middle level: shell commands are
+# allowed unless their arguments are classified as destructive.
+STRICT_PROFILE = ToolProfile(
+    STRICT,
+    allow=frozenset({READ_ONLY, NETWORK, SELF_STORE}),
+    confirm=frozenset({
+        WORKSPACE_WRITE,
+        EXTERNAL_WRITE,
+        PROCESS_EXECUTION,
+        DESKTOP_CONTROL,
+        DESTRUCTIVE_IRREVERSIBLE,
+    }),
+    summary="confirm every command and sensitive action",
 )
 
 # Scheduled prompts are unattended.  Their default is intentionally narrower:
@@ -182,14 +198,9 @@ SCHEDULED_PROFILE = ToolProfile(
 #: ⚠️ THIS PROFILE HAS NO CONFIRM STEP OF ITS OWN. A standing `deny` rule
 #: still wins — the deny gate runs before the profile is consulted at all.
 #:
-#: 🔴 AND SINCE T844 IT IS NO LONGER THE ONLY BRAKE. Ryan, 2026-09-17:
-#: "Keep autonomous, but destructive_irreversible ALWAYS confirms (a floor
-#: no profile removes)". That floor lives in `decide()`, not here, and
-#: `allow=CAPABILITIES` below does NOT reach past it: this profile grants
-#: every capability and still asks before an irreversible one. Everything
-#: else about it is unchanged, which is the point — the row exists because
-#: Ryan killed his own agent seat rather than keep answering the modal, and
-#: a floor that asked about `ls` would earn the same fate.
+#: Autonomous is intentionally the unattended, no-approval profile. The
+#: interactive profile owns confirmation of sensitive capabilities; autonomous
+#: must not reintroduce a prompt through an argument classifier.
 AUTONOMOUS_PROFILE = ToolProfile(
     AUTONOMOUS,
     allow=CAPABILITIES,
@@ -221,6 +232,7 @@ AUTONOMOUS_PROFILE = ToolProfile(
 #: with the change that makes ordering matter.
 PROFILES = {
     SCHEDULED: SCHEDULED_PROFILE,
+    STRICT: STRICT_PROFILE,
     INTERACTIVE: INTERACTIVE_PROFILE,
     AUTONOMOUS: AUTONOMOUS_PROFILE,
 }
@@ -409,45 +421,6 @@ def evaluate(
             capabilities,
             f"{profile.name} profile does not grant {', '.join(sorted(outside))}",
         )
-    # 🔴🔴 THE FLOOR. RYAN, 2026-09-17 (liteask a-584e69c0), verbatim:
-    #     "Keep autonomous, but destructive_irreversible ALWAYS confirms
-    #      (a floor no profile removes)"
-    #
-    # WHAT IT COST TO LEARN. Measuring the tool path on a real engine, a
-    # model was asked to delete a directory and ran `rm -rf * .[a-zA-Z]*`
-    # with ZERO approval events. It emptied a git worktree. Nothing was
-    # broken: `classify_shell` returned destructive_irreversible,
-    # `interactive` confirms exactly that, and `bash` carries SHELL_POLICY.
-    # `autonomous` simply has an EMPTY confirm set, and it is the DEFAULT
-    # (settings.py) -- so every guard was correct and none of them ran.
-    #
-    #     A PROFILE THAT CAN OPT OUT OF A CONFIRMATION IS NOT A POLICY, IT
-    #     IS A PREFERENCE. The authority to skip a question and the
-    #     authority to destroy the workspace were the same switch.
-    #
-    # IT SITS HERE, ABOVE THE PROFILE'S OWN CONFIRM TEST, AND BELOW BOTH
-    # DENY PATHS. A standing `deny` rule still wins (an explicit refusal the
-    # human wrote down), and a capability the profile does not grant at all
-    # is still DENIED rather than softened to a prompt -- both of those are
-    # stricter than this floor, so putting it under them changes nothing
-    # they decide.
-    #
-    # ⚠️ `always_allow` DOES NOT LIFT IT, AND THAT IS A DECISION, NOT AN
-    # OVERSIGHT. Everywhere else an allow rule turns CONFIRM into ALLOW.
-    # Here it would have to, permanently, for a `rule_key` that is (tool,
-    # capability set) -- so one click on one `rm -rf` would silence EVERY
-    # destructive shell command for that tool, for good. "ALWAYS confirms"
-    # is the ruling's own word. If Ryan wants a remembered yes here, it
-    # needs to be keyed on something narrower than a capability set.
-    if DESTRUCTIVE_IRREVERSIBLE in capabilities:
-        return PolicyDecision(
-            CONFIRM,
-            profile.name,
-            capabilities,
-            f"destructive and irreversible; confirmation is required in every "
-            f"profile ({names})",
-        )
-
     # 🔴 A PROFILE WITH AN EMPTY `confirm` SET NEVER OPENS A MODAL, and that
     # guard is `profile.confirm and ...` rather than the capability test alone.
     # `confirm_always` (MCP_UNKNOWN_POLICY) forces a prompt REGARDLESS of

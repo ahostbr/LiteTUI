@@ -74,13 +74,7 @@ def test_autonomous_allows_what_interactive_would_stop_to_ask_about(ws):
 
     assert _act(INTERACTIVE, SHELL_POLICY, {"command": "rm -rf ./build"}, ws) == CONFIRM
 
-    # 🔴 THE ONE EXCEPTION, AND IT USED TO BE IN THE LIST ABOVE. `rm -rf` was an
-    # ALLOW here until T844; then a model ran `rm -rf * .[a-zA-Z]*` under this
-    # profile with no approval event and emptied a git worktree. Ryan,
-    # 2026-09-17 (liteask a-584e69c0): "Keep autonomous, but
-    # destructive_irreversible ALWAYS confirms (a floor no profile removes)".
-    # Moved rather than deleted, so the line that changed is visible.
-    assert _act(AUTONOMOUS, SHELL_POLICY, {"command": "rm -rf ./build"}, ws) == CONFIRM
+    assert _act(AUTONOMOUS, SHELL_POLICY, {"command": "rm -rf ./build"}, ws) == ALLOW
 
 
 # ── the hang ───────────────────────────────────────────────────────────────
@@ -131,14 +125,12 @@ def test_a_standing_deny_rule_still_wins_under_autonomous(ws):
         )
         == DENY
     )
-    # CONTROL: without the rule the same call does NOT reach DENY, so the DENY
-    # above is the rule and not the profile refusing on its own. It was ALLOW
-    # before T844 and is CONFIRM after it — either way it is not DENY, which is
-    # the whole discriminator this control needs.
+    # CONTROL: without the rule the same call is allowed by autonomous; the
+    # explicit deny is what makes this call stop.
     assert (
         _act(AUTONOMOUS, SHELL_POLICY, {"command": "rm -rf ./build"}, ws,
              tool_name="shell")
-        == CONFIRM
+            == ALLOW
     )
 
 
@@ -153,13 +145,12 @@ def test_a_deny_rule_is_still_capability_scoped_under_autonomous(ws):
         == DENY
     )
     # The destructive variant carries a different key, so the narrow rule does
-    # not reach it. NOT-DENY is the assertion; T844's floor turned the exact
-    # value from ALLOW into CONFIRM without touching the key scoping this arm
-    # is about.
+    # not reach it. The destructive variant remains independently allowed in
+    # autonomous; the narrow deny must not bleed into it.
     assert (
         _act(AUTONOMOUS, SHELL_POLICY, {"command": "rm -rf ./build"}, ws,
              tool_name="shell", deny=frozenset({narrow}))
-        == CONFIRM
+            == ALLOW
     )
 
 

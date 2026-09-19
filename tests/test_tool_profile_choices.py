@@ -59,7 +59,7 @@ def test_the_dropdown_is_ordered_by_ascending_authority():
     `unattended()` degrades to, so the ordering principle is unchanged and the
     scale is simply shorter.
     """
-    assert [v for _l, v in tool_profile_choices()] == [INTERACTIVE, AUTONOMOUS]
+    assert [v for _l, v in tool_profile_choices()] == ["strict", INTERACTIVE, AUTONOMOUS]
 
 
 def test_no_label_renders_a_double_separator():

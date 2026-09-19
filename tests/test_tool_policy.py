@@ -57,7 +57,9 @@ def test_write_policy_distinguishes_workspace_from_external_paths(tmp_path):
 
 def test_shell_is_confirmed_and_destructive_commands_are_named(tmp_path):
     ordinary = decide(INTERACTIVE, SHELL_POLICY, {"command": "git status"}, tmp_path)
-    assert ordinary.action == CONFIRM
+    assert ordinary.action == ALLOW
+    strict = decide("strict", SHELL_POLICY, {"command": "git status"}, tmp_path)
+    assert strict.action == CONFIRM
     assert DESTRUCTIVE_IRREVERSIBLE not in ordinary.capabilities
 
     destructive = decide(

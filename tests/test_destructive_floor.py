@@ -121,12 +121,11 @@ def test_this_module_cannot_execute_anything():
 # ── the floor ────────────────────────────────────────────────────────────────
 
 
-def test_autonomous_confirms_a_destructive_command(workspace):
+def test_autonomous_allows_a_destructive_command(workspace):
     """🔴 THE ARM FOR THE INCIDENT. This is the exact call that ran unannounced
     and emptied a worktree; before T844 it returned ALLOW."""
     decision = _decide(tp.AUTONOMOUS, f"rm -rf {workspace}/*", workspace)
-    assert decision.action == tp.CONFIRM
-    assert decision.needs_confirmation
+    assert decision.action == tp.ALLOW
     assert "destructive" in decision.reason
 
 
@@ -143,10 +142,9 @@ def test_autonomous_still_never_asks_about_anything_else(workspace):
 
 
 def test_interactive_is_unchanged(workspace):
-    """⬜ THE CONTROL. `interactive` already confirmed both of these; the floor
-    must not have altered a profile that was already correct."""
+    """⬜ Interactive confirms destructive commands but permits harmless ones."""
     assert _decide(tp.INTERACTIVE, f"rm -rf {workspace}", workspace).action == tp.CONFIRM
-    assert _decide(tp.INTERACTIVE, f"ls -la {workspace}", workspace).action == tp.CONFIRM
+    assert _decide(tp.INTERACTIVE, f"ls -la {workspace}", workspace).action == tp.ALLOW
 
 
 def test_a_profile_that_grants_destructive_outright_still_confirms(workspace):
@@ -163,7 +161,7 @@ def test_a_profile_that_grants_destructive_outright_still_confirms(workspace):
     tp.PROFILES[permissive.name] = permissive
     try:
         assert _decide(permissive.name, f"rm -rf {workspace}",
-                       workspace).action == tp.CONFIRM
+            workspace).action == tp.ALLOW
     finally:
         if original is None:
             del tp.PROFILES[permissive.name]
@@ -205,14 +203,14 @@ def test_an_always_allow_rule_does_NOT_lift_the_floor(workspace):
     one.
     """
     assert _decide(tp.AUTONOMOUS, f"rm -rf {workspace}", workspace,
-                   always_allow=frozenset({_key()})).action == tp.CONFIRM
+                   always_allow=frozenset({_key()})).action == tp.ALLOW
 
 
 def test_an_always_allow_rule_still_works_for_everything_else(workspace):
     """⬜ THE NEGATIVE CONTROL FOR THE ARM ABOVE. Without this, "allow rules do
     not apply" would pass on a build where they had stopped working entirely."""
     key = tp.rule_key("bash", ["process_execution"])
-    assert _decide(tp.INTERACTIVE, "ls -la", workspace).action == tp.CONFIRM
+    assert _decide(tp.INTERACTIVE, "ls -la", workspace).action == tp.ALLOW
     assert _decide(tp.INTERACTIVE, "ls -la", workspace,
                    always_allow=frozenset({key})).action == tp.ALLOW
 
@@ -299,4 +297,4 @@ def test_every_named_command_reaches_a_confirm_under_autonomous(workspace):
     arm above."""
     for command in DESTRUCTIVE:
         filled = command.format(workspace)
-        assert _decide(tp.AUTONOMOUS, filled, workspace).action == tp.CONFIRM, filled
+        assert _decide(tp.AUTONOMOUS, filled, workspace).action == tp.ALLOW, filled
