@@ -47,3 +47,18 @@ def apply_receipts(app, *, parent, receipts):
         return True
 
     return receipts.deliver_for_conversation(parent, conversation, commit=commit)
+
+
+def poll_receipts(app, *, parent, receipts, inbox, registry):
+    """Transfer durably even when busy; apply only at safe local-loop idle.
+
+    Native app-server history needs a separate provider acceptance protocol.
+    Retaining receipts is preferable to claiming that local list edits delivered
+    anything to a remote thread.
+    """
+    if getattr(app, '_gui_quitting', False):
+        return []
+    receipts.replay_from_inbox(parent, inbox=inbox, registry=registry)
+    if app._chat_running() or hasattr(getattr(app, 'backend', None), 'app_server'):
+        return []
+    return app._apply_child_receipts(parent=parent, receipts=receipts)

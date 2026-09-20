@@ -1835,6 +1835,31 @@ class LiteTUI(App):
         except Exception:
             pass  # an update check must never block or break a launch
 
+    def _start_child_delivery(self, *, parent, receipts, inbox, registry):
+        """Install one parent-owned delivery timer from trusted runtime state."""
+        from litetui.agent_parent_delivery import poll_receipts
+        prior = getattr(self, '_child_delivery_timer', None)
+        if prior is not None:
+            prior.stop()
+        last_error = None
+
+        def poll():
+            nonlocal last_error
+            try:
+                poll_receipts(self, parent=parent, receipts=receipts, inbox=inbox, registry=registry)
+                last_error = None
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                # Durable stores retain responsibility; retry without claiming
+                # delivery or spamming the same failure every timer tick.
+                detail = str(exc)
+                if detail != last_error:
+                    self._system(f"[child result delivery deferred: {detail}]")
+                    last_error = detail
+
+        import sqlite3
+        self._child_delivery_timer = self.set_interval(1.0, poll)
+        return self._child_delivery_timer
+
     def _apply_child_receipts(self, *, parent, receipts) -> list[str]:
         """Apply durable outcomes without pretending a UI notice is acceptance.
 
