@@ -1835,6 +1835,18 @@ class LiteTUI(App):
         except Exception:
             pass  # an update check must never block or break a launch
 
+    def _apply_child_receipts(self, *, parent, receipts) -> list[str]:
+        """Apply durable outcomes without pretending a UI notice is acceptance.
+
+        Internal launch orchestration supplies the parent identity and queue.
+        This does not start a model turn or alter native provider history.
+        """
+        from litetui.agent_parent_delivery import apply_receipts
+        applied = apply_receipts(self, parent=parent, receipts=receipts)
+        if applied:
+            self._system(f"[child results saved to this conversation: {len(applied)}]")
+        return applied
+
     def _update_available_notice(self, latest: str) -> None:
         """Delivered by the background update check via call_from_thread
         (update_check.py) — the port of the desktop app's UPDATE_STATUS

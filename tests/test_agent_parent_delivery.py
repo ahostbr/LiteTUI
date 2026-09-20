@@ -63,3 +63,18 @@ def test_history_write_failure_does_not_change_live_context(state, monkeypatch):
     with pytest.raises(OSError): apply_receipts(app, parent='parent', receipts=receipts)
     assert app.conversation == []
     assert receipts.pending('parent') == [event]
+
+
+def test_app_entrypoint_commits_before_notice(state):
+    from litetui.app import LiteTUI
+    app, receipts, event = state
+    notices = []
+    def notice(text):
+        assert not receipts.pending('parent')
+        assert app.conversation == [receipt_message(event)]
+        notices.append(text)
+    app._system = notice
+    assert LiteTUI._apply_child_receipts(app, parent='parent', receipts=receipts) == ['completion']
+    assert len(notices) == 1
+    assert LiteTUI._apply_child_receipts(app, parent='parent', receipts=receipts) == []
+    assert len(notices) == 1
