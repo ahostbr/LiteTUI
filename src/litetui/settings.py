@@ -65,7 +65,13 @@ FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
 
 
 def normalize_footer_order(value: Any) -> list[str]:
-    """Return a safe, complete footer order from user or disk input."""
+    """Return a safe, complete footer order from user or disk input.
+
+    Older settings files and hand-edited files may omit the new field, contain
+    duplicate ids, or have an unknown id. Unknown/duplicate entries are
+    ignored and omitted known entries are appended in the historical order, so
+    a bad preference can never hide a footer field or break the app.
+    """
     if not isinstance(value, (list, tuple)):
         value = ()
     known = set(FOOTER_ORDER_DEFAULT)
