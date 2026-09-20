@@ -1554,7 +1554,7 @@ class LMStudioBackend(_VramGate):
     def __init__(self, settings) -> None:
         self._settings = settings
         self._host = settings.lm_host.rstrip("/")
-        self._sdk_ready = False
+        self._sdk_session = None
 
     def base_url(self) -> str:
         return f"{self._host}/v1"
@@ -1571,30 +1571,25 @@ class LMStudioBackend(_VramGate):
         return "ok"
 
     def shutdown(self) -> None:
-        pass
+        if self._sdk_session is not None:
+            self._sdk_session.close()
+            self._sdk_session = None
 
     def _sdk(self):
-        try:
-            import lmstudio  # noqa: PLC0415 — lazy on purpose (see class doc)
-        except ImportError as e:
-            raise BackendError(
-                "the lmstudio SDK is not installed — `pip install lmstudio` "
-                "(the llama.cpp backend works without it: /backend llamacpp)"
-            ) from e
-        if not self._sdk_ready:
-            api_host = self._host.split("//", 1)[-1]
+        if self._sdk_session is None:
             try:
-                lmstudio.configure_default_client(api_host)
-            except Exception:
-                # Already configured (one default client per process) — the
-                # existing client is for the same host in every real run.
-                pass
-            try:
-                lmstudio.set_sync_api_timeout(self._settings.lms_load_timeout_s)
-            except Exception:
-                pass
-            self._sdk_ready = True
-        return lmstudio
+                from litetui.lmstudio_session import LMStudioSession
+                self._sdk_session = LMStudioSession(
+                    self._host.split("//", 1)[-1],
+                    timeout=self._settings.lms_load_timeout_s,
+                )
+            except ImportError as e:
+                raise BackendError(
+                    "the lmstudio SDK is not installed — `pip install lmstudio` "
+                    "(the llama.cpp backend works without it: /backend llamacpp)"
+                ) from e
+        self._sdk_session.timeout = self._settings.lms_load_timeout_s
+        return self._sdk_session
 
     # -- models -----------------------------------------------------------
 
@@ -1702,7 +1697,7 @@ class LMStudioBackend(_VramGate):
             if notice is not None:
                 notice()
             try:
-                lms.llm(key, config=config)
+                lms.load(key, config=config)
             except Exception as e:
                 runtime_log.record_error(
                     "lmstudio.load_failed", detail=f"load of {key!r} at {self._host} — {e}",
@@ -1718,12 +1713,7 @@ class LMStudioBackend(_VramGate):
         def _unload() -> None:
             lms = self._sdk()
             try:
-                # llm(key) is acquire-or-load: using it for unload can load an
-                # absent model outside admission. Only use existing handles.
-                for model in lms.list_loaded_models():
-                    if model.identifier == key:
-                        model.unload()
-                        break
+                lms.unload(key)
             except Exception as e:
                 runtime_log.record_error(
                     "lmstudio.unload_failed", detail=f"unload of {key!r} at {self._host} — {e}",

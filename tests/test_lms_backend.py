@@ -22,6 +22,7 @@ from litetui.settings import Settings
 class FakeHandle:
     def __init__(self, log):
         self._log = log
+        self.identifier = 'qwen'
 
     def unload(self):
         self._log.append(("unload",))
@@ -31,12 +32,22 @@ class FakeSDK(types.ModuleType):
     def __init__(self):
         super().__init__("lmstudio")
         self.log = []
+        self.timeout = 60
 
-    def configure_default_client(self, host):
+    def Client(self, host):
         self.log.append(("configure", host))
+        return types.SimpleNamespace(
+            llm=types.SimpleNamespace(model=self.llm),
+            list_loaded_models=lambda: [FakeHandle(self.log)],
+            close=lambda: self.log.append(("close", host)),
+        )
+
+    def get_sync_api_timeout(self):
+        return self.timeout
 
     def set_sync_api_timeout(self, s):
         self.log.append(("timeout", s))
+        self.timeout = s
 
     def llm(self, key, config=None):
         self.log.append(("llm", key, config))
