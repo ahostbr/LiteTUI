@@ -434,27 +434,15 @@ class AppServerTransport:
                         return
             finally:
                 from litetui.backend_session import cleanup_steps
-                turn_id = self.turn_id
-                self.turn_id = None
-                async def stop_steering():
-                    if steering_worker is not None:
-                        steering_worker.cancel()
-                        await asyncio.gather(steering_worker.wait(), return_exceptions=True)
-                    if steering_task is not None:
-                        steering_task.cancel()
-                        await asyncio.gather(steering_task, return_exceptions=True)
+                turn_id, self.turn_id = self.turn_id, None
                 async def finish_ui():
-                    tool_ui.finish()
-                async def finish_policy():
-                    bridge = getattr(self.server, 'native_bridge', None)
-                    if bridge is not None and bridge.policy is not None:
-                        await bridge.policy.finish()
+                    if ui is not None:
+                        ui.finish()
                 async def interrupt():
-                    if not completed and turn_id and not interrupt_sent:
+                    if not finished and turn_id and not interrupted:
                         await self.server.request('turn/interrupt',
-                            {'threadId': self.thread_id, 'turnId': turn_id})
-                errors = await cleanup_steps([questions.close, stop_steering,
-                                              finish_ui, finish_policy, interrupt])
+                            {'threadId': reference, 'turnId': turn_id})
+                errors = await cleanup_steps([questions.close, finish_ui, interrupt])
                 session = getattr(self.server, 'session', None)
                 if session is not None:
                     session.cleanup_errors.extend(errors)
@@ -940,23 +928,31 @@ class AppServerTransport:
                         yield _chunk(metadata=metadata)
                         return
             finally:
-                await questions.close()
-                if steering_worker is not None:
-                    steering_worker.cancel()
-                    await asyncio.gather(steering_worker.wait(), return_exceptions=True)
-                if steering_task is not None:
-                    steering_task.cancel()
-                    await asyncio.gather(steering_task, return_exceptions=True)
-                tool_ui.finish()
-                bridge = getattr(self.server, "native_bridge", None)
-                if bridge is not None and bridge.policy is not None:
-                    await bridge.policy.finish()
-                if not completed and self.turn_id and not interrupt_sent:
-                    await self.server.request(
-                        "turn/interrupt",
-                        {"threadId": self.thread_id, "turnId": self.turn_id},
-                    )
+                from litetui.backend_session import cleanup_steps
+                turn_id = self.turn_id
                 self.turn_id = None
+                async def stop_steering():
+                    if steering_worker is not None:
+                        steering_worker.cancel()
+                        await asyncio.gather(steering_worker.wait(), return_exceptions=True)
+                    if steering_task is not None:
+                        steering_task.cancel()
+                        await asyncio.gather(steering_task, return_exceptions=True)
+                async def finish_ui():
+                    tool_ui.finish()
+                async def finish_policy():
+                    bridge = getattr(self.server, 'native_bridge', None)
+                    if bridge is not None and bridge.policy is not None:
+                        await bridge.policy.finish()
+                async def interrupt():
+                    if not completed and turn_id and not interrupt_sent:
+                        await self.server.request('turn/interrupt',
+                            {'threadId': self.thread_id, 'turnId': turn_id})
+                errors = await cleanup_steps([questions.close, stop_steering,
+                                              finish_ui, finish_policy, interrupt])
+                session = getattr(self.server, 'session', None)
+                if session is not None:
+                    session.cleanup_errors.extend(errors)
 
 
 class AppServerStream:

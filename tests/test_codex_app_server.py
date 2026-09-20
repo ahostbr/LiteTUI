@@ -557,3 +557,13 @@ async def test_separate_assistant_items_keep_paragraph_boundaries():
         model="gpt-6-astra", messages=[{"role": "user", "content": "hi"}]
     )
     assert response.choices[0].message.content.startswith("First. More.\n\nNext.")
+
+@pytest.mark.asyncio
+async def test_compaction_cleanup_retains_no_stale_turn():
+    server = Server()
+    server.session = NS(cleanup_errors=[])
+    messages = [{'role': 'assistant', 'content': 'kept', 'provider_metadata': {'provider': 'codex', 'app_server_thread_id': 'thread-1'}}]
+    transport = AppServerTransport(server, NS(conversation=messages))
+    await transport.compact()
+    assert transport.turn_id is None
+    assert server.session.cleanup_errors == []
