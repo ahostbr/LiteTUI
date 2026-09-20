@@ -231,12 +231,25 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
         outcome = {'status': 'cancelled', 'summary': 'Parent cancelled child collection'}
     except Exception as exc:
         outcome = {'status': 'failed', 'summary': f'{type(exc).__name__}: {exc}'}
-    cleanup_error = None
-    try:
-        closed = await process.close()
-    except Exception as exc:
-        closed = False
-        cleanup_error = f'{type(exc).__name__}: {exc}'
+    async def bounded_cleanup():
+        try:
+            async with asyncio.timeout(10):
+                return await process.close(), None
+        except Exception as exc:
+            return False, f'{type(exc).__name__}: {exc}'
+
+    # Repeated caller cancellation must not strand the owned tree or bypass
+    # the durable outcome. Keep awaiting the SAME bounded cleanup task.
+    cleanup = asyncio.create_task(bounded_cleanup())
+    while True:
+        try:
+            closed, cleanup_error = await asyncio.shield(cleanup)
+            break
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+            if cleanup.cancelled():
+                closed, cleanup_error = False, 'Child cleanup was cancelled'
+                break
     result = {**outcome, 'child_id': child_id, 'conversation_id': process.conversation_id,
               'branch': branch, 'evidence': list(evidence),
               'cleanup': {'state': 'confirmed' if closed else 'unconfirmed',

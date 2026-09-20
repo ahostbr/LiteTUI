@@ -70,3 +70,34 @@ async def test_cancelled_collection_persists_replayable_cancelled_outcome(tmp_pa
     pending = AgentInbox(tmp_path / 'inbox.sqlite').pending('parent')
     assert len(pending) == 1
     assert pending[0]['result']['status'] == 'cancelled'
+
+@pytest.mark.asyncio
+async def test_second_cancellation_cannot_interrupt_cleanup_and_persistence(tmp_path):
+    import asyncio
+    from litetui.agent_supervisor import finish_child
+    process = AgentProcess()
+    process.conversation_id = 'actual-convo'
+    collecting, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def collect(**kwargs):
+        collecting.set()
+        await asyncio.Event().wait()
+    async def close(**kwargs):
+        closing.set()
+        await release.wait()
+        return True
+    process.collect_turn, process.close = collect, close
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    notices = []
+    task = asyncio.create_task(finish_child(process, inbox, parent='parent', child_id='child',
+        branch=None, evidence=[], notify=notices.append))
+    await collecting.wait()
+    task.cancel()
+    await closing.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    pending = inbox.pending('parent')
+    assert len(pending) == 1
+    assert pending[0]['result']['cleanup']['state'] == 'confirmed'
+    assert not notices
