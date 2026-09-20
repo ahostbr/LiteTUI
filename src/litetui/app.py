@@ -4421,6 +4421,12 @@ class LiteTUI(App):
                 await self._ensure_chat_ready(timeout=15.0)
                 self._submit_text(self._first_prompt, alt_chord=False)
 
+        except asyncio.CancelledError:
+            self._cli_launch_error = 'Launch configuration cancelled'
+            raise
+        except Exception as exc:
+            self._cli_launch_error = f'Launch configuration failed: {exc}'
+            raise
         finally:
             done = getattr(self, '_cli_args_done', None)
             if done is not None:

@@ -222,3 +222,40 @@ def test_resumed_or_changed_model_revalidates_cli_effort_before_request():
         model_id='changed-model', _cli_effective_thinking='high')
     with pytest.raises(BackendError, match='thinking'):
         LiteTUI._effective_request_overrides(app)
+
+
+def test_cli_startup_failure_sets_blocked_before_releasing_ready_waiter():
+    import pytest
+    app = _FakeApp('model', None, [ModelRow(key='model', path=None, source='server', loaded=True)])
+    app._first_prompt = 'hello'
+    async def failed(**kwargs):
+        raise RuntimeError('readiness fixture')
+    app._ensure_chat_ready = failed
+    async def scenario():
+        app._cli_args_done = asyncio.Event()
+        with pytest.raises(RuntimeError, match='readiness fixture'):
+            await _apply(app)
+        assert app._cli_args_done.is_set()
+        assert 'readiness fixture' in app._cli_launch_error
+    asyncio.run(scenario())
+
+
+def test_cli_startup_cancellation_sets_blocked_and_preserves_cancellation():
+    import pytest
+    app = _FakeApp('model', None, [ModelRow(key='model', path=None, source='server', loaded=True)])
+    app._first_prompt = 'hello'
+    async def scenario():
+        entered = asyncio.Event()
+        app._cli_args_done = asyncio.Event()
+        async def wait(**kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+        app._ensure_chat_ready = wait
+        task = asyncio.create_task(_apply(app))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert app._cli_args_done.is_set()
+        assert 'cancelled' in app._cli_launch_error.lower()
+    asyncio.run(scenario())
