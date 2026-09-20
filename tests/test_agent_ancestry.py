@@ -46,3 +46,19 @@ async def test_lower_level_entrypoints_also_refuse_nested_calls(monkeypatch):
         await run_prepared_child(None, None, registry=None, inbox=None,
             parent='parent', child_id='child', workspace=None, data_root=None,
             branch=None, evidence=[], supported_levels=[], notify=None)
+
+def test_real_interpreter_inherits_managed_depth_and_refuses(tmp_path):
+    import os
+    import subprocess
+    import sys
+    script = (
+        'from litetui.agent_ancestry import require_root_launcher\n'
+        'from litetui.agent_launcher import LaunchBlocked\n'
+        'try:\n require_root_launcher()\n'
+        'except LaunchBlocked:\n print("NESTED_BLOCKED")\n'
+        'else:\n raise SystemExit("depth guard bypassed")\n')
+    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path,
+        env={**os.environ, 'LITETUI_AGENT_DEPTH': '1'},
+        capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'NESTED_BLOCKED'
