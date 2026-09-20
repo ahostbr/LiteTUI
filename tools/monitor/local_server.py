@@ -68,13 +68,21 @@ class History:
 HIST = History()
 
 
-def sweep_loop(interval: float, targets, probe, tracker, sink) -> None:
+def sweep_loop(interval: float, targets, probe, tracker, sink, sweeps: int = 0) -> None:
+    """Run sweeps on a timer. `sweeps` > 0 stops after that many (safe demo);
+    0 runs forever (real monitor mode). A bounded loop is the guard against the
+    'keeps reopening my pages' runaway that an uncapped `while True` allows."""
     engine = MonitorEngine(probe=probe, sink=sink, tracker=tracker)
+    done = 0
     while True:
         try:
             HIST.record(engine.run_sweep(targets))
+            done += 1
         except Exception as exc:  # noqa: BLE001 - a sweep error must not kill the server
             print(f"[sweep] error: {type(exc).__name__}: {exc}")
+        if sweeps and done >= sweeps:
+            print(f"[sweep] stopped after {done} sweep(s) (sweeps={sweeps})")
+            return
         time.sleep(interval)
 
 
@@ -198,6 +206,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Local no-Docker monitor dashboard")
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--interval", type=float, default=5.0, help="seconds between sweeps")
+    ap.add_argument("--sweeps", type=int, default=0,
+                    help="stop after N sweeps (0 = run forever; use for safe demos)")
+    ap.add_argument("--once", action="store_true",
+                    help="run exactly one sweep then stop (sugar for --sweeps 1)")
     ap.add_argument("--config", default=str(HERE / "monitor-targets.json"))
     ap.add_argument("--shots", default="monitor-shots")
     ap.add_argument("--state", default="monitor-baselines.json")
@@ -213,13 +225,15 @@ def main(argv=None) -> int:
     sink = FileSink(args.log)
 
     Handler.shot_dir = shot_dir
+    sweeps = 1 if args.once else args.sweeps
     threading.Thread(target=sweep_loop,
-                     args=(args.interval, targets, probe, tracker, sink),
+                     args=(args.interval, targets, probe, tracker, sink, sweeps),
                      daemon=True).start()
 
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://localhost:{args.port}"
-    print(f"browser monitor live at {url}  (sweeping {len(targets)} target(s) every {args.interval:g}s)")
+    cap = f" every {args.interval:g}s, stopping after {sweeps} sweeps" if sweeps else f" every {args.interval:g}s"
+    print(f"browser monitor live at {url}  (sweeping {len(targets)} target(s){cap})")
     print("Ctrl-C to stop.")
     if args.open:
         webbrowser.open(url)
