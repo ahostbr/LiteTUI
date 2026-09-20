@@ -24,6 +24,7 @@ DESIGN NOTES
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import fields, replace
 from functools import partial
 from typing import Any
@@ -52,7 +53,14 @@ from litetui import gpu_gate, llm_backend, voice_backend, stt_backend
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.settings import Settings
+from litetui.settings_draft import SettingsDraft
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
+from litetui.settings_ui_model import (
+    SETTINGS_SECTIONS,
+    SettingSearchHit,
+    SettingsSectionSpec,
+    search_settings,
+)
 # THE MODULE, not the names. `from ... import PROFILES` binds at import
 # time, which would make the "derivation" a snapshot: a profile added
 # later would not appear, and the test proving it appears could only pass
@@ -132,6 +140,93 @@ class _Row(Horizontal):
     """One label + control + help line."""
 
 
+class SettingsSectionHeader(Button):
+    """A mounted, non-destructive disclosure header for one settings group.
+
+    The controls remain mounted when folded. That preserves `_collect`'s
+    whole-form safety check and lets search reveal a field without rebuilding
+    or mutating the draft.
+    """
+
+    def __init__(self, spec: SettingsSectionSpec):
+        self.spec = spec
+        self._members: list[Widget] = []
+        self._open = spec.default_expanded
+        super().__init__(
+            self._label(),
+            id=f"set-section-{spec.section_id}",
+            classes="settings-section-toggle",
+        )
+
+    def _label(self) -> str:
+        arrow = "▾" if self._open else "▸"
+        count = f"{len(self.spec.fields)} controls" if self.spec.fields else "advanced editor"
+        scopes = ", ".join(dict.fromkeys(field.scope for field in self.spec.fields))
+        scope = f" · {scopes}" if scopes else ""
+        return f"{arrow} {self.spec.title}  ·  {count}{scope}"
+
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._capture_members)
+
+    def _capture_members(self) -> None:
+        parent = self.parent
+        if parent is None:
+            return
+        siblings = list(parent.children)
+        try:
+            start = siblings.index(self) + 1
+        except ValueError:
+            return
+        members: list[Widget] = []
+        for sibling in siblings[start:]:
+            if isinstance(sibling, SettingsSectionHeader):
+                break
+            members.append(sibling)
+        self._members = members
+        self._set_open(self._open)
+
+    def _set_open(self, value: bool) -> None:
+        self._open = value
+        self.label = self._label()
+        for member in self._members:
+            member.display = value
+
+    def toggle(self) -> None:
+        self._set_open(not self._open)
+
+    def apply_search(self, query: str, matching_fields: tuple[str, ...], section_match: bool) -> None:
+        if not query:
+            self.display = True
+            for member in self._members:
+                member.display = True
+            self._set_open(self.spec.default_expanded)
+            return
+        self.display = section_match
+        if not section_match:
+            for member in self._members:
+                member.display = False
+            return
+        self._set_open(True)
+        if not matching_fields:
+            return
+        wanted = set(matching_fields)
+        for member in self._members:
+            ids = {
+                node.id[2:]
+                for node in member.query("*")
+                if node.id and node.id.startswith("f-")
+            }
+            member.display = not ids or bool(ids & wanted)
+
+    def first_matching_widget(self, field_names: tuple[str, ...]) -> Widget | None:
+        wanted = set(field_names)
+        for member in self._members:
+            for node in member.query("*"):
+                if node.id and node.id.startswith("f-") and node.id[2:] in wanted:
+                    return node
+        return None
+
+
 def _num_or_none(raw: str, cast) -> Any:
     raw = raw.strip()
     if raw == "":
@@ -143,6 +238,64 @@ def _num_or_none(raw: str, cast) -> Any:
 #: `scheduler_ui._CAL_KEYS`. `escape` is on the screen only — `SidePanel`
 #: already binds it to cancel the dialog.
 _SET_KEYS = [Binding("ctrl+s", "save", "Save", show=False)]
+
+
+class SettingsExitConfirm(ModalScreen[str]):
+    """Resolve a dirty close or an explicit Restore-defaults request."""
+
+    DEFAULT_CSS = """
+    SettingsExitConfirm { align: center middle; }
+    #settings-exit-box { width: 76; height: auto; padding: 2; background: $panel; border: tall $primary; }
+    #settings-exit-buttons { height: auto; align: center middle; }
+    #settings-exit-buttons Button { margin: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "keep_editing", "Keep editing", show=False)]
+
+    def __init__(self, *, restore: bool = False):
+        super().__init__()
+        self.restore = restore
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="settings-exit-box"):
+            if self.restore:
+                yield Static("Restore all settings to defaults?", id="settings-exit-title")
+                yield Static(
+                    "This replaces the current draft and applies only after you confirm.",
+                    id="settings-exit-sub",
+                )
+                with Horizontal(id="settings-exit-buttons"):
+                    yield Button("Restore defaults", variant="warning", id="settings-restore")
+                    yield Button("Keep editing", id="settings-keep")
+            else:
+                yield Static("Unsaved settings changes", id="settings-exit-title")
+                yield Static(
+                    "Save the draft, discard it, or return to the settings panel.",
+                    id="settings-exit-sub",
+                )
+                with Horizontal(id="settings-exit-buttons"):
+                    yield Button("Save", variant="primary", id="settings-save")
+                    yield Button("Discard", variant="error", id="settings-discard")
+                    yield Button("Keep editing", id="settings-keep")
+
+    def action_keep_editing(self) -> None:
+        self.dismiss("keep")
+
+    @on(Button.Pressed, "#settings-save")
+    def _save(self) -> None:
+        self.dismiss("save")
+
+    @on(Button.Pressed, "#settings-discard")
+    def _discard(self) -> None:
+        self.dismiss("discard")
+
+    @on(Button.Pressed, "#settings-restore")
+    def _restore(self) -> None:
+        self.dismiss("restore")
+
+    @on(Button.Pressed, "#settings-keep")
+    def _keep(self) -> None:
+        self.dismiss("keep")
 
 
 def loop_model_choices(
@@ -208,6 +361,22 @@ class SettingsBody(Widget):
 
     DEFAULT_CSS = """
     SettingsBody { width: 100%; height: 100%; align: center middle; layout: vertical; }
+    SettingsSectionHeader {
+        width: 100%;
+        height: auto;
+        min-height: 3;
+        margin: 1 0 0 0;
+        padding: 0 1;
+        background: $panel;
+        color: $primary-lighten-2;
+        border: tall $primary-darken-2;
+        content-align: left middle;
+    }
+    SettingsSectionHeader:hover { background: $panel-lighten-1; }
+    #set-search-row { height: auto; align: left middle; padding-bottom: 1; }
+    #set-search { width: 1fr; }
+    #set-search-clear { margin-left: 1; }
+    #set-search-status { width: 1fr; color: $text-muted; padding-left: 1; }
     """
 
     BINDINGS = list(_SET_KEYS)
@@ -217,6 +386,8 @@ class SettingsBody(Widget):
                  loaded: list[str] | None = None, remote: bool = False):
         super().__init__()
         self._start = current
+        self._draft = SettingsDraft(current)
+        self._initial_state: dict = {}
         self._models = models or []
         self._mcp_servers = mcp_servers or []
         # T640: which of `models` are resident, and whether residency is even a
@@ -224,6 +395,115 @@ class SettingsBody(Widget):
         # (a dozen suites) keeps working and simply shows nothing as loaded.
         self._loaded = loaded or []
         self._remote = remote
+
+    def on_mount(self) -> None:
+        # The form is the working copy. Capture its mounted values so an Esc
+        # after a partial/invalid edit still asks before discarding it.
+        self.call_after_refresh(self._capture_initial_state)
+
+    def _capture_initial_state(self) -> None:
+        self._initial_state = self._canonical_state(self.get_state())
+
+    @staticmethod
+    def _canonical_state(state: dict) -> dict:
+        """Remove view-only state and normalize hook JSON field values."""
+        out = deepcopy(state)
+        hooks_state = out.get("_hooks_editor")
+        if isinstance(hooks_state, dict):
+            hooks_state.pop("messages", None)
+            hooks_state.pop("scroll_y", None)
+            values = hooks_state.get("values")
+            if isinstance(values, dict):
+                for key, value in list(values.items()):
+                    if not isinstance(value, (str, bool, int, float, type(None))):
+                        values[key] = repr(value)
+        return out
+
+    def _has_unsaved_changes(self) -> bool:
+        return bool(self._initial_state) and self._canonical_state(self.get_state()) != self._initial_state
+
+    def request_cancel(self) -> None:
+        if not self._has_unsaved_changes():
+            close_dialog(self, None)
+            return
+        self.app.push_screen(SettingsExitConfirm(), self._on_cancel_answer)
+
+    def _on_cancel_answer(self, answer: str | None) -> None:
+        if answer == "save":
+            self.action_save()
+        elif answer == "discard":
+            close_dialog(self, None)
+
+    def _section_header(self, section_id: str) -> SettingsSectionHeader:
+        spec = next(
+            section for section in SETTINGS_SECTIONS
+            if section.section_id == section_id
+        )
+        return SettingsSectionHeader(spec)
+
+    def _apply_search(self, query: str) -> tuple[SettingSearchHit, ...]:
+        hits = search_settings(query)
+        by_section = {hit.section_id: hit for hit in hits}
+        for header in self.query(SettingsSectionHeader):
+            hit = by_section.get(header.spec.section_id)
+            header.apply_search(
+                query,
+                hit.field_names if hit else (),
+                hit is not None,
+            )
+
+        status = self.query_one("#set-search-status", Static)
+        if not query.strip():
+            status.update("Search labels, help, scopes, and section names")
+            return hits
+        if not hits:
+            status.update("No settings match")
+            return hits
+
+        mounted_hits = tuple(
+            hit for hit in hits
+            if self.query(f"#set-section-{hit.section_id}")
+        )
+        if not mounted_hits:
+            status.update("No visible settings match on this machine")
+            return hits
+
+        first = mounted_hits[0]
+        self.query_one(TabbedContent).active = f"tab-{first.tab_id}"
+        field_count = sum(len(hit.field_names) for hit in mounted_hits)
+        status.update(
+            f"{len(mounted_hits)} section{'s' if len(mounted_hits) != 1 else ''} · "
+            f"{field_count} direct field match{'es' if field_count != 1 else ''}"
+        )
+
+        def focus_hit() -> None:
+            header = self.query_one(
+                f"#set-section-{first.section_id}", SettingsSectionHeader
+            )
+            header.scroll_visible()
+            if first.field_names:
+                widget = header.first_matching_widget(first.field_names)
+                if widget is not None:
+                    widget.focus()
+
+        self.call_after_refresh(focus_hit)
+        return hits
+
+    @on(Input.Changed, "#set-search")
+    def _search_changed(self, event: Input.Changed) -> None:
+        self._apply_search(event.value)
+
+    @on(Button.Pressed, "#set-search-clear")
+    def _search_clear(self) -> None:
+        field = self.query_one("#set-search", Input)
+        field.value = ""
+        field.focus()
+
+    @on(Button.Pressed, ".settings-section-toggle")
+    def _section_toggle(self, event: Button.Pressed) -> None:
+        if isinstance(event.button, SettingsSectionHeader):
+            event.button.toggle()
+            event.stop()
 
     # ── Builders ─────────────────────────────────────────────────────────────
 
@@ -323,12 +603,20 @@ class SettingsBody(Widget):
                 "Esc cancels · Ctrl+S saves · ←/→ or click to change tab",
                 id="set-sub",
             )
+            with Horizontal(id="set-search-row"):
+                yield Input(
+                    placeholder="Find a setting, help text, or section…",
+                    id="set-search",
+                )
+                yield Static("", id="set-search-status")
+                yield Button("Clear", id="set-search-clear")
             # One tab per section. Each pane scrolls on its own, so no section
             # can push another off the bottom.
             with TabbedContent(id="set-tabs"):
                 with TabPane("Model", id="tab-model"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        yield self._section_header("model-connection")
                         # The configured default MUST appear as an option even
                         # when the server is not serving it, or Textual refuses
                         # the value and the WHOLE PANEL fails to open. Models are
@@ -384,6 +672,7 @@ class SettingsBody(Widget):
                         )
 
                         # ── Backend (engine selection) ───────────────────────
+                        yield self._section_header("model-engine")
                         yield from self._select_row(
                             "backend", "Engine",
                             [(label, name) for name, label in llm_backend.visible_backends()],
@@ -397,6 +686,7 @@ class SettingsBody(Widget):
                             "official Codex engine owns tools, history and compaction. "
                             "Applies on /reconnect.",
                         )
+                        yield self._section_header("model-router")
                         yield from self._text_row(
                             "llama_executable", "llama-server executable",
                             "Blank uses the existing LiteSuite-managed installation; choose another installed executable to override.",
@@ -413,6 +703,7 @@ class SettingsBody(Widget):
                             "never spawned over — LiteSuite's is :8088.",
                             placeholder="http://localhost:8088",
                         )
+                        yield self._section_header("model-discovery")
                         yield from self._switch_row(
                             "llama_scan_litesuite", "Scan LiteSuite models",
                             "~/.litesuite/llm/models — the Model Hub's downloads.",
@@ -430,6 +721,7 @@ class SettingsBody(Widget):
                             "Comma-separated absolute paths, scanned recursively.",
                             placeholder="D:/models, E:/gguf",
                         )
+                        yield self._section_header("model-loading")
                         yield from self._text_row(
                             "llama_models_max", "Max resident models",
                             "Models loaded at once on our router. Two large "
@@ -450,6 +742,7 @@ class SettingsBody(Widget):
                 if gpu_gate.is_rtx_5090():
                     with TabPane("NInfer", id="tab-ninfer"):
                         with VerticalScroll(classes="set-scroll"):
+                            yield self._section_header("ninfer-attach")
                             yield from self._text_row(
                                 "ninfer_host", "NInfer host",
                                 "Blank discovers the engine LiteSuite started (its config "
@@ -467,6 +760,7 @@ class SettingsBody(Widget):
                                 "Blank uses the one file LiteSuite pulled. /engine start serves this.",
                                 placeholder="C:/Users/you/.litesuite/llm/ninfer-models/qwen3_8_27b_nvfp4.ninfer",
                             )
+                            yield self._section_header("ninfer-envelope")
                             yield from self._text_row(
                                 "ninfer_max_context", "NInfer: context length (--max-context)",
                                 "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",
@@ -481,6 +775,7 @@ class SettingsBody(Widget):
                             )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
+                        yield self._section_header("voice-speak")
                         yield Label("Speak — replies read aloud (TTS out)",
                                     classes="set-label")
                         yield from self._switch_row(
@@ -512,6 +807,7 @@ class SettingsBody(Widget):
                         # ── Dictate (STT in) ──
                         yield Label("Dictate — voice to text (STT in)",
                                     classes="set-label")
+                        yield self._section_header("voice-dictate")
                         yield from self._select_row(
                             "stt_model", "Voice-in model (faster-whisper)",
                             [("base.en — ~140 MB, good", "base.en"),
@@ -542,12 +838,14 @@ class SettingsBody(Widget):
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        yield self._section_header("generation-reasoning")
                         yield from self._select_row(
                             "thinking_level", "Thinking level", self._thinking_choices(),
                             "A level THIS SERVER accepts is not always one the LOADED model "
                             "accepts — a virtual model drops an unsupported value with a 200 "
                             "and reasons at its own default instead.",
                         )
+                        yield self._section_header("generation-budget")
                         yield from self._text_row(
                             "max_tokens_tools", "Max tokens (tools on)",
                             "Response budget for an agent turn. Reasoning is spent from this "
@@ -558,6 +856,7 @@ class SettingsBody(Widget):
                             "max_tokens_chat", "Max tokens (tools off)",
                             "Response budget for a plain chat turn.",
                         )
+                        yield self._section_header("generation-sampling")
                         yield from self._text_row(
                             "temperature", "Temperature", "Blank = server default.", "0.0 – 2.0"
                         )
@@ -573,6 +872,7 @@ class SettingsBody(Widget):
                         yield from self._text_row(
                             "frequency_penalty", "Frequency penalty", "Blank = default."
                         )
+                        yield self._section_header("generation-repro")
                         yield from self._text_row(
                             "seed", "Seed",
                             "Fixed seed for reproducible output. Blank = random each turn.",
@@ -592,6 +892,7 @@ class SettingsBody(Widget):
                         # tab and the other did not exist. Ryan 2026-09-11 15:1x
                         # runs MiniCPM5-2B resident beside the big model; these
                         # are the two knobs that point work at it.
+                        yield self._section_header("agent-routing")
                         yield from self._model_pick_row(
                             "subagent_model", "Subagent model",
                             "auto — the model you are talking to",
@@ -608,6 +909,7 @@ class SettingsBody(Widget):
                             "call; point it at a small local model instead. A pick that "
                             "is not loaded falls back to the main model and says so.",
                         )
+                        yield self._section_header("agent-execution")
                         yield from self._switch_row(
                             "tools_enabled", "Tools enabled",
                             "Off = plain chat, no bash/read/write/web_fetch.",
@@ -624,6 +926,14 @@ class SettingsBody(Widget):
                             "result arrives later as an inbox message. 0 = never.",
                             placeholder="30",
                         )
+                        yield from self._switch_row(
+                            "enter_interrupts", "Enter interrupts mid-turn",
+                            "OFF: Enter queues a mid-turn message; ctrl+shift+enter "
+                            "interrupts. ON: the two swap — Enter interrupts, the chord "
+                            "queues. Queued messages send when the turn ends; interrupt "
+                            "keeps the partial reply and sends yours next.",
+                        )
+                        yield self._section_header("agent-authority")
                         yield from self._select_row(
                             "tool_policy_profile", "Tool authority",
                             tool_profile_choices(),
@@ -655,6 +965,7 @@ class SettingsBody(Widget):
                             "overridden by allowing the same thing.",
                             placeholder="none",
                         )
+                        yield self._section_header("agent-tools")
                         yield from self._text_row(
                             "tools_disabled", "Tools switched off",
                             "The boxes you untick in /tools, by tool name. A tool listed "
@@ -663,6 +974,7 @@ class SettingsBody(Widget):
                             "earlier in the same conversation still reaches the host.",
                             placeholder="none — every registered tool is offered",
                         )
+                        yield self._section_header("agent-context")
                         yield from self._select_row(
                             "tool_context_mode", "Tool output context", TOOL_CONTEXT_CHOICES,
                             "What a tool result contributes to the conversation. Both "
@@ -675,18 +987,14 @@ class SettingsBody(Widget):
                             "Results smaller than this enter verbatim whatever the mode — "
                             "a summary can be longer than what it replaces.",
                         )
-                        yield from self._switch_row(
-                            "enter_interrupts", "Enter interrupts mid-turn",
-                            "OFF: Enter queues a mid-turn message; ctrl+shift+enter "
-                            "interrupts. ON: the two swap — Enter interrupts, the chord "
-                            "queues. Queued messages send when the turn ends; interrupt "
-                            "keeps the partial reply and sends yours next.",
-                        )
+                        # The child residency/keep-warm control will be added to the
+                        # Agent loop once its cross-backend runtime contract lands.
 
                         # ── Compaction ───────────────────────────────────────────────
                 with TabPane("Compaction", id="tab-compaction"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        yield self._section_header("compact-trigger")
                         yield from self._switch_row(
                             "autocompact_enabled", "Auto-compact",
                             "Compact by itself once the context window passes the threshold below.",
@@ -704,12 +1012,18 @@ class SettingsBody(Widget):
                             "the model sitting on the summary. If nothing is pending "
                             "it says standing by and stops.",
                         )
+                        yield self._section_header("compact-transcript")
                         yield from self._switch_row(
                             "clear_screen_after_compact", "Clear screen after compacting",
                             "After compacting, the log still shows messages that were just "
                             "REPLACED — the screen and the real context disagree. Clearing "
                             "makes what you can scroll back to match what the model can see.",
                         )
+                        yield from self._text_row(
+                            "compact_keep_recent", "Keep recent messages",
+                            "How many trailing messages survive verbatim after the summary.",
+                        )
+                        yield self._section_header("compact-summary")
                         yield from self._text_row(
                             "compact_max_tokens", "Compact max tokens",
                             "Budget for the summary itself. This was hardcoded at 2048 and is "
@@ -725,21 +1039,19 @@ class SettingsBody(Widget):
                             "compact_max_tool_iters", "Compact tool rounds",
                             "How many tool round-trips compaction may take while persisting.",
                         )
-                        yield from self._text_row(
-                            "compact_keep_recent", "Keep recent messages",
-                            "How many trailing messages survive verbatim after the summary.",
-                        )
 
                         # ── Capabilities ─────────────────────────────────────────────
                 with TabPane("Capabilities", id="tab-capabilities"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        yield self._section_header("cap-identity")
                         yield from self._text_row(
                             "seat_name", "Fleet seat name",
                             "The name this seat asks the LiteHarness registry for, "
                             "and what the footer and `discover` show. Blank = LiteTUI.",
                             placeholder="LiteTUI",
                         )
+                        yield self._section_header("cap-skills")
                         yield from self._switch_row(
                             "skills_enabled", "Skills",
                             "Load skills/<name>/SKILL.md. The index goes in the system "
@@ -752,6 +1064,7 @@ class SettingsBody(Widget):
                             "lines are injected — bodies load on demand.",
                             placeholder="~/.claude/skills, ~/.claude/plugins/.../*/skills",
                         )
+                        yield self._section_header("cap-mcp")
                         yield from self._switch_row(
                             "mcp_enabled", "MCP servers",
                             "Start the servers declared in mcp.json / .mcp.json.",
@@ -772,9 +1085,35 @@ class SettingsBody(Widget):
 
                         # ── Interface ────────────────────────────────────────────────
                 with TabPane("Hooks", id="tab-hooks"):
+                    yield self._section_header("hooks-scope")
+                    yield Static(
+                        "Scope, inventory, and hook actions are exposed by the lifecycle editor below.",
+                        classes="set-help",
+                    )
                     yield HooksEditor()
+                    yield self._section_header("hooks-policy")
+                    yield Static(
+                        "Policy: enabled, mode, and events/sources/tools stay together in the editor.",
+                        classes="set-help",
+                    )
+                    yield self._section_header("hooks-command")
+                    yield Static(
+                        "Command contract: ID, executable, arguments, and working directory.",
+                        classes="set-help",
+                    )
+                    yield self._section_header("hooks-runtime")
+                    yield Static(
+                        "Runtime envelope: environment, timeout, and execution order.",
+                        classes="set-help",
+                    )
+                    yield self._section_header("hooks-test")
+                    yield Static(
+                        "Test and recovery: repair, save/reload, sample events, and rejected prompts.",
+                        classes="set-help",
+                    )
                 with TabPane("Themes", id="tab-themes"):
                     with VerticalScroll(classes="set-scroll"):
+                        yield self._section_header("theme-active")
                         yield from self._select_row(
                             "theme_name", "Theme", _theme_choices(self._start.custom_themes),
                             "Dark built-ins, the LiteSuite ports (matrix, lite-suite, "
@@ -782,6 +1121,7 @@ class SettingsBody(Widget):
                             "the footer's \u2630 commands button still has a quick-select; either way the pick "
                             "survives a restart.",
                         )
+                        yield self._section_header("theme-custom")
                         yield Static("CREATE / EDIT A CUSTOM THEME", classes="set-subhead")
                         yield Static(
                             "Fields are prefilled from the CURRENT theme, so start by "
@@ -791,11 +1131,13 @@ class SettingsBody(Widget):
                             "Leave the name empty to save settings without creating.",
                             classes="set-help",
                         )
+                        yield self._section_header("theme-tokens")
                         yield from self._custom_theme_rows()
 
                 with TabPane("Interface", id="tab-interface"):
                     with VerticalScroll(classes="set-scroll"):
 
+                        yield self._section_header("interface-transcript")
                         yield from self._switch_row(
                             "show_thinking", "Show thinking blocks",
                             "Render the model's reasoning trace in the transcript.",
@@ -809,6 +1151,11 @@ class SettingsBody(Widget):
                             "show_stop_time", "Show local completion time",
                             "Append the local 12-hour wall-clock time to the turn stop line.",
                         )
+                        yield from self._switch_row(
+                            "autoscroll", "Follow output",
+                            "Keep the log pinned to the newest message while streaming.",
+                        )
+                        yield self._section_header("interface-dialogs")
                         yield from self._select_row(
                             "dialog_style", "Dialog style", DIALOG_STYLE_CHOICES,
                             "Sidebar dialogs CARVE space out of the layout instead of "
@@ -833,10 +1180,7 @@ class SettingsBody(Widget):
                             "viewer as real pixels. OFF still attaches the image to "
                             "the model — this only toggles the automatic preview.",
                         )
-                        yield from self._switch_row(
-                            "autoscroll", "Follow output",
-                            "Keep the log pinned to the newest message while streaming.",
-                        )
+                        yield self._section_header("interface-footer")
                         yield Static("FOOTER", classes="set-subhead")
                         yield from self._switch_row(
                             "footer_show_seat", "Agent name",
@@ -1155,11 +1499,18 @@ class SettingsBody(Widget):
             new = self._collect()
         except ValueError as e:
             self.query_one("#set-error", Static).update(f"[b]Cannot save[/b] — {e}")
+            field_name = str(e).split(":", 1)[0].strip()
+            if field_name:
+                try:
+                    self.query_one(f"#f-{field_name}").focus()
+                except Exception:
+                    pass
             return
+        self._draft.replace_working(new)
         close_dialog(self, new)
 
     def action_cancel(self) -> None:
-        close_dialog(self, None)
+        self.request_cancel()
 
     @on(Button.Pressed, "#set-save")
     def _save(self) -> None:
@@ -1171,7 +1522,14 @@ class SettingsBody(Widget):
 
     @on(Button.Pressed, "#set-defaults")
     def _defaults(self) -> None:
-        close_dialog(self, Settings())
+        self.app.push_screen(
+            SettingsExitConfirm(restore=True), self._on_restore_answer
+        )
+
+    def _on_restore_answer(self, answer: str | None) -> None:
+        if answer == "restore":
+            self._draft.replace_working(Settings())
+            close_dialog(self, Settings())
 
     # ── Voice tab ─────────────────────────────────────────────────────────────
     #: True only between the Capture button and the next keypress, so on_key
@@ -1285,4 +1643,4 @@ class SettingsScreen(ModalScreen[Settings | None]):
         self.query_one(SettingsBody).action_save()
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.query_one(SettingsBody).request_cancel()
