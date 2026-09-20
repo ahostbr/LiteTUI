@@ -138,7 +138,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",
         "Reply playback, voice choice, and the install/test path.",
-        ("tts_enabled", "tts_engine", "tts_voice", "tts_edge_voice"), scope="device", keywords=("speak", "TTS", "voice", "Microsoft", "offline"),
+        ("tts_enabled", "tts_engine", "tts_voice", "tts_timeout", "tts_edge_voice"), scope="device", keywords=("speak", "TTS", "voice", "Microsoft", "offline", "timeout"),
     ),
     _section(
         "voice", "Voice", "voice-dictate", "Dictate / STT in",

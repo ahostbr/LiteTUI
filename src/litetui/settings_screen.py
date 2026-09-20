@@ -242,6 +242,13 @@ def _num_or_none(raw: str, cast) -> Any:
     return cast(raw)
 
 
+def _validate_tts_timeout(value: int) -> None:
+    """Reject a disabled TTS timeout before it reaches the voice runtime."""
+
+    if value < 1:
+        raise ValueError("tts_timeout: must be at least 1 second")
+
+
 #: Declared once and installed on both the body and its screen; see
 #: `scheduler_ui._CAL_KEYS`. `escape` is on the screen only — `SidePanel`
 #: already binds it to cancel the dialog.
@@ -798,8 +805,8 @@ class SettingsBody(Widget):
                                     classes="set-label")
                         yield from self._switch_row(
                             "tts_enabled", "Speak replies aloud (TTS)",
-                            "Off by default. This switch is the ONLY speak on/off "
-                            "— the footer button is the mic, not speak.")
+                            "Default for spoken replies. The input Speak toggle can "
+                            "override this for an individual turn.")
                         yield from self._select_row(
                             "tts_engine", "TTS engine",
                             [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
@@ -813,6 +820,13 @@ class SettingsBody(Widget):
                             + [(v, v) for v in voice_backend.list_sapi_voices()],
                             "The Windows voice pyttsx3 speaks with. Add more in "
                             "Windows Settings > Time & language > Speech.")
+                        # OpenBolt owns the Settings field; keep this UI
+                        # checkpoint importable before that field lands.
+                        if hasattr(self._start, "tts_timeout"):
+                            yield from self._text_row(
+                                "tts_timeout", "TTS timeout (seconds)",
+                                "Maximum time a speech request may run before it is stopped.",
+                                placeholder="300")
                         yield from self._text_row(
                             "tts_edge_voice", "edge voice",
                             "The edge-tts voice id used when the engine is 'edge'.",
@@ -1456,6 +1470,8 @@ class SettingsBody(Widget):
             raise ValueError("llama_models_max: 0 means unlimited; below that is nothing")
         if out.lms_load_timeout_s < 30:
             raise ValueError("lms_load_timeout_s: under 30s no large model can load")
+        if hasattr(out, "tts_timeout"):
+            _validate_tts_timeout(out.tts_timeout)
 
         # The theme creator: a non-empty name mints (or overwrites) a custom
         # theme from the ct-* fields and SELECTS it, so Ctrl+S gives instant
