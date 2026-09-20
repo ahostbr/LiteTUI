@@ -586,3 +586,24 @@ async def test_actual_stream_cleanup_failure_still_interrupts_and_clears_turn(mo
     assert transport.turn_id is None
     assert any(method == 'turn/interrupt' for method, params in server.requests)
     assert any('injected question cleanup failure' in error for error in server.session.cleanup_errors)
+
+@pytest.mark.asyncio
+async def test_stream_disconnect_preserves_original_error_despite_cleanup_failure(monkeypatch):
+    from litetui.codex_question_requests import QuestionRequests
+    server = Server()
+    server.finish = False
+    server.session = NS(cleanup_errors=[])
+    transport = AppServerTransport(server)
+    stream = await transport.create(model='gpt-6-astra', messages=[{'role':'user','content':'hi'}], stream=True)
+    iterator = stream.__aiter__()
+    await anext(iterator)
+    while not server.events.empty(): server.events.get_nowait()
+    original = RuntimeError('reader disconnected fixture')
+    await server.events.put(original)
+    async def failed_close(self): raise RuntimeError('secondary cleanup failure')
+    monkeypatch.setattr(QuestionRequests, 'close', failed_close)
+    with pytest.raises(RuntimeError, match='reader disconnected fixture') as caught:
+        async for _ in iterator: pass
+    assert caught.value is original
+    assert transport.turn_id is None
+    assert any('secondary cleanup failure' in error for error in server.session.cleanup_errors)
