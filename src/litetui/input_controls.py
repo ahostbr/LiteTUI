@@ -32,6 +32,12 @@ class PromptBox(Container):
     PromptBox #scroll-lock:hover, PromptBox #prompt-actions > Static:hover { background: $primary 40%; }
     '''
 
+    def on_mount(self):
+        # App CSS takes precedence over widget defaults.
+        self.query_one('#message-input').styles.margin = 0
+        for button in self.query('#prompt-actions > Static'):
+            button.styles.padding = 0
+
     def on_resize(self):
         self.query_one('#scroll-lock').styles.offset = (max(0, self.size.width - 6), 0)
         self.query_one('#prompt-actions').styles.offset = (max(0, self.size.width - 29), 4)

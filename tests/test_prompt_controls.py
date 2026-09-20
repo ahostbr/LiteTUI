@@ -140,3 +140,33 @@ def test_long_speech_uses_file_not_windows_command_line(monkeypatch):
     assert 'hello ' * 9999 in captured['script']
     assert captured['timeout'] == 450
     assert not Path(captured['args'][1]).exists()
+
+@pytest.mark.asyncio
+async def test_actual_app_prompt_controls(tmp_path, monkeypatch):
+    from litetui.app import LiteTUI
+    from litetui import plugins, hook_host
+    from litetui.widgets import ContextFooter, MicButton, PauseButton
+    monkeypatch.setenv('LITETUI_DATA_ROOT', str(tmp_path))
+    monkeypatch.setenv('LITETUI_DISABLE_UPDATE_CHECK', '1')
+    monkeypatch.setenv('LITETUI_HOOKS', 'off')
+    monkeypatch.setattr(LiteTUI, '_connect', lambda self: None)
+    monkeypatch.setattr(LiteTUI, '_mcp_connect', lambda self: None)
+    monkeypatch.setattr(plugins, 'activate_plugins', lambda *args: None)
+    monkeypatch.setattr(hook_host, 'queue_lifecycle', lambda *args: None)
+    app = LiteTUI()
+    async with app.run_test(size=(120, 35)) as pilot:
+        await pilot.pause(0.2)
+        assert len(app.query(MicButton)) == 1
+        assert len(app.query(PauseButton)) == 1
+        footer = app.query_one(ContextFooter)
+        assert not list(footer.query(MicButton))
+        assert not list(footer.query(PauseButton))
+        box = app.query_one('#message-input').region
+        assert app.query_one('#scroll-lock').region.y == box.y
+        assert app.query_one('#prompt-actions').region.y == box.bottom - 1
+        initial = app.settings.autoscroll
+        assert await pilot.click('#scroll-lock')
+        assert app.settings.autoscroll is not initial
+        assert await pilot.click('.pause-button')
+        assert app.paused
+        app.save_screenshot('actual-app-prompt-controls.svg', path='C:/Projects/LiteTUI/artifacts')
