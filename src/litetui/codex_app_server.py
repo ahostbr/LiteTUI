@@ -28,6 +28,7 @@ class AppServer:
         self.native_bridge = None
         self.async_questions = None
         self.process = None
+        self.initialized = False
         self.reader = None
         self.pending = {}
         self.events = asyncio.Queue()
@@ -42,7 +43,9 @@ class AppServer:
                 await self.closer
                 self.closer = None
             if self.process and self.process.returncode is None:
-                return
+                if self.initialized and self.reader and not self.reader.done():
+                    return
+                raise ProviderError('Codex process is alive but disconnected or uninitialized; shut down before reconnecting.')
             if self.reader:
                 await self.reader
             # Follow PATH in exactly the same order as the CLI command. Looking
@@ -91,18 +94,35 @@ class AppServer:
                 ),
             )
             self.reader = asyncio.create_task(self._read())
-            await self.request(
-                "initialize",
-                {
-                    "clientInfo": {
-                        "name": "litetui",
-                        "title": "LiteTUI",
-                        "version": "1",
+            try:
+                await self.request(
+                    "initialize",
+                    {
+                        "clientInfo": {
+                            "name": "litetui",
+                            "title": "LiteTUI",
+                            "version": "1",
+                        },
+                        "capabilities": {"experimentalApi": True},
                     },
-                    "capabilities": {"experimentalApi": True},
-                },
-            )
-            await self.send({"method": "initialized", "params": {}})
+                )
+                await self.send({"method": "initialized", "params": {}})
+                self.initialized = True
+            except BaseException:
+                self.initialized = False
+                # Cleanup must not replace the initialization/cancellation error.
+                try:
+                    self.process.stdin.close()
+                    await asyncio.wait_for(self._close_process(self.process), 10)
+                except BaseException:
+                    pass
+                if self.reader and not self.reader.done():
+                    self.reader.cancel()
+                    try:
+                        await self.reader
+                    except BaseException:
+                        pass
+                raise
 
     async def send(self, message):
         if not self.process or self.process.returncode is not None:
@@ -150,6 +170,7 @@ class AppServer:
         except (OSError, ValueError):
             pass
         finally:
+            self.initialized = False
             self.runtime_activity.disconnected()
             if self.async_questions:
                 self.async_questions.cancel()
@@ -162,6 +183,7 @@ class AppServer:
             await self.events.put(error)
 
     def shutdown(self):
+        self.initialized = False
         if self.async_questions:
             self.async_questions.cancel()
         if self.native_bridge:
@@ -240,6 +262,7 @@ class AppServerTransport:
         self.turn_id = None
         self.lock = asyncio.Lock()
         self.process = None
+        self.initialized = False
 
     async def create(self, *, purpose: str = "turn", **kwargs):
         """`purpose` names what the call is for and never reaches the

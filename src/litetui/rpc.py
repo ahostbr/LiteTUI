@@ -222,21 +222,21 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
                      error="approve needs `approval_id` (or `id`) naming the request "
                            "it answers")
             return
-        if "allow" not in cmd:
+        if type(cmd.get("allow")) is not bool or type(cmd.get("remember", False)) is not bool:
             # NOT defaulted. A missing `allow` could only be guessed, and
             # both guesses are wrong: defaulting to deny ends someone's turn
             # on a malformed message, defaulting to allow runs a tool nobody
             # approved.
             _respond(cmd_id, ok=False,
-                     error="approve needs `allow`: true or false")
+                     error="approve needs boolean `allow` and optional boolean `remember`")
             return
         ok = approval_mod.resolve_over_rpc(
-            app, approval_id, bool(cmd.get("allow")),
-            bool(cmd.get("remember", False)),
+            app, approval_id, cmd["allow"],
+            cmd.get("remember", False),
         )
         if ok:
             _respond(cmd_id, ok=True,
-                     result={"approved": approval_id, "allow": bool(cmd.get("allow")),
+                     result={"approved": approval_id, "allow": cmd["allow"],
                              "id_key": id_key})
         else:
             _respond(
