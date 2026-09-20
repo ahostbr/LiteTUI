@@ -567,3 +567,20 @@ async def test_compaction_cleanup_retains_no_stale_turn():
     await transport.compact()
     assert transport.turn_id is None
     assert server.session.cleanup_errors == []
+
+@pytest.mark.asyncio
+async def test_actual_stream_cleanup_failure_still_interrupts_and_clears_turn(monkeypatch):
+    from litetui.codex_question_requests import QuestionRequests
+    server = Server()
+    server.finish = False
+    server.session = NS(cleanup_errors=[])
+    transport = AppServerTransport(server)
+    stream = await transport.create(model='gpt-6-astra', messages=[{'role':'user','content':'hi'}], stream=True)
+    await anext(stream.__aiter__())
+    async def failed_close(self):
+        raise RuntimeError('injected question cleanup failure')
+    monkeypatch.setattr(QuestionRequests, 'close', failed_close)
+    await asyncio.wait_for(stream.close(), 2)
+    assert transport.turn_id is None
+    assert any(method == 'turn/interrupt' for method, params in server.requests)
+    assert any('injected question cleanup failure' in error for error in server.session.cleanup_errors)
