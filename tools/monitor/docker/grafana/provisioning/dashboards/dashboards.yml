@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning — watches a folder of .json dashboards and
+# loads them automatically. The folder is mounted from ./docker/grafana/dashboards
+# by the compose file; drop a .json there and it appears in Grafana on the next
+# refresh (30s) or restart.
+apiVersion: 1
+
+providers:
+  - name: browser-monitor
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

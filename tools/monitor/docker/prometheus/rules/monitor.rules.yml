@@ -1,0 +1,45 @@
+# Alert rules for the browser monitor.
+#
+# These are the four signals the engine emits (see src/litetui/monitor/engine.py
+# for the metric names and HELP text). For the POC they are evaluated by
+# Prometheus and visible under the Prometheus UI -> "Alerts" tab; wiring them
+# to a pager is a one-line Alertmanager add (see prometheus.yml).
+
+groups:
+  - name: browser-monitor
+    rules:
+      - alert: MonitorTargetDown
+        expr: browser_monitor_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Monitored target {{ $labels.name }} is down"
+          description: "browser_monitor_up has been 0 for {{ $labels.name }} for over 2 minutes (last error recorded by the sweep)."
+
+      - alert: MonitorSlowLoad
+        expr: browser_monitor_load_seconds > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Monitored target {{ $labels.name }} is loading slowly"
+          description: "Page load time for {{ $labels.name }} has exceeded 5s for over 5 minutes."
+
+      - alert: MonitorExpectationMissing
+        expr: browser_monitor_up == 1 and browser_monitor_expect_met == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Target {{ $labels.name }} loaded but is missing expected content"
+          description: "The page is up but the configured expect_text has not been present for over 10 minutes — a silent content regression."
+
+      - alert: MonitorVisualRegression
+        expr: browser_monitor_changed == 1
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "Visual regression on {{ $labels.name }}"
+          description: "The screenshot for {{ $labels.name }} differs from its stored baseline. Open the shots/ folder to inspect."

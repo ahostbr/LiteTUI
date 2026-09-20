@@ -1,0 +1,20 @@
+{
+  "targets": [
+    {
+      "name": "example",
+      "url": "https://example.com",
+      "expect_text": "Example Domain",
+      "screenshot": true
+    },
+    {
+      "name": "grafana",
+      "url": "https://grafana.com",
+      "screenshot": true
+    },
+    {
+      "name": "httpbin",
+      "url": "https://httpbin.org/html",
+      "screenshot": true
+    }
+  ]
+}

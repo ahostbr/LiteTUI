@@ -43,6 +43,10 @@ dependencies = [
 # The heavy path still lands on litetui.app.LiteTUI().run(), as before. It resolves
 # once the package actually builds — which is what [build-system] above provides.
 litetui = "litetui.cli:main"
+# Browser-monitor CLI (src/litetui/monitor/cli.py). Named `litetui-monitor`
+# rather than a bare `monitor` to avoid shadowing system tools; `litetui-monitor
+# demo` is the no-browser POC entry, `litetui-monitor run` does a real sweep.
+litetui-monitor = "litetui.monitor.cli:main"
 
 [dependency-groups]
 # The tooling the gates need, declared rather than assumed present. The project
