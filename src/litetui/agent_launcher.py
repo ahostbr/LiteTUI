@@ -76,3 +76,15 @@ def validate_handshake(spec, event, *, child_id, conversation_id, token, workspa
     if not isinstance(event.get('process_created'), str) or not event['process_created']:
         raise LaunchBlocked('Child process creation identity missing')
     return True
+
+
+def validate_capabilities(spec, supported_levels):
+    """Require caller-probed metadata for an explicit thinking selection."""
+    requested = spec.reasoning_effort if spec.reasoning_effort is not None else spec.thinking_level
+    if requested is None:
+        return True
+    if (not isinstance(supported_levels, (list, tuple))
+            or any(not isinstance(level, str) for level in supported_levels)
+            or requested not in supported_levels):
+        raise LaunchBlocked('Requested thinking selection is not supported by measured provider capabilities')
+    return True

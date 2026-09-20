@@ -50,3 +50,18 @@ def test_handshake_checks_nonce_and_actual_effective_configuration():
                          ('tool_profile', 'scheduled'), ('status', 'connecting')]:
         with pytest.raises(LaunchBlocked):
             validate_handshake(spec, {**event, field: value}, **expected)
+
+
+def test_requested_thinking_requires_measured_provider_capability():
+    from litetui.agent_launcher import validate_request, validate_capabilities, LaunchBlocked
+    spec = validate_request(request(reasoning_effort='high'), parent_profile='autonomous', depth=0)
+    for levels in (None, [], ['low']):
+        with pytest.raises(LaunchBlocked, match='thinking'):
+            validate_capabilities(spec, levels)
+    assert validate_capabilities(spec, ['low', 'high']) is True
+
+
+def test_default_thinking_does_not_invent_provider_capabilities():
+    from litetui.agent_launcher import validate_request, validate_capabilities
+    spec = validate_request(request(), parent_profile='autonomous', depth=0)
+    assert validate_capabilities(spec, None) is True
