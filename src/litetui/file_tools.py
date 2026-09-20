@@ -124,6 +124,19 @@ def tool_grep(args: dict) -> str:
 
 
 def tool_edit(args: dict) -> str:
+    """Serialize cooperating read-check-replace transactions on a stable sibling."""
+    from litetui.shared_state import coordinated_write
+    raw = args.get('path') or ''
+    if not raw:
+        return "[error] missing 'path'"
+    try:
+        with coordinated_write(_resolve_path(raw)):
+            return _edit_locked(args)
+    except OSError as exc:
+        return f'[error] edit could not acquire or commit file transaction: {exc}'
+
+
+def _edit_locked(args: dict) -> str:
     raw = args.get("path") or ""
     if not raw:
         return "[error] missing 'path'"

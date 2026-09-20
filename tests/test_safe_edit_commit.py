@@ -53,3 +53,21 @@ def test_cancellation_cleans_temp_without_swallowing_interrupt(tmp_path, monkeyp
         file_tools.tool_edit({'path': str(target), 'old_string': 'old', 'new_string': 'new'})
     assert target.read_text(encoding='utf-8') == 'old'
     assert not list(tmp_path.glob('.*.edit-*.tmp'))
+
+
+def test_edit_holds_coordinator_during_replace(tmp_path, monkeypatch):
+    import pytest
+    from litetui.shared_state import Lease, OwnershipError
+    target = tmp_path / 'target.txt'
+    target.write_text('old', encoding='utf-8')
+    file_state.record_read(target)
+    real_replace = file_tools.os.replace
+    def checked_replace(source, destination):
+        with pytest.raises(OwnershipError):
+            with Lease(str(target) + '.lock'):
+                pass
+        return real_replace(source, destination)
+    monkeypatch.setattr(file_tools.os, 'replace', checked_replace)
+    assert file_tools.tool_edit({'path': str(target), 'old_string': 'old', 'new_string': 'new'}).startswith('Edited')
+    with Lease(str(target) + '.lock'):
+        assert target.read_text(encoding='utf-8') == 'new'
