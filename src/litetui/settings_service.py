@@ -140,7 +140,9 @@ class SettingsService:
             destination = 'conversation' if spec.scope == SettingScope.CONVERSATION else 'global'
             groups.setdefault(destination, []).append(change)
         results = []
-        for destination, patch in groups.items():
+        # Materialize conversation before our own global patch changes its birth revision.
+        for destination in sorted(groups, key=lambda key: key != 'conversation'):
+            patch = groups[destination]
             path = paths[destination]
             keys = tuple(c.key for c in patch)
             scopes = {c.scope for c in patch}
@@ -153,10 +155,23 @@ class SettingsService:
                     if destination == 'conversation':
                         # Materialize all inherited defaults on first scoped write.
                         if not raw:
-                            raw = asdict(cs.born_from(self.snapshot(conversation_id).saved))
+                            with coordinated_write(paths['global']):
+                                inherited = self.snapshot(conversation_id)
+                                if inherited.revisions['global'] != expected_revisions.get('global'):
+                                    raise ValueError('Stale global revision during conversation creation')
+                                raw = asdict(cs.born_from(inherited.saved))
                         execution = raw.setdefault('execution', {})
                         if not isinstance(execution, dict):
                             raise ValueError('Invalid conversation execution snapshot')
+                        execution_keys = {k for k, spec in SETTING_SPECS.items()
+                                          if spec.scope == SettingScope.CONVERSATION}
+                        if execution_keys - execution.keys():
+                            with coordinated_write(paths['global']):
+                                inherited = self.snapshot(conversation_id)
+                                if inherited.revisions['global'] != expected_revisions.get('global'):
+                                    raise ValueError('Stale global revision during legacy materialization')
+                                for key in execution_keys - execution.keys():
+                                    execution[key] = deepcopy(getattr(inherited.saved, key))
                         aliases = {v: k for k, v in cs.BORN_FROM.items()}
                         for change in patch:
                             execution[change.key] = deepcopy(change.value)

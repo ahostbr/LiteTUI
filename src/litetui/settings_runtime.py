@@ -68,6 +68,16 @@ def apply_saved_result(app, requested, result):
         for key in outcome.fields:
             spec = SETTING_SPECS[key]
             want, before = deepcopy(getattr(requested, key)), deepcopy(getattr(effective, key))
+            env = st.source_of(key)
+            if env:
+                import os
+                actual = st._coerce(key, os.environ[env], before)
+                setattr(effective, key, actual)
+                statuses.append(RuntimeSettingStatus(key, spec.scope.value,
+                                'pending' if actual != want else 'applied',
+                                'restart' if actual != want else 'none', want, actual,
+                                f'Environment {env} overrides saved preference' if actual != want else None))
+                continue
             action = spec.apply_timing
             if action in ('restart', 'reconnect', 'reload') and want != before:
                 statuses.append(RuntimeSettingStatus(key, spec.scope.value, 'pending', action,
@@ -95,3 +105,29 @@ def apply_saved_result(app, requested, result):
     combined = SettingsSaveResult(result.persistence, tuple(statuses))
     app._settings_save_result = combined
     return combined
+
+
+def prepare_reconnect(app):
+    """Adopt saved reconnect-time configuration, not engine-restart settings."""
+    if getattr(app, 'convo_dir', None) is None:
+        return
+    from copy import deepcopy
+    snapshot = service_for(app).snapshot(app.convo_dir.name)
+    target = deepcopy(app.settings)
+    for key, spec in SETTING_SPECS.items():
+        if spec.apply_timing == 'reconnect':
+            setattr(target, key, deepcopy(getattr(snapshot.effective, key)))
+    backend = getattr(app, 'backend', None)
+    if backend is not None and (getattr(backend, 'name', None) != target.backend
+                               or app.settings.codex_native_engine != target.codex_native_engine):
+        from litetui.llm_backend import make_backend
+        replacement = make_backend(target)
+        if hasattr(backend, 'app_server'):
+            backend.shutdown()
+        app.backend = replacement
+        app.available_models = []
+        app._model_id = ''
+    elif backend is not None and hasattr(backend, 'set_settings'):
+        backend.set_settings(target)
+    app.settings = target
+    object.__setattr__(target, '_baseline', asdict(target))

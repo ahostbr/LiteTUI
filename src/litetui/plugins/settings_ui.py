@@ -58,11 +58,21 @@ def _cmd_settings(app, name: str, arg: str) -> None:
     # Read here, with the model list, so both factories get one consistent
     # answer — the same reason `models` is read once above.
     loaded, remote = model_residency.resident_models(app)
+    bindings = {}
+    if getattr(app, 'convo_dir', None) is not None:
+        from litetui import settings_runtime
+        service = settings_runtime.service_for(app)
+        conversation_id = app.convo_dir.name
+        bindings = {
+            'snapshot_provider': lambda: service.snapshot(conversation_id),
+            'save_patch': lambda changes, revisions: service.save_patch(conversation_id, changes, revisions),
+            'runtime_apply': lambda requested, result: settings_runtime.apply_saved_result(app, requested, result),
+        }
     present_dialog(
         app,
-        partial(SettingsBody, app.settings, models, servers, sorted(loaded), remote),
-        partial(SettingsScreen, app.settings, models, servers, sorted(loaded), remote),
-        app._on_settings_saved,
+        partial(SettingsBody, app.settings, models, servers, sorted(loaded), remote, **bindings),
+        partial(SettingsScreen, app.settings, models, servers, sorted(loaded), remote, **bindings),
+        (lambda result: None) if bindings else app._on_settings_saved,
     )
 
 

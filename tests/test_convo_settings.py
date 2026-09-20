@@ -771,3 +771,12 @@ async def test_cli_model_selection_is_not_a_persisted_choice(tmp_path):
     await app_mod.LiteTUI._apply_cli_args.__wrapped__(a)
     assert a.model_id == 'invoked'
     assert cs_mod.load(d).model == 'remembered'
+
+
+def test_legacy_save_preserves_unknown_additive_metadata(tmp_path):
+    d = _dir(tmp_path)
+    cs_mod.path_for(d).write_text('{"model":"a","future_metadata":{"keep":true}}', encoding='utf-8')
+    record = cs_mod.load(d)
+    record.model = 'b'
+    cs_mod.save(d, record)
+    assert json.loads(cs_mod.path_for(d).read_text(encoding='utf-8'))['future_metadata'] == {'keep': True}

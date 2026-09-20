@@ -142,13 +142,28 @@ def save(convo_dir: Path, cs: ConvoSettings) -> Path:
     syscalls would see a conversation quietly revert to the global model rather
     than an error anybody could act on.
     """
+    from litetui.shared_state import coordinated_write
+    with coordinated_write(path_for(convo_dir)):
+        return _save_locked(convo_dir, cs)
+
+
+def _save_locked(convo_dir: Path, cs: ConvoSettings) -> Path:
     d = Path(convo_dir)
     d.mkdir(parents=True, exist_ok=True)
     p = path_for(d)
+    payload = {}
+    if p.exists():
+        try:
+            existing = json.loads(p.read_text(encoding='utf-8'))
+            if isinstance(existing, dict):
+                payload.update(existing)
+        except (OSError, ValueError):
+            pass
+    payload.update(asdict(cs))
     fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".settings-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(asdict(cs), indent=2, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
         os.replace(tmp, p)
     except OSError:
         try:

@@ -179,6 +179,10 @@ def _cmd_model(app, name: str, arg: str) -> None:
 
 
 def _cmd_reconnect(app, name: str, arg: str) -> None:
+    if getattr(app, '_chat_running', lambda: False)():
+        app.system_message('Finish or stop the current turn before reconnecting.')
+        return
+    settings_runtime.prepare_reconnect(app)
     app.connect()
 
 

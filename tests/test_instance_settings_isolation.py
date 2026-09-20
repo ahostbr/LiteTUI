@@ -191,3 +191,35 @@ def test_service_cannot_persist_invalid_backend_name(tmp_path):
     svc = SettingsService(tmp_path)
     with pytest.raises(ValueError, match='backend'):
         svc.save_patch('a', [SettingChange('backend', 'invented', 'conversation')], svc.snapshot('a').revisions)
+
+
+def test_partial_global_write_cannot_materialize_new_conversation_from_stale_defaults(tmp_path):
+    from litetui.settings_service import SettingsService, SettingChange
+    svc = SettingsService(tmp_path)
+    baseline = svc.snapshot('a')
+    st.save(st.Settings(backend='codex'), tmp_path)
+    result = svc.save_patch('a', [SettingChange('temperature', 0.2, 'conversation')], baseline.revisions)
+    assert not result.fully_saved
+    assert 'revision' in result.persistence[0].error.lower()
+    assert not cs.path_for(tmp_path / '.convos' / 'a').exists()
+
+
+def test_mixed_patch_creation_independent_of_change_order(tmp_path):
+    from litetui.settings_service import SettingsService, SettingChange
+    svc = SettingsService(tmp_path)
+    snap = svc.snapshot('a')
+    result = svc.save_patch('a', [SettingChange('theme_name', 'monokai', 'device'),
+                                 SettingChange('temperature', 0.2, 'conversation')], snap.revisions)
+    assert result.fully_saved
+
+
+def test_legacy_missing_execution_fields_materialize_on_scoped_write(tmp_path):
+    from litetui.settings_service import SettingsService, SettingChange
+    svc = SettingsService(tmp_path)
+    d = tmp_path / '.convos' / 'a'
+    d.mkdir(parents=True)
+    cs.save(d, cs.ConvoSettings(backend='codex'))
+    snap = svc.snapshot('a')
+    assert svc.save_patch('a', [SettingChange('temperature', 0.2, 'conversation')], snap.revisions).fully_saved
+    st.save(st.Settings(ninfer_host='http://changed:49260'), tmp_path)
+    assert svc.snapshot('a').saved.ninfer_host == snap.saved.ninfer_host
