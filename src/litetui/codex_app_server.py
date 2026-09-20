@@ -318,7 +318,15 @@ class AppServerTransport:
                 return 0
             return await reconcile(self.app, thread)
 
-    async def compact(self):
+    async def compact(self, *, timeout=120):
+        try:
+            await asyncio.wait_for(self._compact(), timeout)
+        except TimeoutError as exc:
+            raise ProviderError(
+                'Codex compaction timed out; the local transcript was preserved. Reconnect before retrying.'
+            ) from exc
+
+    async def _compact(self):
         async with self.lock:
             reference = next(
                 (
@@ -339,6 +347,20 @@ class AppServerTransport:
                 if opened.get("thread", {}).get("id") != reference:
                     raise ProviderError("Codex resumed a different thread than requested.")
                 self.thread_id, self.process = reference, self.server.process
+            # Events already queued before dispatch cannot belong to this
+            # operation. Preserve server requests rather than silently losing
+            # approvals; refuse compaction until that pending work is resolved.
+            queued = []
+            while not self.server.events.empty():
+                queued.append(self.server.events.get_nowait())
+            for event in queued:
+                if isinstance(event, Exception):
+                    raise event
+            requests = [event for event in queued if "id" in event and "method" in event]
+            if requests:
+                for event in queued:
+                    self.server.events.put_nowait(event)
+                raise ProviderError('Codex has pending server requests; resolve them before compacting.')
             await self.server.request("thread/compact/start", {"threadId": reference})
             finished = False
             compaction_turn = None
@@ -422,6 +444,11 @@ class AppServerTransport:
                             and self.turn_id):
                         compaction_turn = self.turn_id
                     if event.get("method") == "turn/completed":
+                        completed_turn = payload.get("turn", {})
+                        if (self.turn_id and completed_turn.get("id") == self.turn_id
+                                and completed_turn.get("status") in ("failed", "interrupted")):
+                            finished = True
+                            raise ProviderError('Codex compaction did not complete; the local transcript was preserved.')
                         if (not compaction_turn or
                                 payload.get("turn", {}).get("id") != compaction_turn):
                             continue

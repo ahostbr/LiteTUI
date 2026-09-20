@@ -655,3 +655,69 @@ async def test_compaction_ignores_unrelated_completion():
     await asyncio.wait_for(transport.compact(), 2)
     assert transport.turn_id is None
     assert server.events.empty()
+
+@pytest.mark.asyncio
+async def test_compaction_stale_full_lifecycle_cannot_finish_new_operation():
+    server = Server()
+    for method, extra in [('turn/started', {'turn': {'id': 'stale'}}),
+                          ('item/started', {'turnId': 'stale', 'item': {'type': 'contextCompaction'}}),
+                          ('turn/completed', {'turn': {'id': 'stale', 'status': 'completed'}})]:
+        await server.events.put({'method': method, 'params': {'threadId': 'thread-1', **extra}})
+    app = NS(conversation=[{'provider_metadata': {'app_server_thread_id': 'thread-1'}}])
+    await AppServerTransport(server, app).compact()
+    assert server.events.empty(), 'returned on stale lifecycle instead of current compaction'
+
+
+@pytest.mark.asyncio
+async def test_missing_compaction_events_fail_bounded_and_release_lock():
+    from litetui.model_transport import ProviderError
+    server = Server()
+    original = server.request
+    async def missing(method, params):
+        if method == 'thread/compact/start':
+            await server.events.put({'method': 'turn/started', 'params': {
+                'threadId': 'thread-1', 'turn': {'id': 'missing'}}})
+            return {}
+        return await original(method, params)
+    server.request = missing
+    app = NS(conversation=[{'content': 'preserved', 'provider_metadata': {'app_server_thread_id': 'thread-1'}}])
+    transport = AppServerTransport(server, app)
+    with pytest.raises(ProviderError, match='timed out'):
+        await transport.compact(timeout=0.03)
+    assert not transport.lock.locked()
+    assert transport.turn_id is None
+    assert app.conversation[0]['content'] == 'preserved'
+    assert ('turn/interrupt', {'threadId': 'thread-1', 'turnId': 'missing'}) in server.requests
+
+@pytest.mark.asyncio
+async def test_compaction_failure_before_item_is_reported_without_timeout():
+    from litetui.model_transport import ProviderError
+    server = Server()
+    original = server.request
+    async def failed(method, params):
+        if method == 'thread/compact/start':
+            for event, status in [('turn/started', 'inProgress'), ('turn/completed', 'failed')]:
+                await server.events.put({'method': event, 'params': {
+                    'threadId': 'thread-1', 'turn': {'id': 'failed-turn', 'status': status}}})
+            return {}
+        return await original(method, params)
+    server.request = failed
+    transport = AppServerTransport(server, NS(conversation=[{
+        'provider_metadata': {'app_server_thread_id': 'thread-1'}}]))
+    with pytest.raises(ProviderError, match='did not complete'):
+        await transport.compact(timeout=1)
+    assert transport.turn_id is None
+
+
+@pytest.mark.asyncio
+async def test_compaction_preserves_pending_approval_and_does_not_dispatch():
+    from litetui.model_transport import ProviderError
+    server = Server()
+    pending = {'id': 99, 'method': 'item/commandExecution/requestApproval', 'params': {}}
+    await server.events.put(pending)
+    transport = AppServerTransport(server, NS(conversation=[{
+        'provider_metadata': {'app_server_thread_id': 'thread-1'}}]))
+    with pytest.raises(ProviderError, match='pending server requests'):
+        await transport.compact()
+    assert server.events.get_nowait() == pending
+    assert not any(method == 'thread/compact/start' for method, _ in server.requests)
