@@ -421,3 +421,46 @@ class ConversationRepository:
             **({"agent_name": seat_name} if seat_name is not None else {}),
             **({"agent_id": seat_id} if seat_id is not None else {}),
         })
+
+    def commit_child_message(self, completion_id: str, message: dict) -> bool:
+        """Append one idempotent receipt message and fsync before acceptance.
+
+        Unlike ordinary best-effort display logging, receipt transfer must
+        propagate persistence failures. Metadata stays outside API messages.
+        The caller must hold this conversation's lease and serialize live turns.
+        """
+        import os
+        from litetui.agent_inbox import _identity
+        _identity(completion_id)
+        if (not self.owned or self.pending or self.loading or self.convo_path is None
+                or not self.convo_path.is_file()):
+            raise ValueError('Child receipt requires an owned materialized conversation')
+        if not isinstance(message, dict) or message.get('role') != 'user' or not isinstance(message.get('content'), str):
+            raise ValueError('Child receipt must be a user text message')
+        record = {'type': 'msg', 'ts': time.time(), 'completion_id': completion_id, 'message': message}
+        payload = (json.dumps(record, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
+        from litetui.shared_state import coordinated_write
+        with coordinated_write(self.convo_path):
+            with self.convo_path.open('r+b') as stream:
+                for line in stream:
+                    try:
+                        prior = json.loads(line)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if isinstance(prior, dict) and prior.get('completion_id') == completion_id:
+                        if prior.get('message') != message:
+                            raise ValueError('Child receipt history conflict')
+                        # A previous fsync may have failed after a complete write.
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                        return True
+                stream.seek(0, 2)
+                if stream.tell():
+                    stream.seek(-1, 2)
+                    if stream.read(1) != b'\n':
+                        payload = b'\n' + payload
+                stream.seek(0, 2)
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+        return True
