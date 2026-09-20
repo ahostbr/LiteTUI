@@ -1974,6 +1974,13 @@ class LiteTUI(App):
         reorders `_shutdown`, that arm goes red rather than this silently
         becoming a no-op.
         """
+        self._gui_quitting = True
+        delivery = getattr(self, '_child_delivery_timer', None)
+        if delivery is not None:
+            delivery.stop()
+        operations = getattr(self, '_agent_operations', None)
+        if operations is not None:
+            await operations.close()
         await self._settle_before_teardown()
         if getattr(getattr(self, "backend", None), "name", None) == "codex":
             if hasattr(self.backend, "app_server"):
