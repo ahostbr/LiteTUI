@@ -1907,6 +1907,8 @@ class LiteTUI(App):
         await super()._shutdown()
 
     async def on_unmount(self) -> None:
+        from litetui import voice_backend
+        voice_backend.stop()
         self._hook_shutting_down = True
         hook_host.leave_conversation(self)
         hook_host.queue_lifecycle(self, "app_shutdown")
