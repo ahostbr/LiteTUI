@@ -8,7 +8,7 @@ Litetui plugins : <root>\src\litetui\plugins
 
 finished docs goto : "<root>/artifacts" - finished documents, image outputs, transcripts
 
-tests goto : "<root>/tests" - pytests folder. run_all.py entry
+tests goto : "<root>/tests" - pytest + script-style tests. For a change, run ONLY the test file(s) you touched - NEVER run_all.py (282 files, far too slow and it hammers the machine). Pick the runner per file: pytest-style (has `def test_*`) -> `python -m pytest tests/test_x.py -q`; script-style (a module-level `sys.exit(...)`) -> `python tests/test_x.py`. run_all.py is the FULL-suite gate ONLY - a final sweep when explicitly asked, never for iterating on a simple change.
 
 temporary files goto : "<root>/temp-working-dir" - typical junk scripts written for ones offs 
 
