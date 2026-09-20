@@ -33,6 +33,8 @@ class AppServer:
         self.pending = {}
         self.events = asyncio.Queue()
         self.serial = 0
+        from litetui.backend_session import BackendSession
+        self.session = BackendSession()
         self.start_lock = asyncio.Lock()
         self.closer = None
         self.runtime_activity = RuntimeActivity()
@@ -93,6 +95,7 @@ class AppServer:
                     else {}
                 ),
             )
+            generation = self.session.begin()
             self.reader = asyncio.create_task(self._read())
             try:
                 await self.request(
@@ -108,14 +111,16 @@ class AppServer:
                 )
                 await self.send({"method": "initialized", "params": {}})
                 self.initialized = True
-            except BaseException:
+                self.session.ready(generation)
+            except BaseException as original:
                 self.initialized = False
+                self.session.disconnected(str(original))
                 # Cleanup must not replace the initialization/cancellation error.
                 try:
                     self.process.stdin.close()
                     await asyncio.wait_for(self._close_process(self.process), 10)
-                except BaseException:
-                    pass
+                except BaseException as cleanup_error:
+                    self.session.cleanup_errors.append(str(cleanup_error))
                 if self.reader and not self.reader.done():
                     self.reader.cancel()
                     try:
@@ -171,6 +176,7 @@ class AppServer:
             pass
         finally:
             self.initialized = False
+            self.session.disconnected()
             self.runtime_activity.disconnected()
             if self.async_questions:
                 self.async_questions.cancel()
@@ -427,28 +433,31 @@ class AppServerTransport:
                             )
                         return
             finally:
-                await questions.close()
-                if ui:
-                    ui.finish()
-                # Compaction can rebase counters. Never subtract the old user
-                # turn's total from a post-compaction snapshot on the next turn.
-                for index in range(len(self.app.conversation) - 1, -1, -1):
-                    metadata = (
-                        self.app.conversation[index].get("provider_metadata") or {}
-                    )
-                    if metadata.get("app_server_thread_id") == reference:
-                        metadata["native_usage"] = compact_usage.previous
-                        if hasattr(self.app, "_edit"):
-                            self.app._edit(
-                                index, "Codex compaction usage baseline updated"
-                            )
-                        break
-                if not finished and self.turn_id and not interrupted:
-                    await self.server.request(
-                        "turn/interrupt",
-                        {"threadId": reference, "turnId": self.turn_id},
-                    )
+                from litetui.backend_session import cleanup_steps
+                turn_id = self.turn_id
                 self.turn_id = None
+                async def stop_steering():
+                    if steering_worker is not None:
+                        steering_worker.cancel()
+                        await asyncio.gather(steering_worker.wait(), return_exceptions=True)
+                    if steering_task is not None:
+                        steering_task.cancel()
+                        await asyncio.gather(steering_task, return_exceptions=True)
+                async def finish_ui():
+                    tool_ui.finish()
+                async def finish_policy():
+                    bridge = getattr(self.server, 'native_bridge', None)
+                    if bridge is not None and bridge.policy is not None:
+                        await bridge.policy.finish()
+                async def interrupt():
+                    if not completed and turn_id and not interrupt_sent:
+                        await self.server.request('turn/interrupt',
+                            {'threadId': self.thread_id, 'turnId': turn_id})
+                errors = await cleanup_steps([questions.close, stop_steering,
+                                              finish_ui, finish_policy, interrupt])
+                session = getattr(self.server, 'session', None)
+                if session is not None:
+                    session.cleanup_errors.extend(errors)
 
     async def _server_request(self, message, *, interrupt_on_stop=True):
         method, params = message["method"], message.get("params", {})

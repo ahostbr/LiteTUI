@@ -56,3 +56,45 @@ async def test_initialized_live_reader_can_be_reused():
         server.reader.cancel()
         try: await server.reader
         except asyncio.CancelledError: pass
+
+
+def test_session_ignores_stale_connection_and_turn_completion():
+    from litetui.backend_session import BackendSession
+    session = BackendSession()
+    old = session.begin()
+    current = session.begin()
+    assert not session.ready(old)
+    assert session.ready(current)
+    session.start_turn('new-turn')
+    assert not session.finish_turn('old-turn')
+    assert session.active_turn == 'new-turn'
+    assert session.finish_turn('new-turn')
+
+
+def test_app_server_owns_independent_session_state():
+    from litetui.backend_session import BackendSession
+    assert isinstance(mod.AppServer().session, BackendSession)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_runs_all_steps_and_preserves_primary_failure():
+    from litetui.backend_session import cleanup_steps
+    steps = []
+    async def first():
+        steps.append('first')
+        raise RuntimeError('cleanup failed')
+    async def second(): steps.append('second')
+    errors = await cleanup_steps([first, second])
+    assert steps == ['first', 'second']
+    assert 'cleanup failed' in errors[0]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_timeout_does_not_skip_remaining_steps():
+    from litetui.backend_session import cleanup_steps
+    completed = []
+    async def stuck(): await asyncio.sleep(100)
+    async def finish(): completed.append(True)
+    errors = await cleanup_steps([stuck, finish], timeout=0.01)
+    assert completed == [True]
+    assert errors and 'TimeoutError' in errors[0]
