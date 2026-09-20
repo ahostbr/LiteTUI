@@ -149,3 +149,41 @@ def test_headless_explicit_resident_model_wins_before_cli_worker():
     action, model, reason = LiteTUI._headless_model_decision(app)
     assert model == 'requested'
     assert action in ('ok', 'substitute')
+
+
+def test_cli_thinking_is_effective_only_and_validated_before_prompt():
+    app = _FakeApp('model', None, [ModelRow(key='model', path=None, source='server', loaded=True)])
+    app._cli_thinking_level = 'high'
+    app.backend = SimpleNamespace(name='codex', reasoning_levels=lambda model: ['low', 'high'])
+    app.settings = SimpleNamespace(model_infer_overrides={'model': {'reasoning_effort': 'low'}})
+    app._thinking_level = 'low'
+    _run(app)
+    assert app._thinking_level == 'high'
+    assert app._cli_effective_thinking == 'high'
+    assert app.settings.model_infer_overrides['model']['reasoning_effort'] == 'low'
+
+
+def test_unsupported_cli_thinking_blocks_prompt():
+    app = _FakeApp('model', None, [ModelRow(key='model', path=None, source='server', loaded=True)])
+    app._cli_thinking_level = 'unsupported'
+    app.backend = SimpleNamespace(name='codex', reasoning_levels=lambda model: ['low'])
+    app._first_prompt = 'must not run'
+    submitted = []
+    async def ready(**kwargs):
+        return True
+    app._ensure_chat_ready = ready
+    app._submit_text = lambda *args, **kwargs: submitted.append(args)
+    _run(app)
+    assert not submitted
+    assert app._cli_launch_error
+
+
+def test_invocation_effort_overrides_request_copy_not_backend_preferences():
+    original = {'reasoning_effort': 'low', 'temperature': .2}
+    app = SimpleNamespace(backend=SimpleNamespace(request_overrides=lambda model: original),
+                          model_id='model', _cli_effective_thinking='high')
+    assert LiteTUI._effective_request_overrides(app)['reasoning_effort'] == 'high'
+    assert original['reasoning_effort'] == 'low'
+    app._cli_effective_thinking = 'default'
+    assert 'reasoning_effort' not in LiteTUI._effective_request_overrides(app)
+    assert original['reasoning_effort'] == 'low'

@@ -34,3 +34,15 @@ def test_invalid_backend_rejected_before_app_import(monkeypatch):
     with pytest.raises(SystemExit) as caught:
         cli.main()
     assert caught.value.code == 2
+
+
+def test_conflicting_thinking_flags_rejected_before_app(monkeypatch):
+    from litetui import cli
+    class ForbiddenApp:
+        def __init__(self, **kwargs):
+            pytest.fail('conflicting flags reached app')
+    monkeypatch.setitem(sys.modules, 'litetui.app', SimpleNamespace(LiteTUI=ForbiddenApp, wants_ansi_fallback=lambda: False))
+    monkeypatch.setattr(sys, 'argv', ['litetui', '--reasoning-effort', 'high', '--thinking-level', 'low'])
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+    assert caught.value.code == 2

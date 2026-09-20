@@ -1457,6 +1457,7 @@ class LiteTUI(App):
         system_prompt: str | None = None,
         initial_model: str | None = None,
         initial_backend: str | None = None,
+        initial_thinking: str | None = None,
         tool_profile: str | None = None,
         plan_mode: bool = False,
         convo_id: str | None = None,
@@ -1470,6 +1471,8 @@ class LiteTUI(App):
         if initial_backend not in (None, 'codex', 'lmstudio', 'llamacpp', 'ninfer'):
             raise ValueError('Unsupported invocation backend')
         self._cli_initial_backend = initial_backend
+        self._cli_thinking_level = initial_thinking
+        self._cli_effective_thinking = None
         self._cli_tool_profile = tool_profile
         # T558 plan mode. SESSION-ONLY, deliberately not persisted to settings:
         # a mode that survives a restart is a mode you forget you are in, and
@@ -1813,7 +1816,7 @@ class LiteTUI(App):
         if self.settings.mcp_enabled and self.mcp.configs:
             self._mcp_connect()
         # T507-T1: apply CLI args after connection is up.
-        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt:
+        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt or self._cli_thinking_level:
             self._apply_cli_args()
         # T507-T2: start the RPC bridge in headless mode.
         if self._rpc:
@@ -4389,6 +4392,15 @@ class LiteTUI(App):
                     f"loaded: {', '.join(sorted(loaded)) or '(none)'}. "
                     "Launch prompt blocked; no model fallback was used."
                 )
+        level = getattr(self, '_cli_thinking_level', None)
+        if level is not None and not self._cli_launch_error:
+            from litetui.thinking_capabilities import thinking_capabilities
+            if level not in thinking_capabilities(self)['levels']:
+                self._cli_launch_error = 'Requested thinking level is unsupported by the selected model'
+                self._system(self._cli_launch_error + '; launch prompt blocked.')
+            else:
+                self._cli_effective_thinking = level
+                self._thinking_level = None if level == 'default' else level
         if self._cli_launch_error:
             return
         if self._cli_system_prompt:
@@ -6563,6 +6575,15 @@ class LiteTUI(App):
         self._scroll_down(reader_acted=True)
         hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": source, **correlation})
 
+    def _effective_request_overrides(self):
+        overrides = dict(self.backend.request_overrides(self.model_id))
+        level = getattr(self, '_cli_effective_thinking', None)
+        if level == 'default':
+            overrides.pop('reasoning_effort', None)
+        elif level is not None:
+            overrides['reasoning_effort'] = level
+        return overrides
+
     def _headless_model_decision(self) -> tuple[str, str | None, str]:
         """What a `--rpc` child may do about the model, without loading one.
 
@@ -6985,7 +7006,7 @@ class LiteTUI(App):
                 tools_enabled=self.tools_enabled,
                 max_tokens_tools=self.settings.max_tokens_tools,
                 max_tokens_chat=self.settings.max_tokens_chat,
-                request_overrides=self.backend.request_overrides(self.model_id),
+                request_overrides=self._effective_request_overrides(),
                 thinking_level=self.thinking_level,
                 tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                 backend_name=self.backend.name,
@@ -7920,7 +7941,7 @@ class LiteTUI(App):
                     messages=ask,
                     max_tokens=self.settings.compact_max_tokens,
                     thinking_level=self.settings.compact_thinking_level,
-                    request_overrides=self.backend.request_overrides(self.model_id),
+                    request_overrides=self._effective_request_overrides(),
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
