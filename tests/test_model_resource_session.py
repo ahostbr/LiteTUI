@@ -97,8 +97,16 @@ async def test_reload_cancel_retains_peak_until_settled(tmp_path):
             assert session.leases['model'] == original
             raise asyncio.CancelledError()
     assert session.leases['model'] == original
+    assert not session.settle_failed_load('model', absent=None)
+    assert session.leases['model'] == original
     assert session.settle_failed_load('model', absent=True)
-    async with session.load('model', reload=True): pass
+    assert 'model' not in session.leases
+    with coordinator.store.transaction() as db:
+        assert db.execute('SELECT COUNT(*) FROM leases WHERE active=1').fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM reservations WHERE state != 'released'").fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM models').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM reload_claims').fetchone()[0] == 0
+    async with session.load('model'): pass
 
 @pytest.mark.asyncio
 async def test_failed_unload_acknowledgement_can_be_released_again(tmp_path):
@@ -131,3 +139,33 @@ async def test_cancelled_loader_retains_capacity_until_settlement(tmp_path):
     assert coordinator.reserve(demand, 'other').status == 'blocked'
     assert session.settle_failed_load('model', absent=True)
     assert coordinator.reserve(demand, 'other').status == 'admitted'
+
+@pytest.mark.asyncio
+async def test_absent_reload_settlement_disk_failure_is_atomic(tmp_path):
+    import sqlite3
+    from litetui.model_resource_session import ModelResourceSession
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'settlement.sqlite', telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 40, {})
+    session = ModelResourceSession(coordinator, 'owner', demand_for=lambda key: demand)
+    async with session.load('model'): pass
+    with pytest.raises(RuntimeError):
+        async with session.load('model', reload=True):
+            raise RuntimeError('loader failed')
+    reservation = session.unsettled_loads['model']
+    assert not coordinator.settle_absent_load(reservation, 'wrong-owner')
+    with coordinator.store.transaction() as db:
+        db.execute("CREATE TRIGGER fail_settlement BEFORE DELETE ON reload_claims BEGIN SELECT RAISE(ABORT, 'disk failure fixture'); END")
+    with pytest.raises(sqlite3.IntegrityError, match='disk failure fixture'):
+        session.settle_failed_load('model', absent=True)
+    assert session.unsettled_loads['model'] == reservation
+    assert 'model' in session.leases
+    with coordinator.store.transaction() as db:
+        assert db.execute('SELECT COUNT(*) FROM leases WHERE active=1').fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM reservations WHERE state != 'released'").fetchone()[0] == 2
+        assert db.execute('SELECT COUNT(*) FROM models').fetchone()[0] == 1
+        assert db.execute('SELECT COUNT(*) FROM reload_claims').fetchone()[0] == 1
+        db.execute('DROP TRIGGER fail_settlement')
+    assert session.settle_failed_load('model', absent=True)
+    assert not session.settle_failed_load('model', absent=True)
+    async with session.load('model'): pass

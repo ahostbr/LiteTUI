@@ -120,6 +120,32 @@ class ResourceCoordinator:
                 db.execute('DELETE FROM reload_claims WHERE reservation=?', (reservation,))
             return released
 
+    def settle_absent_load(self, reservation, owner):
+        """Atomically retire a stopped, confirmed-absent load and its reload lease.
+
+        Caller must establish backend quiescence and absence, not merely a
+        cancelled request. Unknown outcomes must never call this method.
+        """
+        with self.store.transaction() as db:
+            row = db.execute("SELECT 1 FROM reservations WHERE id=? AND owner=? AND state='reserved'",
+                             (reservation, owner)).fetchone()
+            if row is None:
+                return False
+            reload = db.execute('SELECT lease,model FROM reload_claims WHERE reservation=?',
+                                (reservation,)).fetchone()
+            if reload is not None:
+                lease, identity = reload
+                prior = db.execute('SELECT reservation FROM leases WHERE id=? AND owner=? AND active=1',
+                                   (lease, owner)).fetchone()
+                if prior is None:
+                    return False
+                db.execute('UPDATE leases SET active=0 WHERE id=?', (lease,))
+                db.execute("UPDATE reservations SET state='released' WHERE id=?", (prior[0],))
+                db.execute('DELETE FROM models WHERE identity=?', (identity,))
+            db.execute("UPDATE reservations SET state='released' WHERE id=?", (reservation,))
+            db.execute('DELETE FROM reload_claims WHERE reservation=?', (reservation,))
+            return True
+
     def load_guarded(self, request, owner, loader):
         """No load callback without reservation; allocation failure releases it."""
         decision = self.reserve(request, owner)

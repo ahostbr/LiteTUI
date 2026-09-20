@@ -63,8 +63,9 @@ class ModelResourceSession:
         reservation = self.unsettled_loads.get(key)
         if absent is not True or reservation is None:
             return False
-        if not self.coordinator.release(reservation, self.owner):
+        if not self.coordinator.settle_absent_load(reservation, self.owner):
             return False
+        self.leases.pop(key, None)
         del self.unsettled_loads[key]
         return True
 
