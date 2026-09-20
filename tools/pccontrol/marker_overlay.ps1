@@ -5,10 +5,10 @@
 # never steals focus. This is the agent path (pccontrol.py marker) — unchanged.
 #
 # INTERACTIVE (-Interactive -HandoffFile <json>): the HUMAN path (/mark).
-# The ring is draggable; two buttons ride under it. [send] hides the buttons
+# The ring is draggable; a nearby note window follows it. [send] hides the note
 # (the RING STAYS — it is the highlight), waits a beat for the compositor,
 # captures the marker's monitor, and writes <handoff>.png plus the handoff
-# JSON: {x, y, mon, mon_x, mon_y, png}. [cancel] or Esc writes
+# JSON: {x, y, mon, mon_x, mon_y, png, text}. [cancel] or Esc writes
 # {"cancelled": true}. LiteTUI polls for the JSON and hands the screenshot to
 # the model with the coordinates — a manual human screen-marker channel.
 param(
@@ -61,7 +61,7 @@ function Resolve-MarkerColor([string]$c) {
 
 $size = if ($Size -ge 20) { $Size } else { 110 }
 $labelH = if ($Label -ne '') { 20 } else { 0 }
-$btnH = if ($Interactive) { 26 } else { 0 }
+$btnH = 0
 $key = [System.Drawing.Color]::FromArgb(255, 0, 254)   # transparency key
 $mc = Resolve-MarkerColor $Color
 
@@ -76,6 +76,45 @@ $f.KeyPreview = $true
 $f.Size = New-Object System.Drawing.Size($size, ($size + $labelH + $btnH))
 $f.Location = New-Object System.Drawing.Point(([int]($gx - $size / 2)), ([int]($gy - $size / 2)))
 
+# Ryan 2026-09-08 23:2x: "update /ls-mark with taht golden bullseye icon thats sick".
+# ring.png ships INSIDE this skill dir, never borrowed from another skill — ls-mark is the
+# model for a self-contained catalog skill and a cross-skill path would be a dead pointer on
+# any box but this one. Absent art falls back to the drawn ring, so the skill still works.
+#
+# 🔴 FLATTENED AGAINST THE KEY COLOUR, not drawn with its alpha: WinForms TransparencyKey is
+# all-or-nothing, so an anti-aliased gold edge over a magenta key shows as a magenta halo.
+# Same rule as the gold glide sprite and the typing strip.
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ringPath = Join-Path $here 'ring.png'
+$ringBmp = $null
+$ringPx = [int]($size - 20 + 12)   # the exact rect Add_Paint draws into
+if (Test-Path $ringPath) {
+    try {
+        $src = [System.Drawing.Bitmap]::FromFile($ringPath)
+        # 🔴 SCALE FIRST, FLATTEN SECOND. Flattening then letting DrawImage
+        # scale blends key-colour pixels with gold and the in-between colours
+        # are NOT the key, so they survive TransparencyKey as a magenta halo
+        # around the ring. Resampling while the alpha is still real, then
+        # keying the result, leaves every transparent pixel exactly the key.
+        $scaled = New-Object System.Drawing.Bitmap($ringPx, $ringPx)
+        $sg = [System.Drawing.Graphics]::FromImage($scaled)
+        $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $sg.Clear([System.Drawing.Color]::Transparent)
+        $sg.DrawImage($src, 0, 0, $ringPx, $ringPx)
+        $sg.Dispose(); $src.Dispose()
+
+        $ringBmp = New-Object System.Drawing.Bitmap($ringPx, $ringPx)
+        for ($iy = 0; $iy -lt $ringPx; $iy++) {
+            for ($ix = 0; $ix -lt $ringPx; $ix++) {
+                $p = $scaled.GetPixel($ix, $iy)
+                if ($p.A -lt 128) { $ringBmp.SetPixel($ix, $iy, $key) }
+                else { $ringBmp.SetPixel($ix, $iy, [System.Drawing.Color]::FromArgb(255, $p.R, $p.G, $p.B)) }
+            }
+        }
+        $scaled.Dispose()
+    } catch { $ringBmp = $null }
+}
+
 $f.Add_Paint({
     param($s, $e)
     $g = $e.Graphics
@@ -84,6 +123,15 @@ $f.Add_Paint({
     $pen = New-Object System.Drawing.Pen($mc, $penW)
     $brush = New-Object System.Drawing.SolidBrush($mc)
     $cx = [int]($size / 2); $cy = [int]($size / 2); $r = [int]($size / 2 - 10)
+    if ($null -ne $ringBmp) {
+        # 1:1, no scaling here — the bitmap was already built at $ringPx.
+        $g.DrawImageUnscaled($ringBmp, ($cx - [int]($ringPx / 2)), ($cy - [int]($ringPx / 2)))
+        if ($Label -ne '') {
+            $lf = New-Object System.Drawing.Font('Consolas', 9, [System.Drawing.FontStyle]::Bold)
+            $g.DrawString($Label, $lf, $brush, 2, ($size - 2))
+        }
+        return
+    }
     $g.DrawEllipse($pen, ($cx - $r), ($cy - $r), (2 * $r), (2 * $r))
     $g.FillEllipse($brush, ($cx - 4), ($cy - 4), 8, 8)
     $g.DrawLine($pen, $cx, ($cy - $r - 7), $cx, ($cy - $r + 7))
@@ -117,7 +165,7 @@ if (-not $Interactive) {
     exit 0
 }
 
-# ── interactive: draggable ring + send/cancel, the human path ────────────────
+# ── interactive: draggable ring + optional note, the human path ──────────────
 if ($HandoffFile -eq '') { Write-Error 'Interactive mode needs -HandoffFile'; exit 1 }
 
 $script:drag = $null
@@ -138,28 +186,88 @@ function Write-Handoff([hashtable]$obj) {
     Move-Item -Force $tmp $HandoffFile
 }
 
+$note = New-Object System.Windows.Forms.Form
+$note.Text = 'Mark this spot'
+$note.FormBorderStyle = 'FixedToolWindow'
+$note.StartPosition = 'Manual'
+$note.TopMost = $true
+$note.ShowInTaskbar = $false
+$note.KeyPreview = $true
+$note.ClientSize = New-Object System.Drawing.Size(340, 170)
+$note.BackColor = [System.Drawing.Color]::FromArgb(255, 28, 30, 34)
+$note.ForeColor = [System.Drawing.Color]::White
+$note.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+
+$hint = New-Object System.Windows.Forms.Label
+$hint.Text = 'Drag the ring. Add a note if helpful.'
+$hint.AutoSize = $true
+$hint.Location = New-Object System.Drawing.Point(12, 10)
+$note.Controls.Add($hint)
+
+$inputNote = New-Object System.Windows.Forms.TextBox
+$inputNote.AccessibleName = 'Note about the marked spot'
+$inputNote.Multiline = $true
+$inputNote.AcceptsReturn = $true
+$inputNote.ScrollBars = 'Vertical'
+$inputNote.MaxLength = 8000
+$inputNote.Location = New-Object System.Drawing.Point(12, 36)
+$inputNote.Size = New-Object System.Drawing.Size(316, 82)
+$inputNote.BackColor = [System.Drawing.Color]::FromArgb(255, 42, 45, 50)
+$inputNote.ForeColor = [System.Drawing.Color]::White
+$note.Controls.Add($inputNote)
+
+function Place-NoteWindow {
+    $centre = New-Object System.Drawing.Point(($f.Left + [int]($size / 2)), ($f.Top + [int]($size / 2)))
+    $area = [System.Windows.Forms.Screen]::FromPoint($centre).WorkingArea
+    $left = $f.Right + 12
+    if (($left + $note.Width) -gt $area.Right) { $left = $f.Left - $note.Width - 12 }
+    $left = [Math]::Max($area.Left, [Math]::Min($left, $area.Right - $note.Width))
+    $top = [Math]::Max($area.Top, [Math]::Min($f.Top, $area.Bottom - $note.Height))
+    $note.Location = New-Object System.Drawing.Point($left, $top)
+}
+$f.Add_LocationChanged({ Place-NoteWindow })
+$f.Add_Shown({ Place-NoteWindow; $note.Show($f); $inputNote.Focus() })
+$f.Add_FormClosed({ $note.Close() })
+$script:finished = $false
+
+function Cancel-Mark {
+    if (-not $script:finished) {
+        $script:finished = $true
+        Write-Handoff @{ cancelled = $true }
+        $f.Close()
+    }
+}
+$note.Add_FormClosing({ Cancel-Mark })
+
 $btnSend = New-Object System.Windows.Forms.Button
-$btnSend.Text = 'send'
-$btnSend.Size = New-Object System.Drawing.Size(([int]($size / 2) - 2), 22)
-$btnSend.Location = New-Object System.Drawing.Point(0, ($size + $labelH + 2))
+$btnSend.Text = 'Send'
+$btnSend.Size = New-Object System.Drawing.Size(86, 30)
+$btnSend.Location = New-Object System.Drawing.Point(242, 130)
 $btnSend.BackColor = [System.Drawing.Color]::FromArgb(255, 20, 120, 60)
 $btnSend.ForeColor = [System.Drawing.Color]::White
 $btnSend.FlatStyle = 'Flat'
 
 $btnCancel = New-Object System.Windows.Forms.Button
-$btnCancel.Text = 'x'
-$btnCancel.Size = New-Object System.Drawing.Size(([int]($size / 2) - 2), 22)
-$btnCancel.Location = New-Object System.Drawing.Point(([int]($size / 2) + 2), ($size + $labelH + 2))
+$btnCancel.Text = 'Cancel'
+$btnCancel.Size = New-Object System.Drawing.Size(86, 30)
+$btnCancel.Location = New-Object System.Drawing.Point(148, 130)
 $btnCancel.BackColor = [System.Drawing.Color]::FromArgb(255, 90, 30, 30)
 $btnCancel.ForeColor = [System.Drawing.Color]::White
 $btnCancel.FlatStyle = 'Flat'
 
-$f.Controls.Add($btnSend)
-$f.Controls.Add($btnCancel)
+$note.Controls.Add($btnSend)
+$note.Controls.Add($btnCancel)
 
-$btnCancel.Add_Click({ Write-Handoff @{ cancelled = $true }; $f.Close() })
+$btnCancel.Add_Click({ Cancel-Mark })
 $f.Add_KeyDown({ param($s, $e)
-    if ($e.KeyCode -eq 'Escape') { Write-Handoff @{ cancelled = $true }; $f.Close() } })
+    if ($e.KeyCode -eq 'Escape') { Cancel-Mark } })
+$note.Add_KeyDown({ param($s, $e)
+    if ($e.KeyCode -eq 'Escape') { $e.SuppressKeyPress = $true; Cancel-Mark }
+    elseif ($e.Control -and $e.KeyCode -eq 'Enter') {
+        $e.SuppressKeyPress = $true
+        $btnSend.PerformClick()
+    }
+})
 
 $btnSend.Add_Click({
     # Marker centre in virtual-desktop coords (ring centre, not form corner).
@@ -173,9 +281,10 @@ $btnSend.Add_Click({
     }
     $mb = $screens[$monIdx].Bounds
 
-    # THE RING STAYS IN THE SHOT — it IS the highlight. Only the buttons hide.
-    $btnSend.Visible = $false
-    $btnCancel.Visible = $false
+    # Capture the user's exact note separately, so it never covers the target.
+    $text = $inputNote.Text
+    # THE RING STAYS IN THE SHOT — it IS the highlight. Only the note window hides.
+    $note.Hide()
     $f.Refresh()
     Start-Sleep -Milliseconds 220   # let the compositor catch up
 
@@ -191,8 +300,9 @@ $btnSend.Add_Click({
         x = $mx; y = $my
         mon = $monIdx
         mon_x = ($mx - $mb.X); mon_y = ($my - $mb.Y)
-        png = $png
+        png = $png; text = $text
     }
+    $script:finished = $true
     $f.Close()
 })
 
