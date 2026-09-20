@@ -113,6 +113,41 @@ class AgentProcess:
         self.process.stdin.write((json.dumps({'type': 'prompt', 'message': text}) + '\n').encode('utf-8'))
         await self.process.stdin.drain()
 
+    async def collect_turn(self, *, timeout=300, max_output=1000000):
+        """Bounded first-turn collector; interactive requests require a relay."""
+        started = False
+        chunks = []
+        size = 0
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    event = await self.receive(timeout=timeout)
+                    kind = event.get('type')
+                    if kind == 'error' or (kind == 'response' and event.get('ok') is False):
+                        raise LaunchBlocked(str(event.get('error', 'Child rejected request')))
+                    if kind in ('approval_request', 'question', 'ask_user_question'):
+                        raise LaunchBlocked('Child requires a human relay')
+                    if kind == 'turn_start':
+                        if started:
+                            raise LaunchBlocked('Unexpected overlapping child turn')
+                        started = True
+                    elif kind == 'text_delta':
+                        text = event.get('text')
+                        if not started or not isinstance(text, str):
+                            raise LaunchBlocked('Invalid child text event')
+                        size += len(text)
+                        if size > max_output:
+                            raise LaunchBlocked('Child output exceeds collection limit')
+                        chunks.append(text)
+                    elif kind == 'turn_end':
+                        if not started:
+                            raise LaunchBlocked('Child completed without a started turn')
+                        reason = event.get('stopReason')
+                        status = 'completed' if reason == 'stop' else 'cancelled' if reason in ('cancelled', 'cancel') else 'failed'
+                        return {'status': status, 'summary': ''.join(chunks), 'stop_reason': reason}
+        except TimeoutError as exc:
+            raise LaunchBlocked('Child turn timed out') from exc
+
     async def close(self, *, timeout=2):
         self.ready = False
         if self.process is None:
