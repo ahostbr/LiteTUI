@@ -827,6 +827,13 @@ class SettingsBody(Widget):
                             "to offer it or explain its absence.",
                         )
                         yield from self._switch_row(
+                            "image_viewer_enabled",
+                            "Auto-render pasted images",
+                            "Paste an image (Ctrl+O) and it opens in the in-sidebar "
+                            "viewer as real pixels. OFF still attaches the image to "
+                            "the model — this only toggles the automatic preview.",
+                        )
+                        yield from self._switch_row(
                             "autoscroll", "Follow output",
                             "Keep the log pinned to the newest message while streaming.",
                         )

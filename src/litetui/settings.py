@@ -386,6 +386,11 @@ class Settings:
     #: "sidebar", but it is a separate decision and gets a separate control
     #: rather than being folded into a four-state one.
     dialog_side: str = "right"
+    #: Paste an image (Ctrl+O) and it auto-opens in the in-sidebar viewer,
+    #: rendered as real pixels (default ON). OFF still ATTACHES the image to the
+    #: model exactly as before and the manual view_image path is untouched — this
+    #: toggles only the automatic preview, nothing else.
+    image_viewer_enabled: bool = True
 
     # ── Footer ───────────────────────────────────────────────────────────────
     #: Each field of the status footer, individually. Defaults match what the

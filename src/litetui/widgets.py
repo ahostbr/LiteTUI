@@ -245,16 +245,32 @@ class ChatMessage(Static):
 class UserMessage(Vertical):
     """User prompt with a compact, manually foldable header; no model call."""
 
-    def __init__(self, text: str, queued: bool = False) -> None:
+    def __init__(self, text: str, queued: bool = False, image_path: str | None = None) -> None:
         super().__init__(classes="user-msg")
         self.body = Static(Text(text))
         self.queued = queued
+        # When the user attached an image, we keep a stable on-disk reference so
+        # the "[Image attached]" label can be re-clicked to re-open the viewer.
+        # The path lives ONLY here (and the affordance below), never in `text`.
+        self.image_path = image_path
         preview = " ".join(text.split())
         self.preview = preview if len(preview) <= 80 else preview[:77].rstrip() + "..."
         self.refresh_header()
 
     def compose(self) -> ComposeResult:
         yield self.body
+        if self.image_path:
+            yield Button("🖼  open image", id="user-img-open", classes="user-img-open")
+
+    def on_button_pressed(self, event: "Button.Pressed") -> None:
+        if event.button.id == "user-img-open" and self.image_path:
+            event.stop()
+            # Imported here (not at module top): image_viewer imports
+            # side_panel, and widgets.py is imported very early — a top-level
+            # import would risk a cycle.
+            from litetui import image_viewer
+
+            image_viewer.open_image_viewer(self.app, self.image_path, title="Re-opened image")
 
     @property
     def collapsed(self) -> bool:

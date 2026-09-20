@@ -412,6 +412,8 @@ dependencies = [
     { name = "openai" },
     { name = "pillow" },
     { name = "textual" },
+    { name = "textual-image", version = "0.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "textual-image", version = "0.14.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "websockets" },
 ]
 
@@ -430,6 +432,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.0.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "textual", specifier = ">=0.89.0" },
+    { name = "textual-image", specifier = ">=0.12.0" },
     { name = "websockets", specifier = ">=15" },
 ]
 
@@ -966,6 +969,40 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6a/50/d46c43c02e80c67ead6ba72231c1bfa90f3c6105dc26aee92a782c5f10dd/textual-8.1.0.tar.gz", hash = "sha256:4aef2badb7b15db23c9d96002ac0b6307345fac62b6a37935fb9b483414e4071", size = 1842894, upload-time = "2026-03-10T03:01:11.664Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4c/e2/5ba08dc536ece4d0bd250bcf4aea9770c5078f559de15af0ad235a1a9eb2/textual-8.1.0-py3-none-any.whl", hash = "sha256:878c05fe1a1332bcbf1000a9d9fbdecccb52a683645107612ba2c838d803b7ad", size = 719618, upload-time = "2026-03-10T03:05:31.149Z" },
+]
+
+[[package]]
+name = "textual-image"
+version = "0.12.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12'",
+]
+dependencies = [
+    { name = "pillow", marker = "python_full_version < '3.12'" },
+    { name = "rich", marker = "python_full_version < '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c2/e7/c82ea0604874b6d51d5717a0911061ae5810e36dad2e4d2b11fa7d54cdaa/textual_image-0.12.0.tar.gz", hash = "sha256:fdd0b5ff9c8a99740bc360a99ce014d563fa97d07a5b49b472470809f57c0a74", size = 116403, upload-time = "2026-04-12T17:37:44.696Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/2c/38ac586a3834a3bd8cbcf0c8ea1ae23bf68b9cc13b96a67f47a825479dd3/textual_image-0.12.0-py3-none-any.whl", hash = "sha256:0b13f62fe6a29f4ed6dfd641f2779ffe92dde41f16163fa1de69158477aa50aa", size = 115626, upload-time = "2026-04-12T17:37:41.238Z" },
+]
+
+[[package]]
+name = "textual-image"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15'",
+    "python_full_version >= '3.13' and python_full_version < '3.15'",
+    "python_full_version == '3.12.*'",
+]
+dependencies = [
+    { name = "pillow", marker = "python_full_version >= '3.12'" },
+    { name = "rich", marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7d/3f/2cb7f2ca8bcc2d16b207e1c986a26df1dd67695d9f72b17e1a076d0/textual_image-0.14.0.tar.gz", hash = "sha256:230e2c38738a3d96ca3bcf99c6680b898917003bb21bd5fa7e22cbb16e843235", size = 172914, upload-time = "2026-09-13T20:33:38.706Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c6/e6/1900f281cd37521c91da1497e457a2489422d34b6ab5c8f6c6e870dc895a/textual_image-0.14.0-py3-none-any.whl", hash = "sha256:7af0d29edf02c917416230528dfe77c0d6e93bc6bbcbf21236622082defb0415", size = 180520, upload-time = "2026-09-13T20:33:37.101Z" },
 ]
 
 [[package]]

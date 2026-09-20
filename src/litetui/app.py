@@ -5018,17 +5018,62 @@ class LiteTUI(App):
     def _user_bubble(self, text: str, has_image: bool, queued: bool = False):
         log = self.query_one("#chat-log")
         parts: list[str] = []
+        # The spill path is read (not taken as an argument) so every call site is
+        # unchanged. It is set per-submit by `_submit_text` (via
+        # `_spill_image_for_reclick`) and reset to None at the top of each submit.
+        image_path = getattr(self, "_last_spilled_image", None)
         if has_image:
             parts.append("[Image attached]")
         if text:
             parts.append(text)
-        w = UserMessage("\n".join(parts), queued=queued)
+        # Only the CLICKABLE AFFORDANCE knows the spill path — the path never
+        # enters the body text (so it cannot leak into the transcript the model
+        # re-reads); the body still shows the same "[Image attached]" label.
+        w = UserMessage("\n".join(parts), queued=queued, image_path=image_path)
         # A message that silently waits is indistinguishable from one that was
         # dropped — the title is the visibility.
         w.border_title = "You · queued" if queued else "You"
         log.mount(w)
         self._scroll_down()
         return w
+
+    # The per-submit image path, if this message attached one and the spill
+    # succeeded (see `_spill_image_for_reclick`). Reset to None at the top of
+    # every `_submit_text`; `_user_bubble` reads it to make "[Image attached]"
+    # re-clickable. Never touches the API content or the transcript text.
+    _last_spilled_image: str | None = None
+
+    def _spill_image_for_reclick(self, b64: str) -> str | None:
+        """Persist a submitted image into the conversation so it can be re-opened.
+
+        Writes the image into ``<convo_dir>/images/`` and returns the file path
+        (a stable reference the widget can store); returns None when there is
+        nowhere durable to write it. A failure here degrades to "no re-click" —
+        the image is still attached to the model exactly as before, so a spill
+        problem must never block a turn.
+        """
+        if self.convo_dir is None:
+            return None
+        try:
+            import base64 as _b64
+
+            raw = _b64.b64decode(b64)
+            if raw[:8] != b"\x89PNG\r\n\x1a\n":
+                # Re-encode as PNG (the `pending_image` channel is PNG; a
+                # file-loaded image might not be) so the .png extension is true.
+                from PIL import Image as PILImage
+
+                img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                out = io.BytesIO()
+                img.save(out, format="PNG")
+                raw = out.getvalue()
+            images = self.convo_dir / "images"
+            images.mkdir(parents=True, exist_ok=True)
+            path = images / f"msg-{time.time_ns()}-{uuid.uuid4().hex[:6]}.png"
+            path.write_bytes(raw)
+            return str(path)
+        except Exception:  # noqa: BLE001 — a spill must never break a submit
+            return None
 
     def apply_backend_change(self, choice: str) -> None:
         """Move this app onto another engine. THE one place that does it.
@@ -5694,8 +5739,33 @@ class LiteTUI(App):
         indicator = self.query_one("#image-indicator")
         if value:
             indicator.add_class("visible")
+            self._maybe_auto_open_image_viewer(value)
         else:
             indicator.remove_class("visible")
+
+    # Whether the in-sidebar image viewer is currently open, so a second paste
+    # while it is up does not stack a second sidebar. Set by
+    # `_maybe_auto_open_image_viewer`, cleared by its on_close callback.
+    _image_viewer_open: bool = False
+
+    def _maybe_auto_open_image_viewer(self, b64: str) -> None:
+        """Auto-render a freshly pasted image in the sidebar, gated by setting.
+
+        OFF leaves the paste attaching to the model exactly as before — this is
+        the ONLY thing the `image_viewer_enabled` setting toggles; the manual
+        view_image path is untouched either way.
+        """
+        if not getattr(self.settings, "image_viewer_enabled", True):
+            return
+        if self._image_viewer_open:
+            return
+        from litetui import image_viewer
+
+        if image_viewer.open_image_viewer(
+            self, b64,
+            on_close=lambda _result: setattr(self, "_image_viewer_open", False),
+        ):
+            self._image_viewer_open = True
 
     _IMG_RE = r"(?:png|jpe?g|gif|webp|bmp)"
 
@@ -6408,6 +6478,10 @@ class LiteTUI(App):
                         "detail": detail})
 
     def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
+        # A re-clickable image path is per-submit: reset it here so a message
+        # WITHOUT an image can never inherit the previous message's spill path
+        # (only `_spill_image_for_reclick` re-sets it, below).
+        self._last_spilled_image: str | None = None
         text = value.strip()
         if not text and not self.pending_image:
             self._refuse_submit("empty", "nothing to send")
@@ -6451,6 +6525,13 @@ class LiteTUI(App):
                 return
 
         has_image = image_b64 is not None
+        # Spill the image to the convo so its "[Image attached]" can be re-clicked
+        # later. The spill path never enters the API `content` (built from
+        # `image_b64` below) or the transcript text — it only feeds the widget's
+        # clickable affordance. A spill failure just means no re-click; the turn
+        # still sends the image exactly as before.
+        if has_image:
+            self._last_spilled_image = self._spill_image_for_reclick(image_b64)
         # This is the moment a conversation earns its directory. Everything
         # before it — boot, the system prompt, a /model switch, an abandoned
         # /resume — leaves nothing on disk.
