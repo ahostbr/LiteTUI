@@ -11,7 +11,7 @@ class _FakeApp(SimpleNamespace):
 
     def __init__(self, model_id, cli_model, rows):
         super().__init__(
-            model_id=model_id,
+            _model_id=model_id,
             _cli_initial_model=cli_model,
             _cli_system_prompt=None,
             _first_prompt=None,
@@ -22,6 +22,10 @@ class _FakeApp(SimpleNamespace):
             _ctx_fetched=0,
             conversation=[],
         )
+
+    @property
+    def model_id(self):
+        return self._model_id
 
     def _update_header(self):
         self._headers += 1
@@ -102,3 +106,29 @@ def test_no_flag_does_nothing():
     _run(app)
     assert app.model_id == "big-27b"
     assert app._headers == 0
+
+
+def test_missing_explicit_model_never_submits_prompt_to_previous_model():
+    app = _FakeApp('previous', 'missing', [ModelRow(key='previous', path=None, source='server', loaded=True)])
+    app._first_prompt = 'make a change'
+    submitted = []
+    async def ready(**kwargs):
+        return True
+    app._ensure_chat_ready = ready
+    app._submit_text = lambda *args, **kwargs: submitted.append(args)
+    _run(app)
+    assert not submitted
+    assert app._cli_launch_error
+
+
+def test_unloaded_explicit_model_never_submits_prompt_to_previous_model():
+    app = _FakeApp('previous', 'cold', [ModelRow(key='cold', path=None, source='server', loaded=False)])
+    app._first_prompt = 'make a change'
+    submitted = []
+    async def ready(**kwargs):
+        return True
+    app._ensure_chat_ready = ready
+    app._submit_text = lambda *args, **kwargs: submitted.append(args)
+    _run(app)
+    assert not submitted
+    assert app._cli_launch_error

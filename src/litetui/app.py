@@ -4350,6 +4350,7 @@ class LiteTUI(App):
             if self.available_models or getattr(self, "_connect_settled", False):
                 break
             await asyncio.sleep(0.5)
+        self._cli_launch_error = None
         if self._cli_initial_model:
             want = self._cli_initial_model
             loaded = {r.key for r in self.model_rows.values() if r.loaded}
@@ -4359,17 +4360,21 @@ class LiteTUI(App):
                 self._update_header()
                 self._fetch_ctx_window()
             elif want in self.available_models:
+                self._cli_launch_error = f'Requested model {want!r} is not loaded'
                 self._system(
                     f"[cli] --model {want!r} is downloaded but NOT loaded — "
                     f"load it first in LM Studio or use /model. "
-                    f"Using {self.model_id!r}."
+                    "Launch prompt blocked; no model fallback was used."
                 )
             else:
+                self._cli_launch_error = f'Requested model {want!r} is unavailable'
                 self._system(
                     f"[cli] --model {want!r} not found — "
                     f"loaded: {', '.join(sorted(loaded)) or '(none)'}. "
-                    f"Using {self.model_id!r}."
+                    "Launch prompt blocked; no model fallback was used."
                 )
+        if self._cli_launch_error:
+            return
         if self._cli_system_prompt:
             self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
         if self._first_prompt:
