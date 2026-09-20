@@ -2198,7 +2198,7 @@ class LiteTUI(App):
         # a job -- it still reads the setting through `unattended()`.
         profile = tool_policy.AUTONOMOUS
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
-        banner = f"[{source} {label} \u00b7 {job.schedule}]\n{text}"
+        header = f"{source} {label} \u00b7 {job.schedule}"
 
         if job.new_conversation and not self._chat_running():
             self._handle_command("/new")
@@ -2207,12 +2207,12 @@ class LiteTUI(App):
             # QUEUED, never interrupting. A scheduled prompt is the LEAST
             # urgent kind of input there is -- nobody is waiting on it, so it
             # has no business cancelling something a human asked for.
-            self._user_bubble(banner, False, queued=True)
+            self._user_bubble(text, False, queued=True, header=header)
             self._pending_input.append(
-                {"content": text, "text": banner, "tool_profile": profile, "source": "scheduled"}
+                {"content": text, "text": text, "tool_profile": profile, "source": "scheduled"}
             )
             return True
-        self._user_bubble(banner, False)
+        self._user_bubble(text, False, header=header)
         hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "scheduled"})
         return True
 
@@ -5142,7 +5142,7 @@ class LiteTUI(App):
     # DELETING, NOT AFTER.
     _system = system_message
 
-    def _user_bubble(self, text: str, has_image: bool, queued: bool = False):
+    def _user_bubble(self, text: str, has_image: bool, queued: bool = False, *, header: str | None = None):
         log = self.query_one("#chat-log")
         parts: list[str] = []
         # The spill path is read (not taken as an argument) so every call site is
@@ -5156,10 +5156,10 @@ class LiteTUI(App):
         # Only the CLICKABLE AFFORDANCE knows the spill path — the path never
         # enters the body text (so it cannot leak into the transcript the model
         # re-reads); the body still shows the same "[Image attached]" label.
-        w = UserMessage("\n".join(parts), queued=queued, image_path=image_path)
+        w = UserMessage("\n".join(parts), queued=queued, image_path=image_path, header=header)
         # A message that silently waits is indistinguishable from one that was
         # dropped — the title is the visibility.
-        w.border_title = "You · queued" if queued else "You"
+        w.border_title = header or ("You · queued" if queued else "You")
         log.mount(w)
         self._scroll_down()
         return w

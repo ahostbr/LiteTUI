@@ -245,10 +245,11 @@ class ChatMessage(Static):
 class UserMessage(Vertical):
     """User prompt with a compact, manually foldable header; no model call."""
 
-    def __init__(self, text: str, queued: bool = False, image_path: str | None = None) -> None:
+    def __init__(self, text: str, queued: bool = False, image_path: str | None = None, *, header: str | None = None) -> None:
         super().__init__(classes="user-msg")
         self.body = Static(Text(text))
         self.queued = queued
+        self.message_header = header
         # When the user attached an image, we keep a stable on-disk reference so
         # the "[Image attached]" label can be re-clicked to re-open the viewer.
         # The path lives ONLY here (and the affordance below), never in `text`.
@@ -278,7 +279,7 @@ class UserMessage(Vertical):
 
     def refresh_header(self) -> None:
         marker = "▸" if self.collapsed else "▾"
-        label = "You · queued" if self.queued else "You"
+        label = self.message_header or ("You · queued" if self.queued else "You")
         preview = f" · {self.preview}" if self.collapsed and self.preview else ""
         self.border_title = f"{marker} {label}{preview}"
 
