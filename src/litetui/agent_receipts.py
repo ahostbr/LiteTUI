@@ -20,6 +20,9 @@ class ParentReceipts:
                        'parent TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, '
                        'created REAL NOT NULL, applied INTEGER NOT NULL DEFAULT 0, '
                        'PRIMARY KEY(parent,id))')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(receipts)')}
+            if 'conversation' not in columns:
+                db.execute('ALTER TABLE receipts ADD COLUMN conversation TEXT')
 
     @contextmanager
     def _transaction(self):
@@ -49,6 +52,38 @@ class ParentReceipts:
                 db.execute('INSERT INTO receipts(parent,id,payload,created) VALUES (?,?,?,?)',
                            (parent, ident, payload, time.time()))
         return True
+
+    def accept_for_conversation(self, parent, conversation, event):
+        """Bind using trusted launch context, never the currently selected chat.
+
+        Payload and routing commit atomically before the source can be ACKed.
+        Legacy unbound receipts require an explicit trusted binding; selecting
+        a conversation alone must never claim them.
+        """
+        parent, conversation = _identity(parent), _identity(conversation)
+        ident = _identity(event['completion_id'])
+        payload = _payload(event['result'])
+        with self._transaction() as db:
+            row = db.execute('SELECT payload,conversation FROM receipts WHERE parent=? AND id=?',
+                             (parent, ident)).fetchone()
+            if row:
+                if row[0] != payload:
+                    raise ValueError('Parent receipt conflict')
+                if row[1] not in (None, conversation):
+                    raise ValueError('Parent receipt conversation conflict')
+                db.execute('UPDATE receipts SET conversation=? WHERE parent=? AND id=?',
+                           (conversation, parent, ident))
+            else:
+                db.execute('INSERT INTO receipts(parent,id,payload,created,conversation) '
+                           'VALUES (?,?,?,?,?)', (parent, ident, payload, time.time(), conversation))
+        return True
+
+    def pending_for_conversation(self, parent, conversation):
+        with self._transaction() as db:
+            rows = db.execute('SELECT id,payload FROM receipts WHERE parent=? AND conversation=? '
+                              'AND applied=0 ORDER BY created,id',
+                              (_identity(parent), _identity(conversation))).fetchall()
+        return [{'completion_id': ident, 'result': json.loads(payload)} for ident, payload in rows]
 
     def pending(self, parent):
         with self._transaction() as db:
