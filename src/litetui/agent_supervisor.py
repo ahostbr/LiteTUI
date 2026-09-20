@@ -23,6 +23,11 @@ class AgentProcess:
     def returncode(self):
         return self.process.returncode if self.process else None
 
+    async def start_python(self, *, module, args=(), cwd, env=None):
+        """Full-agent entry path: containment always precedes module execution."""
+        await self.start(python_child_argv(module=module, args=args),
+                         cwd=cwd, env=env, gated=True)
+
     async def start(self, argv, *, cwd, env=None, gated=False):
         if self.process is not None:
             raise LaunchBlocked('Child process already started')

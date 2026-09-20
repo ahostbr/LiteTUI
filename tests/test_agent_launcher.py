@@ -138,3 +138,50 @@ async def test_bootstrap_does_not_execute_target_without_release(tmp_path):
     assert not marker.exists()
     assert await process.close(timeout=.2)
     assert not marker.exists()
+
+@pytest.mark.asyncio
+async def test_cancelling_pending_handshake_reaps_owned_process(tmp_path):
+    from litetui.agent_supervisor import AgentProcess, python_child_argv
+    script = tmp_path / 'silent.py'
+    script.write_text('import time\ntime.sleep(60)\n')
+    process = AgentProcess()
+    await process.start(python_child_argv(script=script), cwd=tmp_path, gated=True)
+    task = asyncio.create_task(process.handshake(spec(tmp_path), child_id='child',
+        conversation_id='convo', token='secret', workspace=str(tmp_path), timeout=30))
+    await asyncio.sleep(.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 3)
+    assert process.returncode is not None
+    assert not process.ready
+    assert await process.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows job containment')
+async def test_containment_failure_never_releases_bootstrap(tmp_path, monkeypatch):
+    from litetui.agent_supervisor import AgentProcess, python_child_argv
+    from litetui import jobkill
+    marker = tmp_path / 'must-not-exist'
+    script = tmp_path / 'target.py'
+    script.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n")
+    monkeypatch.setattr(jobkill, 'assign', lambda job, pid: False)
+    process = AgentProcess()
+    with pytest.raises(LaunchBlocked, match='containment'):
+        await process.start(python_child_argv(script=script), cwd=tmp_path, gated=True)
+    assert process.returncode is not None
+    assert not marker.exists()
+
+@pytest.mark.asyncio
+async def test_gated_installed_entrypoint_runs_without_checkout_cwd(tmp_path):
+    from litetui.agent_supervisor import AgentProcess
+    from litetui.version import __version__
+    process = AgentProcess()
+    await process.start_python(module='litetui.cli', args=['--version'], cwd=tmp_path)
+    try:
+        line = await asyncio.wait_for(process.process.stdout.readline(), 5)
+        assert line.decode().strip() == f'litetui {__version__}'
+        await asyncio.wait_for(process.process.wait(), 5)
+        assert process.returncode == 0
+    finally:
+        await process.close()
