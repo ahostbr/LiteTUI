@@ -63,6 +63,10 @@ class ResourceCoordinator:
                 return blocked('VRAM telemetry invalid')
             if any(type(v) is not int or v < 0 for v in request.vram_peak_by_device.values()):
                 return blocked('VRAM peak estimate invalid')
+            for (raw_identity,) in db.execute("SELECT identity FROM models WHERE state='unloading'"):
+                identity = json.loads(raw_identity)
+                if all(identity[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model')):
+                    return blocked('Model unload is pending')
             ram = 0
             gpu = {}
             for (raw,) in db.execute("SELECT demand FROM reservations WHERE state IN ('reserved','leased')"):
@@ -141,6 +145,11 @@ class ResourceCoordinator:
             db.execute("UPDATE reservations SET state='released' WHERE id=?", (reservation,))
             users = db.execute('SELECT COUNT(*) FROM leases WHERE model=? AND active=1', (identity,)).fetchone()[0]
             owned, warm, state = db.execute('SELECT owned,keep_warm,state FROM models WHERE identity=?', (identity,)).fetchone()
+            model_key = json.loads(identity)
+            for (pending_raw,) in db.execute("SELECT demand FROM reservations WHERE state='reserved'"):
+                pending = json.loads(pending_raw)
+                if all(pending[k] == model_key[k] for k in ('backend', 'endpoint', 'model')):
+                    users += 1
             if users or not owned or warm or state != 'resident':
                 return False
             db.execute("UPDATE models SET state='unloading' WHERE identity=?", (identity,))
@@ -160,3 +169,23 @@ class ResourceCoordinator:
                 db.execute("UPDATE models SET state='resident' WHERE identity=?", (identity,))
             db.execute('DELETE FROM unload_claims WHERE model=?', (identity,))
             return True
+
+    def reconcile(self, *, owner_alive, model_resident=None):
+        """Reclaim only positively dead owners; unknown evidence retains capacity.
+
+        Leased model capacity additionally needs confirmed non-residency.
+        Neither heartbeat age nor elapsed time proves a process/model is gone.
+        """
+        released = []
+        with self.store.transaction() as db:
+            rows = db.execute("SELECT id,owner,demand,state FROM reservations WHERE state IN ('reserved','leased')").fetchall()
+            for reservation, owner, raw, state in rows:
+                if owner_alive(owner) is not False:
+                    continue
+                if model_resident is None or model_resident(json.loads(raw)) is not False:
+                    continue
+                if state == 'leased':
+                    db.execute('UPDATE leases SET active=0 WHERE reservation=?', (reservation,))
+                db.execute("UPDATE reservations SET state='released' WHERE id=?", (reservation,))
+                released.append(reservation)
+        return released

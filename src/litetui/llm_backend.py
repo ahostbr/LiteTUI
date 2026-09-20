@@ -681,9 +681,15 @@ class _VramGate:
     @asynccontextmanager
     async def vram_guard(self, key: str):
         """Ask once per outermost load, then run the body."""
-        if self.vram_gate is None or self._vram_asking:
+        task = asyncio.current_task()
+        if self.vram_gate is None or getattr(self, '_vram_owner', None) is task:
             yield
             return
+        lock = getattr(self, '_vram_lock', None)
+        if lock is None:
+            lock = self._vram_lock = asyncio.Lock()
+        await lock.acquire()
+        self._vram_owner = task
         self._vram_asking = True
         try:
             allowed = await self.vram_gate(key)
@@ -695,6 +701,8 @@ class _VramGate:
             yield
         finally:
             self._vram_asking = False
+            self._vram_owner = None
+            lock.release()
 
 
 class LlamaCppBackend(_VramGate):
