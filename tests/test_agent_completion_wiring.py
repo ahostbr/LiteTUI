@@ -101,3 +101,30 @@ async def test_second_cancellation_cannot_interrupt_cleanup_and_persistence(tmp_
     assert len(pending) == 1
     assert pending[0]['result']['cleanup']['state'] == 'confirmed'
     assert not notices
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault', ['disk', 'notify'])
+async def test_delivery_fault_does_not_skip_owned_cleanup(tmp_path, fault):
+    from litetui.agent_supervisor import finish_child
+    process = AgentProcess()
+    process.conversation_id = 'actual-convo'
+    closed = []
+    async def collect(**kwargs): return {'status': 'completed', 'summary': 'done'}
+    async def close(**kwargs):
+        closed.append(True)
+        return True
+    process.collect_turn, process.close = collect, close
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    notices = []
+    def notify(event):
+        notices.append(event)
+        raise OSError('notification unavailable')
+    if fault == 'disk':
+        def persist(*args): raise OSError('disk unavailable')
+        inbox.persist = persist
+    with pytest.raises(OSError):
+        await finish_child(process, inbox, parent='parent', child_id='child', branch=None,
+                           evidence=[], notify=notify)
+    assert closed == [True]
+    pending = AgentInbox(tmp_path / 'inbox.sqlite').pending('parent')
+    assert len(pending) == (1 if fault == 'notify' else 0)
+    assert len(notices) == (1 if fault == 'notify' else 0)
