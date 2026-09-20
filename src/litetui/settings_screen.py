@@ -24,12 +24,11 @@ DESIGN NOTES
 
 from __future__ import annotations
 
+import importlib.util
 from copy import deepcopy
 from dataclasses import fields, replace
 from functools import partial
 from typing import Any
-
-import importlib.util
 
 from textual import on
 from textual.app import ComposeResult
@@ -48,25 +47,33 @@ from textual.widgets import (
     TabPane,
 )
 
-from litetui.hooks_screen import HooksEditor
-from litetui import gpu_gate, llm_backend, voice_backend, stt_backend
+# THE MODULE, not the names. `from ... import PROFILES` binds at import
+# time, which would make the "derivation" a snapshot: a profile added
+# later would not appear, and the test proving it appears could only pass
+# by patching THIS module -- i.e. by touching the screen, which is the
+# exact thing the derivation exists to stop being necessary.
+from litetui import gpu_gate, llm_backend, stt_backend, tool_policy, voice_backend
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
+from litetui.hooks_screen import HooksEditor
 from litetui.settings import Settings
+from litetui.settings_apply import SettingsSaveResult
 from litetui.settings_draft import SettingsDraft
-from litetui.side_panel import SwapButton, close_dialog, present_dialog
+from litetui.settings_ui_adapter import (
+    RuntimeApply,
+    SavePatch,
+    SettingsConflictError,
+    SettingsUiAdapter,
+    SnapshotProvider,
+    persistence_error,
+)
 from litetui.settings_ui_model import (
     SETTINGS_SECTIONS,
     SettingSearchHit,
     SettingsSectionSpec,
     search_settings,
 )
-# THE MODULE, not the names. `from ... import PROFILES` binds at import
-# time, which would make the "derivation" a snapshot: a profile added
-# later would not appear, and the test proving it appears could only pass
-# by patching THIS module -- i.e. by touching the screen, which is the
-# exact thing the derivation exists to stop being necessary.
-from litetui import tool_policy
+from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 THINKING_CHOICES = [
     ("off — no reasoning (may be ignored, see docs)", "off"),
@@ -82,6 +89,7 @@ def _theme_choices(custom: dict | None = None):
     custom themes, computed at call time — a module-level constant missed
     every theme created after import."""
     from textual.theme import BUILTIN_THEMES
+
     from litetui import themes as themes_mod
     names = [n for n in BUILTIN_THEMES if n not in themes_mod.LIGHT_BUILTINS] + [
         n for n in themes_mod.ALL_THEMES if n not in BUILTIN_THEMES
@@ -383,10 +391,20 @@ class SettingsBody(Widget):
 
     def __init__(self, current: Settings, models: list[str] | None = None,
                  mcp_servers: list[str] | None = None,
-                 loaded: list[str] | None = None, remote: bool = False):
+                 loaded: list[str] | None = None, remote: bool = False,
+                 *, snapshot_provider: SnapshotProvider | None = None,
+                 save_patch: SavePatch | None = None,
+                 runtime_apply: RuntimeApply | None = None):
         super().__init__()
         self._start = current
         self._draft = SettingsDraft(current)
+        self._settings_adapter = SettingsUiAdapter(
+            current,
+            snapshot_provider=snapshot_provider,
+            save_patch=save_patch,
+            runtime_apply=runtime_apply,
+        )
+        self._last_save_result: SettingsSaveResult | None = None
         self._initial_state: dict = {}
         self._models = models or []
         self._mcp_servers = mcp_servers or []
@@ -1243,6 +1261,8 @@ class SettingsBody(Widget):
                 yield Button("Save", variant="primary", id="set-save")
                 yield Button("Cancel", id="set-cancel")
                 yield Button("Restore defaults", variant="warning", id="set-defaults")
+                if self._settings_adapter.enabled:
+                    yield Button("Retry failed", id="set-retry", disabled=True)
                 # `.inline` — three buttons already share this row, and
                 # SwapButton's own `width: 100%` would take all of it.
                 yield SwapButton(classes="inline")
@@ -1494,6 +1514,89 @@ class SettingsBody(Widget):
             except Exception:
                 continue          # a Select whose options no longer hold it
 
+    def _dialog_default_target(self) -> tuple[Settings, tuple[str, ...]]:
+        """Factory-reset only fields represented by this dialog.
+
+        Environment-owned controls remain effective-only.  They are disabled
+        in the form and must not be turned into writes merely because the
+        factory value happens to match the effective value.
+        """
+
+        factory = Settings()
+        target = replace(self._start)
+        names: list[str] = []
+        for field in fields(Settings):
+            name = field.name
+            if not self.query(f"#f-{name}") or settings_mod.source_of(name):
+                continue
+            names.append(name)
+            setattr(target, name, deepcopy(getattr(factory, name)))
+        return target, tuple(names)
+
+    def _set_dialog_values(self, target: Settings, names: tuple[str, ...]) -> None:
+        """Reflect a confirmed factory reset in mounted controls."""
+
+        for name in names:
+            found = self.query(f"#f-{name}")
+            if not found:
+                continue
+            try:
+                found.first().value = deepcopy(getattr(target, name))
+            except (AttributeError, TypeError, ValueError):
+                # A host-specific choice list may not expose a factory value;
+                # persistence still receives the explicit target patch.
+                continue
+
+    def _show_save_result(self, result) -> None:
+        messages: list[str] = []
+        saved = [item.destination for item in result.persistence if item.saved]
+        failed = persistence_error(result)
+        if saved:
+            messages.append(f"Saved: {', '.join(saved)}")
+        if failed:
+            messages.append(f"Save failed — {failed}")
+        if result.has_pending_runtime:
+            messages.append("Runtime changes are pending")
+        if result.has_runtime_failures:
+            runtime_errors = "; ".join(
+                item.reason or f"{item.field}: runtime apply failed"
+                for item in result.runtime
+                if item.status == "failed"
+            )
+            messages.append(f"Runtime apply failed — {runtime_errors}")
+        self.query_one("#set-error", Static).update(" · ".join(messages))
+        retry = self.query("#set-retry")
+        if retry:
+            retry.first().disabled = not bool(self._settings_adapter.pending_changes)
+
+    def _submit(self, new: Settings, *, force_fields: tuple[str, ...] = ()) -> None:
+        self._draft.replace_working(new)
+        try:
+            result = self._settings_adapter.save(new, force_fields=force_fields)
+        except Exception as exc:  # noqa: BLE001 - name the UI boundary failure
+            self.query_one("#set-error", Static).update(
+                f"Cannot save — {type(exc).__name__}: {exc}"
+            )
+            return
+        if result is None:
+            # Legacy host contract: the app owns persistence and receives the
+            # proposed Settings value through close_dialog.
+            close_dialog(self, new)
+            return
+        self._last_save_result = result
+        if (
+            not result.persistence
+            and not result.runtime
+        ) or (
+            result.fully_saved
+            and not result.has_pending_runtime
+            and not result.has_runtime_failures
+            and not self._settings_adapter.pending_changes
+        ):
+            close_dialog(self, new)
+            return
+        self._show_save_result(result)
+
     def action_save(self) -> None:
         try:
             new = self._collect()
@@ -1506,8 +1609,26 @@ class SettingsBody(Widget):
                 except Exception:
                     pass
             return
-        self._draft.replace_working(new)
-        close_dialog(self, new)
+        self._submit(new)
+
+    def action_retry(self) -> None:
+        try:
+            result = self._settings_adapter.retry()
+        except SettingsConflictError as exc:
+            self.query_one("#set-error", Static).update(
+                f"Cannot retry — reload required for {', '.join(exc.destinations)}"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - name the UI boundary failure
+            self.query_one("#set-error", Static).update(
+                f"Cannot retry — {type(exc).__name__}: {exc}"
+            )
+            return
+        self._last_save_result = result
+        if result.fully_saved and not result.has_pending_runtime and not result.has_runtime_failures:
+            close_dialog(self, self._draft.snapshot())
+            return
+        self._show_save_result(result)
 
     def action_cancel(self) -> None:
         self.request_cancel()
@@ -1528,8 +1649,18 @@ class SettingsBody(Widget):
 
     def _on_restore_answer(self, answer: str | None) -> None:
         if answer == "restore":
-            self._draft.replace_working(Settings())
-            close_dialog(self, Settings())
+            target, names = self._dialog_default_target()
+            if not self._settings_adapter.enabled:
+                # Preserve the historical host contract when no service is
+                # bound: Restore returns a factory Settings object directly.
+                close_dialog(self, Settings())
+                return
+            self._set_dialog_values(target, names)
+            self._submit(target, force_fields=names)
+
+    @on(Button.Pressed, "#set-retry")
+    def _retry(self) -> None:
+        self.action_retry()
 
     # ── Voice tab ─────────────────────────────────────────────────────────────
     #: True only between the Capture button and the next keypress, so on_key
@@ -1627,17 +1758,26 @@ class SettingsScreen(ModalScreen[Settings | None]):
 
     def __init__(self, current: Settings, models: list[str] | None = None,
                  mcp_servers: list[str] | None = None,
-                 loaded: list[str] | None = None, remote: bool = False):
+                 loaded: list[str] | None = None, remote: bool = False,
+                 *, snapshot_provider: SnapshotProvider | None = None,
+                 save_patch: SavePatch | None = None,
+                 runtime_apply: RuntimeApply | None = None):
         super().__init__()
         self._start = current
         self._models = models or []
         self._mcp_servers = mcp_servers or []
         self._loaded = loaded or []
         self._remote = remote
+        self._snapshot_provider = snapshot_provider
+        self._save_patch = save_patch
+        self._runtime_apply = runtime_apply
 
     def compose(self) -> ComposeResult:
         yield SettingsBody(self._start, self._models, self._mcp_servers,
-                           self._loaded, self._remote)
+                           self._loaded, self._remote,
+                           snapshot_provider=self._snapshot_provider,
+                           save_patch=self._save_patch,
+                           runtime_apply=self._runtime_apply)
 
     def action_save(self) -> None:
         self.query_one(SettingsBody).action_save()
