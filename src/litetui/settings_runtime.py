@@ -84,14 +84,18 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
                                snapshot.revisions if expected_revisions is None else expected_revisions)
     if any(p.saved and p.scope == 'conversation' for p in result.persistence):
         app._convo_settings = cs.load(directory)
+    from copy import deepcopy
+    next_saved = deepcopy(asdict(snapshot.saved))
     next_baseline = dict(baseline_values)
     for outcome in result.persistence:
         if outcome.saved:
             _retire_saved_invocation(app, candidate, outcome.fields)
             for key in outcome.fields:
                 next_baseline[key] = getattr(candidate, key)
+                next_saved[key] = deepcopy(getattr(candidate, key))
     from copy import deepcopy
     object.__setattr__(candidate, '_baseline', deepcopy(next_baseline))
+    object.__setattr__(candidate, '_saved_values', next_saved)
     app._settings_save_result = result
     return result
 

@@ -198,3 +198,27 @@ def test_environment_explicit_edit_then_repeated_save_keeps_new_preference(tmp_p
     app.settings = chosen
     persist_settings(app, replace(chosen, tts_timeout=155))
     assert json.loads((tmp_path / 'settings.json').read_text())['backend'] == 'codex'
+
+
+def test_conversation_explicit_env_edit_updates_saved_metadata_for_new_conversation(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from litetui import settings as st
+    from litetui.settings_runtime import persist_settings
+    from litetui.settings_service import SettingsService
+    monkeypatch.setenv('LITETUI_BACKEND', 'ninfer')
+    service = SettingsService(tmp_path)
+    service.create_conversation('one')
+    effective = st.load(tmp_path)
+    app = NS(settings=effective, convo_dir=service._paths('one')['conversation'].parent,
+             _settings_service=service, seat=NS())
+    candidate = deepcopy(effective)
+    candidate.backend = 'codex'
+    outcome = persist_settings(app, candidate)
+    assert all(p.saved for p in outcome.persistence)
+    assert service.snapshot('one').saved.backend == 'codex'
+    app.settings = candidate
+    new = tmp_path / 'next'
+    new.mkdir()
+    app.convo_dir = new
+    LiteTUI._adopt_convo_settings(app, born=True)
+    assert convo_settings.load(new).backend == 'codex'
