@@ -607,3 +607,34 @@ async def test_stream_disconnect_preserves_original_error_despite_cleanup_failur
     assert caught.value is original
     assert transport.turn_id is None
     assert any('secondary cleanup failure' in error for error in server.session.cleanup_errors)
+
+@pytest.mark.asyncio
+async def test_actual_stream_task_cancellation_interrupts_and_clears_turn(monkeypatch):
+    from litetui.codex_question_requests import QuestionRequests
+    server = Server()
+    server.finish = False
+    server.session = NS(cleanup_errors=[])
+    transport = AppServerTransport(server)
+    stream = await transport.create(model='gpt-6-astra', messages=[{'role': 'user', 'content': 'hi'}], stream=True)
+    iterator = stream.__aiter__()
+    await anext(iterator)
+    while not server.events.empty():
+        server.events.get_nowait()
+    waiting = asyncio.Event()
+    original_get = server.events.get
+    async def observed_get():
+        waiting.set()
+        return await original_get()
+    monkeypatch.setattr(server.events, 'get', observed_get)
+    async def failed_close(self):
+        raise RuntimeError('cancellation cleanup fixture')
+    monkeypatch.setattr(QuestionRequests, 'close', failed_close)
+    pending = asyncio.create_task(anext(iterator))
+    await asyncio.wait_for(waiting.wait(), 2)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending, 2)
+    assert pending.cancelled()
+    assert transport.turn_id is None
+    assert any(method == 'turn/interrupt' for method, params in server.requests)
+    assert any('cancellation cleanup fixture' in error for error in server.session.cleanup_errors)
