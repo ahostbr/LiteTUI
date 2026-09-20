@@ -50,6 +50,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import sys
+import os
 
 WINDOWS = sys.platform == "win32"
 
@@ -141,6 +142,8 @@ def assign(job: int | None, pid: int) -> bool:
     KILL_ON_JOB_CLOSE job containing us kills the app when the handle closes.
     """
     if job is None or not available():
+        return False
+    if pid == os.getpid() or pid <= 0:
         return False
     ph = _k32.OpenProcess(_PROCESS_ALL_ACCESS, False, pid)
     if not ph:

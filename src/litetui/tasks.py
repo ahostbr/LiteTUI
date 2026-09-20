@@ -99,6 +99,8 @@ class Task:
     #: ⚠️ None MEANS "no claim", not "no owner": every row written before this
     #: field existed keeps the old answer and is marked LOST at boot.
     owner_pid: int | None = None
+    owner_instance: str | None = None
+    owner_created: str | None = None
     #: The live child, for `/tasks kill`. Not persisted, not compared.
     proc: object = field(default=None, repr=False, compare=False)
 
@@ -182,15 +184,20 @@ def prompt_of(args: dict) -> str:
     return (text[:PROMPT_CAP] + "…") if len(text) > PROMPT_CAP else text
 
 
+_INSTANCE_ID = uuid.uuid4().hex
+
 def new_task(tool: str, args: dict, convo_id: str) -> Task:
+    from litetui.task_supervisor import process_creation_identity
     return Task(
-        id="t-" + uuid.uuid4().hex[:6],
+        id="t-" + uuid.uuid4().hex,
         tool=tool,
         label=label_of(tool, args),
         convo_id=convo_id or "",
         started=time.time(),
         prompt=prompt_of(args),
         owner_pid=os.getpid(),
+        owner_instance=_INSTANCE_ID,
+        owner_created=process_creation_identity(os.getpid()),
     )
 
 
@@ -205,6 +212,12 @@ def request_kill(task: Task) -> tuple[bool, object | None]:
     """Claim a local running task, including the interval before spawn."""
     with _PROCESS_LOCK:
         owner = getattr(task, "owner_pid", None)
+        if task.owner_instance is not None and task.owner_instance != _INSTANCE_ID:
+            return False, None
+        if task.owner_created is not None:
+            from litetui.task_supervisor import process_creation_identity
+            if process_creation_identity(os.getpid()) != task.owner_created:
+                return False, None
         if task.state != RUNNING or owner not in (None, os.getpid()):
             return False, None
         if task.proc is None and not pending_cancellable(task):
@@ -468,4 +481,9 @@ def _owner_alive(task: Task) -> bool:
     """
     if task.owner_pid is None or task.owner_pid == os.getpid():
         return False
+    if task.owner_created is not None:
+        from litetui.task_supervisor import process_creation_identity
+        current = process_creation_identity(task.owner_pid)
+        if current is not None:
+            return current == task.owner_created
     return router_record.pid_is_live(task.owner_pid)
