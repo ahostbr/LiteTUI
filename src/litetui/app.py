@@ -4329,6 +4329,12 @@ class LiteTUI(App):
 
     # ── Context window readout (footer) ───────────────────────
 
+    def footer_display_order(self) -> list[str]:
+        """The normalized left-to-right order used by every footer surface."""
+        return settings_mod.normalize_footer_order(
+            getattr(self.settings, "footer_order", None)
+        )
+
     def footer_nav_items(self) -> list[str]:
         """The navigable chips, in the order the footer draws them.
 
@@ -4344,18 +4350,19 @@ class LiteTUI(App):
         """
         s = self.settings
         subs, bg = tasks_mod.live_for_app(self)
-        items = ["authority"]  # never hidden — see the note in ctx_label_text
-        # PLAN SITS WHERE IT IS DRAWN, second. This list and the renderer are
-        # the same order on purpose: Left/Right that walks a different sequence
-        # from the one on screen is movement the user cannot follow.
-        items.append("plan")
-        if s.footer_show_thinking:
-            items.append("think")
-        if s.footer_show_bg and bg:
-            items.append("bg")
-        if s.footer_show_subagents and subs:
-            items.append("agents")
-        return items
+        visible = {
+            # These controls are deliberately never hidden; see the renderer's
+            # authority and plan comments below.
+            "authority": True,
+            "plan": True,
+            "think": bool(s.footer_show_thinking),
+            "bg": bool(s.footer_show_bg and bg),
+            "agents": bool(s.footer_show_subagents and subs),
+        }
+        return [
+            key for key in self.footer_display_order()
+            if visible.get(key, False)
+        ]
 
     def footer_nav_move(self, delta: int) -> None:
         """Left/Right along the visible chips. Wraps, like the authority cycle."""
@@ -4445,7 +4452,7 @@ class LiteTUI(App):
         """
         s = self.settings
         sep = "  \u00b7  "
-        chunks: list[tuple[str, Text]] = []
+        chunks_by_key: dict[str, Text] = {}
 
         # T570 — the selected chip, if the keyboard has taken the footer. Applied
         # by `add` so EVERY chip gets it for free: a per-chip opt-in is how one
@@ -4454,10 +4461,9 @@ class LiteTUI(App):
         nav = getattr(self, "_footer_nav", None)
 
         def add(key: str, chunk: str, style: str, chip: str | None = None) -> None:
-            chunks.append((
-                key,
-                Text(chunk, "reverse bold" if (chip and chip == nav) else style),
-            ))
+            chunks_by_key[key] = Text(
+                chunk, "reverse bold" if (chip and chip == nav) else style
+            )
 
         # THE AUTHORITY LEVEL, FIRST AND WITHOUT A TOGGLE. Ryan asked for it
         # ("ALSO show this in the footer") after being denied a write while
@@ -4561,7 +4567,19 @@ class LiteTUI(App):
             stats = Text()
             appsvc.append_tps_into(self, stats, sep)
             if stats.plain:
-                chunks.append(("tps", stats))
+                chunks_by_key["tps"] = stats
+
+        # Build the actual chunks only after every field has been computed.
+        # This keeps the switches and dynamic zero-state rules independent of
+        # the user's ordering preference, while giving rendering and navigation
+        # one exact sequence to share.
+        chunks = [
+            (key, chunks_by_key[key])
+            for key in settings_mod.normalize_footer_order(
+                getattr(s, "footer_order", None)
+            )
+            if key in chunks_by_key
+        ]
 
         # The footer owns the usable width. During its first compose it is
         # mounted but its children are not, so use the measured palette width

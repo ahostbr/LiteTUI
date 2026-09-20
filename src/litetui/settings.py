@@ -47,6 +47,38 @@ SETTINGS_FILENAME = "settings.json"
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
+# One vocabulary for the footer renderer, keyboard navigation, and settings
+# editor. Authority and plan are intentionally included: they remain always
+# visible, but their position is still part of the user's left-to-right layout.
+FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
+    "authority",
+    "plan",
+    "seat",
+    "think",
+    "bg",
+    "agents",
+    "convo",
+    "ctx",
+    "pct",
+    "tps",
+)
+
+
+def normalize_footer_order(value: Any) -> list[str]:
+    """Return a safe, complete footer order from user or disk input."""
+    if not isinstance(value, (list, tuple)):
+        value = ()
+    known = set(FOOTER_ORDER_DEFAULT)
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in value:
+        item = str(raw).strip()
+        if item in known and item not in seen:
+            result.append(item)
+            seen.add(item)
+    result.extend(item for item in FOOTER_ORDER_DEFAULT if item not in seen)
+    return result
+
 
 @dataclass
 class Settings:
@@ -408,6 +440,11 @@ class Settings:
     footer_show_context: bool = True
     footer_show_context_pct: bool = True
     footer_show_tps: bool = True
+    #: Footer item ids in left-to-right order. Visibility remains controlled by
+    #: the switches above; omitted/unknown ids are repaired on load/save.
+    footer_order: list[str] = field(
+        default_factory=lambda: list(FOOTER_ORDER_DEFAULT)
+    )
 
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
     #: Speak the agent's replies aloud (Ryan 2026-09-18). OFF by default — opt-in.
@@ -514,6 +551,7 @@ def load(root: Path | None = None) -> Settings:
         if raw is not None and raw != "":
             setattr(s, name, _coerce(name, raw, getattr(s, name)))
     s.tool_policy_profile = _selectable_profile(s.tool_policy_profile)
+    s.footer_order = normalize_footer_order(s.footer_order)
     # The snapshot `save()` diffs against: everything this instance believes the
     # file said at load time. Not a field, so `asdict` never sees it.
     object.__setattr__(s, "_baseline", asdict(s))

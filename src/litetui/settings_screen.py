@@ -876,6 +876,17 @@ class SettingsBody(Widget):
                             "footer_show_tps", "Tokens per second",
                             "Generation speed of the last turn.",
                         )
+                        yield from self._text_row(
+                            "footer_order", "Footer order (left to right)",
+                            "Comma-separated ids. Use authority, plan, seat, think, "
+                            "bg, agents, convo, ctx, pct, and tps. The switches "
+                            "above control visibility; authority and plan stay "
+                            "available because they are interactive status controls. "
+                            "Unknown or repeated ids are ignored and missing ids "
+                            "are appended in the default order.",
+                            placeholder="authority, plan, seat, think, bg, agents, "
+                            "convo, ctx, pct, tps",
+                        )
 
             # One error line + one button row, OUTSIDE TabbedContent so both
             # stay visible whichever tab is active. A duplicate copy used to
@@ -1058,6 +1069,11 @@ class SettingsBody(Widget):
                 + ", ".join(missing)
                 + " — refusing to save a partial settings object"
             )
+
+        # Keep the persisted order complete even when a user hand-edits the
+        # comma-separated field. Visibility is controlled by the switches, not
+        # by accidentally leaving an id out of this layout preference.
+        out.footer_order = settings_mod.normalize_footer_order(out.footer_order)
 
         # Range checks that would otherwise fail confusingly at request time.
         if not (1 <= out.autocompact_at_percent <= 99):
