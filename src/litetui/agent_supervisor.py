@@ -17,19 +17,31 @@ class AgentProcess:
         self.ready = False
         self.diagnostics = deque(maxlen=100)
         self._stderr = None
+        self._job = None
 
     @property
     def returncode(self):
         return self.process.returncode if self.process else None
 
-    async def start(self, argv, *, cwd, env=None):
+    async def start(self, argv, *, cwd, env=None, gated=False):
         if self.process is not None:
             raise LaunchBlocked('Child process already started')
         self.process = await asyncio.create_subprocess_exec(
             *argv, cwd=str(cwd), env={**os.environ, **(env or {})},
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=1024 * 1024)
+        if os.name == 'nt':
+            from litetui import jobkill
+            self._job = jobkill.create()
+            if not jobkill.assign(self._job, self.process.pid):
+                jobkill.close(self._job)
+                self._job = None
+                await self.close(timeout=.2)
+                raise LaunchBlocked('Could not establish child process-tree containment')
         self._stderr = asyncio.create_task(self._drain_errors())
+        if gated:
+            self.process.stdin.write(b'LITETUI_CONTAINED_V1\n')
+            await self.process.stdin.drain()
 
     async def _drain_errors(self):
         try:
@@ -73,6 +85,12 @@ class AgentProcess:
         self.ready = False
         if self.process is None:
             return True
+        if self._job is not None:
+            from litetui import jobkill
+            if not jobkill.close(self._job):
+                self.diagnostics.append('Child job close failed')
+                return False
+            self._job = None
         if self.process.stdin is not None:
             self.process.stdin.close()
         try:
@@ -85,9 +103,32 @@ class AgentProcess:
                 await asyncio.wait_for(self.process.wait(), timeout)
             except TimeoutError:
                 return False
-        if self._stderr:
+        if self._stderr and not self._stderr.cancelled():
             try:
                 await asyncio.wait_for(self._stderr, timeout)
             except TimeoutError:
                 self.diagnostics.append('Child stderr cleanup timed out')
         return self.process.returncode is not None
+
+
+def python_child_argv(*, module=None, script=None, args=()):
+    """Gate execution before imports/forks and bypass the Windows venv shim.
+
+    Capture this installed interpreter's import paths, not a hard-coded source
+    checkout. Prompt/credentials are never placed on this command line.
+    """
+    import sys
+    if (module is None) == (script is None):
+        raise ValueError('Specify exactly one module or script')
+    bootstrap = (
+        "import sys,json,runpy; "
+        "line=sys.stdin.buffer.readline(); "
+        "sys.exit(73) if line != b'LITETUI_CONTAINED_V1\\n' else None; "
+        "cfg=json.loads(sys.argv[1]); sys.path[:]=cfg['paths']; "
+        "sys.argv=[cfg['target']]+cfg['args']; "
+        "runpy.run_module(cfg['target'],run_name='__main__',alter_sys=True) "
+        "if cfg['module'] else runpy.run_path(cfg['target'],run_name='__main__')"
+    )
+    config = {'module': module is not None, 'target': module or str(script),
+              'args': list(args), 'paths': [p for p in sys.path if p]}
+    return [getattr(sys, '_base_executable', sys.executable), '-S', '-c', bootstrap, json.dumps(config)]
