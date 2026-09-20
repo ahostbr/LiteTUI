@@ -16,10 +16,24 @@ def service_for(app):
     return service
 
 
+def without_invocation(app, candidate):
+    """Copy persistence values without inheriting unchanged CLI overrides.
+
+    A value deliberately changed away from the effective invocation value is
+    ordinary user intent. Never mutate the effective settings to save them.
+    """
+    from copy import deepcopy
+    result = deepcopy(candidate)
+    for key, saved in getattr(app, '_invocation_saved_values', {}).items():
+        if getattr(candidate, key) == getattr(app.settings, key):
+            setattr(result, key, deepcopy(saved))
+    return result
+
+
 def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
     directory = getattr(app, 'convo_dir', None)
     if directory is None:
-        path = st.save(candidate)
+        path = st.save(without_invocation(app, candidate))
         return SettingsSaveResult(persistence=(PersistenceDestinationResult(str(path), 'defaults', True),))
     service = service_for(app)
     snapshot = service.snapshot(directory.name)
@@ -27,6 +41,11 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
         baseline_values = getattr(candidate, '_baseline', asdict(snapshot.effective))
     else:
         baseline_values = asdict(baseline)
+    # An unchanged invocation value is not a preference edit, even when the
+    # candidate was cloned without its dynamic baseline metadata.
+    for key in getattr(app, '_invocation_saved_values', {}):
+        if getattr(candidate, key) == getattr(app.settings, key):
+            baseline_values[key] = getattr(candidate, key)
     changes = [SettingChange(f.name, getattr(candidate, f.name), SETTING_SPECS[f.name].scope.value)
                for f in fields(st.Settings)
                if getattr(candidate, f.name) != baseline_values[f.name]]

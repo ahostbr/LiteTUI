@@ -1487,7 +1487,10 @@ class LiteTUI(App):
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
+        self._invocation_saved_values = {}
         if initial_backend is not None:
+            self._invocation_saved_values = {
+                'backend': self.settings.backend, 'backend_chosen': self.settings.backend_chosen}
             self.settings.backend = initial_backend
             self.settings.backend_chosen = True
         hook_host.initialize(self)
@@ -3816,7 +3819,8 @@ class LiteTUI(App):
         if self.convo_dir is None:
             return
         if born:
-            cs = convo_settings_mod.born_from(self.settings)
+            from litetui.settings_runtime import without_invocation
+            cs = convo_settings_mod.born_from(without_invocation(self, self.settings))
             cs.seat_name = getattr(self.seat, "name", None)
             cs.seat_id = getattr(self.seat, "agent_id", None)
             cs.seat_tier = getattr(self.seat, "tier", None)
