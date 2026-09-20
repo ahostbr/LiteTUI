@@ -97,6 +97,18 @@ class ParentReceipts:
             return db.execute('UPDATE receipts SET applied=1 WHERE parent=? AND id=?',
                               (_identity(parent), _identity(completion))).rowcount == 1
 
+    def deliver_for_conversation(self, parent, conversation, *, commit):
+        """Apply only receipts explicitly bound to this conversation.
+
+        The consumer must revalidate its live conversation after any await;
+        this synchronous dispatch supplies a stable, trusted routing identity.
+        """
+        applied = []
+        for event in self.pending_for_conversation(parent, conversation):
+            if commit(event) is True and self.mark_applied(parent, event['completion_id']):
+                applied.append(event['completion_id'])
+        return applied
+
     def deliver(self, parent, *, commit):
         """Consumer must persist/dedupe in history before returning literal True."""
         applied = []

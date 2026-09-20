@@ -5,7 +5,8 @@ from litetui.agent_supervisor import finish_child
 
 async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id,
                              workspace, data_root, branch, evidence,
-                             supported_levels, notify, limit=1, timeout=300):
+                             supported_levels, notify, limit=1, timeout=300,
+                             parent_conversation=None):
     """Claim before start, bind before prompt, persist/settle before notify.
 
     Runtime owns routing and persistent workspace/root preparation. A launch
@@ -14,7 +15,7 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
     Cancellation during collection persists pending outcome via finish_child;
     its registry claim intentionally remains until explicit reconciliation.
     """
-    registry.claim(parent, child_id, limit=limit)
+    registry.claim(parent, child_id, limit=limit, parent_conversation=parent_conversation)
 
     def bind(ready):
         registry.bind(parent, child_id, conversation_id=ready['conversation_id'],

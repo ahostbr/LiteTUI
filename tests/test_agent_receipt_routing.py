@@ -45,6 +45,19 @@ def test_binding_failure_does_not_ack_source(tmp_path):
     assert len(inbox.pending('parent')) == 1
 
 
+def test_delivery_never_calls_consumer_for_another_conversation(tmp_path):
+    receipts = ParentReceipts(tmp_path / 'receipts.sqlite')
+    receipts.accept_for_conversation('parent', 'original', event())
+    seen = []
+    assert receipts.deliver_for_conversation('parent', 'switched', commit=seen.append) == []
+    assert seen == []
+    assert receipts.deliver_for_conversation('parent', 'original', commit=seen.append) == []
+    assert seen == [event()]
+    assert receipts.pending_for_conversation('parent', 'original') == [event()]
+    assert receipts.deliver_for_conversation('parent', 'original', commit=lambda e: True) == ['completion']
+    assert receipts.pending_for_conversation('parent', 'original') == []
+
+
 def test_existing_database_is_migrated_without_losing_receipts(tmp_path):
     import sqlite3
     path = tmp_path / 'receipts.sqlite'

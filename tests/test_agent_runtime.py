@@ -37,7 +37,10 @@ async def test_runtime_claim_bind_persist_settle_before_notify(tmp_path):
         calls.append('notify')
     ident = await run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
         parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
-        branch=None, evidence=[], supported_levels=[], notify=notify)
+        branch=None, evidence=[], supported_levels=[], notify=notify,
+        parent_conversation='original-chat')
+    assert AgentRegistry(tmp_path / 'registry.sqlite').parent_conversation('parent', 'child') == 'original-chat'
+    assert registry.parent_conversation('other', 'child') is None
     assert inbox.get('parent', ident)['status'] == 'completed'
     assert calls == ['start', 'prompt', 'close', 'notify']
 

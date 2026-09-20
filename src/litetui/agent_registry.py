@@ -20,6 +20,9 @@ class AgentRegistry:
                        'child_id TEXT PRIMARY KEY, parent TEXT NOT NULL, '
                        'state TEXT NOT NULL, conversation_id TEXT, pid INTEGER, '
                        'process_created TEXT, completion_id TEXT, created REAL NOT NULL)')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(agents)')}
+            if 'parent_conversation' not in columns:
+                db.execute('ALTER TABLE agents ADD COLUMN parent_conversation TEXT')
 
     @contextmanager
     def _transaction(self):
@@ -36,8 +39,10 @@ class AgentRegistry:
         finally:
             db.close()
 
-    def claim(self, parent, child_id, *, limit):
+    def claim(self, parent, child_id, *, limit, parent_conversation=None):
         parent, child_id = _identity(parent), _identity(child_id)
+        if parent_conversation is not None:
+            parent_conversation = _identity(parent_conversation)
         if type(limit) is not int or limit < 1:
             raise LaunchBlocked('Invalid concurrency budget')
         with self._transaction() as db:
@@ -46,8 +51,9 @@ class AgentRegistry:
             if count >= limit:
                 raise LaunchBlocked('Child concurrency budget exhausted')
             try:
-                db.execute('INSERT INTO agents(child_id,parent,state,created) VALUES (?,?,?,?)',
-                           (child_id, parent, 'claimed', time.time()))
+                db.execute('INSERT INTO agents(child_id,parent,state,created,parent_conversation) '
+                           'VALUES (?,?,?,?,?)',
+                           (child_id, parent, 'claimed', time.time(), parent_conversation))
             except sqlite3.IntegrityError as exc:
                 raise LaunchBlocked('Child identity already claimed') from exc
 
@@ -62,6 +68,13 @@ class AgentRegistry:
                                  (conversation_id, pid, created, parent, child_id)).rowcount
             if changed != 1:
                 raise LaunchBlocked('Child is not an unbound claim owned by this parent')
+
+    def parent_conversation(self, parent, child_id):
+        """Trusted launch routing remains available after process settlement."""
+        with self._transaction() as db:
+            row = db.execute('SELECT parent_conversation FROM agents WHERE parent=? AND child_id=?',
+                             (_identity(parent), _identity(child_id))).fetchone()
+        return row[0] if row else None
 
     def active(self, parent):
         with self._transaction() as db:
