@@ -36,7 +36,12 @@ def without_invocation(app, candidate):
     ordinary user intent. Never mutate the effective settings to save them.
     """
     from copy import deepcopy
+    import os
     result = deepcopy(candidate)
+    for key, saved in getattr(app.settings, '_saved_values', {}).items():
+        env = st.ENV_OVERRIDES.get(key)
+        if env and os.environ.get(env) and getattr(candidate, key) == getattr(app.settings, key):
+            setattr(result, key, deepcopy(saved))
     for key, saved in getattr(app, '_invocation_saved_values', {}).items():
         if getattr(candidate, key) == getattr(app.settings, key):
             setattr(result, key, deepcopy(saved))

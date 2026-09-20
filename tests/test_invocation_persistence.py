@@ -163,3 +163,20 @@ def test_environment_then_cli_backend_never_becomes_new_conversation_default(tmp
     LiteTUI._adopt_convo_settings(app, born=True)
     assert convo_settings.load(directory).backend == 'lmstudio'
     assert json.loads((tmp_path / 'settings.json').read_text())['backend'] == 'lmstudio'
+
+
+def test_environment_only_clone_save_does_not_persist_effective_backend(tmp_path, monkeypatch):
+    import json
+    from dataclasses import replace
+    from litetui import settings as st
+    from litetui.settings_runtime import persist_settings
+    (tmp_path / 'settings.json').write_text(json.dumps({'backend': 'lmstudio'}))
+    monkeypatch.setattr(st, 'settings_path', lambda *args, **kwargs: tmp_path / 'settings.json')
+    monkeypatch.setenv('LITETUI_BACKEND', 'ninfer')
+    effective = st.load(tmp_path)
+    app = NS(settings=effective, convo_dir=None)
+    persist_settings(app, replace(effective, tts_timeout=155))
+    saved = json.loads((tmp_path / 'settings.json').read_text())
+    assert saved['backend'] == 'lmstudio'
+    assert saved['tts_timeout'] == 155
+    assert effective.backend == 'ninfer'
