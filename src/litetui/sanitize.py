@@ -160,6 +160,8 @@ def reset_terminal_modes() -> None:
     if stream is None:
         stream = sys.stdout
     try:
+        if not stream.isatty():
+            return
         stream.write(_MOUSE_OFF + _MOUSE_ON)
         stream.flush()
     except Exception:
