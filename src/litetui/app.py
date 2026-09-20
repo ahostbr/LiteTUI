@@ -1456,6 +1456,7 @@ class LiteTUI(App):
         first_prompt: str | None = None,
         system_prompt: str | None = None,
         initial_model: str | None = None,
+        initial_backend: str | None = None,
         tool_profile: str | None = None,
         plan_mode: bool = False,
         convo_id: str | None = None,
@@ -1466,6 +1467,9 @@ class LiteTUI(App):
         self._first_prompt = first_prompt
         self._cli_system_prompt = system_prompt
         self._cli_initial_model = initial_model
+        if initial_backend not in (None, 'codex', 'lmstudio', 'llamacpp', 'ninfer'):
+            raise ValueError('Unsupported invocation backend')
+        self._cli_initial_backend = initial_backend
         self._cli_tool_profile = tool_profile
         # T558 plan mode. SESSION-ONLY, deliberately not persisted to settings:
         # a mode that survives a restart is a mode you forget you are in, and
@@ -1483,6 +1487,9 @@ class LiteTUI(App):
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
+        if initial_backend is not None:
+            self.settings.backend = initial_backend
+            self.settings.backend_chosen = True
         hook_host.initialize(self)
         self.conversation: list[dict] = []
         #: T691: the conversation's own settings, once one is open. None
@@ -3846,6 +3853,9 @@ class LiteTUI(App):
             env = settings_mod.ENV_OVERRIDES.get(key)
             if env and os.environ.get(env):
                 setattr(effective_cs, own, getattr(self.settings, key))
+        if getattr(self, '_cli_initial_backend', None):
+            effective_cs.backend = self._cli_initial_backend
+            self.settings.backend = self._cli_initial_backend
         self._adopt_convo_backend(effective_cs)
         if getattr(getattr(self, '_backend', None), 'name', None) != previous_backend:
             # The previous engine's catalog says nothing about this engine.

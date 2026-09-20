@@ -34,6 +34,7 @@ def main() -> None:
     )
     parser.add_argument("--version", "-V", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--rpc", action="store_true", help="headless JSONL-over-stdio mode")
+    parser.add_argument("--backend", choices=['codex', 'lmstudio', 'llamacpp', 'ninfer'], default=None, help='invocation-only backend selection')
     parser.add_argument("--model", type=str, default=None, help="model slug to select on start")
     parser.add_argument("--prompt", type=str, default=None, help="first turn to submit once ready")
     parser.add_argument("--system-prompt", type=str, default=None, help="prepend a system message")
@@ -92,6 +93,7 @@ def main() -> None:
         first_prompt=args.prompt,
         system_prompt=args.system_prompt,
         initial_model=args.model,
+        initial_backend=args.backend,
         tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
         plan_mode=args.mode == "plan",
         convo_id=args.convo,
