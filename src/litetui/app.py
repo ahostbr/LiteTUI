@@ -5534,7 +5534,13 @@ class LiteTUI(App):
         if anchor is None:
             return True
         try:
-            return log.scroll_y >= anchor - 2
+            # Collapsing/reflowing content can put the old anchor below the
+            # reachable tail. A reader at the new bottom must be able to relock.
+            reachable_anchor = min(anchor, getattr(log, 'max_scroll_y', anchor))
+            following = log.scroll_y >= reachable_anchor - 2
+            if following and reachable_anchor < anchor:
+                self._follow_anchor = reachable_anchor
+            return following
         except Exception:
             # Geometry unavailable: fail OPEN, exactly as _at_bottom does. An
             # over-eager scroll is a visual nit; a dead autoscroll is this bug.
