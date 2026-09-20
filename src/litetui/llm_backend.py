@@ -1718,7 +1718,12 @@ class LMStudioBackend(_VramGate):
         def _unload() -> None:
             lms = self._sdk()
             try:
-                lms.llm(key).unload()
+                # llm(key) is acquire-or-load: using it for unload can load an
+                # absent model outside admission. Only use existing handles.
+                for model in lms.list_loaded_models():
+                    if model.identifier == key:
+                        model.unload()
+                        break
             except Exception as e:
                 runtime_log.record_error(
                     "lmstudio.unload_failed", detail=f"unload of {key!r} at {self._host} — {e}",
