@@ -4344,6 +4344,7 @@ class LiteTUI(App):
         from litetui.task_supervisor import process_creation_identity
         from litetui.gui_rpc import OPERATIONS
         self._rpc_emit({
+            'conversation_id': self.convo_id,
             'pid': os.getpid(),
             'process_created': process_creation_identity(os.getpid()),
             'thinking_level': getattr(self, '_cli_effective_thinking', None) or getattr(self, '_thinking_level', None),

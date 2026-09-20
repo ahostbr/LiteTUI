@@ -15,6 +15,7 @@ class AgentProcess:
     def __init__(self):
         self.process = None
         self.ready = False
+        self.conversation_id = None
         self.diagnostics = deque(maxlen=100)
         self._stderr = None
         self._job = None
@@ -98,9 +99,15 @@ class AgentProcess:
             level = spec.reasoning_effort if spec.reasoning_effort is not None else spec.thinking_level
             if level is not None and event.get('thinking_level') != level:
                 raise LaunchBlocked('Child effective thinking differs from launch request')
+            from litetui.agent_inbox import _identity
+            try:
+                conversation_id = _identity(event.get('conversation_id'))
+            except ValueError as exc:
+                raise LaunchBlocked('Child conversation identity missing or invalid') from exc
             validate_process_identity(event, owned_pid=self.process.pid, probe=probe)
             if self.process.returncode is not None:
                 raise LaunchBlocked('Child exited during readiness')
+            self.conversation_id = conversation_id
             self.ready = True
             return event
         except BaseException:
@@ -199,3 +206,38 @@ def python_child_argv(*, module=None, script=None, args=()):
     config = {'module': module is not None, 'target': module or str(script),
               'args': list(args), 'paths': [p for p in sys.path if p]}
     return [getattr(sys, '_base_executable', sys.executable), '-S', '-c', bootstrap, json.dumps(config)]
+
+
+async def finish_child(process, inbox, *, parent, child_id, branch, evidence, notify, timeout=300):
+    """Commit outcome after bounded process cleanup, then notify the parent.
+
+    Process termination is not local-model absence; resource settlement must be
+    reported separately by the backend coordinator before releasing capacity.
+    """
+    from litetui.agent_inbox import _identity
+    _identity(process.conversation_id)
+    cancelled = None
+    try:
+        outcome = await process.collect_turn(timeout=timeout)
+    except asyncio.CancelledError as exc:
+        cancelled = exc
+        outcome = {'status': 'cancelled', 'summary': 'Parent cancelled child collection'}
+    except Exception as exc:
+        outcome = {'status': 'failed', 'summary': f'{type(exc).__name__}: {exc}'}
+    cleanup_error = None
+    try:
+        closed = await process.close()
+    except Exception as exc:
+        closed = False
+        cleanup_error = f'{type(exc).__name__}: {exc}'
+    result = {**outcome, 'child_id': child_id, 'conversation_id': process.conversation_id,
+              'branch': branch, 'evidence': list(evidence),
+              'cleanup': {'state': 'confirmed' if closed else 'unconfirmed',
+                          'scope': 'owned process tree only', 'error': cleanup_error,
+                          'model_residency': 'not verified'}}
+    completion = inbox.persist(parent, result)
+    if cancelled is not None:
+        # Durable pending result is replayable; preserve caller cancellation.
+        raise cancelled
+    notify({'completion_id': completion, 'result': inbox.get(parent, completion)})
+    return completion

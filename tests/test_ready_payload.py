@@ -289,3 +289,9 @@ def test_ready_reports_effective_thinking_and_kernel_identity():
     assert ready['thinking_level'] == 'high'
     assert ready['pid'] == os.getpid()
     assert ready['process_created'] == process_creation_identity(os.getpid())
+
+
+def test_ready_reports_real_repository_conversation_identity():
+    a = _app()
+    a.convo_id = 'owned-conversation'
+    assert _ready(a)['conversation_id'] == 'owned-conversation'

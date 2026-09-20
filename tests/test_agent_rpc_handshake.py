@@ -12,7 +12,7 @@ async def test_real_rpc_envelope_checks_effective_state_and_owned_pid(tmp_path):
     process.process = SimpleNamespace(pid=123, returncode=None)
     event = {'type':'ready','launch_status':'ready','backend':'codex','model':'model',
              'cwd':str(tmp_path),'tool_profile':'autonomous','thinking_level':'high',
-             'pid':123,'process_created':'stamp'}
+             'pid':123,'process_created':'stamp','conversation_id':'actual-convo'}
     async def receive(**kwargs): return event
     process.receive = receive
     async def close(**kwargs):
