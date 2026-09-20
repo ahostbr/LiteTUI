@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from litetui import settings_runtime
 from litetui import convo_settings as convo_settings_mod
 from litetui import harness as harness_mod
 from litetui import second_instance
@@ -2765,7 +2766,7 @@ class LiteTUI(App):
             return
         self.settings.tool_always_allow.append(key)
         try:
-            settings_mod.save(self.settings)
+            settings_runtime.persist_or_raise(self, self.settings)
         except OSError:
             self._system(
                 f"could not save the always-allow rule for {key} "
@@ -3366,7 +3367,7 @@ class LiteTUI(App):
         # surfaces onto it.
         self.settings.tools_enabled = self.tools_enabled
         try:
-            settings_mod.save(self.settings)
+            settings_runtime.persist_or_raise(self, self.settings)
         except OSError:
             # A toggle that lasts one session beats a crash on Ctrl+T. Said
             # out loud rather than swallowed: a silent half-success here is
@@ -3620,7 +3621,7 @@ class LiteTUI(App):
         # `_active_tool_profile` are transient — see `chosen_tool_profile`.
         self._remember_for_this_convo("tool_policy_profile", profile)
         try:
-            settings_mod.save(self.settings)
+            settings_runtime.persist_or_raise(self, self.settings)
         except OSError:
             # Same call as Ctrl+T: said out loud, never swallowed. A silent
             # half-success is the disagreement this persistence exists to end.
@@ -3803,9 +3804,35 @@ class LiteTUI(App):
 
         cs = convo_settings_mod.load(self.convo_dir)
         self._convo_settings = cs
+        from copy import deepcopy
+        from litetui.settings_scope import SETTING_SPECS, SettingScope
+        self.settings = deepcopy(self.settings)
+        for key, value in cs.execution.items():
+            spec = SETTING_SPECS.get(key)
+            if spec is not None and spec.scope == SettingScope.CONVERSATION:
+                setattr(self.settings, key, settings_mod._coerce(key, deepcopy(value), getattr(self.settings, key)))
+        import os
+        for key, env in settings_mod.ENV_OVERRIDES.items():
+            if os.environ.get(env):
+                setattr(self.settings, key, settings_mod._coerce(key, os.environ[env], getattr(self.settings, key)))
+        for diagnostic in getattr(cs, '_diagnostics', ()):
+            self._system(f'Conversation settings warning: {diagnostic}')
+        current_backend = getattr(self, '_backend', None)
+        if current_backend is not None and hasattr(current_backend, 'set_settings'):
+            current_backend.set_settings(self.settings)
         # Apply through the BACKING fields, not the properties: applying a
         # stored value is not a new choice and must not write the file back.
-        model = convo_settings_mod.resolved(cs, self.settings, "model")
+        previous_backend = getattr(getattr(self, '_backend', None), 'name', None)
+        effective_cs = deepcopy(cs)
+        for own, key in convo_settings_mod.BORN_FROM.items():
+            env = settings_mod.ENV_OVERRIDES.get(key)
+            if env and os.environ.get(env):
+                setattr(effective_cs, own, getattr(self.settings, key))
+        self._adopt_convo_backend(effective_cs)
+        if getattr(getattr(self, '_backend', None), 'name', None) != previous_backend:
+            # The previous engine's catalog says nothing about this engine.
+            self.available_models = []
+        model = convo_settings_mod.resolved(effective_cs, self.settings, "model")
         if model and self.available_models and model not in self.available_models:
             # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
             # the server no longer has — it was uninstalled, or this is another
@@ -3822,9 +3849,8 @@ class LiteTUI(App):
             model = self.settings.default_model
         if model:
             self._model_id = model
-        level = convo_settings_mod.resolved(cs, self.settings, "thinking_level")
+        level = convo_settings_mod.resolved(effective_cs, self.settings, "thinking_level")
         self._thinking_level = None if level in (None, "default") else level
-        self._adopt_convo_backend(cs)
         # 🔴 `--tool-profile` OUTRANKS THE REMEMBERED CHOICE AND NEVER BECOMES
         # IT (T695, Sentinel's ruling). An explicit invocation beats a stored
         # default — but a flag that wrote itself into the conversation file
@@ -3857,6 +3883,10 @@ class LiteTUI(App):
             self.settings.model_infer_overrides = overrides
             if is_codex:
                 self._thinking_level = None if effort == "default" else effort
+
+        # Restoring is not editing: later command saves diff only new intent.
+        from dataclasses import asdict
+        object.__setattr__(self.settings, '_baseline', asdict(self.settings))
 
     def _adopt_convo_backend(self, cs) -> None:
         """Put this conversation back on the engine it was using.
@@ -4306,7 +4336,8 @@ class LiteTUI(App):
             want = self._cli_initial_model
             loaded = {r.key for r in self.model_rows.values() if r.loaded}
             if want in loaded:
-                self.model_id = want
+                # Invocation-only choice must not rewrite remembered selection.
+                self._model_id = want
                 self._update_header()
                 self._fetch_ctx_window()
             elif want in self.available_models:
@@ -5121,7 +5152,7 @@ class LiteTUI(App):
         s = self.settings
         s.backend = choice
         s.backend_chosen = True
-        settings_mod.save(s)
+        settings_runtime.persist_or_raise(self, s)
         # Deliberately NOT shutting the old engine down: a mid-session flip that
         # evicted the resident model would make flipping back cost a full reload.
         # VRAM is freed explicitly (/unload) or at app exit (atexit).
@@ -7797,7 +7828,7 @@ class LiteTUI(App):
             return
         st.theme_name = theme_name
         try:
-            settings_mod.save(st)
+            settings_runtime.persist_or_raise(self, st)
         except OSError:
             pass  # a theme that lasts one session beats a crash on switch
 
@@ -8299,7 +8330,11 @@ class LiteTUI(App):
             # name. Re-run Textual's CSS watcher or its background stays stale.
             self.mutate_reactive(App.theme)
         try:
-            path = settings_mod.save(new)
+            save_result = settings_runtime.persist_settings(self, new, baseline=old)
+            failures = [item.error for item in save_result.persistence if not item.saved]
+            if failures:
+                raise OSError('; '.join(failures))
+            path = Path(save_result.persistence[0].destination) if save_result.persistence else None
         except OSError as e:
             self._settings_persist_error = str(e)
             # The raw OS error (WinError + path) goes to the sink; chat gets

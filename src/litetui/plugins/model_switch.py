@@ -29,6 +29,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Input, Label, Select, Static, Switch, TabbedContent, TabPane
 
+from litetui import settings_runtime
 from litetui import llm_backend
 from litetui import model_transport
 from litetui import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
@@ -226,7 +227,7 @@ def _set_lanes(app, raw: str) -> str:
                 "(its --max-concurrency). They share the --max-context KV pool.")
     s = app.settings
     s.ninfer_max_concurrency = int(raw)
-    settings_mod.save(s)
+    settings_runtime.persist_or_raise(app, s)
     running = getattr(app.backend, "engine_concurrency", lambda: None)()
     tail = f"; the running engine has {running}" if running else ""
     return (f"NInfer lanes set to {raw} — applies on the next /engine start{tail}. "
@@ -1091,7 +1092,7 @@ class ModelConfigBody(Widget):
             s.model_infer_overrides[self._key] = infer_cfg
         else:
             s.model_infer_overrides.pop(self._key, None)
-        settings_mod.save(s)
+        settings_runtime.persist_or_raise(app, s)
 
         key = self._key
         if app.backend.name == "llamacpp" and load_cfg != prior_load:
@@ -1201,7 +1202,7 @@ def _cmd_modelcfg(app, name: str, arg: str) -> None:
         def selected(level):
             if level:
                 app.settings.model_infer_overrides.setdefault(target, {})["reasoning_effort"] = level
-                settings_mod.save(app.settings)
+                settings_runtime.persist_or_raise(app, app.settings)
                 if target == app.model_id:
                     app.thinking_level = level
                     app.update_header()
@@ -1238,7 +1239,7 @@ def _activate(app) -> None:
     if lms_present != llama_present:
         s.backend = "llamacpp" if llama_present else "lmstudio"
         s.backend_chosen = True
-        settings_mod.save(s)
+        settings_runtime.persist_or_raise(app, s)
         if s.backend != app.backend.name:
             app.backend = llm_backend.make_backend(s)
             app.connect()
@@ -1254,7 +1255,7 @@ def _activate(app) -> None:
             return   # ask again next boot
         s.backend = choice
         s.backend_chosen = True
-        settings_mod.save(s)
+        settings_runtime.persist_or_raise(app, s)
         if choice != app.backend.name:
             app.backend = llm_backend.make_backend(s)
             app.model_id = ""

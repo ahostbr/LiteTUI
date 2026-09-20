@@ -546,6 +546,7 @@ def load(root: Path | None = None) -> Settings:
             for k, v in data.items():
                 if k in known:
                     setattr(s, k, _coerce(k, v, getattr(s, k)))
+    object.__setattr__(s, '_saved_values', asdict(s))
     for name, env_key in ENV_OVERRIDES.items():
         raw = os.environ.get(env_key)
         if raw is not None and raw != "":
@@ -610,10 +611,8 @@ def save(s: Settings, root: Path | None = None) -> Path:
     ⇒ So a save now READS the file, applies only the keys that differ from this
     instance's baseline, and leaves the rest of the file exactly as it found it.
 
-    ⚠️ ENV-SOURCED FIELDS ARE STILL WRITTEN, CHANGED OR NOT — the pre-existing
-    rule, kept deliberately: the file records what the user CHOSE, so unsetting
-    an env var must not silently revert the knob to a default they never picked.
-    They are the one category that is written without having changed.
+    Environment overrides are effective-only: an unrelated save does not
+    persist them. An explicitly changed field is still a persistence request.
 
     🔴 ATOMIC, BECAUSE THE TORN FILE IS WORSE THAN THE LOST FIELD. `write_text`
     truncates before it writes, and `load()` answers an unparseable file with
@@ -650,9 +649,6 @@ def _save_locked(s: Settings, root: Path | None = None) -> Path:
         merged.update(current)
     else:
         merged.update({k: v for k, v in current.items() if base.get(k) != v})
-        for name, env_key in ENV_OVERRIDES.items():
-            if os.environ.get(env_key) and name in current:
-                merged[name] = current[name]
 
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".settings-", suffix=".json")
     try:

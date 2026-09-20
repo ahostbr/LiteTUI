@@ -10,6 +10,16 @@ of real conversations in it.
 from __future__ import annotations
 
 import json
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_execution_environment(monkeypatch):
+    # conftest supplies an LM Studio boot default; these tests characterize
+    # stored choices unless a test explicitly selects an invocation override.
+    for key in ('LITETUI_BACKEND', 'LITETUI_MODEL', 'LITETUI_THINKING'):
+        monkeypatch.delenv(key, raising=False)
+
 from pathlib import Path
 
 from litetui import app as app_mod
@@ -503,7 +513,7 @@ def test_EVERY_declared_field_has_a_writer_or_is_named_as_carried_only() -> None
     from pathlib import Path as _P
 
     app_src = _P(app_mod.__file__).read_text(encoding="utf-8")
-    carried_only = {"seat_name", "seat_id", "seat_tier"}
+    carried_only = {"seat_name", "seat_id", "seat_tier", "schema_version", "execution"}  # snapshot metadata authored by born_from/service
 
     missing = []
     for f in fields_of(cs_mod.ConvoSettings):
@@ -682,3 +692,82 @@ def test_CONTROL_without_the_flag_the_conversation_wins(tmp_path: Path) -> None:
     a._adopt_convo_settings(born=False)
 
     assert a._active_tool_profile == "interactive"
+
+
+def test_resume_never_validates_against_previous_backend_catalog(tmp_path, monkeypatch):
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(backend='codex', model='codex-model'))
+    a = _App(st.Settings(default_model='old-model'), d, backend_name='lmstudio')
+    a.available_models = ['old-model']
+    monkeypatch.setattr(app_mod.llm_backend, 'make_backend', lambda s: _FakeBackend(s.backend))
+    a._adopt_convo_settings(born=False)
+    assert a.model_id == 'codex-model'
+    assert a.backend.name == 'codex'
+    assert not any('falls back' in text for text in a.said)
+
+
+def test_resume_restores_execution_snapshot_without_mutating_defaults(tmp_path):
+    defaults = st.Settings(backend='ninfer', ninfer_host='http://localhost:49260', temperature=0.2)
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.born_from(defaults))
+    defaults.ninfer_host = 'http://localhost:49261'
+    defaults.temperature = 0.8
+    a = _App(defaults, d, backend_name='ninfer')
+    a._adopt_convo_settings(born=False)
+    assert a.settings.ninfer_host == 'http://localhost:49260'
+    assert a.settings.temperature == 0.2
+    assert defaults.ninfer_host == 'http://localhost:49261'
+
+
+def test_resume_keeps_environment_effective_without_rewriting_snapshot(tmp_path, monkeypatch):
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.born_from(st.Settings(ninfer_host='http://saved:49260')))
+    monkeypatch.setenv('LITETUI_NINFER_HOST', 'http://invocation:49260')
+    a = _App(st.Settings(), d)
+    a._adopt_convo_settings(born=False)
+    assert a.settings.ninfer_host == 'http://invocation:49260'
+    assert cs_mod.load(d).execution['ninfer_host'] == 'http://saved:49260'
+
+
+def test_resume_environment_backend_model_override_is_effective_only(tmp_path, monkeypatch):
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(backend='lmstudio', model='saved-model'))
+    monkeypatch.setenv('LITETUI_BACKEND', 'codex')
+    monkeypatch.setenv('LITETUI_MODEL', 'invocation-model')
+    monkeypatch.setattr(app_mod.llm_backend, 'make_backend', lambda s: _FakeBackend(s.backend))
+    a = _App(st.Settings(), d, backend_name='lmstudio')
+    a._adopt_convo_settings(born=False)
+    assert a.backend.name == 'codex'
+    assert a.model_id == 'invocation-model'
+    assert cs_mod.load(d).backend == 'lmstudio'
+    assert cs_mod.load(d).model == 'saved-model'
+
+
+def test_resume_effective_snapshot_is_not_dirty_for_next_unrelated_save(tmp_path):
+    from dataclasses import asdict
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.born_from(st.Settings(temperature=0.2)))
+    defaults = st.Settings(temperature=0.8)
+    defaults._baseline = asdict(defaults)
+    a = _App(defaults, d)
+    a._adopt_convo_settings(born=False)
+    assert a.settings._baseline['temperature'] == 0.2
+
+
+@pytest.mark.asyncio
+async def test_cli_model_selection_is_not_a_persisted_choice(tmp_path):
+    from types import SimpleNamespace
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(model='remembered'))
+    a = _App(st.Settings(), d)
+    a._adopt_convo_settings(born=False)
+    a._cli_initial_model = 'invoked'
+    a._cli_system_prompt = None
+    a._first_prompt = None
+    a.available_models = ['invoked']
+    a.model_rows = {'invoked': SimpleNamespace(key='invoked', loaded=True)}
+    a._update_header = lambda: None
+    a._fetch_ctx_window = lambda: None
+    await app_mod.LiteTUI._apply_cli_args.__wrapped__(a)
+    assert a.model_id == 'invoked'
+    assert cs_mod.load(d).model == 'remembered'
