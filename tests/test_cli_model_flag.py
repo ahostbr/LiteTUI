@@ -187,3 +187,28 @@ def test_invocation_effort_overrides_request_copy_not_backend_preferences():
     app._cli_effective_thinking = 'default'
     assert 'reasoning_effort' not in LiteTUI._effective_request_overrides(app)
     assert original['reasoning_effort'] == 'low'
+
+
+def test_deliberate_thinking_choice_retires_cli_override():
+    recorded = []
+    app = SimpleNamespace(_cli_effective_thinking='high', _cli_thinking_level='high',
+                          _backend=SimpleNamespace(name='codex'),
+                          _remember_for_this_convo=lambda key, value: recorded.append((key, value)))
+    LiteTUI.thinking_level.fset(app, 'low')
+    assert app._cli_effective_thinking is None
+    assert app._cli_thinking_level is None
+    assert ('reasoning_effort', 'low') in recorded
+
+
+def test_cli_reasoning_reaches_serialized_turn_request_without_persistence():
+    import json
+    from litetui.turn_engine import TurnEngine
+    original = {'reasoning_effort': 'low'}
+    app = SimpleNamespace(backend=SimpleNamespace(request_overrides=lambda model: original),
+                          model_id='model', _cli_effective_thinking='high')
+    wire = TurnEngine.chat_request(model_id='model', messages=[{'role': 'user', 'content': 'hi'}],
+        tools_enabled=False, max_tokens_tools=100, max_tokens_chat=100,
+        request_overrides=LiteTUI._effective_request_overrides(app), thinking_level='low',
+        backend_name='codex')
+    assert json.loads(json.dumps(wire))['extra_body']['reasoning_effort'] == 'high'
+    assert original == {'reasoning_effort': 'low'}

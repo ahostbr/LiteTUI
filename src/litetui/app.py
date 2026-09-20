@@ -1525,7 +1525,7 @@ class LiteTUI(App):
         # From settings, not hardcoded. This was `None`, so a SAVED thinking
         # level was ignored on every launch — and it looked like it worked
         # because saving it in the same session did apply it.
-        self.thinking_level: str | None = self.settings.thinking_level
+        self._thinking_level = self.settings.thinking_level
         # One warning per session: this is a config truth, not a per-turn event.
         self._reasoning_ignored_warned = False
         # T540: the levels this model actually supports (from probe or seed).
@@ -3715,6 +3715,8 @@ class LiteTUI(App):
 
     @thinking_level.setter
     def thinking_level(self, value: str | None) -> None:
+        self._cli_thinking_level = None
+        self._cli_effective_thinking = None
         self._thinking_level = value
         self._remember_for_this_convo("thinking_level", value)
         # Ryan wrote "think level WHEN ON CODEX" as its own item, and it is a
