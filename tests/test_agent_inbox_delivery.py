@@ -121,3 +121,22 @@ def test_replay_failure_keeps_pending_and_other_parent_cannot_consume(tmp_path):
     with pytest.raises(OSError):
         inbox.replay('parent', accept=failed)
     assert len(inbox.pending('parent')) == 1
+
+def test_crash_between_acceptance_and_ack_redelivers_same_id(tmp_path):
+    from litetui.agent_inbox import AgentInbox
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    completion = inbox.persist('parent', result())
+    accepted = set()
+    effects = []
+    def accept(event):
+        if event['completion_id'] not in accepted:
+            accepted.add(event['completion_id'])
+            effects.append(event['result'])
+        return True
+    def crashed(*args): raise OSError('ACK interrupted')
+    inbox.acknowledge = crashed
+    with pytest.raises(OSError):
+        inbox.replay('parent', accept=accept)
+    restored = AgentInbox(tmp_path / 'inbox.sqlite')
+    assert restored.replay('parent', accept=accept) == [completion]
+    assert effects == [result()]
