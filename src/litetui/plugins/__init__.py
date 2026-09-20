@@ -67,7 +67,6 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.themes_plugin",
     "litetui.plugins.mark_plugin",
     "litetui.plugins.misc",
-    "litetui.plugins.webview",   # /browser — the in-TUI browser (webview ask)
     "litetui.plugins.convo",
     "litetui.plugins.model_switch",
     "litetui.plugins.help_plugin",
