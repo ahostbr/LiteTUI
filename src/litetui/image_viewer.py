@@ -2,12 +2,19 @@
 
 The ask (Ryan): pasting an image should paint it in the sidebar, not just attach
 it. A terminal cannot paint pixels on its own — only a library that speaks a
-graphics protocol can — so ``textual-image`` is the one new dependency. It picks
-the best available protocol at import time (sixel / kitty's TGP where the
-terminal has one, coloured half-cells otherwise, plain unicode when there is no
-tty at all) and therefore always shows *something*. Pillow (already a
-dependency) does the decode; this module only hosts the result in the same
-sidebar the rest of the codebase already opens dialogs in.
+graphics protocol can — so ``textual-image`` is the one new dependency. Pillow
+(already a dependency) does the decode; this module only hosts the result in
+the same sidebar the rest of the codebase already opens dialogs in.
+
+The render backend is NEVER chosen by textual-image's own auto-detect: that
+runs a LIVE stdin escape probe (DA1 for sixel, kitty TGP for kitty, plus a
+CSI 16 t cell-size query). Inside a running Textual app, Textual owns stdin,
+so the terminal's RESPONSE bytes are delivered to Textual as input and land
+in the focused Input as typed text (``[?61;4;6;7...c``, ``[<35;33;27M``).
+Instead the backend is picked from the environment (Windows Terminal ->
+sixel; else the densest unicode mode, half-cell) and the one remaining tty
+query (cell size) is run once, pre-run, while we still own the terminal. See
+``select_backend`` / ``init_image_backend``.
 
 A source that cannot be decoded never crashes the app: it paints a
 "cannot render" line instead.
@@ -16,8 +23,9 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, VerticalScroll
@@ -62,6 +70,67 @@ def _to_pil(source: Any):
         # copy() gives an image that no longer references the (about-to-close)
         # open handle — the widget can keep painting it after the context exits.
         return im.copy()
+
+
+# ── backend selection (no tty round-trip) ───────────────────────────────
+
+_IMAGE_WIDGET_CLS: Any = None
+
+
+def select_backend(env: Mapping[str, str] = os.environ) -> str:
+    """The graphics backend from the ENVIRONMENT ONLY: ``"sixel"`` | ``"halfcell"``.
+
+    No tty round-trip, deliberately: a live capability probe's terminal
+    response is exactly the text that leaked into the Input box while Textual
+    owned the TTY. Env is deterministic: Windows Terminal sets ``WT_SESSION``
+    and has shipped sixel since v1.22 (real pixels); everything else gets the
+    densest unicode mode (half-cell, 2 px/cell) rather than the probe-broken
+    1-block-per-cell fallback.
+    """
+    if env.get("WT_SESSION"):
+        return "sixel"
+    return "halfcell"
+
+
+def init_image_backend() -> Any:
+    """Bind the env-selected render widget class and seed textual-image's
+    cell-size cache. Call ONCE before the Textual app takes the terminal
+    (the entry points: ``app.main`` / ``cli main``); idempotent.
+
+    The selection probes are never trusted (see ``select_backend``), but the
+    CSI 16 t cell-size query still has to run while WE own stdin: on Windows
+    its ioctl path always fails, so an unseeded first render would fire it
+    in-app and leak the response the same way the DA1 probe did. textual-image
+    caches the result on the function itself, so every later call from the
+    render path hits the cache and never touches the tty. Headless / non-tty
+    contexts degrade to env vars / built-in defaults without probing at all.
+
+    Returns the bound widget class, or ``None`` if textual-image is missing
+    (``open_image_viewer`` already degrades in that case).
+    """
+    global _IMAGE_WIDGET_CLS
+    if _IMAGE_WIDGET_CLS is not None:
+        return _IMAGE_WIDGET_CLS
+
+    try:
+        import textual_image  # noqa: F401 — same guard as open_image_viewer
+    except Exception:
+        return None
+
+    from textual_image._terminal import get_cell_size
+    from textual_image import widget as ti_widget
+
+    try:
+        get_cell_size()  # seed the cache while we still own stdin
+    except Exception:
+        pass  # no tty at all: render path degrades to env/defaults, same as before
+
+    _IMAGE_WIDGET_CLS = (
+        ti_widget.SixelImage
+        if select_backend() == "sixel"
+        else ti_widget.HalfcellImage
+    )
+    return _IMAGE_WIDGET_CLS
 
 
 class ImageViewerBody(Widget):
@@ -120,13 +189,19 @@ class ImageViewerBody(Widget):
         yield SwapButton()
 
     def _make_image(self):
-        # Imported here, not at module import, for two reasons: the guard
-        # (a missing textual-image degrades to the text line instead of an
-        # ImportError at import time), and because its cell-size probe is best
-        # run once Textual owns the terminal, not while the module loads.
-        from textual_image.widget import Image as ImageWidget
-
-        return ImageWidget(self._pil, id="iv-img")
+        # NEVER the auto ``textual_image.widget.Image`` alias: importing its
+        # package re-runs the live stdin capability probes at compose time —
+        # in-app, where Textual owns the TTY (the Input-box leak). The
+        # explicit SixelImage / HalfcellImage classes carry no selection
+        # probe, and ``init_image_backend`` (idempotent; the entry points
+        # call it pre-run) has already seeded the cell-size cache, so the
+        # render path touches the tty never.
+        cls = init_image_backend()
+        if cls is None:
+            # Unreachable: open_image_viewer already degraded for a missing
+            # textual-image before this body was composed.
+            raise RuntimeError("textual-image is not installed")
+        return cls(self._pil, id="iv-img")
 
     # ── the swap contract (carry the source so a pop to modal re-renders) ──
     def get_state(self) -> dict:
@@ -138,6 +213,11 @@ class ImageViewerBody(Widget):
 
     # ── events ───────────────────────────────────────────────────────────
     def on_button_pressed(self, event: "Button.Pressed") -> None:
+        # No terminal-mode restore needed on close: the sixel / half-cell
+        # render paths emit only graphics/printable segments — they enable
+        # no mouse tracking or DECSET. Textual owns mouse reporting itself
+        # (and resets it at app exit), and the one pre-run raw-input capture
+        # restores the console mode in its own finally. Input stays clean.
         if event.button.id == "iv-close":
             close_dialog(self, None)
 

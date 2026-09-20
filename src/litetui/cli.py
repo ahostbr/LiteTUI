@@ -98,6 +98,13 @@ def main() -> None:
         **app_kwargs,
     )
 
+    from litetui.image_viewer import init_image_backend
+
+    # Pre-run, before the fd-1 redirect below: the image backend bind +
+    # cell-size seed must happen while we still own the tty (their terminal
+    # replies would otherwise be read by Textual and leak into the Input).
+    init_image_backend()
+
     if args.rpc:
         # Import rpc first so it captures the real fd 1 via os.dup(1), then
         # redirect the original fd 1 to stderr — Textual's escape codes go

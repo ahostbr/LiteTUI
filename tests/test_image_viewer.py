@@ -225,3 +225,75 @@ async def test_reclick_affordance_reopens_viewer(tmp_path):
             n=40,
         )
         assert ok, "clicking the affordance must re-open the sidebar viewer"
+
+
+# ── backend selection (the escape-leak fix, 2026-09-19) ─────────────────
+#
+# The bugs: textual-image's auto-detect runs LIVE stdin escape probes (DA1 /
+# kitty TGP / CSI 16 t) at import and on first render. In-app, Textual owns
+# stdin, so the terminal's REPLIES ([?61;4;6;7...c, [<35;33;27M) landed in the
+# focused Input as typed text, and the image degraded to a mosaic. The fix:
+# pick the backend from ENV only, and seed the cell-size cache pre-run.
+
+
+def test_select_backend_windows_terminal_uses_sixel():
+    # WT_SESSION is set by Windows Terminal (sixel since v1.22) -> real pixels.
+    from litetui.image_viewer import select_backend
+
+    assert select_backend({"WT_SESSION": "abc123"}) == "sixel"
+
+
+def test_select_backend_without_wt_uses_halfcell():
+    # No WT_SESSION -> the densest unicode mode (half-cell), never the
+    # 1-block-per-cell fallback. Pure function: env dict, no tty round-trip.
+    from litetui.image_viewer import select_backend
+
+    assert select_backend({}) == "halfcell"
+    assert (
+        select_backend({"TERM_PROGRAM": "vscode", "TERM": "xterm-256color"})
+        == "halfcell"
+    )
+
+
+def test_init_binds_env_selected_class_and_seeds_cell_cache(monkeypatch):
+    """init_image_backend binds the env-selected EXPLICIT class (never the
+    auto alias) and seeds the cell-size cache, so the render path can never
+    fire a tty query while Textual owns stdin."""
+    import litetui.image_viewer as iv
+    from textual_image._terminal import get_cell_size
+
+    monkeypatch.setenv("WT_SESSION", "test-session")
+    saved = iv._IMAGE_WIDGET_CLS
+    iv._IMAGE_WIDGET_CLS = None
+    try:
+        iv.init_image_backend()
+        assert iv._IMAGE_WIDGET_CLS.__name__ == "Image"
+        assert iv._IMAGE_WIDGET_CLS.__module__ == "textual_image.widget.sixel"
+        assert getattr(get_cell_size, "_result", None) is not None, (
+            "cell size must be cached pre-run; an uncached first render "
+            "would probe the tty while Textual owns it")
+    finally:
+        iv._IMAGE_WIDGET_CLS = saved
+
+
+def test_make_image_uses_env_selected_class(monkeypatch):
+    """The composed widget is the env-selected class, with the #iv-img id."""
+    import litetui.image_viewer as iv
+
+    saved = iv._IMAGE_WIDGET_CLS
+    iv._IMAGE_WIDGET_CLS = None
+    try:
+        monkeypatch.setenv("WT_SESSION", "test-session")
+        body = ImageViewerBody(_png_b64())
+        img = body._make_image()
+        assert img.__class__.__module__ == "textual_image.widget.sixel"
+        assert img.id == "iv-img"
+
+        iv._IMAGE_WIDGET_CLS = None
+        monkeypatch.delenv("WT_SESSION", raising=False)
+        body = ImageViewerBody(_png_b64())
+        img = body._make_image()
+        assert img.__class__.__name__ == "HalfcellImage"
+        assert img.id == "iv-img"
+    finally:
+        iv._IMAGE_WIDGET_CLS = saved

@@ -8506,6 +8506,13 @@ def wants_ansi_fallback() -> bool:
 
 
 def main():
+    from litetui.image_viewer import init_image_backend
+
+    # Pre-run, while we still own the tty: seeds the image cell-size cache
+    # and binds the env-selected render backend (textual-image's own probes
+    # would otherwise fire in-app and leak their terminal replies into the
+    # focused Input).
+    init_image_backend()
     LiteTUI(ansi_color=wants_ansi_fallback()).run()
 
 
