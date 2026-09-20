@@ -93,6 +93,16 @@ def apply_saved_result(app, requested, result):
                     app._thinking_level = None if want in (None, 'default') else want
                 elif key == 'tool_policy_profile':
                     app._active_tool_profile = want
+                elif key == 'tts_enabled' and not want:
+                    from litetui import voice_backend
+                    voice_backend.stop()
+                if key in ('tts_enabled', 'autoscroll'):
+                    refresh = getattr(app, '_refresh_prompt_controls', None)
+                    if refresh is not None:
+                        refresh()
+                    if key == 'autoscroll' and hasattr(app, '_next_follow_generation'):
+                        app._next_follow_generation()
+                        app._scroll_down()
                 statuses.append(RuntimeSettingStatus(key, spec.scope.value, 'applied',
                                 requested=want, effective=deepcopy(getattr(effective, key))))
             except Exception as exc:

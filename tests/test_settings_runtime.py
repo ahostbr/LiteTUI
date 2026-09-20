@@ -61,6 +61,9 @@ def test_real_settings_callback_persists_backend_only_in_conversation(tmp_path, 
         _settings_service = svc
         backend = SimpleNamespace(name='lmstudio')
         theme = settings.theme_name
+        def _refresh_prompt_controls(self): pass
+        def _next_follow_generation(self): pass
+        def _scroll_down(self): pass
         def _bind_mic_hotkey(self): pass
         def _register_custom_themes(self): pass
         def _update_header(self): pass
@@ -213,3 +216,22 @@ def test_reconnect_factory_failure_preserves_effective_backend(tmp_path, monkeyp
     assert app.backend is old_backend
     assert app.settings.backend == 'lmstudio'
     assert svc.snapshot('a').saved.backend == 'codex'
+
+
+def test_saved_voice_off_stops_current_speech_and_refreshes_controls(tmp_path, monkeypatch):
+    from litetui.settings_runtime import apply_saved_result
+    from litetui.settings_service import SettingsService, SettingChange
+    from litetui import voice_backend
+    from copy import deepcopy
+    svc = SettingsService(tmp_path)
+    snap = svc.create_conversation('voice')
+    called = []
+    app = SimpleNamespace(settings=deepcopy(snap.effective), _refresh_prompt_controls=lambda: called.append('refresh'))
+    app.settings.tts_enabled = True
+    requested = deepcopy(app.settings)
+    requested.tts_enabled = False
+    result = svc.save_patch('voice', [SettingChange('tts_enabled', False, 'device')], snap.revisions)
+    monkeypatch.setattr(voice_backend, 'stop', lambda: called.append('stop'))
+    apply_saved_result(app, requested, result)
+    assert called == ['stop', 'refresh']
+    assert not app.settings.tts_enabled
