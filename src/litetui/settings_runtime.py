@@ -30,10 +30,20 @@ def without_invocation(app, candidate):
     return result
 
 
+def _retire_saved_invocation(app, candidate, keys):
+    saved = getattr(app, '_invocation_saved_values', {})
+    for key in list(saved):
+        if key in keys and getattr(candidate, key) != getattr(app.settings, key):
+            del saved[key]
+            if key == 'backend':
+                app._cli_initial_backend = None
+
+
 def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
     directory = getattr(app, 'convo_dir', None)
     if directory is None:
         path = st.save(without_invocation(app, candidate))
+        _retire_saved_invocation(app, candidate, {f.name for f in fields(st.Settings)})
         return SettingsSaveResult(persistence=(PersistenceDestinationResult(str(path), 'defaults', True),))
     service = service_for(app)
     snapshot = service.snapshot(directory.name)
@@ -56,6 +66,7 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
     next_baseline = dict(baseline_values)
     for outcome in result.persistence:
         if outcome.saved:
+            _retire_saved_invocation(app, candidate, outcome.fields)
             for key in outcome.fields:
                 next_baseline[key] = getattr(candidate, key)
     from copy import deepcopy

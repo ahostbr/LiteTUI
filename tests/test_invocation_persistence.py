@@ -66,3 +66,18 @@ def test_deliberate_backend_edit_is_not_stripped(tmp_path, monkeypatch):
              _invocation_saved_values={'backend': 'ninfer'})
     persist_settings(app, replace(effective, backend='llamacpp'))
     assert json.loads((tmp_path / 'settings.json').read_text())['backend'] == 'llamacpp'
+
+
+def test_explicit_edit_retires_override_before_next_unrelated_save(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from litetui import settings as st
+    from litetui.settings_runtime import persist_settings
+    import json
+    monkeypatch.setattr(st, 'settings_path', lambda *args, **kwargs: tmp_path / 'settings.json')
+    app = NS(settings=Settings(backend='codex'), convo_dir=None,
+             _invocation_saved_values={'backend': 'ninfer'})
+    chosen = replace(app.settings, backend='llamacpp')
+    persist_settings(app, chosen)
+    app.settings = chosen
+    persist_settings(app, replace(chosen, tts_timeout=123))
+    assert json.loads((tmp_path / 'settings.json').read_text())['backend'] == 'llamacpp'
