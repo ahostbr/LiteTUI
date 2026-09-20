@@ -249,6 +249,17 @@ def _validate_tts_timeout(value: int) -> None:
         raise ValueError("tts_timeout: must be at least 1 second")
 
 
+def _tts_timeout_from_input(raw: str) -> int:
+    """Parse the live Voice control used by the Test voice action."""
+
+    try:
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError("tts_timeout: enter a whole number of seconds") from exc
+    _validate_tts_timeout(value)
+    return value
+
+
 #: Declared once and installed on both the body and its screen; see
 #: `scheduler_ui._CAL_KEYS`. `escape` is on the screen only — `SidePanel`
 #: already binds it to cancel the dialog.
@@ -1690,8 +1701,18 @@ class SettingsBody(Widget):
             voice = self.query_one("#f-tts_edge_voice", Input).value
         else:
             voice = self.query_one("#f-tts_voice", Select).value
+        timeout = getattr(self._start, "tts_timeout", 300)
+        timeout_input = self.query("#f-tts_timeout")
+        if timeout_input:
+            try:
+                timeout = _tts_timeout_from_input(
+                    self.query_one("#f-tts_timeout", Input).value
+                )
+            except ValueError as exc:
+                self.query_one("#voice-status", Static).update(str(exc))
+                return
         ok = voice_backend.speak("This is the LiteTUI voice test.",
-                                 engine=engine, voice=voice or None)
+                                 engine=engine, voice=voice or None, timeout=timeout)
         self.query_one("#voice-status", Static).update(
             "Sent a test line — you should hear it now." if ok
             else "That engine is not installed — use Install, or pick pyttsx3.")
