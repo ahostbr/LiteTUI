@@ -88,3 +88,24 @@ class AgentRegistry:
             row['identity_state'] = ('unknown' if not current else
                                      'matching' if current == row['process_created'] else 'mismatch')
         return rows
+
+    def settle_completion(self, parent, child_id, *, inbox, completion_id):
+        """Release a bound hosted claim only against its immutable stored outcome.
+
+        This accounts for a process slot, never a local model resource lease.
+        Registry and inbox use separate transactions: a crash leaves a retained
+        claim and retry is safe because completion payloads are immutable.
+        """
+        result = inbox.get(parent, completion_id)
+        if (result is None or result.get('child_id') != child_id
+                or result.get('cleanup', {}).get('state') != 'confirmed'):
+            raise LaunchBlocked('Matching durable completion with confirmed cleanup required')
+        with self._transaction() as db:
+            row = db.execute('SELECT * FROM agents WHERE parent=? AND child_id=?',
+                             (_identity(parent), _identity(child_id))).fetchone()
+            if (row is None or not row['conversation_id']
+                    or row['conversation_id'] != result.get('conversation_id')
+                    or (row['completion_id'] and row['completion_id'] != completion_id)):
+                raise LaunchBlocked('Completion differs from registered child identity')
+            db.execute("UPDATE agents SET state='settled', completion_id=? WHERE parent=? AND child_id=?",
+                       (completion_id, parent, child_id))

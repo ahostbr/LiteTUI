@@ -78,3 +78,37 @@ def test_budget_is_shared_across_parents_and_settlement_is_scoped(tmp_path):
     with pytest.raises(LaunchBlocked):
         registry.settle('parent-a', 'child-a', completion_id='conflict', cleanup_confirmed=True)
     registry.claim('parent-b', 'child-b', limit=1)
+
+def test_settlement_checks_stored_completion_identity_and_cleanup(tmp_path):
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    registry.claim('parent', 'child', limit=1)
+    registry.bind('parent', 'child', conversation_id='convo', pid=123, created='stamp')
+    def result(child, convo, state):
+        return {'child_id': child, 'conversation_id': convo, 'status': 'completed',
+                'summary': 'done', 'evidence': [], 'cleanup': {'state': state}}
+    wrong = inbox.persist('parent', result('other', 'convo', 'confirmed'))
+    with pytest.raises(LaunchBlocked):
+        registry.settle_completion('parent', 'child', inbox=inbox, completion_id=wrong)
+    with pytest.raises(LaunchBlocked):
+        registry.settle_completion('parent', 'child', inbox=inbox, completion_id='missing')
+    good = inbox.persist('parent', result('child', 'convo', 'confirmed'))
+    registry.settle_completion('parent', 'child', inbox=inbox, completion_id=good)
+    assert not registry.active('parent')
+
+
+@pytest.mark.parametrize('convo,state', [('wrong', 'confirmed'), ('convo', 'unconfirmed')])
+def test_invalid_completion_retains_claim(tmp_path, convo, state):
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    registry.claim('parent', 'child', limit=1)
+    registry.bind('parent', 'child', conversation_id='convo', pid=123, created='stamp')
+    ident = inbox.persist('parent', {'child_id': 'child', 'conversation_id': convo,
+        'status': 'failed', 'summary': 'failed', 'evidence': [], 'cleanup': {'state': state}})
+    with pytest.raises(LaunchBlocked):
+        registry.settle_completion('parent', 'child', inbox=inbox, completion_id=ident)
+    assert len(registry.active('parent')) == 1
