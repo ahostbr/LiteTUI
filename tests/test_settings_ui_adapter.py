@@ -7,7 +7,11 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from litetui.settings import Settings
-from litetui.settings_apply import PersistenceDestinationResult, SettingsSaveResult
+from litetui.settings_apply import (
+    PersistenceDestinationResult,
+    RuntimeSettingStatus,
+    SettingsSaveResult,
+)
 from litetui.settings_ui_adapter import (
     SettingsConflictError,
     SettingsUiAdapter,
@@ -198,3 +202,69 @@ def test_restore_forces_saved_value_when_effective_value_already_matches_factory
 
     assert [change.key for change in calls[0]] == ["footer_order"]
     assert calls[0][0].value == factory.footer_order
+
+
+def test_path_destination_updates_logical_revision_and_pending_runtime_effective(monkeypatch):
+    _install_scope_registry(monkeypatch)
+    baseline = Settings(footer_order="seat")
+    calls = []
+
+    def save(changes, revisions):
+        calls.append((tuple(changes), dict(revisions)))
+        if len(calls) == 1:
+            return SettingsSaveResult(
+                persistence=(
+                    PersistenceDestinationResult(
+                        destination="C:/settings/settings.json",
+                        scope="device",
+                        saved=True,
+                        revision="g2",
+                        fields=("footer_order",),
+                    ),
+                ),
+                runtime=(
+                    RuntimeSettingStatus(
+                        field="footer_order",
+                        scope="device",
+                        status="pending",
+                        action="restart",
+                        requested="think",
+                        effective="seat",
+                    ),
+                ),
+            )
+        return SettingsSaveResult(
+            persistence=(
+                PersistenceDestinationResult(
+                    destination="C:/settings/settings.json",
+                    scope="device",
+                    saved=True,
+                    revision="g3",
+                    fields=("theme_name",),
+                ),
+            )
+        )
+
+    adapter = SettingsUiAdapter(
+        baseline,
+        snapshot_provider=lambda: SimpleNamespace(
+            saved=baseline,
+            effective=baseline,
+            revisions={"global": "g1", "conversation": "c1"},
+        ),
+        save_patch=save,
+    )
+    first_target = replace(baseline, footer_order="think")
+    adapter.save(first_target)
+
+    assert adapter.committed.footer_order == "think"
+    assert adapter.effective.footer_order == "seat"
+
+    repeat = adapter.save(first_target)
+    assert repeat.has_pending_runtime
+    assert repeat.runtime[0].field == "footer_order"
+
+    adapter.save(replace(first_target, theme_name="monokai"))
+
+    assert [change.key for change in calls[1][0]] == ["theme_name"]
+    assert calls[1][1] == {"global": "g2", "conversation": "c1"}
