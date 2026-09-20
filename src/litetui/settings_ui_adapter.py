@@ -103,6 +103,16 @@ def _result_fields(result: SettingsSaveResult, *, saved: bool) -> set[str]:
     return fields_out
 
 
+def _revision_destination(scope: SettingsScope) -> str | None:
+    """Translate a persistence scope to the service snapshot key."""
+
+    if scope == "conversation":
+        return "conversation"
+    if scope in {"defaults", "device", "app"}:
+        return "global"
+    return None
+
+
 class SettingsUiAdapter:
     """Stateful bridge between a settings draft and host-owned persistence."""
 
@@ -129,6 +139,7 @@ class SettingsUiAdapter:
         )
         self._expected_revisions = dict(self._baseline.revisions) if self._baseline else {}
         self._pending: dict[str, SettingChange] = {}
+        self._runtime_pending: dict[str, RuntimeSettingStatus] = {}
         self.last_result: SettingsSaveResult | None = None
         self.last_conflict: tuple[str, ...] = ()
 
@@ -140,25 +151,55 @@ class SettingsUiAdapter:
     def committed(self) -> Settings:
         return deepcopy(self._committed)
 
+    @property
+    def effective(self) -> Settings:
+        """Return the last known runtime-effective settings snapshot."""
+
+        return deepcopy(self._effective)
+
     def _set_pending(self, changes: Sequence[SettingChange]) -> None:
         self._pending = {change.key: change for change in changes}
+
+    def _merge_runtime(self, result: SettingsSaveResult) -> SettingsSaveResult:
+        """Retain unresolved runtime outcomes across later no-op saves."""
+
+        statuses = dict(self._runtime_pending)
+        for status in result.runtime:
+            if status.status == "applied":
+                statuses.pop(status.field, None)
+            else:
+                statuses[status.field] = status
+        self._runtime_pending = statuses
+        return replace(result, runtime=tuple(statuses.values()))
 
     def _apply_persistence_result(
         self, result: SettingsSaveResult, target: Settings
     ) -> None:
         saved_fields = _result_fields(result, saved=True)
         failed_fields = _result_fields(result, saved=False)
+        runtime_by_field = {status.field: status for status in result.runtime}
         for change in tuple(self._pending.values()):
             if change.key in saved_fields:
                 setattr(self._committed, change.key, deepcopy(change.value))
-                setattr(self._effective, change.key, deepcopy(change.value))
+                runtime = runtime_by_field.get(change.key)
+                if runtime is None or runtime.status == "applied":
+                    effective = (
+                        runtime.effective
+                        if runtime is not None and runtime.effective is not None
+                        else change.value
+                    )
+                    setattr(self._effective, change.key, deepcopy(effective))
+                elif runtime.effective is not None:
+                    setattr(self._effective, change.key, deepcopy(runtime.effective))
                 self._pending.pop(change.key, None)
         # A result can omit fields when a host reports a coarse destination;
         # retain those fields rather than pretending they were committed.
         self.last_conflict = ()
         for item in result.persistence:
             if item.saved and item.revision is not None:
-                self._expected_revisions[item.destination] = item.revision
+                destination = _revision_destination(cast(SettingsScope, item.scope))
+                if destination is not None:
+                    self._expected_revisions[destination] = item.revision
         if failed_fields:
             self.last_conflict = ()
 
@@ -181,15 +222,20 @@ class SettingsUiAdapter:
             for change in changes_between(self._committed, target)
             if change.key in forced_names
         }
-        merged = {change.key: change for change in initial_changes}
+        changes = tuple(
+            change
+            for change in initial_changes
+            if getattr(self._committed, change.key) != getattr(target, change.key)
+        )
+        merged = {change.key: change for change in changes}
         merged.update(forced)
         changes = tuple(merged.values())
         self._set_pending(changes)
         if not changes:
-            self.last_result = SettingsSaveResult()
+            self.last_result = self._merge_runtime(SettingsSaveResult())
             return self.last_result
         result = self._save_patch(tuple(changes), dict(self._expected_revisions))
-        result = self._apply_runtime(target, result)
+        result = self._merge_runtime(self._apply_runtime(target, result))
         self.last_result = result
         self._apply_persistence_result(result, target)
         return result
@@ -200,7 +246,7 @@ class SettingsUiAdapter:
         if not self.enabled or self._save_patch is None or self._snapshot_provider is None:
             raise RuntimeError("settings retry requires a bound persistence service")
         if not self._pending:
-            self.last_result = SettingsSaveResult()
+            self.last_result = self._merge_runtime(SettingsSaveResult())
             return self.last_result
         fresh = self._snapshot_provider()
         destinations = _destinations_for(tuple(self._pending.values()))
@@ -215,7 +261,7 @@ class SettingsUiAdapter:
         self._expected_revisions = dict(fresh.revisions)
         target = self._target_from_pending()
         result = self._save_patch(tuple(self._pending.values()), dict(self._expected_revisions))
-        result = self._apply_runtime(target, result)
+        result = self._merge_runtime(self._apply_runtime(target, result))
         self.last_result = result
         self._apply_persistence_result(result, target)
         return result
