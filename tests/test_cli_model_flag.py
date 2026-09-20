@@ -132,3 +132,20 @@ def test_unloaded_explicit_model_never_submits_prompt_to_previous_model():
     _run(app)
     assert not submitted
     assert app._cli_launch_error
+
+
+def test_headless_explicit_missing_model_refuses_resident_substitution():
+    app = SimpleNamespace(model_id='resident', _cli_initial_model='missing',
+                          backend=SimpleNamespace(loaded_models=lambda: ['resident']))
+    action, model, reason = LiteTUI._headless_model_decision(app)
+    assert action == 'refuse'
+    assert model is None
+    assert 'missing' in reason
+
+
+def test_headless_explicit_resident_model_wins_before_cli_worker():
+    app = SimpleNamespace(model_id='previous', _cli_initial_model='requested',
+                          backend=SimpleNamespace(loaded_models=lambda: ['previous', 'requested']))
+    action, model, reason = LiteTUI._headless_model_decision(app)
+    assert model == 'requested'
+    assert action in ('ok', 'substitute')

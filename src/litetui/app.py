@@ -4309,7 +4309,7 @@ class LiteTUI(App):
         if getattr(self, "_rpc", False):   # doubles predate this seam
             action, model, why = self._headless_model_decision()
             if action == "substitute" and model:
-                self.model_id = model
+                self._model_id = model
                 note = why
             elif action == "refuse":
                 note = why
@@ -6591,6 +6591,12 @@ class LiteTUI(App):
                 f"than sending a request that might load one"
             )
             return ("refuse", None, why)
+        explicit = getattr(self, '_cli_initial_model', None)
+        if explicit:
+            if explicit not in resident:
+                return ('refuse', None, f'Explicit model {explicit!r} is not loaded; no fallback is permitted.')
+            if explicit != self.model_id:
+                return ('substitute', explicit, 'Applying explicit launch model.')
         want = self.model_id
         if want and want in resident:
             return ("ok", want, "")
