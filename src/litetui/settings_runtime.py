@@ -16,6 +16,19 @@ def service_for(app):
     return service
 
 
+def capture_invocation(settings, overrides):
+    """Apply explicit launch choices while retaining disk, not environment, values."""
+    from copy import deepcopy
+    disk = getattr(settings, '_saved_values', {})
+    saved = {}
+    for key, value in overrides.items():
+        if key not in SETTING_SPECS:
+            raise ValueError(f'Unknown invocation setting: {key}')
+        saved[key] = deepcopy(disk.get(key, getattr(settings, key)))
+        setattr(settings, key, deepcopy(value))
+    return saved
+
+
 def without_invocation(app, candidate):
     """Copy persistence values without inheriting unchanged CLI overrides.
 

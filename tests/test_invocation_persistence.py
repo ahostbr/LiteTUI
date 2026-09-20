@@ -145,3 +145,21 @@ def test_conversation_explicit_edit_retires_only_after_success(tmp_path):
     app.settings = chosen
     persist_settings(app, replace(chosen, tts_timeout=150))
     assert service.snapshot('one').saved.backend == 'llamacpp'
+
+
+def test_environment_then_cli_backend_never_becomes_new_conversation_default(tmp_path, monkeypatch):
+    import json
+    from litetui import settings as st
+    (tmp_path / 'settings.json').write_text(json.dumps({'backend': 'lmstudio'}))
+    monkeypatch.setenv('LITETUI_BACKEND', 'ninfer')
+    settings = st.load(tmp_path)
+    assert settings.backend == 'ninfer'
+    from litetui.settings_runtime import capture_invocation
+    saved = capture_invocation(settings, {'backend': 'codex', 'backend_chosen': True})
+    assert settings.backend == 'codex'
+    directory = tmp_path / 'conversation'
+    directory.mkdir()
+    app = NS(settings=settings, _invocation_saved_values=saved, convo_dir=directory, seat=NS())
+    LiteTUI._adopt_convo_settings(app, born=True)
+    assert convo_settings.load(directory).backend == 'lmstudio'
+    assert json.loads((tmp_path / 'settings.json').read_text())['backend'] == 'lmstudio'

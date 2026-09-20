@@ -1489,10 +1489,9 @@ class LiteTUI(App):
         self.settings: Settings = settings_mod.load()
         self._invocation_saved_values = {}
         if initial_backend is not None:
-            self._invocation_saved_values = {
-                'backend': self.settings.backend, 'backend_chosen': self.settings.backend_chosen}
-            self.settings.backend = initial_backend
-            self.settings.backend_chosen = True
+            from litetui.settings_runtime import capture_invocation
+            self._invocation_saved_values = capture_invocation(self.settings, {
+                'backend': initial_backend, 'backend_chosen': True})
         hook_host.initialize(self)
         self.conversation: list[dict] = []
         #: T691: the conversation's own settings, once one is open. None
