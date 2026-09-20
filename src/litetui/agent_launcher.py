@@ -102,7 +102,7 @@ def validate_process_identity(event, *, owned_pid, probe=None):
         raise LaunchBlocked('Child identity unknown or PID reused')
     return True
 
-async def start_headless_child(spec, process, *, workspace, data_root, supported_levels):
+async def start_headless_child(spec, process, *, workspace, data_root, supported_levels, on_ready=None):
     """Wire validated hosted invocation to contained startup and authenticated RPC.
 
     Internal only: caller must prepare isolated workspace, persistent storage,
@@ -129,6 +129,8 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
         await process.start_python(module='litetui.cli', args=args, cwd=target,
                                    env={'LITETUI_DATA_ROOT': str(root)})
         ready = await process.rpc_handshake(spec, workspace=str(target))
+        if on_ready is not None:
+            on_ready(ready)
         await process.send_prompt(spec.prompt)
         return ready
     except BaseException:

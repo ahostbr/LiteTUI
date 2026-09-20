@@ -68,3 +68,24 @@ async def test_prompt_transport_failure_closes_owned_child(tmp_path):
         await start_headless_child(spec(tmp_path), process, workspace=tmp_path,
                                   data_root=tmp_path, supported_levels=['low'])
     assert process.closed
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reject', [True, False])
+async def test_identity_registration_must_commit_before_prompt(tmp_path, reject):
+    from litetui.agent_launcher import start_headless_child
+    process = Process()
+    def on_ready(event):
+        assert event['conversation_id'] == 'real-child'
+        process.calls.append(('registered', event))
+        if reject:
+            raise OSError('registry unavailable')
+    if reject:
+        with pytest.raises(OSError, match='registry unavailable'):
+            await start_headless_child(spec(tmp_path), process, workspace=tmp_path,
+                data_root=tmp_path, supported_levels=['low'], on_ready=on_ready)
+        assert process.closed
+        assert not any(kind == 'prompt' for kind, _ in process.calls)
+    else:
+        await start_headless_child(spec(tmp_path), process, workspace=tmp_path,
+            data_root=tmp_path, supported_levels=['low'], on_ready=on_ready)
+        assert [kind for kind, _ in process.calls] == ['start', 'handshake', 'registered', 'prompt']
