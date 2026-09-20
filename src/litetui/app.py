@@ -1445,6 +1445,10 @@ class LiteTUI(App):
         Binding("shift+tab", "cycle_tool_profile", "Authority",
                 priority=True, show=False),
         Binding("ctrl+p", "toggle_plan_mode", "Plan", priority=True, show=False),
+        # The in-TUI browser (Ryan 2026-09-19). Opens as a sidebar dialog via
+        # the same path as /browser; Ctrl+B is free (no app/ctrl chord owns it,
+        # and Input binds nothing to it by default).
+        Binding("ctrl+b", "open_browser", "Browser", show=False),
     ]
 
     pending_image: reactive[str | None] = reactive(None)
@@ -8399,6 +8403,19 @@ class LiteTUI(App):
 
     def action_clear_chat(self) -> None:
         self._handle_command("/clear")
+
+    def action_open_browser(self) -> None:
+        """Ctrl+B / /browser — the in-TUI browser, docked in the sidebar.
+
+        Delegates to the same opener the command uses so the two doors cannot
+        drift apart. No URL: it starts at the home page and the bar is focused
+        so the first keystroke is the address. style="sidebar" is forced so it
+        always docks to the side panel; the Swap button pops it to a modal.
+        """
+        from litetui.side_panel import open_dialog
+        from litetui.webview import BrowserBody
+
+        open_dialog(self, BrowserBody, style="sidebar")
 
 
 def wants_ansi_fallback() -> bool:
