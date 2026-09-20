@@ -80,10 +80,37 @@ class AgentProcess:
             await self.close()
             raise
 
+    async def rpc_handshake(self, spec, *, workspace, timeout=30, probe=None):
+        """Validate real LiteTUI RPC over the exclusively owned stdout pipe.
+
+        Unlike a shared rendezvous endpoint this transport needs no echoed
+        bearer token. Conversation allocation is a separate launcher gate.
+        """
+        self.ready = False
+        try:
+            event = await self.receive(timeout=timeout)
+            expected = {'type': 'ready', 'launch_status': 'ready',
+                        'backend': spec.backend, 'model': spec.model,
+                        'cwd': str(workspace), 'tool_profile': spec.tool_profile}
+            for key, value in expected.items():
+                if event.get(key) != value:
+                    raise LaunchBlocked(f'Child effective {key} differs from launch request')
+            level = spec.reasoning_effort if spec.reasoning_effort is not None else spec.thinking_level
+            if level is not None and event.get('thinking_level') != level:
+                raise LaunchBlocked('Child effective thinking differs from launch request')
+            validate_process_identity(event, owned_pid=self.process.pid, probe=probe)
+            if self.process.returncode is not None:
+                raise LaunchBlocked('Child exited during readiness')
+            self.ready = True
+            return event
+        except BaseException:
+            await self.close()
+            raise
+
     async def send_prompt(self, text):
         if not self.ready or self.process.returncode is not None:
             raise LaunchBlocked('Child is not ready for a prompt')
-        self.process.stdin.write((json.dumps({'type': 'prompt', 'text': text}) + '\n').encode('utf-8'))
+        self.process.stdin.write((json.dumps({'type': 'prompt', 'message': text}) + '\n').encode('utf-8'))
         await self.process.stdin.drain()
 
     async def close(self, *, timeout=2):

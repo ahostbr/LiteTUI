@@ -4341,8 +4341,12 @@ class LiteTUI(App):
                 note = why
             elif action == "refuse":
                 note = why
+        from litetui.task_supervisor import process_creation_identity
         from litetui.gui_rpc import OPERATIONS
         self._rpc_emit({
+            'pid': os.getpid(),
+            'process_created': process_creation_identity(os.getpid()),
+            'thinking_level': getattr(self, '_cli_effective_thinking', None) or getattr(self, '_thinking_level', None),
             "type": "ready",
             'launch_status': 'blocked' if getattr(self, '_cli_launch_error', None) else 'ready',
             'launch_error': getattr(self, '_cli_launch_error', None),

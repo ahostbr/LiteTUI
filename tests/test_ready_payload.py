@@ -277,3 +277,15 @@ def test_ready_waits_for_cli_application_before_reporting_effective_state():
         assert a.emitted[0]['launch_status'] == 'blocked'
         assert a.emitted[0]['launch_error'] == 'requested model unavailable'
     asyncio.run(scenario())
+
+
+def test_ready_reports_effective_thinking_and_kernel_identity():
+    import os
+    from litetui.task_supervisor import process_creation_identity
+    a = _app(backend_name='codex')
+    a._thinking_level = 'low'
+    a._cli_effective_thinking = 'high'
+    ready = _ready(a)
+    assert ready['thinking_level'] == 'high'
+    assert ready['pid'] == os.getpid()
+    assert ready['process_created'] == process_creation_identity(os.getpid())

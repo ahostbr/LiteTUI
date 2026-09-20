@@ -46,7 +46,7 @@ async def test_actual_child_gets_no_prompt_until_authenticated(tmp_path):
                                 token='secret', workspace=str(tmp_path), timeout=5)
         await process.send_prompt('quoted "text"\nsecond line')
         event = await process.receive(timeout=2)
-        assert event['command'] == {'type':'prompt', 'text':'quoted "text"\nsecond line'}
+        assert event['command'] == {'type':'prompt', 'message':'quoted "text"\nsecond line'}
     finally:
         assert await process.close(timeout=2)
     assert process.returncode is not None
