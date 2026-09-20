@@ -69,3 +69,32 @@ def test_disk_failure_never_acknowledges_inbox(tmp_path):
         inbox.replay('parent', accept=lambda event: receipts.accept('parent', event))
     assert len(inbox.pending('parent')) == 1
     assert not receipts.pending('parent')
+
+
+def test_concurrent_duplicate_acceptance_has_one_receipt(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from litetui.agent_receipts import ParentReceipts
+    path = tmp_path / 'receipts.sqlite'
+    ParentReceipts(path)
+    event = {'completion_id': 'completion', 'result': result()}
+    def accept(i): return ParentReceipts(path).accept('parent', event)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert all(pool.map(accept, range(4)))
+    assert ParentReceipts(path).pending('parent') == [event]
+
+
+def test_failed_applied_marker_replays_same_receipt_for_history_deduplication(tmp_path):
+    from litetui.agent_receipts import ParentReceipts
+    path = tmp_path / 'receipts.sqlite'
+    receipts = ParentReceipts(path)
+    event = {'completion_id': 'completion', 'result': result()}
+    receipts.accept('parent', event)
+    committed = set()
+    def commit(event):
+        committed.add(event['completion_id'])
+        return True
+    def fail(*args): raise OSError('marker write interrupted')
+    receipts.mark_applied = fail
+    with pytest.raises(OSError): receipts.deliver('parent', commit=commit)
+    assert ParentReceipts(path).deliver('parent', commit=commit) == ['completion']
+    assert committed == {'completion'}
