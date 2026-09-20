@@ -3,8 +3,12 @@ import json
 from litetui.agent_launcher import LaunchBlocked
 
 
-def make_runner(app, *, launch):
-    """launch(args) is an async trusted service configured by the App."""
+def make_runner(app, *, launch, capture=None):
+    """Capture trusted context synchronously before scheduling async launch.
+
+    Optional capture(args) returns a no-argument coroutine factory. This is
+    where production wiring freezes parent conversation/policy on the App loop.
+    """
     def runner(args):
         if not isinstance(args, dict):
             raise LaunchBlocked('Agent operation must be an object')
@@ -25,7 +29,8 @@ def make_runner(app, *, launch):
                 manager = app._agent_operations = AgentOperations()
             if action == 'spawn':
                 captured = dict(request)
-                ident = manager.start(lambda: launch(captured))
+                factory = capture(captured) if capture is not None else lambda: launch(captured)
+                ident = manager.start(factory)
                 return {'operation_id': ident, 'status': 'accepted'}
             ident = request.get('operation_id')
             if not isinstance(ident, str) or not ident:

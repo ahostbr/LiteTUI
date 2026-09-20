@@ -50,3 +50,24 @@ async def test_tool_cancel_waits_for_cleanup_on_app_loop():
         assert cancelled['status'] == 'cancelled'
         assert cleaned.is_set()
         await app._agent_operations.close()
+
+
+@pytest.mark.asyncio
+async def test_context_capture_precedes_scheduled_launch():
+    app = App()
+    captured = []
+    def capture(args):
+        parent = app.selected_parent
+        app.selected_parent = 'switched'
+        async def launch():
+            captured.append(parent)
+            return {'parent': parent}
+        return launch
+    runner = make_runner(app, launch=None, capture=capture)
+    app.selected_parent = 'original'
+    async with app.run_test() as pilot:
+        accepted = json.loads(await asyncio.to_thread(runner, {'prompt': 'task'}))
+        await pilot.pause(0.05)
+        assert captured == ['original']
+        assert app._agent_operations.status(accepted['operation_id'])['result']['parent'] == 'original'
+        await app._agent_operations.close()
