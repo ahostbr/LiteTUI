@@ -1,0 +1,58 @@
+# Grafana + Prometheus + Pushgateway — the sink side of the browser monitor.
+#
+# The monitor itself runs on the HOST (it needs a real Chrome to drive), and it
+# pushes metrics to the pushgateway on :9091. These three containers only make
+# the data visible and alertable:
+#
+#   pushgateway  <- monitor run --sink pushgateway   (the host pushes here)
+#   prometheus   <- scrapes the pushgateway every 15s
+#   grafana      <- dashboards + alerts, provisioned from docker/grafana
+#
+#   docker compose up -d
+#   # pushgateway:  http://localhost:9091
+#   # prometheus:   http://localhost:9090
+#   # grafana:      http://localhost:3000   (admin/admin)
+#
+# The Grafana datasource and the "Browser monitor" dashboard are provisioned
+# automatically on first boot from ./docker/grafana/provisioning, so no manual
+# Grafana clicks are needed.
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
+      - prom-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports:
+      - "9091:9091"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Provision dashboards from the mounted file dir.
+      - GF_DASHBOARDS_DEFAULT_DASHBOARDS_FOLDER=/var/lib/grafana/dashboards
+    volumes:
+      - ./docker/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./docker/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prom-data:
+  grafana-data:

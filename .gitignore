@@ -66,3 +66,9 @@ tools/screenshot.py
 # convo_search local index (77MB, rebuilt with `python tools/convo_search.py --reindex`);
 # -wal/-shm covered by the glob. (T888, 2026-09-18)
 tools/convo_search.db*
+
+# Browser-monitor runtime artifacts (written to CWD by `litetui-monitor run/demo`).
+# Source lives in src/litetui/monitor and tools/monitor; these are per-run outputs.
+monitor-log.jsonl
+monitor-shots/
+monitor-baselines.json

@@ -1,0 +1,13 @@
+# Grafana datasource provisioning — auto-creates the Prometheus datasource on
+# boot, so the dashboard needs no manual setup. Mounted at
+# /etc/grafana/provisioning/datasources by the compose file.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus   # stable uid so dashboard JSON can reference it deterministically
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
