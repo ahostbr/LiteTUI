@@ -45,7 +45,7 @@ class ParentReceipts:
         No dependency on which conversation the UI currently displays.
         """
         def accept(event):
-            conversation = registry.parent_conversation(parent, event['result']['child_id'])
+            conversation = registry.completion_route(parent, event)
             if conversation is None:
                 return False
             return self.accept_for_conversation(parent, conversation, event)

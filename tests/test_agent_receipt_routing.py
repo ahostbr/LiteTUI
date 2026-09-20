@@ -79,6 +79,10 @@ def test_replay_uses_launch_registry_not_current_chat(tmp_path):
     assert receipts.replay_from_inbox('parent', inbox=inbox, registry=registry) == []
     assert len(inbox.pending('parent')) == 1
     registry.claim('parent', 'child', limit=1, parent_conversation='original')
+    assert receipts.replay_from_inbox('parent', inbox=inbox, registry=registry) == []
+    registry.bind('parent', 'child', conversation_id='child-convo', pid=123, created='stamp')
+    assert registry.completion_route('parent', {
+        **event(), 'result': {**event()['result'], 'conversation_id': 'wrong'}}) is None
     assert receipts.replay_from_inbox('parent', inbox=inbox, registry=registry) == [ident]
     assert not inbox.pending('parent')
     assert receipts.pending_for_conversation('parent', 'original')[0]['completion_id'] == ident

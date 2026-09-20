@@ -76,6 +76,19 @@ class AgentRegistry:
                              (_identity(parent), _identity(child_id))).fetchone()
         return row[0] if row else None
 
+    def completion_route(self, parent, event):
+        """Return launch routing only for the authenticated child's conversation."""
+        result = event['result']
+        with self._transaction() as db:
+            row = db.execute('SELECT parent_conversation,conversation_id,completion_id '
+                             'FROM agents WHERE parent=? AND child_id=?',
+                             (_identity(parent), _identity(result['child_id']))).fetchone()
+        if (row is None or not row['parent_conversation']
+                or row['conversation_id'] != result.get('conversation_id')
+                or (row['completion_id'] and row['completion_id'] != event['completion_id'])):
+            return None
+        return row['parent_conversation']
+
     def active(self, parent):
         with self._transaction() as db:
             return [dict(row) for row in db.execute(
