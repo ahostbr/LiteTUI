@@ -1,6 +1,6 @@
 """Owned SDK connections, with no process-default endpoint configuration."""
 from contextlib import contextmanager
-from threading import RLock
+from threading import RLock, Event, Thread
 
 # The installed SDK exposes timeout only as a module-global setting. Serialize
 # our synchronous control operations and restore it even on failure. This does
@@ -16,6 +16,9 @@ class LMStudioSession:
         self.timeout = timeout
         self._client = None
         self._closed = False
+        self._state_lock = RLock()
+        self._cleanup_done = Event()
+        self.cleanup_error = None
 
     @contextmanager
     def _operation(self):
@@ -42,11 +45,29 @@ class LMStudioSession:
                     model.unload()
                     break
 
-    def close(self):
-        with _SDK_CONTROL_LOCK:
-            if self._closed:
-                return
-            if self._client is not None:
-                self._client.close()
-            self._client = None
-            self._closed = True
+    def close(self, *, timeout=0.1):
+        """Reject new work immediately; wait only a bounded time for cleanup.
+
+        False means pending or failed, never proof that a loader stopped.
+        The worker retains this session until in-flight SDK operations settle.
+        """
+        with self._state_lock:
+            if not self._closed:
+                self._closed = True
+                Thread(target=self._finish_close, daemon=True,
+                       name='litetui-lms-close').start()
+        return self.wait_closed(timeout=timeout)
+
+    def wait_closed(self, *, timeout=0):
+        return self._cleanup_done.wait(timeout) and self.cleanup_error is None
+
+    def _finish_close(self):
+        try:
+            with _SDK_CONTROL_LOCK:
+                if self._client is not None:
+                    self._client.close()
+                self._client = None
+        except BaseException as exc:
+            self.cleanup_error = f'{type(exc).__name__}: {exc}'
+        finally:
+            self._cleanup_done.set()

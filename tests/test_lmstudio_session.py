@@ -82,3 +82,47 @@ async def test_production_backends_use_owned_sessions(monkeypatch):
     b.shutdown()
     assert b_client.closed
     assert sdk.timeout == 60
+
+
+def test_close_is_bounded_while_load_is_in_flight(monkeypatch):
+    from threading import Event, Thread
+    from litetui.lmstudio_session import LMStudioSession
+    sdk = fake_sdk(monkeypatch)
+    session = LMStudioSession('host:1234', timeout=777)
+    session.load('initialize')
+    entered, release = Event(), Event()
+    client = session._client
+    def loading(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+    client.llm.model = loading
+    worker = Thread(target=lambda: session.load('slow'))
+    worker.start()
+    assert entered.wait(2)
+    try:
+        assert session.close(timeout=0.02) is False
+        assert not client.closed
+        assert not session.wait_closed(timeout=0.01)
+    finally:
+        release.set()
+        worker.join(2)
+    assert session.wait_closed(timeout=2)
+    assert client.closed
+    assert sdk.timeout == 60
+    with pytest.raises(RuntimeError, match='closed'):
+        session.load('no-reopen')
+
+
+def test_close_failure_is_observable(monkeypatch):
+    from litetui.lmstudio_session import LMStudioSession
+    sdk = fake_sdk(monkeypatch)
+    session = LMStudioSession('host:1234', timeout=777)
+    session.load('initialize')
+    def failed():
+        raise RuntimeError('close fixture')
+    session._client.close = failed
+    assert session.close(timeout=1) is False
+    assert session.wait_closed(timeout=1) is False
+    assert 'close fixture' in session.cleanup_error
+    with pytest.raises(RuntimeError, match='closed'):
+        session.load('no-reopen')

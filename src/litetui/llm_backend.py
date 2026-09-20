@@ -1554,6 +1554,9 @@ class LMStudioBackend(_VramGate):
     def __init__(self, settings) -> None:
         self._settings = settings
         self._host = settings.lm_host.rstrip("/")
+        from threading import RLock
+        self._sdk_lock = RLock()
+        self._sdk_closed = False
         self._sdk_session = None
 
     def base_url(self) -> str:
@@ -1571,25 +1574,33 @@ class LMStudioBackend(_VramGate):
         return "ok"
 
     def shutdown(self) -> None:
-        if self._sdk_session is not None:
-            self._sdk_session.close()
-            self._sdk_session = None
+        with self._sdk_lock:
+            self._sdk_closed = True
+            session = self._sdk_session
+        if session is not None and not session.close():
+            runtime_log.record_error(
+                "lmstudio.cleanup_pending", site="llm_backend",
+                detail=session.cleanup_error or "SDK operation still settling; connection cleanup deferred",
+            )
 
     def _sdk(self):
-        if self._sdk_session is None:
-            try:
-                from litetui.lmstudio_session import LMStudioSession
-                self._sdk_session = LMStudioSession(
-                    self._host.split("//", 1)[-1],
-                    timeout=self._settings.lms_load_timeout_s,
-                )
-            except ImportError as e:
-                raise BackendError(
-                    "the lmstudio SDK is not installed — `pip install lmstudio` "
-                    "(the llama.cpp backend works without it: /backend llamacpp)"
-                ) from e
-        self._sdk_session.timeout = self._settings.lms_load_timeout_s
-        return self._sdk_session
+        with self._sdk_lock:
+            if self._sdk_closed:
+                raise BackendError("LM Studio connection is closed — reconnect before loading.")
+            if self._sdk_session is None:
+                try:
+                    from litetui.lmstudio_session import LMStudioSession
+                    self._sdk_session = LMStudioSession(
+                        self._host.split("//", 1)[-1],
+                        timeout=self._settings.lms_load_timeout_s,
+                    )
+                except ImportError as e:
+                    raise BackendError(
+                        "the lmstudio SDK is not installed — `pip install lmstudio` "
+                        "(the llama.cpp backend works without it: /backend llamacpp)"
+                    ) from e
+            self._sdk_session.timeout = self._settings.lms_load_timeout_s
+            return self._sdk_session
 
     # -- models -----------------------------------------------------------
 
