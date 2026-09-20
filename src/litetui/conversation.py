@@ -88,11 +88,15 @@ class ConversationRepository:
                     rec = json.loads(line)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue  # a torn record may also end inside a UTF-8 character
+                if not isinstance(rec, dict):
+                    continue
                 kind = rec.get("type")
                 if kind == "meta":
                     meta = rec
                 elif kind == "snapshot":
-                    msgs = list(rec.get("messages") or [])
+                    candidate = rec.get("messages")
+                    if isinstance(candidate, list) and all(isinstance(m, dict) and isinstance(m.get('role'), str) for m in candidate):
+                        msgs = list(candidate)
                 elif kind == "rename":
                     # APPEND-ONLY, like every other record here. The name is not
                     # patched into the meta line -- rewriting a JSONL record in
@@ -367,7 +371,7 @@ class ConversationRepository:
                         rec = json.loads(line)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue
-                    if rec.get("type") != "card_summary":
+                    if not isinstance(rec, dict) or rec.get("type") != "card_summary":
                         continue
                     key, summary = rec.get("key"), rec.get("summary")
                     if isinstance(key, str) and isinstance(summary, str):

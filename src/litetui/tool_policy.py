@@ -367,6 +367,7 @@ def evaluate(
     workspace: Path,
     *,
     tool_name: str = "",
+    active_conversation: Path | None = None,
     always_allow: frozenset[str] = frozenset(),
     deny: frozenset[str] = frozenset(),
 ) -> PolicyDecision:
@@ -395,6 +396,8 @@ def evaluate(
     """
     profile = PROFILES.get(profile_name)
     capabilities = policy.classify(args or {}, Path(workspace).resolve())
+    if policy.classify_args is classify_write:
+        capabilities = frozenset(policy.capabilities) | frozenset(classify_write(args or {}, Path(workspace).resolve(), active_conversation=active_conversation))
     names = ", ".join(sorted(capabilities))
     if profile is None:
         return PolicyDecision(
@@ -483,25 +486,26 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def classify_write(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
+def classify_write(args: Mapping[str, object], workspace: Path, *, active_conversation: Path | None = None) -> Iterable[str]:
     """Three answers, not two: the agent's own store, the workspace, elsewhere.
 
     🔴 THE SELF-STORE CHECK MUST COME FIRST, because `.convos` lives INSIDE the
     workspace — asking "is it in the workspace?" first would answer yes for
     every self-store write and the third case would be unreachable.
 
-    The store is read from `paths.CONVO_DIR` — the ONE anchor — rather than
-    rebuilt as `workspace / ".convos"`. That second spelling would agree with
-    the real store only by coincidence, which is the drift pair this codebase
-    keeps paying for.
+    The host supplies the active conversation directory. Only its memory index,
+    soul, handoff, and memories subtree qualify; unknown context grants no
+    self-store exception. Configuration and transcript remain ordinary writes.
 
     Escapes are handled by `_resolve_path`, which resolves before either test:
     `.convos/<id>/../../src/x.py` resolves out of the store and is classified
     as the workspace write it actually is.
     """
     target = _resolve_path(args.get("path"), workspace)
-    if _inside(target, Path(paths.CONVO_DIR).resolve()):
-        return (SELF_STORE,)
+    if active_conversation is not None:
+        own = Path(active_conversation).resolve()
+        if target in {own / name for name in ('memory.md', 'soul.md', 'handoff.md')} or _inside(target, own / 'memories'):
+            return (SELF_STORE,)
     return (WORKSPACE_WRITE,) if _inside(target, workspace) else (EXTERNAL_WRITE,)
 
 

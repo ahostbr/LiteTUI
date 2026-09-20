@@ -79,6 +79,12 @@ class NativePolicy:
         args = event.get("tool_input") or {}
         if not isinstance(args, dict):
             args = {"input": args}
+        if canonical == 'bash':
+            args = dict(args)
+            if 'command' not in args and isinstance(args.get('cmd'), str):
+                args['command'] = args['cmd']
+            if name == 'write_stdin' and 'command' not in args:
+                args['command'] = str(args.get('chars', ''))
         if kind == "PostToolUse":
             # The native hook payload does not include an exit/success status.
             # Wait for the authoritative item completion before reporting one.

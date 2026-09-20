@@ -2332,6 +2332,7 @@ class LiteTUI(App):
             args,
             workspace or paths.ROOT,
             tool_name=name,
+            active_conversation=getattr(self, 'convo_dir', None),
             always_allow=frozenset(self.settings.tool_always_allow or ()),
             deny=frozenset(self.settings.tool_deny or ()),
         )
