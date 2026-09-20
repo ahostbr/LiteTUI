@@ -24,10 +24,10 @@ class SpeakButton(Static):
 class PromptBox(Container):
     DEFAULT_CSS = '''
     PromptBox { height: 5; margin: 0 1 1 1; }
-    PromptBox #message-input { position: absolute; offset: 0 0; width: 100%; height: 5; margin: 0; padding-bottom: 1; }
+    PromptBox #message-input { position: absolute; offset: 0 0; width: 100%; height: 5; margin: 0 !important; padding-bottom: 1; }
     PromptBox #scroll-lock { position: absolute; offset: 0 0; width: 4; height: 1; background: $surface; }
     PromptBox #prompt-actions { position: absolute; offset: 0 4; width: 27; height: 1; background: $surface; }
-    PromptBox #prompt-actions > Static { width: auto; height: 1; padding: 0; }
+    PromptBox #prompt-actions > Static { width: auto; height: 1; padding: 0 !important; }
     PromptBox #speak-toggle.enabled { color: $success; }
     PromptBox #scroll-lock:hover, PromptBox #prompt-actions > Static:hover { background: $primary 40%; }
     '''

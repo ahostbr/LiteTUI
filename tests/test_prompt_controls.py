@@ -14,7 +14,16 @@ class Demo(App):
 
 @pytest.mark.asyncio
 async def test_controls_share_input_border_and_click():
-    app = Demo()
+    from litetui.app import LiteTUI
+    class StyledDemo(Demo):
+        CSS = LiteTUI.CSS
+        def get_css_variables(self):
+            from litetui import themes as themes_mod
+            variables = super().get_css_variables()
+            for key, value in themes_mod.extra_defaults(primary=variables['primary'], bone=variables['foreground']).items():
+                variables.setdefault(key, value)
+            return variables
+    app = StyledDemo()
     async with app.run_test(size=(100, 20)) as pilot:
         await pilot.pause(0.1)
         box = app.query_one('#message-input').region
