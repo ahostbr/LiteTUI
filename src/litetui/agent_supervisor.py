@@ -215,7 +215,8 @@ def python_child_argv(*, module=None, script=None, args=()):
     return [getattr(sys, '_base_executable', sys.executable), '-S', '-c', bootstrap, json.dumps(config)]
 
 
-async def finish_child(process, inbox, *, parent, child_id, branch, evidence, notify, timeout=300):
+async def finish_child(process, inbox, *, parent, child_id, branch, evidence, notify,
+                       timeout=300, data_root=None):
     """Commit outcome after bounded process cleanup, then notify the parent.
 
     Process termination is not local-model absence; resource settlement must be
@@ -255,6 +256,15 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
               'cleanup': {'state': 'confirmed' if closed else 'unconfirmed',
                           'scope': 'owned process tree only', 'error': cleanup_error,
                           'model_residency': 'not verified'}}
+    if data_root is not None:
+        from litetui.agent_storage import conversation_evidence
+        try:
+            result['storage'] = conversation_evidence(data_root, process.conversation_id)
+        except (OSError, ValueError) as exc:
+            result['storage_error'] = f'{type(exc).__name__}: {exc}'
+            if result['status'] == 'completed':
+                result['status'] = 'failed'
+                result['error'] = result['storage_error']
     completion = inbox.persist(parent, result)
     if cancelled is not None:
         # Durable pending result is replayable; preserve caller cancellation.

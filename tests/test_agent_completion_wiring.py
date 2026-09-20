@@ -128,3 +128,26 @@ async def test_delivery_fault_does_not_skip_owned_cleanup(tmp_path, fault):
     pending = AgentInbox(tmp_path / 'inbox.sqlite').pending('parent')
     assert len(pending) == (1 if fault == 'notify' else 0)
     assert len(notices) == (1 if fault == 'notify' else 0)
+@pytest.mark.asyncio
+@pytest.mark.parametrize('materialized', [True, False])
+async def test_durable_completion_requires_materialized_storage_when_requested(tmp_path, materialized):
+    from litetui.agent_supervisor import finish_child
+    process = AgentProcess()
+    process.conversation_id = 'actual-convo'
+    async def collect(**kwargs): return {'status': 'completed', 'summary': 'done'}
+    async def close(**kwargs): return True
+    process.collect_turn, process.close = collect, close
+    if materialized:
+        directory = tmp_path / '.convos' / 'actual-convo'
+        directory.mkdir(parents=True)
+        (directory / 'convo.jsonl').write_text('{}\n', encoding='utf-8')
+        (directory / 'settings.json').write_text('{}', encoding='utf-8')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    completion = await finish_child(process, inbox, parent='parent', child_id='child',
+        branch=None, evidence=[], notify=lambda event: None, data_root=tmp_path)
+    result = inbox.get('parent', completion)
+    assert result['status'] == ('completed' if materialized else 'failed')
+    if materialized:
+        assert result['storage']['transcript'] == str((directory / 'convo.jsonl').resolve())
+    else:
+        assert 'transcript' in result['storage_error']
