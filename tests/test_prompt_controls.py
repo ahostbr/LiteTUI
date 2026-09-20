@@ -170,3 +170,18 @@ async def test_actual_app_prompt_controls(tmp_path, monkeypatch):
         assert await pilot.click('.pause-button')
         assert app.paused
         app.save_screenshot('actual-app-prompt-controls.svg', path='C:/Projects/LiteTUI/artifacts')
+
+
+def test_mic_and_pause_tooltips_track_state():
+    from litetui.widgets import MicButton, PauseButton
+    mic, pause = MicButton(), PauseButton()
+    assert mic.tooltip == 'Start microphone recording'
+    assert pause.tooltip == 'Pause before the next model round'
+    mic.set_recording(True)
+    pause.set_paused(True)
+    assert mic.tooltip == 'Stop recording and transcribe'
+    assert pause.tooltip == 'Resume the agent'
+    mic.set_recording(False)
+    pause.set_paused(False)
+    assert mic.tooltip == 'Start microphone recording'
+    assert pause.tooltip == 'Pause before the next model round'

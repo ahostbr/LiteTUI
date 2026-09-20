@@ -1155,9 +1155,11 @@ class PauseButton(Static):
 
     def __init__(self) -> None:
         super().__init__(self.LABEL_RUN, classes="pause-button")
+        self.tooltip = "Pause before the next model round"
 
     def set_paused(self, on: bool) -> None:
         self.content = self.LABEL_PAUSED if on else self.LABEL_RUN
+        self.tooltip = "Resume the agent" if on else "Pause before the next model round"
         if on:
             self.add_class("paused")
         else:
@@ -1178,9 +1180,11 @@ class MicButton(Static):
 
     def __init__(self) -> None:
         super().__init__(self.LABEL_IDLE, classes="mic-button")
+        self.tooltip = "Start microphone recording"
 
     def set_recording(self, on: bool) -> None:
         self.content = self.LABEL_REC if on else self.LABEL_IDLE
+        self.tooltip = "Stop recording and transcribe" if on else "Start microphone recording"
         if on:
             self.add_class("recording")
         else:
