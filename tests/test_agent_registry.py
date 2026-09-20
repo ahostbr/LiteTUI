@@ -112,3 +112,22 @@ def test_invalid_completion_retains_claim(tmp_path, convo, state):
     with pytest.raises(LaunchBlocked):
         registry.settle_completion('parent', 'child', inbox=inbox, completion_id=ident)
     assert len(registry.active('parent')) == 1
+
+@pytest.mark.parametrize('acknowledged', [True, False])
+def test_reconcile_only_matching_durable_completions_and_keep_unknown_claims(tmp_path, acknowledged):
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    for child in ('completed-child', 'unknown-child'):
+        registry.claim('parent', child, limit=2)
+        registry.bind('parent', child, conversation_id=child+'-convo', pid=123, created='stamp')
+    ident = inbox.persist('parent', {'child_id': 'completed-child',
+        'conversation_id': 'completed-child-convo', 'status': 'cancelled',
+        'summary': 'cancelled', 'evidence': [], 'cleanup': {'state': 'confirmed'}})
+    if acknowledged:
+        inbox.acknowledge('parent', ident)
+    assert registry.reconcile('parent', inbox=inbox) == [ident]
+    assert [row['child_id'] for row in registry.active('parent')] == ['unknown-child']
+    assert registry.reconcile('parent', inbox=inbox) == []
+    assert len(inbox.pending('parent')) == (0 if acknowledged else 1)

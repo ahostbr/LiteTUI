@@ -109,3 +109,21 @@ class AgentRegistry:
                 raise LaunchBlocked('Completion differs from registered child identity')
             db.execute("UPDATE agents SET state='settled', completion_id=? WHERE parent=? AND child_id=?",
                        (completion_id, parent, child_id))
+    def reconcile(self, parent, *, inbox):
+        """Settle retained claims with known completions; never ACK parent mail.
+
+        No completion, unknown identity, or unconfirmed cleanup remains active.
+        Does not infer process death from a failed PID probe or terminate PIDs.
+        """
+        settled = []
+        for row in self.active(parent):
+            event = inbox.for_child(parent, row['child_id'])
+            if event is None:
+                continue
+            try:
+                self.settle_completion(parent, row['child_id'], inbox=inbox,
+                                       completion_id=event['completion_id'])
+            except LaunchBlocked:
+                continue
+            settled.append(event['completion_id'])
+        return settled

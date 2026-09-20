@@ -61,3 +61,39 @@ async def test_unready_failure_retains_claim_instead_of_inventing_conversation(t
             branch=None, evidence=[], supported_levels=[], notify=lambda event: None)
     assert registry.active('parent')[0]['conversation_id'] is None
     assert not inbox.pending('parent')
+
+@pytest.mark.asyncio
+async def test_runtime_cancel_keeps_durable_result_and_reconcilable_claim(tmp_path):
+    import asyncio
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    entered = asyncio.Event()
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text): pass
+        async def collect_turn(self, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+        async def close(self): return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    notices = []
+    task = asyncio.create_task(run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+        parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+        branch=None, evidence=[], supported_levels=[], notify=notices.append))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    pending = inbox.pending('parent')
+    assert len(pending) == 1
+    assert pending[0]['result']['status'] == 'cancelled'
+    assert len(registry.active('parent')) == 1
+    registry.settle_completion('parent', 'child', inbox=inbox, completion_id=pending[0]['completion_id'])
+    assert not registry.active('parent')
+    assert not notices

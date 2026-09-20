@@ -109,3 +109,9 @@ class AgentInbox:
                 if self.acknowledge(parent, event['completion_id']):
                     acknowledged.append(event['completion_id'])
         return acknowledged
+    def for_child(self, parent, child_id):
+        """Recovery lookup includes acknowledged outcomes; ACK is not deletion."""
+        with self._transaction() as db:
+            row = db.execute('SELECT id,payload FROM completions WHERE parent=? AND child=?',
+                             (_identity(parent), _identity(child_id))).fetchone()
+        return {'completion_id': row[0], 'result': json.loads(row[1])} if row else None
