@@ -387,7 +387,9 @@ async def test_real_tui_stream_persists_codex_reference_and_cache_usage():
         assert replies[-1]["provider_metadata"]["app_server_thread_id"] == "thread-1"
         assert app.last_usage["cached_tokens"] == 1800
         assert app.ctx_used == 2005
-        assert app.tps is None
+        # Native per-turn usage now supports an elapsed-derived rate.
+        # A near-zero fixture duration may still leave the rate unknown.
+        assert app.tps is None or app.tps > 0
         assert app.last_usage["thread_usage"]["totalTokens"] == 2005
         assert app._autocompact_due() is None
 
