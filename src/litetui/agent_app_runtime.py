@@ -5,7 +5,7 @@ from litetui.agent_runtime import run_prepared_child
 
 async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
                       child_id, workspace, data_root, branch, evidence,
-                      supported_levels, limit=1, timeout=300):
+                      supported_levels, limit=1, timeout=300, prepare=None):
     from litetui.agent_ancestry import require_root_launcher
     require_root_launcher()
     # Capture before the first await. Never route a returning child to the chat
@@ -26,4 +26,5 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
     return await run_prepared_child(spec, process, registry=registry, inbox=inbox,
         parent=parent, child_id=child_id, workspace=workspace, data_root=data_root,
         branch=branch, evidence=evidence, supported_levels=supported_levels,
-        notify=notify, limit=limit, timeout=timeout, parent_conversation=conversation)
+        notify=notify, limit=limit, timeout=timeout, parent_conversation=conversation,
+        prepare=prepare)
