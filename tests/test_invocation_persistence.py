@@ -117,3 +117,31 @@ def test_resume_then_new_conversation_uses_resumed_saved_backend(tmp_path):
     app.convo_dir = new
     LiteTUI._adopt_convo_settings(app, born=True)
     assert convo_settings.load(new).backend == 'llamacpp'
+
+
+def test_conversation_explicit_edit_retires_only_after_success(tmp_path):
+    from dataclasses import replace
+    from litetui.settings_runtime import persist_settings
+    from litetui.settings_service import SettingsService
+    service = SettingsService(tmp_path)
+    service.create_conversation('one')
+    directory = service._paths('one')['conversation'].parent
+    app = NS(settings=Settings(backend='codex'), convo_dir=directory,
+             _settings_service=service, _cli_initial_backend='codex',
+             _invocation_saved_values={'backend': 'lmstudio'})
+    chosen = replace(app.settings, backend='llamacpp')
+    before = service.snapshot('one')
+    stale = dict(before.revisions)
+    stale['conversation'] = 'invalid-revision'
+    failed = persist_settings(app, chosen, expected_revisions=stale)
+    assert any(not p.saved for p in failed.persistence)
+    assert app._invocation_saved_values == {'backend': 'lmstudio'}
+    assert app._cli_initial_backend == 'codex'
+    assert service.snapshot('one').saved.backend == 'lmstudio'
+    saved = persist_settings(app, chosen)
+    assert all(p.saved for p in saved.persistence)
+    assert 'backend' not in app._invocation_saved_values
+    assert app._cli_initial_backend is None
+    app.settings = chosen
+    persist_settings(app, replace(chosen, tts_timeout=150))
+    assert service.snapshot('one').saved.backend == 'llamacpp'
