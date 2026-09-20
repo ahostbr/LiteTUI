@@ -47,6 +47,38 @@ SETTINGS_FILENAME = "settings.json"
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
+# One vocabulary for the footer renderer, keyboard navigation, and settings
+# editor. Authority and plan are intentionally included: they remain always
+# visible, but their position is still part of the user's left-to-right layout.
+FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
+    "authority",
+    "plan",
+    "seat",
+    "think",
+    "bg",
+    "agents",
+    "convo",
+    "ctx",
+    "pct",
+    "tps",
+)
+
+
+def normalize_footer_order(value: Any) -> list[str]:
+    """Return a safe, complete footer order from user or disk input."""
+    if not isinstance(value, (list, tuple)):
+        value = ()
+    known = set(FOOTER_ORDER_DEFAULT)
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in value:
+        item = str(raw).strip()
+        if item in known and item not in seen:
+            result.append(item)
+            seen.add(item)
+    result.extend(item for item in FOOTER_ORDER_DEFAULT if item not in seen)
+    return result
+
 
 @dataclass
 class Settings:
@@ -386,6 +418,11 @@ class Settings:
     #: "sidebar", but it is a separate decision and gets a separate control
     #: rather than being folded into a four-state one.
     dialog_side: str = "right"
+    #: Paste an image (Ctrl+O) and it auto-opens in the in-sidebar viewer,
+    #: rendered as real pixels (default ON). OFF still ATTACHES the image to the
+    #: model exactly as before and the manual view_image path is untouched — this
+    #: toggles only the automatic preview, nothing else.
+    image_viewer_enabled: bool = True
 
     # ── Footer ───────────────────────────────────────────────────────────────
     #: Each field of the status footer, individually. Defaults match what the
@@ -403,11 +440,18 @@ class Settings:
     footer_show_context: bool = True
     footer_show_context_pct: bool = True
     footer_show_tps: bool = True
+    #: Footer item ids in left-to-right order. Visibility remains controlled by
+    #: the switches above; omitted/unknown ids are repaired on load/save.
+    footer_order: list[str] = field(
+        default_factory=lambda: list(FOOTER_ORDER_DEFAULT)
+    )
 
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
     #: Speak the agent's replies aloud (Ryan 2026-09-18). OFF by default — opt-in.
-    #: Toggled ONLY from this tab (the footer button is the mic, not speak).
+    #: Controlled from Voice settings and the input-border Speak button.
     tts_enabled: bool = False
+    #: Maximum duration of a speech child, seconds.
+    tts_timeout: int = 300
     #: "pyttsx3" (Windows SAPI direct, offline, no download — the default) or
     #: "edge" (Microsoft cloud neural voices; needs edge-tts + playsound).
     tts_engine: str = "pyttsx3"
@@ -504,11 +548,13 @@ def load(root: Path | None = None) -> Settings:
             for k, v in data.items():
                 if k in known:
                     setattr(s, k, _coerce(k, v, getattr(s, k)))
+    object.__setattr__(s, '_saved_values', asdict(s))
     for name, env_key in ENV_OVERRIDES.items():
         raw = os.environ.get(env_key)
         if raw is not None and raw != "":
             setattr(s, name, _coerce(name, raw, getattr(s, name)))
     s.tool_policy_profile = _selectable_profile(s.tool_policy_profile)
+    s.footer_order = normalize_footer_order(s.footer_order)
     # The snapshot `save()` diffs against: everything this instance believes the
     # file said at load time. Not a field, so `asdict` never sees it.
     object.__setattr__(s, "_baseline", asdict(s))
@@ -567,10 +613,8 @@ def save(s: Settings, root: Path | None = None) -> Path:
     ⇒ So a save now READS the file, applies only the keys that differ from this
     instance's baseline, and leaves the rest of the file exactly as it found it.
 
-    ⚠️ ENV-SOURCED FIELDS ARE STILL WRITTEN, CHANGED OR NOT — the pre-existing
-    rule, kept deliberately: the file records what the user CHOSE, so unsetting
-    an env var must not silently revert the knob to a default they never picked.
-    They are the one category that is written without having changed.
+    Environment overrides are effective-only: an unrelated save does not
+    persist them. An explicitly changed field is still a persistence request.
 
     🔴 ATOMIC, BECAUSE THE TORN FILE IS WORSE THAN THE LOST FIELD. `write_text`
     truncates before it writes, and `load()` answers an unparseable file with
@@ -607,9 +651,6 @@ def _save_locked(s: Settings, root: Path | None = None) -> Path:
         merged.update(current)
     else:
         merged.update({k: v for k, v in current.items() if base.get(k) != v})
-        for name, env_key in ENV_OVERRIDES.items():
-            if os.environ.get(env_key) and name in current:
-                merged[name] = current[name]
 
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".settings-", suffix=".json")
     try:

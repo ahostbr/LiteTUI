@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from litetui import settings_runtime
 from litetui import convo_settings as convo_settings_mod
 from litetui import harness as harness_mod
 from litetui import second_instance
@@ -632,19 +633,14 @@ def key_label(key: str) -> str:
 
 
 class ChatLog(VerticalScroll):
-    """The conversation viewport, including ownership of upward reader intent.
+    """Conversation viewport; following is controlled only by the explicit lock."""
 
-    Textual defers ``scroll_end`` until after refresh. Its ordinary wheel
-    handler therefore can't know that an older app-requested scroll is waiting
-    to run. Invalidate those requests *before* applying wheel-up so stale work
-    can neither yank the viewport nor later rewrite the follow anchor.
-    """
+    def watch_virtual_size(self, old_size, new_size):
+        if self.is_mounted:
+            self.app._scroll_down()
 
-    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        # Ctrl/Shift-wheel is Textual's horizontal-scroll gesture, not an
-        # attempt to leave the conversation tail vertically.
-        if not (event.ctrl or event.shift):
-            self.app._reader_left_follow_tail()
+    def on_resize(self):
+        self.app._scroll_down()
 
 
 class LiteTUI(App):
@@ -1460,6 +1456,8 @@ class LiteTUI(App):
         first_prompt: str | None = None,
         system_prompt: str | None = None,
         initial_model: str | None = None,
+        initial_backend: str | None = None,
+        initial_thinking: str | None = None,
         tool_profile: str | None = None,
         plan_mode: bool = False,
         convo_id: str | None = None,
@@ -1470,6 +1468,11 @@ class LiteTUI(App):
         self._first_prompt = first_prompt
         self._cli_system_prompt = system_prompt
         self._cli_initial_model = initial_model
+        if initial_backend not in (None, 'codex', 'lmstudio', 'llamacpp', 'ninfer'):
+            raise ValueError('Unsupported invocation backend')
+        self._cli_initial_backend = initial_backend
+        self._cli_thinking_level = initial_thinking
+        self._cli_effective_thinking = None
         self._cli_tool_profile = tool_profile
         # T558 plan mode. SESSION-ONLY, deliberately not persisted to settings:
         # a mode that survives a restart is a mode you forget you are in, and
@@ -1487,6 +1490,11 @@ class LiteTUI(App):
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
+        self._invocation_saved_values = {}
+        if initial_backend is not None:
+            from litetui.settings_runtime import capture_invocation
+            self._invocation_saved_values = capture_invocation(self.settings, {
+                'backend': initial_backend, 'backend_chosen': True})
         hook_host.initialize(self)
         self.conversation: list[dict] = []
         #: T691: the conversation's own settings, once one is open. None
@@ -1517,7 +1525,7 @@ class LiteTUI(App):
         # From settings, not hardcoded. This was `None`, so a SAVED thinking
         # level was ignored on every launch — and it looked like it worked
         # because saving it in the same session did apply it.
-        self.thinking_level: str | None = self.settings.thinking_level
+        self._thinking_level = self.settings.thinking_level
         # One warning per session: this is a config truth, not a per-turn event.
         self._reasoning_ignored_warned = False
         # T540: the levels this model actually supports (from probe or seed).
@@ -1566,12 +1574,7 @@ class LiteTUI(App):
         self._elapsed = turnstats.ElapsedState(self)
         self._inflight_tools: list = []      # ToolMessages awaiting their result
         self._cancel_buttons: dict = {}      # ToolMessage -> its CancelToolButton
-        # The last scroll position this app SET. Following is judged against it,
-        # never against max_scroll_y -- see _scroll_down.
-        self._follow_anchor: float | None = None
-        # Authorization token for app-owned deferred scrolls. Wheel-up advances
-        # it before Textual moves the viewport, invalidating both a queued
-        # action and a separately queued completion from the old intent.
+        # Invalidates queued scrolling when the explicit lock changes.
         self._follow_generation = 0
         self._compact_card = None            # the live CompactionCard, if any
         #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
@@ -1760,10 +1763,8 @@ class LiteTUI(App):
         # than pushing the box down as it filters.
         self._skill_ac = SkillAutocomplete()
         yield self._skill_ac
-        yield PromptInput(
-            placeholder="Message... (Ctrl+V paste | Ctrl+O image | /help)",
-            id="message-input",
-        )
+        from litetui.input_controls import PromptBox
+        yield PromptBox()
         yield ContextFooter()
 
     def _splash(self) -> None:
@@ -1787,6 +1788,7 @@ class LiteTUI(App):
             self._system(f"[hooks configuration error] {state.error}")
         hook_host.queue_lifecycle(self, "app_start")
         self.query_one("#message-input", Input).focus()
+        self._refresh_prompt_controls()
         self._splash()
         # An authored prompt file that has gone missing is invisible everywhere
         # else: the section simply does not render, and the model is handed
@@ -1814,7 +1816,8 @@ class LiteTUI(App):
         if self.settings.mcp_enabled and self.mcp.configs:
             self._mcp_connect()
         # T507-T1: apply CLI args after connection is up.
-        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt:
+        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt or self._cli_thinking_level:
+            self._cli_args_done = asyncio.Event()
             self._apply_cli_args()
         # T507-T2: start the RPC bridge in headless mode.
         if self._rpc:
@@ -1917,6 +1920,8 @@ class LiteTUI(App):
         await super()._shutdown()
 
     async def on_unmount(self) -> None:
+        from litetui import voice_backend
+        voice_backend.stop()
         self._hook_shutting_down = True
         hook_host.leave_conversation(self)
         hook_host.queue_lifecycle(self, "app_shutdown")
@@ -2193,7 +2198,7 @@ class LiteTUI(App):
         # a job -- it still reads the setting through `unattended()`.
         profile = tool_policy.AUTONOMOUS
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
-        banner = f"[{source} {label} \u00b7 {job.schedule}]\n{text}"
+        header = f"{source} {label} \u00b7 {job.schedule}"
 
         if job.new_conversation and not self._chat_running():
             self._handle_command("/new")
@@ -2202,12 +2207,12 @@ class LiteTUI(App):
             # QUEUED, never interrupting. A scheduled prompt is the LEAST
             # urgent kind of input there is -- nobody is waiting on it, so it
             # has no business cancelling something a human asked for.
-            self._user_bubble(banner, False, queued=True)
+            self._user_bubble(text, False, queued=True, header=header)
             self._pending_input.append(
-                {"content": text, "text": banner, "tool_profile": profile, "source": "scheduled"}
+                {"content": text, "text": text, "tool_profile": profile, "source": "scheduled"}
             )
             return True
-        self._user_bubble(banner, False)
+        self._user_bubble(text, False, header=header)
         hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "scheduled"})
         return True
 
@@ -2331,6 +2336,7 @@ class LiteTUI(App):
             args,
             workspace or paths.ROOT,
             tool_name=name,
+            active_conversation=getattr(self, 'convo_dir', None),
             always_allow=frozenset(self.settings.tool_always_allow or ()),
             deny=frozenset(self.settings.tool_deny or ()),
         )
@@ -2765,7 +2771,7 @@ class LiteTUI(App):
             return
         self.settings.tool_always_allow.append(key)
         try:
-            settings_mod.save(self.settings)
+            settings_runtime.persist_or_raise(self, self.settings)
         except OSError:
             self._system(
                 f"could not save the always-allow rule for {key} "
@@ -3223,7 +3229,6 @@ class LiteTUI(App):
         # up", so the scroll below would be REFUSED and the conversation would
         # open at the top. `None` is already defined as "nothing scrolled yet,
         # trivially following", which is the truth about a log just emptied.
-        self._follow_anchor = None
         self._next_follow_generation()
         # Read HERE, not in `_resume`. On the branch this came from, resume and
         # render were one method, so the lookup sat beside the `read()` call;
@@ -3366,7 +3371,7 @@ class LiteTUI(App):
         # surfaces onto it.
         self.settings.tools_enabled = self.tools_enabled
         try:
-            settings_mod.save(self.settings)
+            settings_runtime.persist_or_raise(self, self.settings)
         except OSError:
             # A toggle that lasts one session beats a crash on Ctrl+T. Said
             # out loud rather than swallowed: a silent half-success here is
@@ -3428,6 +3433,33 @@ class LiteTUI(App):
     #: The running ffmpeg recorder, or None when idle. Its stdin is the stop
     #: channel — see stt_backend.record_stop.
     _mic_proc = None
+
+    def _refresh_prompt_controls(self):
+        from litetui.input_controls import ScrollLockButton, SpeakButton
+        for button in self.query(ScrollLockButton):
+            button.update(' 🔒 ' if self.settings.autoscroll else ' 🔓 ')
+            button.tooltip = 'Pinned to newest output' if self.settings.autoscroll else 'Free scrolling'
+        for button in self.query(SpeakButton):
+            button.set_class(self.settings.tts_enabled, 'enabled')
+            button.tooltip = 'Disable speech and stop playback' if self.settings.tts_enabled else 'Enable speech'
+
+    def action_toggle_scroll_lock(self):
+        self.settings.autoscroll = not self.settings.autoscroll
+        self._next_follow_generation()
+        self._refresh_prompt_controls()
+        if self.settings.autoscroll:
+            self._scroll_down()
+
+    def action_toggle_speak(self):
+        from litetui import voice_backend
+        self.settings.tts_enabled = not self.settings.tts_enabled
+        if not self.settings.tts_enabled:
+            voice_backend.stop()
+        self._refresh_prompt_controls()
+        try:
+            settings_runtime.persist_or_raise(self, self.settings)
+        except Exception as exc:
+            self._system(f'[voice] preference not saved: {exc}')
 
     def action_toggle_mic(self) -> None:
         """The footer mic button and the record hotkey: start recording, or
@@ -3620,7 +3652,7 @@ class LiteTUI(App):
         # `_active_tool_profile` are transient — see `chosen_tool_profile`.
         self._remember_for_this_convo("tool_policy_profile", profile)
         try:
-            settings_mod.save(self.settings)
+            settings_runtime.persist_or_raise(self, self.settings)
         except OSError:
             # Same call as Ctrl+T: said out loud, never swallowed. A silent
             # half-success is the disagreement this persistence exists to end.
@@ -3684,6 +3716,8 @@ class LiteTUI(App):
 
     @thinking_level.setter
     def thinking_level(self, value: str | None) -> None:
+        self._cli_thinking_level = None
+        self._cli_effective_thinking = None
         self._thinking_level = value
         self._remember_for_this_convo("thinking_level", value)
         # Ryan wrote "think level WHEN ON CODEX" as its own item, and it is a
@@ -3790,7 +3824,8 @@ class LiteTUI(App):
         if self.convo_dir is None:
             return
         if born:
-            cs = convo_settings_mod.born_from(self.settings)
+            from litetui.settings_runtime import without_invocation
+            cs = convo_settings_mod.born_from(without_invocation(self, self.settings))
             cs.seat_name = getattr(self.seat, "name", None)
             cs.seat_id = getattr(self.seat, "agent_id", None)
             cs.seat_tier = getattr(self.seat, "tier", None)
@@ -3803,9 +3838,41 @@ class LiteTUI(App):
 
         cs = convo_settings_mod.load(self.convo_dir)
         self._convo_settings = cs
+        from copy import deepcopy
+        from litetui.settings_scope import SETTING_SPECS, SettingScope
+        self.settings = deepcopy(self.settings)
+        for key, value in cs.execution.items():
+            spec = SETTING_SPECS.get(key)
+            if spec is not None and spec.scope == SettingScope.CONVERSATION:
+                setattr(self.settings, key, settings_mod._coerce(key, deepcopy(value), getattr(self.settings, key)))
+        import os
+        for key, env in settings_mod.ENV_OVERRIDES.items():
+            if os.environ.get(env):
+                setattr(self.settings, key, settings_mod._coerce(key, os.environ[env], getattr(self.settings, key)))
+        for diagnostic in getattr(cs, '_diagnostics', ()):
+            self._system(f'Conversation settings warning: {diagnostic}')
+        current_backend = getattr(self, '_backend', None)
+        if current_backend is not None and hasattr(current_backend, 'set_settings'):
+            current_backend.set_settings(self.settings)
         # Apply through the BACKING fields, not the properties: applying a
         # stored value is not a new choice and must not write the file back.
-        model = convo_settings_mod.resolved(cs, self.settings, "model")
+        previous_backend = getattr(getattr(self, '_backend', None), 'name', None)
+        effective_cs = deepcopy(cs)
+        for own, key in convo_settings_mod.BORN_FROM.items():
+            env = settings_mod.ENV_OVERRIDES.get(key)
+            if env and os.environ.get(env):
+                setattr(effective_cs, own, getattr(self.settings, key))
+        if getattr(self, '_cli_initial_backend', None):
+            saved = getattr(self, '_invocation_saved_values', {})
+            saved['backend'] = cs.backend or cs.execution.get('backend', saved.get('backend', self.settings.backend))
+            self._invocation_saved_values = saved
+            effective_cs.backend = self._cli_initial_backend
+            self.settings.backend = self._cli_initial_backend
+        self._adopt_convo_backend(effective_cs)
+        if getattr(getattr(self, '_backend', None), 'name', None) != previous_backend:
+            # The previous engine's catalog says nothing about this engine.
+            self.available_models = []
+        model = convo_settings_mod.resolved(effective_cs, self.settings, "model")
         if model and self.available_models and model not in self.available_models:
             # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
             # the server no longer has — it was uninstalled, or this is another
@@ -3822,9 +3889,8 @@ class LiteTUI(App):
             model = self.settings.default_model
         if model:
             self._model_id = model
-        level = convo_settings_mod.resolved(cs, self.settings, "thinking_level")
+        level = convo_settings_mod.resolved(effective_cs, self.settings, "thinking_level")
         self._thinking_level = None if level in (None, "default") else level
-        self._adopt_convo_backend(cs)
         # 🔴 `--tool-profile` OUTRANKS THE REMEMBERED CHOICE AND NEVER BECOMES
         # IT (T695, Sentinel's ruling). An explicit invocation beats a stored
         # default — but a flag that wrote itself into the conversation file
@@ -3857,6 +3923,10 @@ class LiteTUI(App):
             self.settings.model_infer_overrides = overrides
             if is_codex:
                 self._thinking_level = None if effort == "default" else effort
+
+        # Restoring is not editing: later command saves diff only new intent.
+        from dataclasses import asdict
+        object.__setattr__(self.settings, '_baseline', asdict(self.settings))
 
     def _adopt_convo_backend(self, cs) -> None:
         """Put this conversation back on the engine it was using.
@@ -4253,6 +4323,12 @@ class LiteTUI(App):
             if self.available_models or getattr(self, "_connect_settled", False):
                 break
             await asyncio.sleep(0.5)
+        done = getattr(self, '_cli_args_done', None)
+        if done is not None:
+            try:
+                await asyncio.wait_for(done.wait(), 30)
+            except TimeoutError:
+                self._cli_launch_error = 'Launch configuration did not settle in time'
         from litetui.version import __version__
 
         # T594: resolve BEFORE announcing, so `ready` names the model that
@@ -4261,13 +4337,20 @@ class LiteTUI(App):
         if getattr(self, "_rpc", False):   # doubles predate this seam
             action, model, why = self._headless_model_decision()
             if action == "substitute" and model:
-                self.model_id = model
+                self._model_id = model
                 note = why
             elif action == "refuse":
                 note = why
+        from litetui.task_supervisor import process_creation_identity
         from litetui.gui_rpc import OPERATIONS
         self._rpc_emit({
+            'conversation_id': self.convo_id,
+            'pid': os.getpid(),
+            'process_created': process_creation_identity(os.getpid()),
+            'thinking_level': getattr(self, '_cli_effective_thinking', None) or getattr(self, '_thinking_level', None),
             "type": "ready",
+            'launch_status': 'blocked' if getattr(self, '_cli_launch_error', None) else 'ready',
+            'launch_error': getattr(self, '_cli_launch_error', None),
             "protocol_version": 1,
             "management_protocols": [1],
             "capabilities": list(OPERATIONS),
@@ -4294,40 +4377,73 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="cli-args")
     async def _apply_cli_args(self) -> None:
-        """T507-T1: apply --model, --system-prompt, --prompt after connect."""
-        # Wait for connect to populate available_models (up to 10s) — or for
-        # connect to have finished without any, which is the same T869 tax on
-        # a second waiter: --model has nothing to apply against an empty list.
-        for _ in range(20):
-            if self.available_models or getattr(self, "_connect_settled", False):
-                break
-            await asyncio.sleep(0.5)
-        if self._cli_initial_model:
-            want = self._cli_initial_model
-            loaded = {r.key for r in self.model_rows.values() if r.loaded}
-            if want in loaded:
-                self.model_id = want
-                self._update_header()
-                self._fetch_ctx_window()
-            elif want in self.available_models:
-                self._system(
-                    f"[cli] --model {want!r} is downloaded but NOT loaded — "
-                    f"load it first in LM Studio or use /model. "
-                    f"Using {self.model_id!r}."
-                )
-            else:
-                self._system(
-                    f"[cli] --model {want!r} not found — "
-                    f"loaded: {', '.join(sorted(loaded)) or '(none)'}. "
-                    f"Using {self.model_id!r}."
-                )
-        if self._cli_system_prompt:
-            self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
-        if self._first_prompt:
-            await self._ensure_chat_ready(timeout=15.0)
-            self._submit_text(self._first_prompt, alt_chord=False)
+        try:
+            """T507-T1: apply --model, --system-prompt, --prompt after connect."""
+            # Wait for connect to populate available_models (up to 10s) — or for
+            # connect to have finished without any, which is the same T869 tax on
+            # a second waiter: --model has nothing to apply against an empty list.
+            for _ in range(20):
+                if self.available_models or getattr(self, "_connect_settled", False):
+                    break
+                await asyncio.sleep(0.5)
+            self._cli_launch_error = None
+            if self._cli_initial_model:
+                want = self._cli_initial_model
+                loaded = {r.key for r in self.model_rows.values() if r.loaded}
+                if want in loaded:
+                    # Invocation-only choice must not rewrite remembered selection.
+                    self._model_id = want
+                    self._update_header()
+                    self._fetch_ctx_window()
+                elif want in self.available_models:
+                    self._cli_launch_error = f'Requested model {want!r} is not loaded'
+                    self._system(
+                        f"[cli] --model {want!r} is downloaded but NOT loaded — "
+                        f"load it first in LM Studio or use /model. "
+                        "Launch prompt blocked; no model fallback was used."
+                    )
+                else:
+                    self._cli_launch_error = f'Requested model {want!r} is unavailable'
+                    self._system(
+                        f"[cli] --model {want!r} not found — "
+                        f"loaded: {', '.join(sorted(loaded)) or '(none)'}. "
+                        "Launch prompt blocked; no model fallback was used."
+                    )
+            level = getattr(self, '_cli_thinking_level', None)
+            if level is not None and not self._cli_launch_error:
+                from litetui.thinking_capabilities import thinking_capabilities
+                if level not in thinking_capabilities(self)['levels']:
+                    self._cli_launch_error = 'Requested thinking level is unsupported by the selected model'
+                    self._system(self._cli_launch_error + '; launch prompt blocked.')
+                else:
+                    self._cli_effective_thinking = level
+                    self._thinking_level = None if level == 'default' else level
+            if self._cli_launch_error:
+                return
+            if self._cli_system_prompt:
+                self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
+            if self._first_prompt:
+                await self._ensure_chat_ready(timeout=15.0)
+                self._submit_text(self._first_prompt, alt_chord=False)
+
+        except asyncio.CancelledError:
+            self._cli_launch_error = 'Launch configuration cancelled'
+            raise
+        except Exception as exc:
+            self._cli_launch_error = f'Launch configuration failed: {exc}'
+            raise
+        finally:
+            done = getattr(self, '_cli_args_done', None)
+            if done is not None:
+                done.set()
 
     # ── Context window readout (footer) ───────────────────────
+
+    def footer_display_order(self) -> list[str]:
+        """The normalized left-to-right order used by every footer surface."""
+        return settings_mod.normalize_footer_order(
+            getattr(self.settings, "footer_order", None)
+        )
 
     def footer_nav_items(self) -> list[str]:
         """The navigable chips, in the order the footer draws them.
@@ -4344,18 +4460,19 @@ class LiteTUI(App):
         """
         s = self.settings
         subs, bg = tasks_mod.live_for_app(self)
-        items = ["authority"]  # never hidden — see the note in ctx_label_text
-        # PLAN SITS WHERE IT IS DRAWN, second. This list and the renderer are
-        # the same order on purpose: Left/Right that walks a different sequence
-        # from the one on screen is movement the user cannot follow.
-        items.append("plan")
-        if s.footer_show_thinking:
-            items.append("think")
-        if s.footer_show_bg and bg:
-            items.append("bg")
-        if s.footer_show_subagents and subs:
-            items.append("agents")
-        return items
+        visible = {
+            # These controls are deliberately never hidden; see the renderer's
+            # authority and plan comments below.
+            "authority": True,
+            "plan": True,
+            "think": bool(s.footer_show_thinking),
+            "bg": bool(s.footer_show_bg and bg),
+            "agents": bool(s.footer_show_subagents and subs),
+        }
+        return [
+            key for key in self.footer_display_order()
+            if visible.get(key, False)
+        ]
 
     def footer_nav_move(self, delta: int) -> None:
         """Left/Right along the visible chips. Wraps, like the authority cycle."""
@@ -4445,7 +4562,7 @@ class LiteTUI(App):
         """
         s = self.settings
         sep = "  \u00b7  "
-        chunks: list[tuple[str, Text]] = []
+        chunks_by_key: dict[str, Text] = {}
 
         # T570 — the selected chip, if the keyboard has taken the footer. Applied
         # by `add` so EVERY chip gets it for free: a per-chip opt-in is how one
@@ -4454,10 +4571,9 @@ class LiteTUI(App):
         nav = getattr(self, "_footer_nav", None)
 
         def add(key: str, chunk: str, style: str, chip: str | None = None) -> None:
-            chunks.append((
-                key,
-                Text(chunk, "reverse bold" if (chip and chip == nav) else style),
-            ))
+            chunks_by_key[key] = Text(
+                chunk, "reverse bold" if (chip and chip == nav) else style
+            )
 
         # THE AUTHORITY LEVEL, FIRST AND WITHOUT A TOGGLE. Ryan asked for it
         # ("ALSO show this in the footer") after being denied a write while
@@ -4561,7 +4677,19 @@ class LiteTUI(App):
             stats = Text()
             appsvc.append_tps_into(self, stats, sep)
             if stats.plain:
-                chunks.append(("tps", stats))
+                chunks_by_key["tps"] = stats
+
+        # Build the actual chunks only after every field has been computed.
+        # This keeps the switches and dynamic zero-state rules independent of
+        # the user's ordering preference, while giving rendering and navigation
+        # one exact sequence to share.
+        chunks = [
+            (key, chunks_by_key[key])
+            for key in settings_mod.normalize_footer_order(
+                getattr(s, "footer_order", None)
+            )
+            if key in chunks_by_key
+        ]
 
         # The footer owns the usable width. During its first compose it is
         # mounted but its children are not, so use the measured palette width
@@ -4839,7 +4967,6 @@ class LiteTUI(App):
         was a record of something the model can no longer see.
         """
         self.query_one("#chat-log").remove_children()
-        self._follow_anchor = None    # see _resume: a rebuilt log has no anchor
         self._next_follow_generation()
         if note:
             self._system(note)
@@ -5015,20 +5142,65 @@ class LiteTUI(App):
     # DELETING, NOT AFTER.
     _system = system_message
 
-    def _user_bubble(self, text: str, has_image: bool, queued: bool = False):
+    def _user_bubble(self, text: str, has_image: bool, queued: bool = False, *, header: str | None = None):
         log = self.query_one("#chat-log")
         parts: list[str] = []
+        # The spill path is read (not taken as an argument) so every call site is
+        # unchanged. It is set per-submit by `_submit_text` (via
+        # `_spill_image_for_reclick`) and reset to None at the top of each submit.
+        image_path = getattr(self, "_last_spilled_image", None)
         if has_image:
             parts.append("[Image attached]")
         if text:
             parts.append(text)
-        w = UserMessage("\n".join(parts), queued=queued)
+        # Only the CLICKABLE AFFORDANCE knows the spill path — the path never
+        # enters the body text (so it cannot leak into the transcript the model
+        # re-reads); the body still shows the same "[Image attached]" label.
+        w = UserMessage("\n".join(parts), queued=queued, image_path=image_path, header=header)
         # A message that silently waits is indistinguishable from one that was
         # dropped — the title is the visibility.
-        w.border_title = "You · queued" if queued else "You"
+        w.border_title = header or ("You · queued" if queued else "You")
         log.mount(w)
         self._scroll_down()
         return w
+
+    # The per-submit image path, if this message attached one and the spill
+    # succeeded (see `_spill_image_for_reclick`). Reset to None at the top of
+    # every `_submit_text`; `_user_bubble` reads it to make "[Image attached]"
+    # re-clickable. Never touches the API content or the transcript text.
+    _last_spilled_image: str | None = None
+
+    def _spill_image_for_reclick(self, b64: str) -> str | None:
+        """Persist a submitted image into the conversation so it can be re-opened.
+
+        Writes the image into ``<convo_dir>/images/`` and returns the file path
+        (a stable reference the widget can store); returns None when there is
+        nowhere durable to write it. A failure here degrades to "no re-click" —
+        the image is still attached to the model exactly as before, so a spill
+        problem must never block a turn.
+        """
+        if self.convo_dir is None:
+            return None
+        try:
+            import base64 as _b64
+
+            raw = _b64.b64decode(b64)
+            if raw[:8] != b"\x89PNG\r\n\x1a\n":
+                # Re-encode as PNG (the `pending_image` channel is PNG; a
+                # file-loaded image might not be) so the .png extension is true.
+                from PIL import Image as PILImage
+
+                img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                out = io.BytesIO()
+                img.save(out, format="PNG")
+                raw = out.getvalue()
+            images = self.convo_dir / "images"
+            images.mkdir(parents=True, exist_ok=True)
+            path = images / f"msg-{time.time_ns()}-{uuid.uuid4().hex[:6]}.png"
+            path.write_bytes(raw)
+            return str(path)
+        except Exception:  # noqa: BLE001 — a spill must never break a submit
+            return None
 
     def apply_backend_change(self, choice: str) -> None:
         """Move this app onto another engine. THE one place that does it.
@@ -5058,7 +5230,7 @@ class LiteTUI(App):
         s = self.settings
         s.backend = choice
         s.backend_chosen = True
-        settings_mod.save(s)
+        settings_runtime.persist_or_raise(self, s)
         # Deliberately NOT shutting the old engine down: a mid-session flip that
         # evicted the resident model would make flipping back cost a full reload.
         # VRAM is freed explicitly (/unload) or at app exit (atexit).
@@ -5374,78 +5546,6 @@ class LiteTUI(App):
         self._follow_generation += 1
         return self._follow_generation
 
-    def _reader_left_follow_tail(self) -> None:
-        """Give newer upward reader intent priority over deferred app work.
-
-        🔴 AND RECORD THAT THE READER LEFT, WHEN NOTHING ELSE WILL.
-
-        A cleared anchor means "follow" — right at boot, where nobody has
-        scrolled and the content simply outran a reader who never moved, and
-        WRONG after a rebuild, where the reader has a real position. Every
-        log-emptying site clears it (see `test_autoscroll`'s source arm), and
-        a compaction that FAILS clears it again on every retry.
-
-        RYAN, 2026-09-18, at 98% of the window with compaction looping:
-        *"i srolled to bottom to lock it but its flying up SMH WTF!"*.
-        Measured on a 100x20 pilot: reader parked at row 10, anchor cleared,
-        the next thing the turn mounted yanked them to 87 — over and over.
-
-        Geometry cannot fix this at the predicate: `scroll_y` well below
-        `max_scroll_y` is BOTH "scrolled up" and "outran by a thinking block",
-        and that ambiguity is the whole reason the anchor exists. Asking
-        `_at_bottom` there breaks `test_log_follows_a_filling_thinking_block`
-        (measured: scroll_y 0.0, max_scroll_y 88) — the flakiness
-        `_scroll_down`'s docstring warns about, reproduced.
-
-        The unambiguous signal is the WHEEL, which is the one event that only
-        a human produces. If it arrives while the anchor is unset, the reader
-        HAS moved, so plant one at the tail they are leaving and let the
-        ordinary comparison take over: below it they are reading, back at it
-        they are following again.
-        """
-        self._next_follow_generation()
-        if self._follow_anchor is None:
-            try:
-                self._follow_anchor = self.query_one("#chat-log").max_scroll_y
-            except Exception:
-                # No log yet (boot), or no geometry: leave it unset. The old
-                # behaviour — trivially following — is the safe one here.
-                pass
-
-    def _still_following(self, log) -> bool:
-        """Has the READER moved, or has the CONTENT moved?
-
-        _at_bottom could not tell these apart, and they want opposite answers:
-        a reader who scrolled up must be left alone, a reader whom the content
-        outran must be caught up. Both look identical in the geometry it asked
-        about -- scroll_y sitting below max_scroll_y.
-
-        What separates them is which number moved. Growing content raises
-        max_scroll_y and leaves scroll_y exactly where it was; only a human
-        moves scroll_y. So compare against the position we ourselves last
-        scrolled to, and content growth becomes invisible to the check.
-
-        Concretely, the case that kept coming back: .thinking-body is
-        `max-height: 10`, so a thinking block grows the log ~12 rows in a burst
-        and then never grows again. Against max_scroll_y that burst instantly
-        exceeded the 2-line slack and following was refused for the rest of the
-        turn, with nothing left to restore it. Against our own anchor the burst
-        does not register at all.
-
-        The slack survives for the reason it was introduced: scroll_y is a float
-        and lands fractionally. Unset anchor means nothing has been scrolled yet,
-        which is trivially still following.
-        """
-        anchor = self._follow_anchor
-        if anchor is None:
-            return True
-        try:
-            return log.scroll_y >= anchor - 2
-        except Exception:
-            # Geometry unavailable: fail OPEN, exactly as _at_bottom does. An
-            # over-eager scroll is a visual nit; a dead autoscroll is this bug.
-            return True
-
     # ── one-line card summary ────────────────────────────────────────────
     #
     # RYAN, 2026-09-16: when a response finishes, ask the SAME model for a
@@ -5611,60 +5711,18 @@ class LiteTUI(App):
                 card.autocollapse()
 
     def _scroll_down(self, *, reader_acted: bool = False) -> None:
-        """Scroll the conversation log to the bottom — IF THE READER IS FOLLOWING.
-
-        🔴 FOLLOW IS A LOCK THE READER OWNS, NOT A DEFAULT THE APP APPLIES.
-        Ryan, 2026-09-12, watching a turn with tool calls streaming: *"autoscroll
-        is always on... it should only turn on when the user scrolls to the
-        bottom and then lock. if i start scrolling up on my own right now it
-        drags me back down NO MATTER WHAT."*
-
-        "No matter what" is the clause that removed the old design. This used to
-        take `only_if_following`, and TWELVE of seventeen call sites passed
-        nothing: every tool card, tool result, system line, assistant bubble,
-        compact render and resume scrolled unconditionally. The docstring
-        defended that as "the user's own action" — true of a human pressing
-        send, and false of everything a turn mounts on its own, which is
-        precisely what drags a reader who is trying to read.
-
-        ⚠️ AND A BARE CALL DID NOT ONLY DRAG, IT RE-ARMED. The anchor is written
-        after every successful scroll, so one unconditional scroll also told
-        every later follow check that the reader was at the tail. A single tool
-        card poisoned the lock for the rest of the turn, which is why the stream
-        path looked like it was respecting the reader and did not.
-
-        ⬜ `reader_acted` IS THE ONLY WAY PAST, and it is spelled at the call
-        site so a reviewer can see who claims it. Today that is `_submit_text`
-        alone — a person pressing send is at the bottom by their own choice, and
-        it RE-ENGAGES the lock. It is deliberately not `_user_bubble`, which
-        also mounts bubbles for cron fires, inbox mail and goal-loop turns.
-
-        ⬜ RE-LOCKING NEEDS NO NEW MACHINERY, and no at-bottom geometry check —
-        reintroducing one is what made the three thinking-block arms flaky.
-        `_still_following` already compares scroll_y against where WE last
-        scrolled, and content growth raises max_scroll_y without moving
-        scroll_y. So a reader who returns to the bottom is past the anchor again
-        and following resumes on its own, with nothing to observe or subscribe
-        to.
-        """
+        """Follow only the explicit lock; sending does not override an unlocked reader."""
+        if not self.settings.autoscroll:
+            return
         log = self.query_one("#chat-log")
-        if not reader_acted:
-            # The setting is the master switch for FOLLOWING (Ryan item 4). It
-            # used to gate the stream only, so with autoscroll off a tool card
-            # still jumped — the same complaint arriving through the setting
-            # instead of through the scroll position.
-            if not self.settings.autoscroll:
-                return
-            if not self._still_following(log):
-                return
         # Textual's public scroll_end is deferred even with animation disabled.
         # Own that first defer here so its ACTION can validate authorization;
         # validating only the completion is too late because the stale action
         # may already have yanked a reader who wheeled upward meanwhile.
-        generation = self._next_follow_generation()
+        generation = self._follow_generation
 
         def scroll_if_current() -> None:
-            if generation != self._follow_generation:
+            if generation != self._follow_generation or not self.settings.autoscroll:
                 return
 
             # Same frame as the scroll, before it: layout has settled, so the
@@ -5672,19 +5730,7 @@ class LiteTUI(App):
             # is already expecting.
             self._autocollapse_offscreen(log)
 
-            # Layout has now settled, so immediate=True uses the current end.
-            # Textual still schedules on_complete separately; validate there as
-            # well because wheel-up can interleave after this move but before
-            # ownership would otherwise be recorded.
-            def remember_settled_end() -> None:
-                if generation == self._follow_generation:
-                    self._follow_anchor = log.scroll_y
-
-            log.scroll_end(
-                animate=False,
-                immediate=True,
-                on_complete=remember_settled_end,
-            )
+            log.scroll_end(animate=False, immediate=True)
 
         log.call_after_refresh(scroll_if_current)
 
@@ -5694,8 +5740,33 @@ class LiteTUI(App):
         indicator = self.query_one("#image-indicator")
         if value:
             indicator.add_class("visible")
+            self._maybe_auto_open_image_viewer(value)
         else:
             indicator.remove_class("visible")
+
+    # Whether the in-sidebar image viewer is currently open, so a second paste
+    # while it is up does not stack a second sidebar. Set by
+    # `_maybe_auto_open_image_viewer`, cleared by its on_close callback.
+    _image_viewer_open: bool = False
+
+    def _maybe_auto_open_image_viewer(self, b64: str) -> None:
+        """Auto-render a freshly pasted image in the sidebar, gated by setting.
+
+        OFF leaves the paste attaching to the model exactly as before — this is
+        the ONLY thing the `image_viewer_enabled` setting toggles; the manual
+        view_image path is untouched either way.
+        """
+        if not getattr(self.settings, "image_viewer_enabled", True):
+            return
+        if self._image_viewer_open:
+            return
+        from litetui import image_viewer
+
+        if image_viewer.open_image_viewer(
+            self, b64,
+            on_close=lambda _result: setattr(self, "_image_viewer_open", False),
+        ):
+            self._image_viewer_open = True
 
     _IMG_RE = r"(?:png|jpe?g|gif|webp|bmp)"
 
@@ -6323,6 +6394,7 @@ class LiteTUI(App):
             ac.options.highlighted = event.option_index
         self.accept_skill_completion()
         self.query_one("#message-input", Input).focus()
+        self._refresh_prompt_controls()
 
     @on(Input.Submitted, "#message-input")
     def handle_submit(self, event: Input.Submitted) -> None:
@@ -6408,6 +6480,10 @@ class LiteTUI(App):
                         "detail": detail})
 
     def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
+        # A re-clickable image path is per-submit: reset it here so a message
+        # WITHOUT an image can never inherit the previous message's spill path
+        # (only `_spill_image_for_reclick` re-sets it, below).
+        self._last_spilled_image: str | None = None
         text = value.strip()
         if not text and not self.pending_image:
             self._refuse_submit("empty", "nothing to send")
@@ -6451,6 +6527,13 @@ class LiteTUI(App):
                 return
 
         has_image = image_b64 is not None
+        # Spill the image to the convo so its "[Image attached]" can be re-clicked
+        # later. The spill path never enters the API `content` (built from
+        # `image_b64` below) or the transcript text — it only feeds the widget's
+        # clickable affordance. A spill failure just means no re-click; the turn
+        # still sends the image exactly as before.
+        if has_image:
+            self._last_spilled_image = self._spill_image_for_reclick(image_b64)
         # This is the moment a conversation earns its directory. Everything
         # before it — boot, the system prompt, a /model switch, an abandoned
         # /resume — leaves nothing on disk.
@@ -6520,6 +6603,19 @@ class LiteTUI(App):
         self._scroll_down(reader_acted=True)
         hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": source, **correlation})
 
+    def _effective_request_overrides(self):
+        overrides = dict(self.backend.request_overrides(self.model_id))
+        level = getattr(self, '_cli_effective_thinking', None)
+        if level is not None:
+            from litetui.thinking_capabilities import thinking_capabilities
+            if level not in thinking_capabilities(self)['levels']:
+                raise llm_backend.BackendError('Invocation thinking level is unsupported by the current model; choose a supported level before sending.')
+        if level == 'default':
+            overrides.pop('reasoning_effort', None)
+        elif level is not None:
+            overrides['reasoning_effort'] = level
+        return overrides
+
     def _headless_model_decision(self) -> tuple[str, str | None, str]:
         """What a `--rpc` child may do about the model, without loading one.
 
@@ -6564,6 +6660,12 @@ class LiteTUI(App):
                 f"than sending a request that might load one"
             )
             return ("refuse", None, why)
+        explicit = getattr(self, '_cli_initial_model', None)
+        if explicit:
+            if explicit not in resident:
+                return ('refuse', None, f'Explicit model {explicit!r} is not loaded; no fallback is permitted.')
+            if explicit != self.model_id:
+                return ('substitute', explicit, 'Applying explicit launch model.')
         want = self.model_id
         if want and want in resident:
             return ("ok", want, "")
@@ -6936,7 +7038,7 @@ class LiteTUI(App):
                 tools_enabled=self.tools_enabled,
                 max_tokens_tools=self.settings.max_tokens_tools,
                 max_tokens_chat=self.settings.max_tokens_chat,
-                request_overrides=self.backend.request_overrides(self.model_id),
+                request_overrides=self._effective_request_overrides(),
                 thinking_level=self.thinking_level,
                 tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                 backend_name=self.backend.name,
@@ -7338,6 +7440,7 @@ class LiteTUI(App):
                         from litetui import voice_backend
                         voice_backend.speak(
                             text_full,
+                            timeout=self.settings.tts_timeout,
                             engine=self.settings.tts_engine,
                             voice=(self.settings.tts_edge_voice
                                    if self.settings.tts_engine == "edge"
@@ -7698,7 +7801,7 @@ class LiteTUI(App):
             return
         st.theme_name = theme_name
         try:
-            settings_mod.save(st)
+            settings_runtime.persist_or_raise(self, st)
         except OSError:
             pass  # a theme that lasts one session beats a crash on switch
 
@@ -7870,7 +7973,7 @@ class LiteTUI(App):
                     messages=ask,
                     max_tokens=self.settings.compact_max_tokens,
                     thinking_level=self.settings.compact_thinking_level,
-                    request_overrides=self.backend.request_overrides(self.model_id),
+                    request_overrides=self._effective_request_overrides(),
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
@@ -8174,6 +8277,12 @@ class LiteTUI(App):
         old = self.settings
         self._settings_persist_error = None
         self.settings = new
+        if not new.tts_enabled:
+            from litetui import voice_backend
+            voice_backend.stop()
+        self._refresh_prompt_controls()
+        self._next_follow_generation()
+        self._scroll_down()
         # `new` is a DIFFERENT object than the one the backend captured at
         # construction (`_collect` did `replace()`), so re-point it here or a
         # saved backend setting — ninfer_max_context above all — stays on the
@@ -8200,7 +8309,11 @@ class LiteTUI(App):
             # name. Re-run Textual's CSS watcher or its background stays stale.
             self.mutate_reactive(App.theme)
         try:
-            path = settings_mod.save(new)
+            save_result = settings_runtime.persist_settings(self, new, baseline=old)
+            failures = [item.error for item in save_result.persistence if not item.saved]
+            if failures:
+                raise OSError('; '.join(failures))
+            path = Path(save_result.persistence[0].destination) if save_result.persistence else None
         except OSError as e:
             self._settings_persist_error = str(e)
             # The raw OS error (WinError + path) goes to the sink; chat gets
@@ -8425,6 +8538,13 @@ def wants_ansi_fallback() -> bool:
 
 
 def main():
+    from litetui.image_viewer import init_image_backend
+
+    # Pre-run, while we still own the tty: seeds the image cell-size cache
+    # and binds the env-selected render backend (textual-image's own probes
+    # would otherwise fire in-app and leak their terminal replies into the
+    # focused Input).
+    init_image_backend()
     LiteTUI(ansi_color=wants_ansi_fallback()).run()
 
 

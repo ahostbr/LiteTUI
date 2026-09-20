@@ -33,6 +33,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Label, Static, Switch
 
+from litetui import settings_runtime
 from litetui import settings as settings_mod
 from litetui.side_panel import SwapButton, close_dialog
 
@@ -187,7 +188,7 @@ class ToolListBody(Widget):
             off.append(name)
         self.app.settings.tools_disabled = off
         try:
-            settings_mod.save(self.app.settings)
+            settings_runtime.persist_or_raise(self.app, self.app.settings)
         except OSError:
             # Same shape as every other persistence failure in this app: the
             # change holds for the session and says so, rather than reporting

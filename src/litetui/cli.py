@@ -34,6 +34,10 @@ def main() -> None:
     )
     parser.add_argument("--version", "-V", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--rpc", action="store_true", help="headless JSONL-over-stdio mode")
+    parser.add_argument("--backend", choices=['codex', 'lmstudio', 'llamacpp', 'ninfer'], default=None, help='invocation-only backend selection')
+    thinking = parser.add_mutually_exclusive_group()
+    thinking.add_argument('--reasoning-effort', default=None)
+    thinking.add_argument('--thinking-level', default=None)
     parser.add_argument("--model", type=str, default=None, help="model slug to select on start")
     parser.add_argument("--prompt", type=str, default=None, help="first turn to submit once ready")
     parser.add_argument("--system-prompt", type=str, default=None, help="prepend a system message")
@@ -92,11 +96,20 @@ def main() -> None:
         first_prompt=args.prompt,
         system_prompt=args.system_prompt,
         initial_model=args.model,
+        initial_backend=args.backend,
+        initial_thinking=args.reasoning_effort or args.thinking_level,
         tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
         plan_mode=args.mode == "plan",
         convo_id=args.convo,
         **app_kwargs,
     )
+
+    from litetui.image_viewer import init_image_backend
+
+    # Pre-run, before the fd-1 redirect below: the image backend bind +
+    # cell-size seed must happen while we still own the tty (their terminal
+    # replies would otherwise be read by Textual and leak into the Input).
+    init_image_backend()
 
     if args.rpc:
         # Import rpc first so it captures the real fd 1 via os.dup(1), then

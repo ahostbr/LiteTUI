@@ -34,6 +34,11 @@ class Server:
         if method in ("thread/start", "thread/resume"):
             return {"thread": {"id": "thread-1"}}
         if method == "thread/compact/start":
+            await self.events.put({"method": "turn/started", "params": {
+                "threadId": "thread-1", "turn": {"id": "compact-1"}}})
+            await self.events.put({"method": "item/started", "params": {
+                "threadId": "thread-1", "turnId": "compact-1",
+                "item": {"id": "compact-item", "type": "contextCompaction"}}})
             await self.events.put(
                 {
                     "method": "turn/completed",
@@ -387,7 +392,9 @@ async def test_real_tui_stream_persists_codex_reference_and_cache_usage():
         assert replies[-1]["provider_metadata"]["app_server_thread_id"] == "thread-1"
         assert app.last_usage["cached_tokens"] == 1800
         assert app.ctx_used == 2005
-        assert app.tps is None
+        # Native per-turn usage now supports an elapsed-derived rate.
+        # A near-zero fixture duration may still leave the rate unknown.
+        assert app.tps is None or app.tps > 0
         assert app.last_usage["thread_usage"]["totalTokens"] == 2005
         assert app._autocompact_due() is None
 
@@ -557,3 +564,160 @@ async def test_separate_assistant_items_keep_paragraph_boundaries():
         model="gpt-6-astra", messages=[{"role": "user", "content": "hi"}]
     )
     assert response.choices[0].message.content.startswith("First. More.\n\nNext.")
+
+@pytest.mark.asyncio
+async def test_compaction_cleanup_retains_no_stale_turn():
+    server = Server()
+    server.session = NS(cleanup_errors=[])
+    messages = [{'role': 'assistant', 'content': 'kept', 'provider_metadata': {'provider': 'codex', 'app_server_thread_id': 'thread-1'}}]
+    transport = AppServerTransport(server, NS(conversation=messages))
+    await transport.compact()
+    assert transport.turn_id is None
+    assert server.session.cleanup_errors == []
+
+@pytest.mark.asyncio
+async def test_actual_stream_cleanup_failure_still_interrupts_and_clears_turn(monkeypatch):
+    from litetui.codex_question_requests import QuestionRequests
+    server = Server()
+    server.finish = False
+    server.session = NS(cleanup_errors=[])
+    transport = AppServerTransport(server)
+    stream = await transport.create(model='gpt-6-astra', messages=[{'role':'user','content':'hi'}], stream=True)
+    await anext(stream.__aiter__())
+    async def failed_close(self):
+        raise RuntimeError('injected question cleanup failure')
+    monkeypatch.setattr(QuestionRequests, 'close', failed_close)
+    await asyncio.wait_for(stream.close(), 2)
+    assert transport.turn_id is None
+    assert any(method == 'turn/interrupt' for method, params in server.requests)
+    assert any('injected question cleanup failure' in error for error in server.session.cleanup_errors)
+
+@pytest.mark.asyncio
+async def test_stream_disconnect_preserves_original_error_despite_cleanup_failure(monkeypatch):
+    from litetui.codex_question_requests import QuestionRequests
+    server = Server()
+    server.finish = False
+    server.session = NS(cleanup_errors=[])
+    transport = AppServerTransport(server)
+    stream = await transport.create(model='gpt-6-astra', messages=[{'role':'user','content':'hi'}], stream=True)
+    iterator = stream.__aiter__()
+    await anext(iterator)
+    while not server.events.empty(): server.events.get_nowait()
+    original = RuntimeError('reader disconnected fixture')
+    await server.events.put(original)
+    async def failed_close(self): raise RuntimeError('secondary cleanup failure')
+    monkeypatch.setattr(QuestionRequests, 'close', failed_close)
+    with pytest.raises(RuntimeError, match='reader disconnected fixture') as caught:
+        async for _ in iterator: pass
+    assert caught.value is original
+    assert transport.turn_id is None
+    assert any('secondary cleanup failure' in error for error in server.session.cleanup_errors)
+
+@pytest.mark.asyncio
+async def test_actual_stream_task_cancellation_interrupts_and_clears_turn(monkeypatch):
+    from litetui.codex_question_requests import QuestionRequests
+    server = Server()
+    server.finish = False
+    server.session = NS(cleanup_errors=[])
+    transport = AppServerTransport(server)
+    stream = await transport.create(model='gpt-6-astra', messages=[{'role': 'user', 'content': 'hi'}], stream=True)
+    iterator = stream.__aiter__()
+    await anext(iterator)
+    while not server.events.empty():
+        server.events.get_nowait()
+    waiting = asyncio.Event()
+    original_get = server.events.get
+    async def observed_get():
+        waiting.set()
+        return await original_get()
+    monkeypatch.setattr(server.events, 'get', observed_get)
+    async def failed_close(self):
+        raise RuntimeError('cancellation cleanup fixture')
+    monkeypatch.setattr(QuestionRequests, 'close', failed_close)
+    pending = asyncio.create_task(anext(iterator))
+    await asyncio.wait_for(waiting.wait(), 2)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending, 2)
+    assert pending.cancelled()
+    assert transport.turn_id is None
+    assert any(method == 'turn/interrupt' for method, params in server.requests)
+    assert any('cancellation cleanup fixture' in error for error in server.session.cleanup_errors)
+
+@pytest.mark.asyncio
+async def test_compaction_ignores_unrelated_completion():
+    server = Server()
+    await server.events.put({'method': 'turn/completed', 'params': {
+        'threadId': 'thread-1', 'turn': {'id': 'old-turn', 'status': 'failed'}}})
+    app = NS(conversation=[{'role': 'assistant', 'content': 'kept',
+        'provider_metadata': {'provider': 'codex', 'app_server_thread_id': 'thread-1'}}])
+    transport = AppServerTransport(server, app)
+    await asyncio.wait_for(transport.compact(), 2)
+    assert transport.turn_id is None
+    assert server.events.empty()
+
+@pytest.mark.asyncio
+async def test_compaction_stale_full_lifecycle_cannot_finish_new_operation():
+    server = Server()
+    for method, extra in [('turn/started', {'turn': {'id': 'stale'}}),
+                          ('item/started', {'turnId': 'stale', 'item': {'type': 'contextCompaction'}}),
+                          ('turn/completed', {'turn': {'id': 'stale', 'status': 'completed'}})]:
+        await server.events.put({'method': method, 'params': {'threadId': 'thread-1', **extra}})
+    app = NS(conversation=[{'provider_metadata': {'app_server_thread_id': 'thread-1'}}])
+    await AppServerTransport(server, app).compact()
+    assert server.events.empty(), 'returned on stale lifecycle instead of current compaction'
+
+
+@pytest.mark.asyncio
+async def test_missing_compaction_events_fail_bounded_and_release_lock():
+    from litetui.model_transport import ProviderError
+    server = Server()
+    original = server.request
+    async def missing(method, params):
+        if method == 'thread/compact/start':
+            await server.events.put({'method': 'turn/started', 'params': {
+                'threadId': 'thread-1', 'turn': {'id': 'missing'}}})
+            return {}
+        return await original(method, params)
+    server.request = missing
+    app = NS(conversation=[{'content': 'preserved', 'provider_metadata': {'app_server_thread_id': 'thread-1'}}])
+    transport = AppServerTransport(server, app)
+    with pytest.raises(ProviderError, match='timed out'):
+        await transport.compact(timeout=0.03)
+    assert not transport.lock.locked()
+    assert transport.turn_id is None
+    assert app.conversation[0]['content'] == 'preserved'
+    assert ('turn/interrupt', {'threadId': 'thread-1', 'turnId': 'missing'}) in server.requests
+
+@pytest.mark.asyncio
+async def test_compaction_failure_before_item_is_reported_without_timeout():
+    from litetui.model_transport import ProviderError
+    server = Server()
+    original = server.request
+    async def failed(method, params):
+        if method == 'thread/compact/start':
+            for event, status in [('turn/started', 'inProgress'), ('turn/completed', 'failed')]:
+                await server.events.put({'method': event, 'params': {
+                    'threadId': 'thread-1', 'turn': {'id': 'failed-turn', 'status': status}}})
+            return {}
+        return await original(method, params)
+    server.request = failed
+    transport = AppServerTransport(server, NS(conversation=[{
+        'provider_metadata': {'app_server_thread_id': 'thread-1'}}]))
+    with pytest.raises(ProviderError, match='did not complete'):
+        await transport.compact(timeout=1)
+    assert transport.turn_id is None
+
+
+@pytest.mark.asyncio
+async def test_compaction_preserves_pending_approval_and_does_not_dispatch():
+    from litetui.model_transport import ProviderError
+    server = Server()
+    pending = {'id': 99, 'method': 'item/commandExecution/requestApproval', 'params': {}}
+    await server.events.put(pending)
+    transport = AppServerTransport(server, NS(conversation=[{
+        'provider_metadata': {'app_server_thread_id': 'thread-1'}}]))
+    with pytest.raises(ProviderError, match='pending server requests'):
+        await transport.compact()
+    assert server.events.get_nowait() == pending
+    assert not any(method == 'thread/compact/start' for method, _ in server.requests)

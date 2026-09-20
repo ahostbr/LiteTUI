@@ -28,10 +28,13 @@ class AppServer:
         self.native_bridge = None
         self.async_questions = None
         self.process = None
+        self.initialized = False
         self.reader = None
         self.pending = {}
         self.events = asyncio.Queue()
         self.serial = 0
+        from litetui.backend_session import BackendSession
+        self.session = BackendSession()
         self.start_lock = asyncio.Lock()
         self.closer = None
         self.runtime_activity = RuntimeActivity()
@@ -42,7 +45,9 @@ class AppServer:
                 await self.closer
                 self.closer = None
             if self.process and self.process.returncode is None:
-                return
+                if self.initialized and self.reader and not self.reader.done():
+                    return
+                raise ProviderError('Codex process is alive but disconnected or uninitialized; shut down before reconnecting.')
             if self.reader:
                 await self.reader
             # Follow PATH in exactly the same order as the CLI command. Looking
@@ -90,19 +95,39 @@ class AppServer:
                     else {}
                 ),
             )
+            generation = self.session.begin()
             self.reader = asyncio.create_task(self._read())
-            await self.request(
-                "initialize",
-                {
-                    "clientInfo": {
-                        "name": "litetui",
-                        "title": "LiteTUI",
-                        "version": "1",
+            try:
+                await self.request(
+                    "initialize",
+                    {
+                        "clientInfo": {
+                            "name": "litetui",
+                            "title": "LiteTUI",
+                            "version": "1",
+                        },
+                        "capabilities": {"experimentalApi": True},
                     },
-                    "capabilities": {"experimentalApi": True},
-                },
-            )
-            await self.send({"method": "initialized", "params": {}})
+                )
+                await self.send({"method": "initialized", "params": {}})
+                self.initialized = True
+                self.session.ready(generation)
+            except BaseException as original:
+                self.initialized = False
+                self.session.disconnected(str(original))
+                # Cleanup must not replace the initialization/cancellation error.
+                try:
+                    self.process.stdin.close()
+                    await asyncio.wait_for(self._close_process(self.process), 10)
+                except BaseException as cleanup_error:
+                    self.session.cleanup_errors.append(str(cleanup_error))
+                if self.reader and not self.reader.done():
+                    self.reader.cancel()
+                    try:
+                        await self.reader
+                    except BaseException:
+                        pass
+                raise
 
     async def send(self, message):
         if not self.process or self.process.returncode is not None:
@@ -150,6 +175,8 @@ class AppServer:
         except (OSError, ValueError):
             pass
         finally:
+            self.initialized = False
+            self.session.disconnected()
             self.runtime_activity.disconnected()
             if self.async_questions:
                 self.async_questions.cancel()
@@ -162,6 +189,7 @@ class AppServer:
             await self.events.put(error)
 
     def shutdown(self):
+        self.initialized = False
         if self.async_questions:
             self.async_questions.cancel()
         if self.native_bridge:
@@ -240,6 +268,7 @@ class AppServerTransport:
         self.turn_id = None
         self.lock = asyncio.Lock()
         self.process = None
+        self.initialized = False
 
     async def create(self, *, purpose: str = "turn", **kwargs):
         """`purpose` names what the call is for and never reaches the
@@ -289,7 +318,15 @@ class AppServerTransport:
                 return 0
             return await reconcile(self.app, thread)
 
-    async def compact(self):
+    async def compact(self, *, timeout=120):
+        try:
+            await asyncio.wait_for(self._compact(), timeout)
+        except TimeoutError as exc:
+            raise ProviderError(
+                'Codex compaction timed out; the local transcript was preserved. Reconnect before retrying.'
+            ) from exc
+
+    async def _compact(self):
         async with self.lock:
             reference = next(
                 (
@@ -310,8 +347,23 @@ class AppServerTransport:
                 if opened.get("thread", {}).get("id") != reference:
                     raise ProviderError("Codex resumed a different thread than requested.")
                 self.thread_id, self.process = reference, self.server.process
+            # Events already queued before dispatch cannot belong to this
+            # operation. Preserve server requests rather than silently losing
+            # approvals; refuse compaction until that pending work is resolved.
+            queued = []
+            while not self.server.events.empty():
+                queued.append(self.server.events.get_nowait())
+            for event in queued:
+                if isinstance(event, Exception):
+                    raise event
+            requests = [event for event in queued if "id" in event and "method" in event]
+            if requests:
+                for event in queued:
+                    self.server.events.put_nowait(event)
+                raise ProviderError('Codex has pending server requests; resolve them before compacting.')
             await self.server.request("thread/compact/start", {"threadId": reference})
             finished = False
+            compaction_turn = None
             from litetui.codex_usage import NativeUsage
 
             compact_usage = NativeUsage()
@@ -386,7 +438,20 @@ class AppServerTransport:
                                     "id": "compact:" + self.turn_id,
                                 }
                             )
+                    if (event.get("method") in ("item/started", "item/completed")
+                            and payload.get("item", {}).get("type") == "contextCompaction"
+                            and payload.get("turnId") == self.turn_id
+                            and self.turn_id):
+                        compaction_turn = self.turn_id
                     if event.get("method") == "turn/completed":
+                        completed_turn = payload.get("turn", {})
+                        if (self.turn_id and completed_turn.get("id") == self.turn_id
+                                and completed_turn.get("status") in ("failed", "interrupted")):
+                            finished = True
+                            raise ProviderError('Codex compaction did not complete; the local transcript was preserved.')
+                        if (not compaction_turn or
+                                payload.get("turn", {}).get("id") != compaction_turn):
+                            continue
                         finished = True
                         if payload.get("turn", {}).get("status") != "completed":
                             raise ProviderError(
@@ -404,28 +469,19 @@ class AppServerTransport:
                             )
                         return
             finally:
-                await questions.close()
-                if ui:
-                    ui.finish()
-                # Compaction can rebase counters. Never subtract the old user
-                # turn's total from a post-compaction snapshot on the next turn.
-                for index in range(len(self.app.conversation) - 1, -1, -1):
-                    metadata = (
-                        self.app.conversation[index].get("provider_metadata") or {}
-                    )
-                    if metadata.get("app_server_thread_id") == reference:
-                        metadata["native_usage"] = compact_usage.previous
-                        if hasattr(self.app, "_edit"):
-                            self.app._edit(
-                                index, "Codex compaction usage baseline updated"
-                            )
-                        break
-                if not finished and self.turn_id and not interrupted:
-                    await self.server.request(
-                        "turn/interrupt",
-                        {"threadId": reference, "turnId": self.turn_id},
-                    )
-                self.turn_id = None
+                from litetui.backend_session import cleanup_steps
+                turn_id, self.turn_id = self.turn_id, None
+                async def finish_ui():
+                    if ui is not None:
+                        ui.finish()
+                async def interrupt():
+                    if not finished and turn_id and not interrupted:
+                        await self.server.request('turn/interrupt',
+                            {'threadId': reference, 'turnId': turn_id})
+                errors = await cleanup_steps([questions.close, finish_ui, interrupt])
+                session = getattr(self.server, 'session', None)
+                if session is not None:
+                    session.cleanup_errors.extend(errors)
 
     async def _server_request(self, message, *, interrupt_on_stop=True):
         method, params = message["method"], message.get("params", {})
@@ -908,23 +964,31 @@ class AppServerTransport:
                         yield _chunk(metadata=metadata)
                         return
             finally:
-                await questions.close()
-                if steering_worker is not None:
-                    steering_worker.cancel()
-                    await asyncio.gather(steering_worker.wait(), return_exceptions=True)
-                if steering_task is not None:
-                    steering_task.cancel()
-                    await asyncio.gather(steering_task, return_exceptions=True)
-                tool_ui.finish()
-                bridge = getattr(self.server, "native_bridge", None)
-                if bridge is not None and bridge.policy is not None:
-                    await bridge.policy.finish()
-                if not completed and self.turn_id and not interrupt_sent:
-                    await self.server.request(
-                        "turn/interrupt",
-                        {"threadId": self.thread_id, "turnId": self.turn_id},
-                    )
+                from litetui.backend_session import cleanup_steps
+                turn_id = self.turn_id
                 self.turn_id = None
+                async def stop_steering():
+                    if steering_worker is not None:
+                        steering_worker.cancel()
+                        await asyncio.gather(steering_worker.wait(), return_exceptions=True)
+                    if steering_task is not None:
+                        steering_task.cancel()
+                        await asyncio.gather(steering_task, return_exceptions=True)
+                async def finish_ui():
+                    tool_ui.finish()
+                async def finish_policy():
+                    bridge = getattr(self.server, 'native_bridge', None)
+                    if bridge is not None and bridge.policy is not None:
+                        await bridge.policy.finish()
+                async def interrupt():
+                    if not completed and turn_id and not interrupt_sent:
+                        await self.server.request('turn/interrupt',
+                            {'threadId': self.thread_id, 'turnId': turn_id})
+                errors = await cleanup_steps([questions.close, stop_steering,
+                                              finish_ui, finish_policy, interrupt])
+                session = getattr(self.server, 'session', None)
+                if session is not None:
+                    session.cleanup_errors.extend(errors)
 
 
 class AppServerStream:

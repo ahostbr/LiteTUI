@@ -124,6 +124,19 @@ def tool_grep(args: dict) -> str:
 
 
 def tool_edit(args: dict) -> str:
+    """Serialize cooperating read-check-replace transactions on a stable sibling."""
+    from litetui.shared_state import coordinated_write
+    raw = args.get('path') or ''
+    if not raw:
+        return "[error] missing 'path'"
+    try:
+        with coordinated_write(_resolve_path(raw)):
+            return _edit_locked(args)
+    except OSError as exc:
+        return f'[error] edit could not acquire or commit file transaction: {exc}'
+
+
+def _edit_locked(args: dict) -> str:
     raw = args.get("path") or ""
     if not raw:
         return "[error] missing 'path'"
@@ -145,6 +158,7 @@ def tool_edit(args: dict) -> str:
         return (f"[refused] {p} has not been read since its last change — "
                 "call the `read` tool on it first, then retry this edit")
 
+    identity = p.stat()
     data = p.read_bytes()
     try:
         text = data.decode("utf-8")  # strict: a binary file is not an edit target
@@ -188,16 +202,25 @@ def tool_edit(args: dict) -> str:
 
     # Atomic: write a sibling temp file then os.replace over the target. A
     # crash mid-write leaves either the old or the new content, never a tear.
-    tmp = p.with_name(p.name + ".edit-tmp")
+    import tempfile
+    tmp = None
     try:
-        tmp.write_bytes(out_bytes)
+        fd, name = tempfile.mkstemp(dir=p.parent, prefix='.' + p.name + '.edit-', suffix='.tmp')
+        tmp = Path(name)
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(out_bytes)
+        current = p.stat()
+        if (current.st_dev, current.st_ino, current.st_mtime_ns, current.st_size) != (identity.st_dev, identity.st_ino, identity.st_mtime_ns, identity.st_size) or p.read_bytes() != data:
+            raise OSError('file changed during edit; read again before retry')
         os.replace(tmp, p)
     except Exception as e:  # noqa: BLE001 — report whatever the disk said
+        return f"[error] write failed: {type(e).__name__}: {e}"
+    finally:
         try:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
         except OSError:
             pass
-        return f"[error] write failed: {type(e).__name__}: {e}"
 
     # The edit's own write counts as having seen the file — demanding a re-read
     # for the very next edit would make sequential edits need a roundtrip.

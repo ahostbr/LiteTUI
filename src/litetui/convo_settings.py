@@ -27,6 +27,7 @@ plus the knobs that are genuinely app-wide (theme, seat name, dialog style).
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field, fields
@@ -61,6 +62,9 @@ class ConvoSettings:
     seat_name: str | None = None
     seat_id: str | None = None
     seat_tier: str | None = None
+    #: Additive execution snapshot; legacy top-level choices remain authoritative.
+    schema_version: int = 2
+    execution: dict = field(default_factory=dict)
 
 
 #: The global `Settings` attribute each field is born from. A field absent here
@@ -79,9 +83,19 @@ def path_for(convo_dir: Path) -> Path:
 
 def born_from(settings) -> ConvoSettings:
     """A new conversation's starting point: the global defaults, copied once."""
+    settings = deepcopy(settings)
+    from litetui.settings import ENV_OVERRIDES
+    for key, value in getattr(settings, '_saved_values', {}).items():
+        if key in ENV_OVERRIDES and os.environ.get(ENV_OVERRIDES[key]):
+            setattr(settings, key, deepcopy(value))
     cs = ConvoSettings()
     for own, global_name in BORN_FROM.items():
-        setattr(cs, own, getattr(settings, global_name, None))
+        setattr(cs, own, deepcopy(getattr(settings, global_name, None)))
+    from litetui.settings_scope import SETTING_SPECS, SettingScope, validate_registry
+    validate_registry()
+    cs.execution = {name: deepcopy(getattr(settings, name))
+                    for name, spec in SETTING_SPECS.items()
+                    if spec.scope == SettingScope.CONVERSATION}
     return cs
 
 
@@ -94,17 +108,28 @@ def load(convo_dir: Path) -> ConvoSettings:
     exactly like absent, which falls through to the global defaults.
     """
     cs = ConvoSettings()
+    cs._diagnostics = []
     p = path_for(convo_dir)
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return cs
+    except (OSError, ValueError) as exc:
+        cs._diagnostics.append(str(exc))
         return cs
     if not isinstance(raw, dict):
+        cs._diagnostics.append('Settings must be an object')
         return cs
     known = {f.name for f in fields(ConvoSettings)}
     for k, v in raw.items():
         if k in known:
-            setattr(cs, k, v)
+            valid = (isinstance(v, dict) if k in ('execution', 'llama_load', 'lmstudio_load')
+                     else type(v) is int and v in (1, 2) if k == 'schema_version'
+                     else v is None or isinstance(v, str))
+            if valid:
+                setattr(cs, k, v)
+            else:
+                cs._diagnostics.append(f'Invalid value for {k}')
     return cs
 
 
@@ -117,13 +142,28 @@ def save(convo_dir: Path, cs: ConvoSettings) -> Path:
     syscalls would see a conversation quietly revert to the global model rather
     than an error anybody could act on.
     """
+    from litetui.shared_state import coordinated_write
+    with coordinated_write(path_for(convo_dir)):
+        return _save_locked(convo_dir, cs)
+
+
+def _save_locked(convo_dir: Path, cs: ConvoSettings) -> Path:
     d = Path(convo_dir)
     d.mkdir(parents=True, exist_ok=True)
     p = path_for(d)
+    payload = {}
+    if p.exists():
+        try:
+            existing = json.loads(p.read_text(encoding='utf-8'))
+            if isinstance(existing, dict):
+                payload.update(existing)
+        except (OSError, ValueError):
+            pass
+    payload.update(asdict(cs))
     fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".settings-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(asdict(cs), indent=2, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
         os.replace(tmp, p)
     except OSError:
         try:
@@ -145,5 +185,7 @@ def resolved(cs: ConvoSettings, settings, name: str):
     own = getattr(cs, name, None)
     if own is not None:
         return own
-    global_name = BORN_FROM.get(name)
+    global_name = BORN_FROM.get(name, name)
+    if global_name in cs.execution:
+        return deepcopy(cs.execution[global_name])
     return getattr(settings, global_name, None) if global_name else None

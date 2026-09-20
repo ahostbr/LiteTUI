@@ -21,6 +21,10 @@ dependencies = [
     "openai>=1.0.0",
     "httpx>=0.28.1",
     "Pillow>=10.0.0",
+    # In-sidebar image viewer: paints pasted/staged images as real pixels (sixel /
+    # kitty TGP / half-cell / unicode). Only new dep for that feature — its own
+    # requires are pillow + rich, already above.
+    "textual-image>=0.12.0",
     # LM Studio control plane (load/unload/ttl) — chat stays on openai's
     # OpenAI-compat client for BOTH backends; the SDK is control-only.
     "lmstudio>=1.5.0",

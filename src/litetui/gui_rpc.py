@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, get_args, get_origin, get_type_hints
 
+from litetui import settings_runtime
 from litetui import llm_backend, paths, tasks
 from litetui import settings as settings_mod
 from litetui.shared_state import DATA_VERSION, Lease, OwnershipError, check_data_version
@@ -659,7 +660,7 @@ async def _async_dispatch(app, cmd):
             preset = cmd.get("preset_name")
             if preset:
                 candidate.llama_presets[str(preset)] = {"load": dict(load), "inference": dict(inference)}
-            settings_mod.save(candidate)
+            settings_runtime.persist_or_raise(app, candidate)
             app.settings = candidate
             # `candidate` is a fresh object; re-point the backend or these
             # saved per-model settings stay on the stale object it captured.

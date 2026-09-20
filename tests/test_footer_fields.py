@@ -154,3 +154,28 @@ async def test_tok_per_second_survives_an_unresolved_context_window():
         text = a.ctx_label_text.plain
         assert "ctx" in text
         assert "tok/s" in text, f"tok/s was suppressed by an unresolved window: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_footer_order_is_applied_left_to_right():
+    """The persisted order changes the rendered sequence without hiding fields."""
+    a = _app(
+        footer_order=[
+            "pct", "ctx", "convo", "think", "seat", "plan", "authority", "tps",
+        ]
+    )
+    a._active_tool_profile = "autonomous"
+    async with a.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        text = a.ctx_label_text.plain
+        positions = [
+            text.index("19%"),
+            text.index("ctx "),
+            text.index("616cc9c0"),
+            text.index("think:"),
+            text.index("unregistered"),
+            text.index("plan:"),
+            text.index(">> "),
+            text.index("tok/s"),
+        ]
+        assert positions == sorted(positions)

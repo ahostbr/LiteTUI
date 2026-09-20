@@ -245,16 +245,33 @@ class ChatMessage(Static):
 class UserMessage(Vertical):
     """User prompt with a compact, manually foldable header; no model call."""
 
-    def __init__(self, text: str, queued: bool = False) -> None:
+    def __init__(self, text: str, queued: bool = False, image_path: str | None = None, *, header: str | None = None) -> None:
         super().__init__(classes="user-msg")
         self.body = Static(Text(text))
         self.queued = queued
+        self.message_header = header
+        # When the user attached an image, we keep a stable on-disk reference so
+        # the "[Image attached]" label can be re-clicked to re-open the viewer.
+        # The path lives ONLY here (and the affordance below), never in `text`.
+        self.image_path = image_path
         preview = " ".join(text.split())
         self.preview = preview if len(preview) <= 80 else preview[:77].rstrip() + "..."
         self.refresh_header()
 
     def compose(self) -> ComposeResult:
         yield self.body
+        if self.image_path:
+            yield Button("🖼  open image", id="user-img-open", classes="user-img-open")
+
+    def on_button_pressed(self, event: "Button.Pressed") -> None:
+        if event.button.id == "user-img-open" and self.image_path:
+            event.stop()
+            # Imported here (not at module top): image_viewer imports
+            # side_panel, and widgets.py is imported very early — a top-level
+            # import would risk a cycle.
+            from litetui import image_viewer
+
+            image_viewer.open_image_viewer(self.app, self.image_path, title="Re-opened image")
 
     @property
     def collapsed(self) -> bool:
@@ -262,7 +279,7 @@ class UserMessage(Vertical):
 
     def refresh_header(self) -> None:
         marker = "▸" if self.collapsed else "▾"
-        label = "You · queued" if self.queued else "You"
+        label = self.message_header or ("You · queued" if self.queued else "You")
         preview = f" · {self.preview}" if self.collapsed and self.preview else ""
         self.border_title = f"{marker} {label}{preview}"
 
@@ -1139,9 +1156,11 @@ class PauseButton(Static):
 
     def __init__(self) -> None:
         super().__init__(self.LABEL_RUN, classes="pause-button")
+        self.tooltip = "Pause before the next model round"
 
     def set_paused(self, on: bool) -> None:
         self.content = self.LABEL_PAUSED if on else self.LABEL_RUN
+        self.tooltip = "Resume the agent" if on else "Pause before the next model round"
         if on:
             self.add_class("paused")
         else:
@@ -1162,9 +1181,11 @@ class MicButton(Static):
 
     def __init__(self) -> None:
         super().__init__(self.LABEL_IDLE, classes="mic-button")
+        self.tooltip = "Start microphone recording"
 
     def set_recording(self, on: bool) -> None:
         self.content = self.LABEL_REC if on else self.LABEL_IDLE
+        self.tooltip = "Stop recording and transcribe" if on else "Start microphone recording"
         if on:
             self.add_class("recording")
         else:
@@ -1209,8 +1230,6 @@ class ContextFooter(Footer):
         # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
         # Inside a Horizontal each button owns its own cells.
         with Horizontal(classes="footer-buttons"):
-            yield MicButton()
-            yield PauseButton()
             yield PaletteButton("☰ commands", classes="palette-button")
 
 
