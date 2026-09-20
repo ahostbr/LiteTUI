@@ -51,6 +51,14 @@ def _make_app():
     return application
 
 
+@pytest.fixture(autouse=True)
+def _data_root_to_tmp(tmp_path, monkeypatch):
+    """init_image_backend writes a startup diagnostic to <data_root>/.logs
+    (the fallback path when the runtime-log sink is not installed yet) — keep
+    it out of the checkout so conftest's repo-root guard stays green."""
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+
+
 # ── the decode / degrade contract (no app needed) ─────────────────────────
 
 
@@ -295,5 +303,124 @@ def test_make_image_uses_env_selected_class(monkeypatch):
         img = body._make_image()
         assert img.__class__.__name__ == "HalfcellImage"
         assert img.id == "iv-img"
+    finally:
+        iv._IMAGE_WIDGET_CLS = saved
+
+
+# ── sixel follow-up (2026-09-19): visible tag, startup log, native size ──
+#
+# The escape-leak fix kept input clean, but the image stayed blurry: the
+# render had been sized into the sidebar's cell box. Now: (1) the header shows
+# the EXACT backend + class + env value the choice saw, (2) init logs what it
+# saw to the error sink (never stdout) so WT_SESSION presence is measurable
+# from outside the app, (3) sixel renders at native pixel size (near 1:1) and
+# scrolls instead of downscaling, and (4) WT_PROFILE_ID is a second WT signal
+# in case the launch chain strips WT_SESSION.
+
+
+def test_select_backend_wt_profile_id_also_selects_sixel():
+    # WT sets WT_SESSION AND WT_PROFILE_ID; if the launch chain strips one,
+    # the other still says "Windows Terminal".
+    from litetui.image_viewer import select_backend
+
+    assert select_backend({"WT_PROFILE_ID": "profile-1"}) == "sixel"
+    assert select_backend({"WT_SESSION": "s", "WT_PROFILE_ID": "p"}) == "sixel"
+    # Neither set -> halfcell, as before.
+    assert select_backend({"TERM_PROGRAM": "vscode"}) == "halfcell"
+
+
+def test_init_logs_backend_diagnostics(monkeypatch, tmp_path):
+    """init_image_backend logs what it saw (WT_SESSION value included) to the
+    LiteTUI error file — the pre-run sink is not installed yet, so this must
+    exercise the direct-append fallback — never stdout."""
+    import litetui.image_viewer as iv
+    from litetui import runtime_log
+
+    # The autouse fixture already points LITETUI_DATA_ROOT at tmp_path.
+    monkeypatch.setenv("WT_SESSION", "da63a2ce-0000-0000-0000-000000000000")
+    monkeypatch.delenv("WT_PROFILE_ID", raising=False)
+    monkeypatch.setattr(runtime_log, "_ACTIVE", None, raising=False)  # force the fallback
+    saved = iv._IMAGE_WIDGET_CLS
+    iv._IMAGE_WIDGET_CLS = None
+    try:
+        cls = iv.init_image_backend()
+        assert cls.__module__ == "textual_image.widget.sixel"
+        # The in-process state the header tag is built from.
+        assert iv._BACKEND_INFO["backend"] == "sixel"
+        assert iv._BACKEND_INFO["wt_session"].startswith("da63a2ce-")
+        # ...and the on-disk line, where Sentinel reads it from outside.
+        err = tmp_path / ".logs" / "runtime-errors.log"
+        assert err.is_file(), "the startup diagnostic must land in .logs/runtime-errors.log"
+        text = err.read_text(encoding="utf-8")
+        assert "image_viewer.backend_init" in text
+        assert "da63a2ce-0000-0000-0000-000000000000" in text
+    finally:
+        iv._IMAGE_WIDGET_CLS = saved
+
+
+def test_backend_tag_names_class_and_env():
+    """The header tag shows the backend, the exact class bound at init, and
+    the WT env value — the guessing ends here."""
+    import litetui.image_viewer as iv
+
+    iv._BACKEND_INFO.update(
+        backend="sixel", klass="SixelImage",
+        wt_session="da63a2ce-0000-0000-0000-000000000000", wt_profile_id="",
+        term_program="", term="",
+    )
+    try:
+        tag = iv.backend_tag()
+        assert "sixel" in tag and "SixelImage" in tag
+        assert "WT_SESSION=da63a2ce-…" in tag
+
+        iv._BACKEND_INFO.update(
+            backend="halfcell", klass="HalfcellImage",
+            wt_session="", wt_profile_id="", term_program="", term="",
+        )
+        tag = iv.backend_tag()
+        assert "halfcell" in tag and "HalfcellImage" in tag
+        assert "WT_SESSION=<empty>" in tag
+    finally:
+        iv._BACKEND_INFO.clear()
+
+
+@pytest.mark.asyncio
+async def test_header_shows_backend_tag_under_a_screen():
+    """The composed #iv-meta line carries the [backend: …] tag."""
+    application = _make_app()
+    async with application.run_test(size=(120, 34)) as pilot:
+        await application.screen.mount(ImageViewerBody(_png_b64()))
+        from tests._settle import settle_until
+        from textual.widgets import Static
+
+        ok = await settle_until(pilot, lambda: bool(application.screen.query("#iv-meta")))
+        assert ok, "the meta line must compose"
+        meta = str(application.screen.query_one("#iv-meta", Static).render())
+        assert "[backend:" in meta, f"the header must show the backend tag, got: {meta}"
+
+
+def test_sixel_widget_keeps_native_size_halfcell_fits_width(monkeypatch):
+    """Sixel must render at the image's native pixel size (near 1:1 — the
+    scroll container moves), NOT be downscaled into the sidebar's cell box;
+    half-cell, a 2 px/cell downsample, keeps the fit-to-width behaviour."""
+    import litetui.image_viewer as iv
+
+    saved = iv._IMAGE_WIDGET_CLS
+    iv._IMAGE_WIDGET_CLS = None
+    try:
+        monkeypatch.setenv("WT_SESSION", "test-session")
+        img = ImageViewerBody(_png_b64())._make_image()
+        assert img.__class__.__module__ == "textual_image.widget.sixel"
+        # Unrendered widgets expose the raw style value: a width style of
+        # None means "native pixel size / real cell size" — the near-1:1 path.
+        assert img.styles.width is None, (
+            "sixel must NOT be squeezed to the panel width — that downscale "
+            "is what made it look as blurry as half-cell")
+
+        iv._IMAGE_WIDGET_CLS = None
+        monkeypatch.delenv("WT_SESSION", raising=False)
+        img = ImageViewerBody(_png_b64())._make_image()
+        assert img.__class__.__name__ == "HalfcellImage"
+        assert img.styles.width is not None, "half-cell still fits the panel width"
     finally:
         iv._IMAGE_WIDGET_CLS = saved
