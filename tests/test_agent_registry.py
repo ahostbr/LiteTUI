@@ -62,3 +62,19 @@ def test_recovery_observation_never_releases_unknown_process(tmp_path):
         rows = registry.observe('parent', probe=lambda pid: stamp)
         assert rows[0]['identity_state'] == expected
         assert len(registry.active('parent')) == 1
+
+
+def test_budget_is_shared_across_parents_and_settlement_is_scoped(tmp_path):
+    from litetui.agent_registry import AgentRegistry
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    registry.claim('parent-a', 'child-a', limit=1)
+    with pytest.raises(LaunchBlocked, match='budget'):
+        registry.claim('parent-b', 'child-b', limit=1)
+    with pytest.raises(LaunchBlocked):
+        registry.settle('parent-b', 'child-a', completion_id='completion', cleanup_confirmed=True)
+    assert len(registry.active('parent-a')) == 1
+    registry.settle('parent-a', 'child-a', completion_id='completion', cleanup_confirmed=True)
+    registry.settle('parent-a', 'child-a', completion_id='completion', cleanup_confirmed=True)
+    with pytest.raises(LaunchBlocked):
+        registry.settle('parent-a', 'child-a', completion_id='conflict', cleanup_confirmed=True)
+    registry.claim('parent-b', 'child-b', limit=1)
