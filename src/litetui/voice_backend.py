@@ -23,6 +23,36 @@ import importlib.util
 import os
 import subprocess
 import sys
+import threading
+
+_active = set()
+_active_lock = threading.Lock()
+
+
+def stop() -> None:
+    """Stop only speech processes launched by this LiteTUI instance."""
+    with _active_lock:
+        for proc in tuple(_active):
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except OSError:
+                pass
+
+
+def _reap(proc, timeout):
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    finally:
+        with _active_lock:
+            _active.discard(proc)
+
 
 #: The engines the Voice settings tab offers. `pyttsx3` first = the default.
 ENGINES = ("pyttsx3", "edge")
@@ -122,11 +152,13 @@ asyncio.run(go())
 """
 
 
-def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None) -> bool:
+def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeout: int = 300) -> bool:
     """Fire-and-forget one utterance in a detached child. Returns True if a
     child was launched, False if the text was empty or the engine unavailable.
     NEVER raises — a failed speak must not break a turn."""
-    text = clean_for_speech(text)
+    if type(timeout) is not int or timeout <= 0:
+        return False
+    text = clean_for_speech(text, limit=len(text))
     if not text:
         return False
     if engine == "edge":
@@ -139,7 +171,10 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None) -> bo
         child = _SAPI_CHILD.format(text=text, voice=voice or "")
     py, flags = _speaker()
     try:
-        subprocess.Popen([py, "-c", child], creationflags=flags)
+        with _active_lock:
+            proc = subprocess.Popen([py, "-c", child], creationflags=flags)
+            _active.add(proc)
+        threading.Thread(target=_reap, args=(proc, timeout), daemon=True).start()
         return True
     except Exception:
         return False

@@ -448,8 +448,10 @@ class Settings:
 
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
     #: Speak the agent's replies aloud (Ryan 2026-09-18). OFF by default — opt-in.
-    #: Toggled ONLY from this tab (the footer button is the mic, not speak).
+    #: Controlled from Voice settings and the input-border Speak button.
     tts_enabled: bool = False
+    #: Maximum duration of a speech child, seconds.
+    tts_timeout: int = 300
     #: "pyttsx3" (Windows SAPI direct, offline, no download — the default) or
     #: "edge" (Microsoft cloud neural voices; needs edge-tts + playsound).
     tts_engine: str = "pyttsx3"

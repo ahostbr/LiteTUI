@@ -633,19 +633,14 @@ def key_label(key: str) -> str:
 
 
 class ChatLog(VerticalScroll):
-    """The conversation viewport, including ownership of upward reader intent.
+    """Conversation viewport; following is controlled only by the explicit lock."""
 
-    Textual defers ``scroll_end`` until after refresh. Its ordinary wheel
-    handler therefore can't know that an older app-requested scroll is waiting
-    to run. Invalidate those requests *before* applying wheel-up so stale work
-    can neither yank the viewport nor later rewrite the follow anchor.
-    """
+    def watch_virtual_size(self, old_size, new_size):
+        if self.is_mounted:
+            self.app._scroll_down()
 
-    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        # Ctrl/Shift-wheel is Textual's horizontal-scroll gesture, not an
-        # attempt to leave the conversation tail vertically.
-        if not (event.ctrl or event.shift):
-            self.app._reader_left_follow_tail()
+    def on_resize(self):
+        self.app._scroll_down()
 
 
 class LiteTUI(App):
@@ -1567,12 +1562,7 @@ class LiteTUI(App):
         self._elapsed = turnstats.ElapsedState(self)
         self._inflight_tools: list = []      # ToolMessages awaiting their result
         self._cancel_buttons: dict = {}      # ToolMessage -> its CancelToolButton
-        # The last scroll position this app SET. Following is judged against it,
-        # never against max_scroll_y -- see _scroll_down.
-        self._follow_anchor: float | None = None
-        # Authorization token for app-owned deferred scrolls. Wheel-up advances
-        # it before Textual moves the viewport, invalidating both a queued
-        # action and a separately queued completion from the old intent.
+        # Invalidates queued scrolling when the explicit lock changes.
         self._follow_generation = 0
         self._compact_card = None            # the live CompactionCard, if any
         #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
@@ -1761,10 +1751,8 @@ class LiteTUI(App):
         # than pushing the box down as it filters.
         self._skill_ac = SkillAutocomplete()
         yield self._skill_ac
-        yield PromptInput(
-            placeholder="Message... (Ctrl+V paste | Ctrl+O image | /help)",
-            id="message-input",
-        )
+        from litetui.input_controls import PromptBox
+        yield PromptBox()
         yield ContextFooter()
 
     def _splash(self) -> None:
@@ -1788,6 +1776,7 @@ class LiteTUI(App):
             self._system(f"[hooks configuration error] {state.error}")
         hook_host.queue_lifecycle(self, "app_start")
         self.query_one("#message-input", Input).focus()
+        self._refresh_prompt_controls()
         self._splash()
         # An authored prompt file that has gone missing is invisible everywhere
         # else: the section simply does not render, and the model is handed
@@ -3225,7 +3214,6 @@ class LiteTUI(App):
         # up", so the scroll below would be REFUSED and the conversation would
         # open at the top. `None` is already defined as "nothing scrolled yet,
         # trivially following", which is the truth about a log just emptied.
-        self._follow_anchor = None
         self._next_follow_generation()
         # Read HERE, not in `_resume`. On the branch this came from, resume and
         # render were one method, so the lookup sat beside the `read()` call;
@@ -3430,6 +3418,33 @@ class LiteTUI(App):
     #: The running ffmpeg recorder, or None when idle. Its stdin is the stop
     #: channel — see stt_backend.record_stop.
     _mic_proc = None
+
+    def _refresh_prompt_controls(self):
+        from litetui.input_controls import ScrollLockButton, SpeakButton
+        for button in self.query(ScrollLockButton):
+            button.update(' 🔒 ' if self.settings.autoscroll else ' 🔓 ')
+            button.tooltip = 'Pinned to newest output' if self.settings.autoscroll else 'Free scrolling'
+        for button in self.query(SpeakButton):
+            button.set_class(self.settings.tts_enabled, 'enabled')
+            button.tooltip = 'Disable speech and stop playback' if self.settings.tts_enabled else 'Enable speech'
+
+    def action_toggle_scroll_lock(self):
+        self.settings.autoscroll = not self.settings.autoscroll
+        self._next_follow_generation()
+        self._refresh_prompt_controls()
+        if self.settings.autoscroll:
+            self._scroll_down()
+
+    def action_toggle_speak(self):
+        from litetui import voice_backend
+        self.settings.tts_enabled = not self.settings.tts_enabled
+        if not self.settings.tts_enabled:
+            voice_backend.stop()
+        self._refresh_prompt_controls()
+        try:
+            settings_runtime.persist_or_raise(self, self.settings)
+        except Exception as exc:
+            self._system(f'[voice] preference not saved: {exc}')
 
     def action_toggle_mic(self) -> None:
         """The footer mic button and the record hotkey: start recording, or
@@ -4889,7 +4904,6 @@ class LiteTUI(App):
         was a record of something the model can no longer see.
         """
         self.query_one("#chat-log").remove_children()
-        self._follow_anchor = None    # see _resume: a rebuilt log has no anchor
         self._next_follow_generation()
         if note:
             self._system(note)
@@ -5469,84 +5483,6 @@ class LiteTUI(App):
         self._follow_generation += 1
         return self._follow_generation
 
-    def _reader_left_follow_tail(self) -> None:
-        """Give newer upward reader intent priority over deferred app work.
-
-        🔴 AND RECORD THAT THE READER LEFT, WHEN NOTHING ELSE WILL.
-
-        A cleared anchor means "follow" — right at boot, where nobody has
-        scrolled and the content simply outran a reader who never moved, and
-        WRONG after a rebuild, where the reader has a real position. Every
-        log-emptying site clears it (see `test_autoscroll`'s source arm), and
-        a compaction that FAILS clears it again on every retry.
-
-        RYAN, 2026-09-18, at 98% of the window with compaction looping:
-        *"i srolled to bottom to lock it but its flying up SMH WTF!"*.
-        Measured on a 100x20 pilot: reader parked at row 10, anchor cleared,
-        the next thing the turn mounted yanked them to 87 — over and over.
-
-        Geometry cannot fix this at the predicate: `scroll_y` well below
-        `max_scroll_y` is BOTH "scrolled up" and "outran by a thinking block",
-        and that ambiguity is the whole reason the anchor exists. Asking
-        `_at_bottom` there breaks `test_log_follows_a_filling_thinking_block`
-        (measured: scroll_y 0.0, max_scroll_y 88) — the flakiness
-        `_scroll_down`'s docstring warns about, reproduced.
-
-        The unambiguous signal is the WHEEL, which is the one event that only
-        a human produces. If it arrives while the anchor is unset, the reader
-        HAS moved, so plant one at the tail they are leaving and let the
-        ordinary comparison take over: below it they are reading, back at it
-        they are following again.
-        """
-        self._next_follow_generation()
-        if self._follow_anchor is None:
-            try:
-                self._follow_anchor = self.query_one("#chat-log").max_scroll_y
-            except Exception:
-                # No log yet (boot), or no geometry: leave it unset. The old
-                # behaviour — trivially following — is the safe one here.
-                pass
-
-    def _still_following(self, log) -> bool:
-        """Has the READER moved, or has the CONTENT moved?
-
-        _at_bottom could not tell these apart, and they want opposite answers:
-        a reader who scrolled up must be left alone, a reader whom the content
-        outran must be caught up. Both look identical in the geometry it asked
-        about -- scroll_y sitting below max_scroll_y.
-
-        What separates them is which number moved. Growing content raises
-        max_scroll_y and leaves scroll_y exactly where it was; only a human
-        moves scroll_y. So compare against the position we ourselves last
-        scrolled to, and content growth becomes invisible to the check.
-
-        Concretely, the case that kept coming back: .thinking-body is
-        `max-height: 10`, so a thinking block grows the log ~12 rows in a burst
-        and then never grows again. Against max_scroll_y that burst instantly
-        exceeded the 2-line slack and following was refused for the rest of the
-        turn, with nothing left to restore it. Against our own anchor the burst
-        does not register at all.
-
-        The slack survives for the reason it was introduced: scroll_y is a float
-        and lands fractionally. Unset anchor means nothing has been scrolled yet,
-        which is trivially still following.
-        """
-        anchor = self._follow_anchor
-        if anchor is None:
-            return True
-        try:
-            # Collapsing/reflowing content can put the old anchor below the
-            # reachable tail. A reader at the new bottom must be able to relock.
-            reachable_anchor = min(anchor, getattr(log, 'max_scroll_y', anchor))
-            following = log.scroll_y >= reachable_anchor - 2
-            if following and reachable_anchor < anchor:
-                self._follow_anchor = reachable_anchor
-            return following
-        except Exception:
-            # Geometry unavailable: fail OPEN, exactly as _at_bottom does. An
-            # over-eager scroll is a visual nit; a dead autoscroll is this bug.
-            return True
-
     # ── one-line card summary ────────────────────────────────────────────
     #
     # RYAN, 2026-09-16: when a response finishes, ask the SAME model for a
@@ -5712,60 +5648,18 @@ class LiteTUI(App):
                 card.autocollapse()
 
     def _scroll_down(self, *, reader_acted: bool = False) -> None:
-        """Scroll the conversation log to the bottom — IF THE READER IS FOLLOWING.
-
-        🔴 FOLLOW IS A LOCK THE READER OWNS, NOT A DEFAULT THE APP APPLIES.
-        Ryan, 2026-09-12, watching a turn with tool calls streaming: *"autoscroll
-        is always on... it should only turn on when the user scrolls to the
-        bottom and then lock. if i start scrolling up on my own right now it
-        drags me back down NO MATTER WHAT."*
-
-        "No matter what" is the clause that removed the old design. This used to
-        take `only_if_following`, and TWELVE of seventeen call sites passed
-        nothing: every tool card, tool result, system line, assistant bubble,
-        compact render and resume scrolled unconditionally. The docstring
-        defended that as "the user's own action" — true of a human pressing
-        send, and false of everything a turn mounts on its own, which is
-        precisely what drags a reader who is trying to read.
-
-        ⚠️ AND A BARE CALL DID NOT ONLY DRAG, IT RE-ARMED. The anchor is written
-        after every successful scroll, so one unconditional scroll also told
-        every later follow check that the reader was at the tail. A single tool
-        card poisoned the lock for the rest of the turn, which is why the stream
-        path looked like it was respecting the reader and did not.
-
-        ⬜ `reader_acted` IS THE ONLY WAY PAST, and it is spelled at the call
-        site so a reviewer can see who claims it. Today that is `_submit_text`
-        alone — a person pressing send is at the bottom by their own choice, and
-        it RE-ENGAGES the lock. It is deliberately not `_user_bubble`, which
-        also mounts bubbles for cron fires, inbox mail and goal-loop turns.
-
-        ⬜ RE-LOCKING NEEDS NO NEW MACHINERY, and no at-bottom geometry check —
-        reintroducing one is what made the three thinking-block arms flaky.
-        `_still_following` already compares scroll_y against where WE last
-        scrolled, and content growth raises max_scroll_y without moving
-        scroll_y. So a reader who returns to the bottom is past the anchor again
-        and following resumes on its own, with nothing to observe or subscribe
-        to.
-        """
+        """Follow only the explicit lock; sending does not override an unlocked reader."""
+        if not self.settings.autoscroll:
+            return
         log = self.query_one("#chat-log")
-        if not reader_acted:
-            # The setting is the master switch for FOLLOWING (Ryan item 4). It
-            # used to gate the stream only, so with autoscroll off a tool card
-            # still jumped — the same complaint arriving through the setting
-            # instead of through the scroll position.
-            if not self.settings.autoscroll:
-                return
-            if not self._still_following(log):
-                return
         # Textual's public scroll_end is deferred even with animation disabled.
         # Own that first defer here so its ACTION can validate authorization;
         # validating only the completion is too late because the stale action
         # may already have yanked a reader who wheeled upward meanwhile.
-        generation = self._next_follow_generation()
+        generation = self._follow_generation
 
         def scroll_if_current() -> None:
-            if generation != self._follow_generation:
+            if generation != self._follow_generation or not self.settings.autoscroll:
                 return
 
             # Same frame as the scroll, before it: layout has settled, so the
@@ -5773,19 +5667,7 @@ class LiteTUI(App):
             # is already expecting.
             self._autocollapse_offscreen(log)
 
-            # Layout has now settled, so immediate=True uses the current end.
-            # Textual still schedules on_complete separately; validate there as
-            # well because wheel-up can interleave after this move but before
-            # ownership would otherwise be recorded.
-            def remember_settled_end() -> None:
-                if generation == self._follow_generation:
-                    self._follow_anchor = log.scroll_y
-
-            log.scroll_end(
-                animate=False,
-                immediate=True,
-                on_complete=remember_settled_end,
-            )
+            log.scroll_end(animate=False, immediate=True)
 
         log.call_after_refresh(scroll_if_current)
 
@@ -6449,6 +6331,7 @@ class LiteTUI(App):
             ac.options.highlighted = event.option_index
         self.accept_skill_completion()
         self.query_one("#message-input", Input).focus()
+        self._refresh_prompt_controls()
 
     @on(Input.Submitted, "#message-input")
     def handle_submit(self, event: Input.Submitted) -> None:
@@ -7475,6 +7358,7 @@ class LiteTUI(App):
                         from litetui import voice_backend
                         voice_backend.speak(
                             text_full,
+                            timeout=self.settings.tts_timeout,
                             engine=self.settings.tts_engine,
                             voice=(self.settings.tts_edge_voice
                                    if self.settings.tts_engine == "edge"
@@ -8311,6 +8195,12 @@ class LiteTUI(App):
         old = self.settings
         self._settings_persist_error = None
         self.settings = new
+        if not new.tts_enabled:
+            from litetui import voice_backend
+            voice_backend.stop()
+        self._refresh_prompt_controls()
+        self._next_follow_generation()
+        self._scroll_down()
         # `new` is a DIFFERENT object than the one the backend captured at
         # construction (`_collect` did `replace()`), so re-point it here or a
         # saved backend setting — ninfer_max_context above all — stays on the

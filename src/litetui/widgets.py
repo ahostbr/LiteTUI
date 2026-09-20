@@ -1225,8 +1225,6 @@ class ContextFooter(Footer):
         # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
         # Inside a Horizontal each button owns its own cells.
         with Horizontal(classes="footer-buttons"):
-            yield MicButton()
-            yield PauseButton()
             yield PaletteButton("☰ commands", classes="palette-button")
 
 
