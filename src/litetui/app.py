@@ -1847,6 +1847,9 @@ class LiteTUI(App):
             nonlocal last_error
             try:
                 poll_receipts(self, parent=parent, receipts=receipts, inbox=inbox, registry=registry)
+                wake = getattr(self, '_schedule_child_wake', None)
+                if wake is not None:
+                    wake(parent=parent, receipts=receipts)
                 last_error = None
             except (OSError, ValueError, sqlite3.Error) as exc:
                 # Durable stores retain responsibility; retry without claiming
@@ -1859,6 +1862,21 @@ class LiteTUI(App):
         import sqlite3
         self._child_delivery_timer = self.set_interval(1.0, poll)
         return self._child_delivery_timer
+
+    def _schedule_child_wake(self, *, parent, receipts):
+        previous = getattr(self, '_child_wake_worker', None)
+        if previous is not None and not previous.is_finished:
+            return
+        from litetui.agent_parent_wake import wake_parent
+
+        async def wake():
+            try:
+                await wake_parent(self, parent=parent, receipts=receipts)
+            except Exception as exc:
+                self._system(f"[child-result wake interrupted; retained for recovery: {exc}]")
+
+        self._child_wake_worker = self.run_worker(
+            wake(), group='child-wake', exclusive=False, exit_on_error=False)
 
     def _apply_child_receipts(self, *, parent, receipts) -> list[str]:
         """Apply durable outcomes without pretending a UI notice is acceptance.

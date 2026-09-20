@@ -23,6 +23,8 @@ class ParentReceipts:
             columns = {row[1] for row in db.execute('PRAGMA table_info(receipts)')}
             if 'conversation' not in columns:
                 db.execute('ALTER TABLE receipts ADD COLUMN conversation TEXT')
+            if 'wake_state' not in columns:
+                db.execute("ALTER TABLE receipts ADD COLUMN wake_state TEXT NOT NULL DEFAULT 'pending'")
 
     @contextmanager
     def _transaction(self):
@@ -97,6 +99,41 @@ class ParentReceipts:
                               'AND applied=0 ORDER BY created,id',
                               (_identity(parent), _identity(conversation))).fetchall()
         return [{'completion_id': ident, 'result': json.loads(payload)} for ident, payload in rows]
+
+    def claim_wake(self, parent, conversation):
+        """Claim once before inference; interrupted claims require reconciliation.
+
+        Never retry an uncertain model turn automatically: it may have already
+        executed tools. History delivery alone does not prove inference ran.
+        """
+        scope = (_identity(parent), _identity(conversation))
+        with self._transaction() as db:
+            rows = db.execute("SELECT id FROM receipts WHERE parent=? AND conversation=? "
+                              "AND applied=1 AND wake_state='pending' ORDER BY created,id", scope).fetchall()
+            db.execute("UPDATE receipts SET wake_state='claimed' WHERE parent=? AND conversation=? "
+                       "AND applied=1 AND wake_state='pending'", scope)
+        return [row[0] for row in rows]
+
+    def uncertain_wakes(self, parent, conversation):
+        with self._transaction() as db:
+            rows = db.execute("SELECT id FROM receipts WHERE parent=? AND conversation=? "
+                              "AND wake_state='claimed' ORDER BY created,id",
+                              (_identity(parent), _identity(conversation))).fetchall()
+        return [row[0] for row in rows]
+
+    def finish_wake(self, parent, conversation, completions):
+        scope = (_identity(parent), _identity(conversation))
+        identities = [_identity(ident) for ident in completions]
+        with self._transaction() as db:
+            for ident in identities:
+                row = db.execute('SELECT wake_state FROM receipts WHERE parent=? AND conversation=? AND id=?',
+                                 (*scope, ident)).fetchone()
+                if row is None or row[0] not in ('claimed', 'finished'):
+                    raise ValueError('Wake completion ownership or state conflict')
+            for ident in identities:
+                db.execute("UPDATE receipts SET wake_state='finished' WHERE parent=? AND conversation=? AND id=?",
+                           (*scope, ident))
+        return True
 
     def pending(self, parent):
         with self._transaction() as db:
