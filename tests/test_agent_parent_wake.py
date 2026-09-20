@@ -92,3 +92,20 @@ async def test_real_textual_worker_wakes_once_without_reappending(state):
         assert app.turns == 1
         assert len(app.conversation) == 1
         assert not app.notices
+
+def test_uncertain_restart_displays_one_recovery_notice_without_retry(state):
+    from litetui.app import LiteTUI
+    app, receipts = state
+    receipts.claim_wake('parent', 'chat')
+    notices = []
+    app._system = notices.append
+    def worker(coro, **kwargs):
+        coro.close()
+        return SimpleNamespace(is_finished=True)
+    app.run_worker = worker
+    LiteTUI._schedule_child_wake(app, parent='parent', receipts=receipts)
+    LiteTUI._schedule_child_wake(app, parent='parent', receipts=receipts)
+    assert len(notices) == 1
+    assert 'completion' in notices[0]
+    assert 'No automatic retry' in notices[0]
+    assert receipts.uncertain_wakes('parent', 'chat') == ['completion']

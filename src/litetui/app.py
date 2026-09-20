@@ -1868,6 +1868,14 @@ class LiteTUI(App):
         if previous is not None and not previous.is_finished:
             return
         from litetui.agent_parent_wake import wake_parent
+        uncertain = receipts.uncertain_wakes(parent, self.convo_id)
+        notice_key = (parent, self.convo_id, tuple(uncertain))
+        if uncertain and notice_key != getattr(self, '_child_wake_recovery_notice', None):
+            self._system(
+                '[child-result wake needs review: ' + ', '.join(uncertain)
+                + '; the result is saved, but a previous turn may have executed tools. '
+                'No automatic retry. Review this conversation before continuing.]')
+            self._child_wake_recovery_notice = notice_key
 
         async def wake():
             try:
