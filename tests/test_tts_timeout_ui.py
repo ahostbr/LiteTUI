@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from litetui.settings_screen import _validate_tts_timeout
+from litetui.settings_screen import _tts_timeout_from_input, _validate_tts_timeout
 from litetui.settings_ui_model import SETTINGS_SECTIONS
 
 SCREEN = Path(__file__).resolve().parents[1] / "src" / "litetui" / "settings_screen.py"
@@ -24,6 +24,8 @@ def test_tts_timeout_control_and_validation_are_wired():
 
     assert '"tts_timeout", "TTS timeout (seconds)"' in source
     assert "_validate_tts_timeout(out.tts_timeout)" in source
+    assert "_tts_timeout_from_input" in source
+    assert "timeout=timeout" in source
     assert "input Speak toggle" in source
     assert "ONLY speak on/off" not in source
 
@@ -32,6 +34,10 @@ def test_tts_timeout_control_and_validation_are_wired():
         _validate_tts_timeout(0)
     with pytest.raises(ValueError, match="tts_timeout"):
         _validate_tts_timeout(-1)
+
+    assert _tts_timeout_from_input("300") == 300
+    with pytest.raises(ValueError, match="whole number"):
+        _tts_timeout_from_input("")
 
 
 def test_tts_timeout_source_remains_valid_python():
