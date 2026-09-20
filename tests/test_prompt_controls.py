@@ -117,3 +117,26 @@ def test_tts_timeout_kills_and_reaps_owned_process(monkeypatch):
     assert proc.killed
     assert proc.waits == [300, 5]
     assert proc not in voice._active
+
+
+def test_long_speech_uses_file_not_windows_command_line(monkeypatch):
+    from pathlib import Path
+    from litetui import voice_backend as voice
+    captured = {}
+    class Proc:
+        def wait(self, timeout): captured['timeout'] = timeout
+    def launch(args, **kwargs):
+        captured['args'] = args
+        captured['script'] = Path(args[1]).read_text(encoding='utf-8')
+        return Proc()
+    class Thread:
+        def __init__(self, target, args, **kwargs): self.target, self.args = target, args
+        def start(self): self.target(*self.args)
+    monkeypatch.setattr(voice, '_has', lambda name: True)
+    monkeypatch.setattr(voice.subprocess, 'Popen', launch)
+    monkeypatch.setattr(voice.threading, 'Thread', Thread)
+    assert voice.speak('hello ' * 10000, timeout=450)
+    assert len(captured['args']) == 2
+    assert 'hello ' * 9999 in captured['script']
+    assert captured['timeout'] == 450
+    assert not Path(captured['args'][1]).exists()

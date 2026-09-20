@@ -24,6 +24,8 @@ import os
 import subprocess
 import sys
 import threading
+import tempfile
+from pathlib import Path
 
 _active = set()
 _active_lock = threading.Lock()
@@ -40,7 +42,7 @@ def stop() -> None:
                 pass
 
 
-def _reap(proc, timeout):
+def _reap(proc, timeout, script=None):
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -52,6 +54,8 @@ def _reap(proc, timeout):
     finally:
         with _active_lock:
             _active.discard(proc)
+        if script is not None:
+            Path(script).unlink(missing_ok=True)
 
 
 #: The engines the Voice settings tab offers. `pyttsx3` first = the default.
@@ -170,13 +174,20 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeo
             return False
         child = _SAPI_CHILD.format(text=text, voice=voice or "")
     py, flags = _speaker()
+    script = None
     try:
+        # A long reply exceeds Windows' command-line limit with python -c.
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.py', prefix='litetui-speech-', delete=False) as output:
+            script = output.name
+            output.write(child)
         with _active_lock:
-            proc = subprocess.Popen([py, "-c", child], creationflags=flags)
+            proc = subprocess.Popen([py, script], creationflags=flags)
             _active.add(proc)
-        threading.Thread(target=_reap, args=(proc, timeout), daemon=True).start()
+        threading.Thread(target=_reap, args=(proc, timeout, script), daemon=True).start()
         return True
     except Exception:
+        if script is not None:
+            Path(script).unlink(missing_ok=True)
         return False
 
 
