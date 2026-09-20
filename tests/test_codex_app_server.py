@@ -34,6 +34,11 @@ class Server:
         if method in ("thread/start", "thread/resume"):
             return {"thread": {"id": "thread-1"}}
         if method == "thread/compact/start":
+            await self.events.put({"method": "turn/started", "params": {
+                "threadId": "thread-1", "turn": {"id": "compact-1"}}})
+            await self.events.put({"method": "item/started", "params": {
+                "threadId": "thread-1", "turnId": "compact-1",
+                "item": {"id": "compact-item", "type": "contextCompaction"}}})
             await self.events.put(
                 {
                     "method": "turn/completed",
@@ -638,3 +643,15 @@ async def test_actual_stream_task_cancellation_interrupts_and_clears_turn(monkey
     assert transport.turn_id is None
     assert any(method == 'turn/interrupt' for method, params in server.requests)
     assert any('cancellation cleanup fixture' in error for error in server.session.cleanup_errors)
+
+@pytest.mark.asyncio
+async def test_compaction_ignores_unrelated_completion():
+    server = Server()
+    await server.events.put({'method': 'turn/completed', 'params': {
+        'threadId': 'thread-1', 'turn': {'id': 'old-turn', 'status': 'failed'}}})
+    app = NS(conversation=[{'role': 'assistant', 'content': 'kept',
+        'provider_metadata': {'provider': 'codex', 'app_server_thread_id': 'thread-1'}}])
+    transport = AppServerTransport(server, app)
+    await asyncio.wait_for(transport.compact(), 2)
+    assert transport.turn_id is None
+    assert server.events.empty()

@@ -341,6 +341,7 @@ class AppServerTransport:
                 self.thread_id, self.process = reference, self.server.process
             await self.server.request("thread/compact/start", {"threadId": reference})
             finished = False
+            compaction_turn = None
             from litetui.codex_usage import NativeUsage
 
             compact_usage = NativeUsage()
@@ -415,7 +416,15 @@ class AppServerTransport:
                                     "id": "compact:" + self.turn_id,
                                 }
                             )
+                    if (event.get("method") in ("item/started", "item/completed")
+                            and payload.get("item", {}).get("type") == "contextCompaction"
+                            and payload.get("turnId") == self.turn_id
+                            and self.turn_id):
+                        compaction_turn = self.turn_id
                     if event.get("method") == "turn/completed":
+                        if (not compaction_turn or
+                                payload.get("turn", {}).get("id") != compaction_turn):
+                            continue
                         finished = True
                         if payload.get("turn", {}).get("status") != "completed":
                             raise ProviderError(
