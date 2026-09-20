@@ -134,5 +134,16 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
         await process.send_prompt(spec.prompt)
         return ready
     except BaseException:
-        await process.close()
+        import asyncio
+        async def close_bounded():
+            async with asyncio.timeout(10):
+                return await process.close()
+        cleanup = asyncio.create_task(close_bounded())
+        while True:
+            try:
+                await asyncio.shield(cleanup)
+                break
+            except asyncio.CancelledError:
+                if cleanup.cancelled():
+                    break
         raise

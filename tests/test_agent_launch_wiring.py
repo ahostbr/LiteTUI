@@ -89,3 +89,27 @@ async def test_identity_registration_must_commit_before_prompt(tmp_path, reject)
         await start_headless_child(spec(tmp_path), process, workspace=tmp_path,
             data_root=tmp_path, supported_levels=['low'], on_ready=on_ready)
         assert [kind for kind, _ in process.calls] == ['start', 'handshake', 'registered', 'prompt']
+@pytest.mark.asyncio
+async def test_repeated_cancellation_during_failed_launch_still_closes(tmp_path):
+    import asyncio
+    from litetui.agent_launcher import start_headless_child
+    process = Process()
+    entering, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def handshake(*args, **kwargs):
+        entering.set()
+        await asyncio.Event().wait()
+    async def close():
+        closing.set()
+        await release.wait()
+        process.closed = True
+    process.rpc_handshake, process.close = handshake, close
+    task = asyncio.create_task(start_headless_child(spec(tmp_path), process,
+        workspace=tmp_path, data_root=tmp_path, supported_levels=['low']))
+    await entering.wait()
+    task.cancel()
+    await closing.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert process.closed
