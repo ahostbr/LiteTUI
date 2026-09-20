@@ -127,7 +127,8 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
         args += ['--thinking-level', spec.thinking_level]
     try:
         await process.start_python(module='litetui.cli', args=args, cwd=target,
-                                   env={'LITETUI_DATA_ROOT': str(root)})
+                                   env={'LITETUI_DATA_ROOT': str(root),
+                                        'LITETUI_AGENT_DEPTH': str(spec.child_depth)})
         ready = await process.rpc_handshake(spec, workspace=str(target))
         if on_ready is not None:
             on_ready(ready)

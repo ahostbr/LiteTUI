@@ -14,6 +14,8 @@ class PreparedChild:
 
 
 def prepare_child(spec, *, storage, child_id, baseline, supported_levels):
+    from litetui.agent_ancestry import require_root_launcher
+    require_root_launcher()
     # Admission before filesystem effects. Explicit-workspace mutation and local
     # engines remain unavailable until their ownership/admission gates exist.
     if spec.headed or spec.backend != 'codex' or spec.workspace_mode != 'worktree':
