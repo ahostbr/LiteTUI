@@ -147,15 +147,16 @@ class ResourceCoordinator:
             return True
 
     def load_guarded(self, request, owner, loader):
-        """No load callback without reservation; allocation failure releases it."""
+        """No load callback without reservation; unknown outcomes retain it.
+
+        Even a synchronous HTTP loader can raise after dispatching a remote
+        load. Backend quiescence and absence must be proven before settlement;
+        an exception alone cannot make capacity available to another process.
+        """
         decision = self.reserve(request, owner)
         if decision.status != 'admitted':
             return decision, None
-        try:
-            return decision, loader()
-        except BaseException:
-            self.release(decision.reservation_id, owner)
-            raise
+        return decision, loader()
 
     def acquire_lease(self, reservation, owner, *, owned=False, keep_warm=False):
         """Convert admitted capacity to usage; callers must prove managed ownership."""

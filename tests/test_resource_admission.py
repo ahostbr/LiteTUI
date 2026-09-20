@@ -24,7 +24,7 @@ def test_reservations_cannot_spend_same_capacity(tmp_path):
     assert second.snapshot.ram_available == 100
 
 
-def test_blocked_gate_does_not_call_loader_and_failure_releases(tmp_path):
+def test_blocked_gate_does_not_call_loader_and_failure_retains_capacity(tmp_path):
     from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
     calls = []
     coordinator = ResourceCoordinator(tmp_path / 'gate.sqlite',
@@ -38,6 +38,10 @@ def test_blocked_gate_does_not_call_loader_and_failure_releases(tmp_path):
     import pytest
     with pytest.raises(RuntimeError, match='allocation failed'):
         coordinator.load_guarded(small, 'owner', fail)
+    assert coordinator.reserve(small, 'next').status == 'blocked'
+    with coordinator.store.transaction() as db:
+        reservation = db.execute("SELECT id FROM reservations WHERE owner='owner' AND state='reserved'").fetchone()[0]
+    assert coordinator.settle_absent_load(reservation, 'owner')
     assert coordinator.reserve(small, 'next').status == 'admitted'
 
 
