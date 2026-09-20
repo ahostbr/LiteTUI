@@ -110,6 +110,10 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
     fail-closed until their coordinators are integrated. No prompt on argv.
     """
     from pathlib import Path
+    from litetui.agent_ancestry import require_root_launcher
+    require_root_launcher()
+    if type(spec.child_depth) is not int or spec.child_depth != 1:
+        raise LaunchBlocked('Invalid managed child depth')
     if spec.headed:
         raise LaunchBlocked('Headed child transport is not integrated')
     if spec.backend != 'codex':

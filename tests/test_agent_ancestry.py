@@ -34,3 +34,15 @@ def test_preparation_refuses_before_filesystem_effects(monkeypatch, tmp_path):
         prepare_child(None, storage=tmp_path / 'children', child_id='a'*32,
                       baseline='HEAD', supported_levels=[])
     assert not (tmp_path / 'children').exists()
+
+@pytest.mark.asyncio
+async def test_lower_level_entrypoints_also_refuse_nested_calls(monkeypatch):
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_launcher import start_headless_child
+    monkeypatch.setenv('LITETUI_AGENT_DEPTH', '1')
+    with pytest.raises(LaunchBlocked, match='depth'):
+        await start_headless_child(None, None, workspace=None, data_root=None, supported_levels=[])
+    with pytest.raises(LaunchBlocked, match='depth'):
+        await run_prepared_child(None, None, registry=None, inbox=None,
+            parent='parent', child_id='child', workspace=None, data_root=None,
+            branch=None, evidence=[], supported_levels=[], notify=None)

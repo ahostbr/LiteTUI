@@ -15,6 +15,8 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
     Cancellation during collection persists pending outcome via finish_child;
     its registry claim intentionally remains until explicit reconciliation.
     """
+    from litetui.agent_ancestry import require_root_launcher
+    require_root_launcher()
     registry.claim(parent, child_id, limit=limit, parent_conversation=parent_conversation)
 
     def bind(ready):
