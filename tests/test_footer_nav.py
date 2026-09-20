@@ -69,6 +69,13 @@ def test_a_hidden_chip_is_not_navigable():
     assert a.footer_nav_items() == ["authority", "plan", "agents"]
 
 
+def test_navigation_follows_the_custom_left_to_right_order():
+    a = make_app()
+    add_tasks(a, "bash", "subagent")
+    a.settings.footer_order = ["agents", "think", "authority", "bg", "plan"]
+    assert a.footer_nav_items() == ["agents", "think", "authority", "bg", "plan"]
+
+
 # ── moving ─────────────────────────────────────────────────────────────────
 
 def test_down_takes_the_footer_at_the_first_chip():
