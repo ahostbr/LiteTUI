@@ -299,6 +299,7 @@ def test_make_image_uses_env_selected_class(monkeypatch):
 
         iv._IMAGE_WIDGET_CLS = None
         monkeypatch.delenv("WT_SESSION", raising=False)
+        monkeypatch.delenv("WT_PROFILE_ID", raising=False)  # WT sets both; a real WT shell leaks this
         body = ImageViewerBody(_png_b64())
         img = body._make_image()
         assert img.__class__.__name__ == "HalfcellImage"
@@ -419,8 +420,40 @@ def test_sixel_widget_keeps_native_size_halfcell_fits_width(monkeypatch):
 
         iv._IMAGE_WIDGET_CLS = None
         monkeypatch.delenv("WT_SESSION", raising=False)
+        monkeypatch.delenv("WT_PROFILE_ID", raising=False)  # WT sets both; a real WT shell leaks this
         img = ImageViewerBody(_png_b64())._make_image()
         assert img.__class__.__name__ == "HalfcellImage"
         assert img.styles.width is not None, "half-cell still fits the panel width"
     finally:
         iv._IMAGE_WIDGET_CLS = saved
+
+
+def test_da1_has_sixel_detects_attribute_4():
+    """DA1 sixel detection: attribute 4 present -> sixel, absent -> not.
+
+    The exact leak Ryan saw (`\x1b[?61;4;6;7;...c`) advertises sixel; a reply
+    without a standalone 4 does not (and 40/14 must not false-positive)."""
+    from litetui.image_viewer import _da1_has_sixel
+
+    assert _da1_has_sixel("\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c") is True
+    assert _da1_has_sixel("\x1b[?62;1;6;9;15;22c") is False   # no sixel
+    assert _da1_has_sixel("\x1b[?40;14c") is False            # 40/14, not a bare 4
+    assert _da1_has_sixel("\x1b[?4c") is True                 # sixel-only
+
+
+def test_da1_tag_shows_probe_upgrade():
+    """When env is stripped but the DA1 probe found sixel, the header tag says so."""
+    import litetui.image_viewer as iv
+
+    saved = dict(iv._BACKEND_INFO)
+    try:
+        iv._BACKEND_INFO.clear()
+        iv._BACKEND_INFO.update(
+            backend="sixel", klass="SixelImage",
+            wt_session="", wt_profile_id="", da1_sixel="yes",
+        )
+        assert "DA1 sixel=yes" in iv.backend_tag()
+        assert "[backend: sixel" in iv.backend_tag()
+    finally:
+        iv._BACKEND_INFO.clear()
+        iv._BACKEND_INFO.update(saved)

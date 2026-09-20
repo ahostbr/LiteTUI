@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import io
 import os
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -105,6 +106,49 @@ def select_backend(env: Mapping[str, str] = os.environ) -> str:
     return "halfcell"
 
 
+def _da1_has_sixel(sequence: str) -> bool:
+    """True if a DA1 response advertises sixel (attribute ``4``).
+
+    A Primary Device Attributes reply is ``ESC [ ? n ; n ; ... c``; sixel
+    capability is attribute ``4`` in that list. Windows Terminal reports it
+    (the very leak Ryan saw was ``\\x1b[?61;4;6;7;...c`` — the ``4`` is there).
+    """
+    body = sequence
+    if body.startswith("\x1b[?"):
+        body = body[3:]
+    if body.endswith("c"):
+        body = body[:-1]
+    return "4" in body.split(";")
+
+
+def _probe_sixel_da1(timeout: float = 0.3) -> "bool | None":
+    """Ask the terminal itself whether it supports sixel — LAUNCH-INDEPENDENT.
+
+    The env fast-path (``select_backend``) misses when the ``litetui.exe`` .venv
+    launcher strips ``WT_SESSION``/``WT_PROFILE_ID`` from the process (measured:
+    the header tag then reads ``WT_SESSION=<empty>`` inside real Windows
+    Terminal, so the image drops to half-cell and blurs). When env says
+    "not sixel", ask the terminal directly with a DA1 query (``ESC[c``).
+
+    MUST run pre-run, while we own stdin (the same window as the cell-size
+    query): once Textual starts, its stdin thread grabs the response — that was
+    the original Input-leak bug. Returns True/False, or None when there is no
+    tty to probe (headless/log capture), which keeps the env choice.
+    """
+    out, in_ = sys.__stdout__, sys.__stdin__
+    try:
+        if not (out and in_ and out.isatty() and in_.isatty()):
+            return None
+        from textual_image._terminal import capture_terminal_response
+
+        with capture_terminal_response("\x1b[?", "c", timeout) as resp:
+            out.write("\x1b[c")
+            out.flush()
+        return _da1_has_sixel(resp.sequence)
+    except Exception:
+        return None  # unreadable / timeout / unexpected: keep the env choice
+
+
 def init_image_backend() -> Any:
     """Bind the env-selected render widget class and seed textual-image's
     cell-size cache. Call ONCE before the Textual app takes the terminal
@@ -139,6 +183,14 @@ def init_image_backend() -> Any:
         pass  # no tty at all: render path degrades to env/defaults, same as before
 
     backend = select_backend()
+    # Env fast-path missed (WT vars stripped by the launcher)? Ask the terminal
+    # itself — DA1 sixel probe, pre-run, while we still own stdin.
+    da1 = ""
+    if backend != "sixel":
+        probed = _probe_sixel_da1()
+        da1 = "yes" if probed else ("no" if probed is False else "n/a")
+        if probed:
+            backend = "sixel"
     _IMAGE_WIDGET_CLS = ti_widget.SixelImage if backend == "sixel" else ti_widget.HalfcellImage
     # WHAT THE CHOICE SAW — the header tag (``backend_tag``) and the error-sink
     # line below both read from this, never from env at render time.
@@ -149,6 +201,7 @@ def init_image_backend() -> Any:
         wt_profile_id=os.environ.get("WT_PROFILE_ID", ""),
         term_program=os.environ.get("TERM_PROGRAM", ""),
         term=os.environ.get("TERM", ""),
+        da1_sixel=da1,
     )
     _log_backend_init()
     return _IMAGE_WIDGET_CLS
@@ -175,6 +228,7 @@ def _log_backend_init() -> None:
     detail = (
         f"backend={info['backend']} class={info['klass']} "
         f"WT_SESSION={_v('wt_session')} WT_PROFILE_ID={_v('wt_profile_id')} "
+        f"DA1_sixel={_v('da1_sixel')} "
         f"TERM_PROGRAM={_v('term_program')} TERM={_v('term')}"
     )
     try:
@@ -235,6 +289,8 @@ def backend_tag() -> str:
         env = f"WT_SESSION={info['wt_session'][:9]}…"
     elif info.get("wt_profile_id"):
         env = f"WT_PROFILE_ID={info['wt_profile_id'][:9]}…"
+    elif info.get("da1_sixel") == "yes":
+        env = "WT_SESSION=<empty>, DA1 sixel=yes"
     else:
         env = "WT_SESSION=<empty>"
     return f"[backend: {info['backend']} | {info['klass']} | {env}]"
