@@ -94,3 +94,30 @@ def test_disk_failure_never_notifies_or_exposes_partial_completion(tmp_path):
     inbox.publish('parent', result(), notify=notifications.append)
     assert len(notifications) == 1
     assert len(inbox.pending('parent')) == 1
+
+
+def test_replay_ack_only_after_explicit_durable_parent_acceptance(tmp_path):
+    from litetui.agent_inbox import AgentInbox
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    ident = inbox.persist('parent', result())
+    assert inbox.replay('parent', accept=lambda event: None) == []
+    assert len(inbox.pending('parent')) == 1
+    seen = []
+    def accepted(event):
+        seen.append(event)
+        return True
+    assert inbox.replay('parent', accept=accepted) == [ident]
+    assert not inbox.pending('parent')
+    assert inbox.replay('parent', accept=accepted) == []
+    assert len(seen) == 1
+
+
+def test_replay_failure_keeps_pending_and_other_parent_cannot_consume(tmp_path):
+    from litetui.agent_inbox import AgentInbox
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    inbox.persist('parent', result())
+    def failed(event): raise OSError('parent persistence failed')
+    assert inbox.replay('other', accept=failed) == []
+    with pytest.raises(OSError):
+        inbox.replay('parent', accept=failed)
+    assert len(inbox.pending('parent')) == 1

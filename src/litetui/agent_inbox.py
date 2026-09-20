@@ -95,3 +95,17 @@ class AgentInbox:
         completion = self.persist(parent, result)
         notify({'completion_id': completion, 'result': self.get(parent, completion)})
         return completion
+
+    def replay(self, parent, *, accept):
+        """ACK only explicit durable acceptance, not a transient UI notification.
+
+        accept must deduplicate by completion_id in its own durable store before
+        returning True. A crash between acceptance and ACK can redeliver; never
+        hold our SQLite transaction while invoking arbitrary consumer code.
+        """
+        acknowledged = []
+        for event in self.pending(parent):
+            if accept(event) is True:
+                if self.acknowledge(parent, event['completion_id']):
+                    acknowledged.append(event['completion_id'])
+        return acknowledged
