@@ -78,3 +78,31 @@ def test_app_entrypoint_commits_before_notice(state):
     assert len(notices) == 1
     assert LiteTUI._apply_child_receipts(app, parent='parent', receipts=receipts) == []
     assert len(notices) == 1
+
+
+def test_fsync_failure_after_write_recovers_without_restart(state, monkeypatch):
+    import os
+    app, receipts, event = state
+    real = os.fsync
+    def fail(fd): raise OSError('durability fault')
+    monkeypatch.setattr(os, 'fsync', fail)
+    with pytest.raises(OSError): apply_receipts(app, parent='parent', receipts=receipts)
+    assert app.conversation == []
+    assert app.store.read(app.store.convo_path)[1] == [receipt_message(event)]
+    monkeypatch.setattr(os, 'fsync', real)
+    assert apply_receipts(app, parent='parent', receipts=receipts) == ['completion']
+    assert app.conversation == [receipt_message(event)]
+
+
+def test_recovery_does_not_overwrite_intervening_live_message(state, monkeypatch):
+    import os
+    app, receipts, event = state
+    real = os.fsync
+    def fail(fd): raise OSError('durability fault')
+    monkeypatch.setattr(os, 'fsync', fail)
+    with pytest.raises(OSError): apply_receipts(app, parent='parent', receipts=receipts)
+    monkeypatch.setattr(os, 'fsync', real)
+    app.conversation.append({'role': 'user', 'content': 'new unsaved input'})
+    assert apply_receipts(app, parent='parent', receipts=receipts) == []
+    assert app.conversation[0]['content'] == 'new unsaved input'
+    assert receipts.pending('parent') == [event]

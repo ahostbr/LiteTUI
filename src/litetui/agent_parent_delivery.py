@@ -26,15 +26,24 @@ def apply_receipts(app, *, parent, receipts):
         return []
 
     def commit(event):
+        from copy import deepcopy
         before = store.read(store.convo_path)[1]
+        message = receipt_message(event)
+        key = (str(store.convo_path), event['completion_id'])
+        recovery = getattr(app, '_child_receipt_recovery', None)
         if app.conversation != before:
-            # Never replace unsaved in-memory messages or append into the wrong
-            # resumed state. Receipt remains pending for explicit recovery.
-            return False
-        store.commit_child_message(event['completion_id'], receipt_message(event))
+            # Retry only our exact failed write against unchanged live context.
+            # An arbitrary matching text suffix is not proof of ownership.
+            if not (recovery and recovery[0] == key
+                    and recovery[1] == app.conversation
+                    and before == recovery[1] + [message]):
+                return False
+        app._child_receipt_recovery = (key, deepcopy(app.conversation))
+        store.commit_child_message(event['completion_id'], message)
         # Reading replayed history also handles prior commit + failed marker,
         # restart, snapshots and intentional truncation without resurrection.
         app.conversation[:] = store.read(store.convo_path)[1]
+        app._child_receipt_recovery = None
         return True
 
     return receipts.deliver_for_conversation(parent, conversation, commit=commit)
