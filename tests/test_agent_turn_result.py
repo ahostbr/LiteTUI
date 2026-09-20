@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 import pytest
 from litetui.agent_supervisor import AgentProcess
 from litetui.agent_launcher import LaunchBlocked
@@ -36,3 +35,26 @@ async def test_timeout_is_bounded_not_completed():
     process.receive = receive
     with pytest.raises(LaunchBlocked, match='timed out'):
         await process.collect_turn(timeout=.02)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['tool_approval_requested', 'user_input_requested', 'model_load_requested'])
+async def test_real_human_request_events_fail_without_a_relay(kind):
+    process = AgentProcess()
+    events = iter([{'type': kind}, {'type': 'error', 'error': 'request was ignored'}])
+    async def receive(**kwargs): return next(events)
+    process.receive = receive
+    with pytest.raises(LaunchBlocked, match='human relay'):
+        await process.collect_turn(timeout=1)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('detail', ['backend connection lost', None])
+async def test_failed_end_retains_diagnostic_even_without_text(detail):
+    process = AgentProcess()
+    events = iter([{'type': 'turn_start'},
+                   {'type': 'turn_end', 'stopReason': 'error', 'error': detail}])
+    async def receive(**kwargs): return next(events)
+    process.receive = receive
+    result = await process.collect_turn(timeout=1)
+    assert result['status'] == 'failed'
+    assert result['summary'] == (detail or 'Child turn ended: error')
+    assert result['error'] == (detail or 'Child turn ended: error')

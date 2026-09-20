@@ -132,7 +132,7 @@ class AgentProcess:
                     kind = event.get('type')
                     if kind == 'error' or (kind == 'response' and event.get('ok') is False):
                         raise LaunchBlocked(str(event.get('error', 'Child rejected request')))
-                    if kind in ('approval_request', 'question', 'ask_user_question'):
+                    if kind in ('tool_approval_requested', 'user_input_requested', 'model_load_requested'):
                         raise LaunchBlocked('Child requires a human relay')
                     if kind == 'turn_start':
                         if started:
@@ -151,7 +151,14 @@ class AgentProcess:
                             raise LaunchBlocked('Child completed without a started turn')
                         reason = event.get('stopReason')
                         status = 'completed' if reason == 'stop' else 'cancelled' if reason in ('cancelled', 'cancel') else 'failed'
-                        return {'status': status, 'summary': ''.join(chunks), 'stop_reason': reason}
+                        result = {'status': status, 'summary': ''.join(chunks), 'stop_reason': reason}
+                        if status == 'failed':
+                            detail = event.get('error')
+                            result['error'] = (detail if isinstance(detail, str) and detail
+                                               else f'Child turn ended: {reason}')[:max_output]
+                            if not result['summary']:
+                                result['summary'] = result['error']
+                        return result
         except TimeoutError as exc:
             raise LaunchBlocked('Child turn timed out') from exc
 
