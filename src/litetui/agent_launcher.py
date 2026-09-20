@@ -88,3 +88,16 @@ def validate_capabilities(spec, supported_levels):
             or requested not in supported_levels):
         raise LaunchBlocked('Requested thinking selection is not supported by measured provider capabilities')
     return True
+
+
+def validate_process_identity(event, *, owned_pid, probe=None):
+    """Never trust an unverified self-reported PID, even with a valid nonce."""
+    if probe is None:
+        from litetui.task_supervisor import process_creation_identity
+        probe = process_creation_identity
+    if not isinstance(event, dict) or type(event.get('pid')) is not int or event['pid'] != owned_pid:
+        raise LaunchBlocked('Child identity differs from owned process')
+    current = probe(owned_pid)
+    if not current or current != event.get('process_created'):
+        raise LaunchBlocked('Child identity unknown or PID reused')
+    return True

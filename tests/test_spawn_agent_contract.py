@@ -65,3 +65,12 @@ def test_default_thinking_does_not_invent_provider_capabilities():
     from litetui.agent_launcher import validate_request, validate_capabilities
     spec = validate_request(request(), parent_profile='autonomous', depth=0)
     assert validate_capabilities(spec, None) is True
+
+
+def test_child_identity_must_match_owned_process_and_kernel_stamp():
+    from litetui.agent_launcher import validate_process_identity, LaunchBlocked
+    event = {'pid': 321, 'process_created': 'created'}
+    assert validate_process_identity(event, owned_pid=321, probe=lambda pid: 'created')
+    for owned, stamp in [(999, 'created'), (321, None), (321, 'reused')]:
+        with pytest.raises(LaunchBlocked, match='identity'):
+            validate_process_identity(event, owned_pid=owned, probe=lambda pid: stamp)
