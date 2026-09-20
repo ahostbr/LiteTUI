@@ -38,6 +38,19 @@ class ParentReceipts:
         finally:
             db.close()
 
+    def replay_from_inbox(self, parent, *, inbox, registry):
+        """Transfer only outcomes with durable launch-time parent routing.
+
+        Unknown/legacy launches remain unacknowledged for explicit recovery.
+        No dependency on which conversation the UI currently displays.
+        """
+        def accept(event):
+            conversation = registry.parent_conversation(parent, event['result']['child_id'])
+            if conversation is None:
+                return False
+            return self.accept_for_conversation(parent, conversation, event)
+        return inbox.replay(parent, accept=accept)
+
     def accept(self, parent, event):
         parent = _identity(parent)
         ident = _identity(event['completion_id'])

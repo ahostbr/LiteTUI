@@ -68,3 +68,18 @@ def test_existing_database_is_migrated_without_losing_receipts(tmp_path):
     receipts = ParentReceipts(path)
     assert receipts.accept_for_conversation('parent', 'original', event())
     assert receipts.pending_for_conversation('parent', 'original') == [event()]
+
+
+def test_replay_uses_launch_registry_not_current_chat(tmp_path):
+    from litetui.agent_registry import AgentRegistry
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    receipts = ParentReceipts(tmp_path / 'receipts.sqlite')
+    ident = inbox.persist('parent', event()['result'])
+    assert receipts.replay_from_inbox('parent', inbox=inbox, registry=registry) == []
+    assert len(inbox.pending('parent')) == 1
+    registry.claim('parent', 'child', limit=1, parent_conversation='original')
+    assert receipts.replay_from_inbox('parent', inbox=inbox, registry=registry) == [ident]
+    assert not inbox.pending('parent')
+    assert receipts.pending_for_conversation('parent', 'original')[0]['completion_id'] == ident
+    assert not receipts.pending_for_conversation('parent', 'switched')
