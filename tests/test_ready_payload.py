@@ -262,3 +262,18 @@ def test_a_list_that_ARRIVES_mid_wait_still_ends_the_wait_immediately(monkeypatc
     a._connect_settled = False
 
     assert _rounds(a, sleeps_then_models=3, monkeypatch=monkeypatch) == 3
+
+
+def test_ready_waits_for_cli_application_before_reporting_effective_state():
+    async def scenario():
+        a = _app()
+        a._cli_args_done = asyncio.Event()
+        task = asyncio.create_task(app_mod.LiteTUI._rpc_emit_ready.__wrapped__(a))
+        await asyncio.sleep(.02)
+        assert not a.emitted
+        a._cli_launch_error = 'requested model unavailable'
+        a._cli_args_done.set()
+        await asyncio.wait_for(task, 1)
+        assert a.emitted[0]['launch_status'] == 'blocked'
+        assert a.emitted[0]['launch_error'] == 'requested model unavailable'
+    asyncio.run(scenario())

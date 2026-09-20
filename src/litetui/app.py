@@ -1817,6 +1817,7 @@ class LiteTUI(App):
             self._mcp_connect()
         # T507-T1: apply CLI args after connection is up.
         if self._cli_initial_model or self._first_prompt or self._cli_system_prompt or self._cli_thinking_level:
+            self._cli_args_done = asyncio.Event()
             self._apply_cli_args()
         # T507-T2: start the RPC bridge in headless mode.
         if self._rpc:
@@ -4322,6 +4323,12 @@ class LiteTUI(App):
             if self.available_models or getattr(self, "_connect_settled", False):
                 break
             await asyncio.sleep(0.5)
+        done = getattr(self, '_cli_args_done', None)
+        if done is not None:
+            try:
+                await asyncio.wait_for(done.wait(), 30)
+            except TimeoutError:
+                self._cli_launch_error = 'Launch configuration did not settle in time'
         from litetui.version import __version__
 
         # T594: resolve BEFORE announcing, so `ready` names the model that
@@ -4337,6 +4344,8 @@ class LiteTUI(App):
         from litetui.gui_rpc import OPERATIONS
         self._rpc_emit({
             "type": "ready",
+            'launch_status': 'blocked' if getattr(self, '_cli_launch_error', None) else 'ready',
+            'launch_error': getattr(self, '_cli_launch_error', None),
             "protocol_version": 1,
             "management_protocols": [1],
             "capabilities": list(OPERATIONS),
@@ -4363,53 +4372,59 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="cli-args")
     async def _apply_cli_args(self) -> None:
-        """T507-T1: apply --model, --system-prompt, --prompt after connect."""
-        # Wait for connect to populate available_models (up to 10s) — or for
-        # connect to have finished without any, which is the same T869 tax on
-        # a second waiter: --model has nothing to apply against an empty list.
-        for _ in range(20):
-            if self.available_models or getattr(self, "_connect_settled", False):
-                break
-            await asyncio.sleep(0.5)
-        self._cli_launch_error = None
-        if self._cli_initial_model:
-            want = self._cli_initial_model
-            loaded = {r.key for r in self.model_rows.values() if r.loaded}
-            if want in loaded:
-                # Invocation-only choice must not rewrite remembered selection.
-                self._model_id = want
-                self._update_header()
-                self._fetch_ctx_window()
-            elif want in self.available_models:
-                self._cli_launch_error = f'Requested model {want!r} is not loaded'
-                self._system(
-                    f"[cli] --model {want!r} is downloaded but NOT loaded — "
-                    f"load it first in LM Studio or use /model. "
-                    "Launch prompt blocked; no model fallback was used."
-                )
-            else:
-                self._cli_launch_error = f'Requested model {want!r} is unavailable'
-                self._system(
-                    f"[cli] --model {want!r} not found — "
-                    f"loaded: {', '.join(sorted(loaded)) or '(none)'}. "
-                    "Launch prompt blocked; no model fallback was used."
-                )
-        level = getattr(self, '_cli_thinking_level', None)
-        if level is not None and not self._cli_launch_error:
-            from litetui.thinking_capabilities import thinking_capabilities
-            if level not in thinking_capabilities(self)['levels']:
-                self._cli_launch_error = 'Requested thinking level is unsupported by the selected model'
-                self._system(self._cli_launch_error + '; launch prompt blocked.')
-            else:
-                self._cli_effective_thinking = level
-                self._thinking_level = None if level == 'default' else level
-        if self._cli_launch_error:
-            return
-        if self._cli_system_prompt:
-            self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
-        if self._first_prompt:
-            await self._ensure_chat_ready(timeout=15.0)
-            self._submit_text(self._first_prompt, alt_chord=False)
+        try:
+            """T507-T1: apply --model, --system-prompt, --prompt after connect."""
+            # Wait for connect to populate available_models (up to 10s) — or for
+            # connect to have finished without any, which is the same T869 tax on
+            # a second waiter: --model has nothing to apply against an empty list.
+            for _ in range(20):
+                if self.available_models or getattr(self, "_connect_settled", False):
+                    break
+                await asyncio.sleep(0.5)
+            self._cli_launch_error = None
+            if self._cli_initial_model:
+                want = self._cli_initial_model
+                loaded = {r.key for r in self.model_rows.values() if r.loaded}
+                if want in loaded:
+                    # Invocation-only choice must not rewrite remembered selection.
+                    self._model_id = want
+                    self._update_header()
+                    self._fetch_ctx_window()
+                elif want in self.available_models:
+                    self._cli_launch_error = f'Requested model {want!r} is not loaded'
+                    self._system(
+                        f"[cli] --model {want!r} is downloaded but NOT loaded — "
+                        f"load it first in LM Studio or use /model. "
+                        "Launch prompt blocked; no model fallback was used."
+                    )
+                else:
+                    self._cli_launch_error = f'Requested model {want!r} is unavailable'
+                    self._system(
+                        f"[cli] --model {want!r} not found — "
+                        f"loaded: {', '.join(sorted(loaded)) or '(none)'}. "
+                        "Launch prompt blocked; no model fallback was used."
+                    )
+            level = getattr(self, '_cli_thinking_level', None)
+            if level is not None and not self._cli_launch_error:
+                from litetui.thinking_capabilities import thinking_capabilities
+                if level not in thinking_capabilities(self)['levels']:
+                    self._cli_launch_error = 'Requested thinking level is unsupported by the selected model'
+                    self._system(self._cli_launch_error + '; launch prompt blocked.')
+                else:
+                    self._cli_effective_thinking = level
+                    self._thinking_level = None if level == 'default' else level
+            if self._cli_launch_error:
+                return
+            if self._cli_system_prompt:
+                self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
+            if self._first_prompt:
+                await self._ensure_chat_ready(timeout=15.0)
+                self._submit_text(self._first_prompt, alt_chord=False)
+
+        finally:
+            done = getattr(self, '_cli_args_done', None)
+            if done is not None:
+                done.set()
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -6580,6 +6595,10 @@ class LiteTUI(App):
     def _effective_request_overrides(self):
         overrides = dict(self.backend.request_overrides(self.model_id))
         level = getattr(self, '_cli_effective_thinking', None)
+        if level is not None:
+            from litetui.thinking_capabilities import thinking_capabilities
+            if level not in thinking_capabilities(self)['levels']:
+                raise llm_backend.BackendError('Invocation thinking level is unsupported by the current model; choose a supported level before sending.')
         if level == 'default':
             overrides.pop('reasoning_effort', None)
         elif level is not None:

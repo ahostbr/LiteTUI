@@ -180,7 +180,7 @@ def test_unsupported_cli_thinking_blocks_prompt():
 
 def test_invocation_effort_overrides_request_copy_not_backend_preferences():
     original = {'reasoning_effort': 'low', 'temperature': .2}
-    app = SimpleNamespace(backend=SimpleNamespace(request_overrides=lambda model: original),
+    app = SimpleNamespace(backend=SimpleNamespace(name='codex', reasoning_levels=lambda model: ['low', 'high'], request_overrides=lambda model: original),
                           model_id='model', _cli_effective_thinking='high')
     assert LiteTUI._effective_request_overrides(app)['reasoning_effort'] == 'high'
     assert original['reasoning_effort'] == 'low'
@@ -204,7 +204,7 @@ def test_cli_reasoning_reaches_serialized_turn_request_without_persistence():
     import json
     from litetui.turn_engine import TurnEngine
     original = {'reasoning_effort': 'low'}
-    app = SimpleNamespace(backend=SimpleNamespace(request_overrides=lambda model: original),
+    app = SimpleNamespace(backend=SimpleNamespace(name='codex', reasoning_levels=lambda model: ['low', 'high'], request_overrides=lambda model: original),
                           model_id='model', _cli_effective_thinking='high')
     wire = TurnEngine.chat_request(model_id='model', messages=[{'role': 'user', 'content': 'hi'}],
         tools_enabled=False, max_tokens_tools=100, max_tokens_chat=100,
@@ -212,3 +212,13 @@ def test_cli_reasoning_reaches_serialized_turn_request_without_persistence():
         backend_name='codex')
     assert json.loads(json.dumps(wire))['extra_body']['reasoning_effort'] == 'high'
     assert original == {'reasoning_effort': 'low'}
+
+
+def test_resumed_or_changed_model_revalidates_cli_effort_before_request():
+    from litetui.llm_backend import BackendError
+    import pytest
+    app = SimpleNamespace(backend=SimpleNamespace(name='codex',
+        request_overrides=lambda model: {}, reasoning_levels=lambda model: ['low']),
+        model_id='changed-model', _cli_effective_thinking='high')
+    with pytest.raises(BackendError, match='thinking'):
+        LiteTUI._effective_request_overrides(app)
