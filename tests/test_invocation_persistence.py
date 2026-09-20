@@ -180,3 +180,21 @@ def test_environment_only_clone_save_does_not_persist_effective_backend(tmp_path
     assert saved['backend'] == 'lmstudio'
     assert saved['tts_timeout'] == 155
     assert effective.backend == 'ninfer'
+
+
+def test_environment_explicit_edit_then_repeated_save_keeps_new_preference(tmp_path, monkeypatch):
+    import json
+    from dataclasses import replace
+    from litetui import settings as st
+    from litetui.settings_runtime import persist_settings
+    (tmp_path / 'settings.json').write_text(json.dumps({'backend': 'lmstudio'}))
+    monkeypatch.setattr(st, 'settings_path', lambda *args, **kwargs: tmp_path / 'settings.json')
+    monkeypatch.setenv('LITETUI_BACKEND', 'ninfer')
+    app = NS(settings=st.load(tmp_path), convo_dir=None)
+    from copy import deepcopy
+    chosen = deepcopy(app.settings)
+    chosen.backend = 'codex'
+    persist_settings(app, chosen)
+    app.settings = chosen
+    persist_settings(app, replace(chosen, tts_timeout=155))
+    assert json.loads((tmp_path / 'settings.json').read_text())['backend'] == 'codex'

@@ -60,7 +60,10 @@ def _retire_saved_invocation(app, candidate, keys):
 def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
     directory = getattr(app, 'convo_dir', None)
     if directory is None:
-        path = st.save(without_invocation(app, candidate))
+        persisted = without_invocation(app, candidate)
+        path = st.save(persisted)
+        from copy import deepcopy
+        object.__setattr__(candidate, '_saved_values', deepcopy(asdict(persisted)))
         _retire_saved_invocation(app, candidate, {f.name for f in fields(st.Settings)})
         return SettingsSaveResult(persistence=(PersistenceDestinationResult(str(path), 'defaults', True),))
     service = service_for(app)
