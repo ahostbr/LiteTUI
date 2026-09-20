@@ -3858,6 +3858,9 @@ class LiteTUI(App):
             if env and os.environ.get(env):
                 setattr(effective_cs, own, getattr(self.settings, key))
         if getattr(self, '_cli_initial_backend', None):
+            saved = getattr(self, '_invocation_saved_values', {})
+            saved['backend'] = cs.backend or cs.execution.get('backend', saved.get('backend', self.settings.backend))
+            self._invocation_saved_values = saved
             effective_cs.backend = self._cli_initial_backend
             self.settings.backend = self._cli_initial_backend
         self._adopt_convo_backend(effective_cs)

@@ -81,3 +81,39 @@ def test_explicit_edit_retires_override_before_next_unrelated_save(tmp_path, mon
     app.settings = chosen
     persist_settings(app, replace(chosen, tts_timeout=123))
     assert json.loads((tmp_path / 'settings.json').read_text())['backend'] == 'llamacpp'
+
+
+def test_failed_explicit_save_keeps_invocation_override(tmp_path, monkeypatch):
+    import pytest
+    from dataclasses import replace
+    from litetui import settings as st
+    from litetui.settings_runtime import persist_settings
+    app = NS(settings=Settings(backend='codex'), convo_dir=None,
+             _cli_initial_backend='codex', _invocation_saved_values={'backend': 'ninfer'})
+    def failed(candidate):
+        raise OSError('disk fixture')
+    monkeypatch.setattr(st, 'save', failed)
+    with pytest.raises(OSError, match='disk fixture'):
+        persist_settings(app, replace(app.settings, backend='llamacpp'))
+    assert app._invocation_saved_values == {'backend': 'ninfer'}
+    assert app._cli_initial_backend == 'codex'
+
+
+def test_resume_then_new_conversation_uses_resumed_saved_backend(tmp_path):
+    stored = convo_settings.born_from(Settings(backend='llamacpp'))
+    convo_settings.save(tmp_path, stored)
+    app = NS(settings=Settings(backend='codex'), convo_dir=tmp_path,
+             _cli_initial_backend='codex', _cli_tool_profile='autonomous',
+             _invocation_saved_values={'backend': 'ninfer', 'backend_chosen': True},
+             _backend=NS(name='codex'), _model_id='', available_models=[], seat=NS(),
+             _system=lambda text: None, _adopt_convo_backend=lambda cs: None)
+    before = (tmp_path / 'settings.json').read_bytes()
+    LiteTUI._adopt_convo_settings(app, born=False)
+    assert app.settings.backend == 'codex'
+    assert (tmp_path / 'settings.json').read_bytes() == before
+    assert app._invocation_saved_values['backend'] == 'llamacpp'
+    new = tmp_path / 'new'
+    new.mkdir()
+    app.convo_dir = new
+    LiteTUI._adopt_convo_settings(app, born=True)
+    assert convo_settings.load(new).backend == 'llamacpp'
