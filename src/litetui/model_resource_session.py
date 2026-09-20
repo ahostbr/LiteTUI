@@ -16,9 +16,12 @@ class ModelResourceSession:
         self.keep_warm = keep_warm
         self.leases = {}
         self.unload_claims = {}
+        self.unsettled_loads = {}
 
     @asynccontextmanager
     async def load(self, key, *, reload=False):
+        if key in self.unsettled_loads:
+            raise AdmissionBlocked('BLOCKED: previous loader outcome has not been confirmed')
         demand = self.demand_for(key)
         if demand is None:
             raise AdmissionBlocked('BLOCKED: calibrated RAM/VRAM peak estimate unavailable; review model capacity or cancel')
@@ -36,7 +39,8 @@ class ModelResourceSession:
         try:
             yield
         except BaseException:
-            self.coordinator.release(decision.reservation_id, self.owner)
+            # HTTP/to_thread cancellation does not prove the loader stopped.
+            self.unsettled_loads[key] = decision.reservation_id
             raise
         if reload:
             self.coordinator.release(decision.reservation_id, self.owner)
@@ -49,6 +53,20 @@ class ModelResourceSession:
             # Reconciliation requires confirmed owner death AND absent residency.
             raise
         self.leases[key] = (lease, demand)
+
+    def settle_failed_load(self, key, *, absent):
+        """Backend must prove loading has stopped AND model is absent.
+
+        A transient empty catalogue while a worker is still loading is not
+        proof. Unknown evidence retains capacity and any reload exclusion.
+        """
+        reservation = self.unsettled_loads.get(key)
+        if absent is not True or reservation is None:
+            return False
+        if not self.coordinator.release(reservation, self.owner):
+            return False
+        del self.unsettled_loads[key]
+        return True
 
     def release(self, key):
         prior = self.leases.get(key)

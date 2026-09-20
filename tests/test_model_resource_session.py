@@ -81,7 +81,7 @@ async def test_explicit_reload_refuses_shared_model(tmp_path):
         async with a.load('model', reload=True): pytest.fail('shared model mutated')
 
 @pytest.mark.asyncio
-async def test_reload_cancel_unlocks_peak_but_preserves_original_lease(tmp_path):
+async def test_reload_cancel_retains_peak_until_settled(tmp_path):
     import asyncio
     from litetui.model_resource_session import ModelResourceSession
     from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
@@ -97,6 +97,7 @@ async def test_reload_cancel_unlocks_peak_but_preserves_original_lease(tmp_path)
             assert session.leases['model'] == original
             raise asyncio.CancelledError()
     assert session.leases['model'] == original
+    assert session.settle_failed_load('model', absent=True)
     async with session.load('model', reload=True): pass
 
 @pytest.mark.asyncio
@@ -113,3 +114,20 @@ async def test_failed_unload_acknowledgement_can_be_released_again(tmp_path):
     async with session.load('model'): pass
     assert session.release('model')
     assert session.complete_unload('model', success=True)
+
+@pytest.mark.asyncio
+async def test_cancelled_loader_retains_capacity_until_settlement(tmp_path):
+    import asyncio
+    from litetui.model_resource_session import ModelResourceSession
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'unsettled.sqlite', telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 80, {})
+    session = ModelResourceSession(coordinator, 'owner', demand_for=lambda key: demand)
+    with pytest.raises(asyncio.CancelledError):
+        async with session.load('model'):
+            raise asyncio.CancelledError()
+    assert coordinator.reserve(demand, 'other').status == 'blocked'
+    assert not session.settle_failed_load('model', absent=None)
+    assert coordinator.reserve(demand, 'other').status == 'blocked'
+    assert session.settle_failed_load('model', absent=True)
+    assert coordinator.reserve(demand, 'other').status == 'admitted'
