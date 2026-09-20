@@ -61,3 +61,25 @@ def test_torn_tail_preserved_and_new_record_separated(store):
     assert store.commit_child_message('completion', {'role': 'user', 'content': 'done'})
     assert b'{"torn":\n' in store.convo_path.read_bytes()
     assert len(ConversationRepository.read(store.convo_path)[1]) == 1
+
+
+def test_real_receipt_queue_to_history_survives_failed_applied_marker(store, tmp_path):
+    from litetui.agent_inbox import AgentInbox
+    from litetui.agent_receipts import ParentReceipts
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    receipts = ParentReceipts(tmp_path / 'receipts.sqlite')
+    outcome = {'child_id': 'child', 'conversation_id': 'child-convo', 'status': 'completed',
+               'summary': 'verified result', 'evidence': [], 'cleanup': {'state': 'confirmed'}}
+    ident = inbox.persist('parent', outcome)
+    inbox.replay('parent', accept=lambda event: receipts.accept('parent', event))
+    message = {'role': 'user', 'content': '[child completion] verified result'}
+    def commit(event):
+        return store.commit_child_message(event['completion_id'], message)
+    def fail(*args): raise OSError('interrupted marker')
+    receipts.mark_applied = fail
+    with pytest.raises(OSError): receipts.deliver('parent', commit=commit)
+    restored = ParentReceipts(tmp_path / 'receipts.sqlite')
+    assert restored.deliver('parent', commit=commit) == [ident]
+    assert ConversationRepository.read(store.convo_path)[1] == [message]
+    assert not inbox.pending('parent')
+    assert not restored.pending('parent')
