@@ -48,7 +48,7 @@ class ResourceCoordinator:
     def snapshot(self):
         return self.telemetry()
 
-    def reserve(self, request, owner):
+    def reserve(self, request, owner, *, reload_lease=None):
         with self.store.transaction() as db:
             snapshot = self.telemetry()
             def blocked(reason):
@@ -67,6 +67,27 @@ class ResourceCoordinator:
                 identity = json.loads(raw_identity)
                 if all(identity[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model')):
                     return blocked('Model unload is pending')
+            reload_identity = None
+            for (raw_identity,) in db.execute('SELECT model FROM reload_claims'):
+                identity = json.loads(raw_identity)
+                if all(identity[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model')):
+                    return blocked('Model reload is pending')
+            if reload_lease is not None:
+                row = db.execute('SELECT model FROM leases WHERE id=? AND owner=? AND active=1',
+                                 (reload_lease, owner)).fetchone()
+                if row is None:
+                    return blocked('Reload requires an active owned lease')
+                reload_identity = row[0]
+                identity = json.loads(reload_identity)
+                if any(identity[k] != getattr(request, k) for k in identity):
+                    return blocked('Reload cannot change the leased load shape')
+                users = db.execute('SELECT COUNT(*) FROM leases WHERE model=? AND active=1', (reload_identity,)).fetchone()[0]
+                if users != 1:
+                    return blocked('Reload cannot mutate a shared model')
+                for (raw,) in db.execute("SELECT demand FROM reservations WHERE state='reserved'"):
+                    pending = json.loads(raw)
+                    if all(pending[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model')):
+                        return blocked('Reload conflicts with pending model users')
             ram = 0
             gpu = {}
             for (raw,) in db.execute("SELECT demand FROM reservations WHERE state IN ('reserved','leased')"):
@@ -87,12 +108,17 @@ class ResourceCoordinator:
             reservation = uuid4().hex
             db.execute('INSERT INTO reservations VALUES (?,?,?,?,?)',
                        (reservation, owner, json.dumps(asdict(request)), 'reserved', time.time()))
+            if reload_identity is not None:
+                db.execute('INSERT INTO reload_claims VALUES (?,?,?)', (reservation, reload_lease, reload_identity))
             return AdmissionDecision('admitted', reservation, snapshot, request, 'Capacity reserved')
 
     def release(self, reservation, owner):
         with self.store.transaction() as db:
             cursor = db.execute("UPDATE reservations SET state='released' WHERE id=? AND owner=? AND state='reserved'", (reservation, owner))
-            return cursor.rowcount == 1
+            released = cursor.rowcount == 1
+            if released:
+                db.execute('DELETE FROM reload_claims WHERE reservation=?', (reservation,))
+            return released
 
     def load_guarded(self, request, owner, loader):
         """No load callback without reservation; allocation failure releases it."""
@@ -112,6 +138,8 @@ class ResourceCoordinator:
                              (reservation, owner)).fetchone()
             if row is None or row[1] != 'reserved':
                 raise ValueError('Reservation absent, already consumed, or owned by another instance')
+            if db.execute('SELECT 1 FROM reload_claims WHERE reservation=?', (reservation,)).fetchone():
+                raise ValueError('Reload peak reservation cannot become a new lease')
             demand = json.loads(row[0])
             identity = json.dumps({k: demand[k] for k in ('backend', 'endpoint', 'model', 'context', 'concurrency', 'artifact', 'load_shape', 'vram_peak_by_device')}, sort_keys=True)
             model = db.execute('SELECT owned,keep_warm,state FROM models WHERE identity=?', (identity,)).fetchone()
@@ -141,6 +169,8 @@ class ResourceCoordinator:
             if row is None:
                 return False
             reservation, identity = row
+            if db.execute('SELECT 1 FROM reload_claims WHERE model=?', (identity,)).fetchone():
+                raise ValueError('Cannot release a model while reload is pending')
             db.execute('UPDATE leases SET active=0 WHERE id=?', (lease,))
             db.execute("UPDATE reservations SET state='released' WHERE id=?", (reservation,))
             users = db.execute('SELECT COUNT(*) FROM leases WHERE model=? AND active=1', (identity,)).fetchone()[0]
@@ -187,5 +217,6 @@ class ResourceCoordinator:
                 if state == 'leased':
                     db.execute('UPDATE leases SET active=0 WHERE reservation=?', (reservation,))
                 db.execute("UPDATE reservations SET state='released' WHERE id=?", (reservation,))
+                db.execute('DELETE FROM reload_claims WHERE reservation=?', (reservation,))
                 released.append(reservation)
         return released

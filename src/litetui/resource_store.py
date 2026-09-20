@@ -26,6 +26,8 @@ class ResourceStore:
                        '(id TEXT PRIMARY KEY, reservation TEXT UNIQUE NOT NULL, '
                        'owner TEXT NOT NULL, model TEXT NOT NULL, active INTEGER NOT NULL)')
 
+            db.execute('CREATE TABLE IF NOT EXISTS reload_claims '
+                       '(reservation TEXT PRIMARY KEY, lease TEXT NOT NULL, model TEXT UNIQUE NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS unload_claims '
                        '(model TEXT PRIMARY KEY, lease TEXT NOT NULL, owner TEXT NOT NULL)')
 

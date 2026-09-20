@@ -682,7 +682,8 @@ class _VramGate:
     async def vram_guard(self, key: str):
         """Ask once per outermost load, then run the body."""
         task = asyncio.current_task()
-        if self.vram_gate is None or getattr(self, '_vram_owner', None) is task:
+        admission = getattr(self, 'resource_admission', None)
+        if (self.vram_gate is None and admission is None) or getattr(self, '_vram_owner', None) is task:
             yield
             return
         lock = getattr(self, '_vram_lock', None)
@@ -692,13 +693,17 @@ class _VramGate:
         self._vram_owner = task
         self._vram_asking = True
         try:
-            allowed = await self.vram_gate(key)
+            allowed = await self.vram_gate(key) if self.vram_gate is not None else True
             if not allowed:
                 raise VramRefused(
                     f"{key} was not loaded — another LiteTUI instance is running "
                     "and loading a different model would put a second model in VRAM."
                 )
-            yield
+            if admission is not None:
+                async with admission(key):
+                    yield
+            else:
+                yield
         finally:
             self._vram_asking = False
             self._vram_owner = None

@@ -50,3 +50,21 @@ async def test_nested_same_task_asks_once_and_cancel_releases_gate():
     backend.vram_gate = gate
     async with backend.vram_guard('c'): pass
     assert called == ['a', 'c']
+
+
+@pytest.mark.asyncio
+async def test_resource_context_wraps_load_body_and_cleans_failure():
+    from contextlib import asynccontextmanager
+    backend = _VramGate()
+    events = []
+    @asynccontextmanager
+    async def admission(key):
+        events.append(('reserve', key))
+        try: yield
+        finally: events.append(('release', key))
+    backend.resource_admission = admission
+    with pytest.raises(RuntimeError):
+        async with backend.vram_guard('model'):
+            events.append(('load', 'model'))
+            raise RuntimeError('allocation failure')
+    assert events == [('reserve', 'model'), ('load', 'model'), ('release', 'model')]
