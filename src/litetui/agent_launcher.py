@@ -101,3 +101,36 @@ def validate_process_identity(event, *, owned_pid, probe=None):
     if not current or current != event.get('process_created'):
         raise LaunchBlocked('Child identity unknown or PID reused')
     return True
+
+async def start_headless_child(spec, process, *, workspace, data_root, supported_levels):
+    """Wire validated hosted invocation to contained startup and authenticated RPC.
+
+    Internal only: caller must prepare isolated workspace, persistent storage,
+    registry and concurrency ownership. Local admission/headed paths remain
+    fail-closed until their coordinators are integrated. No prompt on argv.
+    """
+    from pathlib import Path
+    if spec.headed:
+        raise LaunchBlocked('Headed child transport is not integrated')
+    if spec.backend != 'codex':
+        raise LaunchBlocked('Local child resource admission is not integrated')
+    validate_capabilities(spec, supported_levels)
+    target = Path(workspace).resolve()
+    root = Path(data_root).resolve()
+    if not target.is_dir() or not root.is_dir():
+        raise LaunchBlocked('Prepared workspace and persistent data root required')
+    args = ['--rpc', '--backend', spec.backend, '--model', spec.model,
+            '--tool-profile', spec.tool_profile]
+    if spec.reasoning_effort is not None:
+        args += ['--reasoning-effort', spec.reasoning_effort]
+    elif spec.thinking_level is not None:
+        args += ['--thinking-level', spec.thinking_level]
+    try:
+        await process.start_python(module='litetui.cli', args=args, cwd=target,
+                                   env={'LITETUI_DATA_ROOT': str(root)})
+        ready = await process.rpc_handshake(spec, workspace=str(target))
+        await process.send_prompt(spec.prompt)
+        return ready
+    except BaseException:
+        await process.close()
+        raise
