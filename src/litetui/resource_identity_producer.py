@@ -57,7 +57,11 @@ def stable_file_fingerprint(path) -> str | None:
         path_stat = os.stat(path)
     except OSError:
         return None
-    if (path_stat.st_dev, path_stat.st_ino) != (after.st_dev, after.st_ino):
+    if ((path_stat.st_dev, path_stat.st_ino, path_stat.st_size, path_stat.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        # All four, not just (dev, ino): an ordinary append/mtime bump on the SAME
+        # inode between the final fstat and this stat keeps dev/ino but changes
+        # size/mtime — a dev/ino-only compare would certify the stale digest.
         return None
     return digest.hexdigest()
 
@@ -121,6 +125,10 @@ class BackendSnapshot:
     time. A different backend/type/endpoint/model/shape/device OR a changed
     executable/artifact stat is a different snapshot, so resolve() cannot return a
     cached identity across any of those without a fresh prepare.
+
+    ``backend_type`` is the CANONICAL backend id (the same token an identity's
+    ``backend`` field carries, e.g. "ninfer"), NOT a class name — validate_identity
+    compares them for equality, so both sides must be the one schema token.
     """
     backend_type: str
     endpoint: str
@@ -135,14 +143,29 @@ class BackendSnapshot:
     artifact_stat: tuple
     gpu_uuids: tuple
 
+    def __post_init__(self):
+        # The snapshot is used as a dict KEY, so every container field must be
+        # hashable. A caller passing a list (despite the tuple annotation) is
+        # canonicalized to a tuple rather than crashing the cache with an
+        # "unhashable type" at lookup time.
+        for field in ("exe_stat", "artifact_stat", "gpu_uuids"):
+            value = getattr(self, field)
+            if isinstance(value, list):
+                object.__setattr__(self, field, tuple(value))
+
 
 def _snapshot_stable(snapshot) -> bool:
     """True iff the snapshot's executable and artifact still match their captured
-    stat-identities — the file is not mid-write/replaced right now."""
-    if _stat_identity(snapshot.exe_path) != tuple(snapshot.exe_stat):
+    stat-identities — the file is not mid-write/replaced right now.
+
+    A malformed stat-identity (not a tuple, e.g. None) fails CLOSED: an unusable
+    snapshot is never treated as stable, so nothing is published or returned for it.
+    """
+    if not isinstance(snapshot.exe_stat, tuple) or _stat_identity(snapshot.exe_path) != snapshot.exe_stat:
         return False
-    if snapshot.artifact_path and _stat_identity(snapshot.artifact_path) != tuple(snapshot.artifact_stat):
-        return False
+    if snapshot.artifact_path:
+        if not isinstance(snapshot.artifact_stat, tuple) or _stat_identity(snapshot.artifact_path) != snapshot.artifact_stat:
+            return False
     return True
 
 
@@ -153,10 +176,14 @@ def validate_identity(identity, snapshot):
     A `{}` / partial dict / extra-key dict / any missing-or-invalid field is
     rejected. host/build/artifact_fingerprint must be non-blank (real evidence);
     device_set a non-empty tuple of non-blank strings; and the config fields must
-    MATCH the snapshot AND the device_set must equal the snapshot's EXPLICIT
-    placement (so a producer cannot return an identity for another config, and an
-    unknown device_index — placement None — can never validate). Returns a fresh
-    canonical dict (device_set a tuple) that shares no mutable state with the input.
+    MATCH the snapshot — backend (canonical id == snapshot.backend_type), endpoint,
+    model, context, concurrency, load_shape, artifact (== snapshot.artifact_path) —
+    AND the device_set must equal the snapshot's EXPLICIT placement (so a producer
+    cannot return an identity for another backend/artifact/config, and an unknown
+    device_index — placement None — can never validate). ``artifact_fingerprint``
+    stays the trusted producer's responsibility (the cache cannot re-derive a hash
+    from a string); it is only checked non-blank. Returns a fresh canonical dict
+    (device_set a tuple) that shares no mutable state with the input.
     """
     from litetui.resource_calibration import IDENTITY_FIELDS
     if not isinstance(identity, dict) or set(identity) != set(IDENTITY_FIELDS):
@@ -177,11 +204,13 @@ def validate_identity(identity, snapshot):
     if any(not isinstance(d, str) or not d.strip() for d in devices):
         return None
     device_set = tuple(devices)
-    if (identity["endpoint"] != snapshot.endpoint
+    if (identity["backend"] != snapshot.backend_type
+            or identity["endpoint"] != snapshot.endpoint
             or identity["model"] != snapshot.model
             or context != snapshot.context
             or identity["concurrency"] != snapshot.concurrency
-            or identity["load_shape"] != snapshot.load_shape):
+            or identity["load_shape"] != snapshot.load_shape
+            or identity["artifact"] != snapshot.artifact_path):
         return None
     if device_set != explicit_device_uuid(snapshot.device_index, tuple(snapshot.gpu_uuids)):
         return None
@@ -197,15 +226,25 @@ class IdentityPreparationCache:
     dedupes concurrent requests to one shielded compute, and publishes ONLY a value
     that `validate` accepts as a COMPLETE identity bound to the snapshot AND that
     passes a post-compute stat recheck. A producer error fails closed (nothing
-    published). A cancelled sole awaiter does not publish (its compute stops with
-    it); a concurrent awaiter of the same compute still publishes. resolve is a pure
-    lookup that re-stats before returning and hands back a FRESH copy, so a config
-    change is a miss and a caller can never mutate the cached identity.
+    published). Cancellation only DETACHES the awaiter: `shield` keeps the shared
+    `to_thread` compute running (a thread cannot be force-stopped), and Python does
+    not preempt it — so a cancelled SOLE awaiter leaves nothing validated or stored
+    (no waiter reaches the publish), while a concurrent awaiter of the same compute
+    still publishes. The producer may thus run to completion (its side effects are
+    not cancelled) even when its only awaiter is gone. resolve is a pure lookup that
+    re-stats before returning and hands back a FRESH copy, so a config change is a
+    miss and a caller can never mutate the cached identity.
     """
 
     def __init__(self):
         self._done: dict = {}
         self._inflight: dict = {}
+
+    def _reap(self, fut, snapshot):
+        self._inflight.pop(snapshot, None)
+        if not fut.cancelled():
+            fut.exception()          # retrieve so an all-cancelled producer failure
+                                     # is not an unretrieved-exception warning
 
     async def prepare_async(self, snapshot, *, produce, validate=None):
         validate = validate or validate_identity
@@ -216,7 +255,7 @@ class IdentityPreparationCache:
         if future is None:
             future = asyncio.ensure_future(asyncio.to_thread(produce, snapshot))
             self._inflight[snapshot] = future
-            future.add_done_callback(lambda fut, snap=snapshot: self._inflight.pop(snap, None))
+            future.add_done_callback(lambda fut, snap=snapshot: self._reap(fut, snap))
         try:
             result = await asyncio.shield(future)
         except asyncio.CancelledError:

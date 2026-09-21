@@ -55,6 +55,18 @@ def test_fingerprint_rejects_path_replaced_after_open(tmp_path, monkeypatch):
     assert rip.stable_file_fingerprint(p) is None
 
 
+def test_fingerprint_rejects_size_or_mtime_change_after_final_fstat(tmp_path, monkeypatch):
+    # The handle's stats are unchanged, but os.stat(path) shows the SAME inode with a
+    # changed size/mtime (an ordinary append between the final fstat and this stat).
+    # A dev/ino-only compare would certify the stale digest; all four must be compared.
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"hello")
+    handle_stats = iter([_Stat(5), _Stat(5)])
+    monkeypatch.setattr(os, "fstat", lambda fd: next(handle_stats))
+    monkeypatch.setattr(os, "stat", lambda path_arg, **kw: _Stat(6, mtime=2, dev=1, ino=1))
+    assert rip.stable_file_fingerprint(p) is None
+
+
 def test_fingerprint_path_deleted_after_open_is_none(tmp_path, monkeypatch):
     p = tmp_path / "f.bin"
     p.write_bytes(b"hello")
@@ -128,7 +140,7 @@ from litetui.resource_identity_producer import (  # noqa: E402
 
 def _snap(exe_path, **over):
     base = dict(
-        backend_type="NInferBackend", endpoint="http://127.0.0.1:9000/v1", model="m",
+        backend_type="ninfer", endpoint="http://127.0.0.1:9000/v1", model="m",
         context=32768, concurrency=1, load_shape="nvfp4", device_index=0,
         exe_path=str(exe_path), exe_stat=_stat_identity(exe_path),
         artifact_path="", artifact_stat=(), gpu_uuids=("GPU-a",),
@@ -138,11 +150,12 @@ def _snap(exe_path, **over):
 
 
 def _full_identity(snap):
-    """A COMPLETE identity bound to `snap` (device_set = explicit device 0)."""
+    """A COMPLETE identity bound to `snap`: backend == the canonical backend_type,
+    artifact == the configured artifact_path, device_set == explicit device 0."""
     return {
-        "host": "H", "backend": "ninfer", "build": "B", "endpoint": snap.endpoint,
+        "host": "H", "backend": snap.backend_type, "build": "B", "endpoint": snap.endpoint,
         "model": snap.model, "context": snap.context, "concurrency": snap.concurrency,
-        "artifact": "a.ninfer", "artifact_fingerprint": "FP", "load_shape": snap.load_shape,
+        "artifact": snap.artifact_path, "artifact_fingerprint": "FP", "load_shape": snap.load_shape,
         "device_set": ("GPU-a",),
     }
 
@@ -150,20 +163,33 @@ def _full_identity(snap):
 # validate_identity: schema completeness + snapshot binding
 
 def test_validate_rejects_partial_empty_mismatch_and_unknown_device():
-    snap = BackendSnapshot("NInferBackend", "http://h/v1", "m", 32768, 1, "nvfp4", 0,
+    snap = BackendSnapshot("ninfer", "http://h/v1", "m", 32768, 1, "nvfp4", 0,
                            "e", (1, 2, 3, 4), "", (), ("GPU-a",))
     assert validate_identity({}, snap) is None
     assert validate_identity({"host": "H"}, snap) is None            # partial
     assert validate_identity(_full_identity(snap), snap) is not None  # complete + bound
     wrong = _full_identity(snap); wrong["model"] = "other"
     assert validate_identity(wrong, snap) is None                    # config mismatch
-    no_dev = BackendSnapshot("NInferBackend", "http://h/v1", "m", 32768, 1, "nvfp4", None,
+    no_dev = BackendSnapshot("ninfer", "http://h/v1", "m", 32768, 1, "nvfp4", None,
                              "e", (1, 2, 3, 4), "", (), ("GPU-a",))
     assert validate_identity(_full_identity(no_dev), no_dev) is None  # placement unknown
 
 
+def test_validate_binds_backend_and_artifact_to_snapshot(tmp_path):
+    exe = tmp_path / "e.exe"; exe.write_bytes(b"x")
+    artifact = tmp_path / "a.ninfer"; artifact.write_bytes(b"artifact")
+    snap = _snap(exe, backend_type="ninfer", artifact_path=str(artifact),
+                 artifact_stat=_stat_identity(artifact))
+    good = _full_identity(snap)
+    assert validate_identity(good, snap) is not None
+    bad_backend = dict(good); bad_backend["backend"] = "other-backend"
+    assert validate_identity(bad_backend, snap) is None       # backend not bound before
+    bad_artifact = dict(good); bad_artifact["artifact"] = str(tmp_path / "different.ninfer")
+    assert validate_identity(bad_artifact, snap) is None      # artifact not bound before
+
+
 def test_validate_returns_a_defensive_canonical_copy():
-    snap = BackendSnapshot("NInferBackend", "http://h/v1", "m", 32768, 1, "nvfp4", 0,
+    snap = BackendSnapshot("ninfer", "http://h/v1", "m", 32768, 1, "nvfp4", 0,
                            "e", (1, 2, 3, 4), "", (), ("GPU-a",))
     src = _full_identity(snap)
     src["device_set"] = ["GPU-a"]           # a list is accepted...
@@ -268,6 +294,24 @@ async def test_producer_error_fails_closed(tmp_path):
 def test_resolve_miss_for_unprepared(tmp_path):
     exe = tmp_path / "e.exe"; exe.write_bytes(b"x")
     assert IdentityPreparationCache().resolve(_snap(exe)) is None
+
+
+def test_mutable_snapshot_field_does_not_crash_cache_lookup(tmp_path):
+    # A list where a tuple is annotated must not raise 'unhashable type' at the dict
+    # key lookup — __post_init__ canonicalizes it, so resolve() is a clean miss.
+    exe = tmp_path / "e.exe"; exe.write_bytes(b"x")
+    snap = _snap(exe, gpu_uuids=["GPU-a"])
+    assert IdentityPreparationCache().resolve(snap) is None
+
+
+@pytest.mark.asyncio
+async def test_malformed_snapshot_stats_fail_closed(tmp_path):
+    # A non-tuple stat identity (None) is unusable — nothing is published for it.
+    exe = tmp_path / "e.exe"; exe.write_bytes(b"x")
+    snap = _snap(exe, exe_stat=None)
+    cache = IdentityPreparationCache()
+    assert await cache.prepare_async(snap, produce=_full_identity) is None
+    assert cache.resolve(snap) is None
 
 
 @pytest.mark.asyncio
