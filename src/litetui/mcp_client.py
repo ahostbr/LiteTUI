@@ -569,6 +569,10 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         #: threads never acquire it (they use the per-transport lock). RLock so a
         #: shutdown that must join an in-flight op composes cleanly.
         self._op_lock = threading.RLock()
+        #: Permanent terminal state set by stop_all(): once shutting down, no new
+        #: connect is allowed, so a connect racing after stop_all cannot start a
+        #: server that would then leak (never be stopped).
+        self._closing = False
 
     # ── plumbing ────────────────────────────────────────────────────────────
     def _log(self):
@@ -594,18 +598,29 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             return HTTPMCPServer(name, sc, self.root, self._log())
         return MCPServer(name, sc, self.root, self._log())
 
-    def reload_configs(self) -> dict[str, dict]:
-        """Re-read the config files into `configs`. Running servers untouched.
-
-        Deliberately does NOT reconcile: re-reading the file and acting on what
-        changed are different decisions, and a reader that also restarted
-        things would make `/mcp list` a mutating command.
-        """
+    def _reload_configs_locked(self) -> dict[str, dict]:
+        """Body of reload_configs; assumes the caller holds the claim + op_lock
+        (reconcile/add/remove reuse it without re-claiming)."""
         cfg_paths = config_files(self.root)
         servers, file_errors = read_server_configs(cfg_paths)
         self.configs = servers
         self.failures.update(file_errors)
         return servers
+
+    def reload_configs(self) -> dict[str, dict]:
+        """Re-read the config files into `configs`. Running servers untouched.
+
+        Deliberately does NOT reconcile: re-reading the file and acting on what
+        changed are different decisions, and a reader that also restarted
+        things would make `/mcp list` a mutating command. Claim-guarded so a
+        config re-read cannot race a reconcile mid-flight."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                return self._reload_configs_locked()
+        finally:
+            self._release_claim()
 
     def load(self) -> None:
         """Boot: read the configs and start everything not marked disabled."""
@@ -625,6 +640,10 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         not be silent either: a tool that never appears is indistinguishable
         from one the model simply chose not to call.
         """
+        if self._closing:
+            # A connect racing after stop_all would start a server nothing will
+            # ever stop. Refuse rather than leak it.
+            return "closing: the MCP manager is shutting down"
         sc = self.configs.get(name)
         if not isinstance(sc, dict):
             return f"no server named {name!r} in {' / '.join(MCP_CONFIG_NAMES)}"
@@ -875,32 +894,38 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         bad = validate_entry(cfg)
         if bad:
             return bad
-        self.reload_configs()
-        # ⚠️ THE SHADOW CHECK RUNS FIRST, and the order is the whole value of
-        # the message. `configs` is the MERGE of both files, so a name living
-        # in mcp.json also satisfies "already declared" — and that generic
-        # answer ("remove it first") sends the user to a `remove` that will
-        # itself refuse, because /mcp does not write mcp.json. Two refusals and
-        # no way forward. Naming the shadowing file is the only actionable one.
-        shadow = shadowing_file(self.root, name)
-        if shadow is not None:
-            return (
-                f"{shadow.name} already declares {name!r} and wins on precedence; "
-                f"a write to {WRITE_CONFIG_NAME} would never be read"
-            )
-        if name in self.configs:
-            return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
-        path = self.root / WRITE_CONFIG_NAME
-        from litetui.shared_state import coordinated_write
-        with coordinated_write(path):
-            doc = _load_doc(path)
-            block = doc.setdefault("mcpServers", {})
-            if name in block:
-                return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
-            block[name] = cfg
-            _save_doc(path, doc)
-        self.reload_configs()
-        return self.connect(name) if connect else None
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                self._reload_configs_locked()
+                # ⚠️ THE SHADOW CHECK RUNS FIRST, and the order is the whole value
+                # of the message. `configs` is the MERGE of both files, so a name
+                # living in mcp.json also satisfies "already declared" — and that
+                # generic answer sends the user to a `remove` that will itself
+                # refuse, because /mcp does not write mcp.json. Naming the
+                # shadowing file is the only actionable one.
+                shadow = shadowing_file(self.root, name)
+                if shadow is not None:
+                    return (
+                        f"{shadow.name} already declares {name!r} and wins on precedence; "
+                        f"a write to {WRITE_CONFIG_NAME} would never be read"
+                    )
+                if name in self.configs:
+                    return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
+                path = self.root / WRITE_CONFIG_NAME
+                from litetui.shared_state import coordinated_write
+                with coordinated_write(path):
+                    doc = _load_doc(path)
+                    block = doc.setdefault("mcpServers", {})
+                    if name in block:
+                        return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
+                    block[name] = cfg
+                    _save_doc(path, doc)
+                self._reload_configs_locked()
+                return self._connect_locked(name) if connect else None
+        finally:
+            self._release_claim()
 
     def remove(self, name: str) -> str | None:
         """Stop it and delete its entry from .mcp.json. Returns None, or why not.
@@ -909,28 +934,38 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         process with no config behind it, which describe() can only report as
         an orphan. Doing it in this order means `remove` has no such aftermath.
         """
-        path = self.root / WRITE_CONFIG_NAME
-        from litetui.shared_state import coordinated_write
-        with coordinated_write(path):
-            doc = _load_doc(path)
-            block = doc.get("mcpServers") or {}
-            if name not in block:
-                other = shadowing_file(self.root, name)
-                if other is not None:
-                    return f"{name!r} is declared in {other.name}, which /mcp does not write"
-                return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
-            self.disconnect(name)
-            del block[name]
-            doc["mcpServers"] = block
-            _save_doc(path, doc)
-        self.reload_configs()
-        self.failures.pop(name, None)
-        return None
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                path = self.root / WRITE_CONFIG_NAME
+                from litetui.shared_state import coordinated_write
+                with coordinated_write(path):
+                    doc = _load_doc(path)
+                    block = doc.get("mcpServers") or {}
+                    if name not in block:
+                        other = shadowing_file(self.root, name)
+                        if other is not None:
+                            return f"{name!r} is declared in {other.name}, which /mcp does not write"
+                        return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
+                    self._disconnect_locked(name)
+                    del block[name]
+                    doc["mcpServers"] = block
+                    _save_doc(path, doc)
+                self._reload_configs_locked()
+                self.failures.pop(name, None)
+                return None
+        finally:
+            self._release_claim()
 
     def stop_all(self) -> None:
         """Shutdown: JOIN any in-flight lifecycle op (bounded by that op's own
         connect/stop timeouts) via _op_lock, then stop every server. Never
         refuses busy and never leaks a transport — shutdown is terminal."""
+        # Set BEFORE acquiring the lock so a connect racing right now is refused
+        # immediately (see _connect_locked) rather than starting a server this
+        # shutdown will not see.
+        self._closing = True
         with self._op_lock:
             servers = list(self.servers.values())
             self.servers.clear()
