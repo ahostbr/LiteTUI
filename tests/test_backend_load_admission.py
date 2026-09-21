@@ -58,7 +58,7 @@ async def test_resource_context_wraps_load_body_and_cleans_failure():
     backend = _VramGate()
     events = []
     @asynccontextmanager
-    async def admission(key):
+    async def admission(key, *, reload=False):
         events.append(('reserve', key))
         try: yield
         finally: events.append(('release', key))

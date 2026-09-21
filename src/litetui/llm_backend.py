@@ -679,8 +679,15 @@ class _VramGate:
             pass
 
     @asynccontextmanager
-    async def vram_guard(self, key: str):
-        """Ask once per outermost load, then run the body."""
+    async def vram_guard(self, key: str, *, reload: bool = False):
+        """Ask once per outermost load, then run the body.
+
+        `reload` is forwarded to the admission session so a reload re-admits an
+        existing lease's peak rather than being counted as a fresh load. Only the
+        OUTERMOST guard reaches admission (the reentrancy short-circuit below), so
+        a load that delegates to a reload carries the outer call's flag, and a
+        standalone `apply_load_settings` reaches admission with reload=True.
+        """
         task = asyncio.current_task()
         admission = getattr(self, 'resource_admission', None)
         if (self.vram_gate is None and admission is None) or getattr(self, '_vram_owner', None) is task:
@@ -700,7 +707,7 @@ class _VramGate:
                     "and loading a different model would put a second model in VRAM."
                 )
             if admission is not None:
-                async with admission(key):
+                async with admission(key, reload=reload):
                     yield
             else:
                 yield
@@ -1428,8 +1435,10 @@ class LlamaCppBackend(_VramGate):
             raise BackendError(f"could not unload {key!r} on the llama.cpp server — try again in a moment.") from e
 
     async def apply_load_settings(self, key: str, cfg: dict, *, notice=None) -> None:
-        # A reload IS a load: it puts the weights back with a new window.
-        async with self.vram_guard(key):
+        # A reload IS a load: it puts the weights back with a new window. It is
+        # a reload to admission (re-admits the existing lease's peak), not a fresh
+        # load — so nothing double-counts the same model's capacity.
+        async with self.vram_guard(key, reload=True):
             await asyncio.to_thread(self._apply_sync, key, cfg, notice)
 
     def _apply_sync(self, key: str, cfg: dict, notice=None) -> None:
@@ -1696,7 +1705,7 @@ class LMStudioBackend(_VramGate):
 
     # -- control ----------------------------------------------------------
 
-    async def load(self, key: str, *, ctx: int | None = None, notice=None) -> None:
+    async def load(self, key: str, *, ctx: int | None = None, notice=None, _reload: bool = False) -> None:
         def _load() -> None:
             lms = self._sdk()
             config = {"contextLength": ctx} if ctx else None
@@ -1714,7 +1723,7 @@ class LMStudioBackend(_VramGate):
                     "lmstudio.load_failed", detail=f"load of {key!r} at {self._host} — {e}",
                     site="llm_backend")
                 raise BackendError(f"could not load {key!r} in LM Studio — try again in a moment.") from e
-        async with self.vram_guard(key):
+        async with self.vram_guard(key, reload=_reload):
             await asyncio.to_thread(_load)
         # LM Studio takes its load config on the request itself, so THIS is the
         # point at which "what this model was loaded with" is known.
@@ -1749,7 +1758,7 @@ class LMStudioBackend(_VramGate):
         # The `rest` refusal above is already ahead of the notice `load` fires,
         # so this path was never the T873 shape; the parameter only keeps the
         # signature uniform for a caller that hands one to any backend.
-        await self.load(key, ctx=cfg.get("ctx"), notice=notice)
+        await self.load(key, ctx=cfg.get("ctx"), notice=notice, _reload=True)
 
     # -- seat guard --------------------------------------------------------
 
