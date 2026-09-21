@@ -113,42 +113,62 @@ def test_guard_ignores_non_lmstudio_and_missing_backend():
 from litetui import model_transport  # noqa: E402
 
 
-def _app(backend, endpoint):
-    # A fake owner exposing exactly what for_app reads. object() stands in for the
-    # AsyncOpenAI client — for_app must refuse a stale pair BEFORE building a transport.
-    return SimpleNamespace(client=object(), backend=backend, _client_endpoint=endpoint)
+def _bound_app(backend, client=None):
+    # A fake owner exposing exactly what for_app reads, with a real ClientBinding
+    # recorded (as the app.py factory sites do). object() stands in for the client.
+    client = client if client is not None else object()
+    return SimpleNamespace(client=client, backend=backend,
+                           _client_binding=model_transport.bind_client(client, backend))
 
 
-def test_matched_pair_returns_transport():
-    backend = _llama("http://127.0.0.1:7470")
-    transport = model_transport.for_app(_app(backend, backend.base_url().rstrip("/")))
+def test_matched_binding_returns_transport():
+    transport = model_transport.for_app(_bound_app(_llama("http://127.0.0.1:7470")))
     assert isinstance(transport, OpenAITransport)
 
 
-def test_backend_swap_without_client_rebuild_refuses_no_http():
-    lm = _lmstudio("http://127.0.0.1:1234")
-    app = _app(lm, lm.base_url().rstrip("/"))          # client bound to the LM endpoint
-    app.backend = _llama("http://127.0.0.1:7470")      # swapped, client NOT rebuilt
-    with pytest.raises(AdmissionBlocked):
-        model_transport.for_app(app)                   # refuses -> no transport, no request
-
-
-def test_backend_endpoint_mutation_refuses():
-    backend = _lmstudio("http://127.0.0.1:1234")
-    app = _app(backend, backend.base_url().rstrip("/"))
-    backend._host = "http://127.0.0.1:9999"            # backend moved its endpoint
+def test_missing_binding_fails_closed():
+    app = SimpleNamespace(client=object(), backend=_llama("http://127.0.0.1:7470"))  # no binding
     with pytest.raises(AdmissionBlocked):
         model_transport.for_app(app)
 
 
+def test_same_url_backend_TYPE_swap_refuses():
+    # The endpoint is IDENTICAL, only the backend class changes (LM -> llama), which
+    # flips JIT classification. Endpoint-only binding would miss this; the type does not.
+    app = _bound_app(_lmstudio("http://127.0.0.1:1234"))
+    app.backend = _llama("http://127.0.0.1:1234")      # same URL, different TYPE, no rebind
+    with pytest.raises(AdmissionBlocked):
+        model_transport.for_app(app)
+
+
+def test_client_replaced_by_hand_refuses():
+    app = _bound_app(_llama("http://127.0.0.1:7470"))
+    app.client = object()                              # replaced, binding not updated
+    with pytest.raises(AdmissionBlocked):
+        model_transport.for_app(app)
+
+
+def test_backend_swap_and_endpoint_mutation_refuse():
+    swapped = _bound_app(_lmstudio("http://127.0.0.1:1234"))
+    swapped.backend = _llama("http://127.0.0.1:7470")  # different URL + type, no rebuild
+    with pytest.raises(AdmissionBlocked):
+        model_transport.for_app(swapped)
+
+    mutated = _bound_app(_lmstudio("http://127.0.0.1:1234"))
+    mutated.backend._host = "http://127.0.0.1:9999"    # backend moved its endpoint
+    with pytest.raises(AdmissionBlocked):
+        model_transport.for_app(mutated)
+
+
 @pytest.mark.asyncio
-async def test_rebuilt_pair_works_again_then_lm_still_jit_blocked():
-    app = _app(_llama("http://127.0.0.1:7470"), None)
-    app.backend = _lmstudio("http://127.0.0.1:1234")
-    app._client_endpoint = app.backend.base_url().rstrip("/")   # rebuilt/rebound
-    transport = model_transport.for_app(app)                    # pair matched again
+async def test_rebound_pair_works_then_lm_still_jit_blocked():
+    app = _bound_app(_llama("http://127.0.0.1:7470"))
+    spy = _SpyClient()
+    app.backend = _lmstudio("http://127.0.0.1:1234")   # rebuild client + re-bind
+    app.client = spy
+    app._client_binding = model_transport.bind_client(spy, app.backend)
+    transport = model_transport.for_app(app)           # binding matched again
     assert isinstance(transport, OpenAITransport)
-    transport.client = _SpyClient()                             # a client that would send
-    with pytest.raises(AdmissionBlocked):                       # ...but LM is still JIT-blocked
+    with pytest.raises(AdmissionBlocked):              # ...but LM is still JIT-blocked
         await transport.create(model="m", messages=[])
-    assert transport.client.calls == []
+    assert spy.calls == []
