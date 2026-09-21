@@ -46,6 +46,10 @@ from pathlib import Path
 MCP_LOG_NAME = "mcp.log"
 INIT_TIMEOUT = 30.0
 CALL_TIMEOUT = 120.0
+#: A stdin write blocks when the child stops reading and its pipe buffer fills.
+#: The write runs on a joinable thread so the CALLER is bounded by this; the
+#: blocked write itself is not cancellable (see _send).
+SEND_TIMEOUT = 10.0
 MAX_RESULT_CHARS = 50_000
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -83,23 +87,90 @@ class MCPServer:
         # timeout kills the process, so they stop arriving.
         self._pending: dict[int, dict] = {}
         self._reader: threading.Thread | None = None
+        # A stdin writer that timed out and could NOT be cancelled. Retained
+        # (never joined, never its stdin closed under it) until observed
+        # terminal; while it lives, new sends/reconnects are refused so blocked
+        # daemon writers cannot pile up. See _send / _writer_in_flight.
+        self._writer: threading.Thread | None = None
 
     # ── wire ────────────────────────────────────────────────────────────────
     def _next_id(self) -> int:
         self._id += 1
         return self._id
 
-    def _send(self, payload: dict) -> None:
-        if not self.proc or not self.proc.stdin:
+    def _writer_in_flight(self) -> bool:
+        """True while a timed-out writer is retained and not yet observed
+        terminal. Reaps a writer that HAS finished. While one is in flight, new
+        sends and reconnects are refused so uncancellable daemon writers cannot
+        pile up."""
+        w = self._writer
+        if w is None:
+            return False
+        if w.is_alive():
+            return True
+        self._writer = None          # observed terminal -> reap the retention
+        return False
+
+    def _send(self, payload: dict, *, timeout: float = SEND_TIMEOUT) -> None:
+        if self._writer_in_flight():
+            raise MCPError("a previous send is still blocked; server retained")
+        # Capture proc/stdin ONCE. A reconnect can replace self.proc while this
+        # write is in flight; the writer and the timeout teardown must act on the
+        # process we are writing to, never late-bind and kill a replacement.
+        proc = self.proc
+        if not proc or not proc.stdin:
             raise MCPError("server is not running")
-        # A poisoned server (see _poison) keeps its Popen object, with a closed
-        # stdin and an exit code. Writing to it would raise ValueError three
-        # frames down; say what actually happened instead.
-        if self.proc.poll() is not None:
-            raise MCPError(f"server is not running (exit {self.proc.returncode})")
+        # A poisoned server keeps its Popen object, with a closed stdin and an
+        # exit code. Writing would raise three frames down; say what happened.
+        if proc.poll() is not None:
+            raise MCPError(f"server is not running (exit {proc.returncode})")
         line = json.dumps(payload, ensure_ascii=False) + "\n"
-        self.proc.stdin.write(line)
-        self.proc.stdin.flush()
+        stdin = proc.stdin
+        err: dict = {}
+
+        def _write() -> None:
+            try:
+                stdin.write(line)
+                stdin.flush()
+            except Exception as e:  # noqa: BLE001 — pipe closed under us / broken
+                err["e"] = e
+
+        # 🔴 BOUNDED FOR THE CALLER, RETAINED FOR THE WRITER. write()/flush()
+        # block when the child stops reading and its stdin pipe buffer fills.
+        # Running them on a daemon thread joined for `timeout` bounds THIS call;
+        # the write itself has NO safe cancel implemented here (OS APIs exist).
+        # On timeout we kill the child's READ end to encourage a BrokenPipeError
+        # — but a descendant that inherited the read end can keep it open, so we
+        # do NOT assume the writer exits: it is RETAINED (never joined, its stdin
+        # never closed under it) until a later call observes the thread terminal.
+        t = threading.Thread(target=_write, name=f"mcp-writer-{self.name}", daemon=True)
+        self._writer = t             # register BEFORE start so a racing send is refused
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            self.error = f"send timed out after {timeout:.0f}s (server not reading stdin)"
+            self._kill_child(proc)   # the CAPTURED proc, never self.proc (a replacement)
+            raise MCPError("send timed out; server retained")
+        self._writer = None          # writer terminal, retention cleared
+        if "e" in err:
+            raise MCPError(f"send failed ({type(err['e']).__name__})")
+
+    def _kill_child(self, proc) -> None:
+        """Kill the CAPTURED child WITHOUT touching stdin — a retained writer may
+        hold the stdin lock, so closing it here would deadlock. terminate ->
+        bounded wait -> kill -> bounded wait so the process is reaped, not left a
+        zombie. All failures swallowed (type-only elsewhere); no raw output."""
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)   # reap the killed child; no zombie
+            except Exception:
+                pass
 
     def _start_reader(self) -> None:
         """Drain stdout on a thread of its own. Idempotent.
