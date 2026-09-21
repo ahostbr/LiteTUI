@@ -1741,18 +1741,9 @@ class SettingsBody(Widget):
         self.run_worker(self._do_install_edge, thread=True)
 
     def _do_install_edge(self) -> None:
-        import subprocess
-        import sys
+        from litetui.voice_install import install_edge
 
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "edge-tts",
-                 "playsound==1.2.2"],
-                check=True, capture_output=True, timeout=240)
-            msg = "edge support installed — pick 'edge' and Test."
-        except Exception as e:  # noqa: BLE001 - report every failure to the panel
-            msg = (f"install failed: {type(e).__name__} "
-                   "(try: uv pip install edge-tts playsound==1.2.2)")
+        msg = install_edge()
         self.app.call_from_thread(
             self.query_one("#voice-status", Static).update, msg)
 
