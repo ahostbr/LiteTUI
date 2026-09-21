@@ -65,13 +65,17 @@ class ResourceCoordinator:
             if not isinstance(request.vram_peak_by_device, dict) or any(
                     not isinstance(key, str) or not key.strip() for key in request.vram_peak_by_device):
                 return blocked('GPU demand identity invalid')
-            if not snapshot.reliable or type(snapshot.ram_available) is not int or snapshot.ram_available < 0 or not math.isfinite(snapshot.timestamp):
+            if (snapshot.reliable is not True or type(snapshot.ram_available) is not int
+                    or snapshot.ram_available < 0 or type(snapshot.timestamp) not in (int, float)
+                    or not math.isfinite(snapshot.timestamp)):
                 return blocked('Reliable RAM/VRAM telemetry unavailable')
             if time.time() - snapshot.timestamp > 5 or snapshot.timestamp > time.time() + 1:
                 return blocked('Memory telemetry is stale')
             if type(request.ram_peak) is not int or request.ram_peak < 0:
                 return blocked('RAM peak estimate unknown')
-            if any(type(v) is not int or v < 0 for v in snapshot.vram_available.values()):
+            if (not isinstance(snapshot.vram_available, dict)
+                    or any(not isinstance(k, str) or not k.strip() for k in snapshot.vram_available)
+                    or any(type(v) is not int or v < 0 for v in snapshot.vram_available.values())):
                 return blocked('VRAM telemetry invalid')
             if any(type(v) is not int or v < 0 for v in request.vram_peak_by_device.values()):
                 return blocked('VRAM peak estimate invalid')
