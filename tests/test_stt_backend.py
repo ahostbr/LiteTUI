@@ -42,7 +42,9 @@ def test_record_stop_sends_q_then_returns_path_when_wav_exists(monkeypatch, tmp_
         def write(self, b): P.wrote = b
         def flush(self): pass
         def wait(self, timeout=None): pass
-    assert s.record_stop(P()) == str(wav)
+    proc = P()
+    proc._litetui_wav = wav
+    assert s.record_stop(proc) == str(wav)
     assert P.wrote == b"q"
 
 
@@ -72,3 +74,39 @@ def test_silent_clip_returns_empty(monkeypatch, tmp_path):
     wav = tmp_path / "q.wav"; wav.write_bytes(b"x" * 4000)
     monkeypatch.setattr(s, "_check_not_silent", lambda p: "[listen] silence")
     assert s.transcribe(str(wav)) == ""
+
+
+def test_recordings_have_distinct_owned_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(s.paths, 'data_root', lambda: tmp_path)
+    monkeypatch.setattr(s, '_ffmpeg', lambda: 'ffmpeg')
+    monkeypatch.setattr(s, '_first_dshow_device', lambda: 'mic')
+    calls = []
+    class P:
+        def __init__(self, cmd, **kw):
+            calls.append(cmd)
+    monkeypatch.setattr(s.subprocess, 'Popen', P)
+    a, b = s.record_start(), s.record_start()
+    assert calls[0][-1] != calls[1][-1]
+    assert str(a._litetui_wav) == calls[0][-1]
+    assert str(b._litetui_wav) == calls[1][-1]
+
+
+def test_unknown_process_never_returns_stale_shared_audio(monkeypatch, tmp_path):
+    stale = tmp_path / 'stt-record.wav'
+    stale.write_bytes(b'x' * 2000)
+    monkeypatch.setattr(s, '_WAV', stale)
+    class P:
+        stdin = None
+        def wait(self, **kw): pass
+    assert s.record_stop(P()) is None
+
+
+def test_unconfirmed_recorder_exit_does_not_return_audio(tmp_path):
+    wav = tmp_path / 'active.wav'
+    wav.write_bytes(b'x' * 2000)
+    class P:
+        _litetui_wav = wav
+        stdin = None
+        def wait(self, **kw): raise TimeoutError()
+        def kill(self): pass
+    assert s.record_stop(P()) is None
