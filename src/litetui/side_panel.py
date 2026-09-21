@@ -158,6 +158,15 @@ class DialogController:
 
     async def _mount_view(self) -> None:
         body = self._body_factory()
+        # Record the exact Worker object hosting this dialog so an owned-dialog
+        # activity gate can exclude ITSELF (see MCPListBody). _mount_view runs
+        # inside that worker, so get_current_worker() is it; None when a dialog
+        # is awaited outside any worker. Harmless for bodies that never read it.
+        try:
+            from textual.worker import get_current_worker
+            body._dialog_host_worker = get_current_worker()
+        except Exception:
+            body._dialog_host_worker = None
         # 🔴 ASSIGN `_view` BEFORE THE AWAIT, NOT AFTER IT.
         #
         # `mount()` suspends, and the body is LIVE AND INTERACTIVE while it is

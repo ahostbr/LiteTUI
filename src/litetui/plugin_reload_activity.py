@@ -23,6 +23,7 @@ Read-only, no disk, no swap, no cancellation, no loads.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -31,6 +32,68 @@ from textual.worker import WorkerState
 from litetui.plugin_reload_state import ActivitySnapshot
 
 _TERMINAL = frozenset({WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED})
+
+
+#: The attribute on `app` holding the Worker OBJECTS currently in an idle
+#: infrastructure phase (registered by idle_infra_phase). produce_activity
+#: excludes exactly these workers, by object identity (`is`), while they are
+#: idle-polling — a proven, producer-owned identity, never a name/group
+#: heuristic and never an integer id (which could be reused after GC).
+_IDLE_INFRA_ATTR = "_idle_infra_workers"
+
+
+def _contains(seq, worker) -> bool:
+    """Identity membership: never eq/hash (a Worker could overload them)."""
+    try:
+        return any(worker is x for x in seq)
+    except TypeError:
+        return False
+
+
+@contextmanager
+def idle_infra_phase(app):
+    """Mark the CURRENT worker as idle infrastructure for the duration of a
+    poll / sleep / heartbeat await, so produce_activity does not read that
+    worker as management activity.
+
+    Registered by EXACT running Worker OBJECT (get_current_worker), cleared in
+    `finally` — including on cancellation — BEFORE the worker leaves the idle
+    section to deliver or dispatch, so a firing poller is visible again the
+    moment it does real work. The registry is a list used as a refcount: a
+    nested phase for the SAME worker pushes again and pops one on each exit, so
+    an inner exit never clears an outer phase. If the current worker cannot be
+    resolved, nothing is registered (fail-closed — it stays counted)."""
+    from textual.worker import get_current_worker
+    try:
+        worker = get_current_worker()
+    except Exception:
+        worker = None
+    if worker is None:
+        yield
+        return
+    reg = getattr(app, _IDLE_INFRA_ATTR, None)
+    if not isinstance(reg, list):
+        reg = []
+        try:
+            setattr(app, _IDLE_INFRA_ATTR, reg)
+        except Exception:
+            yield
+            return
+    reg.append(worker)                      # refcount: one push per (possibly nested) enter
+    try:
+        yield
+    finally:
+        for i in range(len(reg) - 1, -1, -1):   # pop ONE occurrence, by identity
+            if reg[i] is worker:
+                del reg[i]
+                break
+
+
+def _idle_infra_workers(app) -> list:
+    """The registered idle-infra Worker objects, fail-closed: a missing or
+    non-list attribute means NOTHING is excluded (every worker stays counted)."""
+    reg = getattr(app, _IDLE_INFRA_ATTR, None)
+    return reg if isinstance(reg, list) else []
 
 #: Worker group -> the ActivitySnapshot field it primarily drives. Everything not
 #: listed here (inbox, native-history, init, AND any future/unknown group) is
@@ -72,12 +135,23 @@ def produce_activity(
     app: Any,
     *,
     children_pending: Callable[[], bool | None] | None = None,
+    ignore_workers: Any = (),
+    ignore_screen: Any = None,
 ) -> ActivityReport:
     """Build a fail-closed ActivitySnapshot from the reviewed ownership sources.
 
     The snapshot is the permission gate; `reasons` and `unreadable` are diagnostics.
     Nothing here mutates the app, touches disk, cancels work, or loads anything.
+
+    ignore_workers / ignore_screen exclude ONLY the caller's OWN dialog
+    identity (its host Worker OBJECT, and its own modal screen, both by `is`)
+    so an owned dialog does not see itself as busy. Registered idle-infra
+    pollers (idle_infra_phase) are excluded the same way. Every OTHER signal is
+    kept: a DIFFERENT worker in the same group, a SECOND modal, a busy store, a
+    durable child, an active tool all still count. Defaults are empty — the
+    command producer is unchanged and stays fail-closed.
     """
+    idle_infra = _idle_infra_workers(app)
     fields: dict[str, bool] = {k: False for k in _FIELDS}
     reasons: list[ActivityReason] = []
     unreadable: list[str] = []
@@ -105,6 +179,9 @@ def produce_activity(
                 continue
             if state in _TERMINAL:
                 continue
+            if _contains(ignore_workers, w) or _contains(idle_infra, w):
+                continue   # the caller's OWN dialog host worker, or a registered
+                           # idle-infra poller — not real activity
             field = _GROUP_PRIMARY.get(group, "management_active")
             if group in _GROUP_PRIMARY:
                 note = f"nonterminal worker group {group!r}"
@@ -138,11 +215,16 @@ def produce_activity(
 
     # 3. screen_stack (REQUIRED). Absent / unreadable => management busy.
     try:
-        depth = len(app.screen_stack)
+        stack = app.screen_stack
+        depth = len(stack)
     except Exception as e:  # noqa: BLE001
         mark("management_active", "app.screen_stack", "app", f"unreadable: {type(e).__name__}")
         unreadable.append("app.screen_stack")
     else:
+        # Exclude ONLY the caller's own dialog modal (exact object, by `is`).
+        # A SECOND modal still counts, so another dialog keeps the app busy.
+        if ignore_screen is not None and _contains(stack, ignore_screen):
+            depth -= 1
         if depth > 1:
             mark("management_active", "app.screen_stack", "app", f"modal open (screen_stack depth {depth})")
 

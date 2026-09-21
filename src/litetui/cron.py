@@ -197,8 +197,14 @@ async def monitor(app) -> None:
     fell into, where a checker started work from inside the work it was
     checking.
     """
+    from litetui.plugin_reload_activity import idle_infra_phase
     while True:
-        await asyncio.sleep(sched_mod.TICK_SECONDS)
+        # The tick sleep is this worker's ONLY idle phase — register it as idle
+        # infra so an MCP-mutation activity gate does not read the cron poller as
+        # busy. The refresh/due/_fire_job below run OUTSIDE the phase: a fired
+        # job schedules a chat turn, which is visible as turn_active on its own.
+        with idle_infra_phase(app):
+            await asyncio.sleep(sched_mod.TICK_SECONDS)
         try:
             sched_mod.refresh(app.cron.jobs, paths.data_root())
             ready = sched_mod.due(app.cron.jobs, datetime.now())
