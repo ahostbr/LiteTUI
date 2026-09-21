@@ -94,24 +94,47 @@ def run_guarded(app, coro, *, group, cleanup, report=None):
     # From here a task owns `guarded`; cancel the WORKER to unwind it (never
     # guarded.close(), which the task owns), and close only the never-entered
     # original in _fire.
-    task = getattr(worker, "_task", None)
-    if task is None:
+    try:
+        task = getattr(worker, "_task", None)
+    except Exception as e:  # noqa: BLE001 — a raising descriptor must not escape uncleaned
+        _cancel_quietly(worker)
+        _fire()
+        if report is not None:
+            report(e)
+        return None
+    # Require a REAL asyncio.Task, not merely non-None. An arbitrary object whose
+    # add_done_callback fired _fire synchronously would release the claim and
+    # then we'd open the gate and run the op UNCLAIMED. Anything else fails closed.
+    if not isinstance(task, asyncio.Task):
         _cancel_quietly(worker)
         _fire()
         if report is not None:
             report(None)
         return None
     try:
-        task.add_done_callback(_fire)     # fires on EVERY terminal state, incl. pre-first-step cancel
+        _attach(task, _fire)              # fires on EVERY terminal state, incl. pre-first-step cancel
     except Exception as e:  # noqa: BLE001 — attach failure must fail closed, never wedge
         _cancel_quietly(worker)
         _fire()
         if report is not None:
             report(e)
         return None
+    if task.done() or state["fired"]:
+        # Raced to a terminal state (or the callback already fired): do NOT open
+        # the gate — running the op now would run it against a released claim.
+        _cancel_quietly(worker)
+        if not state["fired"]:
+            _fire()
+        return None
     state["armed"] = True
     go.set()                              # arm THEN open the gate
     return worker
+
+
+def _attach(task, cb) -> None:
+    """The done-callback attach seam (a test can monkeypatch this to force an
+    attach failure without weakening run_guarded's real-Task type check)."""
+    task.add_done_callback(cb)
 
 
 def _cancel_quietly(worker) -> None:

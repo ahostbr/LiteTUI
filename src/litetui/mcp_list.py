@@ -276,11 +276,14 @@ class MCPListBody(Widget):
         from litetui.plugins.mcp_manage import _settle_maintenance
         msg = ""
         try:
-            # Revalidate identity BEFORE the mutation: a backend/convo/manager
-            # transition (or a switch to native Codex) between scheduling and
-            # the thread aborts the mutation rather than applying it to a
-            # changed world. The op is bound to mcp0, so once it IS running it
-            # keeps targeting the captured manager and await_preparation joins.
+            # Revalidate identity BEFORE the mutation. This is a LOOP-ADMISSION
+            # check, not a thread-start atomic guarantee: await_preparation
+            # schedules a thread, so a switch AFTER this check but before the
+            # thread runs is not atomically prevented. The op is bound to mcp0,
+            # so it can never RETARGET a different manager; but a captured old
+            # operation may still finish AFTER an accepted context switch — that
+            # completion is reported (below), never re-rendered onto the new
+            # context, and never claimed as the current mutation's success.
             if (app.convo_id != convo0 or app.backend is not backend0
                     or app.mcp is not mcp0 or hasattr(app.backend, "app_server")):
                 msg = "context changed before the MCP operation started — not applied."
@@ -293,10 +296,13 @@ class MCPListBody(Widget):
                     msg = f"MCP operation failed ({type(e).__name__})."
         finally:
             note = _settle_maintenance(app)
-        # Re-render ONLY if this body is still the ACTIVE view in the same
-        # context; else report to chat (a superseded/removed body, or a changed
-        # convo/backend, must not be re-rendered).
-        if self._is_active_body() and app.convo_id == convo0 and app.backend is backend0:
+        # Re-render ONLY if this body is still the ACTIVE view in the SAME
+        # context — convo, backend AND manager. A manager switch means
+        # _settle_maintenance rebuilt the CURRENT (new) manager's dispatch, not
+        # the one this op targeted, so re-rendering here would paint an old-op
+        # result onto the new manager; report to chat instead.
+        if (self._is_active_body() and app.convo_id == convo0
+                and app.backend is backend0 and app.mcp is mcp0):
             self._say(msg + note)
             await self._rerender()
         else:
