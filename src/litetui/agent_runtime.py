@@ -33,9 +33,23 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
         before_start()
     await start_headless_child(spec, process, workspace=workspace, data_root=data_root,
                                supported_levels=supported_levels, on_ready=bind)
-    completion = await finish_child(process, inbox, parent=parent, child_id=child_id,
-        branch=branch, evidence=evidence, notify=lambda event: None,
-        timeout=timeout, data_root=data_root)
+    import asyncio
+    try:
+        completion = await finish_child(process, inbox, parent=parent, child_id=child_id,
+            branch=branch, evidence=evidence, notify=lambda event: None,
+            timeout=timeout, data_root=data_root)
+    except asyncio.CancelledError:
+        # finish_child has already joined cleanup and persisted cancellation.
+        # Settle only its matching confirmed outcome; unknown cleanup retains
+        # the slot. Preserve cancellation even if reconciliation storage fails.
+        try:
+            event = inbox.for_child(parent, child_id)
+            if event is not None and event['result'].get('cleanup', {}).get('state') == 'confirmed':
+                registry.settle_completion(parent, child_id, inbox=inbox,
+                                           completion_id=event['completion_id'])
+        except Exception:
+            pass  # durable claim/outcome remain available for startup recovery
+        raise
     result = inbox.get(parent, completion)
     if result['cleanup']['state'] == 'confirmed':
         registry.settle_completion(parent, child_id, inbox=inbox, completion_id=completion)

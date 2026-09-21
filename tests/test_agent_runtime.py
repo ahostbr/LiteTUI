@@ -96,7 +96,7 @@ async def test_runtime_cancel_keeps_durable_result_and_reconcilable_claim(tmp_pa
     pending = inbox.pending('parent')
     assert len(pending) == 1
     assert pending[0]['result']['status'] == 'cancelled'
-    assert len(registry.active('parent')) == 1
-    registry.settle_completion('parent', 'child', inbox=inbox, completion_id=pending[0]['completion_id'])
     assert not registry.active('parent')
+    # Explicit reconciliation remains idempotent after cancel already settles.
+    assert registry.reconcile('parent', inbox=inbox) == []
     assert not notices
