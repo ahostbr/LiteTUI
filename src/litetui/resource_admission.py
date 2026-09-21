@@ -251,7 +251,15 @@ class ResourceCoordinator:
                 if model_resident is None or model_resident(demand) is not False:
                     continue
                 if state == 'leased':
+                    identities = db.execute('SELECT model FROM leases WHERE reservation=?', (reservation,)).fetchall()
                     db.execute('UPDATE leases SET active=0 WHERE reservation=?', (reservation,))
+                    for (identity,) in identities:
+                        # Absence ends this residency's ownership. Otherwise a
+                        # later borrowed load inherits stale unload authority.
+                        db.execute('UPDATE models SET owned=0 WHERE identity=?', (identity,))
+                        if not db.execute('SELECT 1 FROM leases WHERE model=? AND active=1', (identity,)).fetchone():
+                            db.execute('DELETE FROM unload_claims WHERE model=?', (identity,))
+                            db.execute('DELETE FROM models WHERE identity=?', (identity,))
                 db.execute("UPDATE reservations SET state='released' WHERE id=?", (reservation,))
                 db.execute('DELETE FROM reload_claims WHERE reservation=?', (reservation,))
                 released.append(reservation)

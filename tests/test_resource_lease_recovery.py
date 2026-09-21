@@ -134,3 +134,52 @@ def test_dead_loader_empty_catalogue_does_not_prove_quiescence(tmp_path):
     assert coordinator.reconcile(owner_alive=lambda owner: False,
                                  model_resident=lambda demand: False,
                                  model_quiescent=lambda demand: True) == [reservation.reservation_id]
+
+
+def test_recovery_requires_exact_quiescence_evidence_for_leased_model(tmp_path):
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'leased-recovery.sqlite',
+        telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 10, {})
+    reservation = coordinator.reserve(demand, 'dead-client')
+    coordinator.acquire_lease(reservation.reservation_id, 'dead-client', owned=True)
+    for evidence in (None, False, 1, 'stopped'):
+        assert coordinator.reconcile(owner_alive=lambda owner: False,
+            model_resident=lambda demand: False,
+            model_quiescent=lambda demand: evidence) == []
+    assert coordinator.reconcile(owner_alive=lambda owner: False,
+        model_resident=lambda demand: False,
+        model_quiescent=lambda demand: True) == [reservation.reservation_id]
+
+
+def test_recovery_probe_failure_rolls_back_all_reclamation(tmp_path):
+    import pytest
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'rollback.sqlite',
+        telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
+    for name in ('first', 'second'):
+        coordinator.reserve(ModelDemand('cpu', 'endpoint', name, 10, {}), 'dead-client')
+    def quiescent(demand):
+        if demand['model'] == 'second':
+            raise OSError('probe failed')
+        return True
+    with pytest.raises(OSError, match='probe failed'):
+        coordinator.reconcile(owner_alive=lambda owner: False,
+                              model_resident=lambda demand: False, model_quiescent=quiescent)
+    with coordinator.store.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM reservations WHERE state='reserved'").fetchone()[0] == 2
+
+
+def test_reclaimed_absent_owned_model_does_not_transfer_ownership_to_borrower(tmp_path):
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'ownership-reset.sqlite',
+        telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 10, {})
+    first = coordinator.reserve(demand, 'dead-client')
+    coordinator.acquire_lease(first.reservation_id, 'dead-client', owned=True)
+    assert coordinator.reconcile(owner_alive=lambda owner: False,
+        model_resident=lambda demand: False,
+        model_quiescent=lambda demand: True) == [first.reservation_id]
+    borrowed = coordinator.reserve(demand, 'borrower')
+    lease = coordinator.acquire_lease(borrowed.reservation_id, 'borrower', owned=False)
+    assert coordinator.release_lease(lease, 'borrower') is False
