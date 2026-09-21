@@ -202,22 +202,39 @@ class MCPListBody(Widget):
             row = self._rows[int(idx)]
         except (ValueError, IndexError):
             return
-        name = row["name"]
+        name = row["name"]              # exact manager name, never re-tokenized
         app = self.app
-        if verb == "connect":
-            err = app.mcp.connect(name)
-            msg = f"could not connect {name}: {err}" if err else f"connected {name}"
-        elif verb == "disconnect":
-            was = app.mcp.disconnect(name)
-            msg = f"disconnected {name}" if was else f"{name} was not running"
-        elif verb == "reconnect":
-            app.mcp.reload_configs()
-            err = app.mcp.reconnect(name)
-            msg = f"could not reconnect {name}: {err}" if err else f"reconnected {name}"
-        elif verb == "remove":
-            err = app.mcp.remove(name)
-            msg = f"could not remove {name}: {err}" if err else f"removed {name}"
-        else:
+        # The buttons call the SAME gate as the /mcp command — they must not
+        # bypass the native / maintenance / idle checks (a mutation on a frozen
+        # Codex thread, or mid-reconcile, is exactly what the command refuses).
+        # The op stays synchronous here on purpose: the rows re-render from the
+        # manager immediately after, and that no-drift invariant needs the
+        # mutation to have completed. MCPBusy is caught for the narrow race
+        # where maintenance starts between the gate check and the call.
+        from litetui.plugins.mcp_manage import _mutation_blocked_reason
+        blocked = _mutation_blocked_reason(app, check_activity=False)
+        if blocked:
+            self._say(blocked)
+            return
+        from litetui.mcp_client import MCPBusy
+        try:
+            if verb == "connect":
+                err = app.mcp.connect(name)
+                msg = f"could not connect {name}: {err}" if err else f"connected {name}"
+            elif verb == "disconnect":
+                was = app.mcp.disconnect(name)
+                msg = f"disconnected {name}" if was else f"{name} was not running"
+            elif verb == "reconnect":
+                app.mcp.reload_configs()
+                err = app.mcp.reconnect(name)
+                msg = f"could not reconnect {name}: {err}" if err else f"reconnected {name}"
+            elif verb == "remove":
+                err = app.mcp.remove(name)
+                msg = f"could not remove {name}: {err}" if err else f"removed {name}"
+            else:
+                return
+        except MCPBusy:
+            self._say("MCP maintenance is in progress — try again in a moment.")
             return
         app.rebuild_mcp_dispatch()
         self._say(msg)
@@ -238,7 +255,19 @@ class MCPListBody(Widget):
             self._say(why or "cannot read that entry")
             return
         app = self.app
-        err = app.mcp.add(name, cfg)
+        from litetui.plugins.mcp_manage import _mutation_blocked_reason
+        blocked = _mutation_blocked_reason(app, check_activity=False)
+        if blocked:
+            self._say(blocked)
+            return
+        # cfg is the parsed dict (command+args or {json}) — passed to the
+        # manager as data, never a shell string.
+        from litetui.mcp_client import MCPBusy
+        try:
+            err = app.mcp.add(name, cfg)
+        except MCPBusy:
+            self._say("MCP maintenance is in progress — try again in a moment.")
+            return
         app.rebuild_mcp_dispatch()
         # A failed START still leaves the server declared, so the form is
         # cleared either way — leaving the text in place would invite a second

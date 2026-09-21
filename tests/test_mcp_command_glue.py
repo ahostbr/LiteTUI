@@ -404,3 +404,44 @@ async def test_mutation_worker_settles_and_bounds_op_error():
     assert app._mcp_maintenance is False
     assert "failed" in _last(app).lower()
     assert secret not in _last(app)               # bounded — no raw error text
+
+
+# ── shared gate helper + scheduling-failure + activity-exception (piece 4) ─────
+def test_blocked_reason_none_when_idle():
+    assert mm._mutation_blocked_reason(_app()) is None
+
+
+def test_blocked_reason_reports_maintenance():
+    msg = mm._mutation_blocked_reason(_app(maint=True))
+    assert msg and "maintenance is in progress" in msg.lower()
+
+
+def test_blocked_reason_reports_native_restart():
+    msg = mm._mutation_blocked_reason(_app(native=True))
+    assert msg and "restart" in msg.lower()
+
+
+def test_blocked_reason_defers_when_activity_probe_raises(monkeypatch):
+    app = _app()
+
+    def _boom(*a, **k):
+        raise RuntimeError("probe boom detail")
+
+    monkeypatch.setattr("litetui.plugin_reload_activity.produce_activity", _boom)
+    msg = mm._mutation_blocked_reason(app)
+    assert msg and "try again shortly" in msg.lower()   # fail-closed defer, not proceed
+    assert "probe boom detail" not in msg                # bounded
+
+
+def test_claim_and_run_unsticks_maintenance_on_scheduling_failure():
+    app = _app()
+
+    def boom_run_worker(coro, **k):
+        raise RuntimeError("cannot schedule")
+
+    app.run_worker = boom_run_worker
+    ok = mm._claim_and_run(app, mm._reconcile_worker(app))
+    assert ok is False
+    assert app._mcp_maintenance is False               # un-stuck, not wedged forever
+    assert app._mcp_maintenance_done.is_set()          # waiters woken
+    assert "could not start" in _last(app).lower()
