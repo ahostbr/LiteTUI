@@ -2585,6 +2585,12 @@ class LiteTUI(App):
         # setting exists to make.
         if not self.tools_enabled:
             return tool_denied("tools-off"), False
+        # MCP maintenance is reconnecting servers off-loop; the dispatch map is
+        # being rebuilt. Pause ALL tool dispatch (conservative — an MCP tool
+        # could route to a server mid-reconnect, and classifying non-MCP dynamic
+        # tools as safe here would be guesswork). Cleared the moment it ends.
+        if getattr(self, "_mcp_maintenance", False):
+            return "[denied] tool calls are paused during MCP maintenance; retry in a moment", False
         # 🔴 THE SECOND MECHANISM, AND IT IS NOT REDUNDANT WITH WITHHOLDING THE
         # SCHEMA. `PluginRegistry.tool_specs` already hides a switched-off tool
         # from the model, but `dispatch_for` deliberately does not consult
@@ -6686,6 +6692,16 @@ class LiteTUI(App):
         self.pending_image = None
         profile = self.chosen_tool_profile
         correlation = {"operation_id": getattr(self, "_gui_next_operation_id", None)} if source == "rpc" else {}
+        if getattr(self, "_mcp_maintenance", False):
+            # Do not start a turn while MCP maintenance is reconnecting servers:
+            # queue the input (never lose it) — _flush_pending_input resends it
+            # once maintenance clears. Same queue path as a busy chat group.
+            bubble = self._user_bubble(text, has_image, queued=True)
+            self._pending_input.append(
+                {"content": content, "text": text, "bubble": bubble,
+                 "tool_profile": profile, "source": source, **correlation})
+            self.notify("Queued — sends after MCP maintenance", timeout=3)
+            return
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
@@ -7790,7 +7806,9 @@ class LiteTUI(App):
         """
         if not self._pending_input:
             return
-        if self._chat_running():
+        if self._chat_running() or getattr(self, "_mcp_maintenance", False):
+            # Retry shortly — do not start a turn during MCP maintenance; the
+            # queued input is preserved and resends once it clears.
             self.set_timer(0.7, self._flush_pending_input)
             return
         entry = self._pending_input[0].get("_codex_entry")
