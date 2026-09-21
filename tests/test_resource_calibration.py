@@ -173,6 +173,77 @@ def test_calibration_path_reuses_resource_store_root():
     assert calibration_path().name == "resource_calibration.json"
 
 
+# ── strict record/schema + duplicate-key fail-closed ────────────────────────
+
+def test_record_missing_a_key_is_uncalibrated(tmp_path):
+    ident = _identity()
+    record = _record(ident, 1, {"GPU-uuid-A": 2})
+    del record["context"]                       # a missing key must NOT read as None
+    p = tmp_path / "cal.json"
+    _write_store(p, [record])
+    assert CalibrationStore(p).envelope_for(ident) is None
+
+
+def test_record_with_extra_key_is_uncalibrated(tmp_path):
+    ident = _identity()
+    record = _record(ident, 1, {"GPU-uuid-A": 2})
+    record["surprise"] = 1
+    p = tmp_path / "cal.json"
+    _write_store(p, [record])
+    assert CalibrationStore(p).envelope_for(ident) is None
+
+
+def test_unknown_top_level_key_is_fail_closed(tmp_path):
+    ident = _identity()
+    p = tmp_path / "cal.json"
+    p.write_text(json.dumps({"schema": SCHEMA,
+                             "records": [_record(ident, 1, {"GPU-uuid-A": 2})],
+                             "extra": 1}), encoding="utf-8")
+    assert CalibrationStore(p).envelope_for(ident) is None
+
+
+def test_duplicate_ram_peak_key_in_record_is_fail_closed(tmp_path):
+    ident = _identity()
+    rec = json.dumps(_record(ident, 1, {"GPU-uuid-A": 2}))
+    rec = rec[:-1] + ', "ram_peak": 999}'        # a second ram_peak — raw, dumps can't
+    p = tmp_path / "cal.json"
+    p.write_text('{"schema": "%s", "records": [%s]}' % (SCHEMA, rec), encoding="utf-8")
+    assert CalibrationStore(p).envelope_for(ident) is None
+
+
+def test_duplicate_device_key_in_vram_is_fail_closed(tmp_path):
+    ident = _identity()
+    body = (
+        '{"host":"HOST-1","backend":"ninfer","build":"ninfer-serve-9.9",'
+        '"endpoint":"http://127.0.0.1:9000","model":"qwen3-27b","context":32768,'
+        '"concurrency":1,"artifact":"qwen3.ninfer","artifact_fingerprint":"sha256:abc",'
+        '"load_shape":"nvfp4","device_set":["GPU-uuid-A"],"ram_peak":1,'
+        '"vram_peak_by_device":{"GPU-uuid-A":2,"GPU-uuid-A":3}}'   # duplicate device
+    )
+    p = tmp_path / "cal.json"
+    p.write_text('{"schema": "%s", "records": [%s]}' % (SCHEMA, body), encoding="utf-8")
+    assert CalibrationStore(p).envelope_for(ident) is None
+
+
+def test_duplicate_top_level_key_is_fail_closed(tmp_path):
+    ident = _identity()
+    rec = json.dumps(_record(ident, 1, {"GPU-uuid-A": 2}))
+    p = tmp_path / "cal.json"
+    p.write_text('{"schema": "%s", "records": [%s], "records": []}' % (SCHEMA, rec), encoding="utf-8")
+    assert CalibrationStore(p).envelope_for(ident) is None
+
+
+def test_context_none_record_does_not_satisfy_a_concrete_context(tmp_path):
+    """context=None is 'no context dimension', not a wildcard: a None-context
+    record never satisfies a concrete-context demand (they differ by identity),
+    so a calibration cannot be reused across runtime contexts. A None-context
+    demand matches only a None-context record."""
+    none_ctx = _identity(context=None)
+    store = _store_with(tmp_path, none_ctx)
+    assert store.envelope_for(_identity(context=32768)) is None   # concrete != None
+    assert store.envelope_for(none_ctx) is not None                # None == None only
+
+
 # ── integration: demand_for + ModelResourceSession, fail-closed ─────────────
 
 class _NoAdmitCoordinator:

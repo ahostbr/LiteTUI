@@ -143,12 +143,48 @@ class LoadEnvelope:
         )
 
 
+#: A record must carry EXACTLY these keys — the identity plus the two peaks. An
+#: absent key is never synthesized (a missing `context` must not read as None and
+#: match a None-context demand), and an extra key is a schema mismatch.
+_REQUIRED_RECORD_KEYS = set(IDENTITY_FIELDS) | {"ram_peak", "vram_peak_by_device"}
+
+
+def _reject_duplicate_keys(pairs):
+    """object_pairs_hook: raise on a duplicate key at ANY nesting level.
+
+    json.loads otherwise keeps the last value for a repeated key, which would let
+    a record silently override its own ram_peak / device / identity and defeat the
+    ambiguity fail-closed guarantee. Raising here makes the whole file unreadable
+    -> no calibration.
+    """
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _record_identity(record):
+    """Canonical identity of a record, or None unless its keys are EXACTLY right.
+
+    Uses record[k] after an exact-key check rather than record.get(k), so a record
+    missing or gaining a field is rejected instead of matching on a synthesized
+    value.
+    """
+    if not isinstance(record, dict) or set(record) != _REQUIRED_RECORD_KEYS:
+        return None
+    return _canonical_identity({k: record[k] for k in IDENTITY_FIELDS})
+
+
 class CalibrationStore:
     """Read-only, versioned lookup over calibration records. Never writes.
 
-    The file is ``{"schema": SCHEMA, "records": [ {identity..., ram_peak,
-    vram_peak_by_device}, ... ]}``. Any read/format failure, and any zero-or-many
-    match, resolves to None. Exactly-one full-identity match is required.
+    The file is EXACTLY ``{"schema": SCHEMA, "records": [ {identity..., ram_peak,
+    vram_peak_by_device}, ... ]}`` — unknown top-level keys, an unknown schema,
+    invalid JSON, a duplicate key anywhere, a record with the wrong key set, and
+    any zero-or-many identity match all resolve to None. Exactly-one exact-key,
+    exact-identity match is required.
     """
 
     def __init__(self, path=None):
@@ -156,25 +192,21 @@ class CalibrationStore:
 
     def _records(self) -> list:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(self.path.read_text(encoding="utf-8"),
+                             object_pairs_hook=_reject_duplicate_keys)
         except (FileNotFoundError, OSError, ValueError):
             return []
-        if not isinstance(raw, dict) or raw.get("schema") != SCHEMA:
+        # Strict top-level: exactly {schema, records}. A stray key is unknown
+        # format, not a best-effort parse.
+        if not isinstance(raw, dict) or set(raw) != {"schema", "records"} or raw["schema"] != SCHEMA:
             return []
-        records = raw.get("records")
-        return records if isinstance(records, list) else []
+        return raw["records"] if isinstance(raw["records"], list) else []
 
     def envelope_for(self, identity) -> LoadEnvelope | None:
         canon = _canonical_identity(identity)
         if canon is None:
             return None
-        matches = []
-        for record in self._records():
-            if not isinstance(record, dict):
-                continue
-            record_canon = _canonical_identity({k: record.get(k) for k in IDENTITY_FIELDS})
-            if record_canon is not None and record_canon == canon:
-                matches.append(record)
+        matches = [record for record in self._records() if _record_identity(record) == canon]
         if len(matches) != 1:
             # 0 = uncalibrated, >1 = ambiguous/duplicate — both fail closed.
             return None
