@@ -34,3 +34,30 @@ def prepare_child(spec, *, storage, child_id, baseline, supported_levels):
     data = root / 'data'
     data.mkdir(exist_ok=False)
     return PreparedChild(prepared.path, data, prepared.branch, prepared.commit)
+
+
+async def await_preparation(prepare):
+    """Keep bounded Git operations off the UI loop; join even on cancellation.
+
+    A thread cannot be killed safely. The underlying Git calls have timeouts;
+    cancellation waits for their terminal state rather than orphaning a write.
+    Any partial storage and the registry claim remain retained for recovery.
+    """
+    import asyncio
+    task = asyncio.create_task(asyncio.to_thread(prepare))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.cancelled():
+                raise
+        except Exception:
+            if cancelled:
+                raise asyncio.CancelledError()
+            raise
+    if cancelled:
+        raise asyncio.CancelledError()
+    return result

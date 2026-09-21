@@ -18,6 +18,16 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
         raise LaunchBlocked('Parent is quitting')
     app._start_child_delivery(parent=parent, registry=registry, inbox=inbox, receipts=receipts)
 
+    def before_start():
+        if (getattr(app, '_gui_quitting', False) or app.convo_id != conversation
+                or app.store.convo_id != conversation or not app.store.owned
+                or app.store.pending or app.store.loading):
+            raise LaunchBlocked('Parent ownership changed during child preparation')
+        settings = getattr(app, 'settings', None)
+        profile = getattr(app, '_active_tool_profile', None) or getattr(settings, 'tool_policy_profile', None)
+        if profile is not None and profile != spec.tool_profile:
+            raise LaunchBlocked('Parent authority changed during child preparation')
+
     def notify(event):
         # Only durable transfer here, never UI delivery or inference while the
         # parent might be in a tool round. The timer owns idle application.
@@ -27,4 +37,4 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
         parent=parent, child_id=child_id, workspace=workspace, data_root=data_root,
         branch=branch, evidence=evidence, supported_levels=supported_levels,
         notify=notify, limit=limit, timeout=timeout, parent_conversation=conversation,
-        prepare=prepare)
+        prepare=prepare, before_start=before_start)
