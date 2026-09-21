@@ -100,48 +100,79 @@ def _entry_from_words(words: list[str]) -> tuple[dict | None, str | None]:
     return {"command": first, "args": words[1:]}, None
 
 
+def _settle_maintenance(app) -> str:
+    """Rebuild the dispatch map, clear the in-flight flag, and WAKE waiters —
+    the shared finally of every off-loop MCP mutation (reconcile AND the single
+    verbs). Returns a block-warning suffix ('' unless the rebuild failed).
+
+    A FAILED rebuild must not resume turns over a stale map, so its outcome is
+    explicit: success clears `_mcp_dispatch_blocked` (current map installed),
+    failure SETS it (bounded reason — type only, never raw error text). Waiters
+    are woken either way; the _stream gate / tool dispatch then defer on the
+    flag until a later reconcile rebuilds successfully."""
+    try:
+        app.rebuild_mcp_dispatch()
+    except Exception as e:  # noqa: BLE001 — a stale map BLOCKS, never resumes
+        app._mcp_dispatch_blocked = f"dispatch rebuild failed ({type(e).__name__})"
+    else:
+        app._mcp_dispatch_blocked = None
+    finally:
+        app._mcp_maintenance = False
+        ev = getattr(app, "_mcp_maintenance_done", None)
+        if ev is not None:
+            ev.set()
+    if getattr(app, "_mcp_dispatch_blocked", None):
+        return ("\n\n[mcp] ⚠ tool dispatch map FAILED to rebuild — tool routing is BLOCKED until a "
+                "successful /mcp reconcile or restart.")
+    return ""
+
+
 async def _reconcile_worker(app) -> None:
     """Off-loop MCP reconcile with a cancellation-safe join. await_preparation
-    joins the worker thread even under cancellation; the in-flight flag is
-    cleared ONLY after it settles.
-
-    A FAILED dispatch rebuild must not resume turns over a stale map. So the
-    rebuild's outcome is explicit: on success `_mcp_dispatch_blocked` is cleared
-    (the current map is installed); on failure it is SET, the waiters are still
-    woken (no infinite wait), and the _stream gate / tool dispatch then defer on
-    that flag until a later reconcile rebuilds successfully. The exception is
-    recorded and reported, never swallowed as success."""
+    joins the worker thread even under cancellation; _settle_maintenance clears
+    the in-flight flag ONLY after it settles and wakes any awaiting turn."""
     from litetui.agent_preparation import await_preparation
+    note = ""
     try:
         outcomes = await await_preparation(app.mcp.reconcile)
     except Exception as e:  # noqa: BLE001 — report, never leave the flag stuck
-        # Bounded: exception TYPE only. A raw reconcile error can embed a
-        # server URL or a secret from mcp.json; per-server outcomes are already
+        # Bounded: exception TYPE only. A raw reconcile error can embed a server
+        # URL or a secret from mcp.json; per-server outcomes are already
         # sanitized by the coordinator.
         outcomes = {"": f"failed ({type(e).__name__})"}
     finally:
-        try:
-            app.rebuild_mcp_dispatch()
-        except Exception as e:  # noqa: BLE001 — a stale map BLOCKS, never resumes
-            # Bounded reason (type + operation), never the raw message.
-            app._mcp_dispatch_blocked = f"dispatch rebuild failed ({type(e).__name__})"
-        else:
-            app._mcp_dispatch_blocked = None   # verified: current map installed
-        finally:
-            # The reconcile op itself is done either way: clear the in-flight
-            # flag and WAKE waiters. They re-check _mcp_dispatch_blocked after
-            # the wait and defer (typed) rather than run over a stale map.
-            app._mcp_maintenance = False
-            ev = getattr(app, "_mcp_maintenance_done", None)
-            if ev is not None:
-                ev.set()
-    if getattr(app, "_mcp_dispatch_blocked", None):
-        app.system_message(
-            _format_reconcile(outcomes)
-            + "\n\n[mcp] ⚠ tool dispatch map FAILED to rebuild — tool routing is BLOCKED until a "
-              "successful /mcp reconcile or restart.")
-    else:
-        app.system_message(_format_reconcile(outcomes))
+        note = _settle_maintenance(app)
+    app.system_message(_format_reconcile(outcomes) + note)
+
+
+async def _mutation_worker(app, op, describe) -> None:
+    """Run ONE MCP mutation (connect/disconnect/reconnect/remove/add) off-loop —
+    off the UI thread, through the coordinator's own claim — then settle the
+    dispatch map. `describe(result)` formats the op's return into a user line.
+    MCPBusy and any other error become a bounded message; the map is settled
+    (and blocked on rebuild failure) in every case."""
+    from litetui.agent_preparation import await_preparation
+    from litetui.mcp_client import MCPBusy
+    msg, note = "", ""
+    try:
+        msg = describe(await await_preparation(op))
+    except MCPBusy:
+        msg = "MCP maintenance is in progress — try again in a moment."
+    except Exception as e:  # noqa: BLE001 — bounded, never echo raw error text
+        msg = f"MCP operation failed ({type(e).__name__})."
+    finally:
+        note = _settle_maintenance(app)
+    app.system_message(msg + note)
+
+
+def _schedule_mutation(app, op, describe) -> None:
+    """Claim maintenance synchronously (so a second mutation is rejected by the
+    gate rather than racing this one) and run the mutation off-loop. A fresh
+    completion Event is what a concurrent turn's _stream gate awaits."""
+    import asyncio
+    app._mcp_maintenance = True
+    app._mcp_maintenance_done = asyncio.Event()
+    app.run_worker(_mutation_worker(app, op, describe), group="mcp", exclusive=False)
 
 
 def _format_reconcile(outcomes: dict) -> str:
@@ -254,14 +285,13 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         if cfg is None:
             app.system_message(f"Cannot add {rest[0]!r}: {why}")
             return
-        err = app.mcp.add(rest[0], cfg)
-        app.rebuild_mcp_dispatch()
+        srv = rest[0]
         # A start failure still leaves the server DECLARED, so the message says
         # both halves rather than a bare "failed" that hides the write.
-        if err:
-            app.system_message(f"Declared {rest[0]!r} in .mcp.json, but it did not start: {err}")
-        else:
-            app.system_message(f"Added and connected {rest[0]!r}.\n\n" + _render(app))
+        _schedule_mutation(
+            app, lambda: app.mcp.add(srv, cfg),
+            lambda err: (f"Declared {srv!r} in .mcp.json, but it did not start: {err}" if err
+                         else f"Added and connected {srv!r}.\n\n" + _render(app)))
         return
 
     if not rest:
@@ -270,37 +300,37 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
     target = rest[0]
 
     if verb == "connect":
-        err = app.mcp.connect(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(f"Could not connect {target!r}: {err}" if err
-                           else f"Connected {target!r}.\n\n" + _render(app))
+        _schedule_mutation(
+            app, lambda: app.mcp.connect(target),
+            lambda err: (f"Could not connect {target!r}: {err}" if err
+                         else f"Connected {target!r}.\n\n" + _render(app)))
         return
 
     if verb in ("disconnect", "stop"):
-        was = app.mcp.disconnect(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(
-            f"Disconnected {target!r}. It stays declared — /mcp connect {target} brings it back."
-            if was else f"{target!r} was not running."
-        )
+        _schedule_mutation(
+            app, lambda: app.mcp.disconnect(target),
+            lambda was: (f"Disconnected {target!r}. It stays declared — /mcp connect {target} brings it back."
+                         if was else f"{target!r} was not running."))
         return
 
     if verb == "reconnect":
         # Re-read first: the usual reason to reconnect is that the config was
         # just edited, and reconnecting to the OLD entry would look like the
-        # edit did nothing.
-        app.mcp.reload_configs()
-        err = app.mcp.reconnect(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(f"Could not reconnect {target!r}: {err}" if err
-                           else f"Reconnected {target!r}.\n\n" + _render(app))
+        # edit did nothing. Both run off-loop in the mutation worker.
+        def _reconnect_op():
+            app.mcp.reload_configs()
+            return app.mcp.reconnect(target)
+        _schedule_mutation(
+            app, _reconnect_op,
+            lambda err: (f"Could not reconnect {target!r}: {err}" if err
+                         else f"Reconnected {target!r}.\n\n" + _render(app)))
         return
 
     if verb in ("remove", "rm", "delete"):
-        err = app.mcp.remove(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(f"Could not remove {target!r}: {err}" if err
-                           else f"Removed {target!r} from .mcp.json.\n\n" + _render(app))
+        _schedule_mutation(
+            app, lambda: app.mcp.remove(target),
+            lambda err: (f"Could not remove {target!r}: {err}" if err
+                         else f"Removed {target!r} from .mcp.json.\n\n" + _render(app)))
         return
 
     app.system_message(f"Unknown /mcp verb {verb!r}.\n\n{USAGE}")
