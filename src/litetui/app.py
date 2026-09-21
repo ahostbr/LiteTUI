@@ -1806,7 +1806,8 @@ class LiteTUI(App):
         for label, f in _checks:
             if not f.exists():
                 self._system(f"[!] {label} missing: {f}\n    That section is absent from the model's context.")
-        self._connect()
+        if self._resume_cli_conversation():
+            self._connect()
         # Voice-in: bind the configurable record hotkey (default ctrl+space).
         self._bind_mic_hotkey()
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
@@ -3210,7 +3211,30 @@ class LiteTUI(App):
     _flatten = staticmethod(ConversationRepository.flatten)
 
 
-    def _resume(self, path: Path) -> None:
+    def _resume_cli_conversation(self) -> bool:
+        """Restore startup ownership/settings before any backend connection."""
+        requested = getattr(self, '_cli_convo_id', None)
+        if not requested:
+            return True
+        try:
+            if (not isinstance(requested, str) or requested in ('.', '..')
+                    or any(c in requested for c in '/\\:')):
+                raise ValueError('Expected a conversation ID, not a path')
+            root = paths.CONVO_DIR.resolve()
+            target = (root / requested / 'convo.jsonl').resolve()
+            if target.parent.parent != root or not target.is_file():
+                raise ValueError('Conversation does not exist in this data root')
+            if not self._resume(target, startup=True):
+                raise ValueError('Conversation could not be restored or is already owned')
+        except (OSError, ValueError) as exc:
+            self._cli_launch_error = f'Startup conversation blocked: {exc}'
+            self._startup_resume_error = self._cli_launch_error
+            self._connect_settled = True
+            self._system(self._cli_launch_error)
+            return False
+        return True
+
+    def _resume(self, path: Path, *, startup: bool = False) -> bool:
         try:
             meta, msgs = ConversationRepository.read(path)
         except OSError as e:
@@ -3222,16 +3246,16 @@ class LiteTUI(App):
                 exc=e,
             )
             self._system(f"Could not read {path.name} — the file seems locked or unreadable.")
-            return
+            return False
         if not msgs:
             self._system(f"{path.name} holds no messages — not resuming.")
-            return
+            return False
 
         try:
             self.store.acquire(path.parent)
         except OSError as exc:
             self._system(f"Conversation is read-only: {exc}")
-            return
+            return False
         hook_host.leave_conversation(self)
         self.conversation = msgs
         # The staged conversation is abandoned WITHOUT being written — that is
@@ -3244,14 +3268,18 @@ class LiteTUI(App):
         self.convo_id = meta.get("id") or path.parent.name
         from litetui.codex_steering import restore_queue
         restore_queue(self)
-        if self._pending_input:
+        if self._pending_input and not startup:
             self.call_after_refresh(self._flush_pending_input)
         hook_host.enter_conversation(self, "conversation_resume")
         # T691: AFTER convo_dir moves and BEFORE the seat sync — this
         # conversation's own model and think level are what /resume is
         # restoring, and reading them from the old directory would apply the
         # settings of the conversation being left.
-        self._adopt_convo_settings(born=False)
+        self._startup_adopting = startup
+        try:
+            self._adopt_convo_settings(born=False)
+        finally:
+            self._startup_adopting = False
         self._sync_seat_identity()
         self._refresh_ctx_label()   # resumed into a different conversation
         # The restored system message already names THIS store (it was written
@@ -3268,8 +3296,11 @@ class LiteTUI(App):
 
         self._render_resumed(path)
         self._native_history_worker = None
-        if hasattr(self.backend, "app_server"):
+        if startup:
+            self._startup_history_path = path
+        if not startup and hasattr(self.backend, "app_server"):
             self._native_history_worker = self._refresh_native_history(path)
+        return True
 
     @work(exclusive=True, group="native-history")
     async def _refresh_native_history(self, path: Path) -> None:
@@ -4018,6 +4049,8 @@ class LiteTUI(App):
         try:
             new_backend = llm_backend.make_backend(probe if probe is not None else self.settings)
         except llm_backend.BackendError as e:
+            if getattr(self, "_startup_adopting", False):
+                raise ValueError(f"Saved backend {want!r} is unavailable: {e}") from e
             self._system(
                 f"This conversation used {want}, which is not available here "
                 f"({e}). Staying on {getattr(self._backend, 'name', 'the current engine')}."
@@ -4203,6 +4236,10 @@ class LiteTUI(App):
                 # already resident; it must be an explicit act, never a side
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
+                startup_history = getattr(self, "_startup_history_path", None)
+                if startup_history is not None and hasattr(self.backend, "app_server"):
+                    self._native_history_worker = self._refresh_native_history(startup_history)
+                    self._startup_history_path = None
                 if self._pending_input and hasattr(self.backend, "app_server"):
                     self.call_after_refresh(self._flush_pending_input)
                 if self.tools_enabled:
@@ -4449,6 +4486,8 @@ class LiteTUI(App):
     async def _apply_cli_args(self) -> None:
         try:
             """T507-T1: apply --model, --system-prompt, --prompt after connect."""
+            if getattr(self, "_cli_launch_error", None):
+                return
             # Wait for connect to populate available_models (up to 10s) — or for
             # connect to have finished without any, which is the same T869 tax on
             # a second waiter: --model has nothing to apply against an empty list.
@@ -6791,6 +6830,8 @@ class LiteTUI(App):
         a missing capability must mean "no opinion", never AttributeError
         mid-turn.
         """
+        if getattr(self, "_startup_resume_error", None):
+            raise llm_backend.BackendError(self._startup_resume_error)
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam
