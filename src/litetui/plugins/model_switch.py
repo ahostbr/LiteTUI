@@ -249,7 +249,30 @@ def _cmd_engine(app, name: str, arg: str) -> None:
         app.system_message(backend.engine_status())
         return
     if verb == "stop":
-        app.system_message(backend.stop_engine())
+        # Off-loop: stop_engine() blocks for seconds (terminate + drain proof). Claim
+        # the stop synchronously FIRST (rejects a double stop and an in-flight start),
+        # then run it in a worker so the UI/loop stays responsive; release only after
+        # the callback joins. Reuses agent_preparation.await_preparation (to_thread +
+        # shield + cancel-join) — no duplicate helper.
+        from litetui import agent_preparation
+
+        if not backend.begin_stop():
+            app.system_message("NInfer engine is busy (a stop or start is already running) — try again shortly.")
+            return
+
+        async def _go(target=backend):
+            try:
+                app.system_message(await agent_preparation.await_preparation(target.stop_engine))
+            finally:
+                target.end_stop()
+
+        coro = _go()
+        try:
+            app.run_worker(coro, exclusive=False, name="ninfer-engine-stop")
+        except Exception as exc:            # noqa: BLE001 - scheduling failed: no phantom stop
+            coro.close()                    # avoid an un-awaited coroutine warning
+            backend.end_stop()
+            app.system_message(f"could not start the engine-stop worker: {type(exc).__name__}")
         return
     if verb in ("lanes", "concurrency"):
         app.system_message(_set_lanes(app, rest[0] if rest else ""))

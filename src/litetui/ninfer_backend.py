@@ -332,6 +332,32 @@ class NInferBackend(_VramGate):
         #: The engine WE started via /engine start (Ryan a-35456da0: "LiteTUI may
         #: start it"), else None = attached to one somebody else runs.
         self._owned: ninfer_engine.OwnedEngine | None = None
+        #: A stop-in-progress claim: True while /engine stop runs off-loop. It blocks
+        #: a new start (and NInfer's only load door IS start_engine — load() is frozen)
+        #: so a restart cannot race the drain. Set synchronously by begin_stop() before
+        #: the worker is scheduled; cleared by end_stop() only after the stop joins.
+        self._stopping = False
+
+    def begin_stop(self) -> bool:
+        """Claim a stop-in-progress, synchronously and atomically (no await inside).
+
+        False (reject, do not overlap) if a stop is already running OR a load/start is
+        IN FLIGHT: `_vram_owner` is the task currently inside vram_guard, and
+        start_engine is NInfer's only load/start door. Claiming while a start is
+        spawning would let it finish a NEW owned process after the stop snapshots the
+        old/none state, orphaning it. Fail closed on any in-flight vram operation.
+
+        This pairs with start_engine's post-gate re-check: if a start passed its entry
+        check but had not yet taken the gate when this claim landed, it aborts before
+        spawning; if it already holds the gate, `_vram_owner` is set and this rejects.
+        """
+        if self._stopping or getattr(self, "_vram_owner", None) is not None:
+            return False
+        self._stopping = True
+        return True
+
+    def end_stop(self) -> None:
+        self._stopping = False
 
     # -- discovery --------------------------------------------------------
 
@@ -552,8 +578,12 @@ class NInferBackend(_VramGate):
         the spawn and never on a refusal (T865). It runs on the worker thread, so a
         UI caller must marshal it back itself.
         """
+        if self._stopping:
+            raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
         key = "ninfer-serve"
         async with self.vram_guard(key):
+            if self._stopping:   # a stop claimed the backend after our entry check
+                raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
             owned = await asyncio.to_thread(
                 ninfer_engine.start, self._settings, healthy=self._health, notice=notice)
         self._owned = owned
@@ -575,16 +605,28 @@ class NInferBackend(_VramGate):
             if entry and entry.get("owner") == "litetui" and entry.get("pid"):
                 host = entry["baseUrl"]
                 if ninfer_engine.stop_registered(entry):
-                    return (f"stopped the engine LiteTUI started at {host} "
-                            f"(pid {entry['pid']}, from the registry — this "
-                            f"session did not hold its handle).")
+                    # stop_registered returns True when a process was SIGNALLED
+                    # (taskkill), not on a confirmed exit — so this does not claim
+                    # "stopped". (The registry-authority logic here is unchanged; a
+                    # confirmed-exit proof for this no-handle path is a separate slice.)
+                    return (f"stop signalled for the engine LiteTUI started at {host} "
+                            f"(pid {entry['pid']}, from the registry — this session did "
+                            f"not hold its handle); exit not confirmed.")
             reg = entry["baseUrl"] if entry else discover_ninfer_host()
             if reg:
                 return f"the engine at {reg} was not started by LiteTUI — stop it where it was started (LiteSuite's Model Hub, or the shell that ran it)."
             return "no engine is running."
         host = self._owned.host
-        self.shutdown()
-        return f"stopped the engine LiteTUI started at {host}."
+        result = self.shutdown()
+        # The message must reflect the PROOF, not assume success: shutdown() returns a
+        # TerminalShutdown and may retain on an unconfirmed exit.
+        if getattr(result, "main_exited", False) and not getattr(result, "retained", True):
+            if getattr(result, "tree", "unknown") == "confirmed":
+                return f"stopped the engine LiteTUI started at {host}."
+            return (f"stopped the engine LiteTUI started at {host} — the main process "
+                    f"exited, but child-process VRAM release is unconfirmed.")
+        return (f"stop requested for the engine at {host}, but exit was NOT confirmed "
+                f"(it may still be running) — try /engine stop again.")
 
     def engine_concurrency(self) -> int | None:
         """The `--max-concurrency` the RUNNING engine was started with, or None
