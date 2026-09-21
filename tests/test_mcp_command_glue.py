@@ -460,16 +460,27 @@ def test_claim_and_run_unsticks_maintenance_on_scheduling_failure():
 
 
 # ── run_guarded lifecycle (immediate pre-first-step cancel, fail-closed) ───────
-def _loop_run_worker(tasks):
+# Every case creates a REAL task for the wrapper (as Textual does), so a leak of
+# the ORIGINAL coro would surface — these run under filterwarnings("error") so a
+# "coroutine ... was never awaited" becomes a FAILURE, proving _fire closes it.
+def _real_run_worker(tasks, *, task_attr="real", cancel_real=True):
     import asyncio
+
     def rw(coro, **k):
-        t = asyncio.get_event_loop().create_task(coro)
+        t = asyncio.get_event_loop().create_task(coro)   # a real task OWNS the wrapper
         tasks.append(t)
-        return NS(_task=t, cancel=lambda: t.cancel())
+        if task_attr == "real":
+            exposed = t
+        elif task_attr == "none":
+            exposed = None
+        else:  # "badattach": add_done_callback raises
+            exposed = NS(add_done_callback=lambda cb: (_ for _ in ()).throw(RuntimeError("attach boom")))
+        return NS(_task=exposed, cancel=(t.cancel if cancel_real else (lambda: None)))
     return rw
 
 
 @pytest.mark.asyncio
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 async def test_run_guarded_runs_op_and_fires_cleanup_once():
     import asyncio
     from litetui.agent_preparation import run_guarded
@@ -478,7 +489,7 @@ async def test_run_guarded_runs_op_and_fires_cleanup_once():
     async def op():
         ran.append(1)
 
-    w = run_guarded(NS(run_worker=_loop_run_worker(tasks)), op(),
+    w = run_guarded(NS(run_worker=_real_run_worker(tasks)), op(),
                     group="mcp", cleanup=lambda: cleaned.append(1))
     assert w is not None
     await asyncio.sleep(0.02)
@@ -486,6 +497,7 @@ async def test_run_guarded_runs_op_and_fires_cleanup_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 async def test_run_guarded_cleanup_on_cancel_before_first_step():
     import asyncio
     from litetui.agent_preparation import run_guarded
@@ -494,31 +506,50 @@ async def test_run_guarded_cleanup_on_cancel_before_first_step():
     async def op():
         ran.append(1)
 
-    run_guarded(NS(run_worker=_loop_run_worker(tasks)), op(),
+    run_guarded(NS(run_worker=_real_run_worker(tasks)), op(),
                 group="mcp", cleanup=lambda: cleaned.append(1))
     tasks[0].cancel()                       # cancel BEFORE the loop runs the guarded coro
     await asyncio.sleep(0.02)
-    assert ran == []                        # op never entered the thread
-    assert cleaned == [1]                   # cleanup still fired exactly once
+    assert ran == []                        # op never entered
+    assert cleaned == [1]                   # cleanup fired once; original coro closed (no leak)
 
 
 @pytest.mark.asyncio
-async def test_run_guarded_missing_task_fails_closed():
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+async def test_run_guarded_attach_failure_fails_closed():
+    import asyncio
     from litetui.agent_preparation import run_guarded
-    cleaned, reported, ran = [], [], []
+    ran, cleaned, reported, tasks = [], [], [], []
 
     async def op():
         ran.append(1)
 
-    def rw(coro, **k):
-        return NS(_task=None, cancel=lambda: None)   # no task hook
-
-    w = run_guarded(NS(run_worker=rw), op(), group="mcp",
-                    cleanup=lambda: cleaned.append(1), report=lambda e: reported.append(e))
-    assert w is None and cleaned == [1] and reported == [None] and ran == []
+    w = run_guarded(NS(run_worker=_real_run_worker(tasks, task_attr="badattach")), op(),
+                    group="mcp", cleanup=lambda: cleaned.append(1),
+                    report=lambda e: reported.append(type(e).__name__))
+    await asyncio.sleep(0.02)
+    assert w is None and ran == [] and cleaned == [1] and reported == ["RuntimeError"]
 
 
 @pytest.mark.asyncio
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+async def test_run_guarded_missing_task_fails_closed():
+    import asyncio
+    from litetui.agent_preparation import run_guarded
+    ran, cleaned, reported, tasks = [], [], [], []
+
+    async def op():
+        ran.append(1)
+
+    w = run_guarded(NS(run_worker=_real_run_worker(tasks, task_attr="none")), op(),
+                    group="mcp", cleanup=lambda: cleaned.append(1),
+                    report=lambda e: reported.append(e))
+    await asyncio.sleep(0.02)
+    assert w is None and ran == [] and cleaned == [1] and reported == [None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 async def test_run_guarded_schedule_failure_fails_closed():
     from litetui.agent_preparation import run_guarded
     cleaned, reported = [], []
