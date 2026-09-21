@@ -231,10 +231,12 @@ class ResourceCoordinator:
             db.execute('DELETE FROM unload_claims WHERE model=?', (identity,))
             return True
 
-    def reconcile(self, *, owner_alive, model_resident=None):
+    def reconcile(self, *, owner_alive, model_resident=None, model_quiescent=None):
         """Reclaim only positively dead owners; unknown evidence retains capacity.
 
-        Leased model capacity additionally needs confirmed non-residency.
+        Both backend quiescence and non-residency must be confirmed. A dead
+        client may leave an accepted server-side load running; an empty model
+        catalogue during that load is not proof that capacity can be reclaimed.
         Neither heartbeat age nor elapsed time proves a process/model is gone.
         """
         released = []
@@ -243,7 +245,10 @@ class ResourceCoordinator:
             for reservation, owner, raw, state in rows:
                 if owner_alive(owner) is not False:
                     continue
-                if model_resident is None or model_resident(json.loads(raw)) is not False:
+                demand = json.loads(raw)
+                if model_quiescent is None or model_quiescent(demand) is not True:
+                    continue
+                if model_resident is None or model_resident(demand) is not False:
                     continue
                 if state == 'leased':
                     db.execute('UPDATE leases SET active=0 WHERE reservation=?', (reservation,))

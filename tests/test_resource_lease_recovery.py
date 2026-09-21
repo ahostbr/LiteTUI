@@ -25,8 +25,9 @@ def test_shared_owned_model_waits_for_last_user_and_blocks_unload_race(tmp_path)
     coordinator = ResourceCoordinator(tmp_path / 'shared.sqlite', telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
     demand = ModelDemand('cpu', 'endpoint', 'model', 10, {})
     a = coordinator.reserve(demand, 'a')
-    b = coordinator.reserve(demand, 'b')
     la = coordinator.acquire_lease(a.reservation_id, 'a', owned=True)
+    # Borrow only after the first load has reached a confirmed lease.
+    b = coordinator.reserve(demand, 'b')
     lb = coordinator.acquire_lease(b.reservation_id, 'b', owned=False)
     assert not coordinator.release_lease(la, 'a')
     assert coordinator.release_lease(lb, 'b')
@@ -85,7 +86,7 @@ def test_reconcile_never_reclaims_unknown_or_live_owner(tmp_path):
     assert coordinator.reconcile(owner_alive=lambda owner: None) == []
     assert coordinator.reconcile(owner_alive=lambda owner: True) == []
     assert coordinator.reserve(demand, 'b').status == 'blocked'
-    assert coordinator.reconcile(owner_alive=lambda owner: False, model_resident=lambda demand: False) == [reservation.reservation_id]
+    assert coordinator.reconcile(owner_alive=lambda owner: False, model_resident=lambda demand: False, model_quiescent=lambda demand: True) == [reservation.reservation_id]
     assert coordinator.reserve(demand, 'b').status == 'admitted'
 
 
@@ -119,3 +120,17 @@ def test_pending_reservation_prevents_last_user_unload(tmp_path):
     assert second.status == 'admitted'
     assert not coordinator.release_lease(lease, 'a')
     assert coordinator.acquire_lease(second.reservation_id, 'b')
+
+
+def test_dead_loader_empty_catalogue_does_not_prove_quiescence(tmp_path):
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'still-loading.sqlite',
+        telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 10, {})
+    reservation = coordinator.reserve(demand, 'dead-client')
+    assert coordinator.reconcile(owner_alive=lambda owner: False,
+                                 model_resident=lambda demand: False) == []
+    assert coordinator.reserve(demand, 'next').status == 'blocked'
+    assert coordinator.reconcile(owner_alive=lambda owner: False,
+                                 model_resident=lambda demand: False,
+                                 model_quiescent=lambda demand: True) == [reservation.reservation_id]
