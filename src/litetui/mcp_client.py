@@ -536,6 +536,12 @@ def validate_entry(cfg: dict) -> str | None:
     return None
 
 
+class MCPBusy(RuntimeError):
+    """A lifecycle op was refused because a maintenance op holds the claim.
+    Callers report this as busy and retry manually — never block or cancel the
+    holder."""
+
+
 class MCPManager:
     """Loads mcp.json / .mcp.json (see config_files), starts each server —
 stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
@@ -551,6 +557,18 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         #: cannot be listed, reconnected or removed.
         self.configs: dict[str, dict] = {}
         self._log_handle = None
+        #: SHORT lock guarding the claim flag only, so a second caller discovers
+        #: "busy" instantly instead of waiting behind a long operation.
+        self._claim_lock = threading.Lock()
+        #: Non-blocking exclusion claim: exactly one lifecycle op (connect/
+        #: disconnect/reconnect/reconcile) at a time. A second caller reports
+        #: busy rather than blocking or cancelling the first.
+        self._maint_active = False
+        #: LONG lock serializing the actual server-dict mutation, held across the
+        #: whole op off-loop INCLUDING stop()/join — deadlock-safe because reader
+        #: threads never acquire it (they use the per-transport lock). RLock so a
+        #: shutdown that must join an in-flight op composes cleanly.
+        self._op_lock = threading.RLock()
 
     # ── plumbing ────────────────────────────────────────────────────────────
     def _log(self):
@@ -598,7 +616,7 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             self.connect(name)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
-    def connect(self, name: str) -> str | None:
+    def _connect_locked(self, name: str) -> str | None:
         """Start ONE server from its config. Returns None, or the error text.
 
         An error is RETURNED rather than raised because every caller — boot,
@@ -631,7 +649,7 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         self.failures.pop(name, None)          # a success clears the old error
         return None
 
-    def disconnect(self, name: str) -> bool:
+    def _disconnect_locked(self, name: str) -> bool:
         """Stop ONE server and forget it. It stays in `configs`.
 
         Returns whether anything was running. Runtime-only by design: the file
@@ -655,18 +673,100 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             )
         return True
 
-    def reconnect(self, name: str) -> str | None:
-        """Stop, then start from a FRESH object. Returns None, or the error.
+    # ── exclusion claim (short lock) + public claim-guarded wrappers ─────────
+    def _try_claim(self) -> bool:
+        """Non-blocking: claim the single maintenance slot, or return False fast
+        (a second caller must report busy, never block or cancel the holder)."""
+        with self._claim_lock:
+            if self._maint_active:
+                return False
+            self._maint_active = True
+            return True
 
-        🔴 A NEW OBJECT, NEVER srv.start() ON THE STOPPED ONE. Both transports
-        carry per-connection state that stop() does not reset — the stdio one
-        holds a dead Popen, a finished reader thread, a frame queue and the
-        `_pending` map; restarting in place would hand the new process the old
-        one's leftovers. Rebuilding also re-reads nothing, so a config edit
-        needs reload_configs() first, which /mcp does.
+    def _release_claim(self) -> None:
+        with self._claim_lock:
+            self._maint_active = False
+
+    def connect(self, name: str) -> str | None:
+        """Public: claim-guarded single connect. Raises MCPBusy if a maintenance
+        op holds the claim (report busy, retry manually)."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                return self._connect_locked(name)
+        finally:
+            self._release_claim()
+
+    def disconnect(self, name: str) -> bool:
+        """Public: claim-guarded single disconnect. Raises MCPBusy if busy."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                return self._disconnect_locked(name)
+        finally:
+            self._release_claim()
+
+    def reconnect(self, name: str) -> str | None:
+        """Public: claim-guarded stop-then-start from a FRESH object. Raises
+        MCPBusy if busy. A new object, never start() on the stopped one — both
+        transports carry per-connection state stop() does not reset. A config
+        edit needs reload_configs() first, which /mcp does."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                self._disconnect_locked(name)
+                return self._connect_locked(name)
+        finally:
+            self._release_claim()
+
+    def reconcile(self) -> dict[str, str]:
+        """Re-read config and reconcile OWNED connections to match, off-loop and
+        claim-serialized. Returns {name: outcome} — or {"": "busy: ..."} when a
+        lifecycle op already holds the claim, or {"": "config invalid: ..."} when
+        the config cannot be parsed (prior config/servers PRESERVED, no bulk
+        disconnect). Outcomes: connected | reconnected | disconnected | failed:...
+
+        Staging: additions and changes are applied BEFORE removals. A changed
+        server on an exclusive endpoint is stop-then-start, reported as an outage
+        on failure with NO rollback claim (a stopped subprocess is gone). Only
+        PREVIOUSLY-DECLARED, owned servers now undeclared are disconnected;
+        servers that were never declared (orphans) are left untouched.
         """
-        self.disconnect(name)
-        return self.connect(name)
+        if not self._try_claim():
+            return {"": "busy: an MCP maintenance operation is already in progress"}
+        try:
+            with self._op_lock:
+                prior_cfg = dict(self.configs)
+                merged, errors = read_server_configs(config_files(self.root))
+                if errors:
+                    # parse/unreadable: preserve everything, change nothing.
+                    self.failures.update(errors)
+                    return {"": f"config invalid ({'; '.join(errors.values())}); no changes"}
+                # A valid EMPTY config is an intentional remove-all, not an error.
+                self.configs = merged
+                new_set, prior_set = set(merged), set(prior_cfg)
+                outcomes: dict[str, str] = {}
+                for name in sorted(new_set):
+                    sc = merged[name]
+                    if not isinstance(sc, dict) or sc.get("disabled"):
+                        continue
+                    if name not in self.servers:
+                        err = self._connect_locked(name)
+                        outcomes[name] = "connected" if err is None else f"failed: {err}"
+                    elif prior_cfg.get(name) != sc:
+                        # exclusive endpoint forces stop-then-start (outage window)
+                        self._disconnect_locked(name)
+                        err = self._connect_locked(name)
+                        outcomes[name] = "reconnected" if err is None else f"failed (outage): {err}"
+                for name in sorted((prior_set & set(self.servers)) - new_set):
+                    self._disconnect_locked(name)
+                    outcomes[name] = "disconnected"
+                return outcomes
+        finally:
+            self._release_claim()
 
     def describe(self) -> list[dict]:
         """One row per server the CONFIGS declare, plus any orphan running one.
@@ -828,8 +928,17 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         return None
 
     def stop_all(self) -> None:
-        for s in self.servers.values():
-            s.stop()
+        """Shutdown: JOIN any in-flight lifecycle op (bounded by that op's own
+        connect/stop timeouts) via _op_lock, then stop every server. Never
+        refuses busy and never leaks a transport — shutdown is terminal."""
+        with self._op_lock:
+            servers = list(self.servers.values())
+            self.servers.clear()
+        for s in servers:
+            try:
+                s.stop()
+            except Exception:
+                pass
         if self._log_handle:
             try:
                 self._log_handle.close()
