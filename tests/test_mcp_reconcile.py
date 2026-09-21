@@ -1,0 +1,163 @@
+"""Coordinator-level tests for MCPManager.reconcile + the claim/lock exclusion.
+
+Fake transports only — NO real process/network. Exercises real behavior
+(outcomes, preservation, busy rejection, ownership), not lock-existence asserts.
+
+Run only this file:
+    python -m pytest tests/test_mcp_reconcile.py
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import litetui.mcp_client as mc
+
+# Opt out of conftest's autouse dial-out stub (_never_dial_out_from_a_constructor),
+# which monkeypatches MCPManager.connect/reconnect/reload_configs. These tests
+# drive the REAL public verbs (with a fake _build transport — no process/network).
+pytestmark = pytest.mark.real_mcp_load
+
+
+class Fake:
+    """A stand-in transport: no subprocess, no network."""
+    def __init__(self, name, *, fail=False):
+        self.name = name
+        self.tools = []
+        self.fail = fail
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        if self.fail:
+            raise RuntimeError("start boom")
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+def _mgr(tmp_path, servers, *, fail=()):
+    (tmp_path / "mcp.json").write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    m = mc.MCPManager(tmp_path)
+    builds: list[Fake] = []
+
+    def _build(name, sc):
+        f = Fake(name, fail=name in fail)
+        builds.append(f)
+        return f
+
+    m._build = _build
+    m._builds = builds
+    return m
+
+
+def _write_cfg(tmp_path, servers):
+    (tmp_path / "mcp.json").write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+
+# ── reconcile outcomes ───────────────────────────────────────────────────────
+def test_reconcile_connects_new(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    assert m.reconcile() == {"a": "connected"}
+    assert list(m.servers) == ["a"]
+
+
+def test_reconcile_disconnects_removed(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    old = m.servers["a"]
+    _write_cfg(tmp_path, {})                      # valid empty = intentional remove-all
+    assert m.reconcile() == {"a": "disconnected"}
+    assert list(m.servers) == [] and old.stopped is True
+
+
+def test_reconcile_reconnects_changed(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    old = m.servers["a"]
+    _write_cfg(tmp_path, {"a": {"command": "y"}})   # config changed
+    assert m.reconcile() == {"a": "reconnected"}
+    assert old.stopped is True and m.servers["a"] is not old
+
+
+def test_orphan_never_declared_is_untouched(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    orphan = Fake("orphan")
+    m.servers["orphan"] = orphan                 # running, never in configs
+    m.reconcile()
+    assert "orphan" in m.servers and orphan.stopped is False
+
+
+# ── failure / non-atomic ─────────────────────────────────────────────────────
+def test_partial_connect_failure_is_non_atomic(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}, "b": {"command": "y"}}, fail={"b"})
+    out = m.reconcile()
+    assert out["a"] == "connected" and out["b"].startswith("failed:")
+    assert "a" in m.servers and "b" not in m.servers   # partial applied, not rolled back
+
+
+def test_changed_server_start_failure_reports_outage(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    _write_cfg(tmp_path, {"a": {"command": "y"}})
+    m._build = lambda name, sc: Fake(name, fail=True)   # the restart fails
+    out = m.reconcile()
+    assert out["a"].startswith("failed (outage):")
+    assert "a" not in m.servers                          # stopped, new start failed, no rollback
+
+
+# ── config safety ────────────────────────────────────────────────────────────
+def test_malformed_config_preserves_no_bulk_disconnect(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    (tmp_path / "mcp.json").write_text("NOT JSON", encoding="utf-8")
+    out = m.reconcile()
+    assert list(out) == [""] and "config invalid" in out[""]
+    assert list(m.servers) == ["a"]                     # preserved, not bulk-disconnected
+
+
+def test_empty_valid_config_is_remove_all(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}, "b": {"command": "y"}})
+    m.reconcile()
+    _write_cfg(tmp_path, {})                             # valid empty, no parse error
+    out = m.reconcile()
+    assert out == {"a": "disconnected", "b": "disconnected"}
+    assert list(m.servers) == []
+
+
+# ── exclusion: busy, never block/cancel ──────────────────────────────────────
+def test_concurrent_reconcile_reports_busy(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m._maint_active = True                               # a lifecycle op holds the claim
+    out = m.reconcile()
+    assert list(out) == [""] and out[""].startswith("busy:")
+    m._maint_active = False
+
+
+def test_public_verbs_raise_busy_when_claimed(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m._maint_active = True
+    for call in (lambda: m.connect("a"), lambda: m.disconnect("a"), lambda: m.reconnect("a")):
+        with pytest.raises(mc.MCPBusy):
+            call()
+    m._maint_active = False
+
+
+def test_reconcile_internals_do_not_self_reject(tmp_path):
+    # reconcile holds the claim and calls the *_locked internals (connect+
+    # disconnect) — those must NOT raise MCPBusy against reconcile's own claim.
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    _write_cfg(tmp_path, {"a": {"command": "z"}})       # forces internal disconnect+connect
+    assert m.reconcile() == {"a": "reconnected"}
+
+
+# ── shutdown never busy-refuses / never leaks ────────────────────────────────
+def test_stop_all_stops_and_clears_even_if_claim_flag_set(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}, "b": {"command": "y"}})
+    m.reconcile()
+    srvs = list(m.servers.values())
+    m.stop_all()
+    assert list(m.servers) == [] and all(s.stopped for s in srvs)
