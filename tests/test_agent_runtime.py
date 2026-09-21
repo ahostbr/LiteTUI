@@ -151,7 +151,8 @@ async def test_bound_prompt_failure_is_durable(tmp_path, cancelled, confirmed, f
     assert calls == ['close', 'close']
 
 @pytest.mark.asyncio
-async def test_bound_prompt_cancel_repeated_during_cleanup_is_joined(tmp_path):
+@pytest.mark.parametrize('prompt_cancelled', [False, True])
+async def test_bound_prompt_cancel_repeated_during_cleanup_is_joined(tmp_path, prompt_cancelled):
     import asyncio
     from litetui.agent_runtime import run_prepared_child
     from litetui.agent_registry import AgentRegistry
@@ -168,7 +169,9 @@ async def test_bound_prompt_cancel_repeated_during_cleanup_is_joined(tmp_path):
         async def rpc_handshake(self, spec, **kwargs):
             return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
         async def send_prompt(self, text):
-            raise asyncio.CancelledError()
+            if prompt_cancelled:
+                raise asyncio.CancelledError()
+            raise OSError('delivery failed before caller cancellation')
         async def collect_turn(self, **kwargs):
             pytest.fail('failed delivery must not collect')
         async def close(self):
