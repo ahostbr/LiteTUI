@@ -156,6 +156,16 @@ def test_release_wake_refuses_non_claimed(state):
         receipts.release_wake('parent', 'chat', ['completion'])
 
 
+def test_release_wake_is_parent_scoped(state):
+    # An id claimed under one parent cannot be released by another parent's call:
+    # the SQL is scoped to (parent, conversation, id, wake_state='claimed').
+    app, receipts = state
+    receipts.claim_wake('parent', 'chat')
+    with pytest.raises(ValueError):
+        receipts.release_wake('otherparent', 'chat', ['completion'])
+    assert receipts.uncertain_wakes('parent', 'chat') == ['completion']  # untouched
+
+
 @pytest.mark.asyncio
 async def test_mounted_stream_blocks_during_maintenance_then_resumes():
     # The gate inside a REAL Textual @work worker: it suspends the turn on the
