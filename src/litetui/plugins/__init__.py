@@ -74,6 +74,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.scheduler_plugin",
     "litetui.plugins.monitor_plugin",   # /monitor — browser-monitor sweep -> Grafana
     "litetui.plugins.subagent_plugin",
+    "litetui.plugins.spawn_agent_plugin",
     "litetui.plugins.tasks_plugin",
     "litetui.plugins.goal_loop_plugin",
     "litetui.plugins.glassbox_plugin",
