@@ -30,6 +30,22 @@ def test_installed_probe_uses_isolated_python_and_external_cwd(tmp_path, monkeyp
     assert "__file__" in source
 
 
+@pytest.mark.parametrize("suffix", ["0", ".post1", " unexpected"])
+def test_version_substring_is_not_candidate_match(tmp_path, monkeypatch, suffix):
+    gate = gate_module()
+    from litetui.version import __version__
+    monkeypatch.setattr(gate, "_run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="litetui " + __version__ + suffix, stderr=""))
+    with pytest.raises(SystemExit):
+        gate.check_version(tmp_path / "python", tmp_path)
+
+
+def test_version_exact_output_passes(tmp_path, monkeypatch):
+    gate = gate_module()
+    from litetui.version import __version__
+    monkeypatch.setattr(gate, "_run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="litetui " + __version__ + "\n", stderr=""))
+    gate.check_version(tmp_path / "python", tmp_path)
+
+
 def test_version_nonzero_is_failure_even_with_matching_text(tmp_path, monkeypatch):
     gate = gate_module()
     from litetui.version import __version__

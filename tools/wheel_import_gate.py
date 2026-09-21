@@ -231,8 +231,8 @@ def check_version(venv_python: Path, workdir: Path) -> None:
         _fail(f"installed --version failed (exit {r.returncode})")
     got = (r.stdout or "").strip()
     print(f"--version -> {got!r} (repo says {expected!r})")
-    if expected not in got:
-        _fail(f"installed --version output {got!r} does not carry repo version {expected!r}")
+    if got != f"litetui {expected}":
+        _fail(f"installed --version output {got!r} does not exactly match repo version {expected!r}")
 
 
 def main() -> None:
