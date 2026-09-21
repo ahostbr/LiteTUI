@@ -134,12 +134,15 @@ class LoadEnvelope:
 
     def to_demand(self) -> ModelDemand:
         # Fresh dict every call: the coordinator requires a mutable dict, and it
-        # must never be able to write back into this envelope.
+        # must never be able to write back into this envelope. Provenance
+        # (host/build/artifact_fingerprint) is carried through so the persisted
+        # coordinator identity distinguishes this exact machine/build/weights.
         return ModelDemand(
             backend=self.backend, endpoint=self.endpoint, model=self.model,
             ram_peak=self.ram_peak, vram_peak_by_device=dict(self.vram_peak_by_device),
             context=self.context, concurrency=self.concurrency,
             artifact=self.artifact, load_shape=self.load_shape,
+            host=self.host, build=self.build, artifact_fingerprint=self.artifact_fingerprint,
         )
 
 

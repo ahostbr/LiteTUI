@@ -28,6 +28,12 @@ class ModelDemand:
     concurrency: int = 1
     artifact: str = ''
     load_shape: str = ''
+    #: Calibration provenance. Either ALL blank (legacy, unverified) or ALL three
+    #: non-blank (a calibrated demand). Carried through the persisted identity so a
+    #: number measured on another host/build/weights file cannot share a lease.
+    host: str = ''
+    build: str = ''
+    artifact_fingerprint: str = ''
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,31 @@ class AdmissionDecision:
     required: ModelDemand
     reason: str
     options: tuple[str, ...] = ('reduce request', 'review loaded models', 'cancel')
+
+
+#: The full model identity persisted in the shared store and compared for lease
+#: sharing / reload. Provenance is part of it, so cross-instance matching
+#: distinguishes builds and artifacts, not only backend/endpoint/model.
+_CORE_IDENTITY = ('backend', 'endpoint', 'model', 'context', 'concurrency',
+                  'artifact', 'load_shape', 'vram_peak_by_device')
+_PROV_IDENTITY = ('host', 'build', 'artifact_fingerprint')
+
+
+def _identity_dict(source):
+    """Full identity from a ModelDemand OR a persisted demand dict.
+
+    Provenance absent in a legacy/pre-change persisted row reads as '' (via .get),
+    never KeyError — so an old row compares UNEQUAL to a calibrated
+    (non-blank-provenance) demand and can never inherit its lease, and a legacy
+    ('' provenance) demand matches only another legacy identity.
+    """
+    if isinstance(source, dict):
+        get = lambda k, d=None: source.get(k, d)  # noqa: E731
+    else:
+        get = lambda k, d=None: getattr(source, k, d)  # noqa: E731
+    identity = {k: get(k) for k in _CORE_IDENTITY}
+    identity.update({k: get(k, '') for k in _PROV_IDENTITY})
+    return identity
 
 
 class ResourceCoordinator:
@@ -79,6 +110,11 @@ class ResourceCoordinator:
                 return blocked('VRAM telemetry invalid')
             if any(type(v) is not int or v < 0 for v in request.vram_peak_by_device.values()):
                 return blocked('VRAM peak estimate invalid')
+            prov = (request.host, request.build, request.artifact_fingerprint)
+            all_blank = all(p == '' for p in prov)
+            all_named = all(isinstance(p, str) and p.strip() for p in prov)
+            if not (all_blank or all_named):
+                return blocked('Model provenance incomplete: host/build/fingerprint must be all set or all empty')
             for (raw_identity,) in db.execute("SELECT identity FROM models WHERE state='unloading'"):
                 identity = json.loads(raw_identity)
                 if all(identity[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model')):
@@ -94,8 +130,10 @@ class ResourceCoordinator:
                 if row is None:
                     return blocked('Reload requires an active owned lease')
                 reload_identity = row[0]
-                identity = json.loads(reload_identity)
-                if any(identity[k] != getattr(request, k) for k in identity):
+                # Full-identity equality, both sides normalized: an old/partial
+                # persisted identity (provenance keys absent) can never equal a
+                # calibrated demand, so it cannot be reloaded into it.
+                if _identity_dict(json.loads(reload_identity)) != _identity_dict(request):
                     return blocked('Reload cannot change the leased load shape')
                 users = db.execute('SELECT COUNT(*) FROM leases WHERE model=? AND active=1', (reload_identity,)).fetchone()[0]
                 if users != 1:
@@ -113,7 +151,7 @@ class ResourceCoordinator:
                     # Enough free memory does not permit two clients to mutate
                     # one backend model while the first outcome is uncertain.
                     return blocked('Model load is pending')
-                if same_model and any(demand.get(k) != getattr(request, k) for k in ('context', 'concurrency', 'artifact', 'load_shape', 'vram_peak_by_device')):
+                if same_model and any(demand.get(k) != getattr(request, k) for k in ('context', 'concurrency', 'artifact', 'load_shape', 'host', 'build', 'artifact_fingerprint', 'vram_peak_by_device')):
                     return blocked('Incompatible load shape while model reserved or leased')
                 ram += demand['ram_peak']
                 for device, amount in demand['vram_peak_by_device'].items():
@@ -188,7 +226,7 @@ class ResourceCoordinator:
             if db.execute('SELECT 1 FROM reload_claims WHERE reservation=?', (reservation,)).fetchone():
                 raise ValueError('Reload peak reservation cannot become a new lease')
             demand = json.loads(row[0])
-            identity = json.dumps({k: demand[k] for k in ('backend', 'endpoint', 'model', 'context', 'concurrency', 'artifact', 'load_shape', 'vram_peak_by_device')}, sort_keys=True)
+            identity = json.dumps(_identity_dict(demand), sort_keys=True)
             model = db.execute('SELECT owned,keep_warm,state FROM models WHERE identity=?', (identity,)).fetchone()
             if model and model[2] == 'unloading':
                 raise ValueError('Model unload is pending; retry admission after reconciliation')
