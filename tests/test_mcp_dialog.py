@@ -230,3 +230,32 @@ async def test_the_add_form_survives_a_host_swap(monkeypatch, tmp_path):
     fresh = MCPListBody()
     fresh.set_state(state)
     assert fresh._pending == ("half", "npx -y ")
+
+
+# ── the buttons obey the same gate as the command (they must not bypass it) ────
+@pytest.mark.asyncio
+async def test_a_button_during_maintenance_is_refused_and_does_not_mutate(monkeypatch, tmp_path):
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        srv = app.mcp.servers["web"]
+        app._mcp_maintenance = True                      # a reconcile is in flight
+        body.query_one("#mcp-act-0-disconnect").press()
+        await _settle(pilot)
+        assert srv.stopped == 0                          # the manager was NOT touched
+        assert "web" in app.mcp.servers
+        assert "maintenance is in progress" in str(body.query_one("#mcp-status").render())
+
+
+@pytest.mark.asyncio
+async def test_a_button_on_native_codex_is_refused(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        srv = app.mcp.servers["web"]
+        app.backend = SimpleNamespace(app_server=object())   # native Codex thread
+        body.query_one("#mcp-act-0-disconnect").press()
+        await _settle(pilot)
+        assert srv.stopped == 0
+        assert "restart" in str(body.query_one("#mcp-status").render()).lower()

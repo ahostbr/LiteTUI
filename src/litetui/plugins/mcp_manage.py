@@ -165,14 +165,30 @@ async def _mutation_worker(app, op, describe) -> None:
     app.system_message(msg + note)
 
 
-def _schedule_mutation(app, op, describe) -> None:
-    """Claim maintenance synchronously (so a second mutation is rejected by the
-    gate rather than racing this one) and run the mutation off-loop. A fresh
-    completion Event is what a concurrent turn's _stream gate awaits."""
+def _claim_and_run(app, coro) -> bool:
+    """Claim maintenance synchronously (so a second op is rejected by the gate
+    rather than racing this one), then run `coro` off-loop. Returns True on
+    success. If run_worker RAISES (scheduling failure), the coro is never
+    awaited and nothing would ever settle the flag — so close it and un-stick
+    maintenance here, waking any waiter, rather than wedge every future turn."""
     import asyncio
     app._mcp_maintenance = True
     app._mcp_maintenance_done = asyncio.Event()
-    app.run_worker(_mutation_worker(app, op, describe), group="mcp", exclusive=False)
+    try:
+        app.run_worker(coro, group="mcp", exclusive=False)
+        return True
+    except Exception as e:  # noqa: BLE001 — a scheduling failure must not stick maintenance
+        coro.close()
+        app._mcp_maintenance = False
+        app._mcp_maintenance_done.set()
+        app.system_message(f"Could not start the MCP operation ({type(e).__name__}).")
+        return False
+
+
+def _schedule_mutation(app, op, describe) -> None:
+    """Run one MCP mutation off-loop through the coordinator. A fresh completion
+    Event is what a concurrent turn's _stream gate awaits."""
+    _claim_and_run(app, _mutation_worker(app, op, describe))
 
 
 def _format_reconcile(outcomes: dict) -> str:
@@ -198,6 +214,41 @@ def _safe_reload(app) -> str | None:
         # Bounded message: MCPBusy carries lock state, but never echo exception
         # text to the user — config errors can embed URLs/tokens.
         return "MCP maintenance is in progress; try again in a moment."
+
+
+def _mutation_blocked_reason(app, *, check_activity: bool = True) -> str | None:
+    """Why an MCP server-changing action must be refused right now, or None to
+    proceed. Shared by the /mcp command AND the dialog so neither bypasses the
+    native / maintenance gates.
+
+    check_activity is the idle gate (a mutation must not race an active chat
+    turn). It is for the COMMAND path only: the DIALOG is itself hosted in an
+    'mcp'-group worker behind an open modal, so produce_activity always reports
+    mcp_active + management_active while it is up — the idle gate would refuse
+    every button unconditionally. The dialog gates on native + maintenance,
+    which are the states that actually make a dialog mutation unsafe."""
+    if getattr(app, "_mcp_maintenance", False):
+        return "MCP maintenance is in progress — try again in a moment."
+    if hasattr(app.backend, "app_server"):
+        return ("Native Codex session: an MCP server change needs a restart to reach the model "
+                "(the thread's tool inventory is fixed for its lifetime).")
+    if not check_activity:
+        return None
+    from pathlib import Path
+    from litetui.plugin_reload_activity import produce_activity
+    from litetui.plugin_reload_children import children_pending
+    from litetui.plugin_reload_state import blocking_reasons
+    try:
+        snap = produce_activity(
+            app,
+            children_pending=lambda: children_pending(Path.home() / ".litetui-agents", app.convo_id),
+        ).snapshot
+        reasons = blocking_reasons(snap)
+    except Exception:  # noqa: BLE001 — an activity-probe failure DEFERS, never proceeds
+        return "Could not confirm it is safe to change MCP servers right now — try again shortly."
+    if reasons:
+        return f"Deferred (busy): {'; '.join(reasons)}. Try the action again shortly."
+    return None
 
 
 def _cmd_mcp(app, name: str, arg: str) -> None:
@@ -254,12 +305,9 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         # Claim maintenance SYNCHRONOUSLY (before scheduling) so a second
         # reconcile is rejected by the gate above rather than cancelling this
         # one; the worker joins off-loop and clears the flag only when settled.
-        # A fresh (cleared) completion Event is what _stream awaits in-worker.
-        import asyncio
-        app._mcp_maintenance = True
-        app._mcp_maintenance_done = asyncio.Event()
-        app.run_worker(_reconcile_worker(app), group="mcp", exclusive=False)
-        app.system_message("MCP reconcile started — re-reading config and reconnecting owned servers.")
+        # _claim_and_run un-sticks maintenance if scheduling itself fails.
+        if _claim_and_run(app, _reconcile_worker(app)):
+            app.system_message("MCP reconcile started — re-reading config and reconnecting owned servers.")
         return
 
     if verb in ("help", "?"):
