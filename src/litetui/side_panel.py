@@ -689,6 +689,31 @@ class _ModalHost(ModalScreen, _ViewMixin):
         await await_subtree_composed(self.body)   # T704
         if self.app.screen is self:
             self.app.pop_screen()
+            return
+        # 🔴 COVERED NON-TOP MODAL (WS7). `pop_screen` only removes the TOP of the
+        # stack, so the guard above is the right refusal for a top modal — but a
+        # `_ModalHost` that another screen has pushed ON TOP of (reachable:
+        # AskUserQuestionScreen, both SettingsExitConfirm pushes) would otherwise
+        # be left LEAKED: the modal stays in the screen stack and resurfaces stale
+        # the moment the covering screen is dismissed.
+        #
+        # Popping here would remove the COVERING screen instead — dismissing a
+        # dialog of its own with a default answer — so we must NOT. Take THIS
+        # modal off the current mode's stack directly and let `_replace_screen`
+        # (the exact teardown `pop_screen` delegates to) suspend it and remove its
+        # widgets. The covering screen stays active and untouched.
+        #
+        # Internal Textual surgery, so guard it: `resolve()` has already answered
+        # the dialog (set the future), so a failed teardown degrades to the old
+        # stale-resurface leak — it must never escape into the `call_next` handler
+        # or crash the loop.
+        try:
+            stack = self.app._screen_stack
+            if self in stack:
+                stack.remove(self)
+                await self.app._replace_screen(self)
+        except Exception:  # noqa: BLE001 — best-effort teardown; never crash the loop
+            pass
 
     def action_cancel(self) -> None:
         self.controller.resolve(None)
