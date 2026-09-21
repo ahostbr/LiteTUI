@@ -62,11 +62,36 @@ def _cmd_settings(app, name: str, arg: str) -> None:
     if getattr(app, 'convo_dir', None) is not None:
         from litetui import settings_runtime
         service = settings_runtime.service_for(app)
-        conversation_id = app.convo_dir.name
+        directory = app.convo_dir
+        conversation_id = directory.name
+        from litetui.settings_apply import (SettingsSaveResult,
+            PersistenceDestinationResult, RuntimeSettingStatus)
+
+        def still_current():
+            return getattr(app, 'convo_dir', None) == directory
+
+        def save_patch(changes, revisions):
+            if not still_current():
+                return SettingsSaveResult((PersistenceDestinationResult(
+                    str(directory), 'conversation', False,
+                    error='Conversation changed; close and reopen /settings.',
+                    fields=tuple(change.key for change in changes)),))
+            return service.save_patch(conversation_id, changes, revisions)
+
+        def runtime_apply(requested, result):
+            if not still_current():
+                return SettingsSaveResult(result.persistence, tuple(
+                    RuntimeSettingStatus(key, outcome.scope, 'failed', 'retry',
+                        requested=getattr(requested, key),
+                        reason='Conversation changed; close and reopen /settings.')
+                    for outcome in result.persistence if outcome.saved
+                    for key in outcome.fields))
+            return settings_runtime.apply_saved_result(app, requested, result)
+
         bindings = {
             'snapshot_provider': lambda: service.snapshot(conversation_id),
-            'save_patch': lambda changes, revisions: service.save_patch(conversation_id, changes, revisions),
-            'runtime_apply': lambda requested, result: settings_runtime.apply_saved_result(app, requested, result),
+            'save_patch': save_patch,
+            'runtime_apply': runtime_apply,
         }
     present_dialog(
         app,
