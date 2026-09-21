@@ -90,9 +90,13 @@ class ResourceCoordinator:
                         return blocked('Reload conflicts with pending model users')
             ram = 0
             gpu = {}
-            for (raw,) in db.execute("SELECT demand FROM reservations WHERE state IN ('reserved','leased')"):
+            for raw, state in db.execute("SELECT demand,state FROM reservations WHERE state IN ('reserved','leased')"):
                 demand = json.loads(raw)
                 same_model = all(demand[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model'))
+                if same_model and state == 'reserved':
+                    # Enough free memory does not permit two clients to mutate
+                    # one backend model while the first outcome is uncertain.
+                    return blocked('Model load is pending')
                 if same_model and any(demand.get(k) != getattr(request, k) for k in ('context', 'concurrency', 'artifact', 'load_shape', 'vram_peak_by_device')):
                     return blocked('Incompatible load shape while model reserved or leased')
                 ram += demand['ram_peak']

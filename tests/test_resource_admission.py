@@ -67,3 +67,18 @@ def test_invalid_or_stale_snapshots_block_real_callback(tmp_path):
         decision, _ = coordinator.load_guarded(ModelDemand('cpu', 'endpoint', 'model', 10, {}), 'a', lambda: calls.append(True))
         assert decision.status == 'blocked'
         assert not calls
+
+
+def test_same_model_pending_load_blocks_second_dispatch_even_with_capacity(tmp_path):
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'same-model.sqlite',
+        telemetry=lambda: ResourceSnapshot(time.time(), 1000, {'gpu': 1000}, True))
+    demand = ModelDemand('local', 'endpoint', 'model', 10, {'gpu': 10})
+    first = coordinator.reserve(demand, 'a')
+    assert first.status == 'admitted'
+    calls = []
+    decision, _ = coordinator.load_guarded(demand, 'b', lambda: calls.append(True))
+    assert decision.status == 'blocked'
+    assert calls == []
+    assert coordinator.settle_absent_load(first.reservation_id, 'a')
+    assert coordinator.reserve(demand, 'b').status == 'admitted'
