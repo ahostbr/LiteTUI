@@ -17,6 +17,7 @@ from textual.worker import WorkerState
 
 from litetui.plugins import PluginRegistry, PluginContext
 from litetui.tool_policy import ToolPolicy, READ_ONLY
+from litetui.plugin_reload_provenance import capture_baseline
 import litetui.plugins.plugin_reload_ui as ui
 
 
@@ -52,6 +53,9 @@ def _app(reg=None, **over):
     base.update(over)
     app = NS(**base)
     app._msgs = msgs
+    # Baseline captured as it would be at startup, so the provenance gate passes
+    # for an unchanged tree (the real logic is covered in test_plugin_reload_provenance).
+    capture_baseline(app)
     return app
 
 
@@ -205,6 +209,33 @@ def test_sibling_registry_independence(patched):
     assert next(e.spec for e in app_b.plugins.tools if e.name == "bash")["function"]["description"] == "original desc"
 
 
+# ── provenance wiring (real logic in test_plugin_reload_provenance) ───────────
+def test_activate_captures_baseline():
+    reg = _reg_with()
+    app = NS(plugins=reg)
+    ui.PLUGIN.activate(app)
+    assert isinstance(getattr(app, "_plugin_source_baseline", None), dict)
+
+
+def test_provenance_failure_blocks_commit(patched, monkeypatch):
+    monkeypatch.setattr("litetui.plugins.plugin_reload_ui.provenance_ok",
+                        lambda app, name: (False, "handler source changed after startup"))
+    app = _app()
+    original = app.plugins
+    ui._handle(app, "/reload-plugins", "bash")
+    msg = _last(app)
+    assert "restart required" in msg and "handler source changed" in msg
+    assert app.plugins is original          # never committed
+
+
+def test_provenance_ok_allows_reload(patched, monkeypatch):
+    monkeypatch.setattr("litetui.plugins.plugin_reload_ui.provenance_ok",
+                        lambda app, name: (True, ""))
+    app = _app()
+    ui._handle(app, "/reload-plugins", "bash")
+    assert "reloaded" in _last(app)
+
+
 def test_reload_command_is_in_default_plugin_discovery():
     from litetui.plugins import PLUGIN_LOAD_ORDER
     assert 'litetui.plugins.plugin_reload_ui' in PLUGIN_LOAD_ORDER
@@ -235,6 +266,7 @@ async def test_reload_command_in_mounted_textual_host(monkeypatch):
     app.plugins = PluginRegistry()
     app.plugins.add_tool('demo', old, lambda args: 'still works', policy=NETWORK_READ_POLICY)
     plugin._register(PluginContext(app, app.plugins, 'reload-plugins'))
+    plugin._activate(app)   # real startup runs activate after register; captures the provenance baseline
     app.backend = SimpleNamespace(name='lmstudio')
     app.convo_id = 'fixture'
     app.store = SimpleNamespace(pending=False, loading=False)

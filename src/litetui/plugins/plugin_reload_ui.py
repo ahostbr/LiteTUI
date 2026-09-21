@@ -20,6 +20,7 @@ from litetui.plugins import PluginManifest
 from litetui.plugin_reload_activity import produce_activity
 from litetui.plugin_reload_children import children_pending
 from litetui.plugin_reload_commit import commit_metadata_candidate
+from litetui.plugin_reload_provenance import capture_baseline, provenance_ok
 from litetui.plugin_schema_reload import stage_schema_refresh
 
 #: Schemas whose DESCRIPTION carries an unresolved runtime placeholder that the
@@ -118,6 +119,15 @@ def _handle(app: Any, name: str, arg: str) -> None:
             app.system_message(f"[reload-plugins] failed: {msg}. Live tools unchanged.")
         return
 
+    # Code-currency gate, immediately before the metadata commit: if the reload
+    # machinery or this tool's handler source changed since the startup baseline,
+    # a description refresh would misrepresent stale code as reloaded. Require a
+    # restart instead of committing.
+    ok, reason = provenance_ok(app, target)
+    if not ok:
+        app.system_message(f"[reload-plugins] restart required: {reason}. Live tools unchanged.")
+        return
+
     def _activity():
         return produce_activity(
             app,
@@ -137,4 +147,12 @@ def _register(ctx) -> None:
     )
 
 
-PLUGIN = PluginManifest(id="reload-plugins", register=_register)
+def _activate(app: Any) -> None:
+    # Capture the source-provenance baseline at STARTUP. activate runs after all
+    # plugins register (app.py register_plugins -> activate_plugins), so every
+    # tool is present. NOT lazy/first-reload: an edit made before the first
+    # /reload-plugins must still be detectable against the pristine baseline.
+    capture_baseline(app)
+
+
+PLUGIN = PluginManifest(id="reload-plugins", register=_register, activate=_activate)
