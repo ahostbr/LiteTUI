@@ -23,6 +23,7 @@ Exits non-zero on any failure — wire it into CI as a blocking step.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -42,6 +43,10 @@ def _fail(msg: str) -> None:
 
 def _run(cmd: list[str], *, timeout: int, cwd: Path | None = None) -> subprocess.CompletedProcess:
     print("+", " ".join(str(c) for c in cmd), flush=True)
+    # Never certify a wheel via checkout imports or the caller's Python home.
+    env = {key: value for key, value in os.environ.items()
+           if key.upper() not in {"PYTHONPATH", "PYTHONHOME"}}
+    env["PYTHONNOUSERSITE"] = "1"
     try:
         return subprocess.run(
             [str(c) for c in cmd],
@@ -49,6 +54,7 @@ def _run(cmd: list[str], *, timeout: int, cwd: Path | None = None) -> subprocess
             text=True,
             timeout=timeout,
             cwd=str(cwd) if cwd else None,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         _fail(f"timed out after {timeout}s: {' '.join(str(c) for c in cmd)}")

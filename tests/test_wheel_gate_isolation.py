@@ -46,6 +46,22 @@ def test_version_exact_output_passes(tmp_path, monkeypatch):
     gate.check_version(tmp_path / "python", tmp_path)
 
 
+def test_subprocess_environment_cannot_fall_back_to_checkout(monkeypatch):
+    gate = gate_module()
+    monkeypatch.setenv("PYTHONPATH", "checkout/src")
+    monkeypatch.setenv("PYTHONHOME", "developer-python")
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    gate._run(["fake-python", "--version"], timeout=1)
+    env = captured.get("env", {})
+    assert env.get("PYTHONNOUSERSITE") == "1"
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+
+
 def test_version_nonzero_is_failure_even_with_matching_text(tmp_path, monkeypatch):
     gate = gate_module()
     from litetui.version import __version__
