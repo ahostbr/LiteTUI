@@ -137,3 +137,12 @@ def test_own_modal_excluded_but_a_second_modal_blocks():
     assert _snap(app, ignore_screen=own).management_active is False
     stack.append(object())                           # a SECOND modal on top
     assert _snap(app, ignore_screen=own).management_active is True
+
+
+def test_base_screen_is_never_subtracted():
+    # A docked dialog's own screen IS the base (stack[0]); subtracting it would
+    # let a FOREIGN modal at depth 2 read as depth 1 and bypass. It must not.
+    base, foreign = object(), object()
+    app = NS(workers=[], store=NS(pending=False, loading=False),
+             screen_stack=[base, foreign], convo_id="c1", _idle_infra_workers=[])
+    assert _snap(app, ignore_screen=base).management_active is True   # foreign modal still blocks

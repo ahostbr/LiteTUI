@@ -26,7 +26,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Input, Static
 
 from litetui.mcp_client import WRITE_CONFIG_NAME
-from litetui.side_panel import SwapButton, _screen_of, close_dialog
+from litetui.side_panel import SwapButton, close_dialog
 
 #: What a state means, in the words a user needs rather than the enum's.
 STATE_NOTE = {
@@ -200,14 +200,34 @@ class MCPListBody(Widget):
         host = getattr(self, "_dialog_host_worker", None)
         return (host,) if host is not None else ()
 
+    def _own_modal_screen(self):
+        """Our own modal screen, but ONLY when we are hosted in a real modal
+        ABOVE the base that STILL contains this body — never the base/sidebar
+        screen (docked), and never a foreign overlay. Returned for the activity
+        gate to exclude; None when docked, so a foreign modal keeps the app busy
+        and cannot be subtracted away by a containment mismatch."""
+        try:
+            screen = self.screen
+            stack = self.app.screen_stack
+        except Exception:
+            return None
+        if screen is None or not stack or screen is stack[0]:
+            return None                       # docked/sidebar → base screen, not ours
+        try:
+            if any(n is self for n in screen.walk_children(with_self=True)):
+                return screen                 # a modal that actually hosts THIS body
+        except Exception:
+            pass
+        return None
+
     def _gate(self, app) -> str | None:
         """The SAME native/maintenance/idle gate the /mcp command runs, minus
         THIS dialog's own identity (its host worker + its own modal) so it does
-        not refuse itself — a real turn/tool/child/busy-store or a second modal
+        not refuse itself — a real turn/tool/child/busy-store or a SECOND modal
         still blocks."""
         from litetui.plugins.mcp_manage import _mutation_blocked_reason
         return _mutation_blocked_reason(
-            app, ignore_workers=self._own_workers(), ignore_screen=_screen_of(self))
+            app, ignore_workers=self._own_workers(), ignore_screen=self._own_modal_screen())
 
     def _dispatch(self, op, describe) -> None:
         """Claim maintenance SYNCHRONOUSLY (a second button then defers on the
@@ -217,11 +237,13 @@ class MCPListBody(Widget):
         app = self.app
         app._mcp_maintenance = True
         app._mcp_maintenance_done = asyncio.Event()
-        self.run_worker(self._run_action(op, describe, app.convo_id, app.backend),
+        self.run_worker(self._run_action(app, op, describe, app.convo_id, app.backend),
                         group="mcp", exclusive=False)
 
-    async def _run_action(self, op, describe, convo0, backend0) -> None:
-        app = self.app
+    async def _run_action(self, app, op, describe, convo0, backend0) -> None:
+        # `app` is captured at SCHEDULING and passed in: reading self.app HERE
+        # would raise NoActiveApp if this widget were removed before the coro's
+        # first step, stranding maintenance before the try/finally below.
         from litetui.agent_preparation import await_preparation
         from litetui.mcp_client import MCPBusy
         from litetui.plugins.mcp_manage import _settle_maintenance

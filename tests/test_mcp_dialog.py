@@ -338,3 +338,58 @@ async def test_a_different_mcp_worker_blocks_the_dialog(monkeypatch, tmp_path):
         assert body._gate(app) is not None            # it blocks
         release.set()
         await pilot.pause()
+
+
+# ── _own_modal_screen: exclude only a REAL owned modal hosting this body ───────
+from types import SimpleNamespace as _NS
+
+
+def test_own_modal_screen_none_when_docked_on_base():
+    base = object()
+    body = _NS(screen=base, app=_NS(screen_stack=[base]))
+    assert MCPListBody._own_modal_screen(body) is None      # docked → not ours to exclude
+
+
+def test_own_modal_screen_returns_the_modal_that_hosts_this_body():
+    base = object()
+    class Scr:
+        def walk_children(self, with_self=False):
+            return [self, body]
+    body = _NS()
+    modal = Scr()
+    body.screen = modal
+    body.app = _NS(screen_stack=[base, modal])
+    assert MCPListBody._own_modal_screen(body) is modal
+
+
+def test_own_modal_screen_none_for_a_foreign_overlay_not_hosting_body():
+    base = object()
+    class Scr:
+        def walk_children(self, with_self=False):
+            return [self]                                   # does NOT contain body
+    body = _NS()
+    body.screen = Scr()
+    body.app = _NS(screen_stack=[base, body.screen])
+    assert MCPListBody._own_modal_screen(body) is None      # containment mismatch → excluded
+
+
+@pytest.mark.asyncio
+async def test_run_action_uses_the_passed_app_not_self_app():
+    """The widget can be removed before the coro's first step; _run_action must
+    use the app captured at scheduling, never self.app (which would raise)."""
+    import asyncio
+    calls = []
+    app = _NS(_mcp_maintenance=True, _mcp_maintenance_done=asyncio.Event(),
+              convo_id="c1", backend=object(), system_message=calls.append,
+              rebuild_mcp_dispatch=lambda: None)
+
+    class Detached:
+        is_mounted = False
+        @property
+        def app(self):
+            raise RuntimeError("NoActiveApp")
+
+    await MCPListBody._run_action(Detached(), app, lambda: None, lambda r: "done",
+                                  "c1", app.backend)
+    assert calls and "done" in calls[0]           # reported via the passed app
+    assert app._mcp_maintenance is False           # settled, not stranded
