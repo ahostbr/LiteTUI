@@ -216,7 +216,7 @@ def python_child_argv(*, module=None, script=None, args=()):
 
 
 async def finish_child(process, inbox, *, parent, child_id, branch, evidence, notify,
-                       timeout=300, data_root=None):
+                       timeout=300, data_root=None, launch_outcome=None):
     """Commit outcome after bounded process cleanup, then notify the parent.
 
     Process termination is not local-model absence; resource settlement must be
@@ -226,7 +226,8 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
     _identity(process.conversation_id)
     cancelled = None
     try:
-        outcome = await process.collect_turn(timeout=timeout)
+        outcome = (dict(launch_outcome) if launch_outcome is not None
+                   else await process.collect_turn(timeout=timeout))
     except asyncio.CancelledError as exc:
         cancelled = exc
         outcome = {'status': 'cancelled', 'summary': 'Parent cancelled child collection'}

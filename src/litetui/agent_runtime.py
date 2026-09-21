@@ -25,19 +25,34 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
         prepared = await await_preparation(prepare)
         workspace, data_root, branch = prepared.workspace, prepared.data_root, prepared.branch
 
+    bound = False
+
     def bind(ready):
+        nonlocal bound
         registry.bind(parent, child_id, conversation_id=ready['conversation_id'],
                       pid=ready['pid'], created=ready['process_created'])
+        bound = True
 
     if before_start is not None:
         before_start()
-    await start_headless_child(spec, process, workspace=workspace, data_root=data_root,
-                               supported_levels=supported_levels, on_ready=bind)
     import asyncio
+    launch_outcome = None
+    launch_cancelled = None
+    try:
+        await start_headless_child(spec, process, workspace=workspace, data_root=data_root,
+                                   supported_levels=supported_levels, on_ready=bind)
+    except (Exception, asyncio.CancelledError) as exc:
+        if not bound:
+            raise  # No verified identity: retain unknown claim, never invent a result.
+        launch_cancelled = exc if isinstance(exc, asyncio.CancelledError) else None
+        launch_outcome = {
+            'status': 'cancelled' if launch_cancelled is not None else 'failed',
+            'summary': f'Child prompt delivery failed: {type(exc).__name__}',
+        }
     try:
         completion = await finish_child(process, inbox, parent=parent, child_id=child_id,
             branch=branch, evidence=evidence, notify=lambda event: None,
-            timeout=timeout, data_root=data_root)
+            timeout=timeout, data_root=data_root, launch_outcome=launch_outcome)
     except asyncio.CancelledError:
         # finish_child has already joined cleanup and persisted cancellation.
         # Settle only its matching confirmed outcome; unknown cleanup retains
@@ -53,5 +68,7 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
     result = inbox.get(parent, completion)
     if result['cleanup']['state'] == 'confirmed':
         registry.settle_completion(parent, child_id, inbox=inbox, completion_id=completion)
+    if launch_cancelled is not None:
+        raise launch_cancelled  # Durable outcome will replay; preserve caller cancellation.
     notify({'completion_id': completion, 'result': result})
     return completion

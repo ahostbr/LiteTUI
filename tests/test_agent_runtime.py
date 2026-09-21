@@ -100,3 +100,49 @@ async def test_runtime_cancel_keeps_durable_result_and_reconcilable_claim(tmp_pa
     # Explicit reconciliation remains idempotent after cancel already settles.
     assert registry.reconcile('parent', inbox=inbox) == []
     assert not notices
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancelled', [False, True])
+@pytest.mark.parametrize('confirmed', [False, True])
+async def test_bound_prompt_failure_is_durable(tmp_path, cancelled, confirmed):
+    import asyncio
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    calls = []
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text):
+            assert registry.active('parent')[0]['state'] == 'running'
+            if cancelled:
+                raise asyncio.CancelledError()
+            raise OSError('private prompt details')
+        async def collect_turn(self, **kwargs):
+            pytest.fail('must not collect after failed prompt delivery')
+        async def close(self):
+            calls.append('close')
+            return confirmed
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    notices = []
+    run = run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+        parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+        branch=None, evidence=[], supported_levels=[], notify=notices.append)
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await run
+    else:
+        await run
+    events = inbox.pending('parent')
+    assert len(events) == 1
+    result = events[0]['result']
+    assert result['status'] == ('cancelled' if cancelled else 'failed')
+    assert result['cleanup']['state'] == ('confirmed' if confirmed else 'unconfirmed')
+    assert 'private prompt' not in result['summary']
+    assert bool(registry.active('parent')) is not confirmed
+    assert len(notices) == (0 if cancelled else 1)
+    assert calls == ['close', 'close']
