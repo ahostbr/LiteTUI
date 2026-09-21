@@ -309,21 +309,24 @@ def registered_host() -> str | None:
 
 
 def stop_registered(entry: dict) -> bool:
-    """Kill an engine LiteTUI registered but no longer holds a handle for.
+    """FAIL CLOSED (option A). A registered engine we hold no live handle for is
+    identified only by {owner, kind, pid}. Under PID reuse a pid-only `taskkill /PID`
+    can terminate an UNRELATED process, and without a retained handle or a verified
+    process identity (e.g. creation time) we cannot confirm the pid is still OUR engine.
 
-    Returns True when a process was actually signalled. `atexit` cannot cover
-    this: it does not run when LiteTUI is force-killed, which is exactly how
-    the 10.7 GB orphan above outlived its parent.
+    So this does NOT kill and does NOT drop the record: it returns False (nothing
+    stopped), preserving the entry for a future identity-verified stop. The old
+    behaviour — taskkill by unverified pid, then unregister and return True even when
+    taskkill raised — could kill a reused pid and permanently erase the only ownership
+    record while the real process survived. Validated so a malformed/foreign entry is a
+    clean no-op either way.
     """
     pid = entry.get("pid")
-    if not isinstance(pid, int):
+    if entry.get("owner") != "litetui" or entry.get("kind") != "ninfer":
         return False
-    try:
-        ttyguard.run(["taskkill", "/T", "/F", "/PID", str(pid)], timeout=15)
-    except Exception:  # noqa: BLE001 - a dead pid is the outcome we wanted
-        pass
-    unregister_host(str(entry.get("baseUrl") or ""))
-    return True
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    return False  # verified identity is a separate slice; until then, no pid-only kill
 
 
 def register_host(base_url: str, *, pid: int | None = None) -> bool:

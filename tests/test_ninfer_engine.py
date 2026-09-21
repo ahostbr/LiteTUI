@@ -393,17 +393,20 @@ def test_registered_host_still_answers_with_just_the_url(tmp_path, monkeypatch):
     assert eng.registered_host() == "http://127.0.0.1:64977"
 
 
-def test_stop_registered_kills_the_pid_and_clears_the_entry(tmp_path, monkeypatch):
+def test_stop_registered_fails_closed_and_keeps_the_record(tmp_path, monkeypatch):
+    """Option A (2026-09-21): without a live handle or a verified process identity, a
+    pid-only `taskkill` could terminate a REUSED pid — so stop_registered no longer
+    kills and no longer drops the record. It fails closed and preserves the entry for a
+    future identity-verified stop (superseding the old kill-and-clear behaviour)."""
     monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
     eng.register_host("http://127.0.0.1:64977", pid=269276)
 
     killed: list = []
     monkeypatch.setattr(eng.ttyguard, "run", lambda cmd, **kw: killed.append(cmd))
 
-    assert eng.stop_registered(eng.registered_entry()) is True
-    assert killed and "269276" in killed[0], f"did not taskkill the pid: {killed}"
-    assert "/T" in killed[0], "the engine's children must go with it"
-    assert eng.registered_entry() is None, "a stopped engine must not stay registered"
+    assert eng.stop_registered(eng.registered_entry()) is False
+    assert killed == [], "a pid-only kill is refused"
+    assert eng.registered_entry() is not None, "the record is preserved, not erased"
 
 
 def test_stop_registered_refuses_an_entry_with_no_pid(tmp_path, monkeypatch):
@@ -420,16 +423,17 @@ def test_stop_registered_refuses_an_entry_with_no_pid(tmp_path, monkeypatch):
     assert eng.registered_entry() is not None, "and the entry stays for its real owner"
 
 
-def test_stop_registered_clears_the_entry_even_when_the_pid_is_already_dead(tmp_path, monkeypatch):
-    """The 10.7 GB case ends with the user killing it by hand. The entry must
-    still go, or /engine start refuses forever on a ghost."""
+def test_stop_registered_preserves_a_possibly_dead_ghost_pending_identity(tmp_path, monkeypatch):
+    """Under option A a pid-only reader cannot tell 'already dead' from 'reused', so it
+    must not act on either — the record is PRESERVED (no kill attempted at all). Safely
+    clearing a ghost entry needs the verified-identity slice; until then a stale record
+    is stopped/cleared where it was started. (Supersedes the old clear-even-if-dead.)"""
     monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
     eng.register_host("http://127.0.0.1:64977", pid=269276)
 
-    def _boom(cmd, **kw):
-        raise OSError("no such process")
+    killed: list = []
+    monkeypatch.setattr(eng.ttyguard, "run", lambda cmd, **kw: killed.append(cmd))
 
-    monkeypatch.setattr(eng.ttyguard, "run", _boom)
-
-    assert eng.stop_registered(eng.registered_entry()) is True
-    assert eng.registered_entry() is None
+    assert eng.stop_registered(eng.registered_entry()) is False
+    assert killed == [], "no taskkill is issued on an unverifiable pid"
+    assert eng.registered_entry() is not None
