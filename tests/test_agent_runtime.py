@@ -103,7 +103,8 @@ async def test_runtime_cancel_keeps_durable_result_and_reconcilable_claim(tmp_pa
 @pytest.mark.asyncio
 @pytest.mark.parametrize('cancelled', [False, True])
 @pytest.mark.parametrize('confirmed', [False, True])
-async def test_bound_prompt_failure_is_durable(tmp_path, cancelled, confirmed):
+@pytest.mark.parametrize('first_cleanup_raises', [False, True])
+async def test_bound_prompt_failure_is_durable(tmp_path, cancelled, confirmed, first_cleanup_raises):
     import asyncio
     from litetui.agent_runtime import run_prepared_child
     from litetui.agent_registry import AgentRegistry
@@ -125,6 +126,8 @@ async def test_bound_prompt_failure_is_durable(tmp_path, cancelled, confirmed):
             pytest.fail('must not collect after failed prompt delivery')
         async def close(self):
             calls.append('close')
+            if first_cleanup_raises and len(calls) == 1:
+                raise OSError('cleanup failed')
             return confirmed
     spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
                              'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)

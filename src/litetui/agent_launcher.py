@@ -151,4 +151,9 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
             except asyncio.CancelledError:
                 if cleanup.cancelled():
                     break
+            except Exception:
+                # Cleanup failure must not replace the original launch exception,
+                # especially cancellation. Bound launches persist an unconfirmed
+                # outcome through the runtime's subsequent cleanup attempt.
+                break
         raise
