@@ -203,3 +203,8 @@ def test_sibling_registry_independence(patched):
     # App B is untouched by App A's reload
     assert app_b.plugins is reg_b
     assert next(e.spec for e in app_b.plugins.tools if e.name == "bash")["function"]["description"] == "original desc"
+
+
+def test_reload_command_is_in_default_plugin_discovery():
+    from litetui.plugins import PLUGIN_LOAD_ORDER
+    assert 'litetui.plugins.plugin_reload_ui' in PLUGIN_LOAD_ORDER
