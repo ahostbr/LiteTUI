@@ -441,3 +441,150 @@ async def test_run_action_aborts_when_manager_replaced_before_start():
     assert ran == []                                  # op NOT run — manager changed
     assert "context changed" in calls[0].lower()
     assert app._mcp_maintenance is False               # settled, not stranded
+
+
+# ── controller swap/resolve while a mutation is in flight ─────────────────────
+#
+# app.mcp is assigned once (app.py:1668) and never reassigned, so the op -- bound
+# to the captured manager at dispatch -- can never retarget. The remaining
+# "controller swap/resolve race" is what happens when the DIALOG controller swaps
+# to a new body, or resolves (tears the view down), while a mutation is still in
+# flight off-loop: the op must STILL run against the bound manager, the completion
+# must be REPORTED to chat (never re-rendered onto a superseded/unmounted body),
+# and the maintenance flag must settle. These pin that the completion is attributed
+# to the right generation -- reported, not painted onto a body that is no longer
+# the active view.
+class _SwapBody:
+    """A body whose _is_active_body mirrors the real controller: active only
+    while it is the controller's current _body AND still mounted."""
+
+    def __init__(self):
+        self.is_mounted = True
+        self._dialog_controller = None
+        self.rerendered = []
+
+    def _is_active_body(self):
+        if not self.is_mounted:
+            return False
+        ctrl = getattr(self, "_dialog_controller", None)
+        return ctrl is None or getattr(ctrl, "_body", None) is self
+
+    def _say(self, text):
+        pass
+
+    async def _rerender(self):
+        self.rerendered.append(1)
+
+
+class _SwapCtrl:
+    def __init__(self):
+        self._body = None
+
+
+def _swap_app():
+    import asyncio
+    mgr = object()
+    return _NS(_mcp_maintenance=True, _mcp_maintenance_done=asyncio.Event(),
+               convo_id="c1", backend=object(), mcp=mgr,
+               system_message=lambda *a, **k: None,
+               rebuild_mcp_dispatch=lambda: None), mgr
+
+
+async def _wait_started(started, max_ticks=200):
+    import asyncio
+    for _ in range(max_ticks):
+        if started.is_set():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("op never entered its thread")
+
+
+@pytest.mark.asyncio
+async def test_swap_while_mutation_in_flight_reports_not_rerenders():
+    """A controller swap to a new body while a mutation is in flight: the op still
+    runs against the bound manager, the completion is REPORTED (not re-rendered
+    onto the superseded body), and the maintenance flag settles."""
+    import asyncio
+    import threading
+    started, release = threading.Event(), threading.Event()
+    ran = []
+
+    def op():
+        started.set()
+        release.wait(timeout=5)
+        ran.append(1)
+        return "done"
+
+    calls = []
+    app, mgr = _swap_app()
+    app.system_message = calls.append
+    body, ctrl = _SwapBody(), _SwapCtrl()
+    ctrl._body, body._dialog_controller = body, ctrl
+    task = asyncio.create_task(
+        MCPListBody._run_action(body, app, op, lambda r: "done: %s" % r,
+                                "c1", app.backend, mgr))
+    await _wait_started(started)              # the op is now blocked in its thread
+    ctrl._body = _SwapBody()                  # SWAP: this body is superseded
+    release.set()                             # the op completes off-loop
+    await task
+    assert ran == [1]                         # the op RAN against the bound manager
+    assert any("done" in c for c in calls)    # REPORTED to chat
+    assert body.rerendered == []              # NOT re-rendered onto the superseded body
+    assert app._mcp_maintenance is False      # settled, not stranded
+
+
+@pytest.mark.asyncio
+async def test_resolve_while_mutation_in_flight_reports_not_rerenders():
+    """A resolve (the view is torn down) while a mutation is in flight: the op
+    still runs, the completion is REPORTED (the body is no longer mounted), and
+    the maintenance flag settles."""
+    import asyncio
+    import threading
+    started, release = threading.Event(), threading.Event()
+    ran = []
+
+    def op():
+        started.set()
+        release.wait(timeout=5)
+        ran.append(1)
+        return "done"
+
+    calls = []
+    app, mgr = _swap_app()
+    app.system_message = calls.append
+    body, ctrl = _SwapBody(), _SwapCtrl()
+    ctrl._body, body._dialog_controller = body, ctrl
+    task = asyncio.create_task(
+        MCPListBody._run_action(body, app, op, lambda r: "done: %s" % r,
+                                "c1", app.backend, mgr))
+    await _wait_started(started)
+    body.is_mounted = False                   # RESOLVE: the view is torn down
+    release.set()
+    await task
+    assert ran == [1]
+    assert any("done" in c for c in calls)
+    assert body.rerendered == []
+    assert app._mcp_maintenance is False
+
+
+@pytest.mark.asyncio
+async def test_no_swap_no_resolve_rerenders_the_active_body():
+    """Control: with no swap/resolve the active body re-renders the result (the
+    normal path is unchanged) and nothing is reported to chat."""
+    ran = []
+
+    def op():
+        ran.append(1)
+        return "done"
+
+    calls = []
+    app, mgr = _swap_app()
+    app.system_message = calls.append
+    body, ctrl = _SwapBody(), _SwapCtrl()
+    ctrl._body, body._dialog_controller = body, ctrl
+    await MCPListBody._run_action(body, app, op, lambda r: "done: %s" % r,
+                                  "c1", app.backend, mgr)
+    assert ran == [1]
+    assert body.rerendered == [1]             # the active body re-rendered
+    assert calls == []                        # NOT reported to chat
+    assert app._mcp_maintenance is False
