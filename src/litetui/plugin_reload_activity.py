@@ -221,9 +221,13 @@ def produce_activity(
         mark("management_active", "app.screen_stack", "app", f"unreadable: {type(e).__name__}")
         unreadable.append("app.screen_stack")
     else:
-        # Exclude ONLY the caller's own dialog modal (exact object, by `is`).
-        # A SECOND modal still counts, so another dialog keeps the app busy.
-        if ignore_screen is not None and _contains(stack, ignore_screen):
+        # Exclude ONLY the caller's own dialog modal — a real modal ABOVE the
+        # base (stack[0]), by `is`. NEVER the base screen: subtracting stack[0]
+        # would let a FOREIGN modal at depth 2 read as depth 1 and bypass. A
+        # SECOND modal still counts. (The caller must ALSO prove ignore_screen
+        # is its own modal hosting its body — see MCPListBody._own_modal_screen;
+        # this non-base guard is the producer-side floor.)
+        if ignore_screen is not None and depth > 1 and _contains(stack[1:], ignore_screen):
             depth -= 1
         if depth > 1:
             mark("management_active", "app.screen_stack", "app", f"modal open (screen_stack depth {depth})")
