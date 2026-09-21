@@ -244,6 +244,61 @@ def test_context_none_record_does_not_satisfy_a_concrete_context(tmp_path):
     assert store.envelope_for(none_ctx) is not None                # None == None only
 
 
+# ── whole-file validation: one bad row fails the whole file ─────────────────
+
+@pytest.mark.parametrize("kind", ["nondict", "partial", "unknown_field", "bad_peak"])
+def test_a_malformed_UNRELATED_row_fails_the_whole_file(tmp_path, kind):
+    target = _identity()
+    good = _record(target, 1, {"GPU-uuid-A": 2})
+    other = _identity(model="other-model")
+    if kind == "nondict":
+        bad = ["not", "a", "dict"]
+    elif kind == "partial":
+        bad = _record(other, 1, {"GPU-uuid-A": 2}); del bad["context"]
+    elif kind == "unknown_field":
+        bad = _record(other, 1, {"GPU-uuid-A": 2}); bad["surprise"] = 1
+    else:
+        bad = _record(other, -1, {"GPU-uuid-A": 2})     # invalid peak
+    p = tmp_path / "cal.json"
+    _write_store(p, [good, bad])
+    assert CalibrationStore(p).envelope_for(target) is None   # target valid, file untrusted
+
+
+def test_a_duplicate_UNRELATED_identity_fails_the_whole_file(tmp_path):
+    target = _identity()
+    other = _identity(model="dup-model")
+    p = tmp_path / "cal.json"
+    _write_store(p, [_record(target, 1, {"GPU-uuid-A": 2}),
+                     _record(other, 1, {"GPU-uuid-A": 2}),
+                     _record(other, 9, {"GPU-uuid-A": 3})])
+    assert CalibrationStore(p).envelope_for(target) is None
+
+
+def test_nan_constant_is_fail_closed(tmp_path):
+    target = _identity()
+    rec = json.dumps(_record(target, 1, {"GPU-uuid-A": 2})).replace('"ram_peak": 1', '"ram_peak": NaN')
+    p = tmp_path / "cal.json"
+    p.write_text('{"schema": "%s", "records": [%s]}' % (SCHEMA, rec), encoding="utf-8")
+    assert CalibrationStore(p).envelope_for(target) is None
+
+
+def test_infinity_constant_is_fail_closed(tmp_path):
+    target = _identity()
+    rec = json.dumps(_record(target, 1, {"GPU-uuid-A": 2})).replace('"ram_peak": 1', '"ram_peak": Infinity')
+    p = tmp_path / "cal.json"
+    p.write_text('{"schema": "%s", "records": [%s]}' % (SCHEMA, rec), encoding="utf-8")
+    assert CalibrationStore(p).envelope_for(target) is None
+
+
+def test_recursion_error_during_parse_is_fail_closed(tmp_path, monkeypatch):
+    import litetui.resource_calibration as rc
+    p = tmp_path / "cal.json"
+    p.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(rc.json, "loads",
+                        lambda *a, **k: (_ for _ in ()).throw(RecursionError()))
+    assert CalibrationStore(p).envelope_for(_identity()) is None
+
+
 # ── integration: demand_for + ModelResourceSession, fail-closed ─────────────
 
 class _NoAdmitCoordinator:
