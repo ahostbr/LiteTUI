@@ -51,7 +51,7 @@ def test_a_malformed_file_is_filed_script_side_not_pytest(tmp_path, monkeypatch,
     the other files ast.parse in the test (which raises) or skip SyntaxError
     files entirely. If a regression let a malformed file fall into the pytest
     half, pytest would hit the SyntaxError during COLLECTION and abort the whole
-    run — the exact INTERNALERROR class the partition exists to prevent. So a
+    run with a collection error (not necessarily INTERNALERROR). So a
     malformed file must land script-side, and it does so regardless of whether
     it happens to contain an exit substring (has_tests is forced False on the
     parse failure, which is sufficient on its own)."""
@@ -71,9 +71,9 @@ def test_a_helper_only_file_is_filed_script_side(tmp_path, monkeypatch):
     module-level exit has `not has_tests` True, so classify() files it
     script-side (the arm the only existing planted case — which carries a
     sys.exit — never reaches). Run as a bare script it imports, calls nothing
-    and exits 0: a silent pass over zero assertions, which is exactly why the
-    partition sends it to the script half rather than letting pytest report a
-    vacuous green."""
+    and exits 0: a silent pass over zero assertions. This is routing behavior,
+    not proof that any assertions ran; script-side classification does not
+    protect against a vacuous green."""
     pyt, scr = _classify(tmp_path, monkeypatch, {
         "test_helper_only.py": "def build_fixture():\n    return {'k': 1}\n",
     })
@@ -89,7 +89,8 @@ def test_duplicate_test_names_are_pytest_style_and_the_shadow_is_uncertified(tmp
     makes NO claim about how many distinct tests survive. Two `def test_dup`
     in one module is legal Python: the second binding shadows the first, pytest
     collects ONE, and the runner's partition neither detects nor reports the
-    lost test. Classification certifies collectABILITY, never collection COUNT.
+    lost test. Classification chooses a route; it certifies neither successful collection
+    (imports can fail) nor collection COUNT.
     This arm pins that contract so a future reader does not mistake 'pytest-side'
     for 'every test here runs'."""
     pyt, scr = _classify(tmp_path, monkeypatch, {
