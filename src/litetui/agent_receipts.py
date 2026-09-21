@@ -152,7 +152,11 @@ class ParentReceipts:
                 if row is None or row[0] != 'claimed':
                     raise ValueError('Wake release ownership or state conflict')
             for ident in identities:
-                db.execute("UPDATE receipts SET wake_state='pending' WHERE parent=? AND conversation=? AND id=?",
+                # Scoped to THIS parent/conversation AND wake_state='claimed':
+                # the UPDATE itself can never re-pend another parent's row or a
+                # non-claimed one, independent of the guard above.
+                db.execute("UPDATE receipts SET wake_state='pending' WHERE parent=? AND conversation=? "
+                           "AND id=? AND wake_state='claimed'",
                            (*scope, ident))
         return True
 
