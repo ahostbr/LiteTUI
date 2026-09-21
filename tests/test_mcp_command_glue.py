@@ -296,3 +296,51 @@ async def test_execute_tool_blocked_when_dispatch_stale():
              _mcp_dispatch_blocked="stale", _rpc_emit=lambda e: None)
     out, ok = await LiteTUI._execute_tool(app, "anytool", {})
     assert ok is False and "blocked" in out.lower()
+
+
+# ── read-path MCPBusy feedback + bounded/sanitized error reasons (piece 2) ─────
+def test_safe_reload_reports_busy_without_echoing_exception():
+    from litetui.mcp_client import MCPBusy
+    app = _app()
+
+    def boom():
+        raise MCPBusy("busy: internal claim detail")
+
+    app.mcp.reload_configs = boom
+    msg = mm._safe_reload(app)
+    assert msg and "maintenance is in progress" in msg.lower()
+    assert "internal claim detail" not in msg          # bounded: no exception text
+
+
+def test_safe_reload_ok_returns_none():
+    assert mm._safe_reload(_app()) is None
+
+
+def test_list_verb_surfaces_busy_instead_of_raising():
+    from litetui.mcp_client import MCPBusy
+    app = _app()
+
+    def boom():
+        raise MCPBusy("busy")
+
+    app.mcp.reload_configs = boom
+    mm._cmd_mcp(app, "/mcp", "list")                    # must not raise
+    assert "maintenance is in progress" in _last(app).lower()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_block_reason_is_bounded_no_secret_leak():
+    import asyncio
+    app = _app(maint=True)
+    app._mcp_maintenance_done = asyncio.Event()
+    secret = "http://internal.host/secret-token-abc123"
+
+    def boom():
+        raise RuntimeError(secret)
+
+    app.rebuild_mcp_dispatch = boom
+    await mm._reconcile_worker(app)
+    assert app._mcp_dispatch_blocked
+    assert secret not in app._mcp_dispatch_blocked      # sanitized
+    assert "RuntimeError" in app._mcp_dispatch_blocked  # type kept
+    assert secret not in _last(app)                     # nor in the user message

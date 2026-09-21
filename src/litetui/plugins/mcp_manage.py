@@ -115,12 +115,16 @@ async def _reconcile_worker(app) -> None:
     try:
         outcomes = await await_preparation(app.mcp.reconcile)
     except Exception as e:  # noqa: BLE001 — report, never leave the flag stuck
-        outcomes = {"": f"failed: {type(e).__name__}: {e}"}
+        # Bounded: exception TYPE only. A raw reconcile error can embed a
+        # server URL or a secret from mcp.json; per-server outcomes are already
+        # sanitized by the coordinator.
+        outcomes = {"": f"failed ({type(e).__name__})"}
     finally:
         try:
             app.rebuild_mcp_dispatch()
         except Exception as e:  # noqa: BLE001 — a stale map BLOCKS, never resumes
-            app._mcp_dispatch_blocked = f"dispatch rebuild failed: {type(e).__name__}: {e}"
+            # Bounded reason (type + operation), never the raw message.
+            app._mcp_dispatch_blocked = f"dispatch rebuild failed ({type(e).__name__})"
         else:
             app._mcp_dispatch_blocked = None   # verified: current map installed
         finally:
@@ -149,6 +153,22 @@ def _format_reconcile(outcomes: dict) -> str:
     return "[mcp reconcile]\n" + rows
 
 
+def _safe_reload(app) -> str | None:
+    """Re-read configs, returning a user message if a maintenance op holds the
+    coordinator claim. reload_configs raises MCPBusy while a reconcile is in
+    flight; the read verbs (bare/list/reload) are not in the server-changing
+    gate above, so without this the exception would escape to the command
+    dispatcher as an error instead of a one-line "try again"."""
+    from litetui.mcp_client import MCPBusy
+    try:
+        app.mcp.reload_configs()
+        return None
+    except MCPBusy:
+        # Bounded message: MCPBusy carries lock state, but never echo exception
+        # text to the user — config errors can embed URLs/tokens.
+        return "MCP maintenance is in progress; try again in a moment."
+
+
 def _cmd_mcp(app, name: str, arg: str) -> None:
     words = (arg or "").split()
     if not words:
@@ -159,7 +179,10 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         from litetui.mcp_list import MCPListBody
         from litetui.side_panel import open_dialog
 
-        app.mcp.reload_configs()
+        busy = _safe_reload(app)
+        if busy:
+            app.system_message(busy)
+            return
         # `open_dialog`, not `show_dialog`: this handler is SYNC and show_dialog
         # is a coroutine (the T078 mismatch). No callback — every action in the
         # dialog is applied when it is made, so there is no answer to collect.
@@ -213,14 +236,14 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         return
 
     if verb in ("list", "ls", "status"):
-        app.mcp.reload_configs()
-        app.system_message(_render(app))
+        busy = _safe_reload(app)
+        app.system_message(busy or _render(app))
         return
 
     if verb == "reload":
-        app.mcp.reload_configs()
-        app.system_message("Re-read mcp.json / .mcp.json — nothing started or stopped.\n\n"
-                           + _render(app))
+        busy = _safe_reload(app)
+        app.system_message(busy or ("Re-read mcp.json / .mcp.json — nothing started or stopped.\n\n"
+                                    + _render(app)))
         return
 
     if verb == "add":
