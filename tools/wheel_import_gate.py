@@ -66,7 +66,20 @@ def build_wheel(workdir: Path | None = None) -> Path:
         _fail("`uv` not found on PATH — the gate builds with it (CI has it)")
     # Never delete the operator's dist artifacts or select a pre-existing wheel.
     output = Path(tempfile.mkdtemp(prefix="wheel-output-", dir=workdir))
-    r = _run([uv, "build", "--wheel", "--out-dir", str(output)], timeout=600, cwd=REPO)
+    # Build from copied inputs, not the checkout's reusable build/ or egg-info.
+    # Keep this explicit for this project's setuptools configuration: arbitrary
+    # checkout files (credentials, runtime state, old dist) are not build inputs.
+    source = Path(tempfile.mkdtemp(prefix="wheel-source-", dir=workdir))
+    for name in ("pyproject.toml", "MANIFEST.in", "README.md", "LICENSE", "LICENSE.txt", "LICENSE.md"):
+        path = REPO / name
+        if path.is_file():
+            shutil.copy2(path, source / name)
+    if not (source / "pyproject.toml").is_file():
+        _fail("candidate pyproject.toml is missing")
+    shutil.copytree(REPO / "src", source / "src", ignore=shutil.ignore_patterns(
+        "__pycache__", "*.pyc", "*.pyo", "*.egg-info", "*.lock",
+        ".pytest_cache", ".mypy_cache", ".ruff_cache", "build", "dist"))
+    r = _run([uv, "build", "--wheel", "--out-dir", str(output)], timeout=600, cwd=source)
     if r.returncode != 0:
         print(r.stdout, file=sys.stderr)
         print(r.stderr, file=sys.stderr)

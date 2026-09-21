@@ -66,6 +66,15 @@ def test_build_uses_fresh_output_without_deleting_existing_dist(tmp_path, monkey
     gate = gate_module()
     monkeypatch.setattr(gate, "REPO", tmp_path)
     monkeypatch.setattr(gate.shutil, "which", lambda name: "uv")
+    (tmp_path / "pyproject.toml").write_text("[build-system]\nrequires = []\n")
+    src = tmp_path / "src" / "litetui"
+    src.mkdir(parents=True)
+    (src / "version.py").write_text('__version__ = "test"\n')
+    (src / "version.py.lock").write_text("runtime")
+    (tmp_path / "src" / "litetui.egg-info").mkdir()
+    (tmp_path / "src" / "litetui.egg-info" / "PKG-INFO").write_text("stale")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "stale.py").write_text("stale")
     dist = tmp_path / "dist"
     dist.mkdir()
     old = dist / "litetui-old.whl"
@@ -76,6 +85,14 @@ def test_build_uses_fresh_output_without_deleting_existing_dist(tmp_path, monkey
         assert "--out-dir" in cmd
         out = Path(cmd[cmd.index("--out-dir") + 1])
         assert out != dist
+        build_source = kwargs["cwd"]
+        assert build_source != tmp_path
+        assert (build_source / "src" / "litetui" / "version.py").read_bytes() == (src / "version.py").read_bytes()
+        assert (build_source / "pyproject.toml").read_bytes() == (tmp_path / "pyproject.toml").read_bytes()
+        assert not (build_source / "build").exists()
+        assert not (build_source / "dist").exists()
+        assert not (build_source / "src" / "litetui.egg-info").exists()
+        assert not list(build_source.rglob("*.lock"))
         out.mkdir(parents=True, exist_ok=True)
         (out / "litetui-new.whl").write_bytes(b"new")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
