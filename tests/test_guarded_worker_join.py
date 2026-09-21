@@ -62,3 +62,34 @@ async def test_real_worker_cancel_before_start_closes_original():
         await asyncio.wait_for(clean.wait(), 2)
         assert not ran
         assert inspect.getcoroutinestate(original) == inspect.CORO_CLOSED
+
+@pytest.mark.asyncio
+async def test_real_worker_attach_failure_closes_both_coroutines(monkeypatch):
+    import gc
+    import inspect
+    from litetui import agent_preparation as preparation
+    ran = []
+    cleaned = []
+    wrappers = []
+    async def op():
+        ran.append(True)
+    original = op()
+    async with App().run_test() as pilot:
+        actual_run_worker = pilot.app.run_worker
+        def capture(wrapper, **kwargs):
+            wrappers.append(wrapper)
+            return actual_run_worker(wrapper, **kwargs)
+        monkeypatch.setattr(pilot.app, 'run_worker', capture)
+        def fail_attach(task, callback):
+            raise RuntimeError('observer unavailable')
+        monkeypatch.setattr(preparation, '_attach', fail_attach)
+        worker = run_guarded(pilot.app, original, group='fake-stop',
+                             cleanup=lambda: cleaned.append(True))
+        assert worker is None
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not ran
+        assert cleaned == [True]
+        assert inspect.getcoroutinestate(original) == inspect.CORO_CLOSED
+        assert inspect.getcoroutinestate(wrappers[0]) == inspect.CORO_CLOSED
+    gc.collect()

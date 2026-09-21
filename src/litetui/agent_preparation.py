@@ -120,6 +120,14 @@ def run_guarded(app, coro, *, group, cleanup, report=None):
         _attach(task, _fire)              # fires on EVERY terminal state, incl. pre-first-step cancel
     except Exception as e:  # noqa: BLE001 — attach failure must fail closed, never wedge
         _cancel_quietly(worker)
+        # Textual owns Worker._run, not our as-yet unentered wrapper. With
+        # the gate closed, closing that CREATED nested coroutine is safe even
+        # if the cancelled Worker later attempts to await it (no work can run).
+        # Never close a coroutine directly owned by the live asyncio Task.
+        import inspect
+        if (task.get_coro() is not guarded
+                and inspect.getcoroutinestate(guarded) == inspect.CORO_CREATED):
+            guarded.close()
         _fire()
         if report is not None:
             report(e)
