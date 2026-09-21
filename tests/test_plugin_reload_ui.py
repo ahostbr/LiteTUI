@@ -208,3 +208,40 @@ def test_sibling_registry_independence(patched):
 def test_reload_command_is_in_default_plugin_discovery():
     from litetui.plugins import PLUGIN_LOAD_ORDER
     assert 'litetui.plugins.plugin_reload_ui' in PLUGIN_LOAD_ORDER
+
+
+@pytest.mark.asyncio
+async def test_reload_command_in_mounted_textual_host(monkeypatch):
+    from textual.app import App
+    from textual.widgets import Static
+    from litetui.plugins import PluginRegistry, PluginContext
+    from litetui.plugins import plugin_reload_ui as plugin
+    from litetui.tool_policy import NETWORK_READ_POLICY
+    from types import SimpleNamespace
+    from copy import deepcopy
+    old = {'type': 'function', 'function': {'name': 'demo', 'description': 'old',
+           'parameters': {'type': 'object', 'properties': {}}}}
+    fresh = deepcopy(old)
+    fresh['function']['description'] = 'updated'
+    monkeypatch.setattr(plugin.tool_schemas, 'available', lambda: {'demo'})
+    monkeypatch.setattr(plugin.tool_schemas, 'load_fresh', lambda name: fresh)
+    monkeypatch.setattr(plugin, 'children_pending', lambda *args: False)
+    class Host(App):
+        def compose(self):
+            yield Static('ready', id='notice')
+        def system_message(self, text):
+            self.query_one('#notice', Static).update(text)
+    app = Host()
+    app.plugins = PluginRegistry()
+    app.plugins.add_tool('demo', old, lambda args: 'still works', policy=NETWORK_READ_POLICY)
+    plugin._register(PluginContext(app, app.plugins, 'reload-plugins'))
+    app.backend = SimpleNamespace(name='lmstudio')
+    app.convo_id = 'fixture'
+    app.store = SimpleNamespace(pending=False, loading=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        plugin._handle(app, '/reload-plugins', 'demo')
+        await pilot.pause()
+        assert app.plugins.tools[0].spec['function']['description'] == 'updated'
+        assert app.plugins.dispatch_for('demo')({}) == 'still works'
+        assert 'reloaded' in str(app.query_one('#notice', Static).render())
