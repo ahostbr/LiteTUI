@@ -1,15 +1,10 @@
 """Locality-classified admission installer — the wiring the app.backend setter uses.
 
-Real backend objects (constructed without __init__, no engine), a real
-ModelResourceSession over a temp store with the default (None) resolver, and a
-fake app. No engine, no model load, no App boot. Proves the installed admission:
-- blocks a loopback (LOCAL) uncalibrated load with no guarded body run;
-- STILL blocks an attached-but-loopback load (locality, not ownership);
-- passes an explicitly-marked remote endpoint through (no coverage claim);
-- blocks unknown locality and an unknown backend shape;
-- leaves a non-_VramGate (codex) untouched;
-- is idempotent and retains an already-installed session;
-- forwards the reload flag and does not double-reserve under the nested guard.
+Real backend objects (no __init__, no engine), real per-backend ModelResourceSession
+over a temp store, and both a fake owner and the REAL LiteTUI.backend setter. No
+engine, no model load, no App boot. Proves classification (incl. error-safety),
+per-backend session retention, idempotency, the fail-closed block, and that the
+actual property setter wires install.
 """
 from __future__ import annotations
 
@@ -19,12 +14,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from litetui import resource_admission_install as inst
-from litetui.resource_admission_install import classify_locality, install_on
+from litetui.resource_admission_install import classify_locality, install_on, make_admission
 from litetui.llm_backend import LlamaCppBackend, LMStudioBackend, _VramGate
 from litetui.ninfer_backend import NInferBackend
-from litetui.model_resource_session import AdmissionBlocked, ModelResourceSession
+from litetui.model_resource_session import AdmissionBlocked
 from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot
+from litetui.resource_calibration import CalibrationStore
 
 
 def _bare(cls, **attrs):
@@ -48,16 +43,16 @@ def _ninfer(host=None):
     return _bare(NInferBackend, _host=host)
 
 
-def _session(tmp_path, demand_for=lambda key: None):
+def _bundle(tmp_path):
     coord = ResourceCoordinator(
         tmp_path / "r.sqlite3",
         telemetry=lambda: ResourceSnapshot(time.time(), 10**12, {"GPU-A": 10**12}, True),
     )
-    return ModelResourceSession(coord, "owner-inst", demand_for=demand_for)
+    return (coord, "owner-inst", CalibrationStore(tmp_path / "cal.json"))   # cal absent -> uncalibrated
 
 
-def _app(session):
-    return SimpleNamespace(_resource_session=session)
+def _app(tmp_path):
+    return SimpleNamespace(_admission_bundle=_bundle(tmp_path))
 
 
 class _RecorderSession:
@@ -74,28 +69,18 @@ class _RecorderSession:
         return cm()
 
 
-# ── classification (pure) ───────────────────────────────────────────────────
+# ── classification, incl. error-safety ──────────────────────────────────────
 
-def test_loopback_endpoints_are_local():
+def test_loopback_and_ninfer_prespawn_and_attached_are_local():
     assert classify_locality(_llama("http://127.0.0.1:7470")) == "local"
     assert classify_locality(_lmstudio("http://localhost:1234")) == "local"
     assert classify_locality(_llama("http://[::1]:7470")) == "local"
-
-
-def test_ninfer_pre_spawn_no_host_is_local():
-    assert classify_locality(_ninfer(host=None)) == "local"
-
-
-def test_attached_but_loopback_is_still_local():
+    assert classify_locality(_ninfer(host=None)) == "local"                 # pre-spawn
     assert classify_locality(_llama(attached="http://127.0.0.1:7470")) == "local"
 
 
-def test_non_loopback_without_marker_is_unknown():
+def test_non_loopback_is_unknown_and_explicit_marker_is_remote():
     assert classify_locality(_llama("http://10.0.0.5:7470")) == "unknown"
-    assert classify_locality(_lmstudio("http://192.168.1.9:1234")) == "unknown"
-
-
-def test_explicit_remote_marker_passes():
     assert classify_locality(_llama("http://10.0.0.5:7470"), remote_marker=lambda b: True) == "remote"
 
 
@@ -105,12 +90,55 @@ def test_unknown_backend_shape_is_unknown():
     assert classify_locality(_bare(Weird)) == "unknown"
 
 
-# ── installed admission behaviour (real backend + real session) ─────────────
+def test_classification_errors_fail_closed_to_unknown():
+    assert classify_locality(_llama("http://[gg::bad")) == "unknown"        # malformed IPv6
+    assert classify_locality(_llama(host=12345)) == "unknown"               # non-string host
+    boom = lambda b: (_ for _ in ()).throw(RuntimeError())                  # noqa: E731
+    assert classify_locality(_llama("http://10.0.0.5:7470"), remote_marker=boom) == "unknown"
+
+
+# ── per-backend sessions + idempotency ──────────────────────────────────────
+
+def test_two_backends_get_separate_backend_owned_sessions(tmp_path):
+    app = _app(tmp_path)
+    a, b = _llama(), _lmstudio()
+    assert install_on(app, a) is True and install_on(app, b) is True
+    assert a._admission_session is not b._admission_session
+    assert [entry[0] for entry in app._admission_sessions] == [a, b]        # registry for cleanup
+
+
+def test_same_backend_reassign_is_idempotent_and_retains(tmp_path):
+    app = _app(tmp_path)
+    backend = _llama()
+    assert install_on(app, backend) is True
+    session = backend._admission_session
+    hook = backend.resource_admission
+    assert install_on(app, backend) is False
+    assert backend._admission_session is session and backend.resource_admission is hook
+
+
+def test_non_vramgate_backend_is_untouched(tmp_path):
+    class Codex:
+        resource_admission = None
+    backend = Codex()
+    assert install_on(_app(tmp_path), backend) is False
+    assert backend.resource_admission is None
+
+
+def test_preinstalled_hook_is_retained(tmp_path):
+    backend = _llama()
+    sentinel = object()
+    backend.resource_admission = sentinel
+    assert install_on(_app(tmp_path), backend) is False
+    assert backend.resource_admission is sentinel
+
+
+# ── installed behaviour (real backend + real session) ───────────────────────
 
 @pytest.mark.asyncio
 async def test_local_uncalibrated_blocks_with_no_body(tmp_path):
     backend = _llama()
-    assert install_on(_app(_session(tmp_path)), backend) is True
+    install_on(_app(tmp_path), backend)
     ran = []
     with pytest.raises(AdmissionBlocked):
         async with backend.vram_guard("m"):
@@ -121,7 +149,7 @@ async def test_local_uncalibrated_blocks_with_no_body(tmp_path):
 @pytest.mark.asyncio
 async def test_attached_local_still_blocks(tmp_path):
     backend = _llama(attached="http://127.0.0.1:7470")
-    install_on(_app(_session(tmp_path)), backend)
+    install_on(_app(tmp_path), backend)
     ran = []
     with pytest.raises(AdmissionBlocked):
         async with backend.vram_guard("m"):
@@ -130,48 +158,30 @@ async def test_attached_local_still_blocks(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_explicit_remote_passes_through(tmp_path):
-    backend = _llama("http://10.0.0.5:7470")
-    install_on(_app(_session(tmp_path)), backend, remote_marker=lambda b: True)
+async def test_explicit_remote_passes_and_unknown_blocks(tmp_path):
+    remote = _llama("http://10.0.0.5:7470")
+    install_on(_app(tmp_path), remote, remote_marker=lambda b: True)
     ran = []
-    async with backend.vram_guard("m"):
+    async with remote.vram_guard("m"):
         ran.append(True)
     assert ran == [True]
 
-
-@pytest.mark.asyncio
-async def test_unknown_locality_blocks(tmp_path):
-    backend = _llama("http://10.0.0.5:7470")
-    install_on(_app(_session(tmp_path)), backend)
-    ran = []
+    unknown = _llama("http://10.0.0.5:7470")
+    install_on(_app(tmp_path), unknown)
+    ran2 = []
     with pytest.raises(AdmissionBlocked):
-        async with backend.vram_guard("m"):
-            ran.append(True)
-    assert ran == []
+        async with unknown.vram_guard("m"):
+            ran2.append(True)
+    assert ran2 == []
 
 
-def test_non_vramgate_backend_is_untouched(tmp_path):
-    class Codex:
-        resource_admission = None
-    backend = Codex()
-    assert install_on(_app(_session(tmp_path)), backend) is False
-    assert backend.resource_admission is None
-
-
-def test_install_is_idempotent_and_retains_session(tmp_path):
-    backend = _llama()
-    app = _app(_session(tmp_path))
-    assert install_on(app, backend) is True
-    first = backend.resource_admission
-    assert install_on(app, backend) is False
-    assert backend.resource_admission is first
-
+# ── the reload flag and the nested guard (make_admission directly) ──────────
 
 @pytest.mark.asyncio
-async def test_reload_flag_forwarded(tmp_path):
+async def test_reload_flag_forwarded():
     recorder = _RecorderSession()
     backend = _llama()
-    install_on(SimpleNamespace(_resource_session=recorder), backend)
+    backend.resource_admission = make_admission(backend, recorder)
     async with backend.vram_guard("m", reload=True):
         pass
     async with backend.vram_guard("m"):
@@ -180,11 +190,32 @@ async def test_reload_flag_forwarded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_nested_guard_does_not_double_reserve(tmp_path):
+async def test_nested_guard_does_not_double_reserve():
     recorder = _RecorderSession()
     backend = _llama()
-    install_on(SimpleNamespace(_resource_session=recorder), backend)
+    backend.resource_admission = make_admission(backend, recorder)
     async with backend.vram_guard("m"):
-        async with backend.vram_guard("m"):   # reentrant, same task
+        async with backend.vram_guard("m"):
             pass
-    assert recorder.calls == [("m", False)]   # admission entered ONCE
+    assert recorder.calls == [("m", False)]
+
+
+# ── the REAL LiteTUI.backend setter wires install (no App boot) ─────────────
+
+def test_real_backend_setter_installs_admission(tmp_path):
+    from litetui.app import LiteTUI
+
+    class _Owner:
+        def __init__(self, bundle):
+            self._admission_bundle = bundle
+            self.remembered = []
+
+        def _remember_for_this_convo(self, field, value):
+            self.remembered.append((field, value))
+
+    owner = _Owner(_bundle(tmp_path))
+    backend = _llama()
+    LiteTUI.backend.fset(owner, backend)            # invoke the actual property setter
+    assert owner._backend is backend
+    assert backend.resource_admission is not None
+    assert backend._admission_session is not None
