@@ -42,6 +42,17 @@ from pathlib import Path
 from . import jobkill, ttyguard
 from .llm_backend import BackendError, _arg_value
 
+
+class EngineStartFailed(BackendError):
+    """ninfer-serve failed to become ready. ``retained_owned`` carries the OwnedEngine for
+    a resident-but-failed process whose cleanup could NOT be confirmed, so the caller can
+    publish it and retry the stop; it is None when the cleanup was confirmed (nothing left
+    to own). A BackendError subclass, so existing ``except BackendError`` paths still catch."""
+
+    def __init__(self, message: str, *, retained_owned=None) -> None:
+        super().__init__(message)
+        self.retained_owned = retained_owned
+
 NINFER_V3_MAGIC = b"NINFER\x00\x03"
 NINFER_V3_HEADER_BYTES = 32
 NINFER_MAX_DIRECTORY_BYTES = 64 * 1024 * 1024
@@ -558,9 +569,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
             fresh = ""
         for marker in NINFER_FAILURE_MARKERS:
             if marker in fresh:
-                _abandon(proc, job)
-                log_file.close()
-                raise BackendError(f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
+                failed = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
+                                     model_id=model_id, job=job, args=tuple(args))
+                _fail_start(failed, f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
         if NINFER_READY_MARKER in fresh or healthy(host):
             owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
                                 model_id=model_id, job=job, args=tuple(args))
@@ -570,25 +581,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
         if getattr(proc, "poll", lambda: None)() is not None:
             break
         time.sleep(0.5)
-    _abandon(proc, job)
-    log_file.close()
-    raise BackendError(f"ninfer-serve did not become ready in {NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
-
-
-def _abandon(proc, job: int | None) -> None:
-    """Drop an engine that never became ready.
-
-    🔴 THESE ARE THE PATHS THAT LEAK. The engine is already holding its weights
-    by the time a failure marker appears or the readiness deadline passes — the
-    port binds LAST — so a start that fails is exactly when gigabytes are
-    resident with no `OwnedEngine` to stop them and no registry entry either
-    (`register_host` runs only on the success path). Closing the job takes the
-    whole tree with it; without one, fall back to the walk.
-    """
-    if job is not None:
-        jobkill.close(job)
-        return
-    _kill(proc)
+    failed = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
+                         model_id=model_id, job=job, args=tuple(args))
+    _fail_start(failed, f"ninfer-serve did not become ready in {NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
 
 
 def _kill(proc) -> None:
@@ -601,22 +596,159 @@ def _kill(proc) -> None:
         pass
 
 
-def stop(owned: OwnedEngine) -> None:
-    """Stop ONLY the process we started, and take it out of the registry.
+#: Bounded wait for the job to drain to zero active processes after terminate(). A job
+#: close is asynchronous, so this poll is the finite proof window.
+_JOB_DRAIN_TIMEOUT = 3.0
+_JOB_DRAIN_INTERVAL = 0.1
 
-    THE JOB IS THE KILL WHEN THERE IS ONE. Closing the last handle is atomic
-    over the whole tree and costs ~0.1ms; `taskkill /T` ENUMERATES the process
-    table and costs seconds — the same seconds whether or not the pid is still
-    alive (measured on this box: 3.4s/6.4s/43s live, 3.7s/6.6s/10.4s already
-    dead). So the walk is the FALLBACK, not a belt-and-braces second step.
-    """
-    if owned.job is not None:
-        jobkill.close(owned.job)
-        owned.job = None
-    elif owned.alive:
-        _kill(owned.proc)
-    unregister_host(owned.host)
+
+def _poll_job_drained(job, timeout=None, interval=None) -> bool:
+    """True iff active_process_count(job) reaches 0 within a finite deadline. A query
+    failure (None) is decisive — cannot prove -> False (retain). A positive count keeps
+    polling until the deadline; a final read decides."""
+    timeout = _JOB_DRAIN_TIMEOUT if timeout is None else timeout
+    interval = _JOB_DRAIN_INTERVAL if interval is None else interval
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        count = jobkill.active_process_count(job)
+        if count is None:
+            return False
+        if count == 0:
+            return True
+        time.sleep(interval)
+    return jobkill.active_process_count(job) == 0
+
+
+def _close_log(owned) -> None:
     try:
         owned.log_file.close()
     except Exception:  # noqa: BLE001, S110 - a closed handle on a dead process is not news
         pass
+
+
+def terminate_owned(owned):
+    """The ONE terminal-shutdown proof for an owned engine — used by stop(), the
+    start-failure path and the backend, so no caller invents a divergent proof.
+
+    Job branch: terminate the job WITHOUT closing the handle, wait for the main process
+    to exit, then poll the job to zero active processes; close ONLY on that proof
+    (tree='confirmed'). No-job branch: _kill + wait (main-only, tree='unknown'). A
+    CloseHandle success is a KILL REQUEST, not a completion — the drain poll is the
+    proof, and the host is unregistered ONLY on a confirmed terminal state. Any
+    failure / query-None / timeout / not-exited RETAINS the handle and the record for a
+    retry (returns retained=True). Returns a TerminalShutdown; it does NOT touch any
+    backend's self._owned (the caller owns that).
+    """
+    from .llm_backend import TerminalShutdown, wait_for_exit
+
+    proc = owned.proc
+    job = owned.job
+    pid = getattr(proc, "pid", None)
+    if job is None:
+        error = None
+        attempted = False
+        try:
+            if owned.alive:
+                _kill(proc)
+                attempted = True
+            main_exited = wait_for_exit(proc)
+        except Exception as exc:  # noqa: BLE001 - type-only diagnostic
+            error = type(exc).__name__
+            main_exited = False
+        if not main_exited:
+            return TerminalShutdown(owned=True, attempted=attempted, main_exited=False,
+                                    tree="unknown", pid=pid, retained=True, error=error)
+        if not unregister_owned(owned):         # bookkeeping failure retains, never loses the handle
+            return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
+                                    tree="unknown", pid=pid, retained=True, error="unregister_failed")
+        _close_log(owned)
+        return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
+                                tree="unknown", pid=pid, retained=False, error=error)
+    error = None
+    try:
+        if not jobkill.terminate(job):
+            error = "terminate_failed"          # reported, but proof is independent
+        main_exited = wait_for_exit(proc)
+        drained = _poll_job_drained(job)
+    except Exception as exc:  # noqa: BLE001 - type-only diagnostic
+        error = type(exc).__name__
+        main_exited = drained = False
+    if not (main_exited and drained):
+        return TerminalShutdown(owned=True, attempted=True, main_exited=main_exited,
+                                tree="unknown", pid=pid, retained=True, error=error)
+    try:
+        closed = jobkill.close(job)             # can raise — a raw raise would lose the handle
+    except Exception as exc:  # noqa: BLE001 - type-only; the proof stands, retain the handle
+        return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                                tree="confirmed", pid=pid, retained=True, error=type(exc).__name__)
+    if not unregister_owned(owned):             # registry bookkeeping is SEPARATE from the proof
+        return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                                tree="confirmed", pid=pid, retained=True, error="unregister_failed")
+    _close_log(owned)
+    if not closed:
+        # Tree proof stands independent of cleanup; do NOT discard the handle.
+        return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                                tree="confirmed", pid=pid, retained=True,
+                                error=error or "close_failed")
+    owned.job = None
+    return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                            tree="confirmed", pid=pid, retained=False, error=error)
+
+
+def unregister_owned(owned) -> bool:
+    """Ownership-checked registry removal: drop the ninfer entry ONLY if its baseUrl AND pid
+    BOTH match this owned engine — so a REPLACEMENT that reused the same host/port (a
+    different pid) is never removed by our cleanup. Returns True on a completed write (incl.
+    'nothing matched'), False on an I/O/parse failure so the caller can retain rather than
+    lose the handle over a bookkeeping error. Never a broad URL-only delete."""
+    pid = getattr(owned.proc, "pid", None)
+    path = _config_path()
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return True                          # nothing registered -> nothing to remove
+    except (OSError, ValueError):
+        return False                         # a real read failure -> retain, do not lose the handle
+    entries = body.get("extraEndpoints") or []
+    host = str(owned.host).rstrip("/")
+    body["extraEndpoints"] = [
+        e for e in entries
+        if not (isinstance(e, dict) and e.get("kind") == "ninfer"
+                and str(e.get("baseUrl", "")).rstrip("/") == host and e.get("pid") == pid)
+    ]
+    try:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
+def _fail_start(owned, message):
+    """A start that failed but left a RESIDENT engine (weights load before the port binds).
+
+    The retained OwnedEngine HANDLE is the real ownership — NOT a registry row. We do NOT
+    register_host here: register_host filters by kind and would remove a FOREIGN ninfer
+    entry (agreed: no foreign overwrite). atexit.register(stop) is registered BEFORE cleanup
+    as best-effort recovery (NOT a force-kill guarantee — the job covers assigned members
+    only). Then the unified cleanup is ATTEMPTED (never keep-running-only). The typed
+    exception carries retained_owned when the cleanup was not confirmed OR when it raised
+    unexpectedly — so an unresolved handle is ALWAYS surfaced to the caller, never lost."""
+    atexit.register(stop, owned)
+    try:
+        result = terminate_owned(owned)
+    except Exception:  # noqa: BLE001 - any unexpected cleanup failure must still surface the handle
+        raise EngineStartFailed(message, retained_owned=owned)
+    raise EngineStartFailed(message, retained_owned=(owned if result.retained else None))
+
+
+def stop(owned: OwnedEngine) -> None:
+    """Stop the engine we started and PROVE it terminated, via the unified terminate_owned.
+    atexit-registered and best-effort; ignores the return and retains on an unconfirmed
+    outcome for a later retry. (The job kill is atomic over the ASSIGNED tree; the taskkill
+    walk is the no-job fallback — measured 3-43s live/dead, so it is a fallback, not a
+    belt-and-braces second step.)"""
+    terminate_owned(owned)
+
+

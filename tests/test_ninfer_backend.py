@@ -280,19 +280,20 @@ def test_the_backend_is_attached_unless_it_started_the_engine():
     backend._owned = owned
     assert backend.attached is False
     stopped = []
-    monkey = ninfer_engine.stop
+    monkey = ninfer_engine.terminate_owned
 
-    def _fake_stop(o):
+    def _fake_terminate(o):
+        from litetui.llm_backend import TerminalShutdown
         stopped.append(o.host)
-        o.proc.poll = lambda: 0        # a real stop terminates it; exit is now provable
+        return TerminalShutdown(owned=True, main_exited=True, retained=False, tree="confirmed")
 
-    ninfer_engine.stop = _fake_stop
+    ninfer_engine.terminate_owned = _fake_terminate
     try:
         backend.shutdown()
     finally:
-        ninfer_engine.stop = monkey
-    # shutdown() delegates to shutdown_owned(): it still calls ninfer_engine.stop and,
-    # once the proc is proven exited, clears our handle so the backend is attached again.
+        ninfer_engine.terminate_owned = monkey
+    # shutdown() delegates to shutdown_owned() -> the unified ninfer_engine.terminate_owned;
+    # on a confirmed terminal state it clears our handle so the backend is attached again.
     assert stopped == ["http://127.0.0.1:1"] and backend.attached is True
 
 

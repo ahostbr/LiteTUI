@@ -298,3 +298,11 @@ async def test_real_textual_worker_task_is_a_real_task_and_observable():
         await worker.wait()
         await asyncio.sleep(0)                        # let the done-callback fire
     assert released == [True]                         # terminal-state cleanup fires on the real task
+
+
+@pytest.mark.asyncio
+async def test_start_refused_while_an_owned_engine_is_tracked():
+    b = _bare()
+    b._owned = object()                     # an unresolved owned engine exists
+    with pytest.raises(BackendError):
+        await b.start_engine()              # must not overwrite/lose the handle
