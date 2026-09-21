@@ -106,3 +106,49 @@ def test_guard_ignores_non_lmstudio_and_missing_backend():
     _refuse_unsupported_local_lm(_llama("http://127.0.0.1:7470"))  # llama -> no-op
     with pytest.raises(AdmissionBlocked):
         _refuse_unsupported_local_lm(_lmstudio("http://127.0.0.1:1234"))
+
+
+# ── stale client<->backend pair refusal in for_app ──────────────────────────
+
+from litetui import model_transport  # noqa: E402
+
+
+def _app(backend, endpoint):
+    # A fake owner exposing exactly what for_app reads. object() stands in for the
+    # AsyncOpenAI client — for_app must refuse a stale pair BEFORE building a transport.
+    return SimpleNamespace(client=object(), backend=backend, _client_endpoint=endpoint)
+
+
+def test_matched_pair_returns_transport():
+    backend = _llama("http://127.0.0.1:7470")
+    transport = model_transport.for_app(_app(backend, backend.base_url().rstrip("/")))
+    assert isinstance(transport, OpenAITransport)
+
+
+def test_backend_swap_without_client_rebuild_refuses_no_http():
+    lm = _lmstudio("http://127.0.0.1:1234")
+    app = _app(lm, lm.base_url().rstrip("/"))          # client bound to the LM endpoint
+    app.backend = _llama("http://127.0.0.1:7470")      # swapped, client NOT rebuilt
+    with pytest.raises(AdmissionBlocked):
+        model_transport.for_app(app)                   # refuses -> no transport, no request
+
+
+def test_backend_endpoint_mutation_refuses():
+    backend = _lmstudio("http://127.0.0.1:1234")
+    app = _app(backend, backend.base_url().rstrip("/"))
+    backend._host = "http://127.0.0.1:9999"            # backend moved its endpoint
+    with pytest.raises(AdmissionBlocked):
+        model_transport.for_app(app)
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_pair_works_again_then_lm_still_jit_blocked():
+    app = _app(_llama("http://127.0.0.1:7470"), None)
+    app.backend = _lmstudio("http://127.0.0.1:1234")
+    app._client_endpoint = app.backend.base_url().rstrip("/")   # rebuilt/rebound
+    transport = model_transport.for_app(app)                    # pair matched again
+    assert isinstance(transport, OpenAITransport)
+    transport.client = _SpyClient()                             # a client that would send
+    with pytest.raises(AdmissionBlocked):                       # ...but LM is still JIT-blocked
+        await transport.create(model="m", messages=[])
+    assert transport.client.calls == []

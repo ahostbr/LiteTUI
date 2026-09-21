@@ -694,7 +694,20 @@ def for_app(app) -> ModelTransport:
             app.backend.name, models=app.backend.models,
             prompt_cache_key=getattr(app, "convo_id", None),
         )
-    return OpenAITransport(app.client, backend=getattr(app, "backend", None))
+    # Refuse a stale client<->backend pair rather than misroute a request: the
+    # client is bound (app._client_endpoint, set where AsyncOpenAI is built in
+    # app.py) to the endpoint it will hit; if the backend was swapped or mutated
+    # its endpoint without rebuilding the client, that no longer matches.
+    backend = app.backend
+    endpoint = backend.base_url().rstrip("/")
+    if getattr(app, "_client_endpoint", None) != endpoint:
+        from litetui.model_resource_session import AdmissionBlocked
+        raise AdmissionBlocked(
+            "BLOCKED: the OpenAI client is a stale pair for the current backend — "
+            f"bound to {getattr(app, '_client_endpoint', None)!r}, backend now serves "
+            f"{endpoint!r}. Reconnect to rebuild the client before sending."
+        )
+    return OpenAITransport(app.client, backend=backend)
 
 
 def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
