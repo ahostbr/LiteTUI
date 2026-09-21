@@ -4,14 +4,16 @@ import pytest
 from litetui import voice_install
 
 
-def test_uv_targets_running_interpreter(monkeypatch):
+def test_uv_targets_system_interpreter(monkeypatch):
+    monkeypatch.setattr("litetui.optional_python.install_target", lambda: "system-python")
     monkeypatch.setattr(voice_install.shutil, 'which', lambda name: 'uv.exe')
-    assert voice_install.install_command() == ['uv.exe', 'pip', 'install', '--python', sys.executable, 'edge-tts', 'playsound==1.2.2']
+    assert voice_install.install_command() == ['uv.exe', 'pip', 'install', '--python', 'system-python', 'edge-tts', 'playsound==1.2.2']
 
 
-def test_pip_fallback_targets_running_interpreter(monkeypatch):
+def test_pip_fallback_targets_system_interpreter(monkeypatch):
+    monkeypatch.setattr("litetui.optional_python.install_target", lambda: "system-python")
     monkeypatch.setattr(voice_install.shutil, 'which', lambda name: None)
-    assert voice_install.install_command()[:4] == [sys.executable, '-m', 'pip', 'install']
+    assert voice_install.install_command()[:4] == ['system-python', '-m', 'pip', 'install']
 
 
 def test_already_installed_does_not_run_installer(monkeypatch):

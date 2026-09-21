@@ -1,4 +1,4 @@
-"""Install optional Edge speech dependencies into this exact Python environment."""
+"""Install optional Edge speech dependencies using system-first Python discovery."""
 import importlib
 import shutil
 import subprocess
@@ -7,13 +7,17 @@ import sys
 
 def edge_available():
     from litetui.voice_backend import available_engines
+    from litetui.optional_python import invalidate
+    invalidate()
     importlib.invalidate_caches()
     return 'edge' in available_engines()
 
 
 def install_command():
     uv = shutil.which('uv')
-    prefix = [uv, 'pip', 'install', '--python', sys.executable] if uv else [sys.executable, '-m', 'pip', 'install']
+    from litetui.optional_python import install_target
+    target = install_target()
+    prefix = [uv, 'pip', 'install', '--python', target] if uv else [target, '-m', 'pip', 'install']
     return prefix + ['edge-tts', 'playsound==1.2.2']
 
 

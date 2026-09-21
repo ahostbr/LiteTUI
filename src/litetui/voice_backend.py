@@ -20,6 +20,7 @@ own audio handle and dies when the clip ends — Popen returns immediately.
 from __future__ import annotations
 
 import importlib.util
+from litetui import optional_python
 import os
 import subprocess
 import sys
@@ -65,13 +66,13 @@ DEFAULT_EDGE_VOICE = "en-GB-SoniaNeural"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _speaker() -> tuple[str, int]:
+def _speaker(executable=None) -> tuple[str, int]:
     """(interpreter, creationflags) for the speaking child. Prefer pythonw.exe:
     measured 2026-09-18 — a `python.exe` child was SILENT (with or without a
     console) while `pythonw.exe` (GUI subsystem) kept an audio session and was
     the only one audible. It also has no console, so no flag and no flash.
     Fall back to python.exe + CREATE_NO_WINDOW when pythonw is missing."""
-    exe = sys.executable or "python"
+    exe = executable or sys.executable or "python"
     d, name = os.path.split(exe)
     if name.lower() in ("python.exe", "python"):
         cand = os.path.join(d, "pythonw.exe")
@@ -92,9 +93,9 @@ def available_engines() -> list[str]:
     package; edge needs BOTH edge_tts and playsound. The tab greys out what is
     missing rather than offering an engine that will fail silently in a child."""
     out: list[str] = []
-    if _has("pyttsx3"):
+    if optional_python.resolve("pyttsx3"):
         out.append("pyttsx3")
-    if _has("edge_tts") and _has("playsound"):
+    if optional_python.resolve("edge_tts", "playsound"):
         out.append("edge")
     return out
 
@@ -165,15 +166,14 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeo
     text = clean_for_speech(text, limit=len(text))
     if not text:
         return False
+    executable = optional_python.resolve(*(("edge_tts", "playsound") if engine == "edge" else ("pyttsx3",)))
+    if not executable:
+        return False
     if engine == "edge":
-        if not (_has("edge_tts") and _has("playsound")):
-            return False
         child = _EDGE_CHILD.format(text=text, voice=voice or DEFAULT_EDGE_VOICE)
     else:
-        if not _has("pyttsx3"):
-            return False
         child = _SAPI_CHILD.format(text=text, voice=voice or "")
-    py, flags = _speaker()
+    py, flags = _speaker(executable)
     script = None
     try:
         # A long reply exceeds Windows' command-line limit with python -c.
