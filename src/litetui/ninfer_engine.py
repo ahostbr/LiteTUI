@@ -35,12 +35,24 @@ import os
 import socket
 import struct
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import jobkill, ttyguard
 from .llm_backend import BackendError, _arg_value
+from .shared_state import Lease  # OwnershipError is an OSError subclass — caught by the writers below
+
+
+def _registry_lock() -> Lease:
+    """The cross-process lock EVERY writer of LiteSuite's config holds around its
+    read-modify-write, so concurrent writers (LiteTUI instances/threads) never lose each
+    other's entries. Non-blocking: OwnershipError (an OSError) on contention makes the
+    write fail closed and the caller retains, rather than corrupting the shared file.
+    (Interop is with LiteTUI's own writers; LiteSuite is a separate process and honours
+    this lock only if it adopts the same path — a documented limitation.)"""
+    return Lease(_config_path().with_name("config.json.lock"))
 
 
 class EngineStartFailed(BackendError):
@@ -348,36 +360,41 @@ def register_host(base_url: str, *, pid: int | None = None) -> bool:
     as external. Every reader keys on baseUrl + kind only, so older readers are unaffected."""
     path = _config_path()
     try:
-        body = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"version": 1}
-        if not isinstance(body, dict):
-            body = {"version": 1}
-        entries = [e for e in (body.get("extraEndpoints") or []) if not (isinstance(e, dict) and e.get("kind") == "ninfer")]
-        entry: dict = {"baseUrl": base_url, "kind": "ninfer", "owner": "litetui"}
-        if pid is not None:
-            entry["pid"] = pid
-        entries.append(entry)
-        body["extraEndpoints"] = entries
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-        return True
+        with _registry_lock():                       # cross-process RMW lock (OwnershipError -> False)
+            body = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"version": 1}
+            if not isinstance(body, dict):
+                body = {"version": 1}
+            entries = [e for e in (body.get("extraEndpoints") or []) if not (isinstance(e, dict) and e.get("kind") == "ninfer")]
+            entry: dict = {"baseUrl": base_url, "kind": "ninfer", "owner": "litetui"}
+            if pid is not None:
+                entry["pid"] = pid
+            entries.append(entry)
+            body["extraEndpoints"] = entries
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+            return True
     except (OSError, ValueError):
         return False
 
 
 def unregister_host(base_url: str) -> None:
+    """Legacy URL-only removal (a stale-cleanup caller). Still a registry writer, so it holds
+    the same cross-process lock around its read-modify-write; a contended lock is a silent
+    no-op (the entry stays for the next attempt)."""
     path = _config_path()
     try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-        entries = body.get("extraEndpoints") or []
-        body["extraEndpoints"] = [
-            e for e in entries
-            if not (isinstance(e, dict) and e.get("kind") == "ninfer" and str(e.get("baseUrl", "")).rstrip("/") == base_url.rstrip("/"))
-        ]
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        with _registry_lock():                       # cross-process RMW lock (all writers share it)
+            body = json.loads(path.read_text(encoding="utf-8"))
+            entries = body.get("extraEndpoints") or []
+            body["extraEndpoints"] = [
+                e for e in entries
+                if not (isinstance(e, dict) and e.get("kind") == "ninfer" and str(e.get("baseUrl", "")).rstrip("/") == base_url.rstrip("/"))
+            ]
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
     except (OSError, ValueError):
         pass
 
@@ -626,7 +643,42 @@ def _close_log(owned) -> None:
         pass
 
 
+_CLEANUP_LOCKS_GUARD = threading.Lock()
+
+
+def _cleanup_lock_for(owned) -> threading.Lock:
+    """A per-OwnedEngine cleanup lock, created once under a global guard (thread-safe) and
+    cached on the instance. It serializes terminate_owned across ALL callers — atexit
+    stop(), a direct terminate_owned, and the backend — so two cleanups can never
+    terminate/close the SAME job concurrently (a handle-reuse hazard)."""
+    with _CLEANUP_LOCKS_GUARD:
+        lock = getattr(owned, "_cleanup_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                owned._cleanup_lock = lock
+            except Exception:  # noqa: BLE001 - a slotted/foreign object still gets a fresh lock
+                pass
+        return lock
+
+
 def terminate_owned(owned):
+    """Per-OwnedEngine-serialized terminal-shutdown proof. If a cleanup for THIS engine is
+    already in flight, return retained (busy) rather than racing a second terminate/close on
+    the same job — it never WAITS (no UI stall). See _terminate_owned_inner for the proof."""
+    from .llm_backend import TerminalShutdown
+    lock = _cleanup_lock_for(owned)
+    if not lock.acquire(blocking=False):
+        return TerminalShutdown(owned=True, attempted=False, main_exited=False, tree="unknown",
+                                pid=getattr(owned.proc, "pid", None), retained=True,
+                                error="cleanup_in_progress")
+    try:
+        return _terminate_owned_inner(owned)
+    finally:
+        lock.release()
+
+
+def _terminate_owned_inner(owned):
     """The ONE terminal-shutdown proof for an owned engine — used by stop(), the
     start-failure path and the backend, so no caller invents a divergent proof.
 
@@ -696,31 +748,34 @@ def terminate_owned(owned):
 
 
 def unregister_owned(owned) -> bool:
-    """Ownership-checked registry removal: drop the ninfer entry ONLY if its baseUrl AND pid
-    BOTH match this owned engine — so a REPLACEMENT that reused the same host/port (a
-    different pid) is never removed by our cleanup. Returns True on a completed write (incl.
-    'nothing matched'), False on an I/O/parse failure so the caller can retain rather than
-    lose the handle over a bookkeeping error. Never a broad URL-only delete."""
+    """Ownership-checked registry removal under the cross-process RMW lock: drop the ninfer
+    entry ONLY if owner=='litetui' AND baseUrl AND pid ALL match this owned engine — so a
+    FOREIGN entry, or a REPLACEMENT that reused the same host/port (a different pid), is never
+    removed by our cleanup. Read and write happen under one lock hold so no writer loses the
+    other's update. Missing config -> nothing to remove (True). An I/O/parse failure or a
+    contended lock -> False, so the caller retains rather than losing the handle over
+    bookkeeping. Never a broad URL-only delete."""
     pid = getattr(owned.proc, "pid", None)
+    host = str(owned.host).rstrip("/")
     path = _config_path()
     try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return True                          # nothing registered -> nothing to remove
-    except (OSError, ValueError):
-        return False                         # a real read failure -> retain, do not lose the handle
-    entries = body.get("extraEndpoints") or []
-    host = str(owned.host).rstrip("/")
-    body["extraEndpoints"] = [
-        e for e in entries
-        if not (isinstance(e, dict) and e.get("kind") == "ninfer"
-                and str(e.get("baseUrl", "")).rstrip("/") == host and e.get("pid") == pid)
-    ]
-    try:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
+        with _registry_lock():
+            try:
+                body = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return True                  # nothing registered -> nothing to remove
+            entries = body.get("extraEndpoints") or []
+            body["extraEndpoints"] = [
+                e for e in entries
+                if not (isinstance(e, dict) and e.get("kind") == "ninfer"
+                        and e.get("owner") == "litetui"
+                        and str(e.get("baseUrl", "")).rstrip("/") == host and e.get("pid") == pid)
+            ]
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+            return True
+    except (OSError, ValueError):            # incl. OwnershipError (contended) -> retain the handle
         return False
     return True
 

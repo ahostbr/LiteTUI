@@ -185,15 +185,19 @@ def _proof(monkeypatch):
 
 
 def _ninfer(proc, job=None):
+    import threading
     b = object.__new__(ninfer_backend.NInferBackend)
     b._owned = _Owned(proc, job=job)
     b._host = "http://127.0.0.1:9000/v1"
+    b._lifecycle_lock = threading.Lock()
     return b
 
 
 def test_ninfer_no_owned_is_not_owned():
+    import threading
     b = object.__new__(ninfer_backend.NInferBackend)
     b._owned = None
+    b._lifecycle_lock = threading.Lock()
     assert b.shutdown_owned() == TerminalShutdown(owned=False)
 
 
@@ -294,3 +298,20 @@ def test_ninfer_production_shutdown_retained_keeps_host(_proof):
     b = _ninfer(_dead(), job=42)
     r = b.shutdown()
     assert r.retained and b._host == "http://127.0.0.1:9000/v1"   # host kept for retry
+
+
+def test_ninfer_shutdown_clears_host_and_owned_together_never_a_replacement(_proof, monkeypatch):
+    from litetui import ninfer_engine
+    b = _ninfer(_dead(), job=42)
+    owned = b._owned
+    other = _Owned(_dead(), job=99)
+    other_host = "http://replacement/v1"
+    other.host = other_host
+    # A replacement swaps _owned AND _host during the drain poll of the OLD engine.
+    def _count_then_replace(job):
+        b._owned = other
+        b._host = other_host
+        return 0
+    monkeypatch.setattr(ninfer_engine.jobkill, "active_process_count", _count_then_replace)
+    b.shutdown_owned()
+    assert b._owned is other and b._host == other_host   # replacement's owned AND host untouched

@@ -55,10 +55,12 @@ async def test_cancel_joins_worker_before_discard():
 # ── begin_stop / _starting claim ────────────────────────────────────────────
 
 def _bare():
+    import threading
     b = object.__new__(NInferBackend)
     b._starting = False
     b._stopping = False
     b._owned = None
+    b._lifecycle_lock = threading.Lock()
     return b
 
 

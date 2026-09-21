@@ -556,3 +556,41 @@ def test_fail_start_surfaces_retained_on_a_cleanup_exception(tmp_path, monkeypat
     with pytest.raises(eng.EngineStartFailed) as ei:
         eng.start(s, healthy=lambda h: False, spawn=spawn)
     assert ei.value.retained_owned is not None             # the handle is surfaced, not lost
+
+
+# ── lifecycle lock: cross-process registry Lease + per-engine cleanup lock ──
+
+def test_registry_write_fails_closed_when_the_lease_is_contended(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    held = eng._registry_lock().acquire()             # another writer holds the cross-process lock
+    try:
+        assert eng.register_host("http://127.0.0.1:5", pid=1) is False   # contended -> fail closed
+        assert eng.unregister_owned(_owned(job=None)) is False           # ...and retain, never corrupt
+    finally:
+        held.release()
+
+
+def test_unregister_owned_spares_a_foreign_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    host = "http://127.0.0.1:9/v1"
+    cfg = eng.litesuite_llm_dir() / "config.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"version": 1, "extraEndpoints": [
+        {"baseUrl": host, "kind": "ninfer", "owner": "litesuite", "pid": 4242},   # NOT ours (owner)
+    ]}))
+    assert eng.unregister_owned(_owned(job=None)) is True     # pid matches but owner != litetui
+    left = json.loads(cfg.read_text())["extraEndpoints"]
+    assert left == [{"baseUrl": host, "kind": "ninfer", "owner": "litesuite", "pid": 4242}]  # spared
+
+
+def test_terminate_owned_is_busy_when_a_cleanup_for_this_engine_is_in_flight(tmp_path, monkeypatch):
+    import threading
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    owned = _owned(job=7)
+    owned._cleanup_lock = threading.Lock()
+    owned._cleanup_lock.acquire()                     # a cleanup is already running for this engine
+    try:
+        r = eng.terminate_owned(owned)                # must NOT race a second terminate/close
+        assert r.retained and r.error == "cleanup_in_progress"
+    finally:
+        owned._cleanup_lock.release()
