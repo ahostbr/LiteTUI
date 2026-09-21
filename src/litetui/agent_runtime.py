@@ -65,9 +65,18 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
         except Exception:
             pass  # durable claim/outcome remain available for startup recovery
         raise
-    result = inbox.get(parent, completion)
-    if result['cleanup']['state'] == 'confirmed':
-        registry.settle_completion(parent, child_id, inbox=inbox, completion_id=completion)
+    except Exception:
+        if launch_cancelled is not None:
+            raise launch_cancelled
+        raise
+    try:
+        result = inbox.get(parent, completion)
+        if result['cleanup']['state'] == 'confirmed':
+            registry.settle_completion(parent, child_id, inbox=inbox, completion_id=completion)
+    except Exception:
+        if launch_cancelled is not None:
+            raise launch_cancelled
+        raise
     if launch_cancelled is not None:
         raise launch_cancelled  # Durable outcome will replay; preserve caller cancellation.
     notify({'completion_id': completion, 'result': result})

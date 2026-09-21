@@ -138,8 +138,9 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
             on_ready(ready)
         await process.send_prompt(spec.prompt)
         return ready
-    except BaseException:
+    except BaseException as original:
         import asyncio
+        cancelled = original if isinstance(original, asyncio.CancelledError) else None
         async def close_bounded():
             async with asyncio.timeout(10):
                 return await process.close()
@@ -148,12 +149,15 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
             try:
                 await asyncio.shield(cleanup)
                 break
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 if cleanup.cancelled():
                     break
+                cancelled = cancelled or exc
             except Exception:
                 # Cleanup failure must not replace the original launch exception,
                 # especially cancellation. Bound launches persist an unconfirmed
                 # outcome through the runtime's subsequent cleanup attempt.
                 break
+        if cancelled is not None:
+            raise cancelled
         raise

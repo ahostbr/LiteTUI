@@ -149,3 +149,100 @@ async def test_bound_prompt_failure_is_durable(tmp_path, cancelled, confirmed, f
     assert bool(registry.active('parent')) is not confirmed
     assert len(notices) == (0 if cancelled else 1)
     assert calls == ['close', 'close']
+
+@pytest.mark.asyncio
+async def test_bound_prompt_cancel_repeated_during_cleanup_is_joined(tmp_path):
+    import asyncio
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    notices = []
+    class Process:
+        conversation_id = 'convo'
+        closes = 0
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text):
+            raise asyncio.CancelledError()
+        async def collect_turn(self, **kwargs):
+            pytest.fail('failed delivery must not collect')
+        async def close(self):
+            self.closes += 1
+            if self.closes == 1:
+                cleaning.set()
+                await release.wait()
+            return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    task = asyncio.create_task(run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+        parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+        branch=None, evidence=[], supported_levels=[], notify=notices.append))
+    try:
+        await asyncio.wait_for(cleaning.wait(), 2)
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert registry.active('parent')
+            assert not inbox.pending('parent')
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    events = inbox.pending('parent')
+    assert len(events) == 1
+    assert events[0]['result']['status'] == 'cancelled'
+    assert not registry.active('parent')
+    assert not notices
+
+@pytest.mark.asyncio
+async def test_internal_cleanup_cancel_is_not_parent_cancel(tmp_path):
+    import asyncio
+    from litetui.agent_supervisor import finish_child
+    from litetui.agent_inbox import AgentInbox
+    class Process:
+        conversation_id = 'convo'
+        async def close(self): raise asyncio.CancelledError()
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    notices = []
+    ident = await finish_child(Process(), inbox, parent='parent', child_id='child',
+        branch=None, evidence=[], notify=notices.append,
+        launch_outcome={'status': 'failed', 'summary': 'prompt failed'})
+    assert inbox.get('parent', ident)['cleanup']['state'] == 'unconfirmed'
+    assert len(notices) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('storage_failure', ['settle', 'persist'])
+async def test_launch_cancel_survives_storage_failure(tmp_path, monkeypatch, storage_failure):
+    import asyncio
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    def fail(*args, **kwargs): raise OSError('storage unavailable')
+    if storage_failure == 'settle':
+        monkeypatch.setattr(registry, 'settle_completion', fail)
+    else:
+        monkeypatch.setattr(inbox, 'persist', fail)
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text): raise asyncio.CancelledError()
+        async def close(self): return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    with pytest.raises(asyncio.CancelledError):
+        await run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+            parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+            branch=None, evidence=[], supported_levels=[], notify=lambda e: pytest.fail('must not notify'))
+    assert registry.active('parent')
+    assert bool(inbox.pending('parent')) is (storage_failure == 'settle')

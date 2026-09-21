@@ -237,6 +237,9 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
         try:
             async with asyncio.timeout(10):
                 return await process.close(), None
+        except asyncio.CancelledError:
+            # An internally cancelled close is unknown cleanup, not parent cancellation.
+            return False, 'Child cleanup was cancelled'
         except Exception as exc:
             return False, f'{type(exc).__name__}: {exc}'
 
@@ -266,7 +269,15 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
             if result['status'] == 'completed':
                 result['status'] = 'failed'
                 result['error'] = result['storage_error']
-    completion = inbox.persist(parent, result)
+    try:
+        completion = inbox.persist(parent, result)
+    except Exception as exc:
+        # No durable outcome exists; the registry claim must remain for recovery.
+        # Do not mask caller cancellation with a storage failure.
+        if cancelled is not None:
+            cancelled.add_note(f'Child outcome persistence failed: {type(exc).__name__}')
+            raise cancelled from exc
+        raise
     if cancelled is not None:
         # Durable pending result is replayable; preserve caller cancellation.
         raise cancelled
