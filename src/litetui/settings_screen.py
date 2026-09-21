@@ -814,10 +814,7 @@ class SettingsBody(Widget):
                         yield self._section_header("voice-speak")
                         yield Label("Speak — replies read aloud (TTS out)",
                                     classes="set-label")
-                        yield from self._switch_row(
-                            "tts_enabled", "Speak replies aloud (TTS)",
-                            "Default for spoken replies. The input Speak toggle can "
-                            "override this for an individual turn.")
+                        yield Static("Use Speak / Stop on each response to control playback. Replies are never spoken automatically.")
                         yield from self._select_row(
                             "tts_engine", "TTS engine",
                             [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
@@ -1741,18 +1738,9 @@ class SettingsBody(Widget):
         self.run_worker(self._do_install_edge, thread=True)
 
     def _do_install_edge(self) -> None:
-        import subprocess
-        import sys
+        from litetui.voice_install import install_edge
 
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "edge-tts",
-                 "playsound==1.2.2"],
-                check=True, capture_output=True, timeout=240)
-            msg = "edge support installed — pick 'edge' and Test."
-        except Exception as e:  # noqa: BLE001 - report every failure to the panel
-            msg = (f"install failed: {type(e).__name__} "
-                   "(try: uv pip install edge-tts playsound==1.2.2)")
+        msg = install_edge()
         self.app.call_from_thread(
             self.query_one("#voice-status", Static).update, msg)
 

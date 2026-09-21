@@ -821,8 +821,10 @@ class AssistantMessage(Vertical):
         self.summary_done: bool = False   # asked once, whatever came back
 
     def compose(self) -> ComposeResult:
+        from litetui.response_speech import ResponseSpeakButton
         yield self.body
         yield self.stop_line
+        yield ResponseSpeakButton(self)
 
     # -- header ------------------------------------------------------------
     #

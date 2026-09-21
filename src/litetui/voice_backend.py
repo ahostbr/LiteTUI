@@ -20,6 +20,7 @@ own audio handle and dies when the clip ends — Popen returns immediately.
 from __future__ import annotations
 
 import importlib.util
+from litetui import optional_python
 import os
 import subprocess
 import sys
@@ -31,12 +32,12 @@ _active = set()
 _active_lock = threading.Lock()
 
 
-def stop() -> None:
+def stop(owner=None) -> None:
     """Stop only speech processes launched by this LiteTUI instance."""
     with _active_lock:
         for proc in tuple(_active):
             try:
-                if proc.poll() is None:
+                if (owner is None or getattr(proc, "_speech_owner", None) is owner) and proc.poll() is None:
                     proc.kill()
             except OSError:
                 pass
@@ -65,13 +66,13 @@ DEFAULT_EDGE_VOICE = "en-GB-SoniaNeural"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _speaker() -> tuple[str, int]:
+def _speaker(executable=None) -> tuple[str, int]:
     """(interpreter, creationflags) for the speaking child. Prefer pythonw.exe:
     measured 2026-09-18 — a `python.exe` child was SILENT (with or without a
     console) while `pythonw.exe` (GUI subsystem) kept an audio session and was
     the only one audible. It also has no console, so no flag and no flash.
     Fall back to python.exe + CREATE_NO_WINDOW when pythonw is missing."""
-    exe = sys.executable or "python"
+    exe = executable or sys.executable or "python"
     d, name = os.path.split(exe)
     if name.lower() in ("python.exe", "python"):
         cand = os.path.join(d, "pythonw.exe")
@@ -92,9 +93,9 @@ def available_engines() -> list[str]:
     package; edge needs BOTH edge_tts and playsound. The tab greys out what is
     missing rather than offering an engine that will fail silently in a child."""
     out: list[str] = []
-    if _has("pyttsx3"):
+    if optional_python.resolve("pyttsx3"):
         out.append("pyttsx3")
-    if _has("edge_tts") and _has("playsound"):
+    if optional_python.resolve("edge_tts", "playsound"):
         out.append("edge")
     return out
 
@@ -156,7 +157,7 @@ asyncio.run(go())
 """
 
 
-def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeout: int = 300) -> bool:
+def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeout: int = 300, owner=None) -> bool:
     """Fire-and-forget one utterance in a detached child. Returns True if a
     child was launched, False if the text was empty or the engine unavailable.
     NEVER raises — a failed speak must not break a turn."""
@@ -165,15 +166,14 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeo
     text = clean_for_speech(text, limit=len(text))
     if not text:
         return False
+    executable = optional_python.resolve(*(("edge_tts", "playsound") if engine == "edge" else ("pyttsx3",)))
+    if not executable:
+        return False
     if engine == "edge":
-        if not (_has("edge_tts") and _has("playsound")):
-            return False
         child = _EDGE_CHILD.format(text=text, voice=voice or DEFAULT_EDGE_VOICE)
     else:
-        if not _has("pyttsx3"):
-            return False
         child = _SAPI_CHILD.format(text=text, voice=voice or "")
-    py, flags = _speaker()
+    py, flags = _speaker(executable)
     script = None
     try:
         # A long reply exceeds Windows' command-line limit with python -c.
@@ -182,6 +182,7 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeo
             output.write(child)
         with _active_lock:
             proc = subprocess.Popen([py, script], creationflags=flags)
+            proc._speech_owner = owner
             _active.add(proc)
         threading.Thread(target=_reap, args=(proc, timeout, script), daemon=True).start()
         return True
@@ -199,3 +200,8 @@ if __name__ == "__main__":  # ponytail self-check: no framework, one assert path
     print("sapi voices:", list_sapi_voices())
     speak("Voice backend self test.", engine="pyttsx3")
     print("ok")
+
+
+def is_playing(owner) -> bool:
+    with _active_lock:
+        return any(getattr(p, '_speech_owner', None) is owner and p.poll() is None for p in _active)
