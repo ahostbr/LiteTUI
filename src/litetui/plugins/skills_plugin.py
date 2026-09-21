@@ -9,8 +9,12 @@ from litetui import skills as skills_mod
 from litetui.picker import pick
 from litetui import paths
 import time
+from pathlib import Path
 from litetui.plugins import PROMPT_ORDER, PluginManifest
 from litetui.tool_policy import READ_POLICY
+from litetui.plugin_reload_skills import refresh_skills_guarded
+from litetui.plugin_reload_activity import produce_activity
+from litetui.plugin_reload_children import children_pending
 
 
 #: Picker row id for "show me the old text report". Not a skill name, and
@@ -27,10 +31,27 @@ def _cmd_refresh(app) -> None:
     report, not the word "refreshed" -- "+1 find-claude-skills" is what tells
     you the thing you just wrote was actually seen.
     """
-    if not app.settings.skills_enabled:
-        app.system_message("Skills are OFF in /settings — nothing to refresh.")
+    # Same guarded path as /reload-plugins skills — this command must not bypass
+    # the native/busy/source-drift/durable-child gates before writing the cache.
+    def _activity():
+        return produce_activity(
+            app,
+            children_pending=lambda: children_pending(Path.home() / ".litetui-agents", app.convo_id),
+        ).snapshot
+    result = refresh_skills_guarded(app, activity=_activity)
+    if result.status != "refreshed":
+        if result.status == "disabled":
+            app.system_message(result.reason)
+        elif result.status == "deferred":
+            app.system_message(
+                f"Skills refresh deferred: {result.reason}. Run /skills refresh again "
+                "after the active work finishes.")
+        elif result.status == "restart-required":
+            app.system_message(f"Skills refresh needs a restart: {result.reason}. Skills unchanged.")
+        else:
+            app.system_message(f"Skills refresh failed: {result.reason}. Skills unchanged.")
         return
-    added, removed = app.refresh_skills()
+    added, removed = result.added, result.removed
     where = skills_mod.cache_path(paths.data_root())
     lines = [f"{len(app.skills)} skill(s) after refresh — cache: {where}"]
     if added:

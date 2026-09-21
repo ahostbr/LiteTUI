@@ -128,9 +128,9 @@ def capture_baseline(app: Any) -> dict:
     return baseline
 
 
-def _drifted(baseline: dict, path: str) -> str | None:
-    """Reason string when `path` cannot be proven unchanged, else None."""
-    files = baseline["files"]
+def _drifted(files: dict, path: str) -> str | None:
+    """Reason string when `path` cannot be proven unchanged against `files`
+    (a {path: digest|None} map), else None."""
     if path not in files:
         return "was not in the startup baseline"
     before = files[path]
@@ -164,7 +164,7 @@ def provenance_ok(app: Any, tool_name: str) -> tuple[bool, str]:
         if current != pinned:
             return False, (f"reload machinery module {name!r} now resolves to a different file than "
                            "at startup; restart required")
-        reason = _drifted(baseline, pinned)
+        reason = _drifted(baseline["files"], pinned)
         if reason is not None:
             return False, f"reload machinery source {Path(pinned).name!r} {reason}; restart required"
 
@@ -181,7 +181,61 @@ def provenance_ok(app: Any, tool_name: str) -> tuple[bool, str]:
                        "restart required")
     if pinned is None:
         return False, f"cannot locate the handler source for {tool_name!r}"
-    reason = _drifted(baseline, pinned)
+    reason = _drifted(baseline["files"], pinned)
     if reason is not None:
         return False, f"handler source for {tool_name!r} {reason}; restart required to load the new code"
+    return True, ""
+
+
+# ── skills-refresh source set ────────────────────────────────────────────────
+# SEPARATE from the core/description set on purpose: it includes litetui.app
+# (refresh_skills' defining source), whose frequent churn must gate a skills
+# refresh but must NEVER block a tool-description refresh. Same fail-closed rules.
+_SKILLS_MODULES: tuple[str, ...] = (
+    "litetui.app",                    # refresh_skills defining source (churny — restart on any edit, by design)
+    "litetui.plugins.skills_plugin",  # the /skills command surface
+    "litetui.skills",                 # discover_all / write_cache — the actual disk work
+    "litetui.plugin_reload_skills",   # the shared guarded helper both commands call
+)
+_SKILLS_KEY = "_skills_source_baseline"
+
+
+def capture_skills_baseline(app: Any) -> dict:
+    """Baseline the skills-refresh sources ONCE at startup, independent of the
+    core baseline. Shape: {"files": {path: digest|None}, "modules": {name: path|None}}."""
+    existing = getattr(app, _SKILLS_KEY, None)
+    if isinstance(existing, dict):
+        return existing
+    files: dict[str, str | None] = {}
+    modules: dict[str, str | None] = {}
+    for name in _SKILLS_MODULES:
+        path = _module_path(name)
+        modules[name] = path
+        if path is not None and path not in files:
+            try:
+                files[path] = _digest(path)
+            except OSError:
+                files[path] = None
+    baseline = {"files": files, "modules": modules}
+    setattr(app, _SKILLS_KEY, baseline)
+    return baseline
+
+
+def skills_provenance_ok(app: Any) -> tuple[bool, str]:
+    """(ok, reason). False whenever any skills-refresh source cannot be proven
+    unchanged since startup — the caller must require a restart before touching
+    the skills cache. Fail-closed on a missing baseline."""
+    baseline = getattr(app, _SKILLS_KEY, None)
+    if not isinstance(baseline, dict):
+        return False, "no skills-source provenance baseline was captured at startup"
+    for name, pinned in baseline["modules"].items():
+        if pinned is None:
+            return False, f"skills-refresh module {name!r} was unavailable at startup; restart required"
+        current = _module_path(name)
+        if current != pinned:
+            return False, (f"skills-refresh module {name!r} now resolves to a different file than "
+                           "at startup; restart required")
+        reason = _drifted(baseline["files"], pinned)
+        if reason is not None:
+            return False, f"skills-refresh source {Path(pinned).name!r} {reason}; restart required"
     return True, ""
