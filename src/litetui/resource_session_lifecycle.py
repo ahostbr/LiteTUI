@@ -9,17 +9,14 @@ work stays blocked.
 """
 from litetui import runtime_log
 
-_MAX_ERR = 200
-
 
 def _safe_error(exc: BaseException) -> str:
-    """Type name + a BOUNDED message. Never repr(exc): arbitrary exception args can
-    carry secrets, and this string reaches the shutdown log."""
-    try:
-        message = str(exc)
-    except Exception:  # noqa: BLE001 - a broken __str__ must not break the report
-        message = ""
-    return f"{type(exc).__name__}: {message[:_MAX_ERR]}" if message else type(exc).__name__
+    """The exception TYPE name only — never str(exc)/repr(exc). Bounded is not
+    redacted: an exception's message (not just repr's args) can carry a path, a
+    token, or user text, and this string reaches the shutdown log and the report.
+    The stable operation label at each call site says WHICH step failed; the type
+    says WHAT kind of failure, and that is all a shutdown diagnostic needs."""
+    return type(exc).__name__
 
 
 def begin_shutdown(app) -> dict:
@@ -76,6 +73,6 @@ def begin_shutdown(app) -> dict:
             report[id(session)] = {"error": _safe_error(exc)}
             runtime_log.record_error(
                 "admission.shutdown_begin_close_failed",
-                detail=_safe_error(exc),
+                detail=f"begin_close: {_safe_error(exc)}",   # stable label + type only
                 site="resource_session_lifecycle")
     return report
