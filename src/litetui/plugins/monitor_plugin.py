@@ -119,6 +119,11 @@ def _handle(app, name: str, arg: str) -> None:
         _run_sweep_demo(app)
         return
 
+    # Retain ownership before dispatch, including the not-yet-started window.
+    # Reload eligibility must not mistake a raw thread for an idle App.
+    threads = getattr(app, '_monitor_threads', None)
+    if threads is None:
+        threads = app._monitor_threads = set()
     # default: a real sweep — off the UI thread, because Chrome is slow.
     def go() -> None:
         try:
@@ -132,8 +137,16 @@ def _handle(app, name: str, arg: str) -> None:
                 error_type=type(exc).__name__,
             )
             _post(app, f"[monitor] sweep failed: {type(exc).__name__}: {exc}")
+        finally:
+            threads.discard(thread)
 
-    threading.Thread(target=go, name="monitor-sweep", daemon=True).start()
+    thread = threading.Thread(target=go, name="monitor-sweep", daemon=True)
+    threads.add(thread)
+    try:
+        thread.start()
+    except BaseException:
+        threads.discard(thread)
+        raise
 
 
 def _register(ctx) -> None:
