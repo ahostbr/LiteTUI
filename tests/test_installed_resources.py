@@ -51,10 +51,11 @@ def _make_source(root: Path) -> Path:
     return pkg
 
 
-def _make_wheel(path: Path, entries) -> Path:
+def _make_wheel(path: Path, entries, pkg=None) -> Path:
     with zipfile.ZipFile(path, "w") as zf:
         for entry in entries:
-            zf.writestr(entry, b"x")
+            data = (pkg.parent / entry).read_bytes() if pkg else b"x"
+            zf.writestr(entry, data)
     return path
 
 
@@ -74,7 +75,7 @@ def test_enumeration_requires_namespace_module_and_excludes_cache(tmp_path):
 
 def test_complete_wheel_passes(tmp_path):
     pkg = _make_source(tmp_path / "src")
-    wheel = _make_wheel(tmp_path / "ok.whl", gate._required_entries(pkg))
+    wheel = _make_wheel(tmp_path / "ok.whl", gate._required_entries(pkg), pkg)
     gate.check_zip(wheel, pkg)  # must not raise
 
 
@@ -91,6 +92,25 @@ def test_wheel_missing_one_required_entry_is_rejected(tmp_path, drop):
     required = gate._required_entries(pkg)
     assert drop in required
     wheel = _make_wheel(tmp_path / "bad.whl", [e for e in required if e != drop])
+    with pytest.raises(SystemExit):
+        gate.check_zip(wheel, pkg)
+
+
+@pytest.mark.parametrize("changed", ["app.py", "schemas/tool.json", "prompts/first.md"])
+def test_stale_wheel_bytes_are_rejected(tmp_path, changed):
+    pkg = _make_source(tmp_path / "src")
+    wheel = _make_wheel(tmp_path / "stale.whl", gate._required_entries(pkg), pkg)
+    (pkg / changed).write_bytes(b"changed after build")
+    with pytest.raises(SystemExit):
+        gate.check_zip(wheel, pkg)
+
+
+def test_duplicate_required_zip_member_is_rejected(tmp_path):
+    pkg = _make_source(tmp_path / "src")
+    wheel = _make_wheel(tmp_path / "duplicate.whl", gate._required_entries(pkg), pkg)
+    with zipfile.ZipFile(wheel, "a") as zf:
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            zf.writestr("litetui/app.py", (pkg / "app.py").read_bytes())
     with pytest.raises(SystemExit):
         gate.check_zip(wheel, pkg)
 

@@ -121,16 +121,21 @@ def check_zip(wheel: Path, pkg_dir: Path = PKG_DIR) -> None:
     `pkg_dir` is a seam for the offline synthetic-fixture tests; main() uses the
     real tree.
     """
-    with zipfile.ZipFile(wheel) as zf:
-        names = set(zf.namelist())
     required = _required_entries(pkg_dir)
-    missing = [entry for entry in required if entry not in names]
-    if missing:
-        _fail(
-            "these source files are on disk but NOT in the wheel — packaging is "
-            f"not shipping them: {sorted(missing)}"
-        )
-    print(f"zip OK: all {len(required)} source modules + data present "
+    with zipfile.ZipFile(wheel) as zf:
+        entries = zf.namelist()
+        names = set(entries)
+        missing = [entry for entry in required if entry not in names]
+        if missing:
+            _fail(f"source files NOT in the wheel: {sorted(missing)}")
+        duplicates = [entry for entry in required if entries.count(entry) != 1]
+        if duplicates:
+            _fail(f"ambiguous duplicate wheel members: {duplicates}")
+        stale = [entry for entry in required
+                 if zf.read(entry) != (pkg_dir / Path(entry).relative_to('litetui')).read_bytes()]
+        if stale:
+            _fail(f"wheel bytes differ from candidate source: {stale}")
+    print(f"zip OK: all {len(required)} source modules + data byte-matched "
           f"({len(names)} entries in wheel)")
 
 
