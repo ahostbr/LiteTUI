@@ -174,6 +174,35 @@ async def test_borrower_holding_owned_row_does_not_auto_unload(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_repeat_close_never_unloads_borrower_on_owned_row(tmp_path):
+    # Regression: a borrower holding the last lease on an OWNED row gets a claim on
+    # the first close (released_unowned_claim). A SECOND close must NOT reach
+    # _drive_unload and unload a borrowed model — the ownership guard is on every path.
+    c = _coord(tmp_path, 'repeat-borrow.sqlite', ram=1000)
+    a = ModelResourceSession(c, 'a', demand_for=lambda k: DEMAND, owned=True)
+    b = ModelResourceSession(c, 'b', demand_for=lambda k: DEMAND)   # borrowed
+    async with a.load('model'):
+        pass
+    async with b.load('model'):
+        pass
+    assert a.release('model') is False       # b is now the last lease; row still owned
+    calls = []
+    unload = lambda k: calls.append(k) or True
+
+    r1 = await b.close(quiescent=ALWAYS_QUIESCENT, unload=unload)
+    r2 = await b.close(quiescent=ALWAYS_QUIESCENT, unload=unload)
+    assert r1 == {'model': 'released_unowned_claim'}
+    assert r2 == {'model': 'released_unowned_claim'}
+    assert calls == []                       # ZERO unloads across BOTH closes
+    assert b.unload_claims.get('model') is not None   # claim retained for the owner
+
+    # A direct _drive_unload retry (the outstanding-claim path) is guarded too.
+    assert await b._drive_unload('model', unload) == 'released_unowned_claim'
+    assert calls == []
+    assert b.unload_claims.get('model') is not None
+
+
+@pytest.mark.asyncio
 async def test_concurrent_close_serializes_no_duplicate_unload(tmp_path):
     import asyncio
     c = _coord(tmp_path, 'concurrent.sqlite')

@@ -178,6 +178,15 @@ class ModelResourceSession:
     async def _drive_unload(self, key, unload):
         if self.unload_claims.get(key) is None:
             return 'gone'
+        # 🔴 UNCONDITIONAL OWNERSHIP GUARD, on EVERY unload path. A borrowed session
+        # can hold a claim it must never act on: coordinator.release_lease grants
+        # permission off the MODEL ROW (owned by the original owner) even when THIS
+        # caller borrowed, so the first close stored a claim and reported
+        # released_unowned_claim. Without this guard a SECOND close (key out of
+        # leases, claim present) would reach here and unload a borrowed/keep-warm
+        # model. The claim is retained for the true owner / reconcile.
+        if not (self.owned and not self.keep_warm):
+            return 'released_unowned_claim'
         try:
             ok = await _maybe_await(unload(key))
         except asyncio.CancelledError:
