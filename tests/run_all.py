@@ -228,6 +228,20 @@ def classify() -> tuple[list[Path], list[Path]]:
     return pytest_style, script_style
 
 
+def _run_bounded(command, *, timeout, **kwargs):
+    """Report child timeout as failure without abandoning remaining files.
+
+    subprocess.run kills/waits for the direct child on timeout. This is not
+    a process-tree cleanup guarantee; tests must still own their descendants.
+    """
+    try:
+        return subprocess.run(command, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        message = f"TIMEOUT after {timeout}s: {command[-1]}"
+        print(message)
+        return subprocess.CompletedProcess(command, 124, "", message)
+
+
 def main() -> int:
     verbose = "-v" in sys.argv
 
@@ -275,6 +289,10 @@ def main() -> int:
 
     print(f"pytest-style: {len(pyt)}   script-style: {len(scr)}\n")
 
+    if not pyt and not scr:
+        print("FAILED: empty selected test inventory; nothing was verified")
+        return 1
+
     failures: list[str] = []
 
     if pyt:
@@ -303,9 +321,10 @@ def main() -> int:
         # failing file and never reach the script half below — the opposite of
         # what a runner whose job is to report EVERY file wants. The return code
         # is read by name immediately after, which is the whole point.
-        proc = subprocess.run(  # noqa: PLW1510
+        proc = _run_bounded(
             [sys.executable, "-m", "pytest", "-q", "--durations=25",
              *[str(p) for p in pyt]],
+            timeout=3600,
             cwd=str(ROOT),
         )
         # pytest's documented exit codes. NO_TESTS (5) and INTERNAL (3) are
@@ -328,7 +347,7 @@ def main() -> int:
         # Same reason as the pytest child above: `check=True` would raise on
         # the first failing script and the remaining files would never run, so
         # the report would name one failure and hide the rest.
-        proc = subprocess.run(  # noqa: PLW1510
+        proc = _run_bounded(
             [sys.executable, str(f)],
             cwd=str(ROOT),
             capture_output=True,
