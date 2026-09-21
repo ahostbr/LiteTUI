@@ -34,14 +34,18 @@ def capture_launch(app, request):
     if (not conversation or app.store.convo_id != conversation or not app.store.owned
             or app.store.pending or app.store.loading):
         raise LaunchBlocked('Owned materialized parent conversation required')
-    from litetui.agent_workspace import _git
-    baseline = _git(Path(spec.workspace).resolve(), 'rev-parse', '--verify', 'HEAD^{commit}')
+    workspace = Path(spec.workspace).resolve()
     captured = dict(request)
+    captured['workspace'] = str(workspace)
     # Home-owned sibling tree, never the caller's source checkout. Shared
     # registry enforces the default one-child budget across parent instances.
     root = Path.home() / '.litetui-agents'
 
     async def launch():
+        from litetui.agent_preparation import await_preparation
+        from litetui.agent_workspace import _git
+        baseline = await await_preparation(
+            lambda: _git(workspace, 'rev-parse', '--verify', 'HEAD^{commit}'))
         current_profile = getattr(app, '_active_tool_profile', None) or app.settings.tool_policy_profile
         if app.convo_id != conversation or current_profile != profile:
             raise LaunchBlocked('Parent conversation or authority changed before launch')
