@@ -28,6 +28,7 @@ class Fake:
         self.fail = fail
         self.started = False
         self.stopped = False
+        self.error = None
 
     def start(self):
         if self.fail:
@@ -190,3 +191,64 @@ def test_add_remove_reload_raise_busy_when_claimed(tmp_path):
     with pytest.raises(mc.MCPBusy):
         m.remove("a")
     m._maint_active = False
+
+
+# ── batch 1: coordinator-state correctness (review remediation) ───────────────
+def test_reconcile_disconnects_newly_disabled_server(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    _write_cfg(tmp_path, {"a": {"command": "x", "disabled": True}})
+    out = m.reconcile()
+    assert out == {"a": "disconnected"} and "a" not in m.servers
+
+
+def test_non_object_config_preserved_as_invalid(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    (tmp_path / "mcp.json").write_text("[]", encoding="utf-8")   # valid JSON, wrong type
+    out = m.reconcile()
+    assert list(out) == [""] and "config invalid" in out[""]
+    assert "a" in m.servers                                       # preserved, no bulk disconnect
+
+
+def test_invalid_entry_reported_and_describe_does_not_crash(tmp_path):
+    m = _mgr(tmp_path, {})
+    _write_cfg(tmp_path, {"a": []})                               # entry is not an object
+    out = m.reconcile()
+    assert out["a"].startswith("failed:")
+    assert m.describe()[0]["state"] == "failed"                  # describe survives it
+
+
+def test_stop_failure_retains_ownership_and_quarantines(tmp_path):
+    class BadStop(Fake):
+        def stop(self):
+            raise RuntimeError("stop boom")
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m._build = lambda n, sc: BadStop(n)
+    m.reconcile()
+    _write_cfg(tmp_path, {})
+    out = m.reconcile()
+    assert out["a"].startswith("failed:") and "a" in m.servers    # not "disconnected", retained
+    # quarantined: a reconnect must NOT start a second process over it
+    assert "stop unresolved" in (m._connect_locked("a") or "")
+
+
+def test_describe_surfaces_runtime_transport_error(tmp_path):
+    m = _mgr(tmp_path, {})
+    f = Fake("a"); f.tools = [{"name": "x"}]; f.error = "timed out"
+    m.configs = {"a": {"command": "x"}}
+    m.servers["a"] = f
+    row = m.describe()[0]
+    assert row["state"] == "failed" and row["error"] == "timed out"
+
+
+def test_remove_lower_precedence_keeps_effective_server(tmp_path):
+    (tmp_path / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"a": {"command": "high"}}}), encoding="utf-8")
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"a": {"command": "low"}}}), encoding="utf-8")
+    m = mc.MCPManager(tmp_path)
+    m._build = lambda n, sc: Fake(n)
+    m.reconcile()
+    assert m.remove("a") is None
+    assert "a" in m.configs and "a" in m.servers                  # effective server untouched
