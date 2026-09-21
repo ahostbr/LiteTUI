@@ -207,6 +207,10 @@ class _FakeWorker:
     """Mimics the bit of textual.worker.Worker we depend on: a `_task` set by run_worker."""
     def __init__(self, task):
         self._task = task
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
 
 
 class _FakeApp:
@@ -268,7 +272,29 @@ def test_command_stop_schedule_failure_clears_claim_no_phantom():
 
 
 def test_command_stop_untracked_worker_fails_closed():
-    app = _FakeApp(_FakeBackend(), task_none=True)   # worker._task absent (internal change)
+    app = _FakeApp(_FakeBackend(), task_none=True)   # worker._task is not a real Task
     _cmd_engine(app, "/engine", "stop")
     assert app.backend.ended is True                 # fail closed: released, no strand
+    assert app.last_worker.cancelled is True         # worker cancelled before abandoning
     assert any("could not be tracked" in m for m in app.messages)
+
+
+@pytest.mark.asyncio
+async def test_real_textual_worker_task_is_a_real_task_and_observable():
+    # The fake worker cannot certify Worker._task's lifecycle; a MOUNTED Textual app can.
+    from textual.app import App
+
+    released = []
+
+    async def _work():
+        return "ok"
+
+    app = App()
+    async with app.run_test():
+        worker = app.run_worker(_work(), name="probe", exit_on_error=False)
+        task = getattr(worker, "_task", None)
+        assert isinstance(task, asyncio.Task)        # real asyncio.Task, as the command requires
+        task.add_done_callback(lambda _t: released.append(True))
+        await worker.wait()
+        await asyncio.sleep(0)                        # let the done-callback fire
+    assert released == [True]                         # terminal-state cleanup fires on the real task

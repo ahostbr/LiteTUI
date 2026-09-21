@@ -291,16 +291,35 @@ def _cmd_engine(app, name: str, arg: str) -> None:
             except Exception:               # noqa: BLE001, S110
                 pass
 
-        # Textual sets Worker._task synchronously in run_worker; add_done_callback fires
-        # on every terminal state incl. pre-first-step cancellation (Worker.StateChanged
-        # does not). _task is Textual-internal: fail closed (release now) if it is absent.
-        task = getattr(worker, "_task", None)
-        if task is None:
-            coro.close()
+        def _fail_closed(close_coro):
+            # Cancel the worker FIRST so a delayed/unsupported worker cannot later run the
+            # coroutine we are about to abandon; then optionally close the coroutine, and
+            # release the claim so it can never strand.
+            try:
+                worker.cancel()
+            except Exception:               # noqa: BLE001, S110
+                pass
+            if close_coro:
+                try:
+                    coro.close()
+                except Exception:           # noqa: BLE001, S110
+                    pass
             backend.end_stop()
             app.system_message("engine stop could not be tracked — released the stop claim; try again.")
+
+        # Textual sets Worker._task synchronously in run_worker; add_done_callback fires on
+        # every terminal state incl. pre-first-step cancellation (Worker.StateChanged does
+        # not). _task is Textual-internal, so validate it is a REAL asyncio.Task (not any
+        # attribute) and that the callback actually attaches — fail closed otherwise.
+        task = getattr(worker, "_task", None)
+        if not isinstance(task, asyncio.Task):
+            _fail_closed(close_coro=True)    # the worker never got a real task; close our coro
             return
-        task.add_done_callback(_release)
+        try:
+            task.add_done_callback(_release)
+        except Exception:                    # noqa: BLE001 - could not observe: the task owns the coro
+            _fail_closed(close_coro=False)   # a real task holds the coro; cancel, don't close it
+            return
         return
     if verb in ("lanes", "concurrency"):
         app.system_message(_set_lanes(app, rest[0] if rest else ""))
