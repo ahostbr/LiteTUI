@@ -162,9 +162,22 @@ def os_name() -> str:
 
 IN_VENV_CHECKS = r'''
 # Runs INSIDE the scratch venv, against ONLY what the wheel installed.
+import importlib.metadata
+from pathlib import Path
+import sys
+import litetui
+from litetui.version import __version__
+
+prefix = Path(sys.prefix).resolve()
+assert sys.prefix != sys.base_prefix, "probe is not inside a virtual environment"
+assert Path(litetui.__file__).resolve().is_relative_to(prefix), "package imported outside venv"
+assert importlib.metadata.version("litetui") == __version__, "installed metadata/version mismatch"
 from litetui import app  # noqa: F401  <- THE heavy import; died in 0.22.0
 from litetui import paths, tool_schemas, textfmt
 from litetui.textfmt import validate_tool_denied
+
+for module in (app, paths, tool_schemas, textfmt):
+    assert Path(module.__file__).resolve().is_relative_to(prefix), f"source fallback: {module.__name__}"
 
 names = sorted(tool_schemas.available())
 assert len(names) >= 15, f"only {len(names)} schemas visible in the install: {names}"
@@ -195,7 +208,7 @@ print(f"in-venv checks OK: {len(names)} schemas, all prompts readable")
 def run_in_venv(venv_python: Path, workdir: Path) -> None:
     check = workdir / "in_venv_checks.py"
     check.write_text(IN_VENV_CHECKS, encoding="utf-8")
-    r = _run([venv_python, str(check)], timeout=300)
+    r = _run([venv_python, "-I", str(check)], timeout=300, cwd=workdir)
     if r.returncode != 0:
         print(r.stdout[-4000:], file=sys.stderr)
         print(r.stderr[-4000:], file=sys.stderr)
@@ -213,7 +226,9 @@ def check_version(venv_python: Path, workdir: Path) -> None:
         if os_name() == "nt"
         else workdir / "venv" / "bin" / "litetui"
     )
-    r = _run([exe, "--version"], timeout=120)
+    r = _run([exe, "--version"], timeout=120, cwd=workdir)
+    if r.returncode != 0:
+        _fail(f"installed --version failed (exit {r.returncode})")
     got = (r.stdout or "").strip()
     print(f"--version -> {got!r} (repo says {expected!r})")
     if expected not in got:
