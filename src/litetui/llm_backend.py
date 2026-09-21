@@ -162,19 +162,26 @@ FLAG_FOR: dict[str, str] = {**VALUE_FLAGS, **BOOL_FLAGS}
 
 @dataclass(frozen=True)
 class TerminalShutdown:
-    """The proven-terminal result of stopping an OWNED engine. Its guarantees are
-    deliberately narrow so a caller cannot over-claim resource absence:
+    """The result of stopping an OWNED engine. Guarantees are deliberately narrow so a
+    caller cannot over-claim resource absence:
 
-    - ``owned`` False: we held no handle (an ATTACHED or absent engine) — nothing
-      was killed and nothing is claimed.
+    - ``owned`` False: we held no handle (an ATTACHED or absent engine) — nothing was
+      killed and nothing is claimed.
+    - ``attempted``: we issued a kill on our owned process this call (a REQUEST, not
+      evidence). A pre-dead process needs none, so attempted can be False with
+      main_exited True.
     - ``main_exited``: poll() on the RETAINED process handle confirmed THIS process
-      exited — never inferred from a pid lookup or a job-close alone.
-    - ``tree`` is 'confirmed' ONLY when a whole-tree kill was used (taskkill /T, or a
-      job object that held the tree) AND main_exited; otherwise 'unknown'. A
-      main-only exit does NOT prove worker/child processes are gone, so a caller must
-      NOT settle broad VRAM/RAM absence from tree='unknown'.
+      exited — the ONLY positive proof here. Never inferred from a pid lookup or a
+      kill request.
+    - ``tree`` is always 'unknown'. A whole-tree kill REQUEST (taskkill /T, or a
+      KILL_ON_JOB_CLOSE job close) is not descendant-exit evidence: taskkill /T only
+      issues signals, a job close is asynchronous, and jobkill exposes no
+      active-process-count / empty-job probe (available/create/assign/close/alive
+      only). So a main exit NEVER proves the worker tree drained — a caller must NOT
+      settle broad VRAM/RAM absence. The field stays for a future descendant probe.
     - ``retained`` True: the outcome was uncertain and self._owned was KEPT — a retry
-      re-drives the SAME handle (no rediscovery).
+      re-drives the SAME handle (no rediscovery, so no pid-reuse ambiguity on the
+      proof; the taskkill-by-pid REQUEST carries a documented residual reuse window).
     - ``error`` is an exception TYPE name only, never raw args.
 
     Process CREATION identity (to defeat pid reuse) is not exposed by the Popen /
@@ -182,7 +189,7 @@ class TerminalShutdown:
     not a pid, is the identity here.
     """
     owned: bool
-    stopped: bool = False
+    attempted: bool = False
     main_exited: bool = False
     tree: str = "unknown"
     pid: int | None = None
@@ -1098,31 +1105,13 @@ class LlamaCppBackend(_VramGate):
             f"{paths.LLAMA_DIR / 'litetui-llama-server.log'} for why, then try again."
         )
 
-    def shutdown(self) -> None:
-        """Kill ONLY what we spawned. Router workers are child processes, so
-        terminate() alone can orphan a loaded model holding VRAM — the tree
-        kill is the fix the spike proved necessary."""
-        if self._owned is None:
-            return
-        proc = self._owned.proc
-        try:
-            proc.terminate()
-            for _ in range(10):
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.3)
-            if proc.poll() is None:
-                self._kill_tree(proc)
-        finally:
-            # Retract our claim before dropping the handle. `remove_if_mine`
-            # checks the pid AND the owner, so a record another app wrote in
-            # the meantime survives us.
-            router_record.remove_if_mine(proc.pid)
-            try:
-                self._owned.log_file.close()
-            except OSError:
-                pass
-            self._owned = None
+    def shutdown(self) -> "TerminalShutdown":
+        """Production teardown path (atexit + UI). Delegates to shutdown_owned() so it
+        uses the retained-handle exit proof instead of discarding the handle and
+        returning None (the original gap). Kills ONLY what we spawned; an attached /
+        no-owned server is left alone (owned=False). Sync and idempotent; callers may
+        ignore the return."""
+        return self.shutdown_owned()
 
     @staticmethod
     def _kill_tree(proc) -> None:
@@ -1136,39 +1125,40 @@ class LlamaCppBackend(_VramGate):
     def shutdown_owned(self) -> TerminalShutdown:
         """Stop our OWNED router and PROVE it exited by polling the RETAINED handle.
 
-        Unlike shutdown() (the existing sync UI path, left untouched), this keeps
-        self._owned until exit is confirmed on the same handle, returns a typed
+        Keeps self._owned until exit is confirmed on the same handle, returns a typed
         TerminalShutdown, and RETAINS the handle on any uncertain outcome so a retry
-        re-drives it. An attached/absent server is never killed (owned=False).
+        re-drives it. An attached/absent server is never killed (owned=False). The
+        production shutdown() delegates here.
 
-        tree='confirmed' only after taskkill /T (whole-tree) AND a confirmed main
-        exit; a terminate-only exit proves the ROUTER, not its workers, so it stays
-        'unknown' — a worker may linger and the caller must not free VRAM on it.
+        tree is always 'unknown': a terminate-only exit proves only the router, and
+        taskkill /T is a kill REQUEST, not descendant-exit evidence — the caller must
+        not free VRAM for the worker tree on a main-only exit.
         """
         owned = self._owned
         if owned is None:
             return TerminalShutdown(owned=False)
         proc = owned.proc
         pid = getattr(proc, "pid", None)
-        tree = "unknown"
+        attempted = False
         error = None
         try:
             if proc.poll() is None:
                 proc.terminate()
+                attempted = True
                 if not wait_for_exit(proc):
-                    self._kill_tree(proc)          # taskkill /T -> the whole tree
-                    if wait_for_exit(proc):
-                        tree = "confirmed"
+                    # Best-effort whole-tree kill; taskkill /T is a REQUEST, never
+                    # descendant-exit proof (and targets a PID that could be reused
+                    # if the main exits in this window — a documented residual, not
+                    # expanded on). llama-server has no job to contain the tree.
+                    self._kill_tree(proc)
+                    wait_for_exit(proc)
             main_exited = proc.poll() is not None
         except Exception as exc:                    # noqa: BLE001 - type-only diagnostic
             error = type(exc).__name__
-            try:
-                main_exited = proc.poll() is not None
-            except Exception:                       # noqa: BLE001
-                main_exited = False
+            main_exited = False                     # never re-poll here; poll() may raise too
         if not main_exited:
             # Uncertain: RETAIN the handle (no cleanup, no clear) for a retry.
-            return TerminalShutdown(owned=True, stopped=True, main_exited=False,
+            return TerminalShutdown(owned=True, attempted=attempted, main_exited=False,
                                     tree="unknown", pid=pid, retained=True, error=error)
         if pid is not None:
             try:
@@ -1181,8 +1171,8 @@ class LlamaCppBackend(_VramGate):
             pass
         if self._owned is owned:                    # clear ONLY if still the same object
             self._owned = None
-        return TerminalShutdown(owned=True, stopped=True, main_exited=True,
-                                tree=tree, pid=pid, retained=False, error=error)
+        return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
+                                tree="unknown", pid=pid, retained=False, error=error)
 
     # -- models -----------------------------------------------------------
 

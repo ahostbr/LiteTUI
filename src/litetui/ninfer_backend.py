@@ -429,23 +429,25 @@ class NInferBackend(_VramGate):
         would take down a process approved separately, that another client may be
         using — from a TUI closing a tab. Attached = leave it. Owned = ours to stop.
         """
-        owned, self._owned = self._owned, None
-        if owned is not None:
-            ninfer_engine.stop(owned)
-        self._host = None
+        result = self.shutdown_owned()
+        self._host = None            # teardown forgets the host even on an uncertain stop
+        return result
 
     def shutdown_owned(self):
         """Stop our OWNED engine and PROVE it exited by polling the RETAINED proc.
 
-        Unlike shutdown() (left untouched), this keeps self._owned until exit is
-        confirmed on the same handle, returns a typed TerminalShutdown, and RETAINS
-        the handle on any uncertain outcome for a retry. Attached engines are never
-        killed (owned=False).
+        Keeps self._owned until exit is confirmed on the same handle, returns a typed
+        TerminalShutdown, and RETAINS the handle on any uncertain outcome for a retry.
+        Attached engines are never killed (owned=False). The production shutdown()
+        delegates here.
 
-        A job-object close terminates the tree, but the closure ALONE is not exit
-        proof — the retained proc is polled after. tree='confirmed' only when the job
-        (which held the whole tree) was closed AND main exit is proven; the no-job
-        fallback (_kill on the main proc) proves the main process only -> 'unknown'.
+        Issues the EXISTING owned cleanup (ninfer_engine.stop, which closes the job
+        whenever one exists — even if the main already exited, because the job may
+        still hold descendants — else _kill, then unregisters + closes the log), then
+        makes a bounded wait on the SAME proc for exit proof. A job close is
+        asynchronous and jobkill has no empty-job / active-process probe, so it is NOT
+        exit proof: tree stays 'unknown' regardless — a main exit never proves the tree
+        drained.
         """
         from .llm_backend import TerminalShutdown, wait_for_exit
 
@@ -454,40 +456,22 @@ class NInferBackend(_VramGate):
             return TerminalShutdown(owned=False)
         proc = owned.proc
         pid = getattr(proc, "pid", None)
-        had_job = owned.job is not None
-        tree = "unknown"
+        attempted = False
         error = None
         try:
-            if owned.alive:
-                if had_job:
-                    ninfer_engine.jobkill.close(owned.job)   # atomic whole-tree kill
-                    owned.job = None
-                else:
-                    ninfer_engine._kill(proc)
-                main_exited = wait_for_exit(proc)            # PROVE via poll on retained proc
-            else:
-                main_exited = True                           # already exited (poll() is None)
-            if main_exited and had_job:
-                tree = "confirmed"
-        except Exception as exc:                             # noqa: BLE001 - type-only diagnostic
+            ninfer_engine.stop(owned)                    # the established owned cleanup
+            attempted = True
+            main_exited = wait_for_exit(proc)            # bounded wait on the SAME proc
+        except Exception as exc:                         # noqa: BLE001 - type-only diagnostic
             error = type(exc).__name__
-            main_exited = not owned.alive
+            main_exited = False                          # never re-poll here (poll may raise too)
         if not main_exited:
-            return TerminalShutdown(owned=True, stopped=True, main_exited=False,
+            return TerminalShutdown(owned=True, attempted=attempted, main_exited=False,
                                     tree="unknown", pid=pid, retained=True, error=error)
-        try:
-            ninfer_engine.unregister_host(owned.host)
-        except OSError:
-            pass
-        try:
-            owned.log_file.close()
-        except OSError:
-            pass
-        if self._owned is owned:                             # clear ONLY if still the same object
+        if self._owned is owned:                         # clear ONLY if still the same object
             self._owned = None
-        self._host = None
-        return TerminalShutdown(owned=True, stopped=True, main_exited=True,
-                                tree=tree, pid=pid, retained=False, error=error)
+        return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
+                                tree="unknown", pid=pid, retained=False, error=error)
 
     # -- owning the engine (Ryan a-35456da0: "LiteTUI may start it") ----------
 

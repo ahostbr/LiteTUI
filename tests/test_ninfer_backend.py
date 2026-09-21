@@ -281,11 +281,18 @@ def test_the_backend_is_attached_unless_it_started_the_engine():
     assert backend.attached is False
     stopped = []
     monkey = ninfer_engine.stop
-    ninfer_engine.stop = lambda o: stopped.append(o.host)
+
+    def _fake_stop(o):
+        stopped.append(o.host)
+        o.proc.poll = lambda: 0        # a real stop terminates it; exit is now provable
+
+    ninfer_engine.stop = _fake_stop
     try:
         backend.shutdown()
     finally:
         ninfer_engine.stop = monkey
+    # shutdown() delegates to shutdown_owned(): it still calls ninfer_engine.stop and,
+    # once the proc is proven exited, clears our handle so the backend is attached again.
     assert stopped == ["http://127.0.0.1:1"] and backend.attached is True
 
 
