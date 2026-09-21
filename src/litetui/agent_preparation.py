@@ -112,6 +112,12 @@ def run_guarded(app, coro, *, group, cleanup, report=None):
     # then we'd open the gate and run the op UNCLAIMED. Anything else fails closed.
     if not isinstance(task, asyncio.Task):
         _cancel_quietly(worker)
+        # No live asyncio.Task was exposed, so nothing runs our wrapper (a real Textual
+        # worker always does); the gate is still closed, so `guarded` is at most
+        # CORO_CREATED — close it here rather than leak a never-awaited coroutine.
+        import inspect
+        if inspect.getcoroutinestate(guarded) == inspect.CORO_CREATED:
+            guarded.close()
         _fire()
         if report is not None:
             report(None)

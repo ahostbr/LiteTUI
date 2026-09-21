@@ -93,3 +93,44 @@ async def test_real_worker_attach_failure_closes_both_coroutines(monkeypatch):
         assert inspect.getcoroutinestate(original) == inspect.CORO_CLOSED
         assert inspect.getcoroutinestate(wrappers[0]) == inspect.CORO_CLOSED
     gc.collect()
+
+
+@pytest.mark.asyncio
+async def test_untracked_worker_non_task_closes_wrapper_and_releases():
+    # The non-asyncio.Task fail-closed branch is unreachable with a REAL Textual app
+    # (run_worker always yields a real asyncio.Task), so a minimal fake app exposing a
+    # non-Task _task exercises it. Fake the WORKER - do NOT subclass asyncio.Task to
+    # fake a failing add_done_callback (that hangs).
+    import gc
+    import inspect
+    cleaned = []
+    ran = []
+    wrappers = []
+
+    async def op():
+        ran.append(True)
+
+    original = op()
+
+    class _Worker:
+        _task = None            # NOT a real asyncio.Task -> run_guarded's fail-closed branch
+        def cancel(self):
+            pass
+
+    class _App:
+        def run_worker(self, coro, **kwargs):
+            wrappers.append(coro)
+            return _Worker()
+
+        def system_message(self, m):
+            pass
+
+    worker = run_guarded(_App(), original, group='fake-stop', cleanup=lambda: cleaned.append(True))
+    assert worker is None                    # fail-closed: could not observe a real task
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not ran                           # the op never ran
+    assert cleaned == [True]                 # cleanup fired exactly once (claim released)
+    assert inspect.getcoroutinestate(original) == inspect.CORO_CLOSED
+    assert inspect.getcoroutinestate(wrappers[0]) == inspect.CORO_CLOSED   # the wrapper too
+    gc.collect()
