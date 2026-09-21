@@ -163,3 +163,54 @@ def test_missing_skills_baseline_requires_restart(surface):
     _invoke(app, surface)
     assert app._refresh_calls == []
     assert "restart" in _last(app).lower()
+
+
+# ── REAL loader/refresh regression (temp roots; real discover_all/write_cache) ─
+import types as _types
+from litetui.app import LiteTUI
+from litetui import skills as skills_mod
+from litetui import paths as _paths
+
+
+def _make_skill(data_root, name, description, body):
+    d = data_root / skills_mod.SKILLS_DIR_NAME / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n", encoding="utf-8")
+
+
+def _real_app(tmp_path, monkeypatch):
+    # Real LiteTUI.refresh_skills bound to a fake host, over a temp data root, so
+    # discover_all/write_cache/cache_path all operate on the fixture, not ~/.claude.
+    monkeypatch.setattr("litetui.paths.data_root", lambda: tmp_path)
+    app = _app()
+    app.refresh_skills = _types.MethodType(LiteTUI.refresh_skills, app)
+    return app
+
+
+@BOTH
+def test_real_refresh_visible_to_loader_and_prompt(tmp_path, monkeypatch, surface):
+    app = _real_app(tmp_path, monkeypatch)
+    _make_skill(tmp_path, "myskill", "My test skill", "DO THE THING")
+    _invoke(app, surface)
+    # added discovered from the real fixture
+    assert any(s.name == "myskill" for s in app.skills)
+    # real skill loader (through the registered `skill` tool) returns the body
+    tool = next(e for e in app.plugins.tools if e.gate)
+    assert "DO THE THING" in tool.run({"name": "myskill"})
+    # real prompt index (what the SKILLS_INDEX section renders) shows it
+    assert "myskill" in skills_mod.index_block(app.skills)
+    # cache was written to the temp root
+    assert skills_mod.cache_path(tmp_path).exists()
+
+
+def test_real_refresh_atomic_on_discover_error(tmp_path, monkeypatch):
+    app = _real_app(tmp_path, monkeypatch)
+    _make_skill(tmp_path, "myskill", "My test skill", "BODY")
+    def _boom(root, extra=None):
+        raise RuntimeError("discover exploded")
+    monkeypatch.setattr("litetui.skills.discover_all", _boom)
+    before = app.skills
+    _invoke(app, "skills_cmd")
+    assert "fail" in _last(app).lower()
+    assert app.skills is before          # real refresh_skills swaps last => untouched on error
