@@ -1982,6 +1982,13 @@ class LiteTUI(App):
         becoming a no-op.
         """
         self._gui_quitting = True
+        # Block NEW model loads on every retained backend admission session BEFORE any
+        # await below can yield the loop — a load dispatched during async teardown
+        # would reserve capacity we are about to stop tracking. begin_close ONLY: no
+        # release, no unload (that needs confirmed quiescence, a separate slice). The
+        # returned report is retained for a shutdown diagnostic, never a cleanup claim.
+        from litetui import resource_session_lifecycle
+        self._shutdown_admission_report = resource_session_lifecycle.begin_shutdown(self)
         delivery = getattr(self, '_child_delivery_timer', None)
         if delivery is not None:
             delivery.stop()
