@@ -54,3 +54,29 @@ def test_activation_restores_delivery_when_parent_conversation_changes(tmp_path,
     app.convo_id = 'third'
     callbacks[0]()
     assert parents == ['first', 'second']
+
+@pytest.mark.asyncio
+async def test_registered_tool_dispatches_captured_launch_on_textual_loop(monkeypatch):
+    import asyncio
+    import json
+    from textual.app import App
+    from litetui.plugins import spawn_agent_plugin as plugin
+    launches = []
+    def capture(app, request):
+        async def launch():
+            launches.append(request)
+            return {'completion_id': 'completion'}
+        return launch
+    monkeypatch.setattr(plugin, 'capture_launch', capture)
+    app = App()
+    registered = []
+    plugin._register(SimpleNamespace(app=app, tool=lambda spec, runner, **kw: registered.append(runner)))
+    async with app.run_test() as pilot:
+        runner = registered[0]
+        accepted = json.loads(await asyncio.to_thread(runner, {'action': 'spawn', 'prompt': 'task'}))
+        await pilot.pause(0.05)
+        result = json.loads(await asyncio.to_thread(runner, {
+            'action': 'status', 'operation_id': accepted['operation_id']}))
+        assert result['result']['completion_id'] == 'completion'
+        assert launches == [{'prompt': 'task'}]
+        await app._agent_operations.close()
