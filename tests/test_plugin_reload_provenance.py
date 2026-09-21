@@ -18,6 +18,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 import litetui.plugin_reload_provenance as prov
+import litetui.plugins.plugin_reload_ui  # noqa: F401 — imports the whole core set, as startup does
 
 
 @pytest.fixture(autouse=True)
@@ -165,3 +166,17 @@ def test_capture_is_once_only_cannot_bless_edit(tmp_path):
     assert second is first
     ok, reason = prov.provenance_ok(app, "bash")
     assert ok is False and "changed after startup" in reason
+
+
+@pytest.mark.parametrize("core_name", prov._CORE_MODULES)
+def test_each_core_module_is_baselined_and_its_drift_detected(tmp_path, core_name):
+    # Every required core module (incl. tool_schemas and plugin_reload_children)
+    # must resolve at capture (already imported by startup) and be drift-checked.
+    src = _write(tmp_path / "t.py", "v1")
+    app = _app([_tool("bash", src)])
+    baseline = prov.capture_baseline(app)
+    pinned = baseline["core"][core_name]
+    assert pinned is not None, f"{core_name} was not imported/resolved at capture"
+    baseline["files"][pinned] = "0" * 64          # simulate this core file drifting
+    ok, reason = prov.provenance_ok(app, "bash")
+    assert ok is False and "reload machinery" in reason
