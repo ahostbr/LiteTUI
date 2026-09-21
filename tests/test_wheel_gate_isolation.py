@@ -62,6 +62,29 @@ def test_subprocess_environment_cannot_fall_back_to_checkout(monkeypatch):
     assert "PYTHONHOME" not in env
 
 
+def test_build_uses_fresh_output_without_deleting_existing_dist(tmp_path, monkeypatch):
+    gate = gate_module()
+    monkeypatch.setattr(gate, "REPO", tmp_path)
+    monkeypatch.setattr(gate.shutil, "which", lambda name: "uv")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    old = dist / "litetui-old.whl"
+    old.write_bytes(b"preserve")
+    work = tmp_path / "gate"
+    work.mkdir()
+    def fake_run(cmd, **kwargs):
+        assert "--out-dir" in cmd
+        out = Path(cmd[cmd.index("--out-dir") + 1])
+        assert out != dist
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "litetui-new.whl").write_bytes(b"new")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(gate, "_run", fake_run)
+    wheel = gate.build_wheel(work)
+    assert wheel.read_bytes() == b"new"
+    assert old.read_bytes() == b"preserve"
+
+
 def test_version_nonzero_is_failure_even_with_matching_text(tmp_path, monkeypatch):
     gate = gate_module()
     from litetui.version import __version__

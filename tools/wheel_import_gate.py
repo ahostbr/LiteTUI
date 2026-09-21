@@ -60,22 +60,21 @@ def _run(cmd: list[str], *, timeout: int, cwd: Path | None = None) -> subprocess
         _fail(f"timed out after {timeout}s: {' '.join(str(c) for c in cmd)}")
 
 
-def build_wheel() -> Path:
+def build_wheel(workdir: Path | None = None) -> Path:
     uv = shutil.which("uv")
     if uv is None:
         _fail("`uv` not found on PATH — the gate builds with it (CI has it)")
-    # Drop stale wheels so a failed rebuild cannot certify an old artifact.
-    for old in (REPO / "dist").glob("litetui-*.whl"):
-        old.unlink()
-    r = _run([uv, "build", "--wheel"], timeout=600, cwd=REPO)
+    # Never delete the operator's dist artifacts or select a pre-existing wheel.
+    output = Path(tempfile.mkdtemp(prefix="wheel-output-", dir=workdir))
+    r = _run([uv, "build", "--wheel", "--out-dir", str(output)], timeout=600, cwd=REPO)
     if r.returncode != 0:
         print(r.stdout, file=sys.stderr)
         print(r.stderr, file=sys.stderr)
         _fail("uv build --wheel failed")
-    wheels = sorted((REPO / "dist").glob("litetui-*.whl"))
-    if not wheels:
-        _fail("build reported success but produced no wheel in dist/")
-    return wheels[-1]
+    wheels = sorted(output.glob("litetui-*.whl"))
+    if len(wheels) != 1:
+        _fail(f"expected exactly one fresh wheel, found {len(wheels)} in {output}")
+    return wheels[0]
 
 
 #: Directory names that never ship as source: bytecode caches and build/tool
@@ -255,7 +254,7 @@ def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="litetui-wheelgate-"))
     print(f"workdir: {workdir}", flush=True)
     try:
-        wheel = build_wheel()
+        wheel = build_wheel(workdir)
         print(f"wheel: {wheel.name}")
         check_zip(wheel)
         venv_python = make_venv(wheel, workdir)
