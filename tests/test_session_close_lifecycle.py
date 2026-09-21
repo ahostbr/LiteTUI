@@ -34,6 +34,22 @@ async def test_closing_blocks_new_loads(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_begin_close_blocks_new_loads_but_retains_everything(tmp_path):
+    c = _coord(tmp_path, 'begin.sqlite')
+    s = ModelResourceSession(c, 'o', demand_for=lambda k: DEMAND, owned=True)
+    async with s.load('model'):
+        pass
+    s.begin_close()                      # sync, no evidence, no release/unload
+    s.begin_close()                      # idempotent
+    assert s._closing is True
+    assert 'model' in s.leases           # lease retained
+    assert c.reserve(DEMAND, 'other').status == 'blocked'   # capacity NOT freed
+    with pytest.raises(AdmissionBlocked):
+        async with s.load('other'):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_in_flight_key_is_retained(tmp_path):
     c = _coord(tmp_path, 'inflight.sqlite')
     s = ModelResourceSession(c, 'o', demand_for=lambda k: DEMAND, owned=True)

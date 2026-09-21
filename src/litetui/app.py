@@ -3806,6 +3806,17 @@ class LiteTUI(App):
         first-boot recovery paths). Ryan named backend FIRST in the ruling, and
         the first cut of this card declared the field and wired none of them.
         """
+        # Stop the OUTGOING backend's session taking new loads BEFORE the swap, so a
+        # stale holder cannot start a load into capacity we are about to stop
+        # tracking. begin_close() only sets the closing flag — it retains every lease
+        # and claim; the actual release/unload needs confirmed quiescence and is a
+        # separate coordinated slice. Only on a real replacement (different object);
+        # a same-object reassignment is a no-op.
+        old = getattr(self, "_backend", None)
+        if old is not None and old is not value:
+            old_session = getattr(old, "_admission_session", None)
+            if old_session is not None:
+                old_session.begin_close()
         self._backend = value
         self._resume_backend_error = None
         self._remember_for_this_convo("backend", getattr(value, "name", None))

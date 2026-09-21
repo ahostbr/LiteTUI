@@ -104,6 +104,17 @@ class ModelResourceSession:
             del self.unload_claims[key]
         return acknowledged
 
+    def begin_close(self):
+        """Synchronously stop this session taking NEW loads, retaining everything.
+
+        The swap path (app.backend setter) calls this on the OLD session before a
+        replacement is installed: a stale holder must not start a new load into
+        capacity we are about to stop tracking. It releases and unloads NOTHING —
+        active/unsettled loads and every claim are retained for the async close()
+        (or reconcile) that follows with real backend evidence. Idempotent.
+        """
+        self._closing = True
+
     async def close(self, *, quiescent, unload):
         """Drive this session's models to a safe terminal state with INJECTED backend
         evidence; return an inspectable {key: outcome} report, NEVER a bool.
@@ -127,7 +138,7 @@ class ModelResourceSession:
         ponytail: the ``unload`` adapter must be idempotent — a retry re-issues unload
         for a still-claimed key, so unloading an already-gone model must be a no-op.
         """
-        self._closing = True
+        self.begin_close()
         report = {}
         async with self._close_lock:
             keys = (set(self.leases) | set(self.active_loads)

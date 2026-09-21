@@ -219,3 +219,53 @@ def test_real_backend_setter_installs_admission(tmp_path):
     assert owner._backend is backend
     assert backend.resource_admission is not None
     assert backend._admission_session is not None
+
+
+class _SwapOwner:
+    def __init__(self, bundle):
+        self._admission_bundle = bundle
+
+    def _remember_for_this_convo(self, field, value):
+        pass
+
+
+def test_replacing_backend_begins_close_on_old_session_retaining_claims(tmp_path):
+    from litetui.app import LiteTUI
+    import asyncio
+
+    owner = _SwapOwner(_bundle(tmp_path))
+    a = _llama()
+    LiteTUI.backend.fset(owner, a)
+    old_session = a._admission_session
+    # Seed the retained state a live session would hold; begin_close must not touch it.
+    old_session.active_loads.add('m1')
+    old_session.unload_claims['m2'] = 'claim-x'
+    assert old_session._closing is False
+
+    b = _lmstudio()                                 # a DIFFERENT backend object
+    LiteTUI.backend.fset(owner, b)
+
+    assert owner._backend is b
+    assert old_session._closing is True             # outgoing session was begin_closed
+    assert old_session.active_loads == {'m1'}       # nothing released
+    assert old_session.unload_claims == {'m2': 'claim-x'}   # nothing unloaded
+    new_session = b._admission_session
+    assert new_session is not old_session and new_session._closing is False
+
+    async def _load_on_stale():
+        async with old_session.load('m3'):
+            pass
+    with pytest.raises(AdmissionBlocked):            # stale holder refuses new loads
+        asyncio.run(_load_on_stale())
+
+
+def test_same_object_reassignment_does_not_begin_close(tmp_path):
+    from litetui.app import LiteTUI
+
+    owner = _SwapOwner(_bundle(tmp_path))
+    a = _llama()
+    LiteTUI.backend.fset(owner, a)
+    session = a._admission_session
+    LiteTUI.backend.fset(owner, a)                  # same object — no-op
+    assert a._admission_session is session
+    assert session._closing is False
