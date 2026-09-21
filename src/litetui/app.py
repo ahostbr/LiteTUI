@@ -3435,14 +3435,10 @@ class LiteTUI(App):
     _mic_proc = None
 
     def _refresh_prompt_controls(self):
-        from litetui.input_controls import ScrollLockButton, SpeakButton
+        from litetui.input_controls import ScrollLockButton
         for button in self.query(ScrollLockButton):
             button.update(' 🔒 ' if self.settings.autoscroll else ' 🔓 ')
             button.tooltip = 'Pinned to newest output' if self.settings.autoscroll else 'Free scrolling'
-        for button in self.query(SpeakButton):
-            button.set_class(self.settings.tts_enabled, 'enabled')
-            button.tooltip = 'Disable speech and stop playback' if self.settings.tts_enabled else 'Enable speech'
-
     def action_toggle_scroll_lock(self):
         self.settings.autoscroll = not self.settings.autoscroll
         self._next_follow_generation()
@@ -3450,16 +3446,6 @@ class LiteTUI(App):
         if self.settings.autoscroll:
             self._scroll_down()
 
-    def action_toggle_speak(self):
-        from litetui import voice_backend
-        self.settings.tts_enabled = not self.settings.tts_enabled
-        if not self.settings.tts_enabled:
-            voice_backend.stop()
-        self._refresh_prompt_controls()
-        try:
-            settings_runtime.persist_or_raise(self, self.settings)
-        except Exception as exc:
-            self._system(f'[voice] preference not saved: {exc}')
 
     def action_toggle_mic(self) -> None:
         """The footer mic button and the record hotkey: start recording, or
@@ -7431,22 +7417,6 @@ class LiteTUI(App):
                 await self.plugins.finalize_turn()
                 if not getattr(self, "_hooks_suppressed", False):
                     await hook_host.dispatch(self, "completion_after", {"answer": text_full or ""})
-                # Speak the reply if the toggle is on. Only a terminal answer
-                # reaches here (retried/paused drafts returned above), so a
-                # spoken line maps one-to-one to a real reply. Fire-and-forget
-                # in a child; never let it break a completed turn.
-                if self.settings.tts_enabled and text_full:
-                    try:
-                        from litetui import voice_backend
-                        voice_backend.speak(
-                            text_full,
-                            timeout=self.settings.tts_timeout,
-                            engine=self.settings.tts_engine,
-                            voice=(self.settings.tts_edge_voice
-                                   if self.settings.tts_engine == "edge"
-                                   else self.settings.tts_voice) or None)
-                    except Exception:
-                        pass
                 self._settle_turn_stop_line(
                     terminal_widget,
                     started_at=turn_started_at,

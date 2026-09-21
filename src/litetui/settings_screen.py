@@ -814,10 +814,7 @@ class SettingsBody(Widget):
                         yield self._section_header("voice-speak")
                         yield Label("Speak — replies read aloud (TTS out)",
                                     classes="set-label")
-                        yield from self._switch_row(
-                            "tts_enabled", "Speak replies aloud (TTS)",
-                            "Default for spoken replies. The input Speak toggle can "
-                            "override this for an individual turn.")
+                        yield Static("Use Speak / Stop on each response to control playback. Replies are never spoken automatically.")
                         yield from self._select_row(
                             "tts_engine", "TTS engine",
                             [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
