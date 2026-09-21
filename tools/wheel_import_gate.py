@@ -72,25 +72,66 @@ def build_wheel() -> Path:
     return wheels[-1]
 
 
-def check_zip(wheel: Path) -> None:
-    """Every data file on disk must be inside the zip — package-data drift."""
-    with zipfile.ZipFile(wheel) as zf:
-        names = set(zf.namelist())
-    missing = []
-    for folder, suffix in (("schemas", ".json"), ("prompts", ".md")):
-        src = PKG_DIR / folder
+#: Directory names that never ship as source: bytecode caches and build/tool
+#: artifacts. A `.py` under any of these is not a module and is excluded from the
+#: required set. Everything else under src/litetui IS required — we do NOT gate
+#: on __init__.py, because `[tool.setuptools.packages.find]` here declares only
+#: `where` (no `namespaces = false`), and plain find can ship IMPLICIT NAMESPACE
+#: packages (dirs with no __init__.py). Gating on __init__.py would silently drop
+#: a namespace module from the requirement and let a wheel omit it undetected —
+#: the exact class this gate exists to catch. Erring toward "require it": a false
+#: require is a loud, fixable signal; a false pass is the silent ship bug.
+_NON_SHIPPING_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "build", "dist"}
+
+
+def _required_entries(pkg_dir: Path) -> list[str]:
+    """Every wheel entry the source tree obliges a built wheel to carry.
+
+    Package-data by glob (schemas/prompts/assets), PI_NOTICE by exact name, and
+    every source `*.py` as a module (namespace-safe — see `_NON_SHIPPING_DIRS`).
+    A required SOURCE input that is itself missing fails loudly here via `_fail`,
+    so a hole in the source tree cannot vanish from a glob and pass unnoticed.
+    """
+    required: list[str] = []
+    for folder, suffix in (("schemas", ".json"), ("prompts", ".md"), ("assets", ".wav")):
+        src = pkg_dir / folder
         if not src.is_dir():
             _fail(f"{src} is missing from the source tree — nothing to ship")
         for f in sorted(src.glob(f"*{suffix}")):
-            entry = f"litetui/{folder}/{f.name}"
-            if entry not in names:
-                missing.append(entry)
+            required.append(f"litetui/{folder}/{f.name}")
+    notice = pkg_dir / "PI_NOTICE.txt"
+    if not notice.is_file():
+        _fail(f"{notice} is missing from the source tree — nothing to ship")
+    required.append("litetui/PI_NOTICE.txt")
+    for f in sorted(pkg_dir.rglob("*.py")):
+        rel = f.relative_to(pkg_dir)
+        if any(part in _NON_SHIPPING_DIRS or part.endswith(".egg-info") for part in rel.parts):
+            continue
+        required.append("litetui/" + rel.as_posix())
+    return required
+
+
+def check_zip(wheel: Path, pkg_dir: Path = PKG_DIR) -> None:
+    """Every source module AND package-data file on disk must be inside the zip.
+
+    Guards the packaging-drift class in one place: a module absent from the built
+    wheel (the 26-vs-28 bug) or a package-data resource setuptools never shipped
+    (schemas / prompts / assets / PI_NOTICE — the T135 FileNotFoundError-on-launch
+    class). Subset check: disk ⊆ wheel; extra wheel entries are not a failure.
+    `pkg_dir` is a seam for the offline synthetic-fixture tests; main() uses the
+    real tree.
+    """
+    with zipfile.ZipFile(wheel) as zf:
+        names = set(zf.namelist())
+    required = _required_entries(pkg_dir)
+    missing = [entry for entry in required if entry not in names]
     if missing:
         _fail(
-            "these files are on disk but NOT in the wheel — package-data is "
-            f"not shipping them: {missing}"
+            "these source files are on disk but NOT in the wheel — packaging is "
+            f"not shipping them: {sorted(missing)}"
         )
-    print(f"zip OK: all schemas+prompts present ({len(names)} entries total)")
+    print(f"zip OK: all {len(required)} source modules + data present "
+          f"({len(names)} entries in wheel)")
 
 
 def make_venv(wheel: Path, workdir: Path) -> Path:
