@@ -809,7 +809,17 @@ def stop(owned: OwnedEngine) -> None:
     atexit-registered and best-effort; ignores the return and retains on an unconfirmed
     outcome for a later retry. (The job kill is atomic over the ASSIGNED tree; the taskkill
     walk is the no-job fallback — measured 3-43s live/dead, so it is a fallback, not a
-    belt-and-braces second step.)"""
-    terminate_owned(owned)
+    belt-and-braces second step.)
+
+    LiteTUI's OWN handle to the log is closed in a finally, mirroring `_fail_start`. The
+    terminal proof is retained on an unconfirmed outcome and `_terminate_owned_inner` only
+    closes the log on a confirmed one, so without this the parent's FileIO leaks whenever
+    the kill cannot be confirmed — including the atexit path. The child keeps writing
+    through its own handle (independent on Windows) and `_log_tail` reads from disk, so
+    closing ours is safe either way (a double close on the confirmed path is a no-op)."""
+    try:
+        terminate_owned(owned)
+    finally:
+        _close_log(owned)
 
 
