@@ -233,3 +233,66 @@ async def test_gate_defers_on_context_change_during_wait(mutate):
 
     with pytest.raises(TurnDeferred):
         await asyncio.gather(LiteTUI._await_mcp_maintenance(app), change())
+
+
+# ── rebuild-blocked: a failed dispatch rebuild BLOCKS, never resumes stale ─────
+@pytest.mark.asyncio
+async def test_reconcile_worker_blocks_on_rebuild_failure():
+    import asyncio
+    app = _app(maint=True)
+    app._mcp_maintenance_done = asyncio.Event()
+
+    def boom():
+        raise RuntimeError("map broke")
+
+    app.rebuild_mcp_dispatch = boom
+    await mm._reconcile_worker(app)
+    assert app._mcp_maintenance is False              # in-flight flag cleared
+    assert app._mcp_maintenance_done.is_set()         # waiters woken (no infinite wait)
+    assert app._mcp_dispatch_blocked                   # map marked stale
+    assert "blocked" in _last(app).lower()             # reported, not swallowed
+
+
+@pytest.mark.asyncio
+async def test_reconcile_worker_clears_block_on_rebuild_success():
+    app = _app(maint=True)
+    app._mcp_dispatch_blocked = "stale from an earlier failed rebuild"
+    await mm._reconcile_worker(app)
+    assert app._mcp_dispatch_blocked is None           # recovery: current map installed
+    assert "rebuild" in app._events
+
+
+@pytest.mark.asyncio
+async def test_gate_defers_when_dispatch_blocked_at_entry():
+    from litetui.app import LiteTUI
+    from litetui.turn_deferral import TurnDeferred
+    app = _gate_app(_mcp_maintenance=False, _mcp_dispatch_blocked="stale")
+    with pytest.raises(TurnDeferred):                  # blocked even with no reconcile in flight
+        await LiteTUI._await_mcp_maintenance(app)
+
+
+@pytest.mark.asyncio
+async def test_gate_defers_when_blocked_after_reconcile():
+    import asyncio
+    from litetui.app import LiteTUI
+    from litetui.turn_deferral import TurnDeferred
+    ev = asyncio.Event()
+    app = _gate_app(_mcp_maintenance_done=ev)          # maint True, not blocked yet
+
+    async def finish():
+        await asyncio.sleep(0)
+        app._mcp_maintenance = False
+        app._mcp_dispatch_blocked = "rebuild failed"   # blocked AFTER settle
+        ev.set()
+
+    with pytest.raises(TurnDeferred):
+        await asyncio.gather(LiteTUI._await_mcp_maintenance(app), finish())
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_blocked_when_dispatch_stale():
+    from litetui.app import LiteTUI
+    app = NS(tools_enabled=True, _mcp_maintenance=False,
+             _mcp_dispatch_blocked="stale", _rpc_emit=lambda e: None)
+    out, ok = await LiteTUI._execute_tool(app, "anytool", {})
+    assert ok is False and "blocked" in out.lower()

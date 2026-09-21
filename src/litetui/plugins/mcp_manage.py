@@ -102,9 +102,15 @@ def _entry_from_words(words: list[str]) -> tuple[dict | None, str | None]:
 
 async def _reconcile_worker(app) -> None:
     """Off-loop MCP reconcile with a cancellation-safe join. await_preparation
-    joins the worker thread even under cancellation; the flag is cleared ONLY
-    after it settles, and the dispatch rebuild is nested so its failure can
-    neither leak the exception nor clear the flag early."""
+    joins the worker thread even under cancellation; the in-flight flag is
+    cleared ONLY after it settles.
+
+    A FAILED dispatch rebuild must not resume turns over a stale map. So the
+    rebuild's outcome is explicit: on success `_mcp_dispatch_blocked` is cleared
+    (the current map is installed); on failure it is SET, the waiters are still
+    woken (no infinite wait), and the _stream gate / tool dispatch then defer on
+    that flag until a later reconcile rebuilds successfully. The exception is
+    recorded and reported, never swallowed as success."""
     from litetui.agent_preparation import await_preparation
     try:
         outcomes = await await_preparation(app.mcp.reconcile)
@@ -113,13 +119,25 @@ async def _reconcile_worker(app) -> None:
     finally:
         try:
             app.rebuild_mcp_dispatch()
+        except Exception as e:  # noqa: BLE001 — a stale map BLOCKS, never resumes
+            app._mcp_dispatch_blocked = f"dispatch rebuild failed: {type(e).__name__}: {e}"
+        else:
+            app._mcp_dispatch_blocked = None   # verified: current map installed
         finally:
+            # The reconcile op itself is done either way: clear the in-flight
+            # flag and WAKE waiters. They re-check _mcp_dispatch_blocked after
+            # the wait and defer (typed) rather than run over a stale map.
             app._mcp_maintenance = False
-            # Wake any turn awaiting completion IN its own worker (see _stream).
             ev = getattr(app, "_mcp_maintenance_done", None)
             if ev is not None:
                 ev.set()
-    app.system_message(_format_reconcile(outcomes))
+    if getattr(app, "_mcp_dispatch_blocked", None):
+        app.system_message(
+            _format_reconcile(outcomes)
+            + "\n\n[mcp] ⚠ tool dispatch map FAILED to rebuild — tool routing is BLOCKED until a "
+              "successful /mcp reconcile or restart.")
+    else:
+        app.system_message(_format_reconcile(outcomes))
 
 
 def _format_reconcile(outcomes: dict) -> str:
