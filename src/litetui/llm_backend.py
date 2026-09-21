@@ -160,6 +160,47 @@ BOOL_FLAGS: dict[str, str] = {
 FLAG_FOR: dict[str, str] = {**VALUE_FLAGS, **BOOL_FLAGS}
 
 
+@dataclass(frozen=True)
+class TerminalShutdown:
+    """The proven-terminal result of stopping an OWNED engine. Its guarantees are
+    deliberately narrow so a caller cannot over-claim resource absence:
+
+    - ``owned`` False: we held no handle (an ATTACHED or absent engine) — nothing
+      was killed and nothing is claimed.
+    - ``main_exited``: poll() on the RETAINED process handle confirmed THIS process
+      exited — never inferred from a pid lookup or a job-close alone.
+    - ``tree`` is 'confirmed' ONLY when a whole-tree kill was used (taskkill /T, or a
+      job object that held the tree) AND main_exited; otherwise 'unknown'. A
+      main-only exit does NOT prove worker/child processes are gone, so a caller must
+      NOT settle broad VRAM/RAM absence from tree='unknown'.
+    - ``retained`` True: the outcome was uncertain and self._owned was KEPT — a retry
+      re-drives the SAME handle (no rediscovery).
+    - ``error`` is an exception TYPE name only, never raw args.
+
+    Process CREATION identity (to defeat pid reuse) is not exposed by the Popen /
+    OwnedEngine handle, so it is intentionally absent; the retained handle itself,
+    not a pid, is the identity here.
+    """
+    owned: bool
+    stopped: bool = False
+    main_exited: bool = False
+    tree: str = "unknown"
+    pid: int | None = None
+    retained: bool = False
+    error: str | None = None
+
+
+def wait_for_exit(proc, timeout: float = 3.0, interval: float = 0.3) -> bool:
+    """True iff poll() on THIS handle reports the process exited within `timeout`.
+    Polls the retained child handle — never a pid lookup, so no pid-reuse ambiguity."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return True
+        time.sleep(interval)
+    return proc.poll() is not None
+
+
 class IniUnexpressible(BackendError):
     """A cfg key exists but the INSTALLED build has no flag for it. The
     caller decides (dedicated spawn, or surface as n/a) — silently dropping
@@ -1091,6 +1132,57 @@ class LlamaCppBackend(_VramGate):
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
+
+    def shutdown_owned(self) -> TerminalShutdown:
+        """Stop our OWNED router and PROVE it exited by polling the RETAINED handle.
+
+        Unlike shutdown() (the existing sync UI path, left untouched), this keeps
+        self._owned until exit is confirmed on the same handle, returns a typed
+        TerminalShutdown, and RETAINS the handle on any uncertain outcome so a retry
+        re-drives it. An attached/absent server is never killed (owned=False).
+
+        tree='confirmed' only after taskkill /T (whole-tree) AND a confirmed main
+        exit; a terminate-only exit proves the ROUTER, not its workers, so it stays
+        'unknown' — a worker may linger and the caller must not free VRAM on it.
+        """
+        owned = self._owned
+        if owned is None:
+            return TerminalShutdown(owned=False)
+        proc = owned.proc
+        pid = getattr(proc, "pid", None)
+        tree = "unknown"
+        error = None
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                if not wait_for_exit(proc):
+                    self._kill_tree(proc)          # taskkill /T -> the whole tree
+                    if wait_for_exit(proc):
+                        tree = "confirmed"
+            main_exited = proc.poll() is not None
+        except Exception as exc:                    # noqa: BLE001 - type-only diagnostic
+            error = type(exc).__name__
+            try:
+                main_exited = proc.poll() is not None
+            except Exception:                       # noqa: BLE001
+                main_exited = False
+        if not main_exited:
+            # Uncertain: RETAIN the handle (no cleanup, no clear) for a retry.
+            return TerminalShutdown(owned=True, stopped=True, main_exited=False,
+                                    tree="unknown", pid=pid, retained=True, error=error)
+        if pid is not None:
+            try:
+                router_record.remove_if_mine(pid)
+            except OSError:
+                pass
+        try:
+            owned.log_file.close()
+        except OSError:
+            pass
+        if self._owned is owned:                    # clear ONLY if still the same object
+            self._owned = None
+        return TerminalShutdown(owned=True, stopped=True, main_exited=True,
+                                tree=tree, pid=pid, retained=False, error=error)
 
     # -- models -----------------------------------------------------------
 
