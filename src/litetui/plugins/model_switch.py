@@ -192,7 +192,7 @@ def _switch_backend(app, choice: str) -> None:
     if getattr(app, "_chat_running", lambda: False)():
         app.system_message("Finish or stop the current turn before switching backends.")
         return
-    if choice == app.backend.name:
+    if choice == app.backend.name and not getattr(app, '_resume_backend_error', None):
         app.system_message(f"Already on {choice}")
         return
     # The SEQUENCE moved to `App.apply_backend_change` so /settings could reach

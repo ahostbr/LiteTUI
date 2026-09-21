@@ -3795,6 +3795,7 @@ class LiteTUI(App):
         the first cut of this card declared the field and wired none of them.
         """
         self._backend = value
+        self._resume_backend_error = None
         self._remember_for_this_convo("backend", getattr(value, "name", None))
 
     @property
@@ -4029,6 +4030,7 @@ class LiteTUI(App):
         one field over.
         """
         want = cs.backend
+        self._resume_backend_error = None
         if not want or want == getattr(getattr(self, "_backend", None), "name", None):
             return
         probe = replace(self.settings, backend=want) if is_dataclass(self.settings) else None
@@ -4037,10 +4039,11 @@ class LiteTUI(App):
         except llm_backend.BackendError as e:
             if getattr(self, "_startup_adopting", False):
                 raise ValueError(f"Saved backend {want!r} is unavailable: {e}") from e
-            self._system(
-                f"This conversation used {want}, which is not available here "
-                f"({e}). Staying on {getattr(self._backend, 'name', 'the current engine')}."
+            self._resume_backend_error = (
+                f"Saved backend {want!r} is unavailable: {e}. "
+                "Sending is blocked; choose a backend explicitly with /backend."
             )
+            self._system(self._resume_backend_error)
             return
         self._backend = new_backend
 
@@ -6818,6 +6821,8 @@ class LiteTUI(App):
         """
         if getattr(self, "_startup_resume_error", None):
             raise llm_backend.BackendError(self._startup_resume_error)
+        if getattr(self, "_resume_backend_error", None):
+            raise llm_backend.BackendError(self._resume_backend_error)
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam
