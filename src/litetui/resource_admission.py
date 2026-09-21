@@ -53,6 +53,18 @@ class ResourceCoordinator:
             snapshot = self.telemetry()
             def blocked(reason):
                 return AdmissionDecision('blocked', None, snapshot, request, reason)
+            if not isinstance(owner, str) or not owner.strip():
+                return blocked('Resource owner identity unavailable')
+            if any(not isinstance(getattr(request, key), str) or not getattr(request, key).strip()
+                   for key in ('backend', 'endpoint', 'model')):
+                return blocked('Model identity incomplete')
+            if type(request.concurrency) is not int or request.concurrency <= 0:
+                return blocked('Model concurrency invalid')
+            if request.context is not None and (type(request.context) is not int or request.context <= 0):
+                return blocked('Model context invalid')
+            if not isinstance(request.vram_peak_by_device, dict) or any(
+                    not isinstance(key, str) or not key.strip() for key in request.vram_peak_by_device):
+                return blocked('GPU demand identity invalid')
             if not snapshot.reliable or type(snapshot.ram_available) is not int or snapshot.ram_available < 0 or not math.isfinite(snapshot.timestamp):
                 return blocked('Reliable RAM/VRAM telemetry unavailable')
             if time.time() - snapshot.timestamp > 5 or snapshot.timestamp > time.time() + 1:
