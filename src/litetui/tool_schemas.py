@@ -112,6 +112,19 @@ def load(name: str, **fmt: str) -> dict:
     return spec
 
 
+def load_fresh(name: str, **fmt: str) -> dict:
+    """Stage a disk schema without invalidating another generation's cache.
+
+    Calling cache_clear during staging affects every App in this interpreter,
+    including when replacement validation fails. Bypass rather than clear it.
+    The caller owns validation and commit of this independent result.
+    """
+    spec = json.loads(_read.__wrapped__(name))
+    if fmt:
+        _fill(spec, fmt)
+    return spec
+
+
 def _fill(node, fmt: dict[str, str]) -> None:
     """Substitute {placeholders} in every string, in place.
 
