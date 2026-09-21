@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from litetui.plugins import PluginContext, PluginManifest, PluginRegistry
-from litetui.tool_policy import MCP_UNKNOWN_POLICY
+from litetui.tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
 
 # ── issue kinds (constants so callers and tests reference them, not literals) ──
 DUPLICATE_MANIFEST_ID = "duplicate_manifest_id"
@@ -49,6 +49,7 @@ CONFIRMATION_WEAKENED = "confirmation_weakened"
 POLICY_OMITTED = "policy_omitted"
 OWNERSHIP_CHANGED = "ownership_changed"
 AUTHORITY_ADDED = "authority_added"
+POLICY_INVALID = "policy_invalid"
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,8 @@ def _schema_problem(spec: Any) -> str | None:
     params = fn.get("parameters")
     if not isinstance(params, dict):
         return "spec.function.parameters must be an object"
+    if params.get("type") != "object":
+        return f"spec.function.parameters.type must be 'object', got {params.get('type')!r}"
     props = params.get("properties")
     if not isinstance(props, dict):
         return "spec.function.parameters.properties must be a mapping"
@@ -212,6 +215,14 @@ def _authority_issues(
     out: list[ReloadIssue] = []
     live_by_name = {e.name: e for e in live.tools}
     for e in candidate.tools:
+        # A tool's policy must be a real ToolPolicy before any capability is read;
+        # ToolEntry stores whatever was passed (add_tool: `policy or MCP_UNKNOWN_POLICY`),
+        # so a caller can hand it a non-policy object. Report, never crash on `.capabilities`.
+        if not isinstance(e.policy, ToolPolicy):
+            out.append(ReloadIssue(
+                POLICY_INVALID, e.owner,
+                f"tool policy is not a ToolPolicy: {type(e.policy).__name__}", name=e.name))
+            continue
         prior = live_by_name.get(e.name)
         if prior is None:
             if e.name not in approved_new_tools:
@@ -219,6 +230,21 @@ def _authority_issues(
                     AUTHORITY_ADDED, e.owner,
                     "new tool not in approved_new_tools; no silent authority expansion",
                     name=e.name))
+                continue
+            # Approved, but approval is not a substitute for declared authority:
+            # a new tool riding the MCP_UNKNOWN_POLICY fallback has no explicit
+            # policy metadata, which is exactly what a reviewer must see.
+            if e.policy is MCP_UNKNOWN_POLICY:
+                out.append(ReloadIssue(
+                    POLICY_OMITTED, e.owner,
+                    "approved new tool lacks explicit policy metadata (MCP_UNKNOWN_POLICY fallback)",
+                    name=e.name))
+            continue
+        if not isinstance(prior.policy, ToolPolicy):
+            # The live generation carried an invalid policy; cannot compare caps.
+            out.append(ReloadIssue(
+                POLICY_INVALID, prior.owner,
+                f"live tool policy is not a ToolPolicy: {type(prior.policy).__name__}", name=e.name))
             continue
         if e.owner != prior.owner:
             out.append(ReloadIssue(
