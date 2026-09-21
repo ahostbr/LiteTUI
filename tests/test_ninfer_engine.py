@@ -24,9 +24,20 @@ def _no_real_process_ops(monkeypatch):
     for NINFER_START_TIMEOUT_S (180s). Per-test monkeypatches still override these."""
     monkeypatch.setattr(eng, "NINFER_START_TIMEOUT_S", 0.3)
     monkeypatch.setattr(eng, "_kill", lambda proc: None)
+    # atexit MUST be faked: start() registers atexit.register(stop, owned); an un-faked
+    # callback survives the monkeypatch restore and runs real cleanup at interpreter exit.
+    monkeypatch.setattr(eng.atexit, "register", lambda *a, **k: None)
     monkeypatch.setattr(eng.jobkill, "create", lambda: None)
     monkeypatch.setattr(eng.jobkill, "assign", lambda job, pid: False)
     monkeypatch.setattr(eng.jobkill, "close", lambda job: True)
+    monkeypatch.setattr(eng.jobkill, "terminate", lambda job, exit_code=1: True)
+    monkeypatch.setattr(eng.jobkill, "active_process_count", lambda job: 0)
+    monkeypatch.setattr(eng, "_JOB_DRAIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(eng, "_JOB_DRAIN_INTERVAL", 0.005)
+    # terminate_owned proves exit via llm_backend.wait_for_exit on the retained handle;
+    # a fake proc has no real exit, so treat it as terminated (round-trip stop tests).
+    from litetui import llm_backend as _lb
+    monkeypatch.setattr(_lb, "wait_for_exit", lambda proc, **kw: True)
 
 
 class _Settings:
@@ -450,3 +461,136 @@ def test_stop_registered_preserves_a_possibly_dead_ghost_pending_identity(tmp_pa
     assert eng.stop_registered(eng.registered_entry()) is False
     assert killed == [], "no taskkill is issued on an unverifiable pid"
     assert eng.registered_entry() is not None
+
+
+# ── terminate_owned + EngineStartFailed (ownership retention) ────────────────
+
+import io as _io
+
+
+def _owned(job=None, dead=True):
+    proc = type("P", (), {"pid": 4242, "poll": staticmethod(lambda: (0 if dead else None))})()
+    return eng.OwnedEngine(proc=proc, host="http://127.0.0.1:9/v1", log_path=Path("x.log"),
+                           log_file=_io.StringIO(), model_id="m", job=job, args=())
+
+
+def test_terminate_owned_job_confirms_and_unregisters(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:9/v1", pid=4242)
+    r = eng.terminate_owned(_owned(job=7))           # autouse: terminate/close True, count 0, wait True
+    assert r.tree == "confirmed" and r.main_exited and not r.retained
+    assert eng.registered_host() is None             # unregistered ONLY on the confirmed proof
+
+
+def test_terminate_owned_retains_and_preserves_record_when_not_drained(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:9/v1", pid=4242)
+    monkeypatch.setattr(eng.jobkill, "active_process_count", lambda job: 5)   # never drains
+    r = eng.terminate_owned(_owned(job=7))
+    assert r.tree == "unknown" and r.retained
+    assert eng.registered_host() is not None         # record PRESERVED on an uncertain outcome
+
+
+def test_terminate_owned_no_job_is_main_only(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    eng.register_host("http://127.0.0.1:9/v1", pid=4242)
+    r = eng.terminate_owned(_owned(job=None))        # dead proc -> wait proves exit
+    assert r.main_exited and r.tree == "unknown" and not r.retained
+    assert eng.registered_host() is None
+
+
+def test_start_failure_surfaces_the_retained_handle_not_a_registry_row(tmp_path, monkeypatch):
+    from litetui import llm_backend
+    monkeypatch.setattr(llm_backend, "wait_for_exit", lambda proc, **kw: False)  # cleanup uncertain
+    s, spawn, _ = _ready_engine(tmp_path, monkeypatch, log_text="server failed during startup\n")
+    with pytest.raises(eng.EngineStartFailed) as ei:
+        eng.start(s, healthy=lambda h: False, spawn=spawn)
+    assert ei.value.retained_owned is not None       # the HANDLE is the retention...
+    assert ei.value.retained_owned.host == "http://127.0.0.1:49260"
+    assert eng.registered_host() is None             # ...NOT a registry row (no foreign-overwriting register)
+
+
+def test_start_failure_retains_nothing_when_cleanup_confirmed(tmp_path, monkeypatch):
+    # autouse wait_for_exit->True + count 0 -> cleanup confirmed -> nothing to own.
+    s, spawn, _ = _ready_engine(tmp_path, monkeypatch, log_text="server failed during startup\n")
+    with pytest.raises(eng.EngineStartFailed) as ei:
+        eng.start(s, healthy=lambda h: False, spawn=spawn)
+    assert ei.value.retained_owned is None
+    assert isinstance(ei.value, BackendError)        # still an ordinary BackendError to old callers
+
+
+def test_terminate_owned_close_raise_retains_handle(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    def _boom(job):
+        raise OSError("CloseHandle failed")
+    monkeypatch.setattr(eng.jobkill, "close", _boom)      # a raw raise would lose the handle
+    r = eng.terminate_owned(_owned(job=7))
+    assert r.tree == "confirmed" and r.retained and r.error == "OSError"
+
+
+def test_terminate_owned_unregister_failure_retains(tmp_path, monkeypatch):
+    monkeypatch.setattr(eng, "unregister_owned", lambda owned: False)   # bookkeeping failure
+    r = eng.terminate_owned(_owned(job=7))
+    assert r.retained and r.error == "unregister_failed"   # registry failure != lost handle
+
+
+def test_unregister_owned_spares_a_replacement_at_the_same_host(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    host = "http://127.0.0.1:9/v1"
+    cfg = eng.litesuite_llm_dir() / "config.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"version": 1, "extraEndpoints": [
+        {"baseUrl": host, "kind": "ninfer", "owner": "litetui", "pid": 4242},   # ours
+        {"baseUrl": host, "kind": "ninfer", "owner": "litetui", "pid": 999},     # a replacement, same host
+    ]}))
+    assert eng.unregister_owned(_owned(job=None)) is True   # _owned.proc.pid == 4242
+    left = [e for e in json.loads(cfg.read_text())["extraEndpoints"] if e.get("kind") == "ninfer"]
+    assert [e["pid"] for e in left] == [999]               # only OURS removed; the replacement survives
+
+
+def test_fail_start_surfaces_retained_on_a_cleanup_exception(tmp_path, monkeypatch):
+    def _boom(owned):
+        raise RuntimeError("cleanup blew up")
+    monkeypatch.setattr(eng, "terminate_owned", _boom)     # any unexpected cleanup failure
+    s, spawn, _ = _ready_engine(tmp_path, monkeypatch, log_text="server failed during startup\n")
+    with pytest.raises(eng.EngineStartFailed) as ei:
+        eng.start(s, healthy=lambda h: False, spawn=spawn)
+    assert ei.value.retained_owned is not None             # the handle is surfaced, not lost
+
+
+# ── lifecycle lock: cross-process registry Lease + per-engine cleanup lock ──
+
+def test_registry_write_fails_closed_when_the_lease_is_contended(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    held = eng._registry_lock().acquire()             # another writer holds the cross-process lock
+    try:
+        assert eng.register_host("http://127.0.0.1:5", pid=1) is False   # contended -> fail closed
+        assert eng.unregister_owned(_owned(job=None)) is False           # ...and retain, never corrupt
+    finally:
+        held.release()
+
+
+def test_unregister_owned_spares_a_foreign_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    host = "http://127.0.0.1:9/v1"
+    cfg = eng.litesuite_llm_dir() / "config.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"version": 1, "extraEndpoints": [
+        {"baseUrl": host, "kind": "ninfer", "owner": "litesuite", "pid": 4242},   # NOT ours (owner)
+    ]}))
+    assert eng.unregister_owned(_owned(job=None)) is True     # pid matches but owner != litetui
+    left = json.loads(cfg.read_text())["extraEndpoints"]
+    assert left == [{"baseUrl": host, "kind": "ninfer", "owner": "litesuite", "pid": 4242}]  # spared
+
+
+def test_terminate_owned_is_busy_when_a_cleanup_for_this_engine_is_in_flight(tmp_path, monkeypatch):
+    import threading
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    owned = _owned(job=7)
+    owned._cleanup_lock = threading.Lock()
+    owned._cleanup_lock.acquire()                     # a cleanup is already running for this engine
+    try:
+        r = eng.terminate_owned(owned)                # must NOT race a second terminate/close
+        assert r.retained and r.error == "cleanup_in_progress"
+    finally:
+        owned._cleanup_lock.release()

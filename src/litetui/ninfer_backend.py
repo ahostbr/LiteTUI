@@ -39,35 +39,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from .llm_backend import BackendError, ModelRow, _VramGate
 from . import ninfer_engine
-
-#: Bounded wait for the job to drain to zero active processes after terminate().
-#: A job close is asynchronous; this poll is the finite proof window.
-_JOB_DRAIN_TIMEOUT = 3.0
-_JOB_DRAIN_INTERVAL = 0.1
-
-
-def _poll_job_drained(job, timeout: float = None, interval: float = None) -> bool:
-    """True iff active_process_count(job) reaches 0 within a finite deadline. A query
-    failure (None) is decisive: cannot prove -> False (retain). A positive count keeps
-    polling until the deadline; a final read decides."""
-    timeout = _JOB_DRAIN_TIMEOUT if timeout is None else timeout
-    interval = _JOB_DRAIN_INTERVAL if interval is None else interval
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        count = ninfer_engine.jobkill.active_process_count(job)
-        if count is None:
-            return False
-        if count == 0:
-            return True
-        time.sleep(interval)
-    return ninfer_engine.jobkill.active_process_count(job) == 0
 
 #: Where LiteSuite keeps the config that names the live engine. The env var is
 #: LiteSuite's own override, honoured so a test (or a second install) points
@@ -341,23 +319,27 @@ class NInferBackend(_VramGate):
         #: process). _stopping is held for the whole off-loop stop.
         self._starting = False
         self._stopping = False
+        #: Serializes every read/write of _starting/_stopping/_owned/_host across the event
+        #: loop AND the spawn/stop worker threads. Held only for SYNC critical sections (no
+        #: await inside), so it never stalls the loop; the long terminate_owned runs OUTSIDE it.
+        self._lifecycle_lock = threading.Lock()
 
     def begin_stop(self) -> bool:
-        """Claim a stop-in-progress, synchronously and atomically (no await inside).
+        """Claim a stop-in-progress, atomically under the lifecycle lock (no await inside).
 
-        False (reject, do not overlap) if a stop is already running OR a start is in
-        flight (_starting). _starting is a DEDICATED claim held across the spawn's
-        cancellation join — unlike _vram_owner, which a cancelled asyncio.to_thread
-        releases while the spawn thread is still running (the orphan race). start_engine
-        is NInfer's only load/start door (load() is frozen), so this covers new loads.
-        """
-        if self._stopping or self._starting:
-            return False
-        self._stopping = True
-        return True
+        False (reject, do not overlap) if a stop is already running OR a start is in flight
+        (_starting). _starting is a DEDICATED claim held across the spawn's cancellation join,
+        so a cancelled spawn thread still blocks a stop. start_engine is NInfer's only
+        load/start door (load() is frozen), so this covers new loads."""
+        with self._lifecycle_lock:
+            if self._stopping or self._starting:
+                return False
+            self._stopping = True
+            return True
 
     def end_stop(self) -> None:
-        self._stopping = False
+        with self._lifecycle_lock:
+            self._stopping = False
 
     # -- discovery --------------------------------------------------------
 
@@ -479,95 +461,33 @@ class NInferBackend(_VramGate):
         using — from a TUI closing a tab. Attached = leave it. Owned = ours to stop.
         """
         result = self.shutdown_owned()
-        if not result.retained:      # keep host/ownership on an uncertain stop for retry
-            self._host = None
+        if not result.owned:         # attached / no owned engine: forget the host (nothing to race)
+            with self._lifecycle_lock:
+                self._host = None
         return result
 
     def shutdown_owned(self):
-        """Stop our OWNED engine and prove exit — WITH tree-drain proof when a job.
+        """Stop our OWNED engine via the unified ninfer_engine.terminate_owned proof, under
+        the lifecycle lock for the capture and the clear (the long terminate runs OUTSIDE the
+        lock so the loop never stalls).
 
-        Keeps self._owned until the outcome is certain, returns a typed
-        TerminalShutdown, and on ANY uncertain outcome retains the ENTIRE ownership
-        (proc, job, host, log) for a retry. Attached engines are never killed
-        (owned=False). The production shutdown() delegates here.
+        Clear self._owned AND self._host TOGETHER, ONLY on a confirmed terminal state AND
+        ONLY while _owned is still the SAME object — so a concurrent replacement is never torn
+        down and its host is never cleared. Any uncertain outcome retains the entire ownership
+        for a retry. Attached engines are never killed (owned=False)."""
+        from .llm_backend import TerminalShutdown
 
-        With a job (the containment set): terminate() the job WITHOUT closing the
-        handle, wait for the main proc to exit, then poll active_process_count(job)
-        to 0. tree='confirmed' requires BOTH main_exited AND a job-drain to zero
-        (independently observed — a terminate() that reports failure does not block a
-        proof if the count still reaches zero, but its failure is reported). Only then
-        is the handle closed, host unregistered and _owned cleared — and only if
-        _owned is still the SAME object (a concurrent replacement must not be torn
-        down). A final close failure keeps tree='confirmed' but retains the handle
-        (never discarded). Without a job, or on any failure/timeout, tree stays
-        'unknown' and everything is retained.
-        """
-        from .llm_backend import TerminalShutdown, wait_for_exit
-
-        owned = self._owned
+        with self._lifecycle_lock:
+            owned = self._owned
         if owned is None:
             return TerminalShutdown(owned=False)
-        proc = owned.proc
-        job = owned.job
-        pid = getattr(proc, "pid", None)
-
-        if job is None:
-            # No containment set: fall back to the established cleanup, main-only proof.
-            error = None
-            attempted = False
-            try:
-                ninfer_engine.stop(owned)
-                attempted = True
-                main_exited = wait_for_exit(proc)
-            except Exception as exc:                     # noqa: BLE001 - type-only diagnostic
-                error = type(exc).__name__
-                main_exited = False
-            if not main_exited:
-                return TerminalShutdown(owned=True, attempted=attempted, main_exited=False,
-                                        tree="unknown", pid=pid, retained=True, error=error)
-            if self._owned is owned:
-                self._owned = None
-            return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
-                                    tree="unknown", pid=pid, retained=False, error=error)
-
-        # Job-backed: terminate (handle kept open), prove main exit AND drain to zero.
-        error = None
-        try:
-            terminated = ninfer_engine.jobkill.terminate(job)
-            if not terminated:
-                error = "terminate_failed"               # reported, not fatal to the proof
-            main_exited = wait_for_exit(proc)
-            drained = _poll_job_drained(job)
-        except Exception as exc:                         # noqa: BLE001 - type-only diagnostic
-            error = type(exc).__name__
-            main_exited = drained = False
-        if not (main_exited and drained):
-            # Unproven: retain the ENTIRE ownership (proc, job, host, log) for a retry.
-            return TerminalShutdown(owned=True, attempted=True, main_exited=main_exited,
-                                    tree="unknown", pid=pid, retained=True, error=error)
-        if self._owned is not owned:
-            # Replaced/torn down concurrently: the proof is about a job we no longer
-            # own — report it, but touch nothing.
-            return TerminalShutdown(owned=True, attempted=True, main_exited=True,
-                                    tree="confirmed", pid=pid, retained=True, error=error)
-        closed = ninfer_engine.jobkill.close(job)        # release the (now empty) job handle
-        try:
-            ninfer_engine.unregister_host(owned.host)
-        except OSError:
-            pass
-        try:
-            owned.log_file.close()
-        except OSError:
-            pass
-        if not closed:
-            # Tree proof stands independent of cleanup; do NOT discard the handle.
-            return TerminalShutdown(owned=True, attempted=True, main_exited=True,
-                                    tree="confirmed", pid=pid, retained=True,
-                                    error=error or "close_failed")
-        owned.job = None
-        self._owned = None
-        return TerminalShutdown(owned=True, attempted=True, main_exited=True,
-                                tree="confirmed", pid=pid, retained=False, error=error)
+        result = ninfer_engine.terminate_owned(owned)     # OUTSIDE the lock (bounded but slow)
+        if not result.retained:
+            with self._lifecycle_lock:
+                if self._owned is owned:                  # same object -> clear owned + host together
+                    self._owned = None
+                    self._host = None
+        return result
 
     # -- owning the engine (Ryan a-35456da0: "LiteTUI may start it") ----------
 
@@ -584,21 +504,42 @@ class NInferBackend(_VramGate):
         # start or a stop already in flight. Held (via the finally, which runs only AFTER
         # the spawn's cancellation JOIN) for the whole spawn, so a stop cannot be admitted
         # while a possibly-cancelled spawn thread is still running.
-        if self._stopping:
-            raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
-        if self._starting:
-            raise BackendError("a NInfer engine start is already in progress.")
-        self._starting = True
+        # Serialized lifecycle gate (all sync, no await between the checks and the claim):
+        # refuse a start while a stop is in flight, while another start is in flight, OR while
+        # an owned engine is still TRACKED — starting a second would overwrite self._owned and
+        # silently lose the handle to the first (its VRAM). Resolve the existing one
+        # (/engine stop) first.
+        with self._lifecycle_lock:
+            if self._stopping:
+                raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
+            if self._starting:
+                raise BackendError("a NInfer engine start is already in progress.")
+            if self._owned is not None:
+                raise BackendError("an owned NInfer engine is already tracked — /engine stop it before starting another.")
+            self._starting = True
         try:
             key = "ninfer-serve"
 
             def _spawn_and_publish():
-                owned = ninfer_engine.start(
-                    self._settings, healthy=self._health, notice=notice)
-                # Publish INSIDE the thread, before returning: a cancellation delivered
-                # after the join must not lose an engine that actually started.
-                self._owned = owned
-                self._host = owned.host
+                try:
+                    owned = ninfer_engine.start(
+                        self._settings, healthy=self._health, notice=notice)
+                except ninfer_engine.EngineStartFailed as exc:
+                    # A failed start may leave a resident engine whose cleanup was not
+                    # confirmed. PUBLISH the retained OwnedEngine (under the lock) so /engine
+                    # stop can retry it. Unconditional + cannot lose a handle: the entry gate
+                    # refused if _owned was already set, and the _starting claim blocks any
+                    # concurrent start/stop from touching _owned during the spawn.
+                    if exc.retained_owned is not None:
+                        with self._lifecycle_lock:
+                            self._owned = exc.retained_owned
+                            self._host = exc.retained_owned.host
+                    raise
+                # Publish INSIDE the thread, before returning (under the lock): a cancellation
+                # delivered after the join must not lose an engine that actually started.
+                with self._lifecycle_lock:
+                    self._owned = owned
+                    self._host = owned.host
                 return owned
 
             async with self.vram_guard(key):
@@ -609,7 +550,8 @@ class NInferBackend(_VramGate):
                 owned = await agent_preparation.await_preparation(_spawn_and_publish)
             return f"started ninfer-serve pid {getattr(owned.proc, 'pid', '?')} at {owned.host} ({owned.model_id})"
         finally:
-            self._starting = False
+            with self._lifecycle_lock:
+                self._starting = False
 
     def stop_engine(self) -> str:
         if self._owned is None:

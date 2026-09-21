@@ -35,12 +35,35 @@ import os
 import socket
 import struct
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import jobkill, ttyguard
 from .llm_backend import BackendError, _arg_value
+from .shared_state import Lease  # OwnershipError is an OSError subclass — caught by the writers below
+
+
+def _registry_lock() -> Lease:
+    """The cross-process lock EVERY writer of LiteSuite's config holds around its
+    read-modify-write, so concurrent writers (LiteTUI instances/threads) never lose each
+    other's entries. Non-blocking: OwnershipError (an OSError) on contention makes the
+    write fail closed and the caller retains, rather than corrupting the shared file.
+    (Interop is with LiteTUI's own writers; LiteSuite is a separate process and honours
+    this lock only if it adopts the same path — a documented limitation.)"""
+    return Lease(_config_path().with_name("config.json.lock"))
+
+
+class EngineStartFailed(BackendError):
+    """ninfer-serve failed to become ready. ``retained_owned`` carries the OwnedEngine for
+    a resident-but-failed process whose cleanup could NOT be confirmed, so the caller can
+    publish it and retry the stop; it is None when the cleanup was confirmed (nothing left
+    to own). A BackendError subclass, so existing ``except BackendError`` paths still catch."""
+
+    def __init__(self, message: str, *, retained_owned=None) -> None:
+        super().__init__(message)
+        self.retained_owned = retained_owned
 
 NINFER_V3_MAGIC = b"NINFER\x00\x03"
 NINFER_V3_HEADER_BYTES = 32
@@ -337,36 +360,41 @@ def register_host(base_url: str, *, pid: int | None = None) -> bool:
     as external. Every reader keys on baseUrl + kind only, so older readers are unaffected."""
     path = _config_path()
     try:
-        body = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"version": 1}
-        if not isinstance(body, dict):
-            body = {"version": 1}
-        entries = [e for e in (body.get("extraEndpoints") or []) if not (isinstance(e, dict) and e.get("kind") == "ninfer")]
-        entry: dict = {"baseUrl": base_url, "kind": "ninfer", "owner": "litetui"}
-        if pid is not None:
-            entry["pid"] = pid
-        entries.append(entry)
-        body["extraEndpoints"] = entries
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-        return True
+        with _registry_lock():                       # cross-process RMW lock (OwnershipError -> False)
+            body = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"version": 1}
+            if not isinstance(body, dict):
+                body = {"version": 1}
+            entries = [e for e in (body.get("extraEndpoints") or []) if not (isinstance(e, dict) and e.get("kind") == "ninfer")]
+            entry: dict = {"baseUrl": base_url, "kind": "ninfer", "owner": "litetui"}
+            if pid is not None:
+                entry["pid"] = pid
+            entries.append(entry)
+            body["extraEndpoints"] = entries
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+            return True
     except (OSError, ValueError):
         return False
 
 
 def unregister_host(base_url: str) -> None:
+    """Legacy URL-only removal (a stale-cleanup caller). Still a registry writer, so it holds
+    the same cross-process lock around its read-modify-write; a contended lock is a silent
+    no-op (the entry stays for the next attempt)."""
     path = _config_path()
     try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-        entries = body.get("extraEndpoints") or []
-        body["extraEndpoints"] = [
-            e for e in entries
-            if not (isinstance(e, dict) and e.get("kind") == "ninfer" and str(e.get("baseUrl", "")).rstrip("/") == base_url.rstrip("/"))
-        ]
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        with _registry_lock():                       # cross-process RMW lock (all writers share it)
+            body = json.loads(path.read_text(encoding="utf-8"))
+            entries = body.get("extraEndpoints") or []
+            body["extraEndpoints"] = [
+                e for e in entries
+                if not (isinstance(e, dict) and e.get("kind") == "ninfer" and str(e.get("baseUrl", "")).rstrip("/") == base_url.rstrip("/"))
+            ]
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
     except (OSError, ValueError):
         pass
 
@@ -558,9 +586,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
             fresh = ""
         for marker in NINFER_FAILURE_MARKERS:
             if marker in fresh:
-                _abandon(proc, job)
-                log_file.close()
-                raise BackendError(f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
+                failed = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
+                                     model_id=model_id, job=job, args=tuple(args))
+                _fail_start(failed, f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
         if NINFER_READY_MARKER in fresh or healthy(host):
             owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
                                 model_id=model_id, job=job, args=tuple(args))
@@ -570,25 +598,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
         if getattr(proc, "poll", lambda: None)() is not None:
             break
         time.sleep(0.5)
-    _abandon(proc, job)
-    log_file.close()
-    raise BackendError(f"ninfer-serve did not become ready in {NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
-
-
-def _abandon(proc, job: int | None) -> None:
-    """Drop an engine that never became ready.
-
-    🔴 THESE ARE THE PATHS THAT LEAK. The engine is already holding its weights
-    by the time a failure marker appears or the readiness deadline passes — the
-    port binds LAST — so a start that fails is exactly when gigabytes are
-    resident with no `OwnedEngine` to stop them and no registry entry either
-    (`register_host` runs only on the success path). Closing the job takes the
-    whole tree with it; without one, fall back to the walk.
-    """
-    if job is not None:
-        jobkill.close(job)
-        return
-    _kill(proc)
+    failed = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
+                         model_id=model_id, job=job, args=tuple(args))
+    _fail_start(failed, f"ninfer-serve did not become ready in {NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
 
 
 def _kill(proc) -> None:
@@ -601,22 +613,203 @@ def _kill(proc) -> None:
         pass
 
 
-def stop(owned: OwnedEngine) -> None:
-    """Stop ONLY the process we started, and take it out of the registry.
+#: Bounded wait for the job to drain to zero active processes after terminate(). A job
+#: close is asynchronous, so this poll is the finite proof window.
+_JOB_DRAIN_TIMEOUT = 3.0
+_JOB_DRAIN_INTERVAL = 0.1
 
-    THE JOB IS THE KILL WHEN THERE IS ONE. Closing the last handle is atomic
-    over the whole tree and costs ~0.1ms; `taskkill /T` ENUMERATES the process
-    table and costs seconds — the same seconds whether or not the pid is still
-    alive (measured on this box: 3.4s/6.4s/43s live, 3.7s/6.6s/10.4s already
-    dead). So the walk is the FALLBACK, not a belt-and-braces second step.
-    """
-    if owned.job is not None:
-        jobkill.close(owned.job)
-        owned.job = None
-    elif owned.alive:
-        _kill(owned.proc)
-    unregister_host(owned.host)
+
+def _poll_job_drained(job, timeout=None, interval=None) -> bool:
+    """True iff active_process_count(job) reaches 0 within a finite deadline. A query
+    failure (None) is decisive — cannot prove -> False (retain). A positive count keeps
+    polling until the deadline; a final read decides."""
+    timeout = _JOB_DRAIN_TIMEOUT if timeout is None else timeout
+    interval = _JOB_DRAIN_INTERVAL if interval is None else interval
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        count = jobkill.active_process_count(job)
+        if count is None:
+            return False
+        if count == 0:
+            return True
+        time.sleep(interval)
+    return jobkill.active_process_count(job) == 0
+
+
+def _close_log(owned) -> None:
     try:
         owned.log_file.close()
     except Exception:  # noqa: BLE001, S110 - a closed handle on a dead process is not news
         pass
+
+
+_CLEANUP_LOCKS_GUARD = threading.Lock()
+
+
+def _cleanup_lock_for(owned) -> threading.Lock:
+    """A per-OwnedEngine cleanup lock, created once under a global guard (thread-safe) and
+    cached on the instance. It serializes terminate_owned across ALL callers — atexit
+    stop(), a direct terminate_owned, and the backend — so two cleanups can never
+    terminate/close the SAME job concurrently (a handle-reuse hazard)."""
+    with _CLEANUP_LOCKS_GUARD:
+        lock = getattr(owned, "_cleanup_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                owned._cleanup_lock = lock
+            except Exception:  # noqa: BLE001 - a slotted/foreign object still gets a fresh lock
+                pass
+        return lock
+
+
+def terminate_owned(owned):
+    """Per-OwnedEngine-serialized terminal-shutdown proof. If a cleanup for THIS engine is
+    already in flight, return retained (busy) rather than racing a second terminate/close on
+    the same job — it never WAITS (no UI stall). See _terminate_owned_inner for the proof."""
+    from .llm_backend import TerminalShutdown
+    lock = _cleanup_lock_for(owned)
+    if not lock.acquire(blocking=False):
+        return TerminalShutdown(owned=True, attempted=False, main_exited=False, tree="unknown",
+                                pid=getattr(owned.proc, "pid", None), retained=True,
+                                error="cleanup_in_progress")
+    try:
+        return _terminate_owned_inner(owned)
+    finally:
+        lock.release()
+
+
+def _terminate_owned_inner(owned):
+    """The ONE terminal-shutdown proof for an owned engine — used by stop(), the
+    start-failure path and the backend, so no caller invents a divergent proof.
+
+    Job branch: terminate the job WITHOUT closing the handle, wait for the main process
+    to exit, then poll the job to zero active processes; close ONLY on that proof
+    (tree='confirmed'). No-job branch: _kill + wait (main-only, tree='unknown'). A
+    CloseHandle success is a KILL REQUEST, not a completion — the drain poll is the
+    proof, and the host is unregistered ONLY on a confirmed terminal state. Any
+    failure / query-None / timeout / not-exited RETAINS the handle and the record for a
+    retry (returns retained=True). Returns a TerminalShutdown; it does NOT touch any
+    backend's self._owned (the caller owns that).
+    """
+    from .llm_backend import TerminalShutdown, wait_for_exit
+
+    proc = owned.proc
+    job = owned.job
+    pid = getattr(proc, "pid", None)
+    if job is None:
+        error = None
+        attempted = False
+        try:
+            if owned.alive:
+                _kill(proc)
+                attempted = True
+            main_exited = wait_for_exit(proc)
+        except Exception as exc:  # noqa: BLE001 - type-only diagnostic
+            error = type(exc).__name__
+            main_exited = False
+        if not main_exited:
+            return TerminalShutdown(owned=True, attempted=attempted, main_exited=False,
+                                    tree="unknown", pid=pid, retained=True, error=error)
+        if not unregister_owned(owned):         # bookkeeping failure retains, never loses the handle
+            return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
+                                    tree="unknown", pid=pid, retained=True, error="unregister_failed")
+        _close_log(owned)
+        return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
+                                tree="unknown", pid=pid, retained=False, error=error)
+    error = None
+    try:
+        if not jobkill.terminate(job):
+            error = "terminate_failed"          # reported, but proof is independent
+        main_exited = wait_for_exit(proc)
+        drained = _poll_job_drained(job)
+    except Exception as exc:  # noqa: BLE001 - type-only diagnostic
+        error = type(exc).__name__
+        main_exited = drained = False
+    if not (main_exited and drained):
+        return TerminalShutdown(owned=True, attempted=True, main_exited=main_exited,
+                                tree="unknown", pid=pid, retained=True, error=error)
+    try:
+        closed = jobkill.close(job)             # can raise — a raw raise would lose the handle
+    except Exception as exc:  # noqa: BLE001 - type-only; the proof stands, retain the handle
+        return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                                tree="confirmed", pid=pid, retained=True, error=type(exc).__name__)
+    if not unregister_owned(owned):             # registry bookkeeping is SEPARATE from the proof
+        return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                                tree="confirmed", pid=pid, retained=True, error="unregister_failed")
+    _close_log(owned)
+    if not closed:
+        # Tree proof stands independent of cleanup; do NOT discard the handle.
+        return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                                tree="confirmed", pid=pid, retained=True,
+                                error=error or "close_failed")
+    owned.job = None
+    return TerminalShutdown(owned=True, attempted=True, main_exited=True,
+                            tree="confirmed", pid=pid, retained=False, error=error)
+
+
+def unregister_owned(owned) -> bool:
+    """Ownership-checked registry removal under the cross-process RMW lock: drop the ninfer
+    entry ONLY if owner=='litetui' AND baseUrl AND pid ALL match this owned engine — so a
+    FOREIGN entry, or a REPLACEMENT that reused the same host/port (a different pid), is never
+    removed by our cleanup. Read and write happen under one lock hold so no writer loses the
+    other's update. Missing config -> nothing to remove (True). An I/O/parse failure or a
+    contended lock -> False, so the caller retains rather than losing the handle over
+    bookkeeping. Never a broad URL-only delete."""
+    pid = getattr(owned.proc, "pid", None)
+    host = str(owned.host).rstrip("/")
+    path = _config_path()
+    try:
+        with _registry_lock():
+            try:
+                body = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return True                  # nothing registered -> nothing to remove
+            entries = body.get("extraEndpoints") or []
+            body["extraEndpoints"] = [
+                e for e in entries
+                if not (isinstance(e, dict) and e.get("kind") == "ninfer"
+                        and e.get("owner") == "litetui"
+                        and str(e.get("baseUrl", "")).rstrip("/") == host and e.get("pid") == pid)
+            ]
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+            return True
+    except (OSError, ValueError):            # incl. OwnershipError (contended) -> retain the handle
+        return False
+    return True
+
+
+def _fail_start(owned, message):
+    """A start that failed but left a RESIDENT engine (weights load before the port binds).
+
+    The retained OwnedEngine HANDLE is the real ownership — NOT a registry row. We do NOT
+    register_host here: register_host filters by kind and would remove a FOREIGN ninfer
+    entry (agreed: no foreign overwrite). atexit.register(stop) is registered BEFORE cleanup
+    as best-effort recovery (NOT a force-kill guarantee — the job covers assigned members
+    only). Then the unified cleanup is ATTEMPTED (never keep-running-only). The typed
+    exception carries retained_owned when the cleanup was not confirmed OR when it raised
+    unexpectedly — so an unresolved handle is ALWAYS surfaced to the caller, never lost."""
+    atexit.register(stop, owned)
+    try:
+        result = terminate_owned(owned)
+    except Exception:  # noqa: BLE001 - any unexpected cleanup failure must still surface the handle
+        raise EngineStartFailed(message, retained_owned=owned)
+    finally:
+        # LiteTUI's OWN handle to the log must not leak on a failed start. The child keeps
+        # writing through its own handle (independent on Windows) and _log_tail reads from
+        # disk, so closing ours is safe whether we retain the engine for a retry or not.
+        # (On the confirmed path _terminate_owned_inner already closed it; _close_log no-ops.)
+        _close_log(owned)
+    raise EngineStartFailed(message, retained_owned=(owned if result.retained else None))
+
+
+def stop(owned: OwnedEngine) -> None:
+    """Stop the engine we started and PROVE it terminated, via the unified terminate_owned.
+    atexit-registered and best-effort; ignores the return and retains on an unconfirmed
+    outcome for a later retry. (The job kill is atomic over the ASSIGNED tree; the taskkill
+    walk is the no-job fallback — measured 3-43s live/dead, so it is a fallback, not a
+    belt-and-braces second step.)"""
+    terminate_owned(owned)
+
+
