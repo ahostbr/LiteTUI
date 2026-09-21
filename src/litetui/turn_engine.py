@@ -47,6 +47,9 @@ def _resolve_reasoning_effort(
 ) -> str | None:
     """Wire value for reasoning_effort given the user's level, backend and model.
 
+    ninfer: template-safe vocabulary; stale `minimal`/`high`/`max` values from
+    older conversations are folded to `low`/`xhigh` rather than sent into a
+    chat template that rejects them.
     llamacpp: verbatim ("none" for off, the graded level otherwise).
     lmstudio: binary — "none" for off, OMIT (None) for any graded level —
     EXCEPT for a model named in `graded_models`, which gets the level verbatim.
@@ -79,6 +82,15 @@ def _resolve_reasoning_effort(
         return None
     if level == "off":
         return "none"
+    if backend_name == "ninfer":
+        return {
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "xhigh",
+            "xhigh": "xhigh",
+            "max": "xhigh",
+        }.get(level)
     if backend_name != "lmstudio":
         return level
     want = (model_id or "").strip().lower()

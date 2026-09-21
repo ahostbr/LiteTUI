@@ -10,11 +10,11 @@ ones a status-code handler, a hardcoded port, or a silent no-op would each pass.
 from __future__ import annotations
 
 import asyncio
-import json
-
 import io
-import pytest
+import json
 from pathlib import Path
+
+import pytest
 
 from litetui.llm_backend import BackendError
 from litetui.ninfer_backend import (
@@ -422,32 +422,14 @@ def test_a_reported_rate_does_not_skip_the_existing_guards():
 # ── thinking (the feature Ryan named) ────────────────────────────────────────
 
 
-def test_the_thinking_levels_come_from_the_engines_contract():
-    """🔴 SEVEN. THIS ARM USED TO SAY FOUR, AND ITS OWN PROSE DEFENDED THE
-    DEFECT: *"`high` would 400 on the artifact we ship"*, citing serving.md.
-
-    It is wrong, and three independent sources say so (2026-09-17):
-
-      1. `serving.md:216-217` — the document it cited — reads: *"`none`
-         requests disabled thinking. The selected template interprets the
-         other standard values (`minimal`, `low`, `medium`, `high`,
-         `xhigh`, `max`)."*
-      2. The live engine NAMES its own vocabulary when refused:
-         `reasoning_effort: "ultra"` -> HTTP 400 *"reasoning_effort must be
-         one of none, minimal, low, medium, high, xhigh, or max"*.
-      3. `high` — the level this docstring said would 400 — returned HTTP
-         200 with 723 characters of reasoning_content from that engine.
-
-        A TEST CAN DEFEND THE BUG. A green assertion and a confident
-        docstring held a false claim in place, and the only thing that
-        dislodged it was running the engine.
-    """
+def test_the_thinking_levels_are_the_template_safe_contract():
+    """The protocol vocabulary is wider than the loaded template vocabulary."""
     backend = NInferBackend(_Settings())
-    seven = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    safe = ["none", "low", "medium", "xhigh"]
     # The model argument is accepted and unused by design (one artifact per
     # process), so both spellings must give the same answer.
-    assert backend.reasoning_levels("qwen3.8-27b") == seven
-    assert backend.reasoning_levels(None) == seven
+    assert backend.reasoning_levels("qwen3.8-27b") == safe
+    assert backend.reasoning_levels(None) == safe
 
 
 def test_thinking_capabilities_asks_the_backend_and_adds_no_ninfer_arm():
@@ -470,8 +452,7 @@ def test_thinking_capabilities_asks_the_backend_and_adds_no_ninfer_arm():
     caps = tc.thinking_capabilities(App())
     assert caps["source"] == "backend model metadata"
     # "none" is rendered as "off" by the shared resolver — not by us.
-    assert caps["levels"] == ["default", "off", "minimal", "low", "medium",
-                              "high", "xhigh", "max"]
+    assert caps["levels"] == ["default", "off", "low", "medium", "xhigh"]
 
 
 def test_thinking_capabilities_has_no_ninfer_name_branch():
@@ -508,10 +489,7 @@ def test_thinking_capabilities_has_no_ninfer_name_branch():
 
 
 def test_the_levels_are_sent_verbatim_and_off_becomes_none():
-    """🔴 VERIFIED, NOT ASSUMED. `turn_engine._resolve_reasoning_effort` is the
-    one place a level becomes a wire value, and ninfer takes the non-lmstudio
-    arm: verbatim, with `off` -> `"none"`, which is the engine's own spelling
-    for thinking disabled."""
+    """Safe levels are verbatim; the UI's `off` becomes the wire's `none`."""
     from litetui.turn_engine import _resolve_reasoning_effort
 
     assert _resolve_reasoning_effort("off", "ninfer") == "none"
@@ -524,14 +502,18 @@ def test_the_levels_are_sent_verbatim_and_off_becomes_none():
     assert _resolve_reasoning_effort(None, "ninfer") is None
 
 
-def test_an_unsupported_level_is_named_rather_than_read_as_a_broken_engine():
-    """🔴 THE ONLY WAY THE LEVEL SET EVER GETS NARROWED.
+def test_stale_ninfer_levels_are_folded_before_the_template_sees_them():
+    """Old conversations can still contain levels the picker no longer offers."""
+    from litetui.turn_engine import _resolve_reasoning_effort
 
-    Nothing advertises which efforts a loaded template exposes, so an effort it
-    lacks comes back as a 400 BEFORE prompt preparation. Without its own
-    sentence that reads as the engine failing, when it means "this model has no
-    Extra High".
-    """
+    assert _resolve_reasoning_effort("minimal", "ninfer") == "low"
+    assert _resolve_reasoning_effort("high", "ninfer") == "xhigh"
+    assert _resolve_reasoning_effort("max", "ninfer") == "xhigh"
+    assert _resolve_reasoning_effort("invented", "ninfer") is None
+
+
+def test_an_unsupported_level_is_named_rather_than_read_as_a_broken_engine():
+    """A differently constrained artifact still gets an actionable error."""
     code, action = classify_ninfer_error('{"code":"reasoning_effort_not_supported"}')
     assert action == "thinking-level"
     assert "/thinking" in ninfer_error_sentence('{"code":"' + code + '"}', "raw")

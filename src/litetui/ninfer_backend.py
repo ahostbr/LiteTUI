@@ -43,8 +43,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .llm_backend import BackendError, ModelRow, _VramGate
 from . import ninfer_engine
+from .llm_backend import BackendError, ModelRow, _VramGate
 
 #: Where LiteSuite keeps the config that names the live engine. The env var is
 #: LiteSuite's own override, honoured so a test (or a second install) points
@@ -109,10 +109,8 @@ NINFER_ERROR_ACTION = {
     # 🔴 THE ONE THE THINKING LEVELS CAN PRODUCE (T806). The engine accepts the
     # FIELD by protocol and the loaded TEMPLATE decides which values it exposes,
     # so an effort the template does not carry is a 400 raised BEFORE prompt
-    # preparation (`ninfer/docs/serving.md:194`). Nothing advertises the exposed
-    # set, so this error is the only way to learn it — which makes a clear
-    # sentence here the difference between "this model has no Extra High" and "the
-    # engine is broken".
+    # preparation (`ninfer/docs/serving.md:194`). Keep the error mapping as a
+    # safeguard for artifacts whose template differs from LiteTUI's safe set.
     "reasoning_effort_not_supported": "thinking-level",
     # THE MEDIA CODES (T824). Read from ninfer/docs/serving.md, not guessed:
     # :44 'media requests and token-count requests fail with HTTP 400
@@ -239,47 +237,16 @@ def format_timings(timings: object) -> str | None:
     return " · ".join(parts) if parts else None
 
 
-#: The reasoning efforts `ninfer-serve` accepts on the wire.
+#: The reasoning efforts LiteTUI offers for NInfer.
 #:
-#: 🔴 READ FROM THE CONTRACT, NOT FROM LiteTUI's OWN VOCABULARY.
-#: `ninfer/docs/serving.md` is explicit twice over: `reasoning_effort: "none"`
-#: disables thinking; a recognised effort-capable template exposes `low`,
-#: `medium` and `xhigh`; and the other OpenAI values (`minimal`, `high`, `max`)
-#: "are parsed but rejected when the loaded template does not expose them".
+#: The server protocol parses a broader OpenAI vocabulary, but the loaded chat
+#: template is the authority that formats a request. The shipped Qwen3.8
+#: artifact rejects `minimal`, `high`, and `max` at
+#: `artifact:chat_template.jinja:55`, before tokenization.
 #:
-#: So this is FOUR, not LiteTUI's five — offering `high` would offer a level
-#: that 400s on the artifact we ship.
-#:
-#: ⚠️ AND IT IS A CLAIM ABOUT THE PROTOCOL, NOT ABOUT THE LOADED TEMPLATE.
-#: Nothing advertises which efforts a template actually exposes — there is no
-#: discovery endpoint and the engine says so — so the honest position is that
-#: these are the values the ENGINE accepts, and a template that lacks one
-#: answers `reasoning_effort_not_supported` BEFORE prompt preparation
-#: (`serving.md:194`). That error has its own sentence in the table above,
-#: because it is the only way this set ever gets narrowed.
-#: The engine's own vocabulary, in the engine's own order.
-#:
-#: 🔴 THIS WAS FOUR OF SEVEN, AND THE THREE THAT WERE MISSING WERE REFUSED
-#: WITH A SENTENCE THAT WAS FALSE ABOUT THEM. Measured 2026-09-17 against
-#: ninfer-serve (35B-A3B): the engine NAMES its vocabulary in its own 400,
-#: and `high` -- one of the three this tuple omitted -- returned HTTP 200
-#: with 723 characters of reasoning_content.
-#:
-#:     POST /v1/chat/completions {..., "reasoning_effort": "ultra"} -> 400
-#:     {"error":{"code":null,
-#:       "message":"reasoning_effort must be one of none, minimal, low,
-#:                   medium, high, xhigh, or max",
-#:       "param":"reasoning_effort","type":"invalid_request_error"}}
-#:
-#: So `set_thinking` answered "Thinking level is not supported by the active
-#: backend/model" for `minimal`, `high` and `max` -- three levels the active
-#: backend supports. The refusal machinery was right; the table was short.
-#:
-#: ⬜ ORDER IS THE ENGINE'S, ascending effort, because this tuple is what the
-#: /thinking picker renders: a set would lose it and an alphabetical list
-#: would put `high` between `default` and `low`.
-NINFER_REASONING_LEVELS = ("none", "minimal", "low", "medium", "high",
-                           "xhigh", "max")
+#: Ryan's 2026-09-21 contract is the template-safe set below. `none` is the
+#: wire spelling; the shared thinking UI renders it as `off`.
+NINFER_REASONING_LEVELS = ("none", "low", "medium", "xhigh")
 
 
 # ── the backend ──────────────────────────────────────────────────────────────
@@ -632,7 +599,7 @@ class NInferBackend(_VramGate):
     # -- capabilities -----------------------------------------------------
 
     def reasoning_levels(self, model: str | None = None) -> list[str]:
-        """The thinking levels this engine takes — THE SEAM THAT ALREADY EXISTED.
+        """The template-safe thinking levels LiteTUI offers for NInfer.
 
         🔴 RYAN, 12:1x: *"agents have seem to try to rebuild every system for
         every backend over and again ... were writing the same code to do the
@@ -646,11 +613,9 @@ class NInferBackend(_VramGate):
         arm is added to `thinking_capabilities`, no `ninfer` name appears there,
         and the /thinking screen renders from what this returns.
 
-        ⬜ `_resolve_reasoning_effort` ALREADY SENDS THESE VERBATIM, and I
-        verified rather than assumed: `turn_engine.py:81` is
-        `if backend_name != "lmstudio": return level`, with `off` mapped to
-        `"none"` one line above — which is exactly the engine's own spelling for
-        thinking disabled.
+        `_resolve_reasoning_effort` sends these values verbatim, maps the UI's
+        `off` to the wire's `none`, and folds stale wider-vocabulary values from
+        older conversations onto this set before they reach the template.
 
         ⬜ THE MODEL ARGUMENT IS ACCEPTED AND UNUSED, DELIBERATELY. One artifact
         per process: the model cannot differ from the one this engine serves, so

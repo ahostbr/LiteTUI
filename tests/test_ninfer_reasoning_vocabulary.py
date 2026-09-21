@@ -1,39 +1,25 @@
-"""One reasoning vocabulary, and it is the engine's (T839).
+"""One template-safe reasoning vocabulary across NInfer's controls.
 
-🔴 TWO DEFECTS, ONE CAUSE: THE LEVELS WERE DECIDED IN MORE THAN ONE PLACE.
-
-Measured 2026-09-17 against ninfer-serve (35B-A3B, 127.0.0.1:58755):
-
-  (a) `NINFER_REASONING_LEVELS` held FOUR of the engine's SEVEN, so
-      `set_thinking("high")` answered "Thinking level is not supported by the
-      active backend/model" — about a level the engine served with HTTP 200 and
-      723 characters of reasoning_content.
-
-  (b) `/think` never asked the backend at all. It fell back to the global
-      `settings.THINKING_LEVELS`, so on the SAME model in the SAME second
-      `/think high` was accepted while `set_thinking("high")` was refused.
-
-      ⚠️ AND FIXING ONLY (a) WOULD HAVE FLIPPED (b) RATHER THAN CLOSING IT:
-      with seven levels restored, `set_thinking("max")` works while
-      `/think max` is refused, because THINKING_LEVELS has six and lacks `max`.
-      TWO LISTS CANNOT BE KEPT EQUAL BY EDITING ONE OF THEM.
-
-So the fix is `backend_levels()` — one answer, both callers — and the arms
-below check the AGREEMENT, not either list on its own.
+The server protocol parses seven OpenAI effort spellings, but the shipped
+Qwen3.8 artifact rejects `minimal`, `high`, and `max` in its Jinja template.
+The UI therefore offers `off`, `low`, `medium`, and `xhigh`; `off` becomes
+`none` on the wire. The arms below keep both control paths in agreement and
+preserve the wider-protocol error shape as a compatibility check.
 """
 
 from __future__ import annotations
-
-import re
 
 import httpx
 import openai
 import pytest
 
 from litetui.app import _plain_backend_error
-from litetui.ninfer_backend import (NINFER_REASONING_LEVELS, NInferBackend,
-                                    classify_ninfer_error,
-                                    ninfer_error_sentence)
+from litetui.ninfer_backend import (
+    NINFER_REASONING_LEVELS,
+    NInferBackend,
+    classify_ninfer_error,
+    ninfer_error_sentence,
+)
 from litetui.plugins.misc import UNSET, _thinking_rows
 from litetui.settings import THINKING_LEVELS, Settings
 from litetui.thinking_capabilities import set_thinking, thinking_capabilities
@@ -43,19 +29,10 @@ from litetui.thinking_capabilities import set_thinking, thinking_capabilities
 #:   POST http://127.0.0.1:58755/v1/chat/completions
 #:   {"model":"qwen3_6_35b_a3b", ..., "reasoning_effort":"ultra"}   -> HTTP 400
 #:
-#: This is the ONLY authority in this file for what the engine takes. Parsing
-#: it, rather than retyping the names, is what makes this arm a pin on the
-#: engine instead of a second copy of our own tuple agreeing with itself.
+#: This remains evidence for the engine's wider protocol vocabulary; it is not
+#: the list exposed by LiteTUI because the loaded template is narrower.
 ENGINE_400_MESSAGE = ("reasoning_effort must be one of none, minimal, low, "
                       "medium, high, xhigh, or max")
-
-
-def _levels_the_engine_named() -> list[str]:
-    tail = ENGINE_400_MESSAGE.split("must be one of", 1)[1]
-    # `,\s*` alone leaves "or max" from "xhigh, or max": the comma consumes the
-    # separator before the `or` alternative is ever tried. The optional `or`
-    # has to live inside the comma branch.
-    return [w for w in re.split(r",\s*(?:or\s+)?|\s+or\s+", tail.strip()) if w]
 
 
 def _app(backend_name="ninfer", *, model="qwen3_6_35b_a3b", backend=None,
@@ -84,20 +61,18 @@ def _ninfer_app():
 # ── the vocabulary is the engine's ───────────────────────────────────────────
 
 
-def test_the_vocabulary_is_exactly_what_the_engine_named():
-    """🔴 THE PIN. Derived from the engine's own 400 text, so this goes red if
-    the tuple drifts from what the engine will actually take."""
-    assert list(NINFER_REASONING_LEVELS) == _levels_the_engine_named()
+def test_the_vocabulary_is_exactly_the_template_safe_set():
+    """Protocol acceptance is insufficient when the loaded template rejects it."""
+    assert list(NINFER_REASONING_LEVELS) == ["none", "low", "medium", "xhigh"]
 
 
-def test_the_three_that_were_refused_are_accepted_now():
-    """🔴 THE DEFECT, NAMED. `minimal`, `high` and `max` were rejected with a
-    sentence that was false about them — `high` returned HTTP 200 and 723
-    characters of reasoning_content from this very engine."""
+def test_template_unsupported_levels_are_not_offered_or_accepted():
+    """The Qwen3.8 artifact raises `invalid_prompt` for these values."""
     app = _ninfer_app()
     for level in ("minimal", "high", "max"):
-        set_thinking(app, level)
-        assert app.thinking_level == level
+        assert level not in _offered(app)
+        with pytest.raises(ValueError):
+            set_thinking(app, level)
 
 
 def test_a_level_the_engine_does_not_take_is_still_refused():
