@@ -5,9 +5,12 @@ from litetui import hook_host, tool_policy
 
 async def wake_parent(app, *, parent, receipts):
     if (app._chat_running() or getattr(app, '_gui_quitting', False)
+            or getattr(app, '_mcp_maintenance', False)
             or getattr(app, '_pending_input', [])
             or getattr(app, '_stop_requested', False)
             or hasattr(app.backend, 'app_server')):
+        # Checked BEFORE claim_wake: a wake deferred during MCP maintenance must
+        # not claim (and therefore finish) its receipts — it re-fires later.
         return []
     conversation = app.convo_id
     store = app.store

@@ -136,3 +136,26 @@ async def test_execute_tool_paused_during_maintenance():
     app = NS(tools_enabled=True, _mcp_maintenance=True, _rpc_emit=lambda e: None)
     out, ok = await LiteTUI._execute_tool(app, "anytool", {})
     assert ok is False and "maintenance" in out.lower()
+
+
+# ── maintenance completion Event + parent-wake preclaim guard (batch 3) ───────
+@pytest.mark.asyncio
+async def test_reconcile_worker_sets_completion_event():
+    import asyncio
+    app = _app(maint=True)
+    app._mcp_maintenance_done = asyncio.Event()
+    await mm._reconcile_worker(app)
+    assert app._mcp_maintenance is False and app._mcp_maintenance_done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_wake_parent_defers_before_claim_during_maintenance():
+    from litetui.agent_parent_wake import wake_parent
+    claimed = []
+    receipts = NS(claim_wake=lambda p, c: (claimed.append((p, c)) or ["id"]),
+                  finish_wake=lambda *a: None)
+    app = NS(_chat_running=lambda: False, _gui_quitting=False, _mcp_maintenance=True,
+             _pending_input=[], _stop_requested=False, backend=NS(name="lmstudio"),
+             convo_id="c1")
+    out = await wake_parent(app, parent="p", receipts=receipts)
+    assert out == [] and claimed == []       # deferred BEFORE claiming any receipt
