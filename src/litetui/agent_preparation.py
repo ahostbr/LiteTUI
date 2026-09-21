@@ -62,6 +62,11 @@ def run_guarded(app, coro, *, group, cleanup, report=None):
     state = {"armed": False, "started": False, "fired": False}
 
     def _fire(*_a):
+        # Textual's Task runs Worker._run, which may be cancelled before it
+        # ever awaits our wrapper. Only its terminal callback may close that
+        # wrapper; failure paths must not close a coroutine owned by a live task.
+        if _a and isinstance(_a[0], asyncio.Task) and _a[0].done():
+            guarded.close()
         if state["fired"]:
             return
         state["fired"] = True
