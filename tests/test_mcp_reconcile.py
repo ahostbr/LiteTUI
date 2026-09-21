@@ -161,3 +161,32 @@ def test_stop_all_stops_and_clears_even_if_claim_flag_set(tmp_path):
     srvs = list(m.servers.values())
     m.stop_all()
     assert list(m.servers) == [] and all(s.stopped for s in srvs)
+
+
+def test_connect_after_stop_all_is_refused_no_leak(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    m.stop_all()
+    result = m.connect("a")                       # public connect, claim free, but closing
+    assert "closing" in result and "a" not in m.servers
+
+
+def test_reconcile_after_closing_starts_nothing(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.stop_all()                                  # sets closing
+    _write_cfg(tmp_path, {"a": {"command": "x"}})
+    out = m.reconcile()
+    assert out.get("a", "").startswith("failed:") and "closing" in out["a"]
+    assert list(m.servers) == []
+
+
+def test_add_remove_reload_raise_busy_when_claimed(tmp_path):
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m._maint_active = True                         # a maintenance op holds the claim
+    with pytest.raises(mc.MCPBusy):
+        m.reload_configs()
+    with pytest.raises(mc.MCPBusy):
+        m.add("newsrv", {"command": "echo"})
+    with pytest.raises(mc.MCPBusy):
+        m.remove("a")
+    m._maint_active = False
