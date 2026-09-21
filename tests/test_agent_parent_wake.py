@@ -109,3 +109,79 @@ def test_uncertain_restart_displays_one_recovery_notice_without_retry(state):
     assert 'completion' in notices[0]
     assert 'No automatic retry' in notices[0]
     assert receipts.uncertain_wakes('parent', 'chat') == ['completion']
+
+# ── batch 3: MCP-maintenance gate outcomes on the CLAIMED receipt ──────────────
+# The gate races: wake_parent's pre-claim guard already defers a wake that STARTS
+# during maintenance, but maintenance can begin AFTER that guard and BEFORE the
+# turn generates. Then the receipt is already claimed and the gate defers. A
+# deferral there is provably side-effect free, so the claim returns to pending
+# (re-fires); any other failure keeps it claimed (uncertain) — never re-run.
+@pytest.mark.asyncio
+async def test_gate_deferral_releases_claim_to_pending(state):
+    from litetui.turn_deferral import STREAM_DEFERRED
+    app, receipts = state
+
+    class Worker:                       # _stream deferred at the gate → sentinel
+        async def wait(self):
+            return STREAM_DEFERRED
+
+    app._stream = lambda: Worker()
+    assert await wake_parent(app, parent='parent', receipts=receipts) == []
+    assert not receipts.uncertain_wakes('parent', 'chat')          # not left claimed
+    assert receipts.claim_wake('parent', 'chat') == ['completion']  # re-fires cleanly
+
+
+@pytest.mark.asyncio
+async def test_non_deferral_failure_keeps_claim_uncertain(state):
+    from textual.worker import WorkerFailed
+    app, receipts = state
+
+    class Worker:
+        async def wait(self):
+            raise WorkerFailed(RuntimeError("boom"))
+
+    app._stream = lambda: Worker()
+    with pytest.raises(WorkerFailed):
+        await wake_parent(app, parent='parent', receipts=receipts)
+    assert receipts.uncertain_wakes('parent', 'chat') == ['completion']  # NOT released
+
+
+def test_release_wake_refuses_non_claimed(state):
+    app, receipts = state
+    with pytest.raises(ValueError):                       # still pending, never claimed
+        receipts.release_wake('parent', 'chat', ['completion'])
+    receipts.claim_wake('parent', 'chat')
+    receipts.finish_wake('parent', 'chat', ['completion'])
+    with pytest.raises(ValueError):                       # finished, not claimed
+        receipts.release_wake('parent', 'chat', ['completion'])
+
+
+@pytest.mark.asyncio
+async def test_mounted_stream_blocks_during_maintenance_then_resumes():
+    # The gate inside a REAL Textual @work worker: it suspends the turn on the
+    # completion Event and runs it exactly once after maintenance settles.
+    import asyncio
+    from textual.app import App
+    from textual import work
+    from litetui.app import LiteTUI
+
+    class Host(App):
+        _await_mcp_maintenance = LiteTUI._await_mcp_maintenance
+
+        @work(group='chat', exclusive=True)
+        async def _stream(self):
+            await self._await_mcp_maintenance()
+            self.turns += 1
+
+    app = Host()
+    app.backend, app.convo_id, app._stop_requested = object(), 'chat', False
+    app.turns, app._mcp_maintenance = 0, True
+    async with app.run_test() as pilot:
+        app._mcp_maintenance_done = asyncio.Event()       # created on the loop
+        app._stream()
+        await pilot.pause(0.05)
+        assert app.turns == 0                             # blocked in the gate
+        app._mcp_maintenance = False                      # settle (flag then event)
+        app._mcp_maintenance_done.set()
+        await pilot.pause(0.05)
+        assert app.turns == 1                             # resumed, ran once

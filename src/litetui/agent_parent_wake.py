@@ -1,6 +1,7 @@
 """Wake already-committed parent history without appending another user turn."""
 from uuid import uuid4
 from litetui import hook_host, tool_policy
+from litetui.turn_deferral import STREAM_DEFERRED
 
 
 async def wake_parent(app, *, parent, receipts):
@@ -34,6 +35,13 @@ async def wake_parent(app, *, parent, receipts):
     # Claim persisted before scheduling. Exceptions/cancellation leave it
     # uncertain, never auto-repeat tool side effects after a crash.
     worker = app._stream()
-    await worker.wait()
+    if (await worker.wait()) is STREAM_DEFERRED:
+        # Deferred at the pre-generation gate: nothing streamed, so the claim is
+        # provably side-effect free. Release it to pending for a clean re-fire,
+        # and do NOT finish (the turn never ran). A real failure/cancellation
+        # raises out of wait() instead and leaves the claim 'claimed'
+        # (uncertain), never released.
+        receipts.release_wake(parent, conversation, ids)
+        return []
     receipts.finish_wake(parent, conversation, ids)
     return ids

@@ -7055,29 +7055,63 @@ class LiteTUI(App):
         self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
                         "tps": tps, "tpsSource": tps_source, **extra})
 
+    async def _await_mcp_maintenance(self) -> None:
+        """Block a turn while an MCP reconcile is in flight, then let it proceed.
+
+        Awaits IN the calling worker (not a detached timer) so a parent wake
+        that awaits _stream completes only when the turn ACTUALLY runs. Raises
+        TurnDeferred — never returns silently — when the turn must be dropped,
+        so a caller cannot read a deferral as a completed turn and finish a
+        receipt for a turn that never ran.
+        """
+        from litetui.turn_deferral import TurnDeferred
+        if not getattr(self, "_mcp_maintenance", False):
+            return
+        # Identity captured ONCE. The turn that resumes must be the SAME turn
+        # (conversation + backend binding) that entered, and must not resume
+        # into a stop/quit raised during the wait. Re-reading convo each pass —
+        # the e942e60 bug — compared it against itself and never saw a switch.
+        convo0 = self.convo_id
+        backend0 = self.backend
+        stop0 = self._stop_requested
+        while getattr(self, "_mcp_maintenance", False):
+            # The Event is re-read every pass: a second reconcile may have begun
+            # with a fresh (cleared) Event after the first one completed.
+            done = getattr(self, "_mcp_maintenance_done", None)
+            if done is None or done.is_set():
+                # Flag says maintaining but there is no fresh signal to await
+                # (missing, or already fired and not replaced). Awaiting a set
+                # Event busy-spins; proceeding runs the turn mid-maintenance
+                # (fail-open, the e942e60 `break`). Defer instead of either.
+                raise TurnDeferred(
+                    "mcp maintenance active without a pending completion signal")
+            await done.wait()
+            if (getattr(self, "_gui_quitting", False)
+                    or self.convo_id != convo0
+                    or self.backend is not backend0
+                    or self._stop_requested != stop0):
+                # Quit / conversation switched / backend rebound / stopped
+                # during the wait: the turn we were asked to run no longer
+                # exists. Defer (typed) — never normal-return.
+                raise TurnDeferred("turn context changed during mcp maintenance")
+
     @work(exclusive=True, group="chat")
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
-        # 🔴 COMMON MCP-MAINTENANCE GATE. This is the one point EVERY turn passes
-        # through, whatever launched it (typed, queued, RPC, inbox wake, a direct
-        # call). AWAIT maintenance completion IN THIS SAME worker (not a detached
-        # retry timer): a caller that awaits this worker (a parent wake) must
-        # only complete when the turn ACTUALLY runs, and the turn must never run
-        # in a different conversation than it was queued for. Loops because a new
-        # maintenance pass could begin between the wait returning and proceeding.
-        while getattr(self, "_mcp_maintenance", False):
-            convo = self.convo_id
-            done = getattr(self, "_mcp_maintenance_done", None)
-            if done is None:
-                break
-            await done.wait()
-            if (getattr(self, "_gui_quitting", False) or self.convo_id != convo
-                    or self._stop_requested):
-                # Aborted (quit / conversation switched / stopped during
-                # maintenance): drop this turn rather than run it in a changed
-                # context. Nothing was stamped or consumed above.
-                return
+        # 🔴 COMMON MCP-MAINTENANCE GATE. The one point EVERY turn passes through,
+        # whatever launched it (typed, queued, RPC, inbox wake, a direct call).
+        # The gate raises TurnDeferred (typed, testable without a live turn); we
+        # catch it HERE and return the STREAM_DEFERRED sentinel rather than let
+        # it escape the worker — @work is exit_on_error=True, so a raised
+        # exception would crash the TUI. The sentinel ends the worker SUCCESS
+        # (on_worker_state_changed then flushes/retries) and lets a parent wake
+        # tell "deferred" from "ran" without finishing a turn that never began.
+        from litetui.turn_deferral import STREAM_DEFERRED, TurnDeferred
+        try:
+            await self._await_mcp_maintenance()
+        except TurnDeferred:
+            return STREAM_DEFERRED
         # Stamp before setup/probing: waiting for the turn's first request is
         # part of the turn, not free time before it.
         turn_started_at = time.monotonic()
