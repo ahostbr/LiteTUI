@@ -37,69 +37,88 @@ def prepare_child(spec, *, storage, child_id, baseline, supported_levels):
 
 
 def run_guarded(app, coro, *, group, cleanup, report=None):
-    """Run `coro` off-loop as a VISIBLE Textual worker, guaranteeing `cleanup`
-    fires exactly once — on normal completion, on error, OR on a cancel BEFORE
-    the coroutine's first real step (the case Worker.StateChanged never reports).
+    """Schedule `coro` as a VISIBLE Textual worker (ON the loop — the THREAD
+    offload is `coro`'s own job, via await_preparation), guaranteeing `cleanup`
+    fires exactly once: on normal completion, on error, OR on a cancel BEFORE the
+    coroutine's first real step (the case Worker.StateChanged never reports).
 
-    A caller claims a lock synchronously and would deadlock/wedge if a worker
-    cancelled before its finally ran; `cleanup` is the release, made idempotent
-    by the caller (it no-ops once the coro has settled).
+    A caller claims a lock synchronously and would wedge if a worker cancelled
+    before its finally ran; `cleanup` is the release, made idempotent by the
+    caller (it no-ops once the coro has settled).
 
     The work parks on a startup gate before doing anything, so it can NEVER run
-    before the done-callback is armed — correct even under an eager task factory
-    (where create_task runs the coro synchronously to its first await). Only
-    after the callback is attached to worker._task is the gate opened. If the
-    private _task hook is ever absent, the gate is never opened, the parked
-    worker is cancelled (no real work ran), the never-entered `coro` is closed,
-    and cleanup runs once. Returns the worker, or None if it could not start.
+    before the done-callback is armed — correct even under an eager task factory.
+    Only after the callback is attached to worker._task is the gate opened.
+
+    `started` lives in OUTER state, not in `_guarded`: a worker cancelled before
+    its coroutine's first step never runs `_guarded`'s body/finally, so the
+    terminal callback (or a fail-closed path) is what closes the never-awaited
+    original coro. Attachment itself is guarded — a raising add_done_callback,
+    an absent _task, or a scheduling failure all fail closed (cancel the worker,
+    close the never-started original, release once). Returns the worker, or None.
     """
     import asyncio
     go = asyncio.Event()
-    armed = {"ok": False}
-    fired = {"done": False}
+    state = {"armed": False, "started": False, "fired": False}
 
     def _fire(*_a):
-        if not fired["done"]:
-            fired["done"] = True
-            cleanup()
+        if state["fired"]:
+            return
+        state["fired"] = True
+        if not state["started"]:
+            # The original coro was never awaited (cancel before first step,
+            # gate never opened, or attach failed). Its owner (_guarded) may
+            # never have run, so close it here.
+            try:
+                coro.close()
+            except Exception:
+                pass
+        cleanup()
 
     async def _guarded():
-        started = False
-        try:
-            await go.wait()
-            if not armed["ok"]:
-                return
-            started = True
-            await coro
-        finally:
-            if not started:
-                coro.close()          # the ORIGINAL coro was never awaited
+        await go.wait()
+        if not state["armed"]:
+            return
+        state["started"] = True
+        await coro
+
     guarded = _guarded()
     try:
         worker = app.run_worker(guarded, group=group, exclusive=False, exit_on_error=False)
-    except Exception as e:  # noqa: BLE001 — scheduling failure: nothing awaited either coro
+    except Exception as e:  # noqa: BLE001 — scheduling failure: neither coro was handed to a task
         guarded.close()
-        coro.close()
+        _fire()                           # started False -> also closes the original coro
+        if report is not None:
+            report(e)
+        return None
+    # From here a task owns `guarded`; cancel the WORKER to unwind it (never
+    # guarded.close(), which the task owns), and close only the never-entered
+    # original in _fire.
+    task = getattr(worker, "_task", None)
+    if task is None:
+        _cancel_quietly(worker)
+        _fire()
+        if report is not None:
+            report(None)
+        return None
+    try:
+        task.add_done_callback(_fire)     # fires on EVERY terminal state, incl. pre-first-step cancel
+    except Exception as e:  # noqa: BLE001 — attach failure must fail closed, never wedge
+        _cancel_quietly(worker)
         _fire()
         if report is not None:
             report(e)
         return None
-    task = getattr(worker, "_task", None)
-    if task is not None:
-        task.add_done_callback(_fire)     # fires on EVERY terminal state, incl. pre-first-step cancel
-        armed["ok"] = True
-        go.set()                          # arm THEN open the gate
-        return worker
-    # Private hook absent (unreachable while add_worker starts synchronously):
-    # never arm, cancel the parked worker, release once. Fail closed.
+    state["armed"] = True
+    go.set()                              # arm THEN open the gate
+    return worker
+
+
+def _cancel_quietly(worker) -> None:
     try:
         worker.cancel()
     except Exception:
         pass
-    _fire()
-    if report is not None:
-        report(None)
-    return None
 
 
 async def await_preparation(prepare):
