@@ -47,7 +47,11 @@ _CORE_MODULES: tuple[str, ...] = (
     "litetui.plugin_reload_state",         # session-state transfer + idle gate
     "litetui.plugin_reload_activity",      # activity producer
     "litetui.plugin_reload_provenance",    # this module
+    "litetui.tool_schemas",                # load_fresh/available — the refresh reads through it
+    "litetui.plugin_reload_children",      # children_pending — the commit's idle evidence
 )
+# All ten are top-level imports of plugins.plugin_reload_ui, so they are already
+# in sys.modules by the time its activate() runs — capture never force-imports.
 
 _KEY = "_plugin_source_baseline"
 
