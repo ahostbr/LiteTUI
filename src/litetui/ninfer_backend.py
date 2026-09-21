@@ -434,6 +434,61 @@ class NInferBackend(_VramGate):
             ninfer_engine.stop(owned)
         self._host = None
 
+    def shutdown_owned(self):
+        """Stop our OWNED engine and PROVE it exited by polling the RETAINED proc.
+
+        Unlike shutdown() (left untouched), this keeps self._owned until exit is
+        confirmed on the same handle, returns a typed TerminalShutdown, and RETAINS
+        the handle on any uncertain outcome for a retry. Attached engines are never
+        killed (owned=False).
+
+        A job-object close terminates the tree, but the closure ALONE is not exit
+        proof — the retained proc is polled after. tree='confirmed' only when the job
+        (which held the whole tree) was closed AND main exit is proven; the no-job
+        fallback (_kill on the main proc) proves the main process only -> 'unknown'.
+        """
+        from .llm_backend import TerminalShutdown, wait_for_exit
+
+        owned = self._owned
+        if owned is None:
+            return TerminalShutdown(owned=False)
+        proc = owned.proc
+        pid = getattr(proc, "pid", None)
+        had_job = owned.job is not None
+        tree = "unknown"
+        error = None
+        try:
+            if owned.alive:
+                if had_job:
+                    ninfer_engine.jobkill.close(owned.job)   # atomic whole-tree kill
+                    owned.job = None
+                else:
+                    ninfer_engine._kill(proc)
+                main_exited = wait_for_exit(proc)            # PROVE via poll on retained proc
+            else:
+                main_exited = True                           # already exited (poll() is None)
+            if main_exited and had_job:
+                tree = "confirmed"
+        except Exception as exc:                             # noqa: BLE001 - type-only diagnostic
+            error = type(exc).__name__
+            main_exited = not owned.alive
+        if not main_exited:
+            return TerminalShutdown(owned=True, stopped=True, main_exited=False,
+                                    tree="unknown", pid=pid, retained=True, error=error)
+        try:
+            ninfer_engine.unregister_host(owned.host)
+        except OSError:
+            pass
+        try:
+            owned.log_file.close()
+        except OSError:
+            pass
+        if self._owned is owned:                             # clear ONLY if still the same object
+            self._owned = None
+        self._host = None
+        return TerminalShutdown(owned=True, stopped=True, main_exited=True,
+                                tree=tree, pid=pid, retained=False, error=error)
+
     # -- owning the engine (Ryan a-35456da0: "LiteTUI may start it") ----------
 
     async def start_engine(self, *, notice=None) -> str:
