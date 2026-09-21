@@ -221,6 +221,48 @@ def test_dynamic_provider_restart_required_and_not_evaluated():
     assert any("dynamic" in lim for lim in res.limitations)
 
 
+# ── review hardening (OpenBolt c52c453 review) ───────────────────────────────
+def test_parameters_type_must_be_object():
+    spec = _spec("arr", params={"type": "array", "properties": {}, "required": []})
+    m = _tool_manifest("p1", [(spec, _pol(READ_ONLY))])
+    res = pr.stage_candidate(_app(), [m], live=PluginRegistry(),
+                             reviewed_owners=frozenset({"p1"}),
+                             approved_new_tools=frozenset({"arr"}))
+    assert res.ok is False
+    assert pr.MALFORMED_SCHEMA in _kinds(res)
+
+
+def test_spec_that_raises_in_add_tool_is_register_failed():
+    # No function.name key -> registry.add_tool raises KeyError inside register();
+    # honest classification is a registration failure, not malformed_schema.
+    bad = {"type": "function", "function": {"parameters": {"type": "object", "properties": {}}}}
+    m = _tool_manifest("p1", [(bad, _pol(READ_ONLY))])
+    res = pr.stage_candidate(_app(), [m], live=PluginRegistry(),
+                             reviewed_owners=frozenset({"p1"}))
+    assert res.ok is False
+    assert pr.REGISTER_FAILED in _kinds(res)
+
+
+def test_approved_new_tool_requires_explicit_policy():
+    # In approved_new_tools, but rides the MCP_UNKNOWN_POLICY fallback => rejected.
+    m = _tool_manifest("p1", [(_spec("t2"), None)])
+    res = pr.stage_candidate(_app(), [m], live=PluginRegistry(),
+                             reviewed_owners=frozenset({"p1"}),
+                             approved_new_tools=frozenset({"t2"}))
+    assert res.ok is False
+    assert pr.POLICY_OMITTED in _kinds(res)
+
+
+def test_invalid_policy_type_reported_not_crashed():
+    # A non-ToolPolicy object must be reported, not crash on .capabilities.
+    m = _tool_manifest("p1", [(_spec("t3"), "not-a-policy")])
+    res = pr.stage_candidate(_app(), [m], live=PluginRegistry(),
+                             reviewed_owners=frozenset({"p1"}),
+                             approved_new_tools=frozenset({"t3"}))
+    assert res.ok is False
+    assert pr.POLICY_INVALID in _kinds(res)
+
+
 # ── isolation guarantee ─────────────────────────────────────────────────────
 def test_live_registry_untouched_on_rejection():
     spec = _spec("t1")
