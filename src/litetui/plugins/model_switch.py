@@ -249,11 +249,13 @@ def _cmd_engine(app, name: str, arg: str) -> None:
         app.system_message(backend.engine_status())
         return
     if verb == "stop":
-        # Off-loop: stop_engine() blocks for seconds (terminate + drain proof). Claim
-        # the stop synchronously FIRST (rejects a double stop and an in-flight start),
-        # then run it as a REAL Textual worker (visible in app.workers, joined at app
-        # shutdown) so the UI stays responsive. Reuses agent_preparation.await_preparation
-        # (to_thread + shield + cancel-join) — no duplicate helper.
+        # Off-loop: stop_engine() blocks for seconds (terminate + drain proof). Claim the
+        # stop synchronously FIRST (rejects a double stop and an in-flight start), then hand
+        # the blocking work to agent_preparation.run_guarded: a VISIBLE Textual worker (on
+        # the loop; the thread offload is await_preparation's job) whose done-callback
+        # releases the claim exactly once on success, error, or a cancel before the worker's
+        # first step. All scheduling/attach/fail-closed handling lives in run_guarded —
+        # no duplicate helper, no stranded claim.
         import asyncio
 
         from litetui import agent_preparation
@@ -262,7 +264,7 @@ def _cmd_engine(app, name: str, arg: str) -> None:
             app.system_message("NInfer engine is busy (a start or stop is already running) — try again shortly.")
             return
 
-        async def _go(target=backend):
+        async def _stop_work(target=backend):
             try:
                 app.system_message(await agent_preparation.await_preparation(target.stop_engine))
             except asyncio.CancelledError:
@@ -270,56 +272,17 @@ def _cmd_engine(app, name: str, arg: str) -> None:
             except Exception as exc:        # noqa: BLE001 - don't crash the loop; type-only
                 app.system_message(f"engine stop failed: {type(exc).__name__}")
 
-        coro = _go()
-        try:
-            worker = app.run_worker(coro, exclusive=False, name="ninfer-engine-stop",
-                                    exit_on_error=False)
-        except Exception as exc:            # noqa: BLE001 - could not schedule: no phantom stop
-            coro.close()
-            backend.end_stop()
-            app.system_message(f"could not start the engine-stop worker: {type(exc).__name__}")
-            return
+        def _report(e):
+            # run_guarded fails closed when it cannot schedule the worker (e set) or when
+            # the worker's task cannot be observed/attached (e None); the claim is already
+            # released either way, so say why the stop did not proceed.
+            if e is None:
+                app.system_message("engine stop could not be tracked — released the stop claim; try again.")
+            else:
+                app.system_message(f"could not start the engine-stop worker: {type(e).__name__}")
 
-        def _release(_task, target=backend, entered=coro):
-            # Release the claim on the underlying task's TERMINAL state — success, error,
-            # or a cancellation delivered before the worker body ran (which no finally in
-            # _go would catch). Closing the coroutine is a no-op once it has run and
-            # suppresses an un-awaited warning if the worker never entered it.
-            target.end_stop()
-            try:
-                entered.close()
-            except Exception:               # noqa: BLE001, S110
-                pass
-
-        def _fail_closed(close_coro):
-            # Cancel the worker FIRST so a delayed/unsupported worker cannot later run the
-            # coroutine we are about to abandon; then optionally close the coroutine, and
-            # release the claim so it can never strand.
-            try:
-                worker.cancel()
-            except Exception:               # noqa: BLE001, S110
-                pass
-            if close_coro:
-                try:
-                    coro.close()
-                except Exception:           # noqa: BLE001, S110
-                    pass
-            backend.end_stop()
-            app.system_message("engine stop could not be tracked — released the stop claim; try again.")
-
-        # Textual sets Worker._task synchronously in run_worker; add_done_callback fires on
-        # every terminal state incl. pre-first-step cancellation (Worker.StateChanged does
-        # not). _task is Textual-internal, so validate it is a REAL asyncio.Task (not any
-        # attribute) and that the callback actually attaches — fail closed otherwise.
-        task = getattr(worker, "_task", None)
-        if not isinstance(task, asyncio.Task):
-            _fail_closed(close_coro=True)    # the worker never got a real task; close our coro
-            return
-        try:
-            task.add_done_callback(_release)
-        except Exception:                    # noqa: BLE001 - could not observe: the task owns the coro
-            _fail_closed(close_coro=False)   # a real task holds the coro; cancel, don't close it
-            return
+        agent_preparation.run_guarded(app, _stop_work(), group="ninfer-engine-stop",
+                                      cleanup=backend.end_stop, report=_report)
         return
     if verb in ("lanes", "concurrency"):
         app.system_message(_set_lanes(app, rest[0] if rest else ""))
