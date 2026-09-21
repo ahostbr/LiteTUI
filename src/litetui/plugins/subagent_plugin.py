@@ -23,7 +23,9 @@ import asyncio
 import urllib.request
 from pathlib import Path
 
-from litetui import model_transport, tool_schemas
+from copy import deepcopy
+from litetui import model_transport, tool_schemas, settings_runtime
+from litetui.picker import pick
 from litetui import tasks as tasks_mod
 from litetui.plugins import PluginManifest
 from litetui.tool_policy import NETWORK_READ_POLICY
@@ -183,8 +185,56 @@ def _make_runner(app):
     return tool_subagent
 
 
+def _cmd_subagent_set(app, name: str, arg: str) -> None:
+    if getattr(app.backend, "name", None) != "codex":
+        app.system_message("/subagent-set is available in Codex conversations.")
+        return
+    backend = app.backend
+    conversation = getattr(app, "convo_id", None)
+    directory = getattr(app, "convo_dir", None)
+
+    def selected(value):
+        if value is None:
+            return
+        if (app.backend is not backend or getattr(app, "convo_id", None) != conversation
+                or getattr(app, "convo_dir", None) != directory):
+            app.system_message("Conversation changed; open /subagent-set again.")
+            return
+        if not directory:
+            app.system_message("Open a conversation before saving its subagent default.")
+            return
+        model = None if value == "__follow__" else value
+        if model is not None and model not in getattr(backend, "models", {}):
+            app.system_message(f"Codex model not available: {model}. Use /reconnect to refresh.")
+            return
+        candidate = deepcopy(app.settings)
+        candidate.subagent_model = model
+        try:
+            result = settings_runtime.persist_or_raise(app, candidate)
+        except (OSError, ValueError) as exc:
+            app.system_message(f"Subagent default was not saved: {exc}")
+            return
+        settings_runtime.apply_saved_result(app, candidate, result)
+        app.system_message(f"Conversation subagent default: {model or 'Follow current model'}. Parent model unchanged.")
+
+    if arg.strip():
+        selected("__follow__" if arg.strip().lower() == "default" else arg.strip())
+        return
+    models = getattr(backend, "models", {})
+    if not models:
+        app.system_message("No Codex models discovered yet. Use /reconnect, then /subagent-set.")
+        return
+    rows = [("__follow__", "Follow current model (no override)")]
+    rows.extend((key, key) for key in models)
+    pick(app, "Default subagent model · this conversation", rows, selected,
+         current=app.settings.subagent_model or "__follow__")
+
+
 def _register(ctx) -> None:
     ctx.tool(SPEC, _make_runner(ctx.app), policy=NETWORK_READ_POLICY)
+    ctx.command(("/subagent-set",), _cmd_subagent_set,
+                palette="Default subagent model", group="model", order=25,
+                help="Pick this Codex conversation's subagent model; 'default' follows the parent.")
 
 
 PLUGIN = PluginManifest(id="subagent", register=_register)
