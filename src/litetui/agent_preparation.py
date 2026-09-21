@@ -1,6 +1,7 @@
 """Prepare retained launch locations outside the parent checkout."""
 from dataclasses import dataclass
 from pathlib import Path
+from litetui.agent_admission import admit_launch
 from litetui.agent_launcher import LaunchBlocked, validate_capabilities
 from litetui.agent_workspace import create_worktree
 
@@ -16,10 +17,14 @@ class PreparedChild:
 def prepare_child(spec, *, storage, child_id, baseline, supported_levels):
     from litetui.agent_ancestry import require_root_launcher
     require_root_launcher()
-    # Admission before filesystem effects. Explicit-workspace mutation and local
-    # engines remain unavailable until their ownership/admission gates exist.
-    if spec.headed or spec.backend != 'codex' or spec.workspace_mode != 'worktree':
-        raise LaunchBlocked('Only isolated headless hosted worktree launch is integrated')
+    # Admission before filesystem effects: a local engine needs a verified
+    # capacity reservation (the WS3 resolver's verdict) and headed /
+    # explicit-workspace launches are not integrated. The composed service
+    # holds no reservation, so every local request is refused here -- before
+    # any filesystem effect -- with a distinct reason per case.
+    verdict = admit_launch(spec)
+    if not verdict.admitted:
+        raise LaunchBlocked(verdict.reason)
     validate_capabilities(spec, supported_levels)
     import re
     if not isinstance(child_id, str) or not re.fullmatch(r'[0-9a-f]{32}', child_id):

@@ -1,6 +1,7 @@
 """Composed hosted launch service, callable only from trusted App runtime."""
 from uuid import uuid4
 from litetui.agent_ancestry import require_root_launcher
+from litetui.agent_admission import admit_launch
 from litetui.agent_launcher import LaunchBlocked, validate_request, validate_capabilities
 from litetui.agent_preparation import prepare_child
 from litetui.agent_app_runtime import run_for_app
@@ -13,8 +14,13 @@ async def launch_for_app(app, request, *, registry, inbox, receipts, parent,
     depth = require_root_launcher()
     profile = getattr(app, '_active_tool_profile', None) or app.settings.tool_policy_profile
     spec = validate_request(request, parent_profile=profile, depth=depth)
-    if spec.headed or spec.backend != 'codex' or spec.workspace_mode != 'worktree':
-        raise LaunchBlocked('Only hosted headless isolated worktree launch is integrated')
+    # Admission before any spawn: a local engine needs a verified capacity
+    # reservation (the WS3 resolver's verdict) and headed / explicit-workspace
+    # launches are not integrated. The composed service holds no reservation,
+    # so every local request is refused here with a distinct capacity reason.
+    verdict = admit_launch(spec)
+    if not verdict.admitted:
+        raise LaunchBlocked(verdict.reason)
     validate_capabilities(spec, supported_levels)
     child_id = uuid4().hex
     def prepare():
