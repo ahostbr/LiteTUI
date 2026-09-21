@@ -66,6 +66,8 @@ def _register(ctx):
 
 
 def _activate(app):
+    if getattr(app, '_child_recovery_timer', None) is not None:
+        return
     root = Path.home() / '.litetui-agents'
     restored = None
 
@@ -102,7 +104,20 @@ def _activate(app):
                 app._system(f'[child delivery recovery deferred: {detail}]')
                 last_error = detail
 
-    app.set_interval(2.0, guarded_restore)
+    app._child_recovery_timer = app.set_interval(2.0, guarded_restore)
+
+
+def _deactivate(app):
+    """Stop only this plugin's observer, never children or delivery ownership.
+
+    Explicit lifecycle seam for the reload coordinator; not yet registered as
+    a manifest hook. Textual also stops App timers on ordinary App shutdown.
+    A failed stop retains the handle so recovery cannot create a duplicate.
+    """
+    timer = getattr(app, '_child_recovery_timer', None)
+    if timer is not None:
+        timer.stop()
+        app._child_recovery_timer = None
 
 
 PLUGIN = PluginManifest(id='spawn_agent', register=_register, activate=_activate)
