@@ -168,6 +168,11 @@ def _reject_duplicate_keys(pairs):
     return result
 
 
+def _reject_constant(token):
+    """parse_constant hook: NaN / Infinity / -Infinity are not valid peaks."""
+    raise ValueError(f"non-finite JSON constant: {token}")
+
+
 def _record_identity(record):
     """Canonical identity of a record, or None unless its keys are EXACTLY right.
 
@@ -196,8 +201,10 @@ class CalibrationStore:
     def _records(self) -> list:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"),
-                             object_pairs_hook=_reject_duplicate_keys)
-        except (FileNotFoundError, OSError, ValueError):
+                             object_pairs_hook=_reject_duplicate_keys,
+                             parse_constant=_reject_constant)
+        except (FileNotFoundError, OSError, ValueError, RecursionError):
+            # RecursionError: a deeply nested payload must fail closed, not crash.
             return []
         # Strict top-level: exactly {schema, records}. A stray key is unknown
         # format, not a best-effort parse.
@@ -205,23 +212,41 @@ class CalibrationStore:
             return []
         return raw["records"] if isinstance(raw["records"], list) else []
 
+    def _validated_index(self):
+        """The WHOLE file, validated, as {identity_key: LoadEnvelope} — or None.
+
+        A single malformed row (non-dict, wrong key set, or an invalid
+        LoadEnvelope) or a single duplicate identity ANYWHERE fails the whole
+        file, not just the one row. This is the contract: a valid target sitting
+        beside a malformed unrelated record is NOT trusted.
+        """
+        index: dict = {}
+        for record in self._records():
+            record_canon = _record_identity(record)
+            if record_canon is None:
+                return None               # non-dict or wrong key set
+            try:
+                envelope = LoadEnvelope(
+                    ram_peak=record["ram_peak"],
+                    vram_peak_by_device=record["vram_peak_by_device"],
+                    **record_canon,
+                )
+            except (KeyError, TypeError, ValueError):
+                return None               # a row that will not validate
+            key = tuple(sorted(record_canon.items()))
+            if key in index:
+                return None               # duplicate identity anywhere = ambiguous
+            index[key] = envelope
+        return index
+
     def envelope_for(self, identity) -> LoadEnvelope | None:
         canon = _canonical_identity(identity)
         if canon is None:
             return None
-        matches = [record for record in self._records() if _record_identity(record) == canon]
-        if len(matches) != 1:
-            # 0 = uncalibrated, >1 = ambiguous/duplicate — both fail closed.
+        index = self._validated_index()
+        if index is None:
             return None
-        record = matches[0]
-        try:
-            return LoadEnvelope(
-                ram_peak=record["ram_peak"],
-                vram_peak_by_device=record["vram_peak_by_device"],
-                **canon,
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
+        return index.get(tuple(sorted(canon.items())))
 
 
 def make_demand_for(store: CalibrationStore, resolve_identity):
