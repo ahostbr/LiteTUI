@@ -1,0 +1,16 @@
+{
+  "type": "function",
+  "function": {
+    "name": "self_compact",
+    "description": "Request compaction of this conversation at the end of the current tool round, then resume. Use when resolved investigation or repetitive tool output can be replaced by a substantially smaller record without losing what is needed to continue. Preserve decisions, constraints, evidence references, ruled-out approaches, unresolved hypotheses and next actions in the handoff; retain decision-rich planning and unfinished investigations when their detail still matters. This is a request, not proof that compaction succeeded. Local LiteTUI backends only. Automatic compaction remains the fallback. Do not call again immediately after waking without useful intervening work.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1000, "description": "What is resolved or redundant, and why a smaller record suffices now."},
+        "handoff": {"type": "string", "minLength": 1, "maxLength": 8000, "description": "Concise continuity record: goal, decisions and constraints, findings with evidence pointers, failed approaches, open questions, and next action. Preserved verbatim in the compacted context."}
+      },
+      "required": ["reason", "handoff"],
+      "additionalProperties": false
+    }
+  }
+}

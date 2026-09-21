@@ -6914,6 +6914,10 @@ class LiteTUI(App):
         # rather than where the ping reads it: a mark that only ever latched
         # would kill loop mode for the rest of the session after one Esc.
         self._turn_abandoned = False
+        self.self_compaction.pending = None
+        if (self.conversation and self.conversation[-1].get("role") == "user"
+                and self.conversation[-1].get("content") != WAKE_AFTER_COMPACT):
+            self.self_compaction.progress()
         # 🔴 RE-READ THE WINDOW AT TURN START, NOT ONLY AT TURN END.
         #
         # The end-of-turn resync was wired into ONE of the loop's exits (the
@@ -6951,6 +6955,7 @@ class LiteTUI(App):
         final_turn_tps_source: str | None = None
         terminal_widget: AssistantMessage | None = None
         compact_due = False
+        self_compact_request = None
         stopped_early = False
         native_loop = hasattr(self.backend, "app_server")
         if native_loop:
@@ -7457,6 +7462,8 @@ class LiteTUI(App):
                         result, ok = f"[error] invalid tool arguments: {e}", False
                     else:
                         result, ok = await self._execute_tool(name, args)
+                        if ok and name not in {"self_compact", "tool_search"}:
+                            self.self_compaction.progress()
                 # ── one hygiene point for every tool result ──────────
                 # bash, read, web_fetch, harness, skill and every MCP tool
                 # pass through here and nowhere else, so this is where they
@@ -7498,6 +7505,7 @@ class LiteTUI(App):
 
             if self._stop_requested:
                 # Pair every call before stopping, even on the last allowed round.
+                self.self_compaction.pending = None
                 stopped_early = True
                 break
 
@@ -7537,6 +7545,16 @@ class LiteTUI(App):
                 })
                 self._append({"role": "user", "content": content})
                 self._user_bubble(f"[view_image] {names}", True)
+
+            self_compact_request = self.self_compaction.take()
+            if self_compact_request is not None:
+                break
+
+        if self_compact_request is not None:
+            self._system(f"[agent requested compaction: {self_compact_request.reason}]")
+            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            self.call_after_refresh(self._run_self_compaction, self_compact_request)
+            return
 
         if compact_due:
             pct = self._autocompact_due()
@@ -7853,8 +7871,21 @@ class LiteTUI(App):
                         "latest_request_usage", "thread_usage", "turn_usage")
         }
 
+    def _run_self_compaction(self, request) -> None:
+        # A newer user turn or a switched conversation wins the scheduling race.
+        if (self._stop_requested or self._chat_running()
+                or request.conversation_id != self.convo_id
+                or not self.self_compaction.supported()):
+            self._system("Self-compaction request cancelled because the conversation changed or a turn took priority.")
+            return
+        self._compact(
+            f"Agent's reason for compaction: {request.reason}\n\n"
+            f"Agent's continuity notes:\n{request.handoff}",
+            handoff=request.handoff,
+        )
+
     @work(exclusive=True, group="chat")
-    async def _compact(self, extra: str = "") -> None:
+    async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
             self._stop_reason = None
@@ -8129,6 +8160,8 @@ class LiteTUI(App):
             },
             {"role": "assistant", "content": "Understood — I have that context."},
         ]
+        if handoff is not None:
+            pair[0]["content"] += "\n\n[Agent's pre-compaction handoff]\n" + handoff
         rebuilt: list[dict] = ([system] if system else []) + pair + tail
 
         # T832: ONE number for the size this conversation now is. It used to
@@ -8142,6 +8175,7 @@ class LiteTUI(App):
         # as it stands on disk, which is the pre-compaction one.
         self._truncate(len(self.conversation) - len(tail), pair, "compact", measurements={
             "model": self.model_id, "auto": auto,
+            "trigger": "agent" if handoff is not None else ("automatic" if auto else "manual"),
             "before_chars": before_chars, "after_chars": self._msg_chars(rebuilt),
             "before_count": before_count, "after_count": len(rebuilt),
             "tokens_before": trigger_tokens, "tokens_after": None,
@@ -8243,7 +8277,7 @@ class LiteTUI(App):
             )
             self._clear_screen(note=summary_note)
 
-        if self.settings.wake_after_compact:
+        if self.settings.wake_after_compact or handoff is not None:
             # SCHEDULED, never called: see _wake_after_compact for why a
             # direct self._stream() here would cancel this very compact.
             # Success path only - a failed compact produced no summary, and
