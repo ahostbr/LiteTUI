@@ -20,7 +20,8 @@ from litetui.plugins import PluginManifest
 from litetui.plugin_reload_activity import produce_activity
 from litetui.plugin_reload_children import children_pending
 from litetui.plugin_reload_commit import commit_metadata_candidate
-from litetui.plugin_reload_provenance import capture_baseline, provenance_ok
+from litetui.plugin_reload_provenance import capture_baseline, capture_skills_baseline, provenance_ok
+from litetui.plugin_reload_skills import refresh_skills_guarded, render_result as _render_skills
 from litetui.plugin_schema_reload import stage_schema_refresh
 
 #: Schemas whose DESCRIPTION carries an unresolved runtime placeholder that the
@@ -45,6 +46,7 @@ def _usage(app: Any) -> str:
     names = _eligible(app)
     return (
         "/reload-plugins <name> — refresh ONE static tool's DESCRIPTION from disk (metadata only).\n"
+        "/reload-plugins skills — re-scan the skills index from disk (same guarded path as /skills refresh).\n"
         "This is NOT a full plugin reload: handlers, argument contracts, new tools, and native "
         "Codex threads all require a restart.\n"
         f"Refreshable now: {', '.join(names) if names else '(none)'}"
@@ -80,6 +82,13 @@ def _handle(app: Any, name: str, arg: str) -> None:
     target = (arg or "").strip()
     if not target:
         app.system_message(_usage(app))
+        return
+
+    # Reserved data-refresh verb: `/reload-plugins skills` refreshes the skills
+    # index (disk data), NOT a tool schema. Routed through the shared guarded
+    # helper so it and /skills refresh cannot diverge on the gates.
+    if target == "skills":
+        _handle_skills(app)
         return
 
     registered = {e.name for e in expected.tools}
@@ -138,6 +147,18 @@ def _handle(app: Any, name: str, arg: str) -> None:
     app.system_message(_render(target, result))
 
 
+def _handle_skills(app: Any) -> None:
+    """`/reload-plugins skills` — refresh the skills index (disk data) through the
+    shared guarded helper. Native/busy/source-drift/unknown-children all refuse
+    before any discovery or cache write."""
+    def _activity():
+        return produce_activity(
+            app,
+            children_pending=lambda: children_pending(Path.home() / _AGENTS_ROOT, app.convo_id),
+        ).snapshot
+    app.system_message(_render_skills(refresh_skills_guarded(app, activity=_activity)))
+
+
 def _register(ctx) -> None:
     ctx.command(
         ("/reload-plugins",), _handle,
@@ -148,11 +169,14 @@ def _register(ctx) -> None:
 
 
 def _activate(app: Any) -> None:
-    # Capture the source-provenance baseline at STARTUP. activate runs after all
+    # Capture BOTH provenance baselines at STARTUP. activate runs after all
     # plugins register (app.py register_plugins -> activate_plugins), so every
-    # tool is present. NOT lazy/first-reload: an edit made before the first
-    # /reload-plugins must still be detectable against the pristine baseline.
+    # tool and required module is present. NOT lazy/first-reload: an edit made
+    # before the first reload must still be detectable against the pristine
+    # baselines. The skills set is separate so app.py churn never blocks a
+    # description refresh.
     capture_baseline(app)
+    capture_skills_baseline(app)
 
 
 PLUGIN = PluginManifest(id="reload-plugins", register=_register, activate=_activate)
