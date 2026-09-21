@@ -681,6 +681,29 @@ class OpenAITransport:
         return await self.client.chat.completions.create(**kwargs)
 
 
+@dataclass(frozen=True)
+class ClientBinding:
+    """Immutable authorization created at client creation: THIS client object, for
+    THIS backend TYPE (its admission scope / JIT classification), at THIS endpoint.
+
+    for_app refuses unless the CURRENT (app.client, app.backend) still matches the
+    record. This catches (a) a client replaced by hand, (b) a same-URL backend-TYPE
+    swap (LM<->llama at one address changes JIT classification), and (c) an endpoint
+    mutation. It is NOT a caller-editable string: it binds the client OBJECT and the
+    backend CLASS, and a same-endpoint reconnect must re-bind (bind_client) to
+    re-authorize the kept client for the rebuilt backend.
+    """
+    client: object
+    backend_type: type
+    endpoint: str
+
+
+def bind_client(client, backend) -> ClientBinding:
+    """Record the client<->backend binding. Call at every client (re)build and
+    store the result on app._client_binding (see app.py factory sites)."""
+    return ClientBinding(client, type(backend), backend.base_url().rstrip("/"))
+
+
 def for_app(app) -> ModelTransport:
     if getattr(getattr(app, "backend", None), "name", None) in OAUTH_PROVIDERS:
         if hasattr(app.backend, "app_server"):
@@ -694,18 +717,28 @@ def for_app(app) -> ModelTransport:
             app.backend.name, models=app.backend.models,
             prompt_cache_key=getattr(app, "convo_id", None),
         )
-    # Refuse a stale client<->backend pair rather than misroute a request: the
-    # client is bound (app._client_endpoint, set where AsyncOpenAI is built in
-    # app.py) to the endpoint it will hit; if the backend was swapped or mutated
-    # its endpoint without rebuilding the client, that no longer matches.
+    # Refuse a stale client<->backend pair rather than misroute a request. The
+    # binding is recorded at client creation (app.py factory sites). Production
+    # for_app REQUIRES it: a missing binding fails closed. A mismatch — client
+    # replaced by hand, a same-URL backend-TYPE swap, or an endpoint mutation —
+    # refuses. (A standalone OpenAITransport(client) built directly, without
+    # for_app, is the optional test path and carries no binding.)
     backend = app.backend
-    endpoint = backend.base_url().rstrip("/")
-    if getattr(app, "_client_endpoint", None) != endpoint:
-        from litetui.model_resource_session import AdmissionBlocked
+    binding = getattr(app, "_client_binding", None)
+    from litetui.model_resource_session import AdmissionBlocked
+    if binding is None:
         raise AdmissionBlocked(
-            "BLOCKED: the OpenAI client is a stale pair for the current backend — "
-            f"bound to {getattr(app, '_client_endpoint', None)!r}, backend now serves "
-            f"{endpoint!r}. Reconnect to rebuild the client before sending."
+            "BLOCKED: no client<->backend binding is recorded; refusing to send "
+            "rather than route an unverified client."
+        )
+    if (binding.client is not app.client
+            or binding.backend_type is not type(backend)
+            or binding.endpoint != backend.base_url().rstrip("/")):
+        raise AdmissionBlocked(
+            "BLOCKED: the OpenAI client is a stale pair for the current backend "
+            f"(bound {binding.backend_type.__name__}@{binding.endpoint}, now "
+            f"{type(backend).__name__}@{backend.base_url().rstrip('/')}). Rebuild "
+            "the client through the factory before sending."
         )
     return OpenAITransport(app.client, backend=backend)
 
