@@ -49,16 +49,16 @@ def _app(*, native=False, maint=False, workers=None, reconcile_ret=None):
     events: list = []
     backend = NS(name="codex", app_server=object()) if native else NS(name="lmstudio")
 
-    class _FakeTask:
-        # run_guarded attaches a done-callback to worker._task; the scheduling
-        # tests never run the worker, so this just accepts the callback.
-        def add_done_callback(self, cb):
-            pass
-
     def _run_worker(coro, **k):
         events.append("worker")
-        coro.close()          # the _guarded wrapper; we assert scheduling, not execution
-        return NS(_task=_FakeTask(), cancel=lambda: None)
+        # A REAL asyncio.Task (as Textual makes) so run_guarded's
+        # isinstance(asyncio.Task) check passes and it ARMS rather than failing
+        # closed. The scheduling tests assert BEFORE the loop runs the worker,
+        # then let it settle. Only reached by tests that actually schedule (they
+        # run under a running loop); the gate-reject tests never call this.
+        import asyncio
+        t = asyncio.get_running_loop().create_task(coro)
+        return NS(_task=t, cancel=t.cancel)
 
     app = NS(
         backend=backend, _mcp_maintenance=maint, workers=workers or [],
@@ -77,12 +77,15 @@ def _last(app):
 
 
 # ── /mcp reconcile command + gate ─────────────────────────────────────────────
-def test_reconcile_happy_claims_and_schedules():
+@pytest.mark.asyncio
+async def test_reconcile_happy_claims_and_schedules():
+    import asyncio
     app = _app()
     mm._cmd_mcp(app, "/mcp", "reconcile")
-    assert app._mcp_maintenance is True          # claimed synchronously
+    assert app._mcp_maintenance is True          # claimed synchronously (worker not run yet)
     assert "worker" in app._events               # off-loop worker scheduled
     assert "started" in _last(app).lower()
+    await asyncio.sleep(0.02)                     # let the scheduled worker settle (no leak)
 
 
 def test_reconcile_rejected_when_already_maintaining():
@@ -359,17 +362,23 @@ async def test_reconcile_block_reason_is_bounded_no_secret_leak():
 
 
 # ── verb routing through the coordinator (piece 3) ─────────────────────────────
-def test_connect_verb_schedules_offloop_not_sync():
+@pytest.mark.asyncio
+async def test_connect_verb_schedules_offloop_not_sync():
+    import asyncio
     app = _app()
     mm._cmd_mcp(app, "/mcp", "connect somesrv")
     assert app._mcp_maintenance is True      # claimed synchronously by the gate
     assert "worker" in app._events           # routed off-loop, not a sync app.mcp.connect
+    await asyncio.sleep(0.02)
 
 
-def test_remove_verb_schedules_offloop():
+@pytest.mark.asyncio
+async def test_remove_verb_schedules_offloop():
+    import asyncio
     app = _app()
     mm._cmd_mcp(app, "/mcp", "remove somesrv")
     assert app._mcp_maintenance is True and "worker" in app._events
+    await asyncio.sleep(0.02)
 
 
 @pytest.mark.asyncio
@@ -463,7 +472,7 @@ def test_claim_and_run_unsticks_maintenance_on_scheduling_failure():
 # Every case creates a REAL task for the wrapper (as Textual does), so a leak of
 # the ORIGINAL coro would surface — these run under filterwarnings("error") so a
 # "coroutine ... was never awaited" becomes a FAILURE, proving _fire closes it.
-def _real_run_worker(tasks, *, task_attr="real", cancel_real=True):
+def _real_run_worker(tasks, *, task_attr="real"):
     import asyncio
 
     def rw(coro, **k):
@@ -473,9 +482,9 @@ def _real_run_worker(tasks, *, task_attr="real", cancel_real=True):
             exposed = t
         elif task_attr == "none":
             exposed = None
-        else:  # "badattach": add_done_callback raises
-            exposed = NS(add_done_callback=lambda cb: (_ for _ in ()).throw(RuntimeError("attach boom")))
-        return NS(_task=exposed, cancel=(t.cancel if cancel_real else (lambda: None)))
+        else:  # "arbitrary": NOT an asyncio.Task; its add_done_callback fires synchronously
+            exposed = NS(add_done_callback=lambda cb: cb())
+        return NS(_task=exposed, cancel=t.cancel)
     return rw
 
 
@@ -516,17 +525,23 @@ async def test_run_guarded_cleanup_on_cancel_before_first_step():
 
 @pytest.mark.asyncio
 @pytest.mark.filterwarnings("error::RuntimeWarning")
-async def test_run_guarded_attach_failure_fails_closed():
+async def test_run_guarded_attach_failure_fails_closed(monkeypatch):
+    # A REAL asyncio.Task, but the attach seam raises — monkeypatched so the
+    # production isinstance(real Task) check is NOT weakened for the fake.
     import asyncio
-    from litetui.agent_preparation import run_guarded
+    import litetui.agent_preparation as ap
     ran, cleaned, reported, tasks = [], [], [], []
 
     async def op():
         ran.append(1)
 
-    w = run_guarded(NS(run_worker=_real_run_worker(tasks, task_attr="badattach")), op(),
-                    group="mcp", cleanup=lambda: cleaned.append(1),
-                    report=lambda e: reported.append(type(e).__name__))
+    def _boom(task, cb):
+        raise RuntimeError("attach boom")
+
+    monkeypatch.setattr(ap, "_attach", _boom)
+    w = ap.run_guarded(NS(run_worker=_real_run_worker(tasks)), op(),
+                       group="mcp", cleanup=lambda: cleaned.append(1),
+                       report=lambda e: reported.append(type(e).__name__))
     await asyncio.sleep(0.02)
     assert w is None and ran == [] and cleaned == [1] and reported == ["RuntimeError"]
 
@@ -546,6 +561,25 @@ async def test_run_guarded_missing_task_fails_closed():
                     report=lambda e: reported.append(e))
     await asyncio.sleep(0.02)
     assert w is None and ran == [] and cleaned == [1] and reported == [None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+async def test_run_guarded_rejects_arbitrary_task_object_zero_ops():
+    # _task is NOT a real asyncio.Task and its add_done_callback fires the
+    # callback synchronously; run_guarded must fail closed (isinstance check)
+    # and NEVER open the gate — the op must not run against a released claim.
+    import asyncio
+    from litetui.agent_preparation import run_guarded
+    ran, cleaned, tasks = [], [], []
+
+    async def op():
+        ran.append(1)
+
+    w = run_guarded(NS(run_worker=_real_run_worker(tasks, task_attr="arbitrary")), op(),
+                    group="mcp", cleanup=lambda: cleaned.append(1))
+    await asyncio.sleep(0.02)
+    assert w is None and ran == [] and cleaned == [1]      # ZERO ops, cleanup once
 
 
 @pytest.mark.asyncio
