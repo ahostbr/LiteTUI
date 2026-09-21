@@ -16,6 +16,19 @@ from litetui import ninfer_engine as eng
 from litetui.llm_backend import BackendError
 
 
+@pytest.fixture(autouse=True)
+def _no_real_process_ops(monkeypatch):
+    """Every pid here is FAKE. Never let a real jobkill/taskkill target one — a nonexistent
+    pid makes taskkill enumerate the whole table (seconds) and a REUSED pid is a live,
+    unrelated process. Also bound the readiness wait so a never-ready fake spawn cannot loop
+    for NINFER_START_TIMEOUT_S (180s). Per-test monkeypatches still override these."""
+    monkeypatch.setattr(eng, "NINFER_START_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(eng, "_kill", lambda proc: None)
+    monkeypatch.setattr(eng.jobkill, "create", lambda: None)
+    monkeypatch.setattr(eng.jobkill, "assign", lambda job, pid: False)
+    monkeypatch.setattr(eng.jobkill, "close", lambda job: True)
+
+
 class _Settings:
     backend = "ninfer"
     ninfer_host = ""
