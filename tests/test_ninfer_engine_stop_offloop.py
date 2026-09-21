@@ -154,15 +154,28 @@ def test_stop_message_retained_is_explicitly_not_stopped():
     assert "NOT confirmed" in msg and "stopped the engine" not in msg
 
 
-def test_registry_stop_message_says_requested_not_confirmed(monkeypatch):
+def test_registry_no_handle_fails_closed_and_preserves_record(monkeypatch):
     b = _bare()
     b._owned = None
     monkeypatch.setattr(ninfer_backend.ninfer_engine, "registered_entry",
-                        lambda: {"owner": "litetui", "pid": 123, "baseUrl": "http://h"})
-    monkeypatch.setattr(ninfer_backend.ninfer_engine, "stop_registered", lambda entry: True)
-    msg = b.stop_engine()
-    assert "stop requested" in msg and "exit not confirmed" in msg
-    assert "signalled" not in msg and "stopped the engine" not in msg
+                        lambda: {"owner": "litetui", "kind": "ninfer", "pid": 123, "baseUrl": "http://h"})
+    msg = b.stop_engine()                            # real stop_registered fails closed
+    assert "cannot safely verify" in msg and "record is preserved" in msg
+    assert "was not started by LiteTUI" not in msg   # our own engine is NOT mislabelled external
+    assert "stopped the engine" not in msg
+
+
+def test_stop_registered_fails_closed_no_kill_no_unregister(monkeypatch):
+    from litetui import ninfer_engine
+    side = []
+    monkeypatch.setattr(ninfer_engine, "unregister_host", lambda h: side.append(("unregister", h)))
+    monkeypatch.setattr(ninfer_engine.ttyguard, "run", lambda *a, **k: side.append(("taskkill", a)))
+    good = {"owner": "litetui", "kind": "ninfer", "pid": 123, "baseUrl": "http://h"}
+    assert ninfer_engine.stop_registered(good) is False
+    assert side == []                                # no taskkill, no unregister — record kept
+    assert ninfer_engine.stop_registered({"owner": "other", "kind": "ninfer", "pid": 1}) is False
+    assert ninfer_engine.stop_registered({"owner": "litetui", "kind": "ninfer", "pid": 0}) is False
+    assert ninfer_engine.stop_registered({"owner": "litetui", "kind": "ninfer", "pid": True}) is False
 
 
 # ── /engine stop command wrapper ────────────────────────────────────────────
