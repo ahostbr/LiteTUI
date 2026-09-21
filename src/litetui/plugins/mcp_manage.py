@@ -236,7 +236,7 @@ def _mutation_blocked_reason(app, *, ignore_workers=(), ignore_screen=None) -> s
     The command passes neither (full gate). Defaults empty = fail-closed."""
     if getattr(app, "_mcp_maintenance", False):
         return "MCP maintenance is in progress — try again in a moment."
-    if hasattr(app.backend, "app_server"):
+    if hasattr(getattr(app, "backend", None), "app_server"):
         return ("Native Codex session: an MCP server change needs a restart to reach the model "
                 "(the thread's tool inventory is fixed for its lifetime).")
     from pathlib import Path
@@ -290,7 +290,7 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         if getattr(app, "_mcp_maintenance", False):
             app.system_message("MCP maintenance is in progress — try again in a moment.")
             return
-        if hasattr(app.backend, "app_server"):
+        if hasattr(getattr(app, "backend", None), "app_server"):
             app.system_message(
                 "Native Codex session: an MCP server change needs a restart to reach the model "
                 "(the thread's tool inventory is fixed for its lifetime).")
