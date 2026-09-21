@@ -54,8 +54,9 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
             branch=branch, evidence=evidence, notify=lambda event: None,
             timeout=timeout, data_root=data_root, launch_outcome=launch_outcome)
     except asyncio.CancelledError:
-        # finish_child has already joined cleanup and persisted cancellation.
-        # Settle only its matching confirmed outcome; unknown cleanup retains
+        # finish_child has joined cleanup and attempted persistence; a storage
+        # failure may leave no outcome. Settle only a matching confirmed result;
+        # missing outcome or unknown cleanup retains
         # the slot. Preserve cancellation even if reconciliation storage fails.
         try:
             event = inbox.for_child(parent, child_id)
@@ -65,17 +66,19 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
         except Exception:
             pass  # durable claim/outcome remain available for startup recovery
         raise
-    except Exception:
+    except Exception as exc:
         if launch_cancelled is not None:
-            raise launch_cancelled
+            launch_cancelled.add_note(f'Child completion recording failed: {type(exc).__name__}')
+            raise launch_cancelled from exc
         raise
     try:
         result = inbox.get(parent, completion)
         if result['cleanup']['state'] == 'confirmed':
             registry.settle_completion(parent, child_id, inbox=inbox, completion_id=completion)
-    except Exception:
+    except Exception as exc:
         if launch_cancelled is not None:
-            raise launch_cancelled
+            launch_cancelled.add_note(f'Child completion recording failed: {type(exc).__name__}')
+            raise launch_cancelled from exc
         raise
     if launch_cancelled is not None:
         raise launch_cancelled  # Durable outcome will replay; preserve caller cancellation.

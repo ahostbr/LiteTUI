@@ -243,9 +243,10 @@ async def test_launch_cancel_survives_storage_failure(tmp_path, monkeypatch, sto
         async def close(self): return True
     spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
                              'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as caught:
         await run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
             parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
             branch=None, evidence=[], supported_levels=[], notify=lambda e: pytest.fail('must not notify'))
+    assert caught.value.__notes__ == ['Child completion recording failed: OSError']
     assert registry.active('parent')
     assert bool(inbox.pending('parent')) is (storage_failure == 'settle')
