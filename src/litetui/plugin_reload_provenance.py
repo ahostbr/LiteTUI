@@ -25,8 +25,9 @@ Bounded on purpose — what this is NOT:
 
 It never imports, reloads, or executes anything — only hashes bytes of already
 resolved, existing files. Fail-closed: whatever cannot be proven unchanged
-requires a restart. The baseline is captured ONCE per process and is never
-recaptured from the reload path, so a reload cannot bless a post-startup edit.
+requires a restart. The baseline is captured ONCE per App instance (stored on
+the app) and is never recaptured from the reload path, so a reload cannot bless
+a post-startup edit.
 """
 from __future__ import annotations
 
@@ -102,12 +103,15 @@ def capture_baseline(app: Any) -> dict:
         except OSError:
             files[path] = None
 
-    core: list[str] = []
+    # Pin name->path for EVERY core module, recording None when a required core
+    # module is unavailable at startup — omitting it would fail OPEN (its drift
+    # would never be checked). The mapping is re-verified at check time, so a
+    # module.__file__ rebound to another (even unchanged) file is caught.
+    core: dict[str, str | None] = {}
     for name in _CORE_MODULES:
         path = _module_path(name)
-        if path is not None:
-            core.append(path)
-            _record(path)
+        core[name] = path
+        _record(path)                # _record no-ops on None
 
     targets: dict[str, str | None] = {}
     for entry in app.plugins.tools:
@@ -115,7 +119,7 @@ def capture_baseline(app: Any) -> dict:
         targets[entry.name] = path
         _record(path)
 
-    baseline = {"files": files, "targets": targets, "core": tuple(core)}
+    baseline = {"files": files, "targets": targets, "core": core}
     setattr(app, _KEY, baseline)
     return baseline
 
@@ -145,11 +149,20 @@ def provenance_ok(app: Any, tool_name: str) -> tuple[bool, str]:
     if not isinstance(baseline, dict):
         return False, "no source provenance baseline was captured at startup"
 
-    # Core drift invalidates every target.
-    for path in baseline["core"]:
-        reason = _drifted(baseline, path)
+    # Core drift invalidates every target. Check the pinned name->path mapping
+    # first (a required module unavailable at startup or now, or remapped to a
+    # different file, is drift even if that file's bytes are unchanged), then the
+    # digest of the pinned path.
+    for name, pinned in baseline["core"].items():
+        if pinned is None:
+            return False, f"reload machinery module {name!r} was unavailable at startup; restart required"
+        current = _module_path(name)
+        if current != pinned:
+            return False, (f"reload machinery module {name!r} now resolves to a different file than "
+                           "at startup; restart required")
+        reason = _drifted(baseline, pinned)
         if reason is not None:
-            return False, f"reload machinery source {Path(path).name!r} {reason}; restart required"
+            return False, f"reload machinery source {Path(pinned).name!r} {reason}; restart required"
 
     entry = next((e for e in app.plugins.tools if e.name == tool_name), None)
     if entry is None:

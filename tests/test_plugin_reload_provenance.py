@@ -112,10 +112,40 @@ def test_core_drift_blocks_every_target(tmp_path):
     src = _write(tmp_path / "t.py", "v1")
     app = _app([_tool("bash", src)])
     baseline = prov.capture_baseline(app)
-    core_path = baseline["core"][0]
+    core_path = next(p for p in baseline["core"].values() if p)
     baseline["files"][core_path] = "0" * 64          # simulate disk != baseline
     ok, reason = prov.provenance_ok(app, "bash")
     assert ok is False and "reload machinery source" in reason and "changed" in reason
+
+
+def test_core_module_unavailable_at_startup(tmp_path, monkeypatch):
+    src = _write(tmp_path / "t.py", "v1")
+    app = _app([_tool("bash", src)])
+    # A required core module resolving to nothing at startup must be recorded
+    # (None), not silently omitted, and must fail closed.
+    monkeypatch.setattr(prov, "_CORE_MODULES",
+                        prov._CORE_MODULES + ("litetui._provtest_missing_core",))
+    prov.capture_baseline(app)
+    ok, reason = prov.provenance_ok(app, "bash")
+    assert ok is False and "unavailable at startup" in reason
+
+
+def test_core_mapping_drift_to_another_baselined_file(tmp_path, monkeypatch):
+    src = _write(tmp_path / "t.py", "v1")
+    file_a = _write(tmp_path / "corefake.py", "cfa")
+    modname = "_provtest_corefake"
+    mod = types.ModuleType(modname)
+    mod.__file__ = str(file_a)
+    sys.modules[modname] = mod
+    app = _app([_tool("bash", src)])
+    monkeypatch.setattr(prov, "_CORE_MODULES", prov._CORE_MODULES + (modname,))
+    baseline = prov.capture_baseline(app)
+    # Rebind to a DIFFERENT, already-baselined, UNCHANGED file: the digest test
+    # would pass, but the mapping changed => must still fail closed.
+    other = next(p for n, p in baseline["core"].items() if p and n != modname)
+    mod.__file__ = other
+    ok, reason = prov.provenance_ok(app, "bash")
+    assert ok is False and "different file" in reason
 
 
 # ── missing baseline / capture-once ──────────────────────────────────────────
