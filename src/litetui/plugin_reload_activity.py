@@ -90,9 +90,13 @@ def idle_infra_phase(app):
 
 
 def _idle_infra_workers(app) -> list:
-    """The registered idle-infra Worker objects, fail-closed: a missing or
-    non-list attribute means NOTHING is excluded (every worker stays counted)."""
-    reg = getattr(app, _IDLE_INFRA_ATTR, None)
+    """The registered idle-infra Worker objects, fail-closed: a missing,
+    non-list, or raising attribute means NOTHING is excluded (every worker
+    stays counted)."""
+    try:
+        reg = getattr(app, _IDLE_INFRA_ATTR, None)
+    except Exception:  # noqa: BLE001 — a raising descriptor must not whitelist anything
+        return []
     return reg if isinstance(reg, list) else []
 
 #: Worker group -> the ActivitySnapshot field it primarily drives. Everything not

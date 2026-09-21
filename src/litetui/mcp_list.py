@@ -49,6 +49,16 @@ ACTIONS_FOR = {
 }
 
 
+def _verb_button(idx: int, verb: str, server: str) -> Button:
+    """A row-action button carrying the EXACT server name it was rendered for.
+    The Textual id stays index-based (a server name is not a legal id), but the
+    action reads `_mcp_server`, so a describe() reorder between render and press
+    can never retarget the wrong server."""
+    btn = Button(verb.capitalize(), id=f"mcp-act-{idx}-{verb}")
+    btn._mcp_server = server
+    return btn
+
+
 class MCPListBody(Widget):
     """A dialog body that works in either host. No ModalScreen assumptions."""
 
@@ -114,10 +124,8 @@ class MCPListBody(Widget):
             # IndexError deep inside Textual. Passing children to the
             # constructor is the form that works in both callers.
             yield Horizontal(
-                *(
-                    Button(verb.capitalize(), id=f"mcp-act-{i}-{verb}")
-                    for verb in ACTIONS_FOR.get(row["state"], ())
-                ),
+                *(_verb_button(i, verb, row["name"])
+                  for verb in ACTIONS_FOR.get(row["state"], ())),
                 classes="mcp-actions",
             )
 
@@ -229,18 +237,37 @@ class MCPListBody(Widget):
         return _mutation_blocked_reason(
             app, ignore_workers=self._own_workers(), ignore_screen=self._own_modal_screen())
 
-    def _dispatch(self, op, describe) -> None:
+    def _is_active_body(self) -> bool:
+        """True only when THIS body is still the controller's current view. A
+        swap can leave the old body briefly mounted while no longer active; a
+        completion must not re-render a superseded body."""
+        if not self.is_mounted:
+            return False
+        ctrl = getattr(self, "_dialog_controller", None)
+        return ctrl is None or getattr(ctrl, "_body", None) is self
+
+    def _dispatch(self, op, describe, mcp0) -> None:
         """Claim maintenance SYNCHRONOUSLY (a second button then defers on the
-        gate), capture the convo/backend identity, and run the op OFF the loop.
-        The UI stays live; the rows re-render on completion."""
+        gate), capture convo/backend/manager identity, and run the op OFF the
+        loop via run_guarded — which un-sticks maintenance if the worker is
+        cancelled before its first step or fails to schedule."""
         import asyncio
+        from litetui.agent_preparation import run_guarded
         app = self.app
         app._mcp_maintenance = True
-        app._mcp_maintenance_done = asyncio.Event()
-        self.run_worker(self._run_action(app, op, describe, app.convo_id, app.backend),
-                        group="mcp", exclusive=False)
+        ev = asyncio.Event()
+        app._mcp_maintenance_done = ev
 
-    async def _run_action(self, app, op, describe, convo0, backend0) -> None:
+        def _release():
+            if not ev.is_set():
+                app._mcp_maintenance = False
+                ev.set()
+
+        coro = self._run_action(app, op, describe, app.convo_id, app.backend, mcp0)
+        run_guarded(app, coro, group="mcp", cleanup=_release,
+                    report=lambda e: app.system_message("Could not start the MCP operation."))
+
+    async def _run_action(self, app, op, describe, convo0, backend0, mcp0) -> None:
         # `app` is captured at SCHEDULING and passed in: reading self.app HERE
         # would raise NoActiveApp if this widget were removed before the coro's
         # first step, stranding maintenance before the try/finally below.
@@ -249,18 +276,27 @@ class MCPListBody(Widget):
         from litetui.plugins.mcp_manage import _settle_maintenance
         msg = ""
         try:
-            try:
-                msg = describe(await await_preparation(op))
-            except MCPBusy:
-                msg = "MCP maintenance is in progress — try again in a moment."
-            except Exception as e:  # noqa: BLE001 — bounded, never raw error text
-                msg = f"MCP operation failed ({type(e).__name__})."
+            # Revalidate identity BEFORE the mutation: a backend/convo/manager
+            # transition (or a switch to native Codex) between scheduling and
+            # the thread aborts the mutation rather than applying it to a
+            # changed world. The op is bound to mcp0, so once it IS running it
+            # keeps targeting the captured manager and await_preparation joins.
+            if (app.convo_id != convo0 or app.backend is not backend0
+                    or app.mcp is not mcp0 or hasattr(app.backend, "app_server")):
+                msg = "context changed before the MCP operation started — not applied."
+            else:
+                try:
+                    msg = describe(await await_preparation(op))
+                except MCPBusy:
+                    msg = "MCP maintenance is in progress — try again in a moment."
+                except Exception as e:  # noqa: BLE001 — bounded, never raw error text
+                    msg = f"MCP operation failed ({type(e).__name__})."
         finally:
             note = _settle_maintenance(app)
-        # Touch the dialog ONLY if this same body is still mounted in the same
-        # context; otherwise it is gone / the convo/backend changed, so report to
-        # chat rather than a stale widget.
-        if self.is_mounted and app.convo_id == convo0 and app.backend is backend0:
+        # Re-render ONLY if this body is still the ACTIVE view in the same
+        # context; else report to chat (a superseded/removed body, or a changed
+        # convo/backend, must not be re-rendered).
+        if self._is_active_body() and app.convo_id == convo0 and app.backend is backend0:
             self._say(msg + note)
             await self._rerender()
         else:
@@ -269,35 +305,34 @@ class MCPListBody(Widget):
     @on(Button.Pressed, ".mcp-actions Button")
     async def _row_action(self, event: Button.Pressed) -> None:
         event.stop()
-        bid = event.button.id or ""
-        try:
-            _, _, idx, verb = bid.split("-", 3)
-            row = self._rows[int(idx)]
-        except (ValueError, IndexError):
+        parts = (event.button.id or "").split("-", 3)
+        name = getattr(event.button, "_mcp_server", None)   # exact name bound at render
+        if len(parts) != 4 or name is None:
             return
-        name = row["name"]              # exact manager name, never re-tokenized
+        verb = parts[3]
         app = self.app
         blocked = self._gate(app)
         if blocked:
             self._say(blocked)
             return
+        mcp0 = app.mcp                                       # bind the manager; op targets THIS one
         if verb == "connect":
-            op = lambda: app.mcp.connect(name)
+            op = lambda: mcp0.connect(name)
             describe = lambda err: f"could not connect {name}: {err}" if err else f"connected {name}"
         elif verb == "disconnect":
-            op = lambda: app.mcp.disconnect(name)
+            op = lambda: mcp0.disconnect(name)
             describe = lambda was: f"disconnected {name}" if was else f"{name} was not running"
         elif verb == "reconnect":
             def op():
-                app.mcp.reload_configs()   # pick up config edits before reconnecting
-                return app.mcp.reconnect(name)
+                mcp0.reload_configs()   # pick up config edits before reconnecting
+                return mcp0.reconnect(name)
             describe = lambda err: f"could not reconnect {name}: {err}" if err else f"reconnected {name}"
         elif verb == "remove":
-            op = lambda: app.mcp.remove(name)
+            op = lambda: mcp0.remove(name)
             describe = lambda err: f"could not remove {name}: {err}" if err else f"removed {name}"
         else:
             return
-        self._dispatch(op, describe)
+        self._dispatch(op, describe, mcp0)
 
     @on(Button.Pressed, "#mcp-add-go")
     async def _add(self, event: Button.Pressed) -> None:
@@ -323,10 +358,12 @@ class MCPListBody(Widget):
         # so an in-flight add cannot be re-submitted as a duplicate.
         self.query_one("#mcp-add-name", Input).value = ""
         self.query_one("#mcp-add-target", Input).value = ""
+        mcp0 = app.mcp
         self._dispatch(
-            lambda: app.mcp.add(name, cfg),
+            lambda: mcp0.add(name, cfg),
             lambda err: (f"declared {name}, but it did not start: {err}" if err
-                         else f"added {name}"))
+                         else f"added {name}"),
+            mcp0)
 
     @on(Button.Pressed, "#mcp-close")
     def _close(self) -> None:

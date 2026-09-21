@@ -379,17 +379,65 @@ async def test_run_action_uses_the_passed_app_not_self_app():
     use the app captured at scheduling, never self.app (which would raise)."""
     import asyncio
     calls = []
+    mgr = object()
     app = _NS(_mcp_maintenance=True, _mcp_maintenance_done=asyncio.Event(),
-              convo_id="c1", backend=object(), system_message=calls.append,
+              convo_id="c1", backend=object(), mcp=mgr, system_message=calls.append,
               rebuild_mcp_dispatch=lambda: None)
 
     class Detached:
         is_mounted = False
+        def _is_active_body(self):
+            return False
         @property
         def app(self):
             raise RuntimeError("NoActiveApp")
 
     await MCPListBody._run_action(Detached(), app, lambda: None, lambda r: "done",
-                                  "c1", app.backend)
+                                  "c1", app.backend, mgr)
     assert calls and "done" in calls[0]           # reported via the passed app
     assert app._mcp_maintenance is False           # settled, not stranded
+
+
+# ── row target by name, host identity from controller, identity revalidation ──
+def test_verb_button_binds_the_exact_server_name():
+    from litetui.mcp_list import _verb_button
+    btn = _verb_button(0, "connect", "@scope/pkg")
+    assert btn._mcp_server == "@scope/pkg"        # exact name, immune to a reorder
+    assert btn.id == "mcp-act-0-connect"          # id stays index-based (legal id)
+
+
+@pytest.mark.asyncio
+async def test_dialog_body_host_worker_comes_from_the_controller(monkeypatch, tmp_path):
+    """The host worker is captured ONCE in the controller (open()) and stamped on
+    every body — so a swap that re-runs _mount_view reuses the same ref instead
+    of re-resolving to None."""
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        ctrl = getattr(body, "_dialog_controller", None)
+        assert ctrl is not None
+        assert ctrl._host_worker is not None
+        assert body._dialog_host_worker is ctrl._host_worker
+
+
+@pytest.mark.asyncio
+async def test_run_action_aborts_when_manager_replaced_before_start():
+    """A backend/convo/manager transition between scheduling and the thread must
+    abort the mutation, not apply it to a changed world."""
+    import asyncio
+    ran, calls = [], []
+    mgr0, mgr1 = object(), object()
+    app = _NS(_mcp_maintenance=True, _mcp_maintenance_done=asyncio.Event(),
+              convo_id="c1", backend=object(), mcp=mgr1,   # manager REPLACED since scheduling
+              system_message=calls.append, rebuild_mcp_dispatch=lambda: None)
+
+    class Body:
+        is_mounted = False
+        def _is_active_body(self):
+            return False
+
+    await MCPListBody._run_action(Body(), app, lambda: ran.append(1), lambda r: "done",
+                                  "c1", app.backend, mgr0)   # scheduled against mgr0
+    assert ran == []                                  # op NOT run — manager changed
+    assert "context changed" in calls[0].lower()
+    assert app._mcp_maintenance is False               # settled, not stranded
