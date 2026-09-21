@@ -198,6 +198,10 @@ def prepare_reconnect(app):
     for key, spec in SETTING_SPECS.items():
         if spec.apply_timing == 'reconnect':
             setattr(target, key, deepcopy(getattr(snapshot.effective, key)))
+    # Reconnect must not quietly return a CLI-selected server to the saved URL.
+    # Deliberate preference edits retire their key from this map above.
+    for key in getattr(app, '_invocation_saved_values', {}):
+        setattr(target, key, deepcopy(getattr(app.settings, key)))
     backend = getattr(app, 'backend', None)
     if backend is not None and (getattr(backend, 'name', None) != target.backend
                                or app.settings.codex_native_engine != target.codex_native_engine):

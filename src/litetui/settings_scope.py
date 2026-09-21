@@ -17,7 +17,7 @@ class SettingSpec:
     sensitive: bool = False
 
 
-_CONVERSATION = '''lm_host ninfer_host ninfer_executable ninfer_artifact
+_CONVERSATION = '''custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host ninfer_executable ninfer_artifact
 ninfer_max_context ninfer_max_concurrency default_model default_context_length
 pin_default_model backend codex_native_engine llama_host llama_executable
 llama_attach_hosts llama_models_max llama_load_settings model_infer_overrides
@@ -37,7 +37,7 @@ footer_show_subagents footer_show_convo footer_show_context footer_show_context_
 footer_show_tps footer_order tts_enabled tts_timeout tts_engine tts_voice tts_edge_voice
 stt_model stt_mic stt_hotkey'''.split()
 _DEFAULTS = ['backend_chosen', 'llama_presets']
-_RECONNECT = set('lm_host ninfer_host llama_host backend default_model codex_native_engine pin_default_model skills_enabled skill_roots mcp_enabled mcp_disabled_servers'.split())
+_RECONNECT = set('custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host llama_host backend default_model codex_native_engine pin_default_model skills_enabled skill_roots mcp_enabled mcp_disabled_servers'.split())
 _RESTART = set('ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency llama_executable llama_attach_hosts llama_models_max plugins_disabled'.split())
 
 SETTING_SPECS = {}

@@ -317,6 +317,7 @@ def _cmd_backend(app, name: str, arg: str) -> None:
         if llm_backend.llama_available(app.settings) else "not installed — choose an installed executable in Settings"
     )
     rows = [
+        ("custom", f"Custom server  · {app.settings.custom_base_url or 'set URL in /settings'}"),
         ("lmstudio", f"LM Studio desktop  · {lms_mark}"),
         ("llamacpp", f"llama.cpp (our engine)  · {llama_mark}"),
         ("ninfer", f"NInfer (5090 engine)  · {_ninfer_mark(app)}"),

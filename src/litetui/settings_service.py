@@ -133,8 +133,14 @@ class SettingsService:
                 valid = isinstance(value, str)
             if not valid:
                 raise ValueError(f'Invalid value for {change.key}: expected {declared}')
-            if change.key == 'backend' and value not in ('lmstudio', 'llamacpp', 'ninfer', 'codex'):
+            from litetui.llm_backend import BACKEND_NAMES
+            if change.key == 'backend' and value not in BACKEND_NAMES:
                 raise ValueError('Unknown backend')
+            if change.key == 'custom_base_url' and value:
+                from litetui.custom_backend import api_base
+                api_base(value)
+            if change.key == 'custom_context_length' and value < 0:
+                raise ValueError('Custom context budget must be zero or positive')
             # Reject unserializable nested payloads before any destination writes.
             json.dumps(value, allow_nan=False)
             destination = 'conversation' if spec.scope == SettingScope.CONVERSATION else 'global'

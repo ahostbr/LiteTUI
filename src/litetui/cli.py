@@ -30,11 +30,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="litetui",
         description="LiteTUI — a terminal interface for local LLMs",
-        add_help=False,
+        add_help=True,
     )
     parser.add_argument("--version", "-V", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--rpc", action="store_true", help="headless JSONL-over-stdio mode")
-    parser.add_argument("--backend", choices=['codex', 'lmstudio', 'llamacpp', 'ninfer'], default=None, help='invocation-only backend selection')
+    from litetui.llm_backend import BACKEND_NAMES
+    parser.add_argument("--backend", choices=BACKEND_NAMES, default=None, help='invocation-only backend selection')
+    from litetui.launch_options import add_arguments, from_args
+    add_arguments(parser)
     thinking = parser.add_mutually_exclusive_group()
     thinking.add_argument('--reasoning-effort', default=None)
     thinking.add_argument('--thinking-level', default=None)
@@ -60,10 +63,20 @@ def main() -> None:
     parser.add_argument("--export-conversation", type=str, help="export a saved convo.jsonl without starting the app")
     parser.add_argument("--export-output", type=str, help="new Markdown file for --export-conversation")
 
-    args, remaining = parser.parse_known_args()
+    args = parser.parse_args()
+    try:
+        launch_options = from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.cwd:
         os.chdir(args.cwd)
+    from litetui.settings import load
+    try:
+        settings = load()
+        launch_options.overrides(settings, args.backend or settings.backend, args.model)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.export_conversation or args.export_output:
         if not args.export_conversation or not args.export_output:
@@ -98,6 +111,7 @@ def main() -> None:
         initial_model=args.model,
         initial_backend=args.backend,
         initial_thinking=args.reasoning_effort or args.thinking_level,
+        launch_options=launch_options,
         tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
         plan_mode=args.mode == "plan",
         convo_id=args.convo,

@@ -724,6 +724,19 @@ class SettingsBody(Widget):
                         )
                         yield self._section_header("model-router")
                         yield from self._text_row(
+                            "custom_base_url", "Custom server URL",
+                            "OpenAI-compatible endpoint. No fallback or automatic model loading.",
+                            placeholder="http://127.0.0.1:1235/v1",
+                        )
+                        yield from self._text_row(
+                            "custom_api_key_env", "Custom API key environment variable",
+                            "Optional environment variable NAME containing the credential; never paste a key here.",
+                        )
+                        yield from self._text_row(
+                            "custom_context_length", "Custom context budget",
+                            "Declared client budget in tokens; 0 means unknown. Does not resize the server's context.",
+                        )
+                        yield from self._text_row(
                             "llama_executable", "llama-server executable",
                             "Blank uses the existing LiteSuite-managed installation; choose another installed executable to override.",
                             placeholder="C:/llama.cpp/llama-server.exe",
@@ -1377,6 +1390,9 @@ class SettingsBody(Widget):
                 "llama_load_settings", "model_infer_overrides", "llama_presets",
                 # Set by the first-boot picker, not by a visible control.
                 "backend_chosen",
+                # Legacy preference: playback is now explicitly controlled on
+                # each response. There is deliberately no auto-speech checkbox.
+                "tts_enabled",
             ):
                 continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
@@ -1466,6 +1482,11 @@ class SettingsBody(Widget):
             raise ValueError("autocompact_at_percent: must be between 1 and 99")
         if out.tool_iterations < 1:
             raise ValueError("tool_iterations: must be at least 1")
+        if out.custom_context_length < 0:
+            raise ValueError('custom_context_length: must be zero (unknown) or positive')
+        if out.custom_base_url:
+            from litetui.custom_backend import api_base
+            api_base(out.custom_base_url)
         if out.tool_policy_profile not in tool_policy.PROFILE_NAMES:
             raise ValueError(
                 f"tool_policy_profile: must be one of {', '.join(tool_policy.PROFILE_NAMES)}"

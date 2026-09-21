@@ -140,6 +140,9 @@ class Settings:
     codex_native_engine: bool = False
     #: OUR router instance. 7470 sits in the ecosystem's 74xx block — the
     #: 8xxx range is crowded on dev machines (Ryan, 2026-08-21).
+    custom_base_url: str = ""
+    custom_api_key_env: str = ""
+    custom_context_length: int = 0
     llama_host: str = "http://localhost:7470"
     #: Explicit installed executable. Empty selects the ecosystem default.
     llama_executable: str = ""

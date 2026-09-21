@@ -88,6 +88,8 @@ class AgentProcess:
         bearer token. Conversation allocation is a separate launcher gate.
         """
         self.ready = False
+        if spec.launch:
+            timeout = max(timeout, spec.launch.get('timeout', 600) + 15)
         try:
             event = await self.receive(timeout=timeout)
             expected = {'type': 'ready', 'launch_status': 'ready',
@@ -97,8 +99,18 @@ class AgentProcess:
                 if event.get(key) != value:
                     raise LaunchBlocked(f'Child effective {key} differs from launch request')
             level = spec.reasoning_effort if spec.reasoning_effort is not None else spec.thinking_level
+            if level == 'none':
+                level = 'off'
             if level is not None and event.get('thinking_level') != level:
                 raise LaunchBlocked('Child effective thinking differs from launch request')
+            if spec.launch:
+                from litetui.custom_backend import api_base
+                if spec.launch.get('base_url') and event.get('base_url', '').rstrip('/') != api_base(spec.launch['base_url']):
+                    raise LaunchBlocked('Child effective endpoint differs from launch request')
+                if spec.launch.get('context_length') and event.get('context_requested') != spec.launch['context_length']:
+                    raise LaunchBlocked('Child context request differs from launch request')
+                if spec.launch.get('context_length') and (event.get('context_length') or 0) < spec.launch['context_length']:
+                    raise LaunchBlocked('Child context capacity is below the launch request')
             from litetui.agent_inbox import _identity
             try:
                 conversation_id = _identity(event.get('conversation_id'))

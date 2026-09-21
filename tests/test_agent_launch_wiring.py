@@ -38,7 +38,7 @@ async def test_explicit_runtime_root_and_policy_before_prompt(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('extra', [{'headed': True}, {'backend': 'ninfer'}])
+@pytest.mark.parametrize('extra', [{'headed': True}])
 async def test_unintegrated_paths_block_before_process(tmp_path, extra):
     from litetui.agent_launcher import start_headless_child
     process = Process()
@@ -56,6 +56,19 @@ async def test_bad_capabilities_block_before_start(tmp_path):
         await start_headless_child(spec(tmp_path), process, workspace=tmp_path,
                                   data_root=tmp_path, supported_levels=[])
     assert not process.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('backend', ['custom', 'llamacpp', 'lmstudio', 'ninfer', 'codex'])
+async def test_all_backends_forward_explicit_identity(tmp_path, backend):
+    from litetui.agent_launcher import start_headless_child
+    process = Process()
+    await start_headless_child(spec(tmp_path, backend=backend), process, workspace=tmp_path,
+                              data_root=tmp_path, supported_levels=['low'])
+    args = process.calls[0][1]['args']
+    assert args[args.index('--backend') + 1] == backend
+    assert args[args.index('--model') + 1] == 'requested'
+    assert args[args.index('--reasoning-effort') + 1] == 'low'
 
 
 @pytest.mark.asyncio

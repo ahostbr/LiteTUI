@@ -320,6 +320,7 @@ async def test_every_field_is_reachable_without_opening_its_tab():
                 # is set by the first-boot picker.
                 "llama_load_settings", "model_infer_overrides", "llama_presets",
                 "backend_chosen",
+                "tts_enabled",  # legacy; playback is per-response now
             ):
                 continue  # rendered as per-server switches, not one control
             if settings_mod.source_of(f.name):

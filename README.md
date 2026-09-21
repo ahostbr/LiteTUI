@@ -275,6 +275,79 @@ being a separate data root, no shared anything. Finer knobs exist for one field
 at a time: `LITETUI_SEAT_NAME`, `LITETUI_MODEL`, `LITETUI_THINKING`,
 `LITETUI_BACKEND`.
 
+## Launching backends from a terminal or another agent
+
+Run `litetui --help` (or `python -m litetui.cli --help`) for the complete argument
+contract. Unknown flags are errors. Options apply to this invocation, including
+when resuming a conversation; they do not overwrite saved defaults.
+
+Normal launches open the TUI in the current terminal. Add `--rpc` for JSONL over
+stdio. Agents must wait for the `ready` event with `launch_status: "ready"` and
+check its `backend`, `model`, `base_url`, `thinking_level` and `context_length`
+before sending a `{"type":"prompt","message":"..."}` command. Failed startup or
+an unavailable explicit model blocks the launch prompt. `--prompt` can supply an
+initial prompt for a headed launch; avoid putting sensitive text on process argv.
+
+| Backend | Connect/start | Model and context |
+| --- | --- | --- |
+| `custom` | `--base-url URL`; optional `--start-server --server-command JSON` | Server-native arguments load the model. `--model` selects an advertised ID; `--context-length` declares the client budget, not a server resize. |
+| `llamacpp` | `--server-mode connect` or `--start-server`; optional `--server-executable PATH` and `--base-url URL` | `--load-model --model ID --context-length N`; optional `--model-path GGUF` adds its directory to discovery. |
+| `lmstudio` | `--server-mode connect` or `--start-server` using installed `lms server start` | `--load-model --model ID --context-length N` uses the LM Studio SDK. |
+| `ninfer` | Connect to discovery or `--base-url URL`; `--start-server` uses an allocated port | Startup accepts `--model-path ARTIFACT --context-length N --server-executable PATH`. `--model` must match the served ID. Requires RTX 5090. |
+| `codex` | Subscription login; connects using the configured Codex adapter (native app-server is managed by that adapter when enabled) | `--model ID --reasoning-effort LEVEL`. Endpoint, context and output limits belong to Codex; local-server overrides are rejected. |
+
+`--server-mode auto` preserves each backend's existing behavior. `connect` never
+starts an inference server. `--start-server` explicitly authorizes starting one;
+it does not restart or evict a server already running. An explicit llama.cpp URL
+never falls back to another router. `--load-model` explicitly authorizes loading
+or reloading on llama.cpp/LM Studio; context changes require this flag.
+
+`--thinking-level` and `--reasoning-effort` are mutually exclusive aliases.
+`none` is accepted as an alias for UI `off`. Available levels depend on the
+backend/model: NInfer uses `off/low/medium/xhigh`; Codex uses its model metadata;
+custom servers receive the selected value and their template defines support.
+`--max-tokens` sets the output limit for local/custom servers. Use
+`--server-timeout SECONDS` for slow model loads (default 600).
+
+Examples (PowerShell):
+
+```powershell
+# Existing Prism or another OpenAI-compatible server, no environment override needed
+litetui --backend custom --base-url http://127.0.0.1:1235/v1 --model ternary-bonsai-2-27b --thinking-level off --context-length 32768
+
+# Start our llama.cpp router, then load a model before accepting the first prompt
+litetui --backend llamacpp --start-server --load-model --model qwen3.8-27b-q4_k_m --context-length 32768 --thinking-level medium
+
+# Start LM Studio's API server (LM Studio/lms must already be installed)
+litetui --backend lmstudio --start-server --load-model --model qwen/qwen3.8-27b --context-length 32768 --thinking-level medium
+
+# Start NInfer from an explicitly chosen artifact; verify its advertised model ID
+litetui --backend ninfer --start-server --model-path D:/models/model.ninfer --model YOUR_SERVED_MODEL_ID --context-length 32768 --thinking-level xhigh
+
+litetui --backend codex --model gpt-5.6-sol --reasoning-effort high
+
+# Custom executable arguments are a JSON array, never a shell command.
+# A PowerShell script file avoids nested Start-Process -Command quote loss.
+$serverArgs = @('D:/Prism/llama-server.exe', '-m', '{model_path}', '--alias', '{model}', '-c', '{context_length}', '--host', '{host}', '--port', '{port}', '--jinja') | ConvertTo-Json -Compress
+litetui --backend custom --base-url http://127.0.0.1:1235/v1 --start-server --server-command $serverArgs --model-path D:/models/bonsai.gguf --model bonsai --context-length 32768 --thinking-level off
+```
+
+Custom command placeholders are `{model}`, `{model_path}`, `{context_length}`,
+`{host}` and `{port}`. Add native flags (GPU layers, projector, cache settings)
+as separate array elements. Only loopback endpoints can be started locally.
+Output goes to `custom-server.log` in the data root. LiteTUI cleans up custom
+processes it starts; attaching to an existing server never claims ownership.
+For authentication use `--api-key-env VARIABLE_NAME`; the secret stays in the
+environment. Custom URL, key-variable name and declared context budget are also
+available under `/settings`, and `/backend` includes Custom.
+
+The internal `LaunchSpec` accepts the same controls in its optional `launch`
+object (`base_url`, `server_mode`, `load_model`, `context_length`, `max_tokens`,
+`server_executable`, `model_path`, `server_command`, `api_key_env`, `timeout`).
+Its supervised headless path supports all five backends and verifies readiness
+before forwarding the prompt. For headed launches use the public CLI in a visible
+terminal; the internal headed transport remains unavailable.
+
 ## Harness seat
 
 LiteTUI registers as a LiteHarness agent and monitors its own inbox, so other

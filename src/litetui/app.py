@@ -1458,6 +1458,7 @@ class LiteTUI(App):
         initial_model: str | None = None,
         initial_backend: str | None = None,
         initial_thinking: str | None = None,
+        launch_options=None,
         tool_profile: str | None = None,
         plan_mode: bool = False,
         convo_id: str | None = None,
@@ -1468,11 +1469,15 @@ class LiteTUI(App):
         self._first_prompt = first_prompt
         self._cli_system_prompt = system_prompt
         self._cli_initial_model = initial_model
-        if initial_backend not in (None, 'codex', 'lmstudio', 'llamacpp', 'ninfer'):
+        if initial_backend is not None and initial_backend not in llm_backend.BACKEND_NAMES:
             raise ValueError('Unsupported invocation backend')
         self._cli_initial_backend = initial_backend
-        self._cli_thinking_level = initial_thinking
+        self._cli_thinking_level = 'off' if initial_thinking == 'none' else initial_thinking
+        self._launch_options = launch_options
+        self._launch_prepared = False
+        self._connect_done = asyncio.Event()
         self._cli_effective_thinking = None
+        self._cli_launch_error: str | None = None
         self._cli_tool_profile = tool_profile
         # T558 plan mode. SESSION-ONLY, deliberately not persisted to settings:
         # a mode that survives a restart is a mode you forget you are in, and
@@ -1491,10 +1496,17 @@ class LiteTUI(App):
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
         self._invocation_saved_values = {}
+        self._launch_overrides = {}
+        if launch_options is not None:
+            from litetui.settings_runtime import capture_invocation
+            chosen_backend = initial_backend or self.settings.backend
+            self._launch_backend = chosen_backend
+            self._launch_overrides = launch_options.overrides(self.settings, chosen_backend, initial_model)
+            self._invocation_saved_values.update(capture_invocation(self.settings, self._launch_overrides))
         if initial_backend is not None:
             from litetui.settings_runtime import capture_invocation
-            self._invocation_saved_values = capture_invocation(self.settings, {
-                'backend': initial_backend, 'backend_chosen': True})
+            self._invocation_saved_values.update(capture_invocation(self.settings, {
+                'backend': initial_backend, 'backend_chosen': True}))
         hook_host.initialize(self)
         self.conversation: list[dict] = []
         #: T691: the conversation's own settings, once one is open. None
@@ -1816,7 +1828,7 @@ class LiteTUI(App):
         if self.settings.mcp_enabled and self.mcp.configs:
             self._mcp_connect()
         # T507-T1: apply CLI args after connection is up.
-        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt or self._cli_thinking_level:
+        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt or self._cli_thinking_level or self._launch_options:
             self._cli_args_done = asyncio.Event()
             self._apply_cli_args()
         # T507-T2: start the RPC bridge in headless mode.
@@ -1912,6 +1924,8 @@ class LiteTUI(App):
         becoming a no-op.
         """
         await self._settle_before_teardown()
+        from litetui.launch_options import stop_custom
+        await asyncio.to_thread(stop_custom, self)
         if getattr(getattr(self, "backend", None), "name", None) == "codex":
             if hasattr(self.backend, "app_server"):
                 await self.backend.app_server.close()
@@ -3837,6 +3851,10 @@ class LiteTUI(App):
                 setattr(self.settings, key, settings_mod._coerce(key, os.environ[env], getattr(self.settings, key)))
         for diagnostic in getattr(cs, '_diagnostics', ()):
             self._system(f'Conversation settings warning: {diagnostic}')
+        for key, value in getattr(self, '_launch_overrides', {}).items():
+            if key in self._invocation_saved_values:
+                self._invocation_saved_values[key] = deepcopy(getattr(self.settings, key))
+                setattr(self.settings, key, deepcopy(value))
         current_backend = getattr(self, '_backend', None)
         if current_backend is not None and hasattr(current_backend, 'set_settings'):
             current_backend.set_settings(self.settings)
@@ -3972,6 +3990,10 @@ class LiteTUI(App):
         exists to prevent, by the one path that cannot show it. LiteSuite
         renders refusals loudly already.
         """
+        # Explicit CLI --load-model / --start-server is launch-scoped consent.
+        # Other loads retain the ordinary second-instance confirmation policy.
+        if getattr(self, '_explicit_launch_load', False):
+            return True
         try:
             sibling = harness_mod.other_live_litetui(getattr(self.seat, "agent_id", None))
         except Exception:  # noqa: BLE001 - a registry read must not block a load
@@ -4058,17 +4080,21 @@ class LiteTUI(App):
         try:
             # The llama backend may spawn its own server here (never loading
             # a model) or attach to LiteSuite's — either way, say which.
-            status = await self.backend.ensure_running()
+            from litetui.launch_options import prepare
+            timeout = getattr(getattr(self, '_launch_options', None), 'timeout', 600)
+            async with asyncio.timeout(timeout):
+                status = await prepare(self)
             if status != "ok":
-                self._system(f"llama.cpp: {status}")
+                self._system(f"{self.backend.label}: {status}")
             # Rebuild the chat client ONLY when the base_url moved (attaching
             # can move it): a client built earlier would stream at a server
             # the control plane is no longer talking to. When it has NOT
             # moved, the existing client object survives — anything attached
             # to it (a test's stubbed create, a keep-alive pool) stays valid.
             new_base = self.backend.base_url().rstrip("/")
-            if str(self.client.base_url).rstrip("/") != new_base:
-                self.client = AsyncOpenAI(base_url=new_base, api_key="litetui")
+            api_key = getattr(self.backend, 'api_key', lambda: 'litetui')()
+            if str(self.client.base_url).rstrip("/") != new_base or self.client.api_key != api_key:
+                self.client = AsyncOpenAI(base_url=new_base, api_key=api_key)
             rows = await self.backend.list_models()
             self._gui_connection_success = True
             SKIP = {"embed", "embedding"}
@@ -4131,7 +4157,7 @@ class LiteTUI(App):
                 # model_switch.py), so nothing is lost by staying quiet.
                 if len(self.available_models) > 1:
                     self._system(f"{len(self.available_models)} models available — /models to list, /model <n> to switch")
-                if self.backend.name == "lmstudio":
+                if self.backend.name == "lmstudio" and self._cli_thinking_level is None:
                     self._probe_thinking()
                 self._rpc_emit_model_state()
             else:
@@ -4215,6 +4241,8 @@ class LiteTUI(App):
             # would leave exactly that case waiting for a list that can no
             # longer arrive.
             self._connect_settled = True
+            if hasattr(self, '_connect_done'):
+                self._connect_done.set()
 
     _connect = connect          # arrival alias (PLAN §2b)
 
@@ -4312,7 +4340,7 @@ class LiteTUI(App):
         done = getattr(self, '_cli_args_done', None)
         if done is not None:
             try:
-                await asyncio.wait_for(done.wait(), 30)
+                await asyncio.wait_for(done.wait(), getattr(getattr(self, '_launch_options', None), 'timeout', 30) + 5)
             except TimeoutError:
                 self._cli_launch_error = 'Launch configuration did not settle in time'
         from litetui.version import __version__
@@ -4337,6 +4365,10 @@ class LiteTUI(App):
             "type": "ready",
             'launch_status': 'blocked' if getattr(self, '_cli_launch_error', None) else 'ready',
             'launch_error': getattr(self, '_cli_launch_error', None),
+            'base_url': self.backend.base_url(),
+            'context_length': self.ctx_max,
+            'context_requested': getattr(getattr(self, '_launch_options', None), 'context_length', None),
+            'context_source': 'user_declared' if self.backend.name == 'custom' else 'backend_reported',
             "protocol_version": 1,
             "management_protocols": [1],
             "capabilities": list(OPERATIONS),
@@ -4372,7 +4404,12 @@ class LiteTUI(App):
                 if self.available_models or getattr(self, "_connect_settled", False):
                     break
                 await asyncio.sleep(0.5)
+            if getattr(self, '_launch_options', None) is not None:
+                await asyncio.wait_for(self._connect_done.wait(), self._launch_options.timeout + 5)
             self._cli_launch_error = None
+            if getattr(self, '_launch_options', None) is not None and not self._gui_connection_success:
+                self._cli_launch_error = 'Backend connection/startup failed; launch prompt blocked'
+                return
             if self._cli_initial_model:
                 want = self._cli_initial_model
                 loaded = {r.key for r in self.model_rows.values() if r.loaded}
@@ -4397,6 +4434,10 @@ class LiteTUI(App):
                     )
             level = getattr(self, '_cli_thinking_level', None)
             if level is not None and not self._cli_launch_error:
+                if self.backend.name == 'lmstudio' and level != 'default':
+                    self._model_thinking_levels = await asyncio.to_thread(
+                        thinking_probe.get_effective_levels, self.settings.lm_host, self.model_id,
+                        self.settings.lmstudio_graded_thinking_models)
                 from litetui.thinking_capabilities import thinking_capabilities
                 if level not in thinking_capabilities(self)['levels']:
                     self._cli_launch_error = 'Requested thinking level is unsupported by the selected model'
@@ -4406,6 +4447,12 @@ class LiteTUI(App):
                     self._thinking_level = None if level == 'default' else level
             if self._cli_launch_error:
                 return
+            requested_ctx = getattr(getattr(self, '_launch_options', None), 'context_length', None)
+            if requested_ctx:
+                info = await self.backend.model_info(self.model_id)
+                if not info or not info[2] or not info[0] or info[0] < requested_ctx:
+                    raise llm_backend.BackendError(f'Requested {requested_ctx} context tokens, but the backend did not confirm that capacity')
+                self.ctx_max, _model_type, self.ctx_loaded = info
             if self._cli_system_prompt:
                 self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
             if self._first_prompt:
@@ -6591,6 +6638,9 @@ class LiteTUI(App):
 
     def _effective_request_overrides(self):
         overrides = dict(self.backend.request_overrides(self.model_id))
+        max_tokens = getattr(getattr(self, '_launch_options', None), 'max_tokens', None)
+        if max_tokens is not None:
+            overrides['max_tokens'] = max_tokens
         level = getattr(self, '_cli_effective_thinking', None)
         if level is not None:
             from litetui.thinking_capabilities import thinking_capabilities

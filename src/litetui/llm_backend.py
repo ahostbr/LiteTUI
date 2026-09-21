@@ -1963,6 +1963,7 @@ def set_vram_gate(gate) -> None:
 #: (Ryan 2026-09-17: "modular reusable pieces that connect", not a fourth
 #: if-chain per backend). Order is display order.
 BACKENDS: tuple[tuple[str, str], ...] = (
+    ("custom", "Custom (OpenAI-compatible server)"),
     ("lmstudio", "LM Studio desktop"),
     ("llamacpp", "llama.cpp (our own llama-server)"),
     ("ninfer", "NInfer (NVFP4 5090 engine)"),
@@ -2023,6 +2024,9 @@ def make_backend(settings):
 
 
 def _make_backend(settings):
+    if settings.backend == "custom":
+        from litetui.custom_backend import CustomBackend
+        return CustomBackend(settings)
     if settings.backend == "codex":
         from litetui.oauth_backend import OAuthBackend
         return OAuthBackend(settings)

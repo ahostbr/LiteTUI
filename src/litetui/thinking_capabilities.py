@@ -69,8 +69,8 @@ def thinking_capabilities(app):
     return {"levels": ["default", *choices], "source": source,
             "note": ("Model support has not been reported; use the backend default."
                      if source == "unavailable" else
-                     "The llama.cpp adapter forwards these levels; their effect depends on the model and chat template."
-                     if name == "llamacpp" else
+                     "The adapter forwards these levels; their effect depends on the server, model and chat template."
+                     if name in ("llamacpp", "custom") else
                      "Codex CLI manages reasoning and caching; default uses the model default. Max and Ultra consume usage limits faster."
                      if name == "codex" else
                      "Levels reported by the active backend; default omits the effort field.")}
