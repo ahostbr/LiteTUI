@@ -177,6 +177,13 @@ class OAuthBackend:
     async def ensure_chat_ready(self, key):
         if not hasattr(self, "app_server"):
             read_credentials(self.name)
+        # /resume can construct this backend after the startup connect worker
+        # has finished. An empty catalog means it has not been initialized,
+        # not that the restored model is unavailable. Do this in the awaited
+        # send gate so an immediate send cannot race a background reconnect.
+        if not self.models:
+            await self.ensure_running()
+            await self.list_models()
         if key not in self.models:
             raise BackendError("Choose an available Codex model with /model.")
 
