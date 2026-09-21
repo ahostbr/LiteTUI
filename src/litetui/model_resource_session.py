@@ -49,7 +49,8 @@ class ModelResourceSession:
         # Only a fully committed success may clear it; absence settlement is
         # the explicit recovery path for every uncertain outcome.
         if reload:
-            self.coordinator.release(decision.reservation_id, self.owner)
+            if self.coordinator.release(decision.reservation_id, self.owner) is not True:
+                raise AdmissionBlocked('BLOCKED: reload capacity accounting was not confirmed')
         else:
             lease = self.coordinator.acquire_lease(decision.reservation_id, self.owner,
                          owned=self.owned, keep_warm=self.keep_warm)
