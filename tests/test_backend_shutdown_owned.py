@@ -140,7 +140,7 @@ def test_llama_production_shutdown_attached_is_not_owned():
     assert b.shutdown() == TerminalShutdown(owned=False)   # attached/none: nothing killed
 
 
-# ── NInferBackend.shutdown_owned ────────────────────────────────────────────
+# ── NInferBackend.shutdown_owned: job-proof (tree='confirmed') path ──────────
 
 class _Owned:
     def __init__(self, proc, job=None):
@@ -154,13 +154,33 @@ class _Owned:
         return self.proc.poll() is None
 
 
+def _dead():
+    return SimpleNamespace(pid=1, poll=lambda: 0)
+
+
+def _live():
+    return SimpleNamespace(pid=1, poll=lambda: None)
+
+
 @pytest.fixture
-def _ninfer_engine_stubs(monkeypatch):
-    from litetui import ninfer_engine
-    monkeypatch.setattr(ninfer_engine, "unregister_host", lambda host: None)
-    monkeypatch.setattr(ninfer_engine, "_kill", lambda proc: proc.kill_now())
-    monkeypatch.setattr(ninfer_engine.jobkill, "close", lambda job: None)
-    return ninfer_engine
+def _proof(monkeypatch):
+    """Stub the jobkill proof primitives + drain timing; drive counts per test."""
+    from litetui import ninfer_engine, ninfer_backend as nb
+    state = SimpleNamespace(terminated=[], closed=[], unregistered=[], logs_closed=[],
+                            terminate_ok=True, close_ok=True, counts=[0])
+    monkeypatch.setattr(ninfer_engine.jobkill, "terminate",
+                        lambda job, exit_code=1: (state.terminated.append(job), state.terminate_ok)[1])
+    monkeypatch.setattr(ninfer_engine.jobkill, "close",
+                        lambda job: (state.closed.append(job), state.close_ok)[1])
+    monkeypatch.setattr(ninfer_engine, "unregister_host",
+                        lambda host: state.unregistered.append(host))
+
+    def _count(job):
+        return state.counts[0] if len(state.counts) == 1 else state.counts.pop(0)
+    monkeypatch.setattr(ninfer_engine.jobkill, "active_process_count", _count)
+    monkeypatch.setattr(nb, "_JOB_DRAIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(nb, "_JOB_DRAIN_INTERVAL", 0.005)
+    return state
 
 
 def _ninfer(proc, job=None):
@@ -176,64 +196,100 @@ def test_ninfer_no_owned_is_not_owned():
     assert b.shutdown_owned() == TerminalShutdown(owned=False)
 
 
-def test_ninfer_job_close_plus_poll_is_main_only_tree_unknown(_ninfer_engine_stubs):
-    proc = _Proc("terminate")
-    closed = []
-    _ninfer_engine_stubs.jobkill.close = lambda job: (closed.append(job), setattr(proc, "_dead", True))
-    b = _ninfer(proc, job=99)
+def test_ninfer_job_drain_zero_plus_main_exit_confirms_tree(_proof):
+    _proof.counts = [0]
+    b = _ninfer(_dead(), job=42)
     r = b.shutdown_owned()
-    assert closed == [99] and r.attempted and r.main_exited
-    assert r.tree == "unknown" and not r.retained    # job close is not tree proof
+    assert _proof.terminated == [42]                 # terminated, handle NOT closed first
+    assert r.main_exited and r.tree == "confirmed" and not r.retained
+    assert _proof.closed == [42]                     # handle released only after proof
+    assert _proof.unregistered == ["http://127.0.0.1:9000/v1"]
     assert b._owned is None
 
 
-def test_ninfer_already_dead_with_job_still_closes_job(_ninfer_engine_stubs):
-    # Regression: owned.alive False + a job present must STILL close the job — the job
-    # may hold descendants. The old code skipped the close and leaked them.
-    proc = _Proc("already")
-    closed = []
-    _ninfer_engine_stubs.jobkill.close = lambda job: closed.append(job)
-    r = _ninfer(proc, job=77).shutdown_owned()
-    assert closed == [77]                             # job closed despite the main already dead
-    assert r.attempted and r.main_exited and r.tree == "unknown"
-
-
-def test_ninfer_no_job_fallback_kill_is_main_only(_ninfer_engine_stubs):
-    proc = _Proc("kill")
-    r = _ninfer(proc, job=None).shutdown_owned()
-    assert proc.killed and r.main_exited and r.tree == "unknown"
-
-
-def test_ninfer_job_close_but_no_exit_retains(_ninfer_engine_stubs):
-    proc = _Proc("never")
-    b = _ninfer(proc, job=99)
+def test_ninfer_drain_never_zero_times_out_and_retains(_proof):
+    _proof.counts = [5]                              # never drains
+    b = _ninfer(_dead(), job=42)
     r = b.shutdown_owned()
-    assert not r.main_exited and r.retained and r.tree == "unknown"
-    assert b._owned is not None                       # RETAINED for retry
+    assert r.tree == "unknown" and r.retained and r.main_exited
+    assert _proof.closed == []                       # never closed the handle
+    assert b._owned is not None                      # entire ownership retained
 
 
-def test_ninfer_exception_preserves_type_and_retains(_ninfer_engine_stubs):
-    proc = _RaisingProc()                             # wait_for_exit poll raises
-    b = _ninfer(proc, job=99)
+def test_ninfer_query_failure_retains(_proof):
+    _proof.counts = [None]                           # query failed -> cannot prove
+    b = _ninfer(_dead(), job=42)
     r = b.shutdown_owned()
-    assert r.error == "RuntimeError" and not r.main_exited and r.retained
+    assert r.tree == "unknown" and r.retained and _proof.closed == []
     assert b._owned is not None
 
 
-# ── NInferBackend.shutdown() delegates + clears host ────────────────────────
+def test_ninfer_main_not_exited_retains_even_if_drained(_proof):
+    _proof.counts = [0]
+    b = _ninfer(_live(), job=42)                     # proc still alive
+    r = b.shutdown_owned()
+    assert not r.main_exited and r.tree == "unknown" and r.retained
+    assert b._owned is not None
 
-def test_ninfer_production_shutdown_delegates_and_clears_host(_ninfer_engine_stubs):
-    proc = _Proc("terminate")
-    _ninfer_engine_stubs.jobkill.close = lambda job: setattr(proc, "_dead", True)
-    b = _ninfer(proc, job=5)
+
+def test_ninfer_terminate_failure_still_proves_but_reports_error(_proof):
+    _proof.terminate_ok = False                      # TerminateJobObject reported failure
+    _proof.counts = [0]                              # ...but the tree still drained
+    r = _ninfer(_dead(), job=42).shutdown_owned()
+    assert r.tree == "confirmed" and r.main_exited and r.error == "terminate_failed"
+
+
+def test_ninfer_close_failure_keeps_proof_but_retains_handle(_proof):
+    _proof.close_ok = False
+    _proof.counts = [0]
+    b = _ninfer(_dead(), job=42)
+    r = b.shutdown_owned()
+    assert r.tree == "confirmed" and r.retained and r.error == "close_failed"
+    assert b._owned is not None                      # handle NOT discarded on close failure
+
+
+def test_ninfer_concurrent_replacement_is_not_torn_down(_proof, monkeypatch):
+    from litetui import ninfer_engine
+    b = _ninfer(_dead(), job=42)
+    other = _Owned(_dead(), job=99)
+    # A replacement swaps self._owned during the drain poll.
+    def _count_then_replace(job):
+        b._owned = other
+        return 0
+    monkeypatch.setattr(ninfer_engine.jobkill, "active_process_count", _count_then_replace)
+    r = b.shutdown_owned()
+    assert r.tree == "confirmed" and r.retained      # proof about a job we no longer own
+    assert _proof.closed == []                       # the replacement is NOT closed
+    assert b._owned is other
+
+
+def test_ninfer_retry_after_retain_confirms(_proof):
+    b = _ninfer(_dead(), job=42)
+    _proof.counts = [5]                              # first: not drained
+    assert b.shutdown_owned().retained and b._owned is not None
+    _proof.counts = [0]                              # second: drained -> confirmed
+    r = b.shutdown_owned()
+    assert r.tree == "confirmed" and not r.retained and b._owned is None
+
+
+def test_ninfer_no_job_is_main_only_unknown(monkeypatch):
+    from litetui import ninfer_engine
+    monkeypatch.setattr(ninfer_engine, "stop", lambda o: None)
+    r = _ninfer(_dead(), job=None).shutdown_owned()
+    assert r.main_exited and r.tree == "unknown" and not r.retained
+
+
+# ── NInferBackend.shutdown() delegates; clears host only when not retained ──
+
+def test_ninfer_production_shutdown_confirmed_clears_host(_proof):
+    _proof.counts = [0]
+    b = _ninfer(_dead(), job=42)
     r = b.shutdown()
-    assert isinstance(r, TerminalShutdown) and r.main_exited
-    assert b._owned is None and b._host is None
+    assert r.tree == "confirmed" and b._owned is None and b._host is None
 
 
-def test_ninfer_production_shutdown_attached_is_not_owned():
-    b = object.__new__(ninfer_backend.NInferBackend)
-    b._owned = None
-    b._host = "http://somewhere/v1"
+def test_ninfer_production_shutdown_retained_keeps_host(_proof):
+    _proof.counts = [5]                              # not proven -> retain
+    b = _ninfer(_dead(), job=42)
     r = b.shutdown()
-    assert r == TerminalShutdown(owned=False) and b._host is None   # attached: forget host, no kill
+    assert r.retained and b._host == "http://127.0.0.1:9000/v1"   # host kept for retry
