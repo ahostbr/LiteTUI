@@ -135,6 +135,27 @@ class ParentReceipts:
                            (*scope, ident))
         return True
 
+    def release_wake(self, parent, conversation, completions):
+        """Return claimed wakes to 'pending' for a clean re-fire.
+
+        ONLY valid when the turn provably never started — a pre-generation gate
+        deferral (see TurnDeferred). A claimed wake whose turn MAY have run must
+        stay claimed (uncertain); releasing it would re-run tools. Enforced by
+        refusing any id not currently 'claimed'.
+        """
+        scope = (_identity(parent), _identity(conversation))
+        identities = [_identity(ident) for ident in completions]
+        with self._transaction() as db:
+            for ident in identities:
+                row = db.execute('SELECT wake_state FROM receipts WHERE parent=? AND conversation=? AND id=?',
+                                 (*scope, ident)).fetchone()
+                if row is None or row[0] != 'claimed':
+                    raise ValueError('Wake release ownership or state conflict')
+            for ident in identities:
+                db.execute("UPDATE receipts SET wake_state='pending' WHERE parent=? AND conversation=? AND id=?",
+                           (*scope, ident))
+        return True
+
     def pending(self, parent):
         with self._transaction() as db:
             rows = db.execute('SELECT id,payload FROM receipts WHERE parent=? AND applied=0 '

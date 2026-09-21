@@ -159,3 +159,77 @@ async def test_wake_parent_defers_before_claim_during_maintenance():
              convo_id="c1")
     out = await wake_parent(app, parent="p", receipts=receipts)
     assert out == [] and claimed == []       # deferred BEFORE claiming any receipt
+
+
+# ── _stream MCP-maintenance gate (_await_mcp_maintenance) ──────────────────────
+# The gate is extracted from _stream so its negatives are testable without a
+# live turn. e942e60 had a fail-open (`done is None => break => run`); these pin
+# every path OpenBolt named: missing/stale Event => defer (not spin, not run),
+# and convo/backend/stop/quit change during the wait => defer (not normal-return).
+def _gate_app(**over):
+    base = dict(_mcp_maintenance=True, convo_id="c1", backend=object(),
+                _stop_requested=False, _gui_quitting=False)
+    base.update(over)
+    return NS(**base)
+
+
+@pytest.mark.asyncio
+async def test_gate_noop_when_not_maintaining():
+    from litetui.app import LiteTUI
+    await LiteTUI._await_mcp_maintenance(_gate_app(_mcp_maintenance=False))  # returns
+
+
+@pytest.mark.asyncio
+async def test_gate_defers_when_event_missing():
+    from litetui.app import LiteTUI
+    from litetui.turn_deferral import TurnDeferred
+    with pytest.raises(TurnDeferred):                       # flag True, no Event
+        await LiteTUI._await_mcp_maintenance(_gate_app())
+
+
+@pytest.mark.asyncio
+async def test_gate_defers_when_event_already_set():
+    import asyncio
+    from litetui.app import LiteTUI
+    from litetui.turn_deferral import TurnDeferred
+    ev = asyncio.Event(); ev.set()
+    with pytest.raises(TurnDeferred):                       # would busy-spin otherwise
+        await LiteTUI._await_mcp_maintenance(_gate_app(_mcp_maintenance_done=ev))
+
+
+@pytest.mark.asyncio
+async def test_gate_resumes_when_flag_cleared_and_event_set():
+    import asyncio
+    from litetui.app import LiteTUI
+    ev = asyncio.Event()
+    app = _gate_app(_mcp_maintenance_done=ev)
+
+    async def finish():
+        await asyncio.sleep(0)                              # let the gate reach wait()
+        app._mcp_maintenance = False                        # order as _reconcile_worker
+        ev.set()
+
+    await asyncio.gather(LiteTUI._await_mcp_maintenance(app), finish())  # no raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutate", [
+    lambda app: setattr(app, "convo_id", "c2"),
+    lambda app: setattr(app, "backend", object()),
+    lambda app: setattr(app, "_stop_requested", True),
+    lambda app: setattr(app, "_gui_quitting", True),
+])
+async def test_gate_defers_on_context_change_during_wait(mutate):
+    import asyncio
+    from litetui.app import LiteTUI
+    from litetui.turn_deferral import TurnDeferred
+    ev = asyncio.Event()
+    app = _gate_app(_mcp_maintenance_done=ev)               # flag stays True
+
+    async def change():
+        await asyncio.sleep(0)
+        mutate(app)                                         # context moves mid-wait
+        ev.set()
+
+    with pytest.raises(TurnDeferred):
+        await asyncio.gather(LiteTUI._await_mcp_maintenance(app), change())
