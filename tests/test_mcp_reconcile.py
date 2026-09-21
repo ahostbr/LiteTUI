@@ -252,3 +252,30 @@ def test_remove_lower_precedence_keeps_effective_server(tmp_path):
     m.reconcile()
     assert m.remove("a") is None
     assert "a" in m.configs and "a" in m.servers                  # effective server untouched
+
+
+def test_invalid_entry_retains_running_healthy_server(tmp_path):
+    # A malformed edit to a RUNNING server's entry must not disconnect it
+    # (continuity): retain the server + the last-known-good config, report failed.
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.reconcile()
+    srv = m.servers["a"]
+    _write_cfg(tmp_path, {"a": []})                 # malformed entry, not a removal
+    out = m.reconcile()
+    assert out["a"].startswith("failed:") and "retained" in out["a"]
+    assert "a" in m.servers and m.servers["a"] is srv and srv.stopped is False
+    assert m.configs["a"] == {"command": "x"}        # last-known-good config kept
+
+
+def test_failed_start_whose_cleanup_also_fails_retains_handle(tmp_path):
+    class BadStartStop(Fake):
+        def start(self):
+            raise RuntimeError("start boom")
+        def stop(self):
+            raise RuntimeError("stop boom too")
+    m = _mgr(tmp_path, {"a": {"command": "x"}})
+    m.configs = {"a": {"command": "x"}}               # _connect_locked reads configs
+    m._build = lambda n, sc: BadStartStop(n)
+    err = m._connect_locked("a")
+    assert err and "start boom" in err               # start failure returned, not raised
+    assert "a" in m.servers and "a" in m._stop_failed  # handle retained + quarantined

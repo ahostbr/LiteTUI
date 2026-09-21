@@ -683,9 +683,12 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             try:
                 srv.stop()
             except Exception:
-                # A failed start whose cleanup also fails must not let the start
-                # error escape as an exception — it is a returned failure.
-                pass
+                # Cleanup ALSO failed: the child may be live. RETAIN + quarantine
+                # the handle rather than orphaning the process, and still return
+                # the start failure (never let it escape as an exception).
+                with self._servers_lock:
+                    self.servers[name] = srv
+                self._stop_failed.add(name)
             return self.failures[name]
         with self._servers_lock:
             self.servers[name] = srv
@@ -813,10 +816,17 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 for name in sorted(new_set):
                     sc = merged[name]
                     if not isinstance(sc, dict):
-                        # Invalid entry: never startable. Disconnect if running,
-                        # report failed rather than silently skipping.
-                        outcomes[name] = _drop(name) if name in self.servers else \
-                            "failed: invalid config entry (not an object)"
+                        # A MALFORMED entry is NOT an intended removal: never take
+                        # down a healthy running server for a typo. Keep the
+                        # last-known-good config entry and the running server;
+                        # report the new entry failed. (A DISABLED valid entry,
+                        # below, IS an intended stop.)
+                        prior = prior_cfg.get(name)
+                        if isinstance(prior, dict):
+                            self.configs[name] = prior
+                        outcomes[name] = ("failed: invalid config entry (server/config retained)"
+                                          if name in self.servers
+                                          else "failed: invalid config entry (not an object)")
                         continue
                     if sc.get("disabled"):
                         # A declared-but-disabled server must match load()'s policy:
