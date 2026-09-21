@@ -8,10 +8,15 @@ from litetui.settings_apply import SettingsSaveResult, PersistenceDestinationRes
 
 def service_for(app):
     service = getattr(app, '_settings_service', None)
+    directory = getattr(app, 'convo_dir', None)
     if service is None:
         from litetui.paths import data_root
-        directory = getattr(app, 'convo_dir', None)
         service = SettingsService(data_root(), directory.parent if directory else None)
+        app._settings_service = service
+    elif directory is not None and service.conversation_root.resolve() != directory.parent.resolve():
+        # /resume accepts an external conversation path. Rebind only its
+        # storage root; device/default preferences retain their original owner.
+        service = SettingsService(service.root, directory.parent)
         app._settings_service = service
     return service
 
