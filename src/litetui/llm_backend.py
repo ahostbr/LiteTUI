@@ -2032,10 +2032,12 @@ def _make_backend(settings):
         from litetui import gpu_gate
 
         if not gpu_gate.is_rtx_5090():
-            # T893: a settings.json carried over from a 5090 box. Not a 5090 ->
-            # nothing NInfer, not even a refusal line: boot the default engine.
-            settings.backend = "lmstudio"
-            return LMStudioBackend(settings)
+            # An explicit/saved provider choice must never silently become
+            # another engine, especially when restoring a conversation.
+            raise BackendError(
+                "NInfer requires supported RTX 5090 hardware. "
+                "Choose another backend explicitly; no fallback was used."
+            )
         # 🔴 T806 — RYAN: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER"*.
         # Imported here rather than at module scope so a broken NInfer install
         # cannot stop the other three backends from booting, the same reason
