@@ -1,17 +1,30 @@
-"""`/reload-plugins` — the operator command for the ONE supported reload op:
-refresh a single static tool's DESCRIPTION from disk (metadata only).
+"""`/reload-plugins` — the operator command for the supported reload ops.
 
-This is deliberately NOT a full plugin reload. Handlers, argument contracts,
-new tools, and native Codex threads all require a restart; this command says so
-rather than pretending otherwise. All safety lives in the core helpers
-(stage_schema_refresh / commit_metadata_candidate / produce_activity): this file
-only parses the command, validates the name, and relays the CommitResult. It
-never imports-reloads, never activates, never retries automatically, and never
-touches app.plugins except through commit_metadata_candidate.
+Two modes, both fail-closed and restart-honest:
+
+  1. METADATA-ONLY (the original, verified-green path): refresh a single static
+     tool's DESCRIPTION from disk. Handlers, argument contracts, new tools, and
+     native Codex threads all require a restart; the command says so rather than
+     pretending otherwise. All safety lives in the core helpers (stage_schema_
+     refresh / commit_metadata_candidate / produce_activity); this file only
+     parses the command, validates the name, and relays the CommitResult.
+
+  2. HANDLER-GENERATION RELOAD (WS7 full scope): for a plugin that has declared
+     reload-compatibility metadata (module-level ``RELOAD_COMPATIBLE``) AND is on
+     the host reviewed allowlist, swap the plugin's handler generation at an idle
+     boundary through the no-rollback stack (plugin_reload_command.handler_reload
+     -> reload_handler_generation -> commit_handler_candidate). For the current
+     plugin set -- none declare RELOAD_COMPATIBLE -- this branch always falls
+     through to mode 1, so the verified-green metadata path is preserved exactly.
+
+Neither mode imports-reloads a live module, retries automatically, or touches
+app.plugins except through its own no-rollback commit helper.
 """
 from __future__ import annotations
 
 import re
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +32,10 @@ from litetui import tool_schemas
 from litetui.plugins import PluginManifest
 from litetui.plugin_reload_activity import produce_activity
 from litetui.plugin_reload_children import children_pending
+from litetui.plugin_reload_command import ReloadCompatibility, ReloadTarget, handler_reload
 from litetui.plugin_reload_commit import commit_metadata_candidate
+from litetui.plugin_reload_generation import read_live_module_source
+from litetui.plugin_reload_handler import render_handler_reload
 from litetui.plugin_reload_provenance import capture_baseline, capture_skills_baseline, provenance_ok
 from litetui.plugin_reload_skills import refresh_skills_guarded, render_result as _render_skills
 from litetui.plugin_schema_reload import stage_schema_refresh
@@ -35,6 +51,13 @@ _TEMPLATED_EXCLUDE = frozenset({"powershell"})
 _PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 _AGENTS_ROOT = ".litetui-agents"
+
+#: Host allowlist of plugin ids reviewed as pure-register for HANDLER reload.
+#: A plugin that declares RELOAD_COMPATIBLE is still restart-required until it
+#: is listed here (a plugin cannot review itself). Empty: no plugin is
+#: handler-reload-reviewed yet, so the handler-reload branch is the "thin" state
+#: (it falls through to the metadata-only path for every current plugin).
+_HANDLER_RELOAD_REVIEWED: frozenset[str] = frozenset()
 
 
 def _eligible(app: Any) -> list[str]:
@@ -75,6 +98,71 @@ def _render(name: str, result: Any) -> str:
     return f"[reload-plugins] failed: {reasons}. Live tools unchanged."
 
 
+def _module_name_for(owner: str) -> str | None:
+    """Map a registered plugin id to its module name by scanning sys.modules for
+    the litetui plugin module whose ``.PLUGIN.id`` matches. Defensive: an absent
+    or ambiguous match returns None so the handler-reload branch stays a clean
+    fall-through (never a guess). Read-only: it touches no app or module state."""
+    hits: list[str] = []
+    for name, mod in sys.modules.items():
+        if not name.startswith("litetui.plugins."):
+            continue
+        plug = getattr(mod, "PLUGIN", None)
+        if plug is not None and getattr(plug, "id", None) == owner:
+            hits.append(name)
+    return hits[0] if len(hits) == 1 else None
+
+
+def _resolve_reload(target: str) -> ReloadTarget | None:
+    """The production App-state resolution: the plugin's on-disk source + its
+    declared ``RELOAD_COMPATIBLE``. Returns None when the target is not a known
+    litetui plugin module or declares no handler-reload compatibility -- the
+    default, so the branch falls through to the metadata-only path. A source-read
+    failure (e.g. a vanished file) is the same: None, live generation untouched."""
+    mod_name = _module_name_for(target)
+    if mod_name is None:
+        return None
+    module = sys.modules.get(mod_name)
+    if module is None:
+        return None
+    compat = getattr(module, "RELOAD_COMPATIBLE", None)
+    if not isinstance(compat, ReloadCompatibility):
+        return None
+    try:
+        source = read_live_module_source(mod_name)
+    except Exception:
+        return None
+    return ReloadTarget(owner=target, module_name=mod_name, source=source, compat=compat)
+
+
+def _handler_reload_branch(
+    app: Any, target: str, *, activity: Callable[[], Any] | None = None
+) -> str | None:
+    """The ``/reload-plugins`` handler-reload branch. Returns the operator line
+    when ``target`` is a plugin that declared handler-reload compatibility; else
+    None (fall through to the metadata-only path, unchanged). Never mutates
+    app.plugins except through the no-rollback swap. ``activity`` defaults to the
+    live idle-boundary snapshot; a test may inject one. For the current plugin
+    set (none declare RELOAD_COMPATIBLE) this is always None, so the verified-
+    green metadata-only path is preserved exactly."""
+    resolved = _resolve_reload(target)
+    if resolved is None:
+        return None
+    if activity is None:
+        # noqa: E731 -- a throwaway bound at call site, not a stored lambda.
+        activity = lambda: produce_activity(
+            app,
+            children_pending=lambda: children_pending(Path.home() / _AGENTS_ROOT, app.convo_id),
+        ).snapshot
+    result = handler_reload(
+        app, target,
+        resolve=lambda _t: resolved,
+        live_manifests=list(getattr(app, "_plugin_manifests", []) or []),
+        reviewed_owners=_HANDLER_RELOAD_REVIEWED,
+        activity=activity)
+    return render_handler_reload(target, result)
+
+
 def _handle(app: Any, name: str, arg: str) -> None:
     # Provenance: bind the generation we operate on BEFORE any lookup or load,
     # so every check below and the commit refer to the same registry object.
@@ -89,6 +177,15 @@ def _handle(app: Any, name: str, arg: str) -> None:
     # helper so it and /skills refresh cannot diverge on the gates.
     if target == "skills":
         _handle_skills(app)
+        return
+
+    # Handler-generation reload branch (WS7 full scope): fires ONLY for a plugin
+    # that declared RELOAD_COMPATIBLE and is host-reviewed. For the current
+    # plugin set (none declare it) this is always None and the metadata-only path
+    # below runs unchanged.
+    handler_line = _handler_reload_branch(app, target)
+    if handler_line is not None:
+        app.system_message(handler_line)
         return
 
     registered = {e.name for e in expected.tools}
