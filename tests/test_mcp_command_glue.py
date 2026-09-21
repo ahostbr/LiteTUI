@@ -344,3 +344,63 @@ async def test_reconcile_block_reason_is_bounded_no_secret_leak():
     assert secret not in app._mcp_dispatch_blocked      # sanitized
     assert "RuntimeError" in app._mcp_dispatch_blocked  # type kept
     assert secret not in _last(app)                     # nor in the user message
+
+
+# ── verb routing through the coordinator (piece 3) ─────────────────────────────
+def test_connect_verb_schedules_offloop_not_sync():
+    app = _app()
+    mm._cmd_mcp(app, "/mcp", "connect somesrv")
+    assert app._mcp_maintenance is True      # claimed synchronously by the gate
+    assert "worker" in app._events           # routed off-loop, not a sync app.mcp.connect
+
+
+def test_remove_verb_schedules_offloop():
+    app = _app()
+    mm._cmd_mcp(app, "/mcp", "remove somesrv")
+    assert app._mcp_maintenance is True and "worker" in app._events
+
+
+@pytest.mark.asyncio
+async def test_mutation_worker_runs_op_settles_and_reports():
+    import asyncio
+    app = _app(maint=True)
+    app._mcp_maintenance_done = asyncio.Event()
+    calls = []
+    await mm._mutation_worker(app, lambda: calls.append("op"), lambda r: "Connected x.")
+    assert calls == ["op"]                        # op ran off-loop
+    assert app._mcp_maintenance is False          # settled
+    assert app._mcp_maintenance_done.is_set()     # waiters woken
+    assert "rebuild" in app._events               # dispatch rebuilt
+    assert "Connected x." in _last(app)
+
+
+@pytest.mark.asyncio
+async def test_mutation_worker_reports_busy_bounded():
+    import asyncio
+    from litetui.mcp_client import MCPBusy
+    app = _app(maint=True)
+    app._mcp_maintenance_done = asyncio.Event()
+
+    def op():
+        raise MCPBusy("internal busy detail")
+
+    await mm._mutation_worker(app, op, lambda r: "should not be used")
+    assert "maintenance is in progress" in _last(app).lower()
+    assert "internal busy detail" not in _last(app)
+    assert app._mcp_maintenance is False          # settled despite the raise
+
+
+@pytest.mark.asyncio
+async def test_mutation_worker_settles_and_bounds_op_error():
+    import asyncio
+    app = _app(maint=True)
+    app._mcp_maintenance_done = asyncio.Event()
+    secret = "http://internal/token-xyz"
+
+    def op():
+        raise RuntimeError(secret)
+
+    await mm._mutation_worker(app, op, lambda r: "unused")
+    assert app._mcp_maintenance is False
+    assert "failed" in _last(app).lower()
+    assert secret not in _last(app)               # bounded — no raw error text
