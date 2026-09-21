@@ -100,6 +100,33 @@ def _entry_from_words(words: list[str]) -> tuple[dict | None, str | None]:
     return {"command": first, "args": words[1:]}, None
 
 
+async def _reconcile_worker(app) -> None:
+    """Off-loop MCP reconcile with a cancellation-safe join. await_preparation
+    joins the worker thread even under cancellation; the flag is cleared ONLY
+    after it settles, and the dispatch rebuild is nested so its failure can
+    neither leak the exception nor clear the flag early."""
+    from litetui.agent_preparation import await_preparation
+    try:
+        outcomes = await await_preparation(app.mcp.reconcile)
+    except Exception as e:  # noqa: BLE001 — report, never leave the flag stuck
+        outcomes = {"": f"failed: {type(e).__name__}: {e}"}
+    finally:
+        try:
+            app.rebuild_mcp_dispatch()
+        finally:
+            app._mcp_maintenance = False
+    app.system_message(_format_reconcile(outcomes))
+
+
+def _format_reconcile(outcomes: dict) -> str:
+    if list(outcomes) == [""]:
+        return f"[mcp reconcile] {outcomes['']}"
+    if not outcomes:
+        return "[mcp reconcile] no changes."
+    rows = "\n".join(f"  {n}: {o}" for n, o in sorted(outcomes.items()))
+    return "[mcp reconcile]\n" + rows
+
+
 def _cmd_mcp(app, name: str, arg: str) -> None:
     words = (arg or "").split()
     if not words:
@@ -119,6 +146,42 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
 
     verb = words[0].lower()
     rest = words[1:]
+
+    # Server-changing verbs share the reload exclusion + native/idle gates. On
+    # native the live Codex thread's dynamicTools are frozen, so a tool-set
+    # change needs a restart to reach the model; and a mutation must not race an
+    # active turn or an in-flight maintenance pass.
+    if verb in ("add", "connect", "disconnect", "stop", "reconnect", "remove",
+                "rm", "delete", "reconcile"):
+        if getattr(app, "_mcp_maintenance", False):
+            app.system_message("MCP maintenance is in progress — try again in a moment.")
+            return
+        if hasattr(app.backend, "app_server"):
+            app.system_message(
+                "Native Codex session: an MCP server change needs a restart to reach the model "
+                "(the thread's tool inventory is fixed for its lifetime).")
+            return
+        from pathlib import Path
+        from litetui.plugin_reload_activity import produce_activity
+        from litetui.plugin_reload_children import children_pending
+        from litetui.plugin_reload_state import blocking_reasons
+        snap = produce_activity(
+            app,
+            children_pending=lambda: children_pending(Path.home() / ".litetui-agents", app.convo_id),
+        ).snapshot
+        reasons = blocking_reasons(snap)
+        if reasons:
+            app.system_message(f"Deferred (busy): {'; '.join(reasons)}. Run /mcp {verb} again shortly.")
+            return
+
+    if verb == "reconcile":
+        # Claim maintenance SYNCHRONOUSLY (before scheduling) so a second
+        # reconcile is rejected by the gate above rather than cancelling this
+        # one; the worker joins off-loop and clears the flag only when settled.
+        app._mcp_maintenance = True
+        app.run_worker(_reconcile_worker(app), group="mcp", exclusive=False)
+        app.system_message("MCP reconcile started — re-reading config and reconnecting owned servers.")
+        return
 
     if verb in ("help", "?"):
         app.system_message(USAGE)
