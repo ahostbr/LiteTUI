@@ -100,3 +100,30 @@ def reload_handler_generation(
         activity=activity, eligible=eligible, swap_seams=swap_seams)
     return HandlerReloadResult(swap.status, swap.reasons,
                                token=gen.token, swapped=swap.swapped)
+
+
+def render_handler_reload(name: str, result: HandlerReloadResult) -> str:
+    """The concise operator line for one handler-generation reload: reloaded /
+    unchanged / deferred / failed / restart-required (plus degraded), with
+    actionable reasons. Never presents a partial failure as a full reload.
+    Consistent in style with ``plugin_reload_ui._render`` (the metadata-only
+    path) so the two reload modes read the same way to the operator.
+
+    Pure: formats the result; touches no App state.
+    """
+    p = "[reload-plugins]"
+    if result.status == "swapped":
+        return (f"{p} reloaded: {name!r} now runs the new handler generation; the "
+                f"next turn sees it. (no rollback -- the new generation is live)")
+    if result.status == "no-op":
+        return f"{p} unchanged: {name!r} already matches the loaded generation."
+    reasons = "; ".join(result.reasons) if result.reasons else "no reason given"
+    if result.status == "deferred":
+        return (f"{p} deferred: {reasons}. Not retried automatically -- run the "
+                f"reload again after the active work finishes.")
+    if result.status == "restart-required":
+        return f"{p} restart required: {reasons}. Live handlers unchanged."
+    if result.status == "degraded":
+        return (f"{p} degraded: {reasons}. The new generation is partially live; "
+                f"a restart is required. Live handlers were not rolled back.")
+    return f"{p} failed: {reasons}. Live handlers unchanged."

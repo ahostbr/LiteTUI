@@ -9,7 +9,11 @@ generation and claims no rollback, while a clean reload installs the new handler
 from types import SimpleNamespace
 
 from litetui.plugins import PluginContext, PluginManifest, PluginRegistry
-from litetui.plugin_reload_handler import HandlerReloadResult, reload_handler_generation
+from litetui.plugin_reload_handler import (
+    HandlerReloadResult,
+    render_handler_reload,
+    reload_handler_generation,
+)
 from litetui.plugin_reload_state import ActivitySnapshot
 from litetui.plugin_reload_swap import SwapSeams
 
@@ -198,3 +202,44 @@ def test_activate_failure_after_swap_is_degraded():
     assert r.token is not None
     # The point of no return was crossed: the pointer was swapped.
     assert app.plugins is not live_reg
+
+
+# ── operator feedback (the concise result line) ──────────────────────────
+
+
+def test_render_reloaded_names_the_generation_and_no_rollback():
+    line = render_handler_reload("reloaded", HandlerReloadResult(
+        "swapped", (), token="abc", swapped=True))
+    assert line.startswith("[reload-plugins] reloaded:")
+    assert "reloaded" in line and "no rollback" in line
+
+
+def test_render_unchanged():
+    line = render_handler_reload("reloaded", HandlerReloadResult("no-op"))
+    assert line.startswith("[reload-plugins] unchanged:")
+
+
+def test_render_deferred_says_not_auto_retried():
+    line = render_handler_reload("reloaded", HandlerReloadResult(
+        "deferred", ("a tool call is executing",)))
+    assert line.startswith("[reload-plugins] deferred:")
+    assert "a tool call is executing" in line
+    assert "Not retried automatically" in line
+
+
+def test_render_restart_required_and_failed_keep_live_note():
+    assert "restart required:" in render_handler_reload(
+        "reloaded", HandlerReloadResult("restart-required", ("not eligible",)))
+    failed = render_handler_reload("reloaded", HandlerReloadResult(
+        "failed", ("fresh generation failed (ValueError); live generation preserved, no rollback",)))
+    assert failed.startswith("[reload-plugins] failed:")
+    assert "Live handlers unchanged" in failed
+
+
+def test_render_degraded_never_claims_rollback():
+    line = render_handler_reload("reloaded", HandlerReloadResult(
+        "degraded", ("activate failed after swap (RuntimeError)",), token="t", swapped=True))
+    assert line.startswith("[reload-plugins] degraded:")
+    assert "restart is required" in line
+    assert "not rolled back" in line.lower()
+    assert "restored" not in line.lower()
