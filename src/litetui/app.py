@@ -2585,6 +2585,13 @@ class LiteTUI(App):
         # tools as safe here would be guesswork). Cleared the moment it ends.
         if getattr(self, "_mcp_maintenance", False):
             return "[denied] tool calls are paused during MCP maintenance; retry in a moment", False
+        # A reconcile whose dispatch rebuild FAILED leaves the map stale; tools
+        # stay blocked (not "retry in a moment") until a later reconcile rebuilds
+        # it, so a call can never route through a map that no longer matches the
+        # servers. Cleared only when a rebuild verifiably installs the map.
+        if getattr(self, "_mcp_dispatch_blocked", None):
+            return ("[denied] MCP tool dispatch is blocked: the tool map failed to rebuild. "
+                    "Run /mcp reconcile to retry, or restart."), False
         # 🔴 THE SECOND MECHANISM, AND IT IS NOT REDUNDANT WITH WITHHOLDING THE
         # SCHEMA. `PluginRegistry.tool_specs` already hides a switched-off tool
         # from the model, but `dispatch_for` deliberately does not consult
@@ -7037,6 +7044,11 @@ class LiteTUI(App):
         receipt for a turn that never ran.
         """
         from litetui.turn_deferral import TurnDeferred
+        if getattr(self, "_mcp_dispatch_blocked", None):
+            # A prior reconcile left the dispatch map stale (its rebuild failed).
+            # Block every turn until a later reconcile rebuilds it successfully —
+            # never run over a map that no longer matches the servers.
+            raise TurnDeferred("mcp dispatch map is stale; blocked until rebuild succeeds")
         if not getattr(self, "_mcp_maintenance", False):
             return
         # Identity captured ONCE. The turn that resumes must be the SAME turn
@@ -7066,6 +7078,10 @@ class LiteTUI(App):
                 # during the wait: the turn we were asked to run no longer
                 # exists. Defer (typed) — never normal-return.
                 raise TurnDeferred("turn context changed during mcp maintenance")
+        if getattr(self, "_mcp_dispatch_blocked", None):
+            # Woke because the reconcile settled, but its dispatch rebuild
+            # failed: defer rather than run this turn over a stale map.
+            raise TurnDeferred("mcp dispatch map is stale after reconcile; blocked until rebuild succeeds")
 
     @work(exclusive=True, group="chat")
     async def _stream(self) -> None:
