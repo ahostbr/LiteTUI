@@ -228,6 +228,32 @@ def classify() -> tuple[list[Path], list[Path]]:
     return pytest_style, script_style
 
 
+# Reviewed legacy-only exceptions, never inferred from absent test definitions.
+# Read-only scan at 4eccbbb found zero script-classified files. New exceptions
+# require explicit review; all other files go through pytest item accounting.
+LEGACY_SCRIPT_TESTS: frozenset[str] = frozenset()
+
+
+def explicit_inventory() -> tuple[list[Path], list[Path]]:
+    files = {path.name: path for path in TESTS.glob("test_*.py")}
+    missing = LEGACY_SCRIPT_TESTS - files.keys()
+    if missing:
+        raise ValueError(f"Declared legacy scripts missing: {sorted(missing)}")
+    pyt, scr = [], []
+    for name, path in sorted(files.items()):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeError, OSError) as exc:
+            raise ValueError(f"Unreadable/syntax-invalid test {name}: {exc}") from exc
+        if name in LEGACY_SCRIPT_TESTS:
+            scr.append(path)
+        elif module_level_hazards(tree):
+            raise ValueError(f"Import hazard requires explicit inventory review: {name}")
+        else:
+            pyt.append(path)
+    return pyt, scr
+
+
 def _run_bounded(command, *, timeout, **kwargs):
     """Report child timeout as failure without abandoning remaining files.
 
@@ -283,7 +309,11 @@ def main() -> int:
     if _src not in _existing.split(os.pathsep):
         os.environ["PYTHONPATH"] = _src + (os.pathsep + _existing if _existing else "")
 
-    pyt, scr = classify()
+    try:
+        pyt, scr = explicit_inventory()
+    except ValueError as exc:
+        print(f"FAILED: {exc}")
+        return 1
     if "--scripts-only" in sys.argv:
         pyt = []
 

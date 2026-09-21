@@ -16,7 +16,7 @@ def isolate_runner_environment(monkeypatch):
 
 
 def test_empty_inventory_is_not_green(monkeypatch, capsys):
-    monkeypatch.setattr(run_all, "classify", lambda: ([], []))
+    monkeypatch.setattr(run_all, "explicit_inventory", lambda: ([], []))
     monkeypatch.setattr(sys, "argv", ["run_all.py"])
     monkeypatch.setattr(run_all.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected child")))
     assert run_all.main() == 1
@@ -25,7 +25,7 @@ def test_empty_inventory_is_not_green(monkeypatch, capsys):
 
 def test_script_timeout_is_reported_and_remaining_scripts_run(monkeypatch, capsys):
     files = [Path("test_hang.py"), Path("test_after.py")]
-    monkeypatch.setattr(run_all, "classify", lambda: ([], files))
+    monkeypatch.setattr(run_all, "explicit_inventory", lambda: ([], files))
     monkeypatch.setattr(sys, "argv", ["run_all.py"])
     calls = []
 
@@ -44,7 +44,7 @@ def test_script_timeout_is_reported_and_remaining_scripts_run(monkeypatch, capsy
 
 
 def test_pytest_timeout_is_bounded_and_scripts_still_run(monkeypatch, capsys):
-    monkeypatch.setattr(run_all, "classify", lambda: ([Path("test_unit.py")], [Path("test_script.py")]))
+    monkeypatch.setattr(run_all, "explicit_inventory", lambda: ([Path("test_unit.py")], [Path("test_script.py")]))
     monkeypatch.setattr(sys, "argv", ["run_all.py"])
     calls = []
 
