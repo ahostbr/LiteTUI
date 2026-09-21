@@ -295,11 +295,12 @@ class TpsState:
         return max(self.reasoning, (self.reasoning_chars + 3) // 4)
 
     def split_reasoning(self, completion_tokens: int) -> int | None:
-        """The reasoning share of the server's own count, split by characters.
+        """Estimate reasoning's share of completion usage from all output text.
 
-        `usage.completion_tokens` covers thinking and answer together; the
-        thinking block wants its own. A thinking-only round gets the whole
-        count exactly; a mixed round gets it by proportion of characters."""
+        Completion usage includes reasoning, prose AND tool-call output. All
+        three must enter `chars`, or a large generated file gets attributed
+        to a tiny reasoning phase. This is an estimate, not a provider-supplied
+        reasoning-token breakdown."""
         if not self.reasoning_chars or not completion_tokens:
             return None
         return max(1, round(completion_tokens * self.reasoning_chars / max(self.chars, 1)))
@@ -316,7 +317,10 @@ class TpsState:
         now = time.monotonic() if now is None else now
         if self.t0 is None:
             self.t0 = now
-            return None         # nothing to divide by yet
+            if not chars:
+                return None     # clock-only initialization, no payload
+            # The first real payload still belongs in the token/share counts.
+            # The elapsed-time guard below prevents division by zero.
         self.n += 1
         self.chars += chars
         # THE SAME INCREMENT, PARTITIONED. Not a second tally: the split has

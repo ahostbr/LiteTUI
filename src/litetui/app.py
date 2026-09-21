@@ -7249,6 +7249,18 @@ class LiteTUI(App):
                         break
                     tool_calls = getattr(delta, "tool_calls", None) or []
                     if tool_calls:
+                        # Completion usage includes generated tool names and
+                        # arguments. Count each NEW fragment, not accumulated
+                        # arguments, or the thinking share absorbs code output
+                        # and divides it by the much shorter thinking interval.
+                        tool_chars = sum(
+                            len(tc.function.name or "") + len(tc.function.arguments or "")
+                            for tc in tool_calls if tc.function is not None
+                        )
+                        if tool_chars:
+                            live = self._tps.tick(chars=tool_chars)
+                            if not native_loop and live is not None:
+                                self.tps = live
                         # A tool call is the trace's end too (the model
                         # thinks, then decides), so the header timer stops here.
                         self._thinking_done()

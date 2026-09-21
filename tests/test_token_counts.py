@@ -258,8 +258,8 @@ async def test_THE_APP_actually_tags_its_reasoning_deltas():
             if not a._chat_running():
                 break
 
-    # the FIRST delta only starts the clock, so 3 reasoning deltas -> 2 counted
-    assert a._tps.reasoning == 2, (
+    # The first payload starts the clock AND contributes to the count.
+    assert a._tps.reasoning == 3, (
         f"the app is not tagging reasoning deltas: reasoning={a._tps.reasoning}, "
         f"content={a._tps.content}"
     )
