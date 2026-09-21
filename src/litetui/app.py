@@ -7031,6 +7031,25 @@ class LiteTUI(App):
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
+        # 🔴 COMMON MCP-MAINTENANCE GATE. This is the one point EVERY turn passes
+        # through, whatever launched it (typed, queued, RPC, inbox wake, a direct
+        # call). AWAIT maintenance completion IN THIS SAME worker (not a detached
+        # retry timer): a caller that awaits this worker (a parent wake) must
+        # only complete when the turn ACTUALLY runs, and the turn must never run
+        # in a different conversation than it was queued for. Loops because a new
+        # maintenance pass could begin between the wait returning and proceeding.
+        while getattr(self, "_mcp_maintenance", False):
+            convo = self.convo_id
+            done = getattr(self, "_mcp_maintenance_done", None)
+            if done is None:
+                break
+            await done.wait()
+            if (getattr(self, "_gui_quitting", False) or self.convo_id != convo
+                    or self._stop_requested):
+                # Aborted (quit / conversation switched / stopped during
+                # maintenance): drop this turn rather than run it in a changed
+                # context. Nothing was stamped or consumed above.
+                return
         # Stamp before setup/probing: waiting for the turn's first request is
         # part of the turn, not free time before it.
         turn_started_at = time.monotonic()

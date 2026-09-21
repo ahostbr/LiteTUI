@@ -115,6 +115,10 @@ async def _reconcile_worker(app) -> None:
             app.rebuild_mcp_dispatch()
         finally:
             app._mcp_maintenance = False
+            # Wake any turn awaiting completion IN its own worker (see _stream).
+            ev = getattr(app, "_mcp_maintenance_done", None)
+            if ev is not None:
+                ev.set()
     app.system_message(_format_reconcile(outcomes))
 
 
@@ -178,7 +182,10 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         # Claim maintenance SYNCHRONOUSLY (before scheduling) so a second
         # reconcile is rejected by the gate above rather than cancelling this
         # one; the worker joins off-loop and clears the flag only when settled.
+        # A fresh (cleared) completion Event is what _stream awaits in-worker.
+        import asyncio
         app._mcp_maintenance = True
+        app._mcp_maintenance_done = asyncio.Event()
         app.run_worker(_reconcile_worker(app), group="mcp", exclusive=False)
         app.system_message("MCP reconcile started — re-reading config and reconnecting owned servers.")
         return
