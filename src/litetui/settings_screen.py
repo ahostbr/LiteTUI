@@ -1564,8 +1564,20 @@ class SettingsBody(Widget):
             found = self.query(f"#f-{name}")
             if not found:
                 continue
+            widget = found.first()
+            value = deepcopy(getattr(target, name))
+            # An optional-string Select's UNSET state is its blank "" option, not
+            # a raw None. The mount already knows this (_model_pick_row and the
+            # default_model Select both build `value=current or ""`) and so does
+            # _collect (`val or None`). Reflecting a factory None straight in was
+            # the one place that skipped the `or ""`, and `allow_blank=False`
+            # rejects it with InvalidSelectValueError — an Exception, NOT a
+            # ValueError, so the except below never caught it and a confirmed
+            # Restore crashed before it could persist anything.
+            if value is None and isinstance(widget, Select):
+                value = ""
             try:
-                found.first().value = deepcopy(getattr(target, name))
+                widget.value = value
             except (AttributeError, TypeError, ValueError):
                 # A host-specific choice list may not expose a factory value;
                 # persistence still receives the explicit target patch.
