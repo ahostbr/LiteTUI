@@ -163,6 +163,103 @@ def test_stop_does_not_close_stdin_while_a_writer_is_retained(tmp_path):
         srv._send({"jsonrpc": "2.0", "id": 1}, timeout=0.05)
     assert srv._writer.is_alive()                   # retained
     proc.stdin.closed = False
-    srv.stop()
+    # stop() is UNCERTAIN while the writer is live: it must RAISE (not silently
+    # succeed) and must NOT close stdin under the live writer.
+    with pytest.raises(mc.MCPError) as ei:
+        srv.stop()
+    assert "writer still alive" in str(ei.value).lower()
     assert proc.stdin.closed is False               # NEVER closed under the live writer
+    # item 9: once the writer is terminal, a stop() RETRY confirms and clears.
     gate.set(); srv._writer.join(2)
+    srv.stop()
+    assert proc.stdin.closed is True                # safe to close once the writer is gone
+    assert srv._quarantined is None
+
+
+# ── persistent quarantine + start() boundary guard ───────────────────────────
+def test_quarantine_persists_until_a_confirmed_stop(tmp_path):
+    gate = threading.Event()                        # writer blocks -> retained
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError):
+        srv._send({"jsonrpc": "2.0", "id": 1}, timeout=0.05)
+    assert srv._quarantined is not None
+
+    # Release + reap the writer: the writer retention clears...
+    gate.set(); srv._writer.join(2)
+    assert srv._writer_in_flight() is False
+
+    # ...but the QUARANTINE is persistent: a fresh send is STILL refused until a
+    # confirmed stop() clears it (item 2) — it is not auto-recovered by the
+    # writer dying.
+    with pytest.raises(mc.MCPError) as ei:
+        srv._send({"jsonrpc": "2.0", "id": 2})
+    assert "quarantined" in str(ei.value).lower()
+    # and start() is refused for the same reason (item 8).
+    with pytest.raises(mc.MCPError) as ei2:
+        srv.start()
+    assert "cannot start" in str(ei2.value).lower()
+
+    # A confirmed stop() is the recovery path; it clears the quarantine.
+    srv.stop()
+    assert srv._quarantined is None
+    assert srv.proc is None
+
+
+def test_start_refuses_a_live_writer_and_an_unreaped_proc(tmp_path):
+    # a live in-flight writer -> refuse (item 8)
+    hold = threading.Event()
+    w = threading.Thread(target=hold.wait, daemon=True); w.start()
+    srv = mc.MCPServer("x", {}, tmp_path, io.StringIO())
+    srv._writer = w
+    with pytest.raises(mc.MCPError) as ei:
+        srv.start()
+    assert "in flight" in str(ei.value).lower()
+    hold.set(); w.join(1)
+
+    # a previous proc that has not exited -> refuse (item 8)
+    srv2 = mc.MCPServer("y", {}, tmp_path, io.StringIO())
+    srv2.proc = _Proc(threading.Event())            # poll() -> None (running)
+    with pytest.raises(mc.MCPError) as ei2:
+        srv2.start()
+    assert "not reaped" in str(ei2.value).lower()
+
+
+def test_stop_raises_uncertain_when_the_child_is_not_reaped(tmp_path):
+    class NeverDies(_Proc):
+        def terminate(self): raise OSError("terminate refused")
+        def kill(self):      raise OSError("kill refused")
+        def wait(self, timeout=None):
+            raise TimeoutError("still alive")        # never reaped
+        def poll(self):
+            return None                              # still running
+    proc = NeverDies(threading.Event())
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError) as ei:
+        srv.stop()
+    assert "child not reaped" in str(ei.value).lower()
+    # nothing was cleared: the handle is retained for a later verify + retry.
+    assert srv.proc is proc
+
+
+def test_stop_all_retains_uncertain_servers(tmp_path):
+    m = mc.MCPManager(tmp_path)
+
+    class OKServer:
+        name = "ok"
+        def stop(self):
+            return None
+    class BadServer:
+        name = "bad"
+        def stop(self):
+            raise RuntimeError("child not reaped")
+    ok, bad = OKServer(), BadServer()
+    with m._servers_lock:
+        m.servers = {"ok": ok, "bad": bad}
+    m.stop_all()
+    # cleanly stopped removed; uncertain RETAINED + quarantined, truthful failure
+    assert "ok" not in m.servers
+    assert m.servers.get("bad") is bad
+    assert "bad" in m._stop_failed and "ok" not in m._stop_failed
+    assert "bad" in m.failures
+    assert m._closing is True
