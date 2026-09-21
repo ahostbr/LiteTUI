@@ -1624,6 +1624,11 @@ class LiteTUI(App):
             base_url=self.backend.base_url(),
             api_key="litetui",
         )
+        # Bind the client to the endpoint it was built for. model_transport.for_app
+        # refuses a request when this no longer matches backend.base_url() — e.g.
+        # plugins/model_switch reassigns self.backend without rebuilding self.client,
+        # which would otherwise send to the previous engine's endpoint.
+        self._client_endpoint = self.backend.base_url().rstrip("/")
         # Discovered ONCE, before the first system prompt is built -- the skill
         # index rides in that prompt, so discovering later would ship a prompt
         # that omits every skill for the first turn.
@@ -4182,6 +4187,9 @@ class LiteTUI(App):
             new_base = self.backend.base_url().rstrip("/")
             if str(self.client.base_url).rstrip("/") != new_base:
                 self.client = AsyncOpenAI(base_url=new_base, api_key="litetui")
+            # Re-bind after a same-endpoint reconnect keeps the client: the kept
+            # client is valid for the rebuilt backend at the same endpoint.
+            self._client_endpoint = self.backend.base_url().rstrip("/")
             rows = await self.backend.list_models()
             self._gui_connection_success = True
             SKIP = {"embed", "embedding"}
