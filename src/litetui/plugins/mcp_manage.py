@@ -167,22 +167,29 @@ async def _mutation_worker(app, op, describe) -> None:
 
 def _claim_and_run(app, coro) -> bool:
     """Claim maintenance synchronously (so a second op is rejected by the gate
-    rather than racing this one), then run `coro` off-loop. Returns True on
-    success. If run_worker RAISES (scheduling failure), the coro is never
-    awaited and nothing would ever settle the flag — so close it and un-stick
-    maintenance here, waking any waiter, rather than wedge every future turn."""
+    rather than racing this one), then run `coro` off-loop via run_guarded.
+
+    A worker cancelled BEFORE its coroutine's first step never runs the finally
+    that settles maintenance; run_guarded's cleanup is the release that un-sticks
+    it in that case (and on a schedule/attach failure). The release no-ops once
+    the coro has already settled (its Event is set). Lifecycle co-designed with
+    RigidStem (worker._task done-callback + a startup gate; see run_guarded)."""
     import asyncio
+    from litetui.agent_preparation import run_guarded
     app._mcp_maintenance = True
-    app._mcp_maintenance_done = asyncio.Event()
-    try:
-        app.run_worker(coro, group="mcp", exclusive=False)
-        return True
-    except Exception as e:  # noqa: BLE001 — a scheduling failure must not stick maintenance
-        coro.close()
-        app._mcp_maintenance = False
-        app._mcp_maintenance_done.set()
-        app.system_message(f"Could not start the MCP operation ({type(e).__name__}).")
-        return False
+    ev = asyncio.Event()
+    app._mcp_maintenance_done = ev
+
+    def _release():
+        if not ev.is_set():
+            app._mcp_maintenance = False
+            ev.set()
+
+    def _report(e):
+        app.system_message(
+            f"Could not start the MCP operation ({type(e).__name__ if e else 'not tracked'}).")
+
+    return run_guarded(app, coro, group="mcp", cleanup=_release, report=_report) is not None
 
 
 def _schedule_mutation(app, op, describe) -> None:

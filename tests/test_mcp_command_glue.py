@@ -17,6 +17,11 @@ from textual.worker import WorkerState
 
 import litetui.plugins.mcp_manage as mm
 
+#: The scheduling-only tests use a fake run_worker that records the schedule and
+#: never runs the worker, so the coroutine run_guarded wraps is intentionally
+#: never awaited here (in production _guarded runs and awaits/closes it).
+pytestmark = pytest.mark.filterwarnings("ignore:coroutine .* was never awaited:RuntimeWarning")
+
 
 @pytest.fixture(autouse=True)
 def _idle_children(monkeypatch):
@@ -44,9 +49,16 @@ def _app(*, native=False, maint=False, workers=None, reconcile_ret=None):
     events: list = []
     backend = NS(name="codex", app_server=object()) if native else NS(name="lmstudio")
 
+    class _FakeTask:
+        # run_guarded attaches a done-callback to worker._task; the scheduling
+        # tests never run the worker, so this just accepts the callback.
+        def add_done_callback(self, cb):
+            pass
+
     def _run_worker(coro, **k):
         events.append("worker")
-        coro.close()          # we assert scheduling, not execution, here
+        coro.close()          # the _guarded wrapper; we assert scheduling, not execution
+        return NS(_task=_FakeTask(), cancel=lambda: None)
 
     app = NS(
         backend=backend, _mcp_maintenance=maint, workers=workers or [],
@@ -445,3 +457,79 @@ def test_claim_and_run_unsticks_maintenance_on_scheduling_failure():
     assert app._mcp_maintenance is False               # un-stuck, not wedged forever
     assert app._mcp_maintenance_done.is_set()          # waiters woken
     assert "could not start" in _last(app).lower()
+
+
+# ── run_guarded lifecycle (immediate pre-first-step cancel, fail-closed) ───────
+def _loop_run_worker(tasks):
+    import asyncio
+    def rw(coro, **k):
+        t = asyncio.get_event_loop().create_task(coro)
+        tasks.append(t)
+        return NS(_task=t, cancel=lambda: t.cancel())
+    return rw
+
+
+@pytest.mark.asyncio
+async def test_run_guarded_runs_op_and_fires_cleanup_once():
+    import asyncio
+    from litetui.agent_preparation import run_guarded
+    ran, cleaned, tasks = [], [], []
+
+    async def op():
+        ran.append(1)
+
+    w = run_guarded(NS(run_worker=_loop_run_worker(tasks)), op(),
+                    group="mcp", cleanup=lambda: cleaned.append(1))
+    assert w is not None
+    await asyncio.sleep(0.02)
+    assert ran == [1] and cleaned == [1]
+
+
+@pytest.mark.asyncio
+async def test_run_guarded_cleanup_on_cancel_before_first_step():
+    import asyncio
+    from litetui.agent_preparation import run_guarded
+    ran, cleaned, tasks = [], [], []
+
+    async def op():
+        ran.append(1)
+
+    run_guarded(NS(run_worker=_loop_run_worker(tasks)), op(),
+                group="mcp", cleanup=lambda: cleaned.append(1))
+    tasks[0].cancel()                       # cancel BEFORE the loop runs the guarded coro
+    await asyncio.sleep(0.02)
+    assert ran == []                        # op never entered the thread
+    assert cleaned == [1]                   # cleanup still fired exactly once
+
+
+@pytest.mark.asyncio
+async def test_run_guarded_missing_task_fails_closed():
+    from litetui.agent_preparation import run_guarded
+    cleaned, reported, ran = [], [], []
+
+    async def op():
+        ran.append(1)
+
+    def rw(coro, **k):
+        return NS(_task=None, cancel=lambda: None)   # no task hook
+
+    w = run_guarded(NS(run_worker=rw), op(), group="mcp",
+                    cleanup=lambda: cleaned.append(1), report=lambda e: reported.append(e))
+    assert w is None and cleaned == [1] and reported == [None] and ran == []
+
+
+@pytest.mark.asyncio
+async def test_run_guarded_schedule_failure_fails_closed():
+    from litetui.agent_preparation import run_guarded
+    cleaned, reported = [], []
+
+    async def op():
+        pass
+
+    def rw(coro, **k):
+        raise RuntimeError("cannot schedule")
+
+    w = run_guarded(NS(run_worker=rw), op(), group="mcp",
+                    cleanup=lambda: cleaned.append(1),
+                    report=lambda e: reported.append(type(e).__name__))
+    assert w is None and cleaned == [1] and reported == ["RuntimeError"]
