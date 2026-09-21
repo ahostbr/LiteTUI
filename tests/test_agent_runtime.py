@@ -250,3 +250,168 @@ async def test_launch_cancel_survives_storage_failure(tmp_path, monkeypatch, sto
     assert caught.value.__notes__ == ['Child completion recording failed: OSError']
     assert registry.active('parent')
     assert bool(inbox.pending('parent')) is (storage_failure == 'settle')
+
+
+def _fail_with(exc_type, message):
+    def _fail(*args, **kwargs):
+        raise exc_type(message)
+    return _fail
+
+
+@pytest.mark.asyncio
+async def test_persistence_failure_leaves_durable_recovery_marker(tmp_path, monkeypatch):
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    monkeypatch.setattr(inbox, 'persist', _fail_with(OSError, 'disk full'))
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text): pass
+        async def collect_turn(self, **kwargs):
+            return {'status': 'completed', 'summary': 'done'}
+        async def close(self): return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    with pytest.raises(OSError, match='disk full'):
+        await run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+            parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+            branch=None, evidence=[], supported_levels=[], notify=lambda e: pytest.fail('no notify'))
+    # No durable outcome exists; the claim is retained and durably flagged.
+    assert not inbox.pending('parent')
+    assert registry.active('parent')
+    flagged = registry.needs_recovery('parent')
+    assert len(flagged) == 1
+    assert flagged[0]['child_id'] == 'child'
+    assert 'persistence' in flagged[0]['recovery_marker']
+    # Durable across reopen: startup recovery can find the stranded claim.
+    assert AgentRegistry(tmp_path / 'registry.sqlite').needs_recovery('parent')
+
+
+@pytest.mark.asyncio
+async def test_cancel_persistence_failure_leaves_recovery_marker(tmp_path, monkeypatch):
+    import asyncio
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    monkeypatch.setattr(inbox, 'persist', _fail_with(OSError, 'disk full'))
+    entered = asyncio.Event()
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text): pass
+        async def collect_turn(self, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+        async def close(self): return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    task = asyncio.create_task(run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+        parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+        branch=None, evidence=[], supported_levels=[], notify=lambda e: None))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not inbox.pending('parent')
+    assert registry.active('parent')
+    flagged = registry.needs_recovery('parent')
+    assert len(flagged) == 1
+    assert 'persistence' in flagged[0]['recovery_marker']
+
+
+@pytest.mark.asyncio
+async def test_settlement_storage_failure_leaves_recovery_marker(tmp_path, monkeypatch):
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    monkeypatch.setattr(registry, 'settle_completion', _fail_with(OSError, 'registry locked'))
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text): pass
+        async def collect_turn(self, **kwargs):
+            return {'status': 'completed', 'summary': 'done'}
+        async def close(self): return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    with pytest.raises(OSError, match='registry locked'):
+        await run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+            parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+            branch=None, evidence=[], supported_levels=[], notify=lambda e: pytest.fail('no notify'))
+    # The durable outcome exists (reconcilable) but settlement did not complete.
+    assert len(inbox.pending('parent')) == 1
+    assert registry.active('parent')
+    flagged = registry.needs_recovery('parent')
+    assert len(flagged) == 1
+    assert 'settlement' in flagged[0]['recovery_marker'].lower()
+
+
+@pytest.mark.asyncio
+async def test_marker_write_failure_does_not_mask_error_or_lose_claim(tmp_path, monkeypatch):
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    monkeypatch.setattr(inbox, 'persist', _fail_with(OSError, 'disk full'))
+    monkeypatch.setattr(registry, 'mark_recovery', _fail_with(OSError, 'marker unavailable'))
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text): pass
+        async def collect_turn(self, **kwargs):
+            return {'status': 'completed', 'summary': 'done'}
+        async def close(self): return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    # The original persistence error propagates; the marker failure is swallowed.
+    with pytest.raises(OSError, match='disk full'):
+        await run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+            parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+            branch=None, evidence=[], supported_levels=[], notify=lambda e: pytest.fail('no notify'))
+    # A failed marker must not lose the claim.
+    assert registry.active('parent')
+
+
+@pytest.mark.asyncio
+async def test_successful_launch_leaves_no_recovery_marker(tmp_path):
+    from litetui.agent_runtime import run_prepared_child
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    directory = tmp_path / '.convos' / 'convo'
+    directory.mkdir(parents=True)
+    (directory / 'convo.jsonl').write_text('{}\n')
+    (directory / 'settings.json').write_text('{}')
+    class Process:
+        conversation_id = 'convo'
+        async def start_python(self, **kwargs): pass
+        async def rpc_handshake(self, spec, **kwargs):
+            return {'conversation_id': 'convo', 'pid': 123, 'process_created': 'stamp'}
+        async def send_prompt(self, text): pass
+        async def collect_turn(self, **kwargs):
+            return {'status': 'completed', 'summary': 'done'}
+        async def close(self): return True
+    spec = validate_request({'prompt': 'task', 'backend': 'codex', 'model': 'model',
+                             'workspace': str(tmp_path)}, parent_profile='autonomous', depth=0)
+    await run_prepared_child(spec, Process(), registry=registry, inbox=inbox,
+        parent='parent', child_id='child', workspace=tmp_path, data_root=tmp_path,
+        branch=None, evidence=[], supported_levels=[], notify=lambda e: None)
+    assert not registry.active('parent')
+    assert not registry.needs_recovery('parent')

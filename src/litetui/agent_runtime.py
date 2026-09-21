@@ -33,6 +33,14 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
                       pid=ready['pid'], created=ready['process_created'])
         bound = True
 
+    def note_recovery(marker):
+        # Best-effort durable annotation on the retained claim. A failure here
+        # must never mask the original error/cancellation or lose the claim.
+        try:
+            registry.mark_recovery(parent, child_id, marker)
+        except Exception:
+            pass
+
     if before_start is not None:
         before_start()
     import asyncio
@@ -58,15 +66,25 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
         # failure may leave no outcome. Settle only a matching confirmed result;
         # missing outcome or unknown cleanup retains
         # the slot. Preserve cancellation even if reconciliation storage fails.
+        no_outcome = False
         try:
             event = inbox.for_child(parent, child_id)
-            if event is not None and event['result'].get('cleanup', {}).get('state') == 'confirmed':
+            if event is None:
+                no_outcome = True
+            elif event['result'].get('cleanup', {}).get('state') == 'confirmed':
                 registry.settle_completion(parent, child_id, inbox=inbox,
                                            completion_id=event['completion_id'])
         except Exception:
             pass  # durable claim/outcome remain available for startup recovery
+        if no_outcome:
+            # Persistence left no durable outcome; flag the retained claim so a
+            # stranded no-outcome claim is distinguishable and recoverable.
+            note_recovery('outcome persistence failed; no durable outcome')
         raise
     except Exception as exc:
+        # finish_child raised: the durable outcome was not persisted. Flag the
+        # retained claim for recovery before preserving the original error.
+        note_recovery('outcome persistence failed; no durable outcome')
         if launch_cancelled is not None:
             launch_cancelled.add_note(f'Child completion recording failed: {type(exc).__name__}')
             raise launch_cancelled from exc
@@ -76,6 +94,9 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
         if result['cleanup']['state'] == 'confirmed':
             registry.settle_completion(parent, child_id, inbox=inbox, completion_id=completion)
     except Exception as exc:
+        # The durable outcome exists but settlement did not complete; flag the
+        # retained claim so reconciliation can release it once available.
+        note_recovery('settlement storage failed; durable outcome retained for reconciliation')
         if launch_cancelled is not None:
             launch_cancelled.add_note(f'Child completion recording failed: {type(exc).__name__}')
             raise launch_cancelled from exc
