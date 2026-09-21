@@ -216,24 +216,22 @@ def _safe_reload(app) -> str | None:
         return "MCP maintenance is in progress; try again in a moment."
 
 
-def _mutation_blocked_reason(app, *, check_activity: bool = True) -> str | None:
+def _mutation_blocked_reason(app, *, ignore_workers=(), ignore_screen=None) -> str | None:
     """Why an MCP server-changing action must be refused right now, or None to
     proceed. Shared by the /mcp command AND the dialog so neither bypasses the
-    native / maintenance gates.
+    native / maintenance / idle gates.
 
-    check_activity is the idle gate (a mutation must not race an active chat
-    turn). It is for the COMMAND path only: the DIALOG is itself hosted in an
-    'mcp'-group worker behind an open modal, so produce_activity always reports
-    mcp_active + management_active while it is up — the idle gate would refuse
-    every button unconditionally. The dialog gates on native + maintenance,
-    which are the states that actually make a dialog mutation unsafe."""
+    The idle gate (a mutation must not race an active turn/tool/child) is real
+    for both callers. The dialog is itself hosted in a worker behind a modal, so
+    it would otherwise see ITSELF as busy — it passes its own host-worker id and
+    modal screen as ignore_* so produce_activity excludes exactly that identity
+    while STILL blocking on a real turn/tool/child/busy-store or a second modal.
+    The command passes neither (full gate). Defaults empty = fail-closed."""
     if getattr(app, "_mcp_maintenance", False):
         return "MCP maintenance is in progress — try again in a moment."
     if hasattr(app.backend, "app_server"):
         return ("Native Codex session: an MCP server change needs a restart to reach the model "
                 "(the thread's tool inventory is fixed for its lifetime).")
-    if not check_activity:
-        return None
     from pathlib import Path
     from litetui.plugin_reload_activity import produce_activity
     from litetui.plugin_reload_children import children_pending
@@ -242,6 +240,8 @@ def _mutation_blocked_reason(app, *, check_activity: bool = True) -> str | None:
         snap = produce_activity(
             app,
             children_pending=lambda: children_pending(Path.home() / ".litetui-agents", app.convo_id),
+            ignore_workers=ignore_workers,
+            ignore_screen=ignore_screen,
         ).snapshot
         reasons = blocking_reasons(snap)
     except Exception:  # noqa: BLE001 — an activity-probe failure DEFERS, never proceeds

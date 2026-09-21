@@ -643,6 +643,13 @@ class ChatLog(VerticalScroll):
         self.app._scroll_down()
 
 
+#: Seconds the inbox monitor waits before registering, to let _connect settle so
+#: the model is known. Module-level so a mounted test can drive the worker to its
+#: (wrapped, idle) poll phase quickly instead of blocking the suite on real time;
+#: production keeps the full settle.
+_INBOX_SETTLE_S = 2.0
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -2054,7 +2061,7 @@ class LiteTUI(App):
         it writes to stdout, which paints over a Textual screen. harness.poll
         claims ONLY messages addressed to this seat.
         """
-        await asyncio.sleep(2)  # let _connect settle so the model is known
+        await asyncio.sleep(_INBOX_SETTLE_S)  # let _connect settle so the model is known
         self.seat.model = self.model_id or "unknown"
         ok = await asyncio.to_thread(self.seat.register)
         self._seat_started = True
@@ -2131,9 +2138,17 @@ class LiteTUI(App):
             # while the app is plainly running -- `last_seen` is written once,
             # at registration, and never again.
             beat = 0
+            from litetui.plugin_reload_activity import idle_infra_phase
             while True:
-                await asyncio.sleep(harness_mod.POLL_SECONDS)
-                msgs = await asyncio.to_thread(self.seat.poll)
+                # The poll wait + the poll read are this worker's idle phase —
+                # registered as idle infra so an MCP-mutation gate does not read
+                # the inbox poller as busy. Initial registration above is NOT
+                # wrapped (it mutates the tool offer + system prompt, and must
+                # block). _deliver_inbox runs OUTSIDE the phase: it schedules a
+                # chat turn, visible as turn_active on its own.
+                with idle_infra_phase(self):
+                    await asyncio.sleep(harness_mod.POLL_SECONDS)
+                    msgs = await asyncio.to_thread(self.seat.poll)
                 for m in msgs:
                     self._deliver_inbox(m)
 
@@ -2143,7 +2158,8 @@ class LiteTUI(App):
                     # Silent on failure by design: a missed beat is not news,
                     # and reporting one would paint the transcript every minute
                     # that liteharness happened to be busy.
-                    await asyncio.to_thread(self.seat.heartbeat)
+                    with idle_infra_phase(self):
+                        await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
 

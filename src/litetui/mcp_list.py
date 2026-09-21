@@ -26,7 +26,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Input, Static
 
 from litetui.mcp_client import WRITE_CONFIG_NAME
-from litetui.side_panel import SwapButton, close_dialog
+from litetui.side_panel import SwapButton, _screen_of, close_dialog
 
 #: What a state means, in the words a user needs rather than the enum's.
 STATE_NOTE = {
@@ -193,6 +193,57 @@ class MCPListBody(Widget):
         await scroll.remove_children()
         await scroll.mount(*self._row_widgets())
 
+    def _own_workers(self) -> tuple:
+        """This dialog's OWN host worker OBJECT, excluded from its activity gate
+        so the dialog does not count itself as busy. Excluded by `is` identity;
+        any OTHER worker (including a different same-group one) still blocks."""
+        host = getattr(self, "_dialog_host_worker", None)
+        return (host,) if host is not None else ()
+
+    def _gate(self, app) -> str | None:
+        """The SAME native/maintenance/idle gate the /mcp command runs, minus
+        THIS dialog's own identity (its host worker + its own modal) so it does
+        not refuse itself — a real turn/tool/child/busy-store or a second modal
+        still blocks."""
+        from litetui.plugins.mcp_manage import _mutation_blocked_reason
+        return _mutation_blocked_reason(
+            app, ignore_workers=self._own_workers(), ignore_screen=_screen_of(self))
+
+    def _dispatch(self, op, describe) -> None:
+        """Claim maintenance SYNCHRONOUSLY (a second button then defers on the
+        gate), capture the convo/backend identity, and run the op OFF the loop.
+        The UI stays live; the rows re-render on completion."""
+        import asyncio
+        app = self.app
+        app._mcp_maintenance = True
+        app._mcp_maintenance_done = asyncio.Event()
+        self.run_worker(self._run_action(op, describe, app.convo_id, app.backend),
+                        group="mcp", exclusive=False)
+
+    async def _run_action(self, op, describe, convo0, backend0) -> None:
+        app = self.app
+        from litetui.agent_preparation import await_preparation
+        from litetui.mcp_client import MCPBusy
+        from litetui.plugins.mcp_manage import _settle_maintenance
+        msg = ""
+        try:
+            try:
+                msg = describe(await await_preparation(op))
+            except MCPBusy:
+                msg = "MCP maintenance is in progress — try again in a moment."
+            except Exception as e:  # noqa: BLE001 — bounded, never raw error text
+                msg = f"MCP operation failed ({type(e).__name__})."
+        finally:
+            note = _settle_maintenance(app)
+        # Touch the dialog ONLY if this same body is still mounted in the same
+        # context; otherwise it is gone / the convo/backend changed, so report to
+        # chat rather than a stale widget.
+        if self.is_mounted and app.convo_id == convo0 and app.backend is backend0:
+            self._say(msg + note)
+            await self._rerender()
+        else:
+            app.system_message(msg + note)
+
     @on(Button.Pressed, ".mcp-actions Button")
     async def _row_action(self, event: Button.Pressed) -> None:
         event.stop()
@@ -204,41 +255,27 @@ class MCPListBody(Widget):
             return
         name = row["name"]              # exact manager name, never re-tokenized
         app = self.app
-        # The buttons call the SAME gate as the /mcp command — they must not
-        # bypass the native / maintenance / idle checks (a mutation on a frozen
-        # Codex thread, or mid-reconcile, is exactly what the command refuses).
-        # The op stays synchronous here on purpose: the rows re-render from the
-        # manager immediately after, and that no-drift invariant needs the
-        # mutation to have completed. MCPBusy is caught for the narrow race
-        # where maintenance starts between the gate check and the call.
-        from litetui.plugins.mcp_manage import _mutation_blocked_reason
-        blocked = _mutation_blocked_reason(app, check_activity=False)
+        blocked = self._gate(app)
         if blocked:
             self._say(blocked)
             return
-        from litetui.mcp_client import MCPBusy
-        try:
-            if verb == "connect":
-                err = app.mcp.connect(name)
-                msg = f"could not connect {name}: {err}" if err else f"connected {name}"
-            elif verb == "disconnect":
-                was = app.mcp.disconnect(name)
-                msg = f"disconnected {name}" if was else f"{name} was not running"
-            elif verb == "reconnect":
-                app.mcp.reload_configs()
-                err = app.mcp.reconnect(name)
-                msg = f"could not reconnect {name}: {err}" if err else f"reconnected {name}"
-            elif verb == "remove":
-                err = app.mcp.remove(name)
-                msg = f"could not remove {name}: {err}" if err else f"removed {name}"
-            else:
-                return
-        except MCPBusy:
-            self._say("MCP maintenance is in progress — try again in a moment.")
+        if verb == "connect":
+            op = lambda: app.mcp.connect(name)
+            describe = lambda err: f"could not connect {name}: {err}" if err else f"connected {name}"
+        elif verb == "disconnect":
+            op = lambda: app.mcp.disconnect(name)
+            describe = lambda was: f"disconnected {name}" if was else f"{name} was not running"
+        elif verb == "reconnect":
+            def op():
+                app.mcp.reload_configs()   # pick up config edits before reconnecting
+                return app.mcp.reconnect(name)
+            describe = lambda err: f"could not reconnect {name}: {err}" if err else f"reconnected {name}"
+        elif verb == "remove":
+            op = lambda: app.mcp.remove(name)
+            describe = lambda err: f"could not remove {name}: {err}" if err else f"removed {name}"
+        else:
             return
-        app.rebuild_mcp_dispatch()
-        self._say(msg)
-        await self._rerender()
+        self._dispatch(op, describe)
 
     @on(Button.Pressed, "#mcp-add-go")
     async def _add(self, event: Button.Pressed) -> None:
@@ -255,27 +292,19 @@ class MCPListBody(Widget):
             self._say(why or "cannot read that entry")
             return
         app = self.app
-        from litetui.plugins.mcp_manage import _mutation_blocked_reason
-        blocked = _mutation_blocked_reason(app, check_activity=False)
+        blocked = self._gate(app)
         if blocked:
             self._say(blocked)
             return
-        # cfg is the parsed dict (command+args or {json}) — passed to the
-        # manager as data, never a shell string.
-        from litetui.mcp_client import MCPBusy
-        try:
-            err = app.mcp.add(name, cfg)
-        except MCPBusy:
-            self._say("MCP maintenance is in progress — try again in a moment.")
-            return
-        app.rebuild_mcp_dispatch()
-        # A failed START still leaves the server declared, so the form is
-        # cleared either way — leaving the text in place would invite a second
-        # Add that refuses as a duplicate.
+        # cfg is the parsed dict (command+args or {json}) — passed to the manager
+        # as data, never a shell string. Clear the form now the add is accepted,
+        # so an in-flight add cannot be re-submitted as a duplicate.
         self.query_one("#mcp-add-name", Input).value = ""
         self.query_one("#mcp-add-target", Input).value = ""
-        self._say(f"declared {name}, but it did not start: {err}" if err else f"added {name}")
-        await self._rerender()
+        self._dispatch(
+            lambda: app.mcp.add(name, cfg),
+            lambda err: (f"declared {name}, but it did not start: {err}" if err
+                         else f"added {name}"))
 
     @on(Button.Pressed, "#mcp-close")
     def _close(self) -> None:
