@@ -131,3 +131,38 @@ def test_broken_pipe_is_a_bounded_error(tmp_path):
     assert "send failed" in str(ei.value).lower()
     assert "BrokenPipeError" in str(ei.value) and "gone" not in str(ei.value)   # type only
     assert srv._writer is None
+
+
+# ── stop(): reap the killed child (second wait) + join the reader ─────────────
+def test_stop_reaps_a_killed_child_and_joins_the_reader(tmp_path):
+    gate = threading.Event(); gate.set()
+    waits = []
+
+    class HardProc(_Proc):
+        def terminate(self):                       # force the kill path
+            raise OSError("terminate refused")
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return 0
+
+    proc = HardProc(gate)
+    srv = _server(tmp_path, proc)
+    reader = threading.Thread(target=lambda: None, daemon=True)   # already-finishing reader
+    reader.start()
+    srv._reader = reader
+    srv.stop()
+    assert proc.killed and waits                    # killed AND reaped (second wait after kill)
+    assert not reader.is_alive()                    # reader joined
+
+
+def test_stop_does_not_close_stdin_while_a_writer_is_retained(tmp_path):
+    gate = threading.Event()                        # writer blocks -> retained
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError):
+        srv._send({"jsonrpc": "2.0", "id": 1}, timeout=0.05)
+    assert srv._writer.is_alive()                   # retained
+    proc.stdin.closed = False
+    srv.stop()
+    assert proc.stdin.closed is False               # NEVER closed under the live writer
+    gate.set(); srv._writer.join(2)

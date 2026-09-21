@@ -340,18 +340,30 @@ class MCPServer:
         return _flatten_content(result)
 
     def stop(self) -> None:
-        if not self.proc:
+        proc = self.proc
+        if proc is None:
             return
+        # Do NOT close stdin while a timed-out writer is still retained on it: the
+        # blocked write holds the BufferedWriter lock, so close() would deadlock.
+        # The kill below closes the child's READ end instead.
+        writer_live = self._writer_in_flight()
         try:
-            if self.proc.stdin:
-                self.proc.stdin.close()
-            self.proc.terminate()
-            self.proc.wait(timeout=5)
+            if proc.stdin and not writer_live:
+                proc.stdin.close()
+            proc.terminate()
+            proc.wait(timeout=5)
         except Exception:
             try:
-                self.proc.kill()
+                proc.kill()
+                proc.wait(timeout=5)   # SECOND wait: reap the killed child, no zombie
             except Exception:
                 pass
+        # Join the reader: stdin/stdout are closed (or the child is dead), so
+        # readline() returns EOF and _reader_loop exits. Bounded so a wedged
+        # reader cannot hang teardown.
+        reader = self._reader
+        if reader is not None and reader.is_alive():
+            reader.join(timeout=2)
 
 
 class HTTPMCPServer:
