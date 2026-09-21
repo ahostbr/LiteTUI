@@ -154,7 +154,17 @@ def test_missing_baseline_requires_restart(tmp_path):
     src = _write(tmp_path / "t.py", "v1")
     app = _app([_tool("bash", src)])       # capture never called
     ok, reason = prov.provenance_ok(app, "bash")
-    assert ok is False and "no source provenance baseline" in reason
+    assert ok is False and "reload plugin" in reason.lower() and "restart" in reason.lower()
+
+
+def test_malformed_core_baseline_restarts_not_crashes():
+    # a dict that is NOT a valid baseline (missing keys / empty/incomplete core
+    # map / wrong types) must fail closed with a diagnostic, never KeyError.
+    for bad in ({}, {"files": {}}, {"files": {}, "core": {}}, {"files": 1, "core": 2}):
+        app = _app([])
+        app._plugin_source_baseline = bad
+        ok, reason = prov.provenance_ok(app, "bash")
+        assert ok is False and "restart" in reason.lower()
 
 
 def test_capture_is_once_only_cannot_bless_edit(tmp_path):

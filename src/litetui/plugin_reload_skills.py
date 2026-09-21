@@ -49,7 +49,11 @@ def refresh_skills_guarded(app: Any, *, activity: Callable[[], ActivitySnapshot]
     if not ok:
         return SkillsRefreshResult("restart-required", reason=why)
 
-    snapshot = activity()
+    try:
+        snapshot = activity()
+    except Exception as e:  # noqa: BLE001 — an unreadable activity probe must defer, not refresh
+        return SkillsRefreshResult(
+            "deferred", reason=f"activity check failed ({type(e).__name__}); not refreshed")
     if not isinstance(snapshot, ActivitySnapshot):
         return SkillsRefreshResult("deferred", reason="activity evidence unavailable")
     reasons = blocking_reasons(snapshot)

@@ -145,13 +145,28 @@ def _drifted(files: dict, path: str) -> str | None:
     return None
 
 
+def _baseline_incomplete(baseline: Any, map_key: str, required: tuple[str, ...]) -> bool:
+    """True when the baseline is absent OR malformed: not a dict, missing the
+    files/map sections, wrong types, or not covering every REQUIRED module. An
+    incomplete baseline must fail closed (restart), never crash a checker, and
+    an empty/partial module map must NOT pass as valid."""
+    if not isinstance(baseline, dict):
+        return True
+    files = baseline.get("files")
+    mapping = baseline.get(map_key)
+    if not isinstance(files, dict) or not isinstance(mapping, dict):
+        return True
+    return any(name not in mapping for name in required)
+
+
 def provenance_ok(app: Any, tool_name: str) -> tuple[bool, str]:
     """(ok, reason). False whenever the core machinery or the target handler
     source cannot be proven unchanged since the startup baseline — the caller
     must then require a restart rather than commit a metadata refresh."""
     baseline = getattr(app, _KEY, None)
-    if not isinstance(baseline, dict):
-        return False, "no source provenance baseline was captured at startup"
+    if _baseline_incomplete(baseline, "core", _CORE_MODULES):
+        return False, ("no valid reload provenance baseline (is the reload plugin loaded and "
+                       "activated?); restart required")
 
     # Core drift invalidates every target. Check the pinned name->path mapping
     # first (a required module unavailable at startup or now, or remapped to a
@@ -226,8 +241,9 @@ def skills_provenance_ok(app: Any) -> tuple[bool, str]:
     unchanged since startup — the caller must require a restart before touching
     the skills cache. Fail-closed on a missing baseline."""
     baseline = getattr(app, _SKILLS_KEY, None)
-    if not isinstance(baseline, dict):
-        return False, "no skills-source provenance baseline was captured at startup"
+    if _baseline_incomplete(baseline, "modules", _SKILLS_MODULES):
+        return False, ("no valid skills provenance baseline (is the reload plugin loaded and "
+                       "activated?); restart required")
     for name, pinned in baseline["modules"].items():
         if pinned is None:
             return False, f"skills-refresh module {name!r} was unavailable at startup; restart required"
