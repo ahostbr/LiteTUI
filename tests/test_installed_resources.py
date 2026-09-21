@@ -115,6 +115,24 @@ def test_duplicate_required_zip_member_is_rejected(tmp_path):
         gate.check_zip(wheel, pkg)
 
 
+@pytest.mark.parametrize("extra", ["litetui/obsolete.py", "litetui/schemas/removed.json", "litetui/prompts/removed.md"])
+def test_obsolete_package_payload_is_rejected(tmp_path, extra):
+    pkg = _make_source(tmp_path / "src")
+    wheel = _make_wheel(tmp_path / "obsolete.whl", gate._required_entries(pkg), pkg)
+    with zipfile.ZipFile(wheel, "a") as zf:
+        zf.writestr(extra, b"obsolete build residue")
+    with pytest.raises(SystemExit):
+        gate.check_zip(wheel, pkg)
+
+
+def test_distribution_metadata_is_not_obsolete_package_payload(tmp_path):
+    pkg = _make_source(tmp_path / "src")
+    wheel = _make_wheel(tmp_path / "metadata.whl", gate._required_entries(pkg), pkg)
+    with zipfile.ZipFile(wheel, "a") as zf:
+        zf.writestr("litetui-1.0.dist-info/METADATA", b"Name: litetui")
+    gate.check_zip(wheel, pkg)
+
+
 def test_missing_pi_notice_in_source_fails_clearly(tmp_path):
     """A required named source file that is itself absent fails loudly in
     enumeration rather than vanishing from a glob."""

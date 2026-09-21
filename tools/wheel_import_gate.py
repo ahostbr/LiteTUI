@@ -123,7 +123,8 @@ def check_zip(wheel: Path, pkg_dir: Path = PKG_DIR) -> None:
     Guards the packaging-drift class in one place: a module absent from the built
     wheel (the 26-vs-28 bug) or a package-data resource setuptools never shipped
     (schemas / prompts / assets / PI_NOTICE — the T135 FileNotFoundError-on-launch
-    class). Subset check: disk ⊆ wheel; extra wheel entries are not a failure.
+    class). Package payload must match the source inventory; distribution metadata
+    outside litetui/ is allowed. Obsolete build-directory residue is rejected.
     `pkg_dir` is a seam for the offline synthetic-fixture tests; main() uses the
     real tree.
     """
@@ -134,6 +135,10 @@ def check_zip(wheel: Path, pkg_dir: Path = PKG_DIR) -> None:
         missing = [entry for entry in required if entry not in names]
         if missing:
             _fail(f"source files NOT in the wheel: {sorted(missing)}")
+        extra = sorted(entry for entry in names - set(required)
+                       if entry.startswith("litetui/") and not entry.endswith("/"))
+        if extra:
+            _fail(f"unexpected package payload (possibly stale build residue): {extra}")
         duplicates = [entry for entry in required if entries.count(entry) != 1]
         if duplicates:
             _fail(f"ambiguous duplicate wheel members: {duplicates}")
