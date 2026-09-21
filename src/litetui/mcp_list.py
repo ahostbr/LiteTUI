@@ -248,24 +248,17 @@ class MCPListBody(Widget):
 
     def _dispatch(self, op, describe, mcp0) -> None:
         """Claim maintenance SYNCHRONOUSLY (a second button then defers on the
-        gate), capture convo/backend/manager identity, and run the op OFF the
-        loop via run_guarded — which un-sticks maintenance if the worker is
-        cancelled before its first step or fails to schedule."""
-        import asyncio
-        from litetui.agent_preparation import run_guarded
+        gate) and submit the op off-loop through the unified submit_op — the
+        shared claim / run_guarded / settle-release now lives there once; this
+        body only supplies its own worker (self._run_action, which revalidates
+        convo/backend/manager identity + delivers by re-render-or-message) and a
+        plain schedule-failure line. submit_op un-sticks maintenance if the
+        worker is cancelled before its first step or fails to schedule."""
+        from litetui.plugins.mcp_manage import submit_op
         app = self.app
-        app._mcp_maintenance = True
-        ev = asyncio.Event()
-        app._mcp_maintenance_done = ev
-
-        def _release():
-            if not ev.is_set():
-                app._mcp_maintenance = False
-                ev.set()
-
-        coro = self._run_action(app, op, describe, app.convo_id, app.backend, mcp0)
-        run_guarded(app, coro, group="mcp", cleanup=_release,
-                    report=lambda e: app.system_message("Could not start the MCP operation."))
+        worker = self._run_action(app, op, describe, app.convo_id, app.backend, mcp0)
+        submit_op(app, worker, report=lambda e: app.system_message(
+            "Could not start the MCP operation."))
 
     async def _run_action(self, app, op, describe, convo0, backend0, mcp0) -> None:
         # `app` is captured at SCHEDULING and passed in: reading self.app HERE

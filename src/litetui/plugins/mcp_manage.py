@@ -165,17 +165,33 @@ async def _mutation_worker(app, op, describe) -> None:
     app.system_message(msg + note)
 
 
-def _claim_and_run(app, coro) -> bool:
-    """Claim maintenance synchronously (so a second op is rejected by the gate
-    rather than racing this one), then run `coro` off-loop via run_guarded.
+def submit_op(app, coro, *, report=None) -> bool:
+    """UNIFIED off-loop MCP mutation submission — the single entry point the /mcp
+    command, the MCP dialog AND the reconcile verb all submit through. `coro` is
+    the op's worker coroutine (run the op, format the result, settle maintenance,
+    deliver the line); the shared claim + off-loop scheduling lives here once so
+    the dialog no longer hand-rolls it.
 
-    A worker cancelled BEFORE its coroutine's first step never runs the finally
-    that settles maintenance; run_guarded's cleanup is the release that un-sticks
-    it in that case (and on a schedule/attach failure). The release no-ops once
-    the coro has already settled (its Event is set). Lifecycle co-designed with
-    RigidStem (worker._task done-callback + a startup gate; see run_guarded)."""
+    Claims maintenance SYNCHRONOUSLY (so a second op is rejected by the gate
+    rather than racing this one), then runs `coro` off-loop via run_guarded. A
+    worker cancelled BEFORE its coroutine's first step never runs the finally
+    that settles maintenance; run_guarded's cleanup (`_release`) is the release
+    that un-sticks it in that case (and on a schedule/attach failure). The
+    release no-ops once the coro has already settled (its Event is set).
+    Lifecycle co-designed with RigidStem (worker._task done-callback + a startup
+    gate; see run_guarded). `report` formats a schedule-failure line; when None
+    the default names the exception type, the dialog passes a plainer one.
+    Returns whether the worker scheduled (run_guarded non-None)."""
     import asyncio
     from litetui.agent_preparation import run_guarded
+
+    def _report(e):
+        if report is not None:
+            report(e)
+        else:
+            app.system_message(
+                f"Could not start the MCP operation ({type(e).__name__ if e else 'not tracked'}).")
+
     app._mcp_maintenance = True
     ev = asyncio.Event()
     app._mcp_maintenance_done = ev
@@ -185,17 +201,19 @@ def _claim_and_run(app, coro) -> bool:
             app._mcp_maintenance = False
             ev.set()
 
-    def _report(e):
-        app.system_message(
-            f"Could not start the MCP operation ({type(e).__name__ if e else 'not tracked'}).")
-
     return run_guarded(app, coro, group="mcp", cleanup=_release, report=_report) is not None
+
+
+def _claim_and_run(app, coro, *, report=None) -> bool:
+    """Back-compat name for submit_op (the glue test calls it by this name);
+    kept so that call site needs no change."""
+    return submit_op(app, coro, report=report)
 
 
 def _schedule_mutation(app, op, describe) -> None:
     """Run one MCP mutation off-loop through the coordinator. A fresh completion
     Event is what a concurrent turn's _stream gate awaits."""
-    _claim_and_run(app, _mutation_worker(app, op, describe))
+    submit_op(app, _mutation_worker(app, op, describe))
 
 
 def _format_reconcile(outcomes: dict) -> str:
@@ -312,8 +330,8 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         # Claim maintenance SYNCHRONOUSLY (before scheduling) so a second
         # reconcile is rejected by the gate above rather than cancelling this
         # one; the worker joins off-loop and clears the flag only when settled.
-        # _claim_and_run un-sticks maintenance if scheduling itself fails.
-        if _claim_and_run(app, _reconcile_worker(app)):
+        # submit_op un-sticks maintenance if scheduling itself fails.
+        if submit_op(app, _reconcile_worker(app)):
             app.system_message("MCP reconcile started — re-reading config and reconnecting owned servers.")
         return
 
