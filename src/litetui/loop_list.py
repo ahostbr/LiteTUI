@@ -32,6 +32,25 @@ from litetui.goal_loop import _loop_jobs, remove_loop, set_loop_enabled
 from litetui.side_panel import SwapButton, close_dialog
 
 
+def loop_countdown(job, now=None) -> str:
+    from datetime import datetime
+    import math
+    if not job.enabled:
+        return 'Paused'
+    try:
+        due = datetime.fromisoformat(job.next_run_at or '')
+        now = now or datetime.now(due.tzinfo)
+        seconds = max(0, math.ceil((due - now).total_seconds()))
+    except (ValueError, TypeError, AttributeError):
+        return 'Not scheduled'
+    if seconds == 0:
+        return 'Due'
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    clock = f'{hours}:{minutes:02}:{seconds:02}' if hours else f'{minutes:02}:{seconds:02}'
+    return f'Next in {clock}'
+
+
 def loop_rows(app) -> list[dict]:
     """One dict per loop, from the LIVE job list.
 
@@ -45,6 +64,7 @@ def loop_rows(app) -> list[dict]:
             {
                 "id": job.id,
                 "enabled": bool(job.enabled),
+                "countdown": loop_countdown(job),
                 "every": f"every {job.interval_minutes}m",
                 "prompt": (job.prompt or "").strip(),
                 "runs": int(getattr(job, "run_count", 0) or 0),
@@ -64,6 +84,7 @@ class LoopListBody(Widget):
     LoopListBody .ll-head { height: auto; }
     LoopListBody .ll-when { width: 1fr; padding: 1 0 0 1; }
     LoopListBody .ll-prompt { color: $text-muted; padding: 0 0 1 3; }
+    LoopListBody .ll-next { height: 1; padding: 0 0 0 3; color: $accent; }
     LoopListBody .ll-kill { width: 10; }
     LoopListBody #ll-buttons { height: auto; align: center middle; padding: 1 0 0 0; }
     LoopListBody #ll-buttons Button { margin: 0 1 0 0; }
@@ -101,6 +122,7 @@ class LoopListBody(Widget):
                         classes="ll-when",
                     )
                     yield Button("Remove", id=f"ll-rm-{row['id']}", classes="ll-kill")
+                yield Static(row["countdown"], id=f"ll-next-{row['id']}", classes="ll-next")
                 yield Static(row["prompt"] or "(no prompt)",
                              classes="ll-prompt", markup=False)
         with Horizontal(id="ll-buttons"):
@@ -122,6 +144,7 @@ class LoopListBody(Widget):
         self._scroll_y = int(state.get("scroll_y") or 0)
 
     def on_mount(self) -> None:
+        self.set_interval(1, self._refresh_countdowns)
         if self._scroll_y:
             try:
                 self.query_one("#ll-scroll", VerticalScroll).scroll_to(
@@ -129,6 +152,11 @@ class LoopListBody(Widget):
                 )
             except Exception:
                 pass
+
+    def _refresh_countdowns(self) -> None:
+        for widget in self.query(".ll-next"):
+            job = self._job(widget.id[len("ll-next-"):])
+            widget.update(loop_countdown(job) if job is not None else "Removed")
 
     # ── the writes, both delegated ───────────────────────────────────────
 
@@ -148,6 +176,7 @@ class LoopListBody(Widget):
             return
         # THE SHARED VERB. Not `job.enabled = ...` — see the module docstring.
         set_loop_enabled(self.app, job, bool(event.value))
+        self._refresh_countdowns()
 
     @on(Button.Pressed)
     def _pressed(self, event: Button.Pressed) -> None:
