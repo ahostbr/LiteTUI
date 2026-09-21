@@ -26,10 +26,21 @@ worked but something survived" reports may have been this rather than the
 timeout, and nobody would have attributed them correctly.
 
 HOW A JOB SOLVES IT. A process assigned to a Job Object with
-JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE takes its whole tree with it when the last
-handle to that job closes -- every descendant inherits the job, so there is
-nothing to enumerate and nothing to time out. The failure mode we are removing
-is not "the kill is slow", it is "the kill has a deadline it can miss".
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE takes its ASSIGNED MEMBERS with it when the
+last handle to that job closes -- a descendant a member spawns AFTER it is in the
+job inherits the job. There is nothing to enumerate.
+
+🔴 TWO SCOPE CAVEATS, both load-bearing for anyone reading this as PROOF:
+1. ASSIGNMENT IS NOT ATOMIC WITH EXEC. `assign()` runs AFTER the child's
+   CreateProcess returns, so a descendant the child forks in the window between
+   its own exec and AssignProcessToJobObject is NOT in the job and is not covered.
+   Containment is only total for children spawned once the parent is a member.
+2. CLOSE/TERMINATE IS A KILL REQUEST, NOT A COMPLETION. The kernel signals the
+   members; it does not block until they have exited. "Did the tree drain" is a
+   SEPARATE question, answered by `active_process_count` reaching zero (and a
+   wait on the main handle) -- never assumed from the close/terminate call.
+The failure mode this removes is "the kill has a deadline it can miss"; it does
+NOT, by itself, prove the tree is gone.
 
 ⚠️ NEVER ASSIGN OUR OWN PROCESS TO ONE OF THESE JOBS. A KILL_ON_JOB_CLOSE job
 containing this process kills the app the moment the handle closes -- including
@@ -176,10 +187,14 @@ def assign(job: int | None, pid: int) -> bool:
 
 
 def close(job: int | None) -> bool:
-    """Close the handle. If it was the last one, the kernel kills every member.
+    """Close the handle. If it was the last one, the kernel signals every ASSIGNED
+    member to terminate — with no walk and no deadline to miss (the reason this
+    module exists).
 
-    This IS the kill. There is no walk, no deadline and nothing to time out —
-    which is the whole reason this module exists.
+    It is a kill REQUEST, not a completion: the call does not block until members
+    exit, and it cannot reach a descendant that ran before it was assigned (see the
+    module docstring). "Did the tree drain" is answered by `active_process_count`
+    reaching zero, never assumed from this returning True.
     """
     if job is None or not available():
         return False
