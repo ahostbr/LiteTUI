@@ -795,6 +795,12 @@ def _fail_start(owned, message):
         result = terminate_owned(owned)
     except Exception:  # noqa: BLE001 - any unexpected cleanup failure must still surface the handle
         raise EngineStartFailed(message, retained_owned=owned)
+    finally:
+        # LiteTUI's OWN handle to the log must not leak on a failed start. The child keeps
+        # writing through its own handle (independent on Windows) and _log_tail reads from
+        # disk, so closing ours is safe whether we retain the engine for a retry or not.
+        # (On the confirmed path _terminate_owned_inner already closed it; _close_log no-ops.)
+        _close_log(owned)
     raise EngineStartFailed(message, retained_owned=(owned if result.retained else None))
 
 
