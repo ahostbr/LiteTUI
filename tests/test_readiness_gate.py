@@ -59,7 +59,7 @@ def complete_manifest(tmp_path, module):
                    conditions='fixture', command='fixture command', exit_code=0,
                    evidence=record(key + '.txt'))
         if key in module.CRITICAL:
-            row['passes'] = [{'status': 'PASS', 'timestamp': f'2026-09-20T00:00:0{i}Z',
+            row['passes'] = [{**identity, 'status': 'PASS', 'exit_code': 0, 'timestamp': f'2026-09-20T00:00:0{i}Z',
                               'evidence': record(f'{key}-{i}.txt')} for i in range(3)]
             row['negative_evidence'] = record(key + '-negative.txt')
         rows.append(row)
@@ -85,3 +85,15 @@ def test_reused_critical_evidence_and_missing_approval_block(tmp_path):
     issues = module.validate(manifest, tmp_path)
     assert any('duplicated pass' in issue for issue in issues)
     assert any('Ryan approval' in issue for issue in issues)
+
+
+@pytest.mark.parametrize('change', [
+    {'timestamp': 'not-a-time'}, {'timestamp': '2026-09-19T00:00:00Z'},
+    {'commit': 'c' * 40}, {'exit_code': 1},
+])
+def test_critical_runs_need_ordered_candidate_bound_success(tmp_path, change):
+    module = gate()
+    manifest = complete_manifest(tmp_path, module)
+    row = next(row for row in manifest['results'] if row['id'] in module.CRITICAL)
+    row['passes'][1].update(change)
+    assert module.validate(manifest, tmp_path)

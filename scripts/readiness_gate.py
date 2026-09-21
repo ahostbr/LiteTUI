@@ -4,6 +4,7 @@ Paths are relative to the manifest directory. A PASS is not a signature: human
 approval provenance must still be reviewed by the release operator.
 """
 import argparse
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -76,10 +77,22 @@ def validate(manifest, root):
                 issues.append(f'{key}: three consecutive pass records required')
             else:
                 paths = set()
+                previous_time = None
                 for run in passes[-3:]:
                     if not isinstance(run, dict) or run.get('status') != 'PASS' or not run.get('timestamp'):
                         issues.append(f'{key}: invalid critical pass')
                         continue
+                    if any(run.get(field) != candidate.get(field) for field in ('commit', 'version', 'sha256')):
+                        issues.append(f'{key}: critical pass candidate mismatch')
+                    if type(run.get('exit_code')) is not int or run['exit_code'] != 0:
+                        issues.append(f'{key}: critical pass unsuccessful exit')
+                    try:
+                        stamp = datetime.fromisoformat(run['timestamp'].replace('Z', '+00:00'))
+                        if stamp.tzinfo is None or (previous_time is not None and stamp <= previous_time):
+                            raise ValueError('unordered or timezone missing')
+                        previous_time = stamp
+                    except (ValueError, TypeError, AttributeError):
+                        issues.append(f'{key}: invalid or unordered critical timestamp')
                     path = evidence(run.get('evidence'), f'{key} pass')
                     if path in paths:
                         issues.append(f'{key}: duplicated pass evidence')
