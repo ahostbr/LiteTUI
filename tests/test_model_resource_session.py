@@ -169,3 +169,46 @@ async def test_absent_reload_settlement_disk_failure_is_atomic(tmp_path):
     assert session.settle_failed_load('model', absent=True)
     assert not session.settle_failed_load('model', absent=True)
     async with session.load('model'): pass
+
+@pytest.mark.asyncio
+async def test_bookkeeping_failure_blocks_second_loader(tmp_path, monkeypatch):
+    from litetui.model_resource_session import ModelResourceSession, AdmissionBlocked
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'bookkeeping.sqlite', telemetry=lambda: ResourceSnapshot(time.time(), 1000, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 10, {})
+    session = ModelResourceSession(coordinator, 'owner', demand_for=lambda key: demand)
+    def fail(*args, **kwargs):
+        raise OSError('bookkeeping unavailable')
+    monkeypatch.setattr(coordinator, 'acquire_lease', fail)
+    with pytest.raises(OSError):
+        async with session.load('model'): pass
+    with pytest.raises(AdmissionBlocked):
+        async with session.load('model'): pytest.fail('duplicate dispatch after bookkeeping failure')
+    assert session.unsettled_loads['model']
+
+
+@pytest.mark.asyncio
+async def test_overlapping_same_session_load_never_dispatches_twice(tmp_path):
+    from litetui.model_resource_session import ModelResourceSession, AdmissionBlocked
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'overlap.sqlite', telemetry=lambda: ResourceSnapshot(time.time(), 1000, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 10, {})
+    session = ModelResourceSession(coordinator, 'owner', demand_for=lambda key: demand)
+    async with session.load('model'):
+        with pytest.raises(AdmissionBlocked):
+            async with session.load('model'): pytest.fail('overlapping loader')
+    assert 'model' in session.leases
+
+@pytest.mark.asyncio
+async def test_live_loader_cannot_be_settled_as_absent(tmp_path):
+    from litetui.model_resource_session import ModelResourceSession
+    from litetui.resource_admission import ResourceCoordinator, ResourceSnapshot, ModelDemand
+    coordinator = ResourceCoordinator(tmp_path / 'live.sqlite', telemetry=lambda: ResourceSnapshot(time.time(), 100, {}, True))
+    demand = ModelDemand('cpu', 'endpoint', 'model', 80, {})
+    session = ModelResourceSession(coordinator, 'owner', demand_for=lambda key: demand)
+    async with session.load('model'):
+        assert not session.settle_failed_load('model', absent=True)
+        assert coordinator.reserve(demand, 'other').status == 'blocked'
+    assert not session.active_loads
+    assert not session.unsettled_loads
+    assert 'model' in session.leases

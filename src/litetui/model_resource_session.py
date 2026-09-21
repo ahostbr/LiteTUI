@@ -17,6 +17,7 @@ class ModelResourceSession:
         self.leases = {}
         self.unload_claims = {}
         self.unsettled_loads = {}
+        self.active_loads = set()
 
     @asynccontextmanager
     async def load(self, key, *, reload=False):
@@ -36,23 +37,24 @@ class ModelResourceSession:
         decision = self.coordinator.reserve(demand, self.owner, reload_lease=prior[0] if reload else None)
         if decision.status != 'admitted':
             raise AdmissionBlocked(f'BLOCKED: {decision.reason}; RAM={decision.snapshot.ram_available}; VRAM={decision.snapshot.vram_available}; options={decision.options}')
+        # Claim before yielding: another task (or reentrant caller) must not
+        # dispatch the same loader while the first outcome is still unknown.
+        self.unsettled_loads[key] = decision.reservation_id
+        self.active_loads.add(key)
         try:
             yield
-        except BaseException:
-            # HTTP/to_thread cancellation does not prove the loader stopped.
-            self.unsettled_loads[key] = decision.reservation_id
-            raise
+        finally:
+            self.active_loads.discard(key)
+        # Keep the claim on loader cancellation OR failed post-load accounting.
+        # Only a fully committed success may clear it; absence settlement is
+        # the explicit recovery path for every uncertain outcome.
         if reload:
             self.coordinator.release(decision.reservation_id, self.owner)
-            return
-        try:
+        else:
             lease = self.coordinator.acquire_lease(decision.reservation_id, self.owner,
                          owned=self.owned, keep_warm=self.keep_warm)
-        except BaseException:
-            # Successful load with failed bookkeeping must retain its capacity.
-            # Reconciliation requires confirmed owner death AND absent residency.
-            raise
-        self.leases[key] = (lease, demand)
+            self.leases[key] = (lease, demand)
+        del self.unsettled_loads[key]
 
     def settle_failed_load(self, key, *, absent):
         """Backend must prove loading has stopped AND model is absent.
@@ -60,6 +62,8 @@ class ModelResourceSession:
         A transient empty catalogue while a worker is still loading is not
         proof. Unknown evidence retains capacity and any reload exclusion.
         """
+        if key in self.active_loads:
+            return False
         reservation = self.unsettled_loads.get(key)
         if absent is not True or reservation is None:
             return False
