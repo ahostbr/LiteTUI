@@ -20,9 +20,11 @@ class _FakeSession:
         self.unload_claims = {f"c{i}": i for i in range(claims)}
         self._fail = fail
 
+    _SECRET = "super-secret-token-and-a-very-long-tail"
+
     def begin_close(self):
         if self._fail:
-            raise RuntimeError("super-secret-token-and-a-very-long-tail" * 20)
+            raise RuntimeError(self._SECRET * 20)
         self._closing = True
 
 
@@ -72,8 +74,11 @@ def test_failing_begin_close_is_isolated_surfaced_and_secret_bounded(monkeypatch
     report = rsl.begin_shutdown(app)
     assert good._closing                          # one failure does not skip the rest
     err = report[id(bad)]["error"]
-    assert err.startswith("RuntimeError")         # type + bounded message, not repr
-    assert len(err) <= len("RuntimeError: ") + rsl._MAX_ERR   # bounded, no full arg dump
+    assert err == "RuntimeError"                  # TYPE ONLY — never the exception text
+    logged_details = " ".join(d for _e, d in logged)
+    # the secret in the exception message reaches NEITHER the report NOR the log
+    assert _FakeSession._SECRET not in err
+    assert _FakeSession._SECRET not in logged_details
     assert any(e == "admission.shutdown_begin_close_failed" for e, _ in logged)  # surfaced
 
 
