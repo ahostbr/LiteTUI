@@ -40,8 +40,29 @@ class _Stat:
 def test_fingerprint_rejects_change_during_hash(tmp_path, monkeypatch, after):
     p = tmp_path / "f.bin"
     p.write_bytes(b"hello")
-    stats = iter([_Stat(5), after])          # before, after
+    stats = iter([_Stat(5), after])          # before, after (both via os.fstat on the handle)
     monkeypatch.setattr(os, "fstat", lambda fd: next(stats))
+    assert rip.stable_file_fingerprint(p) is None
+
+
+def test_fingerprint_rejects_path_replaced_after_open(tmp_path, monkeypatch):
+    # The open handle stays valid on the ORIGINAL file (fstat unchanged), but the
+    # PATH is renamed/replaced onto a different file: os.stat(path) resolves to a
+    # different (dev, ino) than the handle's, so the fingerprint is rejected.
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"hello")
+    monkeypatch.setattr(os, "stat", lambda path_arg: _Stat(5, ino=424242))
+    assert rip.stable_file_fingerprint(p) is None
+
+
+def test_fingerprint_path_deleted_after_open_is_none(tmp_path, monkeypatch):
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"hello")
+
+    def _boom(path_arg):
+        raise OSError("path gone")
+
+    monkeypatch.setattr(os, "stat", _boom)
     assert rip.stable_file_fingerprint(p) is None
 
 
@@ -91,3 +112,103 @@ def test_explicit_device_maps_selected_index():
 ])
 def test_explicit_device_uuid_none_cases(index, uuids):
     assert rip.explicit_device_uuid(index, uuids) is None
+
+
+# ── IdentityPreparationCache (async prepare / sync resolve) ─────────────────
+
+import asyncio  # noqa: E402
+
+from litetui.resource_identity_producer import (  # noqa: E402
+    BackendSnapshot,
+    IdentityPreparationCache,
+    _stat_identity,
+)
+
+
+def _snap(exe_path, **over):
+    base = dict(
+        backend_type="NInferBackend", endpoint="http://127.0.0.1:9000/v1", model="m",
+        context=32768, concurrency=1, load_shape="nvfp4", device_index=0,
+        exe_path=str(exe_path), exe_stat=_stat_identity(exe_path),
+        artifact_path="", artifact_stat=(), gpu_uuids=("GPU-a",),
+    )
+    base.update(over)
+    return BackendSnapshot(**base)
+
+
+@pytest.mark.asyncio
+async def test_prepare_dedupes_concurrent_same_snapshot(tmp_path):
+    exe = tmp_path / "e.exe"
+    exe.write_bytes(b"x")
+    snap = _snap(exe)
+    calls = []
+
+    def produce(s):
+        calls.append(s)
+        return {"host": "h"}
+
+    cache = IdentityPreparationCache()
+    a, b = await asyncio.gather(cache.prepare_async(snap, produce=produce),
+                                cache.prepare_async(snap, produce=produce))
+    assert a == b == {"host": "h"}
+    assert len(calls) == 1          # one shared compute
+
+
+@pytest.mark.asyncio
+async def test_resolve_returns_then_invalidates_on_stat_change(tmp_path):
+    exe = tmp_path / "e.exe"
+    exe.write_bytes(b"x")
+    snap = _snap(exe)
+    cache = IdentityPreparationCache()
+    await cache.prepare_async(snap, produce=lambda s: {"host": "h"})
+    assert cache.resolve(snap) == {"host": "h"}
+    exe.write_bytes(b"xy")          # executable changed since prepare
+    assert cache.resolve(snap) is None
+
+
+@pytest.mark.asyncio
+async def test_produce_none_publishes_nothing(tmp_path):
+    exe = tmp_path / "e.exe"
+    exe.write_bytes(b"x")
+    snap = _snap(exe)
+    cache = IdentityPreparationCache()
+    assert await cache.prepare_async(snap, produce=lambda s: None) is None
+    assert cache.resolve(snap) is None
+
+
+def test_resolve_miss_for_unprepared(tmp_path):
+    exe = tmp_path / "e.exe"
+    exe.write_bytes(b"x")
+    assert IdentityPreparationCache().resolve(_snap(exe)) is None
+
+
+@pytest.mark.asyncio
+async def test_config_change_is_a_cache_miss(tmp_path):
+    exe = tmp_path / "e.exe"
+    exe.write_bytes(b"x")
+    cache = IdentityPreparationCache()
+    await cache.prepare_async(_snap(exe, model="a"), produce=lambda s: {"host": "h"})
+    assert cache.resolve(_snap(exe, model="b")) is None     # different config = different key
+
+
+@pytest.mark.asyncio
+async def test_cancelled_awaiter_publishes_no_partial(tmp_path):
+    exe = tmp_path / "e.exe"
+    exe.write_bytes(b"x")
+    snap = _snap(exe)
+    cache = IdentityPreparationCache()
+
+    def produce(s):
+        import time
+        time.sleep(0.05)
+        return {"host": "h"}
+
+    task = asyncio.ensure_future(cache.prepare_async(snap, produce=produce))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.12)
+    # the shielded compute completed and published the COMPLETE identity; a
+    # cancelled awaiter never left a partial one behind.
+    assert cache.resolve(snap) == {"host": "h"}
