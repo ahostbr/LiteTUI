@@ -323,8 +323,9 @@ def main() -> int:
         # is read by name immediately after, which is the whole point.
         proc = _run_bounded(
             [sys.executable, "-m", "pytest", "-q", "--durations=25",
-             *[str(p) for p in pyt]],
+             "-p", "readiness_collection_gate", *[str(p) for p in pyt]],
             timeout=3600,
+            env={**os.environ, "PYTHONPATH": str(TESTS) + os.pathsep + os.environ["PYTHONPATH"]},
             cwd=str(ROOT),
         )
         # pytest's documented exit codes. NO_TESTS (5) and INTERNAL (3) are
