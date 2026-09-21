@@ -59,6 +59,7 @@ def switch_model(app, target: str) -> bool:
     """
     if target not in app.available_models:
         return False
+    settings_runtime.save_selection_defaults(backend=app.backend.name, default_model=target)
     if target == app.model_id:
         return True
     app.model_id = target
@@ -146,6 +147,10 @@ def _pick_ninfer_artifact(app) -> None:
         import dataclasses
         app._on_settings_saved(
             dataclasses.replace(app.settings, ninfer_artifact=choice))
+        result = getattr(app, '_settings_save_result', None)
+        if result is not None and any(not p.saved for p in result.persistence):
+            return
+        settings_runtime.save_selection_defaults(backend="ninfer", ninfer_artifact=choice)
         app.system_message(
             f"NInfer artifact set to {Path(choice).stem} — /engine start to serve it."
         )
@@ -193,6 +198,7 @@ def _switch_backend(app, choice: str) -> None:
         app.system_message("Finish or stop the current turn before switching backends.")
         return
     if choice == app.backend.name:
+        settings_runtime.save_selection_defaults(backend=choice, backend_chosen=True)
         app.system_message(f"Already on {choice}")
         return
     # The SEQUENCE moved to `App.apply_backend_change` so /settings could reach
@@ -202,6 +208,8 @@ def _switch_backend(app, choice: str) -> None:
     # module, which `test_app_never_imports_a_plugin_module` enforces.
     # The guards above stay here, where the user typed the command.
     app.apply_backend_change(choice)
+    if app.backend.name == choice:
+        settings_runtime.save_selection_defaults(backend=choice, backend_chosen=True)
 
 
 def _ninfer_mark(app) -> str:

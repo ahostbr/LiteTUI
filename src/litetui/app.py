@@ -5213,10 +5213,10 @@ class LiteTUI(App):
                 # the wrong box. Refuse BEFORE the save, with the reason.
                 self.system_message(gpu_gate.why_not())
                 return
-        s = self.settings
-        s.backend = choice
-        s.backend_chosen = True
+        from dataclasses import replace
+        s = replace(self.settings, backend=choice, backend_chosen=True)
         settings_runtime.persist_or_raise(self, s)
+        self.settings = s
         # Deliberately NOT shutting the old engine down: a mid-session flip that
         # evicted the resident model would make flipping back cost a full reload.
         # VRAM is freed explicitly (/unload) or at app exit (atexit).

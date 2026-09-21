@@ -78,22 +78,8 @@ def test_the_field_a_second_instance_never_touched_is_left_alone(tmp_path: Path)
     assert on_disk["max_tokens_chat"] == 8192
 
 
-def test_an_env_sourced_field_is_still_written_every_save(tmp_path: Path) -> None:
-    """The one category that is written WITHOUT having changed, kept on purpose.
-
-    `save()`'s pre-existing rule: the file records what the user CHOSE, so an
-    env-sourced field is persisted even when this instance never touched it —
-    otherwise unsetting the variable would silently revert the knob to a default
-    nobody picked. The merge must not quietly drop that.
-
-    ⚠️ AND THIS ARM IS WHY `backend` IS NOT USED ABOVE. `tests/conftest.py:42`
-    does `os.environ.setdefault("LITETUI_BACKEND", "lmstudio")` for the whole
-    session, so under pytest `backend` is env-pinned and is written on every
-    save by design. An earlier draft asserted a merged `backend` and went red
-    against correct code: the arm was measuring the env rule while believing it
-    measured the merge rule. The harness differs from the app here, and a field
-    chosen without checking that is a field that answers a different question.
-    """
+def test_env_override_does_not_overwrite_another_instances_default(tmp_path: Path) -> None:
+    """An unrelated save preserves disk defaults and the instance's override."""
     import os
 
     assert os.environ.get("LITETUI_BACKEND"), "conftest no longer pins the backend"
@@ -106,10 +92,11 @@ def test_an_env_sourced_field_is_still_written_every_save(tmp_path: Path) -> Non
     raw["backend"] = "codex"
     st.settings_path(tmp_path).write_text(json.dumps(raw), encoding="utf-8")
 
-    # B saves something unrelated; its env-sourced backend is re-asserted.
+    # B saves something unrelated; its environment stays effective-only.
     b.theme_name = "ash"
     st.save(b, tmp_path)
-    assert _read(tmp_path)["backend"] == a.backend == os.environ["LITETUI_BACKEND"]
+    assert _read(tmp_path)["backend"] == "codex"
+    assert a.backend == b.backend == os.environ["LITETUI_BACKEND"]
 
 
 def test_a_torn_file_cannot_be_observed(tmp_path: Path) -> None:

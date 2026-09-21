@@ -108,6 +108,22 @@ def persist_or_raise(app, candidate):
     return result
 
 
+def save_selection_defaults(**choices):
+    """Explicit picker choices also become startup defaults, immediately.
+
+    Start from disk and force only these keys into the atomic merge. Never
+    copy a conversation's unrelated overrides or launch environment to defaults.
+    """
+    allowed = {'backend', 'backend_chosen', 'default_model', 'ninfer_artifact'}
+    if not choices.keys() <= allowed:
+        raise ValueError('Not a backend/model selection')
+    defaults = st.load()
+    for key, value in choices.items():
+        setattr(defaults, key, value)
+        defaults._baseline.pop(key, None)
+    return st.save(defaults)
+
+
 def apply_saved_result(app, requested, result):
     """Apply only saved fields; engine-affecting changes remain explicitly pending.
 
