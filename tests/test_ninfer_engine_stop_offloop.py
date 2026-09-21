@@ -190,29 +190,39 @@ class _FakeBackend:
         return "stopped X"
 
 
+class _FakeWorker:
+    """Mimics the bit of textual.worker.Worker we depend on: a `_task` set by run_worker."""
+    def __init__(self, task):
+        self._task = task
+
+
 class _FakeApp:
-    def __init__(self, backend):
+    def __init__(self, backend, *, worker_raises=False, task_none=False):
         self.backend = backend
         self.messages = []
+        self.worker_raises = worker_raises
+        self.task_none = task_none
+        self.last_worker = None
 
     def system_message(self, m):
         self.messages.append(m)
 
-
-async def _run_scheduled(call):
-    """Run `call` (which schedules a task via asyncio.ensure_future) and return the task."""
-    before = asyncio.all_tasks()
-    call()
-    new = asyncio.all_tasks() - before
-    return new.pop() if new else None
+    def run_worker(self, coro, **kw):
+        if self.worker_raises:
+            raise RuntimeError("scheduler down")     # command must coro.close()
+        if self.task_none:
+            self.last_worker = _FakeWorker(None)     # command must fail closed
+            return self.last_worker
+        self.last_worker = _FakeWorker(asyncio.ensure_future(coro))
+        return self.last_worker
 
 
 @pytest.mark.asyncio
-async def test_command_stop_schedules_offloop_and_releases_after_join():
+async def test_command_stop_runs_as_worker_and_releases_after_join():
     app = _FakeApp(_FakeBackend())
-    task = await _run_scheduled(lambda: _cmd_engine(app, "/engine", "stop"))
-    assert app.backend._stopping is True and task is not None
-    await task
+    _cmd_engine(app, "/engine", "stop")
+    assert app.backend._stopping is True and app.last_worker is not None
+    await app.last_worker._task
     await asyncio.sleep(0)                            # let the done-callback fire
     assert app.backend.stop_calls == 1 and app.backend.ended is True
     assert app.messages == ["stopped X"]
@@ -221,11 +231,11 @@ async def test_command_stop_schedules_offloop_and_releases_after_join():
 @pytest.mark.asyncio
 async def test_command_stop_cancel_before_body_still_releases_claim():
     app = _FakeApp(_FakeBackend())
-    task = await _run_scheduled(lambda: _cmd_engine(app, "/engine", "stop"))
-    task.cancel()                                    # cancel before the coroutine body runs
+    _cmd_engine(app, "/engine", "stop")
+    app.last_worker._task.cancel()                   # cancel before the worker body runs
     await asyncio.sleep(0)
     await asyncio.sleep(0)                            # let the done-callback fire
-    assert app.backend.ended is True                 # claim released, no strand
+    assert app.backend.ended is True                 # claim released via task terminal state
     assert app.backend.stop_calls == 0               # stop_engine never ran
 
 
@@ -234,18 +244,18 @@ def test_command_stop_rejects_double():
     backend._stopping = True
     app = _FakeApp(backend)
     _cmd_engine(app, "/engine", "stop")
-    assert any("busy" in m for m in app.messages)
+    assert app.last_worker is None and any("busy" in m for m in app.messages)
 
 
-@pytest.mark.asyncio
-async def test_command_stop_schedule_failure_clears_claim_no_phantom(monkeypatch):
-    app = _FakeApp(_FakeBackend())
-
-    def _boom(coro):
-        coro.close()
-        raise RuntimeError("scheduler down")
-
-    monkeypatch.setattr(asyncio, "ensure_future", _boom)
+def test_command_stop_schedule_failure_clears_claim_no_phantom():
+    app = _FakeApp(_FakeBackend(), worker_raises=True)
     _cmd_engine(app, "/engine", "stop")
     assert app.backend.ended is True                 # claim released, no phantom stop
     assert any("could not start the engine-stop worker" in m for m in app.messages)
+
+
+def test_command_stop_untracked_worker_fails_closed():
+    app = _FakeApp(_FakeBackend(), task_none=True)   # worker._task absent (internal change)
+    _cmd_engine(app, "/engine", "stop")
+    assert app.backend.ended is True                 # fail closed: released, no strand
+    assert any("could not be tracked" in m for m in app.messages)

@@ -251,9 +251,9 @@ def _cmd_engine(app, name: str, arg: str) -> None:
     if verb == "stop":
         # Off-loop: stop_engine() blocks for seconds (terminate + drain proof). Claim
         # the stop synchronously FIRST (rejects a double stop and an in-flight start),
-        # then run it off the loop so the UI stays responsive. Reuses
-        # agent_preparation.await_preparation (to_thread + shield + cancel-join) — no
-        # duplicate helper.
+        # then run it as a REAL Textual worker (visible in app.workers, joined at app
+        # shutdown) so the UI stays responsive. Reuses agent_preparation.await_preparation
+        # (to_thread + shield + cancel-join) — no duplicate helper.
         import asyncio
 
         from litetui import agent_preparation
@@ -266,21 +266,41 @@ def _cmd_engine(app, name: str, arg: str) -> None:
             try:
                 app.system_message(await agent_preparation.await_preparation(target.stop_engine))
             except asyncio.CancelledError:
-                raise                       # await_preparation already joined the worker
+                raise                       # await_preparation already joined the thread
             except Exception as exc:        # noqa: BLE001 - don't crash the loop; type-only
                 app.system_message(f"engine stop failed: {type(exc).__name__}")
 
         coro = _go()
         try:
-            task = asyncio.ensure_future(coro)
+            worker = app.run_worker(coro, exclusive=False, name="ninfer-engine-stop",
+                                    exit_on_error=False)
         except Exception as exc:            # noqa: BLE001 - could not schedule: no phantom stop
             coro.close()
             backend.end_stop()
             app.system_message(f"could not start the engine-stop worker: {type(exc).__name__}")
             return
-        # Release the claim on ANY terminal state — success, error, OR a cancellation
-        # delivered before the coroutine body ran (which would skip _go's own cleanup).
-        task.add_done_callback(lambda _t, b=backend: b.end_stop())
+
+        def _release(_task, target=backend, entered=coro):
+            # Release the claim on the underlying task's TERMINAL state — success, error,
+            # or a cancellation delivered before the worker body ran (which no finally in
+            # _go would catch). Closing the coroutine is a no-op once it has run and
+            # suppresses an un-awaited warning if the worker never entered it.
+            target.end_stop()
+            try:
+                entered.close()
+            except Exception:               # noqa: BLE001, S110
+                pass
+
+        # Textual sets Worker._task synchronously in run_worker; add_done_callback fires
+        # on every terminal state incl. pre-first-step cancellation (Worker.StateChanged
+        # does not). _task is Textual-internal: fail closed (release now) if it is absent.
+        task = getattr(worker, "_task", None)
+        if task is None:
+            coro.close()
+            backend.end_stop()
+            app.system_message("engine stop could not be tracked — released the stop claim; try again.")
+            return
+        task.add_done_callback(_release)
         return
     if verb in ("lanes", "concurrency"):
         app.system_message(_set_lanes(app, rest[0] if rest else ""))
