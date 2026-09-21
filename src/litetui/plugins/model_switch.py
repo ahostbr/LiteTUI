@@ -251,28 +251,36 @@ def _cmd_engine(app, name: str, arg: str) -> None:
     if verb == "stop":
         # Off-loop: stop_engine() blocks for seconds (terminate + drain proof). Claim
         # the stop synchronously FIRST (rejects a double stop and an in-flight start),
-        # then run it in a worker so the UI/loop stays responsive; release only after
-        # the callback joins. Reuses agent_preparation.await_preparation (to_thread +
-        # shield + cancel-join) — no duplicate helper.
+        # then run it off the loop so the UI stays responsive. Reuses
+        # agent_preparation.await_preparation (to_thread + shield + cancel-join) — no
+        # duplicate helper.
+        import asyncio
+
         from litetui import agent_preparation
 
         if not backend.begin_stop():
-            app.system_message("NInfer engine is busy (a stop or start is already running) — try again shortly.")
+            app.system_message("NInfer engine is busy (a start or stop is already running) — try again shortly.")
             return
 
         async def _go(target=backend):
             try:
                 app.system_message(await agent_preparation.await_preparation(target.stop_engine))
-            finally:
-                target.end_stop()
+            except asyncio.CancelledError:
+                raise                       # await_preparation already joined the worker
+            except Exception as exc:        # noqa: BLE001 - don't crash the loop; type-only
+                app.system_message(f"engine stop failed: {type(exc).__name__}")
 
         coro = _go()
         try:
-            app.run_worker(coro, exclusive=False, name="ninfer-engine-stop")
-        except Exception as exc:            # noqa: BLE001 - scheduling failed: no phantom stop
-            coro.close()                    # avoid an un-awaited coroutine warning
+            task = asyncio.ensure_future(coro)
+        except Exception as exc:            # noqa: BLE001 - could not schedule: no phantom stop
+            coro.close()
             backend.end_stop()
             app.system_message(f"could not start the engine-stop worker: {type(exc).__name__}")
+            return
+        # Release the claim on ANY terminal state — success, error, OR a cancellation
+        # delivered before the coroutine body ran (which would skip _go's own cleanup).
+        task.add_done_callback(lambda _t, b=backend: b.end_stop())
         return
     if verb in ("lanes", "concurrency"):
         app.system_message(_set_lanes(app, rest[0] if rest else ""))

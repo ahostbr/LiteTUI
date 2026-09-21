@@ -332,26 +332,26 @@ class NInferBackend(_VramGate):
         #: The engine WE started via /engine start (Ryan a-35456da0: "LiteTUI may
         #: start it"), else None = attached to one somebody else runs.
         self._owned: ninfer_engine.OwnedEngine | None = None
-        #: A stop-in-progress claim: True while /engine stop runs off-loop. It blocks
-        #: a new start (and NInfer's only load door IS start_engine — load() is frozen)
-        #: so a restart cannot race the drain. Set synchronously by begin_stop() before
-        #: the worker is scheduled; cleared by end_stop() only after the stop joins.
+        #: Mutually-exclusive lifecycle claims, both set SYNCHRONOUSLY (no await between
+        #: the check and the set) so start and stop can never run concurrently on the
+        #: same backend. _starting is held for the WHOLE spawn — including the
+        #: cancellation JOIN — because a spawn thread outlives a cancelled await, so a
+        #: start that is cancelled must still block a stop until its thread has finished
+        #: (otherwise the stop snapshots none/old state and the late spawn orphans a
+        #: process). _stopping is held for the whole off-loop stop.
+        self._starting = False
         self._stopping = False
 
     def begin_stop(self) -> bool:
         """Claim a stop-in-progress, synchronously and atomically (no await inside).
 
-        False (reject, do not overlap) if a stop is already running OR a load/start is
-        IN FLIGHT: `_vram_owner` is the task currently inside vram_guard, and
-        start_engine is NInfer's only load/start door. Claiming while a start is
-        spawning would let it finish a NEW owned process after the stop snapshots the
-        old/none state, orphaning it. Fail closed on any in-flight vram operation.
-
-        This pairs with start_engine's post-gate re-check: if a start passed its entry
-        check but had not yet taken the gate when this claim landed, it aborts before
-        spawning; if it already holds the gate, `_vram_owner` is set and this rejects.
+        False (reject, do not overlap) if a stop is already running OR a start is in
+        flight (_starting). _starting is a DEDICATED claim held across the spawn's
+        cancellation join — unlike _vram_owner, which a cancelled asyncio.to_thread
+        releases while the spawn thread is still running (the orphan race). start_engine
+        is NInfer's only load/start door (load() is frozen), so this covers new loads.
         """
-        if self._stopping or getattr(self, "_vram_owner", None) is not None:
+        if self._stopping or self._starting:
             return False
         self._stopping = True
         return True
@@ -578,17 +578,38 @@ class NInferBackend(_VramGate):
         the spawn and never on a refusal (T865). It runs on the worker thread, so a
         UI caller must marshal it back itself.
         """
+        from litetui import agent_preparation
+
+        # Claim _starting SYNCHRONOUSLY, before the first await, and reject a concurrent
+        # start or a stop already in flight. Held (via the finally, which runs only AFTER
+        # the spawn's cancellation JOIN) for the whole spawn, so a stop cannot be admitted
+        # while a possibly-cancelled spawn thread is still running.
         if self._stopping:
             raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
-        key = "ninfer-serve"
-        async with self.vram_guard(key):
-            if self._stopping:   # a stop claimed the backend after our entry check
-                raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
-            owned = await asyncio.to_thread(
-                ninfer_engine.start, self._settings, healthy=self._health, notice=notice)
-        self._owned = owned
-        self._host = owned.host
-        return f"started ninfer-serve pid {getattr(owned.proc, 'pid', '?')} at {owned.host} ({owned.model_id})"
+        if self._starting:
+            raise BackendError("a NInfer engine start is already in progress.")
+        self._starting = True
+        try:
+            key = "ninfer-serve"
+
+            def _spawn_and_publish():
+                owned = ninfer_engine.start(
+                    self._settings, healthy=self._health, notice=notice)
+                # Publish INSIDE the thread, before returning: a cancellation delivered
+                # after the join must not lose an engine that actually started.
+                self._owned = owned
+                self._host = owned.host
+                return owned
+
+            async with self.vram_guard(key):
+                if self._stopping:   # a stop claimed the backend after our entry check
+                    raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
+                # await_preparation runs the blocking spawn off-loop and JOINS the thread
+                # on cancellation (a raw to_thread would orphan it), then re-raises.
+                owned = await agent_preparation.await_preparation(_spawn_and_publish)
+            return f"started ninfer-serve pid {getattr(owned.proc, 'pid', '?')} at {owned.host} ({owned.model_id})"
+        finally:
+            self._starting = False
 
     def stop_engine(self) -> str:
         if self._owned is None:
@@ -605,11 +626,10 @@ class NInferBackend(_VramGate):
             if entry and entry.get("owner") == "litetui" and entry.get("pid"):
                 host = entry["baseUrl"]
                 if ninfer_engine.stop_registered(entry):
-                    # stop_registered returns True when a process was SIGNALLED
-                    # (taskkill), not on a confirmed exit — so this does not claim
-                    # "stopped". (The registry-authority logic here is unchanged; a
-                    # confirmed-exit proof for this no-handle path is a separate slice.)
-                    return (f"stop signalled for the engine LiteTUI started at {host} "
+                    # stop_registered returns True even if taskkill raised (it always
+                    # unregisters), so this is at most a REQUEST, never a confirmed exit.
+                    # (Its fail-closed authority is a separate, coordinated slice.)
+                    return (f"stop requested for the engine LiteTUI started at {host} "
                             f"(pid {entry['pid']}, from the registry — this session did "
                             f"not hold its handle); exit not confirmed.")
             reg = entry["baseUrl"] if entry else discover_ninfer_host()
@@ -622,7 +642,11 @@ class NInferBackend(_VramGate):
         # TerminalShutdown and may retain on an unconfirmed exit.
         if getattr(result, "main_exited", False) and not getattr(result, "retained", True):
             if getattr(result, "tree", "unknown") == "confirmed":
-                return f"stopped the engine LiteTUI started at {host}."
+                # 'confirmed' proves the job's ASSIGNED members drained — not that every
+                # descendant is gone (a child spawned before job assignment is not a
+                # member). So the wording stays scoped, never "the whole tree".
+                return (f"stopped the engine LiteTUI started at {host} — its main process "
+                        f"and assigned members are confirmed gone.")
             return (f"stopped the engine LiteTUI started at {host} — the main process "
                     f"exited, but child-process VRAM release is unconfirmed.")
         return (f"stop requested for the engine at {host}, but exit was NOT confirmed "
