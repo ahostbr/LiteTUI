@@ -136,46 +136,103 @@ class BackendSnapshot:
     gpu_uuids: tuple
 
 
+def _snapshot_stable(snapshot) -> bool:
+    """True iff the snapshot's executable and artifact still match their captured
+    stat-identities — the file is not mid-write/replaced right now."""
+    if _stat_identity(snapshot.exe_path) != tuple(snapshot.exe_stat):
+        return False
+    if snapshot.artifact_path and _stat_identity(snapshot.artifact_path) != tuple(snapshot.artifact_stat):
+        return False
+    return True
+
+
+def validate_identity(identity, snapshot):
+    """Canonicalize a producer result, or None if it is not a COMPLETE identity
+    BOUND to this snapshot.
+
+    A `{}` / partial dict / extra-key dict / any missing-or-invalid field is
+    rejected. host/build/artifact_fingerprint must be non-blank (real evidence);
+    device_set a non-empty tuple of non-blank strings; and the config fields must
+    MATCH the snapshot AND the device_set must equal the snapshot's EXPLICIT
+    placement (so a producer cannot return an identity for another config, and an
+    unknown device_index — placement None — can never validate). Returns a fresh
+    canonical dict (device_set a tuple) that shares no mutable state with the input.
+    """
+    from litetui.resource_calibration import IDENTITY_FIELDS
+    if not isinstance(identity, dict) or set(identity) != set(IDENTITY_FIELDS):
+        return None
+    for key in ("host", "build", "artifact_fingerprint", "backend", "endpoint", "model"):
+        if not isinstance(identity.get(key), str) or not identity[key].strip():
+            return None
+    if type(identity.get("concurrency")) is not int or identity["concurrency"] <= 0:
+        return None
+    context = identity.get("context")
+    if context is not None and (type(context) is not int or context <= 0):
+        return None
+    if not isinstance(identity.get("artifact"), str) or not isinstance(identity.get("load_shape"), str):
+        return None
+    devices = identity.get("device_set")
+    if not isinstance(devices, (list, tuple)) or not devices:
+        return None
+    if any(not isinstance(d, str) or not d.strip() for d in devices):
+        return None
+    device_set = tuple(devices)
+    if (identity["endpoint"] != snapshot.endpoint
+            or identity["model"] != snapshot.model
+            or context != snapshot.context
+            or identity["concurrency"] != snapshot.concurrency
+            or identity["load_shape"] != snapshot.load_shape):
+        return None
+    if device_set != explicit_device_uuid(snapshot.device_index, tuple(snapshot.gpu_uuids)):
+        return None
+    canonical = dict(identity)
+    canonical["device_set"] = device_set
+    return canonical
+
+
 class IdentityPreparationCache:
     """Backend-owned: async prepare (off-loop) + sync resolve (fast, no hashing).
 
     prepare_async runs the injected slow `produce(snapshot)` off the event loop,
-    dedupes concurrent requests for the same snapshot, and publishes ONLY a
-    complete non-None identity (a cancelled awaiter never publishes a partial one).
-    resolve is a pure lookup that revalidates the file stats before returning; a
-    config change is already a cache miss because the config is in the key.
+    dedupes concurrent requests to one shielded compute, and publishes ONLY a value
+    that `validate` accepts as a COMPLETE identity bound to the snapshot AND that
+    passes a post-compute stat recheck. A producer error fails closed (nothing
+    published). A cancelled sole awaiter does not publish (its compute stops with
+    it); a concurrent awaiter of the same compute still publishes. resolve is a pure
+    lookup that re-stats before returning and hands back a FRESH copy, so a config
+    change is a miss and a caller can never mutate the cached identity.
     """
 
     def __init__(self):
         self._done: dict = {}
         self._inflight: dict = {}
 
-    async def prepare_async(self, snapshot, *, produce):
-        if snapshot in self._done:
-            return self._done[snapshot]
+    async def prepare_async(self, snapshot, *, produce, validate=None):
+        validate = validate or validate_identity
+        cached = self.resolve(snapshot)              # cached path re-stats + copies
+        if cached is not None:
+            return cached
         future = self._inflight.get(snapshot)
         if future is None:
             future = asyncio.ensure_future(asyncio.to_thread(produce, snapshot))
-
-            def _publish(fut, snap=snapshot):
-                self._inflight.pop(snap, None)
-                if not fut.cancelled() and fut.exception() is None and fut.result() is not None:
-                    self._done[snap] = fut.result()
-
-            future.add_done_callback(_publish)
             self._inflight[snapshot] = future
-        # shield: a cancelled awaiter must not cancel the shared compute (which
-        # other callers may still be awaiting) nor leave a half-done publish.
-        return await asyncio.shield(future)
+            future.add_done_callback(lambda fut, snap=snapshot: self._inflight.pop(snap, None))
+        try:
+            result = await asyncio.shield(future)
+        except asyncio.CancelledError:
+            raise
+        except Exception:                            # noqa: BLE001 - producer error fails closed
+            return None
+        canonical = validate(result, snapshot)
+        if canonical is not None and _snapshot_stable(snapshot):
+            self._done.setdefault(snapshot, dict(canonical))   # store a defensive copy
+        return self.resolve(snapshot)
 
     def resolve(self, snapshot):
-        identity = self._done.get(snapshot)
-        if identity is None:
+        stored = self._done.get(snapshot)
+        if stored is None:
             return None
-        if _stat_identity(snapshot.exe_path) != tuple(snapshot.exe_stat):
-            self._done.pop(snapshot, None)     # executable changed since prepare
+        if not _snapshot_stable(snapshot):
+            self._done.pop(snapshot, None)           # exe/artifact changed since prepare
             return None
-        if snapshot.artifact_path and _stat_identity(snapshot.artifact_path) != tuple(snapshot.artifact_stat):
-            self._done.pop(snapshot, None)     # artifact changed since prepare
-            return None
-        return identity
+        return dict(stored)                          # fresh copy; caller cannot mutate the cache
