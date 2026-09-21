@@ -457,6 +457,11 @@ def read_server_configs(cfg_paths: list[Path]) -> tuple[dict[str, dict], dict[st
             )
             errors[p.name] = f"unreadable: {e}"
             continue
+        if not isinstance(data, dict):
+            # Valid JSON, wrong top-level type ([], null, 42): a config error, not
+            # an AttributeError on data.get(...). Reported so reconcile preserves.
+            errors[p.name] = "not a JSON object"
+            continue
         block = data.get("mcpServers") or data.get("servers") or {}
         if not isinstance(block, dict):
             continue
@@ -573,6 +578,15 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         #: connect is allowed, so a connect racing after stop_all cannot start a
         #: server that would then leak (never be stopped).
         self._closing = False
+        #: SHORT lock guarding the servers-dict itself, so read-side APIs
+        #: (tool_specs/dispatch/describe/status_line) snapshot coherently without
+        #: blocking on the long _op_lock while a connect/stop runs. Every dict
+        #: mutation and every snapshot takes it, briefly.
+        self._servers_lock = threading.Lock()
+        #: Names whose stop() failed and whose process is unresolved. A connect
+        #: to such a name is refused (never reconnect over a possibly-live
+        #: process) until it is cleared by a successful later stop.
+        self._stop_failed: set[str] = set()
 
     # ── plumbing ────────────────────────────────────────────────────────────
     def _log(self):
@@ -644,6 +658,10 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             # A connect racing after stop_all would start a server nothing will
             # ever stop. Refuse rather than leak it.
             return "closing: the MCP manager is shutting down"
+        if name in self._stop_failed:
+            # An earlier stop() did not confirm; the old process may still be
+            # live. Never start a second one over it.
+            return f"stop unresolved for {name!r}: restart required before reconnecting"
         sc = self.configs.get(name)
         if not isinstance(sc, dict):
             return f"no server named {name!r} in {' / '.join(MCP_CONFIG_NAMES)}"
@@ -662,9 +680,15 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 error_type=type(e).__name__,
             )
             self.failures[name] = f"{type(e).__name__}: {e}"
-            srv.stop()
+            try:
+                srv.stop()
+            except Exception:
+                # A failed start whose cleanup also fails must not let the start
+                # error escape as an exception — it is a returned failure.
+                pass
             return self.failures[name]
-        self.servers[name] = srv
+        with self._servers_lock:
+            self.servers[name] = srv
         self.failures.pop(name, None)          # a success clears the old error
         return None
 
@@ -676,7 +700,8 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         it persist is `mcp_disabled_servers`' job, and conflating the two would
         mean a transient disconnect quietly rewrote the user's config.
         """
-        srv = self.servers.pop(name, None)
+        with self._servers_lock:
+            srv = self.servers.pop(name, None)
         if srv is None:
             return False
         try:
@@ -690,6 +715,15 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 operation="stop",
                 error_type=type(e).__name__,
             )
+            # RETAIN ownership + quarantine: a failed stop leaves a possibly-live
+            # process, so keep the handle and refuse a reconnect until a later
+            # stop confirms. Reporting "disconnected" here would be a lie.
+            with self._servers_lock:
+                self.servers[name] = srv
+            self._stop_failed.add(name)
+            self.failures[name] = f"stop failed: {type(e).__name__}: {e}"
+            return True
+        self._stop_failed.discard(name)   # a clean stop resolves any quarantine
         return True
 
     # ── exclusion claim (short lock) + public claim-guarded wrappers ─────────
@@ -768,9 +802,27 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 self.configs = merged
                 new_set, prior_set = set(merged), set(prior_cfg)
                 outcomes: dict[str, str] = {}
+
+                def _drop(name: str) -> str:
+                    """Disconnect and report honestly: a failed stop is quarantined
+                    and reported failed (ownership retained), not 'disconnected'."""
+                    self._disconnect_locked(name)
+                    return (f"failed: {self.failures.get(name, 'stop failed')}"
+                            if name in self._stop_failed else "disconnected")
+
                 for name in sorted(new_set):
                     sc = merged[name]
-                    if not isinstance(sc, dict) or sc.get("disabled"):
+                    if not isinstance(sc, dict):
+                        # Invalid entry: never startable. Disconnect if running,
+                        # report failed rather than silently skipping.
+                        outcomes[name] = _drop(name) if name in self.servers else \
+                            "failed: invalid config entry (not an object)"
+                        continue
+                    if sc.get("disabled"):
+                        # A declared-but-disabled server must match load()'s policy:
+                        # not running. Disconnect it if it is.
+                        if name in self.servers:
+                            outcomes[name] = _drop(name)
                         continue
                     if name not in self.servers:
                         err = self._connect_locked(name)
@@ -778,11 +830,13 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                     elif prior_cfg.get(name) != sc:
                         # exclusive endpoint forces stop-then-start (outage window)
                         self._disconnect_locked(name)
+                        if name in self._stop_failed:
+                            outcomes[name] = f"failed (stop unresolved): {self.failures.get(name, '')}"
+                            continue
                         err = self._connect_locked(name)
                         outcomes[name] = "reconnected" if err is None else f"failed (outage): {err}"
                 for name in sorted((prior_set & set(self.servers)) - new_set):
-                    self._disconnect_locked(name)
-                    outcomes[name] = "disconnected"
+                    outcomes[name] = _drop(name)
                 return outcomes
         finally:
             self._release_claim()
@@ -794,25 +848,37 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         must remain visible, or the UI offers no way to stop the thing the user
         can see in their process list.
         """
-        names = list(self.configs) + [n for n in self.servers if n not in self.configs]
+        with self._servers_lock:
+            servers = dict(self.servers)            # coherent snapshot, short lock
+        names = list(self.configs) + [n for n in servers if n not in self.configs]
         rows = []
         for name in names:
-            sc = self.configs.get(name) or {}
-            srv = self.servers.get(name)
+            raw = self.configs.get(name)
+            sc = raw if isinstance(raw, dict) else {}
+            invalid_entry = raw is not None and not isinstance(raw, dict)
+            srv = servers.get(name)
             declared = name in self.configs
             # ORPHAN OUTRANKS CONNECTED, and that ordering is the point: a
             # running server the file no longer declares IS connected, so the
             # obvious `if srv: "connected"` is true and useless — it hides the
             # one fact the user needs, which is that a restart will not bring
             # this back. Naming the state is the only way the row can say so.
-            if srv is not None:
+            srv_error = getattr(srv, "error", None) if srv is not None else None
+            if invalid_entry:
+                state, error = "failed", "invalid config entry (not an object)"
+            elif srv is not None and srv_error:
+                # A running transport that has POISONED at runtime is not healthy;
+                # surface it rather than reporting a bare "connected".
+                state, error = "failed", srv_error
+            elif srv is not None:
                 state = "connected" if declared else "orphan"
+                error = self.failures.get(name)
             elif name in self.failures:
-                state = "failed"
+                state, error = "failed", self.failures.get(name)
             elif sc.get("disabled"):
-                state = "disabled"
+                state, error = "disabled", None
             else:
-                state = "stopped"
+                state, error = "stopped", None
             http = bool(sc.get("url") and not sc.get("command"))
             rows.append(
                 {
@@ -821,14 +887,16 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                     "target": sc.get("url") or sc.get("command") or "",
                     "state": state,
                     "tools": len(srv.tools) if srv is not None else 0,
-                    "error": self.failures.get(name),
+                    "error": error,
                 }
             )
         return rows
 
     def tool_specs(self) -> list[dict]:
         specs: list[dict] = []
-        for sname, srv in self.servers.items():
+        with self._servers_lock:
+            servers = list(self.servers.items())    # snapshot; no size-change race
+        for sname, srv in servers:
             for t in srv.tools:
                 tname = t.get("name")
                 if not tname:
@@ -848,7 +916,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
 
     def dispatch(self) -> dict:
         table = {}
-        for sname, srv in self.servers.items():
+        with self._servers_lock:
+            servers = list(self.servers.items())    # snapshot; closures bind these refs
+        for sname, srv in servers:
             for t in srv.tools:
                 tname = t.get("name")
                 if not tname:
@@ -875,7 +945,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         return table
 
     def status_line(self) -> str:
-        bits = [f"{n}:{len(s.tools)}" for n, s in self.servers.items()]
+        with self._servers_lock:
+            servers = list(self.servers.items())
+        bits = [f"{n}:{len(s.tools)}" for n, s in servers]
         for n, err in self.failures.items():
             bits.append(f"{n}:FAILED")
         return " · ".join(bits)
@@ -948,7 +1020,12 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                         if other is not None:
                             return f"{name!r} is declared in {other.name}, which /mcp does not write"
                         return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
-                    self._disconnect_locked(name)
+                    # Only stop the running server if THIS (.mcp.json) entry is
+                    # the effective one. If a higher-precedence mcp.json also
+                    # declares it, that server stays effective and running —
+                    # stopping it here would leave it declared-but-stopped.
+                    if shadowing_file(self.root, name) is None:
+                        self._disconnect_locked(name)
                     del block[name]
                     doc["mcpServers"] = block
                     _save_doc(path, doc)
@@ -967,8 +1044,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         # shutdown will not see.
         self._closing = True
         with self._op_lock:
-            servers = list(self.servers.values())
-            self.servers.clear()
+            with self._servers_lock:
+                servers = list(self.servers.values())
+                self.servers.clear()
         for s in servers:
             try:
                 s.stop()
