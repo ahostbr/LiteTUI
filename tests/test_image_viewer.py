@@ -284,6 +284,45 @@ def test_init_binds_env_selected_class_and_seeds_cell_cache(monkeypatch):
         iv._IMAGE_WIDGET_CLS = saved
 
 
+@pytest.mark.parametrize("dimensions, expected", [
+    (("", ""), (10, 20)),
+    (("9", "18"), (9, 18)),
+    (("0", "-2"), (10, 20)),
+])
+def test_malformed_size_reply_is_cached_before_widget_import(monkeypatch, dimensions, expected):
+    """A fresh process exercises the import-time query that crashed run.bat."""
+    import subprocess
+    import sys
+    import textwrap
+
+    monkeypatch.setenv("TEXTUAL_CELL_WIDTH", dimensions[0])
+    monkeypatch.setenv("TEXTUAL_CELL_HEIGHT", dimensions[1])
+    code = textwrap.dedent('''
+        import os
+        import textual_image._terminal as terminal
+        import litetui.image_viewer as viewer
+
+        calls = []
+        def noisy_size_reply():
+            if hasattr(noisy_size_reply, "_result"):
+                return noisy_size_reply._result
+            calls.append("probe")
+            raise ValueError("invalid literal for int() with base 10: '<35'")
+        terminal.get_cell_size = noisy_size_reply
+        os.environ["WT_SESSION"] = "regression"
+        viewer._log_backend_init = lambda: None
+        widget = viewer.init_image_backend()
+        assert widget.__module__ == "textual_image.widget.sixel"
+        expected = tuple(map(int, os.environ["EXPECTED_CELL"].split(",")))
+        assert tuple(noisy_size_reply()) == expected
+        assert viewer.init_image_backend() is widget
+        assert calls == ["probe"], calls
+    ''')
+    monkeypatch.setenv("EXPECTED_CELL", ",".join(map(str, expected)))
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_make_image_uses_env_selected_class(monkeypatch):
     """The composed widget is the env-selected class, with the #iv-img id."""
     import litetui.image_viewer as iv

@@ -174,13 +174,27 @@ def init_image_backend() -> Any:
     except Exception:
         return None
 
-    from textual_image._terminal import get_cell_size
-    from textual_image import widget as ti_widget
+    from textual_image._terminal import CellSize, get_cell_size
 
     try:
         get_cell_size()  # seed the cache while we still own stdin
     except Exception:
-        pass  # no tty at all: render path degrades to env/defaults, same as before
+        # Mouse/input escape sequences can interleave with the size reply.
+        # The dependency's parser may raise ValueError instead of TerminalError.
+        # Seed its documented fallback BEFORE importing widget: that import
+        # calls get_cell_size itself, outside our guarded probe. Caching also
+        # prevents a retry after Textual takes ownership of terminal input.
+        width = os.environ.get("TEXTUAL_CELL_WIDTH", "")
+        height = os.environ.get("TEXTUAL_CELL_HEIGHT", "")
+        try:
+            cell = CellSize(int(width), int(height))
+            if cell.width <= 0 or cell.height <= 0:
+                raise ValueError("non-positive cell size")
+        except ValueError:
+            cell = CellSize(10, 20)
+        get_cell_size.__dict__["_result"] = cell
+
+    from textual_image import widget as ti_widget
 
     backend = select_backend()
     # Env fast-path missed (WT vars stripped by the launcher)? Ask the terminal
