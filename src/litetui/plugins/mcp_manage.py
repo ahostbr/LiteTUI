@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 
 from litetui.plugins import PluginManifest
+from litetui.friendly_errors import present
 
 USAGE = (
     "/mcp                     list every server, its state and tool count\n"
@@ -66,7 +67,8 @@ def _render(app) -> str:
         bits.append(f"{r['tools']:>2} tools" if r["state"] == "connected" else "        ")
         bits.append(r["target"][:60])
         line = "  ".join(b for b in bits if b.strip() or True)
-        note = r["error"] or _STATE_NOTE.get(r["state"], "")
+        note = (present(r["error"], app.settings.error_message_style, surface=f"mcp:{r['name']}")
+                if r["error"] else _STATE_NOTE.get(r["state"], ""))
         if note:
             line += f"\n      {note}"
         lines.append(line)

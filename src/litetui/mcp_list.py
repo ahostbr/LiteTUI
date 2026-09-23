@@ -25,6 +25,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Button, Input, Static
 
+from litetui.friendly_errors import present
 from litetui.mcp_client import WRITE_CONFIG_NAME
 from litetui.side_panel import SwapButton, close_dialog
 
@@ -106,7 +107,8 @@ class MCPListBody(Widget):
             if note:
                 yield Static(note, classes="mcp-detail", markup=False)
             if row["error"]:
-                yield Static(row["error"], classes="mcp-error", markup=False)
+                yield Static(present(row["error"], app.settings.error_message_style, surface=f"mcp:{row['name']}"),
+                             classes="mcp-error", markup=False)
             # 🔴 CONSTRUCTED, NOT `with Horizontal(...)`. The context-manager
             # form appends to `app._compose_stacks`, which only exists while
             # compose() is running — and this generator runs AGAIN on every
@@ -180,7 +182,8 @@ class MCPListBody(Widget):
     # ── actions ──────────────────────────────────────────────────────────
     def _say(self, text: str) -> None:
         try:
-            self.query_one("#mcp-status", Static).update(text)
+            self.query_one("#mcp-status", Static).update(
+                present(text, self.app.settings.error_message_style, surface="mcp"))
         except Exception:
             pass
 

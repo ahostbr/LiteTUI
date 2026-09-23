@@ -35,7 +35,7 @@ from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
 from litetui import runtime_log
-from litetui.friendly_errors import display_error
+from litetui.friendly_errors import present
 from litetui.conversation import (
     CONVO_SEED_FILES,
     TRANSCRIPT_NAME,
@@ -4234,7 +4234,8 @@ class LiteTUI(App):
                 exc=e,
             )
             self.sub_title = "Disconnected"
-            self._system(_plain_backend_error(e, self.backend))
+            self._system(str(e) if self.settings.error_message_style == "detail"
+                         else _plain_backend_error(e, self.backend))
         finally:
             # 🔴 T869 — IN `finally`, NOT AT THE END OF THE `try`. The case that
             # pays the whole ten-second poll is the one where connect RAISED
@@ -5165,9 +5166,7 @@ class LiteTUI(App):
         **in scope** to replace it with. Ask "is X reachable from every call
         site?" before scheduling any "seal it behind X" step.
         """
-        shown = display_error(text, self.settings.error_message_style)
-        if shown != text:
-            runtime_log.record_error("user_message_simplified", detail=text)
+        shown = present(text, self.settings.error_message_style)
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(shown), classes="system-msg"))
         self._scroll_down()
@@ -6025,7 +6024,9 @@ class LiteTUI(App):
                 detail=f"{type(e).__name__}: {e}",
                 exc=e,
             )
-            self.notify("Paste failed — the clipboard did not hold a readable image.", severity="error", timeout=3)
+            self.notify(present(f"Paste failed: {type(e).__name__}: {e}",
+                                self.settings.error_message_style, surface="paste"),
+                        severity="error", timeout=3)
 
     # ── Modal callbacks ──────────────────────────────────────────
 
@@ -7131,7 +7132,10 @@ class LiteTUI(App):
                             "so the next message can go through."
                         )
                 widget.body.content = Text(
-                    takeover or _plain_backend_error(e, self.backend), style="bold red"
+                    present(takeover or (str(e) if self.settings.error_message_style == "detail"
+                                         else _plain_backend_error(e, self.backend)),
+                            self.settings.error_message_style, surface="backend"),
+                    style="bold red"
                 )
                 widget.border_title = "Error"
                 self._settle_turn_stop_line(
@@ -7377,7 +7381,10 @@ class LiteTUI(App):
                             "so the next message can go through."
                         )
                 widget.body.content = Text(
-                    takeover or _plain_backend_error(e, self.backend), style="bold red"
+                    present(takeover or (str(e) if self.settings.error_message_style == "detail"
+                                         else _plain_backend_error(e, self.backend)),
+                            self.settings.error_message_style, surface="backend"),
+                    style="bold red"
                 )
                 widget.border_title = "Error"
                 self._settle_turn_stop_line(
@@ -7540,7 +7547,8 @@ class LiteTUI(App):
                 result = sanitize.redact_secrets(result)
                 sanitize.reset_terminal_modes()
                 if msg is not None:
-                    msg.set_result(result, ok)
+                    msg.set_result(present(result, self.settings.error_message_style, surface="tool")
+                                   if not ok else result, ok)
                     self._tool_end(msg)
                 self._scroll_down()
                 self._append(
@@ -7835,7 +7843,9 @@ class LiteTUI(App):
             try:
                 self.register_theme(themes_mod.theme_from_tokens(name, tokens))
             except Exception as e:
-                self.notify(f"custom theme {name!r} skipped: {e}", severity="warning")
+                self.notify(present(f"custom theme {name!r} skipped: {e}",
+                                    getattr(self.settings, "error_message_style", "plain"), surface="theme"),
+                            severity="warning")
 
     def watch_theme(self, theme_name: str) -> None:
         """Persist a theme change, wherever it came from (palette, settings).
@@ -8150,7 +8160,9 @@ class LiteTUI(App):
                             result = f"[error] {type(e).__name__}: {e}"
                             ok = False
                     if i in tool_msgs:
-                        tool_msgs[i].set_result(str(result), ok)
+                        tool_msgs[i].set_result(
+                            present(str(result), self.settings.error_message_style, surface="tool")
+                            if not ok else str(result), ok)
                     ask.append({
                         "role": "tool",
                         "tool_call_id": slot["id"] or f"call_{i}",

@@ -30,6 +30,8 @@ from dataclasses import fields, replace
 from functools import partial
 from typing import Any
 
+from litetui.friendly_errors import present
+
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -1602,6 +1604,10 @@ class SettingsBody(Widget):
                 # persistence still receives the explicit target patch.
                 continue
 
+    def _show_error(self, raw: str, *, surface: str = "settings") -> None:
+        mode = getattr(getattr(self.app, "settings", None), "error_message_style", "plain")
+        self.query_one("#set-error", Static).update(present(raw, mode, surface=surface))
+
     def _show_save_result(self, result) -> None:
         messages: list[str] = []
         saved = [item.destination for item in result.persistence if item.saved]
@@ -1609,7 +1615,7 @@ class SettingsBody(Widget):
         if saved:
             messages.append(f"Saved: {', '.join(saved)}")
         if failed:
-            messages.append(f"Save failed — {failed}")
+            messages.append(present(f"Save failed — {failed}", self.app.settings.error_message_style, surface="settings"))
         if result.has_pending_runtime:
             messages.append("Runtime changes are pending")
         if result.has_runtime_failures:
@@ -1618,7 +1624,7 @@ class SettingsBody(Widget):
                 for item in result.runtime
                 if item.status == "failed"
             )
-            messages.append(f"Runtime apply failed — {runtime_errors}")
+            messages.append(present(f"Runtime apply failed — {runtime_errors}", self.app.settings.error_message_style, surface="settings"))
         self.query_one("#set-error", Static).update(" · ".join(messages))
         retry = self.query("#set-retry")
         if retry:
@@ -1629,9 +1635,7 @@ class SettingsBody(Widget):
         try:
             result = self._settings_adapter.save(new, force_fields=force_fields)
         except Exception as exc:  # noqa: BLE001 - name the UI boundary failure
-            self.query_one("#set-error", Static).update(
-                f"Cannot save — {type(exc).__name__}: {exc}"
-            )
+            self._show_error(f"Cannot save — {type(exc).__name__}: {exc}")
             return
         if result is None:
             # Legacy host contract: the app owns persistence and receives the
@@ -1656,7 +1660,7 @@ class SettingsBody(Widget):
         try:
             new = self._collect()
         except ValueError as e:
-            self.query_one("#set-error", Static).update(f"[b]Cannot save[/b] — {e}")
+            self._show_error(f"Cannot save — {e}", surface="validation")
             field_name = str(e).split(":", 1)[0].strip()
             if field_name:
                 try:
@@ -1670,14 +1674,10 @@ class SettingsBody(Widget):
         try:
             result = self._settings_adapter.retry()
         except SettingsConflictError as exc:
-            self.query_one("#set-error", Static).update(
-                f"Cannot retry — reload required for {', '.join(exc.destinations)}"
-            )
+            self._show_error(f"Cannot retry — reload required for {', '.join(exc.destinations)}")
             return
         except Exception as exc:  # noqa: BLE001 - name the UI boundary failure
-            self.query_one("#set-error", Static).update(
-                f"Cannot retry — {type(exc).__name__}: {exc}"
-            )
+            self._show_error(f"Cannot retry — {type(exc).__name__}: {exc}")
             return
         self._last_save_result = result
         if result.fully_saved and not result.has_pending_runtime and not result.has_runtime_failures:

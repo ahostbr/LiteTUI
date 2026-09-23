@@ -1,20 +1,24 @@
 # User-facing diagnostics inventory (LT-FRIENDLY-ERRORS)
 
-Source survey on branch `agent/cobaltridge-friendly-errors`. Line references are source locations (not rendered-line offsets); dynamic text may vary. `system_message` (app.py:5146-5174) is the shared chat-log boundary for app/plugin system lines; `friendly_errors.display_error` recognizes MCP connection/config failures there, retains unrecognized messages verbatim, and logs rewritten original lines through `runtime_log.record_error` (runtime_log.py:283). Full Detail bypasses rewriting. This is a **surface inventory**, not a claim that each individual error string has a bespoke rewrite.
+Source survey on branch `agent/cobaltridge-friendly-errors`. `present` is the shared presentation mapper: recognized Plain Talk copy is logged with its raw source; Full Detail returns exact originals. An unchanged known message may already be actionable at its source. Unknown error families are not assigned an invented recovery step.
 
-| Surface | Source locations | Current handling / risk |
+| Surface | Source locations | Presentation |
 | --- | --- | --- |
-| Startup MCP bridge connect | app.py:1964-1990; mcp_client.py:331-344 | `[!] mcp name: MCPError: cannot reach URL: reason`; Plain Talk explains offline bridge, chat continuity, startup action. |
-| MCP management command and status | plugins/mcp_manage.py:45-77, 129-195 | Status rows and `Could not connect/reconnect`, declaration errors; command notices pass through shared chat boundary. Status row is **not** a system-message classification target when embedded in multi-line listings. |
-| Backend initial connect/model availability | app.py:4110-4237, llm_backend.py:940-965 | Exception logged raw and summarized by `_plain_backend_error` (app.py:415-485), backend-specific recovery hint. |
-| Streaming/backend turn failure | app.py:7099-7140, 7343-7389 | Error card uses `_plain_backend_error`; raw exception recorded separately. Card is outside `system_message`, so Full Detail does **not** change card copy yet. |
-| Tool execution/argument errors | app.py:2678-2683, 7510-7517, 8143-8151; plugins/__init__.py:460-498 | Tool-result/card and plugin status channels, not generic chat lines; technical result stays available to model. |
-| Context/model load and inference | app.py:4880-4914; plugins/model_switch.py:164-178, 286-312, 418-430, 546-595, 1075-1174 | Command and settings messages mostly through `system_message`; known backend wording already supplied at source. |
-| Settings validation/save/runtime apply | settings_screen.py:254-263, 1410-1440, 1595-1630, 1650-1668 | Inline `#set-error` (not chat boundary), field-specific validation and persistence failure detail stays visible in both modes. |
-| Auth/provider and plugin import | app.py:4180-4237; plugins/__init__.py:600-658 | Backend errors use backend-specific explanation; plugin status registry retains exception text, not rewritten by chat boundary. |
-| Conversation persistence | app.py:2947-2965, 3150-3175 | Explicit memory-only warning; raw error recorded. |
-| Harness registration/remote services | app.py:2050-2070, 3750-3800 | Existing offline message with raw error log; remains unchanged. |
-| Paste/voice/media, theme | app.py:6014-6032, 7820-7840, 8350-8400; settings_screen.py:840-896 | Toasts or inline status, not chat system lines. |
-| Missing prompt/context files | app.py:1795-1822 | Chat warning explains reduced model context; unknown patterns preserved. |
+| Startup MCP bridge connect | app.py:1964-1990; mcp_client.py:331-344 | Chat mapper explains offline bridge and recovery. |
+| MCP management command, multiline status and dialog | plugins/mcp_manage.py:45-195; mcp_list.py:85-250 | Chat messages, each status row, and dialog status/errors map independently. |
+| Backend initial connect/model availability | app.py:4110-4237; llm_backend.py:940-965 | Source-authored Plain Talk and backend recovery; raw exception in Full Detail on connect failure. |
+| Streaming/backend turn failure | app.py:7099-7140, 7343-7389 | Card maps source-authored Plain Talk and shows exception in Full Detail. |
+| Tool execution/argument errors | app.py:2678-2683, 7510-7555, 8143-8167; plugins/__init__.py:460-498 | Known invalid arguments map on cards; other errors remain specific. Tool result sent to model stays raw. Plugin status listing maps known failures. |
+| Context/model load and inference | app.py:4880-4914; plugins/model_switch.py:164-178, 286-312, 418-430, 546-595, 1075-1174 | Existing actionable source copy passes through chat mapper; unknown messages unchanged. |
+| Settings validation/save/runtime apply | settings_screen.py:1410-1440, 1605-1685 | Validation keeps field-specific reason; persistence and runtime failures map inline, Full Detail preserves original. |
+| Auth/provider and plugin import | app.py:4180-4237; plugins/__init__.py:600-658 | Backend source explanations; plugin status mapped only when rendered, raw status retained in registry. |
+| Conversation persistence | app.py:2947-2965, 3150-3175 | Existing memory-only warning passes through chat mapper, raw logged at source. |
+| Harness registration/remote services | app.py:2050-2070, 3750-3800 | Existing offline/recovery wording passes through chat mapper, raw logged at source. |
+| Paste/voice/media, theme | app.py:6014-6032, 7820-7845, 8350-8400; settings_screen.py:840-896 | Paste and custom theme toasts map; existing source-authored voice/media validation remains unchanged. |
+| Missing prompt/context files | app.py:1795-1822 | Existing context warning passes through chat mapper. |
 
-A source-wide search of `notify(`, `system_message(`, `_system(`, `#set-error`, `record_error`, `raise BackendError`, `raise MCPError`, and plugin status assignments locates additional command-specific variants. Unknown failures deliberately remain verbatim; inventing a generic recovery action would mislead. Follow-up required for Full Detail parity on direct cards, toasts, inline settings and multi-line MCP status, and a categorized mapping for their specific error families.
+## Coverage after mapping
+
+Plain Talk and Full Detail now share `friendly_errors.present` at the chat boundary, backend turn cards, settings persistence/runtime inline feedback, MCP command and dialog status rows, plugin status listing, custom-theme and paste toasts, and invalid tool-argument cards. The tool result returned to the model remains raw. Backend initial connection and model/context load already provide source-owned actionable sentences in Plain Talk; Full Detail exposes the initial exception and turn-card exception. Conversation persistence, harness registration, missing prompt, model-load guidance, and known voice/media validation are source-authored actionable messages, so the mapper intentionally returns them unchanged. Unknown diagnostics remain unchanged instead of guessing a remedy.
+
+`present` logs rewritten originals in the runtime error sink; Full Detail bypasses rewriting. Settings validation stays field-specific instead of being masked by generic save advice.

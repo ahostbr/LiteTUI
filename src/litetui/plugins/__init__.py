@@ -572,9 +572,11 @@ def status_command(app, name: str, arg: str) -> None:
     disabled plugin reports nothing exactly when it matters). The status
     dict is insertion-ordered, which IS the load order; keys are manifest
     ids, or the module name when the module never imported."""
+    from litetui.friendly_errors import present
+
     lines = [f"{len(app.plugins.status)} plugin(s), load order:"]
     for pid, status in app.plugins.status.items():
-        lines.append(f"  {status:<9} {pid}")
+        lines.append(f"  {present(status, app.settings.error_message_style, surface='plugin'):<9} {pid}")
     app.system_message(chr(10).join(lines))
 
 
