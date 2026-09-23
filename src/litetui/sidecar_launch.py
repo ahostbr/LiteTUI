@@ -28,8 +28,17 @@ class SidecarWindow:
         self.process = None
         self.token = ""
         self._next_id = 1
+        self._exchange_lock = threading.Lock()
 
     def _exchange(self, command: str, payload: object) -> dict:
+        if not self._exchange_lock.acquire(blocking=False):
+            raise RuntimeError("Sidecar pipe is busy")
+        try:
+            return self._exchange_locked(command, payload)
+        finally:
+            self._exchange_lock.release()
+
+    def _exchange_locked(self, command: str, payload: object) -> dict:
         process = self.process
         if process is None or process.poll() is not None or process.stdin is None or process.stdout is None:
             raise RuntimeError("Sidecar child is unavailable")

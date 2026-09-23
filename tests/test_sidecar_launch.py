@@ -115,3 +115,18 @@ def test_close_reaps_child_and_closes_both_pipes(tmp_path):
     assert process.terminated
     assert process.stdin.close.called and process.stdout.close.called
     assert owner.process is None
+
+
+def test_parallel_exchange_refuses_second_reader(tmp_path):
+    process = FakeProcess()
+    owner = sidecar_launch.SidecarWindow(tmp_path / "sidecar.exe")
+    owner.process = process
+    assert owner._exchange_lock.acquire(blocking=False)
+    try:
+        import pytest
+        with pytest.raises(RuntimeError, match="busy"):
+            owner._exchange("open", {"view": "calendar"})
+        process.stdin.write.assert_not_called()
+        process.stdout.readline.assert_not_called()
+    finally:
+        owner._exchange_lock.release()
