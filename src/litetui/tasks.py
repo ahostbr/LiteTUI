@@ -365,11 +365,19 @@ def live(tasks) -> list:
     )
 
 
+def host_tasks_for_app(app) -> list[Task]:
+    """Host tasks belonging to this conversation, including finished history."""
+    convo_id = getattr(app, "convo_id", None)
+    return [row for row in getattr(app, "bg_tasks", {}).values()
+            if row.convo_id == convo_id]
+
+
 def live_for_app(app):
     """Shared visible rows; provider rows never enter the host process store."""
-    host = list(getattr(app, "bg_tasks", {}).values())
+    convo_id = getattr(app, "convo_id", None)
+    host = host_tasks_for_app(app)
     native = [row for row in getattr(app, "codex_native_activity", {}).values()
-              if row.convo_id == getattr(app, "convo_id", None)
+              if row.convo_id == convo_id
               and getattr(getattr(app, "backend", None), "name", None) == "codex"]
     return split_live([*host, *native])
 

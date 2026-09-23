@@ -39,6 +39,7 @@ def make_app():
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a.bg_tasks = {}
+    a.convo_id = "c1"
     return a
 
 

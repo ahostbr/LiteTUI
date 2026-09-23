@@ -12,7 +12,7 @@ def _cmd_tasks(app, name: str, arg: str) -> None:
     verb, _, rest = (arg or "").strip().partition(" ")
     rest = rest.strip()
     if verb in ("", "list"):
-        text = tasks_mod.render_list(app.bg_tasks.values())
+        text = tasks_mod.render_list(tasks_mod.host_tasks_for_app(app))
         from litetui.task_screens import bg_row
 
         native = [row for row in tasks_mod.live_for_app(app)[1] if hasattr(row, "thread_id")]
@@ -25,7 +25,10 @@ def _cmd_tasks(app, name: str, arg: str) -> None:
             return
         app._kill_background(rest)
     elif verb == "tail" and rest:
-        app._system(tasks_mod.tail_text(app.bg_tasks.get(rest), paths.data_root()))
+        task = app.bg_tasks.get(rest)
+        if task is not None and task.convo_id != app.convo_id:
+            task = None
+        app._system(tasks_mod.tail_text(task, paths.data_root()))
     else:
         app._system("usage: /tasks [list | kill <id> | tail <id>]")
 

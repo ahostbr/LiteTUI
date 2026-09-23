@@ -95,7 +95,8 @@ async def test_stop_pending_shell_prevents_side_effect_and_persists_killed(tmp_p
 def test_pending_stop_cannot_claim_foreign_task():
     task = tasks.new_task("powershell", {"command": "fixture"}, "convo")
     task.owner_pid = os.getpid() + 100000
-    app = type("Host", (), {"bg_tasks": {task.id: task}, "_system": lambda *args: None})()
+    app = type("Host", (), {"bg_tasks": {task.id: task}, "convo_id": "convo",
+                            "_system": lambda *args: None})()
     assert LiteTUI._kill_background(app, task.id) is not None
     assert task.state == tasks.RUNNING
 

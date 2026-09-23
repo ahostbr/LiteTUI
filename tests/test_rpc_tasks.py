@@ -36,6 +36,7 @@ def make_app():
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a.bg_tasks = {}
+    a.convo_id = "convo-1"
     # `_kill_background` posts its refusal into the chat, which needs a mounted
     # app ("No screens on stack"). Captured rather than silenced: over `--rpc`
     # that line is the second half of the answer, the same way `/think`'s

@@ -2741,7 +2741,7 @@ class LiteTUI(App):
         ignores the return and behaves exactly as before.
         """
         task = self.bg_tasks.get(task_id)
-        if task is None:
+        if task is None or task.convo_id != self.convo_id:
             reason = f"no task {task_id}"
             self._system(reason)
             return reason

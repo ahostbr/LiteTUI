@@ -435,7 +435,9 @@ def _handle_tasks(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any)
             # `to_row` is the serialiser the STORE already uses: same field set
             # on the wire and on disk, and it is what excludes the live `proc`
             # (a Popen holding a _thread.lock — deep-copying one was a crash).
-            _respond(cmd_id, ok=True, result=[t.to_row() for t in app.bg_tasks.values()])
+            from litetui import tasks as tasks_mod
+
+            _respond(cmd_id, ok=True, result=[t.to_row() for t in tasks_mod.host_tasks_for_app(app)])
         elif verb == "kill":
             task_id = cmd.get("task_id", "")
             # THE APP'S OWN BODY, the one `/tasks kill` calls: it checks the
@@ -453,7 +455,7 @@ def _handle_tasks(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any)
             # log — which does not exist until `finish` writes it.
             task_id = cmd.get("task_id", "")
             task = app.bg_tasks.get(task_id)
-            if task is None:
+            if task is None or task.convo_id != app.convo_id:
                 _respond(cmd_id, ok=False, error=f"no such task: {task_id}")
             else:
                 from litetui import paths
