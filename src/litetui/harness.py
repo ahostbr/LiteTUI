@@ -299,6 +299,28 @@ class Seat:
         self.name = name
         return True
 
+    def claim_name(self, name: str) -> bool:
+        """Claim a resumed conversation's saved name for this process's seat.
+
+        Keep the old identity if registration fails; a name shown in the footer
+        must be the one the fleet accepted, not just the one we requested.
+        """
+        name = name.strip()
+        if not name or not self.registered or harness_disabled():
+            return False
+        try:
+            argv = self._presence_argv()
+            argv[argv.index("--name") + 1] = name
+            result = _cli(argv + ["--takeover"], timeout=30)
+        except Exception as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
+            return False
+        if result.returncode != 0:
+            self.error = (result.stderr or result.stdout or "").strip()[:200] or f"exit {result.returncode}"
+            return False
+        self.name = _resolved_name(result.stdout) or name
+        return True
+
     def heartbeat(self) -> bool:
         """Refresh presence so the roster keeps showing this seat.
 

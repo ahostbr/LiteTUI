@@ -1678,6 +1678,8 @@ class LiteTUI(App):
             model="",
         )
         self._seat_started = False
+        self._resumed_seat_name: str | None = None
+        self._seat_claim_lock = asyncio.Lock()
         # The plugin substrate. Per INSTANCE, never module-level — the suite
         # builds many apps in one process, and a shared registry would leak
         # skills/mcp/seat state between them. Skills discovery and mcp.load()
@@ -2002,6 +2004,10 @@ class LiteTUI(App):
         self.seat.model = self.model_id or "unknown"
         ok = await asyncio.to_thread(self.seat.register)
         self._seat_started = True
+        if ok and self._resumed_seat_name:
+            async with self._seat_claim_lock:
+                await asyncio.to_thread(self.seat.claim_name, self._resumed_seat_name)
+            self._refresh_ctx_label()
         if ok:
             self._system(
                 f"harness seat online · {self.seat.name} · {self.seat.agent_id[:8]}"
@@ -2911,8 +2917,26 @@ class LiteTUI(App):
         """
         hook_host.leave_conversation(self)
         self.store.stage(str(uuid.uuid4()))
+        self._resumed_seat_name = None
         self._refresh_ctx_label()   # the footer names the conversation
         self._sync_seat_identity()
+
+    @work(exclusive=True, group="seat-name")
+    async def _claim_resumed_seat_name(self, name: str, convo_id: str) -> None:
+        """Claim the saved conversation name without blocking the UI thread."""
+        if not self._seat_started or not self.seat.registered:
+            return  # initial registration will pick up the pending resume
+        async with self._seat_claim_lock:
+            if self.convo_id != convo_id or self._resumed_seat_name != name:
+                return
+            claimed = await asyncio.to_thread(self.seat.claim_name, name)
+            if self.convo_id != convo_id or self._resumed_seat_name != name:
+                return
+            if claimed:
+                self._sync_fleet_identity()
+                self._refresh_ctx_label()
+            else:
+                self._system(f"Could not claim resumed seat name {name}: {self.seat.error or 'registration failed'}")
 
     def _sync_seat_identity(self) -> None:
         """T507-T5: no-op — the seat id is now process-stable (process_agent_id).
@@ -3195,6 +3219,10 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        saved_name = meta.get("agent_name")
+        self._resumed_seat_name = saved_name.strip() if isinstance(saved_name, str) and saved_name.strip() else None
+        if self._resumed_seat_name:
+            self._claim_resumed_seat_name(self._resumed_seat_name, self.convo_id)
         from litetui.codex_steering import restore_queue
         restore_queue(self)
         if self._pending_input:
