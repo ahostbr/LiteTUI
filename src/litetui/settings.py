@@ -483,6 +483,9 @@ class Settings:
     #: takes effect without a restart. Textual key spelling, e.g. "ctrl+space".
     stt_hotkey: str = "ctrl+space"
 
+    #: Optional native sidecar is default-off; Textual screens remain fallback.
+    sidecar_enabled: bool = False
+
 
 #: field name → environment variable that overrides it.
 #: Both pre-existing knobs are preserved by name so nothing that worked breaks.

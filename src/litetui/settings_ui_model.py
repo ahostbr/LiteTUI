@@ -268,7 +268,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "interface", "Interface", "interface-dialogs", "Dialogs & media",
         "Choose whether interruptions cover the chat and how pasted images appear.",
-        ("dialog_style", "dialog_side", "image_viewer_enabled"), scope="device", keywords=("dialog", "sidebar", "media", "image", "paste"), field_keywords={"dialog_style": ("sidebar", "modal"), "dialog_side": ("sidebar", "left", "right"), "image_viewer_enabled": ("paste", "preview")},
+        ("dialog_style", "dialog_side", "image_viewer_enabled", "sidecar_enabled"), scope="device", keywords=("dialog", "sidebar", "media", "image", "paste", "sidecar", "native"), field_keywords={"dialog_style": ("sidebar", "modal"), "dialog_side": ("sidebar", "left", "right"), "image_viewer_enabled": ("paste", "preview"), "sidecar_enabled": ("native", "optional", "window")},
     ),
     _section(
         "interface", "Interface", "interface-footer", "Footer telemetry",
