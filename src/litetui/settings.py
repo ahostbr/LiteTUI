@@ -416,6 +416,8 @@ class Settings:
     #: Append the local wall-clock completion time to that summary.
     show_stop_time: bool = False
     autoscroll: bool = True
+    #: Diagnostic copy in chat: plain by default, detail for original messages.
+    error_message_style: str = "plain"
     #: How dialogs are presented. "modal" is the current behaviour and stays the
     #: default. "sidebar" mounts them in a `split: right` panel so the chat
     #: reflows narrower instead of being covered — see side_panel.py. This is a
@@ -563,6 +565,8 @@ def load(root: Path | None = None) -> Settings:
         if raw is not None and raw != "":
             setattr(s, name, _coerce(name, raw, getattr(s, name)))
     s.tool_policy_profile = _selectable_profile(s.tool_policy_profile)
+    if s.error_message_style not in ("plain", "detail"):
+        s.error_message_style = "plain"
     s.footer_order = normalize_footer_order(s.footer_order)
     # The snapshot `save()` diffs against: everything this instance believes the
     # file said at load time. Not a field, so `asdict` never sees it.

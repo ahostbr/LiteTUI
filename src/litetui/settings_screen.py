@@ -130,6 +130,11 @@ def tool_profile_choices() -> list[tuple[str, str]]:
         for name in tool_policy.selectable_profile_names()
     ]
 
+ERROR_MESSAGE_CHOICES = [
+    ("Plain Talk — short explanations and next steps", "plain"),
+    ("Full Detail — original diagnostic messages", "detail"),
+]
+
 DIALOG_STYLE_CHOICES = [
     ("modal — dialog covers the chat (current)", "modal"),
     ("sidebar — dialog splits off the side, chat stays readable", "sidebar"),
@@ -1207,6 +1212,11 @@ class SettingsBody(Widget):
                         yield from self._switch_row(
                             "autoscroll", "Follow output",
                             "Keep the log pinned to the newest message while streaming.",
+                        )
+                        yield from self._select_row(
+                            "error_message_style", "Error messages", ERROR_MESSAGE_CHOICES,
+                            "Plain Talk explains known issues; Full Detail shows original diagnostics. "
+                            "Simplified system lines are also saved in the runtime error log.",
                         )
                         yield self._section_header("interface-dialogs")
                         yield from self._select_row(

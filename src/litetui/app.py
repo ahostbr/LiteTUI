@@ -35,6 +35,7 @@ from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
 from litetui import runtime_log
+from litetui.friendly_errors import display_error
 from litetui.conversation import (
     CONVO_SEED_FILES,
     TRANSCRIPT_NAME,
@@ -5164,8 +5165,11 @@ class LiteTUI(App):
         **in scope** to replace it with. Ask "is X reachable from every call
         site?" before scheduling any "seal it behind X" step.
         """
+        shown = display_error(text, self.settings.error_message_style)
+        if shown != text:
+            runtime_log.record_error("user_message_simplified", detail=text)
         log = self.query_one("#chat-log")
-        log.mount(ChatMessage(Text(text), classes="system-msg"))
+        log.mount(ChatMessage(Text(shown), classes="system-msg"))
         self._scroll_down()
 
     # Compatibility alias. Keeps the 62 in-file call sites and every not-yet-

@@ -263,7 +263,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "interface", "Interface", "interface-transcript", "Transcript & motion",
         "What stays visible while the model works.",
-        ("show_thinking", "show_stop_line", "show_stop_time", "autoscroll"), scope="app", keywords=("thinking", "stop", "completion", "follow", "output"), default_expanded=True,
+        ("show_thinking", "show_stop_line", "show_stop_time", "autoscroll", "error_message_style"), scope="app", keywords=("thinking", "stop", "completion", "follow", "output", "errors", "Plain Talk", "Full Detail"), default_expanded=True,
     ),
     _section(
         "interface", "Interface", "interface-dialogs", "Dialogs & media",

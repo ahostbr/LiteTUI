@@ -31,7 +31,7 @@ autocompact_enabled autocompact_at_percent wake_after_compact seat_name skills_e
 skill_roots mcp_enabled mcp_disabled_servers plugins_disabled'''.split()
 _DEVICE = '''llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
 llama_models_dirs enter_interrupts clear_screen_after_compact theme_name custom_themes
-show_thinking show_stop_line show_stop_time autoscroll dialog_style dialog_side
+show_thinking show_stop_line show_stop_time autoscroll error_message_style dialog_style dialog_side
 image_viewer_enabled footer_show_seat footer_show_thinking footer_show_bg
 footer_show_subagents footer_show_convo footer_show_context footer_show_context_pct
 footer_show_tps footer_order tts_enabled tts_timeout tts_engine tts_voice tts_edge_voice
