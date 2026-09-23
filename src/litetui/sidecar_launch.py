@@ -42,7 +42,7 @@ class SidecarWindow:
 
         def read_reply() -> None:
             try:
-                response.put(process.stdout.readline())
+                response.put(process.stdout.readline(sidecar_protocol.MAX_FRAME_BYTES + 2))
             except OSError as exc:
                 response.put(exc)
 
@@ -100,11 +100,16 @@ class SidecarWindow:
         process = self.process
         self.process = None
         self.token = ""
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=self.timeout)
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=self.timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=self.timeout)
+        finally:
+            for pipe in (process.stdin, process.stdout):
+                if pipe is not None:
+                    pipe.close()
         return True

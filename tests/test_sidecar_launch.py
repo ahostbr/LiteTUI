@@ -55,7 +55,7 @@ def test_handshake_and_live_view_switch(tmp_path):
     spawn = Mock(return_value=process)
     owner = sidecar_launch.SidecarWindow(exe, spawn=spawn)
     # Frame token comes from launch argv, not hardcoded fixture.
-    process.stdout.readline.side_effect = lambda: (json.dumps({
+    process.stdout.readline.side_effect = lambda _limit: (json.dumps({
         "version": 1, "id": 1, "token": owner.token,
         "command": "reply", "payload": {"ready": True, "version": 1},
     }).encode() + b"\n") if process.stdin.write.call_count == 1 else (json.dumps({
@@ -91,3 +91,27 @@ def test_launch_error_warns_and_falls_back(tmp_path):
     owner = sidecar_launch.SidecarWindow(exe, warn=warn, spawn=Mock(side_effect=OSError("denied")))
     assert not owner.open("settings")
     assert "denied" in warn.call_args.args[0]
+
+
+def test_oversized_unterminated_reply_falls_back_without_unbounded_read(tmp_path):
+    exe = tmp_path / "sidecar.exe"
+    exe.write_bytes(b"sample")
+    process = FakeProcess()
+    process.stdout.readline.return_value = b"x" * (sidecar_launch.sidecar_protocol.MAX_FRAME_BYTES + 2)
+    warn = Mock()
+    owner = sidecar_launch.SidecarWindow(exe, spawn=Mock(return_value=process), warn=warn)
+    assert not owner.open("settings")
+    process.stdout.readline.assert_called_once_with(sidecar_launch.sidecar_protocol.MAX_FRAME_BYTES + 2)
+    assert process.terminated
+    assert process.stdin.close.called and process.stdout.close.called
+    assert "handshake" in warn.call_args.args[0]
+
+
+def test_close_reaps_child_and_closes_both_pipes(tmp_path):
+    process = FakeProcess()
+    owner = sidecar_launch.SidecarWindow(tmp_path / "sidecar.exe")
+    owner.process = process
+    assert owner.close()
+    assert process.terminated
+    assert process.stdin.close.called and process.stdout.close.called
+    assert owner.process is None
