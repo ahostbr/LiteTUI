@@ -1,41 +1,96 @@
-"""Optional native preview lifecycle; no settings or job authority is transferred.
+"""Parent-owned optional sidecar preview lifecycle.
 
-This launcher is intentionally not yet wired to commands. The Rust preview has
-no parent IPC: opening it cannot satisfy /settings, /calendar, or /job parity.
+No settings or scheduler authority crosses this connection yet. The child is
+only a presentation preview; never replace a Textual editor with it.
 """
 from __future__ import annotations
 
+import os
+import queue
+import secrets
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
+
+from litetui import sidecar_protocol
 
 VIEWS = frozenset({"settings", "calendar", "job"})
 
 
 class SidecarWindow:
     def __init__(self, executable: Path, *, spawn: Callable = subprocess.Popen,
-                 warn: Callable[[str], None] | None = None):
+                 warn: Callable[[str], None] | None = None, timeout: float = 3):
         self.executable = Path(executable)
         self.spawn = spawn
         self.warn = warn or (lambda _message: None)
+        self.timeout = timeout
         self.process = None
+        self.token = ""
+        self._next_id = 1
 
-    def open(self, view: str) -> bool:
+    def _exchange(self, command: str, payload: object) -> dict:
+        process = self.process
+        if process is None or process.poll() is not None or process.stdin is None or process.stdout is None:
+            raise RuntimeError("Sidecar child is unavailable")
+        request_id = self._next_id
+        self._next_id += 1
+        raw = sidecar_protocol.encode(request_id, self.token, command, payload)
+        process.stdin.write(raw + b"\n")
+        process.stdin.flush()
+        response: queue.Queue[bytes | OSError] = queue.Queue(maxsize=1)
+
+        def read_reply() -> None:
+            try:
+                response.put(process.stdout.readline())
+            except OSError as exc:
+                response.put(exc)
+
+        threading.Thread(target=read_reply, daemon=True).start()
+        try:
+            value = response.get(timeout=self.timeout)
+        except queue.Empty as exc:
+            raise TimeoutError("Sidecar did not respond") from exc
+        if isinstance(value, OSError):
+            raise value
+        if not value or len(value) > sidecar_protocol.MAX_FRAME_BYTES + 1 or not value.endswith(b"\n"):
+            raise ValueError("Invalid sidecar reply length")
+        frame = sidecar_protocol.decode(value[:-1], self.token)
+        if frame["id"] != request_id or frame["command"] != "reply" or not isinstance(frame["payload"], dict):
+            raise ValueError("Unexpected sidecar reply")
+        return frame["payload"]
+
+    def open(self, view: str, *, enabled: bool = True) -> bool:
         if view not in VIEWS:
             raise ValueError(f"Unknown sidecar view: {view}")
+        if not enabled:
+            return False
         if not self.executable.is_file():
             self.warn(f"Sidecar is not installed: {self.executable}; use Textual instead.")
             return False
         if self.process is not None and self.process.poll() is None:
-            # Re-routing a live child needs authenticated IPC. Do not report
-            # success or spawn another window before that transport exists.
-            self.warn("Sidecar view switching is not connected; use Textual instead.")
-            return False
+            try:
+                result = self._exchange("open", {"view": view})
+                if result.get("opened") == view:
+                    return True
+                raise ValueError("Sidecar did not open the requested view")
+            except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                self.warn(f"Sidecar view switch failed: {exc}; use Textual instead.")
+                self.close()
+                return False
+        self.token = secrets.token_hex(32)
+        self._next_id = 1
         try:
-            self.process = self.spawn([str(self.executable), "--view", view], close_fds=True)
-        except OSError as exc:
-            self.warn(f"Sidecar failed to launch: {exc}; use Textual instead.")
-            self.process = None
+            env = {**os.environ, "LITETUI_SIDECAR_TOKEN": self.token}
+            self.process = self.spawn([str(self.executable), "--view", view, "--parent-pipe"],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL, close_fds=True, env=env)
+            result = self._exchange("hello", {})
+            if result.get("version") != sidecar_protocol.VERSION or result.get("ready") is not True:
+                raise ValueError("Incompatible sidecar handshake")
+        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+            self.warn(f"Sidecar handshake/launch failed: {exc}; use Textual instead.")
+            self.close()
             return False
         return True
 
@@ -44,20 +99,12 @@ class SidecarWindow:
             return False
         process = self.process
         self.process = None
+        self.token = ""
         if process.poll() is None:
             process.terminate()
             try:
-                process.wait(timeout=3)
+                process.wait(timeout=self.timeout)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout=3)
+                process.wait(timeout=self.timeout)
         return True
-
-
-def try_open(view: str, *, enabled: bool, executable: Path,
-             warn: Callable[[str], None] | None = None,
-             spawn: Callable = subprocess.Popen) -> bool:
-    """Single preview launch probe. Callers must retain a SidecarWindow for ownership."""
-    if not enabled:
-        return False
-    return SidecarWindow(executable, warn=warn, spawn=spawn).open(view)
