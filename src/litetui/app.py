@@ -2081,6 +2081,14 @@ class LiteTUI(App):
                 for m in msgs:
                     self._deliver_inbox(m)
 
+                # A CLI takeover can rename this live seat between heartbeats.
+                # Read-only identity sync is cheap and repaints the footer here,
+                # rather than waiting up to a minute (or writing stale name).
+                old_name = self.seat.name
+                await asyncio.to_thread(self.seat.refresh_name)
+                if self.seat.name != old_name:
+                    self._refresh_ctx_label()
+
                 beat += 1
                 if beat >= harness_mod.HEARTBEAT_EVERY:
                     beat = 0

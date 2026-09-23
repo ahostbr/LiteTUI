@@ -275,6 +275,30 @@ class Seat:
                 # as an opt-in flag; requires liteharness with --session-pid.
                 "--session-pid", str(os.getpid())]
 
+    def refresh_name(self, root: Path | None = None) -> bool:
+        """Adopt a rename of this agent's own registry row without claiming it.
+
+        A separate CLI can rename the seat while this TUI runs. Read only our
+        agent-id file (never search by name); an absent or malformed row must
+        not replace the last verified identity. Heartbeat calls this BEFORE
+        writing presence, otherwise its stale --name immediately undoes the
+        external rename.
+        """
+        if not self.registered or harness_disabled():
+            return False
+        path = (root or Path.home() / ".liteharness") / "agents" / f"{self.agent_id}.json"
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(row, dict) or row.get("agent_id") != self.agent_id:
+            return False
+        name = row.get("name")
+        if not isinstance(name, str) or not name.strip() or name == self.name:
+            return False
+        self.name = name
+        return True
+
     def heartbeat(self) -> bool:
         """Refresh presence so the roster keeps showing this seat.
 
@@ -298,6 +322,9 @@ class Seat:
         """
         if not self.registered or harness_disabled():
             return False
+        # The monitor refreshes identity before each poll; keep this guard for
+        # standalone callers so a heartbeat cannot overwrite an external rename.
+        self.refresh_name()
         try:
             r = _cli(self._presence_argv(), timeout=30)
             if r.returncode == 0:
