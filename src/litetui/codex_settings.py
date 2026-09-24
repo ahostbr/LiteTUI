@@ -111,6 +111,16 @@ CONTROLS = {
 }
 
 
+CLINE_THINKING = Control(
+    "native",
+    "Sent to ClinePass as the reasoning effort. Each model accepts its own levels; the list follows the selected model.",
+)
+CLINE_FIXED = Control(
+    "unsupported",
+    "ClinePass is Cline's fixed remote endpoint, so this local-server or other-engine setting does not apply. Saved values are preserved for other backends.",
+)
+
+
 def native(backend):
     """True only when the official app-server owns the loop (0.23.1: opt-in)."""
     return hasattr(backend, "app_server")
@@ -130,6 +140,14 @@ def control(backend, name):
                            "Claude writes the summary, and the next message starts a fresh session carrying it.")
         if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
             return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
+        return None
+    if getattr(backend, "name", None) == "cline":
+        # Our loop drives ClinePass (sampling, tools, compaction all apply);
+        # only its endpoint is fixed and remote.
+        if name == "thinking_level":
+            return CLINE_THINKING
+        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith("ninfer_"):
+            return CLINE_FIXED
         return None
     return CONTROLS.get(name) if native(backend) else None
 

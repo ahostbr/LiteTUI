@@ -2060,6 +2060,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
     ("ninfer", "NInfer (NVFP4 5090 engine)"),
     ("codex", "Codex (OAuth subscription)"),
     ("claude", "Claude Agent"),
+    ("cline", "ClinePass (Cline subscription)"),
 )
 BACKEND_NAMES: tuple[str, ...] = tuple(name for name, _ in BACKENDS)
 
@@ -2122,6 +2123,9 @@ def _make_backend(settings):
     if settings.backend == "custom":
         from litetui.custom_backend import CustomBackend
         return CustomBackend(settings)
+    if settings.backend == "cline":
+        from litetui.cline_backend import ClineBackend
+        return ClineBackend(settings)
     if settings.backend == "codex":
         from litetui.oauth_backend import OAuthBackend
         return OAuthBackend(settings)
