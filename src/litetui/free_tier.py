@@ -9,8 +9,9 @@ Pure Python, recreated from the freellmapi design (E:/SAS/REPO_CLONES/freellmapi
 server/src/services/ratelimit.ts, lib/fallback-loop.ts), not copied:
 
 - SOURCES: a static table. Keyless sources are live with no setup; keyed ones
-  stay inactive until their environment variable is set (the key is read at call
-  time, never stored, printed or committed; the same rule as custom_api_key_env).
+  stay inactive until they have a key: the one saved in /settings or the sidecar
+  (Ryan 2026-09-24, liteask a-29b8bd60), else their environment variable. Read at
+  call time; never printed, logged or sent to the sidecar.
 - The same model offered by several sources is ONE picker entry (group_of), and
   a request fails over across its sources inside the HTTP transport, so a
   subagent never sees a busy source. It errors only when every source for that
@@ -105,7 +106,16 @@ def source_key(source: Source) -> str | None:
             return cline_backend.ClineBackend(None).api_key()
         except BackendError:
             return None
-    return os.environ.get(source.key_env, '').strip() or None
+    return saved_key(source.key_env) or os.environ.get(source.key_env, '').strip() or None
+
+
+def saved_key(key_env: str) -> str:
+    """The key saved in /settings or the sidecar for `key_env` (the field is
+    the var's name lowercased), read from disk at call time, so a save takes
+    effect on the next request with no reconnect."""
+    from litetui import settings as settings_mod
+
+    return str(getattr(settings_mod.load(), key_env.lower(), '') or '').strip()
 
 
 def _keyprint(key: str) -> str:

@@ -54,7 +54,7 @@ from textual.widgets import (
 # later would not appear, and the test proving it appears could only pass
 # by patching THIS module -- i.e. by touching the screen, which is the
 # exact thing the derivation exists to stop being necessary.
-from litetui import gpu_gate, llm_backend, stt_backend, tool_policy, voice_backend
+from litetui import free_tier, gpu_gate, llm_backend, stt_backend, tool_policy, voice_backend
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.hooks_screen import HooksEditor
@@ -587,7 +587,8 @@ class SettingsBody(Widget):
 
         return control(getattr(self.app, "backend", None), name)
 
-    def _text_row(self, name: str, label: str, help_text: str, placeholder: str = ""):
+    def _text_row(self, name: str, label: str, help_text: str, placeholder: str = "",
+                  password: bool = False):
         locked = settings_mod.source_of(name)
         capability = self._backend_control(name)
         if capability:
@@ -604,11 +605,23 @@ class SettingsBody(Widget):
                 id=f"f-{name}",
                 disabled=locked is not None or bool(capability and not capability.editable),
                 classes="set-input",
+                password=password,
             )
             note = help_text
             if locked:
                 note = f"LOCKED by ${locked} — unset it to edit here.  {help_text}"
             yield Static(note, classes="set-help")
+
+    def _key_row(self, name: str):
+        """A free-tier source key: masked, and blank falls back to its env var."""
+        source = next(s for s in free_tier.SOURCES if s.key_env and s.key_env.lower() == name)
+        yield from self._text_row(
+            name, f"{source.label} key",
+            f"Free tier ({source.limits}). Masked; blank falls back to ${source.key_env}. "
+            "Saved to this machine's settings.json. Use a free-tier account: one with "
+            "billing on can be charged.",
+            placeholder=f"unset — uses ${source.key_env} if set", password=True,
+        )
 
     def _switch_row(self, name: str, label: str, help_text: str):
         capability = self._backend_control(name)
@@ -793,6 +806,14 @@ class SettingsBody(Widget):
                             "never spawned over — LiteSuite's is :8088.",
                             placeholder="http://localhost:8088",
                         )
+                        yield self._section_header("model-free-keys")
+                        yield from self._key_row("groq_api_key")
+                        yield from self._key_row("cerebras_api_key")
+                        yield from self._key_row("nvidia_api_key")
+                        yield from self._key_row("mistral_api_key")
+                        yield from self._key_row("github_models_token")
+                        yield from self._key_row("openrouter_api_key")
+                        yield from self._key_row("gemini_api_key")
                         yield self._section_header("model-discovery")
                         yield from self._switch_row(
                             "llama_scan_litesuite", "Scan LiteSuite models",

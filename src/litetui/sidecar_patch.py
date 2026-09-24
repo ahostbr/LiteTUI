@@ -7,7 +7,7 @@ from litetui import settings_runtime
 from litetui.settings_apply import RuntimeSettingStatus, SettingsSaveResult
 from litetui.settings_scope import SETTING_SPECS
 from litetui.settings_ui_adapter import SettingsUiAdapter
-from litetui.sidecar_settings import is_sensitive
+from litetui.sidecar_settings import SECRET_FIELDS, is_sensitive
 
 MAX_CHANGES = 32
 _NO_CHANGE = object()
@@ -41,9 +41,11 @@ def apply_patch(app, payload: dict) -> dict:
         key = change["key"]
         from litetui.settings_screen import NOT_A_SETTINGS_CONTROL
 
-        if (not isinstance(key, str) or key not in SETTING_SPECS or is_sensitive(key)
-                or key in NOT_A_SETTINGS_CONTROL):
+        if (not isinstance(key, str) or key not in SETTING_SPECS
+                or (is_sensitive(key) and key not in SECRET_FIELDS) or key in NOT_A_SETTINGS_CONTROL):
             raise ValueError("Setting not editable from sidecar")
+        if key in SECRET_FIELDS and not isinstance(change["value"], str):
+            raise ValueError("Invalid key value")
         if key in keys:
             raise ValueError("Duplicate settings field")
         keys.add(key)

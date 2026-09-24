@@ -38,7 +38,7 @@ SCREEN = Path(__file__).resolve().parents[1] / "src" / "litetui" / "settings_scr
 # audit then reports the T544 regression against working code. The `id=` scan
 # below cannot cover the gap — a helper spells its id `f"f-{name}"`, an
 # f-string, and that branch only sees a literal Constant.
-ROW_HELPERS = {"_text_row", "_switch_row", "_select_row", "_model_pick_row"}
+ROW_HELPERS = {"_text_row", "_switch_row", "_select_row", "_model_pick_row", "_key_row"}
 
 
 def _tree() -> ast.Module:
