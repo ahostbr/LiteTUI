@@ -6,7 +6,7 @@ This is an inventory of the existing Textual surface, **not** an assertion that 
 |---|---|
 | Model | Default/pinned model, context length, backend, LM Studio host/graded-thinking models, Codex native engine, custom API URL/key environment/context, llama executable/host/attach/discovery/model paths and limits/load timeout. Model pickers, loaded-resident state, capability and environment locks. |
 | NInfer | Host, executable, artifact, max context/concurrency; RTX 5090 capability gate and next-start semantics. |
-| Voice | TTS enable/engine/voice/timeout/Edge voice, STT model/mic/hotkey; test voice, install Edge support, capture hotkey, download voice model. |
+| Voice | TTS engine/voice/timeout/Edge voice, STT model/mic/hotkey; test voice, install Edge support, capture hotkey, download voice model. `tts_enabled` is registry/model-listed but not demonstrated as a mounted Textual control. |
 | Generation | Thinking level; tool/chat token limits; temperature, top-p, top-k, min-p, repeat/presence/frequency penalties, seed and stop sequences. |
 | Agent loop | Subagent and summary models, tool enable/iterations/background threshold, Enter interrupt, policy profile, always-allow/deny/disabled tools, context mode/threshold. |
 | Compaction | Auto-compact enable/threshold/wake; maximum tokens, thinking and tool iterations; clear screen and recent-message retention. |
@@ -14,6 +14,13 @@ This is an inventory of the existing Textual surface, **not** an assertion that 
 | Hooks | Hook inventory, policy, command, runtime envelope, repair, save/reload, sample-event test; inspect `hooks_screen.py` and its persistence separately. |
 | Themes | Theme name, custom theme identity/palette tokens; inspect custom-theme editor separately. |
 | Interface | Thinking/stop-line/stop-time display, autoscroll, error style, footer visibility/order, dialog style/side, image viewer, sidecar preference. |
+
+## Audit corrections and unproven controls
+
+- The mounted Model router includes `custom_base_url`, `custom_api_key_env`, `custom_context_length`; `settings_ui_model.SETTINGS_SECTIONS["model-router"]` omits them. The name `custom_api_key_env` is redacted from the sidecar snapshot and cannot be edited through its gated patch adapter.
+- `tts_enabled`, `llama_load_settings`, `model_infer_overrides`, `plugins_disabled`, `backend_chosen`, `llama_presets`, `custom_themes`, and `mcp_disabled_servers` are in `SETTING_SPECS` but mounted-control status or precise handler mapping is not established by this inventory. `tts_timeout` mounts conditionally. Verify actual Textual controls rather than treating registry/model entries as proof of UI parity.
+- `settings_ui_model` section scope labels are presentation metadata, **not** ownership: e.g. model-router and generation budgets disagree with canonical `SETTING_SPECS`. Scope on wire must come from the latter.
+- Immediate Voice actions have distinct UI identifiers `#voice-test`, `#voice-install-edge`, `#voice-capture`, `#voice-dl-stt`; audit pressed handlers separately. Search and section toggle are view-only. Hooks/custom themes require a separate inventory of mounted controls and actions.
 
 ## Cross-cutting behavior
 
