@@ -28,10 +28,100 @@ try: a missing `claude_agent_sdk` raised before it and left `start()` awaiting a
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import subprocess
+import sys
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from typing import Any
 
 from litetui.backend_session import BackendSession
+
+# ---- the owned CLI child --------------------------------------------------
+# 🔴 A PID IS NOT AN IDENTITY. Windows reuses pids — measured in this repo's own
+# restart probe, where a new claude.exe came back on the previous one's pid 6.4s
+# later. Every recorded child therefore carries its creation time, and nothing is
+# killed unless BOTH still match. Without that, forced cleanup is a coin flip that
+# can terminate an unrelated process.
+#
+# WE NEVER SEARCH FOR claude.exe BY NAME. Only the pid this session's own transport
+# handed us is ever touched; this box routinely has a dozen live claude.exe
+# belonging to the operator.
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_KERNEL32 = None
+if sys.platform == "win32":
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
+    _KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+
+def _creation_filetime(pid):
+    """Creation time of a LIVE pid, or None. Native and sub-second.
+
+    Returns None off Windows, which makes `_child_alive` false and disables forced
+    cleanup rather than killing a pid whose identity cannot be proven.
+    """
+    if _KERNEL32 is None:
+        return None
+    handle = _KERNEL32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        created, exited = wintypes.FILETIME(), wintypes.FILETIME()
+        kernel, user = wintypes.FILETIME(), wintypes.FILETIME()
+        if not _KERNEL32.GetProcessTimes(handle, ctypes.byref(created),
+                                         ctypes.byref(exited), ctypes.byref(kernel),
+                                         ctypes.byref(user)):
+            return None
+        code = wintypes.DWORD()
+        if not _KERNEL32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return None
+        if code.value != _STILL_ACTIVE:
+            return None
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    finally:
+        _KERNEL32.CloseHandle(handle)
+
+
+def _record_owned_child(client):
+    """The pid the SDK just spawned, with its identity. Never raises.
+
+    Reaches into SDK internals on purpose and defensively: losing the ability to
+    reap a child is worth a diagnostic, never a failed connect.
+    """
+    try:
+        transport = getattr(client, "_transport", None)
+        process = getattr(transport, "_process", None)
+        pid = getattr(process, "pid", None)
+        if pid is None:
+            return None
+        pid = int(pid)
+        return {"pid": pid, "created": _creation_filetime(pid)}
+    except Exception:  # noqa: BLE001 - discovery must never break a connect
+        return None
+
+
+def _child_alive(child):
+    if not child or child.get("created") is None:
+        return False
+    return _creation_filetime(child["pid"]) == child["created"]
+
+
+def _force_kill_tree(pid):
+    """Kill one pid tree and say what happened — including when it did not work.
+
+    A cleanup routine that reports success it did not achieve is worse than one
+    that fails loudly: the caller stops looking.
+    """
+    try:
+        done = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                              capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"taskkill did not run: {type(exc).__name__}: {exc}"
+    text = (done.stdout or done.stderr or "").strip()[:200]
+    return text or f"taskkill exit {done.returncode}"
 
 
 class CommandRefused(RuntimeError):
@@ -73,7 +163,12 @@ class ClaudeSession:
     session_id: str | None = None
     #: Bound on each owned-teardown step. A field so a test can shrink it;
     #: never long enough to make a stuck reader look like a hang.
+    #: Grace for a cooperative close before escalation. A field so a test can
+    #: shrink it; 12s of real waiting per test is how a suite stops being run.
+    settle_timeout: float = 12
     cleanup_timeout: float = 10
+    #: {pid, created} for the CLI child this session spawned, or None.
+    owned_child: dict | None = field(default=None, init=False)
     _owner: asyncio.Task | None = field(default=None, init=False)
     _commands: asyncio.Queue = field(default_factory=asyncio.Queue, init=False)
     _events: asyncio.Queue = field(default_factory=asyncio.Queue, init=False)
@@ -103,6 +198,7 @@ class ClaudeSession:
                 self.client_factory = ClaudeSDKClient
             client = self.client_factory(self.options)
             await client.connect()
+            self.owned_child = _record_owned_child(client)
             self.info = await client.get_server_info() or {}
             self.lifecycle.ready(generation)
             self._ready.set_result(self.info)
@@ -167,6 +263,12 @@ class ClaudeSession:
             # is recorded as a cleanup error rather than completed. Shielding it
             # would need a fresh task and give the affinity problem back; left as
             # a known ceiling, not silently traded away.
+            # A CONNECT THAT FAILED AFTER SPAWNING still owns a process. The happy
+            # path records at connect; this covers the path where connect raised
+            # between spawn and return, which would otherwise leave a child nobody
+            # could reap.
+            if client is not None and self.owned_child is None:
+                self.owned_child = _record_owned_child(client)
             if reader:
                 reader.cancel()
                 try:
@@ -184,6 +286,37 @@ class ClaudeSession:
                 self.lifecycle.disconnected()
             self._drain()
             self._events.put_nowait(None)
+
+    async def _reap_owned_child(self, reason):
+        """Force-kill this session's own CLI child if it is still alive.
+
+        Only ever the recorded pid, only while its creation time still matches, and
+        only the subprocess — the SDK client is never touched from here, because
+        calling disconnect from a second task is the AnyIO affinity hazard plan 2.5
+        tells us to avoid.
+        """
+        child = self.owned_child
+        if child is None:
+            return
+        if child.get("created") is None:
+            # A pid with no provable identity. Killing on a pid alone can terminate
+            # an unrelated process, so we refuse — and SAY so, because reporting
+            # nothing here would read as "there was nothing to clean up".
+            self.lifecycle.cleanup_errors.append(
+                f"{reason}; owned Claude CLI pid {child['pid']} could not be "
+                "identity-verified, so it was NOT killed — process cleanup is "
+                "unverified")
+            return
+        if not _child_alive(child):
+            return                        # it exited on its own; nothing to report
+        detail = await asyncio.to_thread(_force_kill_tree, child["pid"])
+        # LOOK AGAIN. taskkill can report success for a process that is still
+        # terminating, or fail outright; either way the only honest answer comes
+        # from re-checking the identity.
+        outcome = ("was force-killed" if not _child_alive(child)
+                   else "SURVIVED a force-kill and may still be running")
+        self.lifecycle.cleanup_errors.append(
+            f"{reason}; owned Claude CLI pid {child['pid']} {outcome}: {detail}")
 
     def _drain(self, error=None):
         """Settle every queued command. Only the owner can resolve a reply."""
@@ -276,10 +409,31 @@ class ClaudeSession:
             reply = asyncio.get_running_loop().create_future()
             self._commands.put_nowait(_Command("close", None, reply))
             try:
-                async with asyncio.timeout(12):
+                async with asyncio.timeout(self.settle_timeout):
                     await asyncio.shield(owner)
             except TimeoutError:
+                # KILL THE CHILD FIRST, THEN CANCEL. Measured before this existed
+                # (artifacts/claude-close-escalation-before.json): close() never
+                # returned, the owner stayed alive, the claude.exe survived, and
+                # cleanup_errors was EMPTY — cleanup succeeded by silence. Killing
+                # the child first also unwedges the SDK's pending I/O, so the owner
+                # usually unwinds on its own instead of being abandoned.
+                await self._reap_owned_child(
+                    f"close did not settle within {self.settle_timeout:.0f}s")
                 owner.cancel()
-                await asyncio.gather(owner, return_exceptions=True)
+                # NOT gather(): on a cancellation-resistant teardown that waits
+                # forever, which is the whole defect. asyncio.wait observes.
+                _done, pending = await asyncio.wait({owner},
+                                                   timeout=self.cleanup_timeout)
+                if pending:
+                    # Says nothing about the child: the reaper above reports that
+                    # separately and only if it verified it. Two claims, each owned
+                    # by the code that can actually check it.
+                    self.lifecycle.cleanup_errors.append(
+                        f"owner task still running {self.cleanup_timeout:.0f}s after "
+                        "cancellation; this session has stopped waiting for it")
         else:
             await asyncio.gather(owner, return_exceptions=True)
+        # THE LAST WORD, on every path. A graceful close leaves nothing behind; if
+        # one did, that is a cleanup error rather than silence.
+        await self._reap_owned_child("owned child outlived close")

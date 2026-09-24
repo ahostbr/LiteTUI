@@ -314,3 +314,296 @@ async def test_close_without_a_start_is_a_no_op():
     session = ClaudeSession(None, lambda _: Client(None))
     await asyncio.wait_for(session.close(), timeout=2)
     assert session.lifecycle.failure is None
+
+
+# ---- stuck close: bounded, forced, and never silent -------------------------
+# Baseline before this behaviour existed, measured with the real SDK in
+# artifacts/claude-close-escalation-before.json: close() never returned, the owner
+# stayed alive, the real claude.exe survived, and cleanup_errors was EMPTY.
+#
+# 🔴 EVERY WEDGED TEST RELEASES ITS WEDGE IN A `finally`. Releasing at the end of
+# the body instead means a failing assert leaves the owner parked in the wedge, and
+# the loop teardown then hangs the WHOLE RUN rather than reporting one failure.
+# Measured: a first cut did exactly that and cost two timed-out runs.
+
+
+class FakeChild:
+    """Stands in for the CLI subprocess the SDK spawns."""
+
+    def __init__(self, pid=424242, created=999):
+        self.pid = pid
+        self.created = created
+        self.killed = False
+
+
+class WedgedClient(Client):
+    """A client whose disconnect never returns and ignores cancellation.
+
+    The exact shape the live probe reproduced; it is what made the old
+    `await asyncio.gather(owner)` wait forever.
+    """
+
+    def __init__(self, options, child):
+        super().__init__(options)
+        self.release = asyncio.Event()
+        self.child = child
+        # Where _record_owned_child looks: client._transport._process.pid
+        self._transport = type("T", (), {"_process": child})()
+
+    async def disconnect(self):
+        """Never returns, ignores cancellation — until the CHILD dies.
+
+        The real transport's disconnect awaits `self._process.wait()`, so killing
+        the child is what lets it finish. Modelling that is the only way a test can
+        see whether the fix kills the child BEFORE abandoning the owner.
+        """
+        self.closed = True
+        while not self.release.is_set() and not self.child.killed:
+            try:
+                await asyncio.wait_for(self.release.wait(), timeout=0.01)
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+
+
+@pytest.fixture
+def owned(monkeypatch):
+    """Route the native process helpers at a fake child; record every kill.
+
+    `state["created"]` is what the helpers report NOW, so a test can change the
+    identity behind a pid after the session recorded it — which is the only way to
+    exercise pid reuse.
+    """
+    from litetui import claude_session as mod
+
+    child = FakeChild()
+    killed: list[int] = []
+    state = {"created": child.created}
+
+    def creation_filetime(pid):
+        if int(pid) != child.pid or child.killed:
+            return None
+        return state["created"]
+
+    def force_kill_tree(pid):
+        assert int(pid) == child.pid, f"killed a pid we do not own: {pid}"
+        child.killed = True
+        killed.append(int(pid))
+        return "SUCCESS: terminated"
+
+    monkeypatch.setattr(mod, "_creation_filetime", creation_filetime)
+    monkeypatch.setattr(mod, "_force_kill_tree", force_kill_tree)
+    return child, killed, state
+
+
+async def close_under_bound(session, client, timeout=20):
+    """Close, observing with asyncio.wait, and always release the wedge.
+
+    NEVER wait_for: on a cancellation-resistant target it cancels the inner task and
+    then awaits it, so the bound hangs too. That trap cost two nine-minute runs
+    before the live probe became readable, and it is the same mistake the product
+    code made.
+    """
+    closing = asyncio.ensure_future(session.close())
+    done, _pending = await asyncio.wait([closing], timeout=timeout)
+    return bool(done)
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_close_is_bounded_and_force_kills_only_the_owned_child(owned):
+    child, killed, _state = owned
+    client = WedgedClient(None, child)
+    session = ClaudeSession(None, lambda _: client)
+    session.cleanup_timeout = session.settle_timeout = 0.05
+    try:
+        await session.query("one", "first")
+        assert session.owned_child == {"pid": child.pid, "created": child.created}
+        assert await close_under_bound(session, client), (
+            "close() did not return; the escalation is still unbounded")
+        assert killed == [child.pid]
+        assert child.killed
+        assert any(f"pid {child.pid} was force-killed" in error
+                   for error in session.lifecycle.cleanup_errors), (
+            session.lifecycle.cleanup_errors)
+    finally:
+        client.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_close_never_reports_success_silently(owned):
+    child, _killed, _state = owned
+    client = WedgedClient(None, child)
+    session = ClaudeSession(None, lambda _: client)
+    session.cleanup_timeout = session.settle_timeout = 0.05
+    try:
+        await session.query("one", "first")
+        assert await close_under_bound(session, client)
+        # Sentinel's pass condition: silent success is a fail.
+        assert session.lifecycle.cleanup_errors, "a forced teardown reported nothing"
+    finally:
+        client.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_reused_pid_is_never_killed(owned):
+    """🔴 The identity check, and it is not theoretical.
+
+    The restart probe measured Windows handing a new claude.exe the pid a dead one
+    had used 6.4s earlier. If liveness were pid-only, forced cleanup would kill
+    whatever now holds that number.
+    """
+    child, killed, state = owned
+    client = WedgedClient(None, child)
+    session = ClaudeSession(None, lambda _: client)
+    session.cleanup_timeout = session.settle_timeout = 0.05
+    try:
+        await session.query("one", "first")
+        assert session.owned_child["created"] == child.created
+        state["created"] = child.created + 1   # a different process holds it now
+        assert await close_under_bound(session, client)
+        assert killed == [], "killed a pid whose identity no longer matched"
+    finally:
+        client.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_clean_close_kills_nothing(owned):
+    """The reaper stays out of the way when the SDK tore down properly."""
+    child, killed, _state = owned
+    client = Client(None)
+    client._transport = type("T", (), {"_process": child})()
+    session = ClaudeSession(None, lambda _: client)
+    await session.query("one", "first")
+    await client.messages.put(ResultMessage())
+    assert len([m async for m in session.events()]) == 1
+    child.killed = True   # the real disconnect reaped it; it is no longer alive
+    await session.close()
+    assert killed == []
+    assert session.lifecycle.cleanup_errors == []
+
+
+@pytest.mark.asyncio
+async def test_missing_sdk_internals_disable_the_reaper_without_breaking_connect():
+    """The pid is read out of SDK privates; losing it costs a diagnostic only."""
+    client = Client(None)          # no _transport at all
+    session = ClaudeSession(None, lambda _: client)
+    await session.query("one", "first")
+    assert session.owned_child is None
+    await client.messages.put(ResultMessage())
+    assert len([m async for m in session.events()]) == 1
+    await session.close()
+    assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_killing_the_child_first_lets_the_owner_finish_not_be_abandoned(owned):
+    """Why the stuck path reaps BEFORE it cancels.
+
+    Killing the owned child unwedges the SDK's pending I/O, so the owner unwinds on
+    its own. Cancel first and you abandon a task that still holds the transport.
+    """
+    child, killed, _state = owned
+    client = WedgedClient(None, child)
+    session = ClaudeSession(None, lambda _: client)
+    session.cleanup_timeout = session.settle_timeout = 0.05
+    try:
+        await session.query("one", "first")
+        assert await close_under_bound(session, client)
+        assert killed == [child.pid]
+        assert session._owner.done(), "the owner was abandoned rather than unwedged"
+        assert not any("still running" in error
+                       for error in session.lifecycle.cleanup_errors), (
+            session.lifecycle.cleanup_errors)
+    finally:
+        client.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_outlives_a_graceful_close_is_still_reaped(owned):
+    """Why close() reaps unconditionally at the end.
+
+    The SDK returned from disconnect and the process is somehow STILL there. Every
+    earlier guard has already passed, so this is the only thing left between the app
+    and a stray CLI child — and it must say so rather than exit quietly.
+    """
+    child, killed, _state = owned
+    client = Client(None)                       # a graceful disconnect
+    client._transport = type("T", (), {"_process": child})()
+    session = ClaudeSession(None, lambda _: client)
+    await session.query("one", "first")
+    await client.messages.put(ResultMessage())
+    assert len([m async for m in session.events()]) == 1
+    await session.close()                       # child.killed is still False
+    assert killed == [child.pid]
+    assert any("outlived close" in error
+               for error in session.lifecycle.cleanup_errors), (
+        session.lifecycle.cleanup_errors)
+
+
+@pytest.mark.asyncio
+async def test_an_unverifiable_child_is_not_killed_and_says_it_is_unverified(owned,
+                                                                            monkeypatch):
+    """A pid with no provable identity must not be killed — and must not be silent.
+
+    This is the SDK-internals-moved case, and the non-Windows case. Killing on a pid
+    alone could terminate an unrelated process; reporting nothing would read as
+    "there was nothing to clean up". Neither is acceptable, so it refuses and says
+    the cleanup is unverified.
+    """
+    from litetui import claude_session as mod
+
+    child, killed, _state = owned
+    monkeypatch.setattr(mod, "_creation_filetime", lambda pid: None)
+    client = WedgedClient(None, child)
+    session = ClaudeSession(None, lambda _: client)
+    session.cleanup_timeout = session.settle_timeout = 0.05
+    try:
+        await session.query("one", "first")
+        assert session.owned_child == {"pid": child.pid, "created": None}
+        assert await close_under_bound(session, client)
+        assert killed == [], "killed a pid whose identity could not be proven"
+        assert any("unverified" in error
+                   for error in session.lifecycle.cleanup_errors), (
+            session.lifecycle.cleanup_errors)
+    finally:
+        client.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_survives_the_kill_is_reported_as_surviving(owned,
+                                                                      monkeypatch):
+    """taskkill can report success for a process that is still there.
+
+    The only honest answer comes from looking again, so the outcome is re-checked
+    and reported as SURVIVED rather than as a kill that worked.
+    """
+    from litetui import claude_session as mod
+
+    child, _killed, _state = owned
+    attempts: list[int] = []
+
+    def kill_that_does_not_work(pid):
+        attempts.append(int(pid))
+        return "SUCCESS: terminated"      # claims success, child stays alive
+
+    monkeypatch.setattr(mod, "_force_kill_tree", kill_that_does_not_work)
+    client = WedgedClient(None, child)
+    session = ClaudeSession(None, lambda _: client)
+    session.cleanup_timeout = session.settle_timeout = 0.05
+    try:
+        await session.query("one", "first")
+        assert await close_under_bound(session, client)
+        # TWICE, and that is correct: the stuck path tried, the child was still
+        # alive at close()'s last word, so it tried again. Two attempts and two
+        # honest reports beat one attempt and a claim.
+        assert attempts == [child.pid, child.pid]
+        assert any("SURVIVED a force-kill" in error
+                   for error in session.lifecycle.cleanup_errors), (
+            session.lifecycle.cleanup_errors)
+    finally:
+        client.release.set()
+        await asyncio.sleep(0)
