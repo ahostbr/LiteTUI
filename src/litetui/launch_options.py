@@ -27,6 +27,12 @@ class LaunchOptions:
     def overrides(self, settings, backend, model):
         from litetui.custom_backend import api_base
         values = {}
+        if backend == 'claude' and any((
+            self.base_url, self.context_length, self.max_tokens, self.server_executable,
+            self.model_path, self.server_command, self.api_key_env, self.load_model,
+            self.server_mode != 'auto',
+        )):
+            raise ValueError('Claude owns its runtime, endpoint and context; local server/load/sampling options are unsupported')
         if backend == 'ninfer':
             from litetui import gpu_gate
             if not gpu_gate.is_rtx_5090():

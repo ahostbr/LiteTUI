@@ -179,7 +179,20 @@ def _cmd_resume(app, name: str, arg: str) -> None:
     app._resume(target[0])
 
 
+def _cmd_claude(app, _name: str, arg: str) -> None:
+    from litetui.claude_turn import command
+
+    command(app, arg)
+
+
 def _register(ctx) -> None:
+    ctx.command(
+        ("/claude",), _cmd_claude,
+        palette="Claude session",
+        help="Native Claude session: status | resolve (no replay) | continue | new.",
+        group="convo",
+        order=45,
+    )
     ctx.command(
         ("/new", "/clear", "/reset"), _cmd_new,
         palette="New conversation",

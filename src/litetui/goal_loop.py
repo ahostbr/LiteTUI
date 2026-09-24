@@ -330,6 +330,9 @@ def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
 
 
 def goal_command(app: Any, arg: str) -> None:
+    if getattr(getattr(app, "backend", None), "owns_native_turns", False):
+        app._system("Claude owns the agent loop; host goal-loop automatic followups are unsupported.")
+        return
     arg = arg.strip()
     state = load_goal(getattr(app, "convo_dir", None))
     if not arg or arg.lower() in {"status", "show"}:

@@ -642,6 +642,8 @@ class OpenAITransport:
 
 
 def for_app(app) -> ModelTransport:
+    if getattr(getattr(app, "backend", None), "owns_native_turns", False):
+        raise ProviderError("Claude owns native turns; legacy transport is unsupported. No fallback was used.")
     if getattr(getattr(app, "backend", None), "name", None) in OAUTH_PROVIDERS:
         if hasattr(app.backend, "app_server"):
             from litetui.codex_app_server import AppServerTransport
@@ -664,6 +666,8 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
     as chat, without tools or parent history. Called only inside the tool worker.
     """
     backend = getattr(app, "backend", None)
+    if getattr(backend, "owns_native_turns", False):
+        raise ProviderError("Claude legacy subagent/summary sidecalls are unsupported; use native agents.")
     if getattr(backend, "remote", False):
 
         async def run():

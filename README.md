@@ -28,6 +28,64 @@ generated: LiteSuite's install dir, LM Studio's dirs, the HuggingFace cache and
 any custom roots, deduplicated, with voice and embedding GGUFs filtered out by
 the file's own `general.architecture` header rather than by guessing from names.
 
+## Claude Agent (experimental native backend)
+
+Install the optional, pinned runtime while LiteTUI is closed:
+
+```powershell
+uv sync --locked --extra claude
+claude auth login
+uv run --locked --extra claude litetui --backend claude
+```
+
+Or select `/backend claude` in an installed session. Authentication is delegated
+entirely to the official SDK/CLI, matching LiteSuite's ClaudeAdapter: LiteTUI does
+not read/copy login tokens or implement OAuth. The tested pair is Python Agent
+SDK **0.2.159** and bundled CLI **2.1.281**. An explicit `claude_executable` setting
+must report that tested CLI version; reconnect after changing it. Other backends
+need no Claude extra. Anthropic's permission requirements for offering subscription
+login in third-party products remain a separate distribution gate; a local smoke
+test is not distribution approval.
+
+**Claude owns its agent loop, tools, native context and automatic compaction.**
+LiteTUI renders text/thinking and native activity, persists session references and
+input delivery, and supplies guarded host services through in-process MCP.
+Native calls pass mandatory `PreToolUse` policy checks; host calls pass the existing
+LiteTUI dispatcher. Questions and approvals work in TUI and JSONL RPC.
+
+- `/claude status`: native identity and pending delivery states (not prompt content).
+- `/claude new`: fresh independent segment; old native history and held inputs stay saved.
+- `/claude continue`: explicitly continue unsent prepared inputs after restart.
+- `/claude resolve`: explicitly resolve uncertain deliveries **without replaying them**.
+  Inspect their effects/history first; this is not rollback.
+- Returning to Claude resumes the selected Claude segment. Other-provider history
+  is **not** imported. Busy prompts are durably queued for their original segment.
+
+Native agents/background launches, image attachments, host goal-loop followups,
+legacy subagent/summary calls, manual `/compact`, raw native slash passthrough and
+local loading/context/sampling controls are not enabled. Unsupported calls are
+refused rather than sent through an OpenAI fallback. Unknown context/usage remains
+unknown; cumulative cost is not described as per-turn cost.
+
+Initial configuration is controlled: user/project/local settings, external MCP,
+skills and Chrome integration are not automatically loaded. Native prompt preset
+plus a small LiteTUI append replaces the local-backend system prompt. Changes to
+tool inventory or session-creation prompt/configuration require a new session.
+The SDK retains its own session files; LiteTUI's companion `claude_ledger.json`
+tracks selected segments and prepared/submitted/terminal/uncertain deliveries.
+String-query delivery does not currently supply a stable native user-message UUID;
+LiteTUI does not fabricate provider acknowledgment. In-flight deliveries become
+uncertain after restart and are never automatically replayed. Native activity
+cards are saved at turn settlement; a mid-turn crash can lose those display cards,
+not the SDK's authoritative history. There is no old-segment picker or rollback.
+
+Live probes are **opt-in**, not default tests: `e2e/claude_contract_probe.py`
+(isolated offline controls; `--with-query` uses no credentials and an unreachable
+endpoint), `e2e/claude_live_probe.py`, and `LITETUI_CLAUDE_LIVE=1` for
+`e2e/claude_tui_smoke.py`, `e2e/claude_rpc_smoke.py`,
+`e2e/claude_negative_probe.py`, and `e2e/claude_timeout_probe.py`. Evidence and remaining release gates are in
+`artifacts/claude-implementation-progress.md`.
+
 ## What it does
 
 **Chat + agent loop.** Streams replies, renders the thinking trace in a

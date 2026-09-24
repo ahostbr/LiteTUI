@@ -1308,7 +1308,7 @@ def _register(ctx) -> None:
     ctx.command(
         ("/backend",), _cmd_backend,
         palette="Switch backend",
-        help="Choose LM Studio, llama.cpp, or a Codex subscription.",
+        help="Choose a local engine, custom endpoint, Codex, or Claude Agent.",
         group="backend",
         order=50,
     )

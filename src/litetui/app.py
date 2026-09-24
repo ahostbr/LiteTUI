@@ -1929,11 +1929,29 @@ class LiteTUI(App):
         await self._settle_before_teardown()
         from litetui.launch_options import stop_custom
         await asyncio.to_thread(stop_custom, self)
-        if getattr(getattr(self, "backend", None), "name", None) == "codex":
-            if hasattr(self.backend, "app_server"):
-                await self.backend.app_server.close()
+        backend = getattr(self, "backend", None)
+        native = getattr(backend, "owns_native_turns", False)
+        # 🔴 THIS BRANCH USED TO SIT INSIDE `if backend.name == "codex"`, WHICH
+        # NO CLAUDE BACKEND CAN EVER SATISFY (ClaudeBackend.name is "claude").
+        # It read as the exit path for native runtimes and was dead code, so a
+        # normal app exit never closed the owned claude.exe at all.
+        if not native and getattr(backend, "name", None) == "codex":
+            if hasattr(backend, "app_server"):
+                await backend.app_server.close()
             else:
-                self.backend.shutdown()
+                backend.shutdown()
+        # Owned cleanup outlives the backend that started it: switching away
+        # from Claude leaves its close task on the app, so exit settles the
+        # accumulated handles whether or not Claude is still selected.
+        if native or getattr(self, "_claude_closing", None):
+            from litetui.claude_backend import close_native, settle_close
+            close_native(self, backend)
+            failures = await settle_close(self)
+            if failures:
+                try:
+                    self._system("Claude cleanup: " + "; ".join(failures))
+                except Exception:  # noqa: BLE001 - the tree is being torn down
+                    pass
         await super()._shutdown()
 
     async def on_unmount(self) -> None:
@@ -2396,11 +2414,15 @@ class LiteTUI(App):
                 # owe the model different sentences.
                 unanswered = answer is None
             else:
-                answer = await show_dialog(
-                    self,
-                    partial(ToolApprovalBody, name, args, decision),
-                    modal_factory=partial(ToolApprovalScreen, name, args, decision),
-                )
+                if getattr(getattr(self, "backend", None), "owns_native_turns", False):
+                    from litetui.claude_turn import approval_dialog
+                    answer = await approval_dialog(self, name, args, decision)
+                else:
+                    answer = await show_dialog(
+                        self,
+                        partial(ToolApprovalBody, name, args, decision),
+                        modal_factory=partial(ToolApprovalScreen, name, args, decision),
+                    )
                 unanswered = False
             # `not answer` covers three cases on purpose: DENIED, and None from
             # a screen dismissed without a value, and any future falsy answer.
@@ -2915,6 +2937,13 @@ class LiteTUI(App):
         paths are assigned here anyway, so the footer can name the conversation
         and /clear can report where it will live.
         """
+        previous = getattr(self, "_backend", None)
+        if getattr(previous, "owns_native_turns", False):
+            bridge = getattr(previous, "_claude_tools", None)
+            if bridge:
+                bridge.stop()
+            from litetui.claude_backend import close_native
+            close_native(self, previous)
         hook_host.leave_conversation(self)
         self.store.stage(str(uuid.uuid4()))
         self._resumed_seat_name = None
@@ -3209,6 +3238,13 @@ class LiteTUI(App):
         except OSError as exc:
             self._system(f"Conversation is read-only: {exc}")
             return
+        previous = getattr(self, "_backend", None)
+        if getattr(previous, "owns_native_turns", False):
+            bridge = getattr(previous, "_claude_tools", None)
+            if bridge:
+                bridge.stop()
+            from litetui.claude_backend import close_native
+            close_native(self, previous)
         hook_host.leave_conversation(self)
         self.conversation = msgs
         # The staged conversation is abandoned WITHOUT being written — that is
@@ -3317,6 +3353,9 @@ class LiteTUI(App):
                 tools += 1
             from litetui.codex_trace import replay as replay_codex_trace
             native_tools += replay_codex_trace(self, m.get("provider_metadata") or {}, native_seen)
+            if m.get("claude_native"):
+                from litetui.claude_turn import replay_activity
+                replay_activity(self, m["claude_native"])
         # Tool traffic is summarised rather than replayed — the widgets carry
         # streamed state that cannot be faithfully reconstructed from the log.
         # It IS still in self.conversation, so the model sees all of it.
@@ -3435,6 +3474,19 @@ class LiteTUI(App):
             self._edit(0, "tools toggled")  # one message, not the whole list
         state = "ON (bash, read, write, web_fetch)" if self.tools_enabled else "OFF"
         self._system(f"Tools {state} — Ctrl+T to toggle")
+        # A live Claude session was handed its inventory when it opened, so the
+        # two directions are NOT symmetric and saying "Tools ON" alone would
+        # promise something the session cannot do. Enforcement is per call
+        # (claude_tools.pre_tool reads tools_enabled every time), advertisement
+        # is per session (sdk_options runs once at open).
+        if (getattr(self.backend, "owns_native_turns", False)
+                and getattr(self.backend, "session", None) is not None):
+            self._system(
+                "Claude's live session keeps the inventory it opened with; the new tools are "
+                "advertised to it only after /claude new."
+                if self.tools_enabled else
+                "Claude's live session still lists these tools, but every call is now denied."
+            )
         self._update_header()
 
     @classmethod
@@ -3749,6 +3801,8 @@ class LiteTUI(App):
 
     @property
     def thinking_level(self) -> str | None:
+        if getattr(getattr(self, "_backend", None), "owns_native_turns", False):
+            return None  # Native default; local thinking settings are not forwarded.
         return self._thinking_level
 
     @thinking_level.setter
@@ -3994,6 +4048,8 @@ class LiteTUI(App):
                 f"({e}). Staying on {getattr(self._backend, 'name', 'the current engine')}."
             )
             return
+        from litetui.claude_backend import close_native
+        close_native(self, getattr(self, "_backend", None))
         self._backend = new_backend
 
     async def _vram_gate_allows(self, model: str) -> bool:
@@ -4118,6 +4174,10 @@ class LiteTUI(App):
             # The llama backend may spawn its own server here (never loading
             # a model) or attach to LiteSuite's — either way, say which.
             from litetui.launch_options import prepare
+            if getattr(self, "_claude_closing", None):
+                from litetui.claude_backend import settle_close
+                for cleanup_failure in await settle_close(self):
+                    self._system(f"Claude cleanup: {cleanup_failure}")
             timeout = getattr(getattr(self, '_launch_options', None), 'timeout', 600)
             async with asyncio.timeout(timeout):
                 status = await prepare(self)
@@ -5067,8 +5127,9 @@ class LiteTUI(App):
         needs off the app. See that function for why each refusal to answer is
         load bearing.
         """
-        if hasattr(getattr(self, "backend", None), "app_server"):
-            return None  # Codex owns context and automatic compaction.
+        if (hasattr(getattr(self, "backend", None), "app_server")
+                or getattr(getattr(self, "backend", None), "owns_native_turns", False)):
+            return None  # Native runtimes own context and automatic compaction.
         return TurnEngine.autocompact_due(
             enabled=self.settings.autocompact_enabled,
             at_percent=self.settings.autocompact_at_percent,
@@ -5306,7 +5367,10 @@ class LiteTUI(App):
         # Deliberately NOT shutting the old engine down: a mid-session flip that
         # evicted the resident model would make flipping back cost a full reload.
         # VRAM is freed explicitly (/unload) or at app exit (atexit).
-        if hasattr(self.backend, "app_server"):
+        if getattr(self.backend, "owns_native_turns", False):
+            from litetui.claude_backend import close_native
+            close_native(self, self.backend)
+        elif hasattr(self.backend, "app_server"):
             self.backend.shutdown()
         self.backend = llm_backend.make_backend(s)
         # The conversation is NOT touched — history survives an engine switch;
@@ -5631,6 +5695,8 @@ class LiteTUI(App):
 
     def _kick_card_summary(self, card) -> None:
         """Fire-and-forget the summary for one finished card."""
+        if getattr(self.backend, "owns_native_turns", False):
+            return  # Native context never calls a legacy summary model.
         if card is None or getattr(card, "summary_done", False):
             return
         if card.summary:                      # restored from the store already
@@ -6513,6 +6579,8 @@ class LiteTUI(App):
         REFUSES ONLY ON NUMBERS IT HAS. An unknown window returns None:
         guessing one would refuse a message that might have been fine.
         """
+        if getattr(getattr(self, "backend", None), "owns_native_turns", False):
+            return None
         window = getattr(self, "ctx_max", None)
         if not window or not getattr(self, "ctx_loaded", False):
             return None
@@ -6642,9 +6710,20 @@ class LiteTUI(App):
             self._refuse_submit("message_over_budget", oversize)
             return
 
-        self.pending_image = None
         profile = self.chosen_tool_profile
+        claude_metadata = {}
+        if getattr(self.backend, "owns_native_turns", False):
+            from litetui.claude_turn import prepare_input
+            try:
+                claude_metadata = prepare_input(self, content, profile, source,
+                    getattr(self, "_gui_next_operation_id", None) if source == "rpc" else None)
+            except (ValueError, TypeError, OSError, RuntimeError) as exc:
+                self._system(str(exc))
+                self._refuse_submit("claude_admission", str(exc))
+                return
+        self.pending_image = None
         correlation = {"operation_id": getattr(self, "_gui_next_operation_id", None)} if source == "rpc" else {}
+        correlation.update(claude_metadata)
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
@@ -6990,6 +7069,10 @@ class LiteTUI(App):
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
+        if getattr(self.backend, "owns_native_turns", False):
+            from litetui.claude_turn import stream_turn
+            await stream_turn(self)
+            return
         # Stamp before setup/probing: waiting for the turn's first request is
         # part of the turn, not free time before it.
         turn_started_at = time.monotonic()
@@ -7788,6 +7871,9 @@ class LiteTUI(App):
         if self._chat_running():
             self.set_timer(0.7, self._flush_pending_input)
             return
+        from litetui.claude_turn import queue_ready
+        if not queue_ready(self, self._pending_input[0]):
+            return
         entry = self._pending_input[0].get("_codex_entry")
         if entry and not hasattr(self.backend, "app_server"):
             self._system("Queued Codex input is retained for its Codex conversation.")
@@ -7986,6 +8072,9 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
+        if getattr(self.backend, "owns_native_turns", False):
+            self._system("Claude owns native automatic compaction; host /compact is unsupported.")
+            return
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
             self._stop_reason = None

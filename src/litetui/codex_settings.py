@@ -117,10 +117,20 @@ def native(backend):
 
 
 def control(backend, name):
+    if getattr(backend, "owns_native_turns", False):
+        if name in {"tools_enabled", "tools_disabled"}:
+            return Control("host", "Permission changes apply immediately to Claude calls. Advertised tool inventory is fixed for a live session; use /claude new to refresh it.")
+        if name in {"tool_policy_profile", "tool_always_allow", "tool_deny", "enter_interrupts"}:
+            return Control("host", "LiteTUI authority and interaction setting; enforced for Claude calls.")
+        if name in CONTROLS or name in {"thinking_level", "codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
+            return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
+        return None
     return CONTROLS.get(name) if native(backend) else None
 
 
 def loop_description(backend, iterations):
+    if getattr(backend, "owns_native_turns", False):
+        return "agent loop: managed by the official Claude SDK runtime"
     if native(backend):
         return "agent loop: managed by the official Codex engine"
     return f"agent loop: up to {iterations} tool iterations per turn (/settings)"

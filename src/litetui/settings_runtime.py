@@ -207,12 +207,17 @@ def prepare_reconnect(app):
                                or app.settings.codex_native_engine != target.codex_native_engine):
         from litetui.llm_backend import make_backend
         replacement = make_backend(target)
-        if hasattr(backend, 'app_server'):
+        if getattr(backend, 'owns_native_turns', False):
+            from litetui.claude_backend import close_native
+            close_native(app, backend)
+        elif hasattr(backend, 'app_server'):
             backend.shutdown()
         app.backend = replacement
         app.available_models = []
         app._model_id = ''
     elif backend is not None and hasattr(backend, 'set_settings'):
+        from litetui.claude_backend import close_native
+        close_native(app, backend)
         backend.set_settings(target)
     app.settings = target
     object.__setattr__(target, '_baseline', asdict(target))

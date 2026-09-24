@@ -1968,6 +1968,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
     ("llamacpp", "llama.cpp (our own llama-server)"),
     ("ninfer", "NInfer (NVFP4 5090 engine)"),
     ("codex", "Codex (OAuth subscription)"),
+    ("claude", "Claude Agent"),
 )
 BACKEND_NAMES: tuple[str, ...] = tuple(name for name, _ in BACKENDS)
 
@@ -2024,6 +2025,9 @@ def make_backend(settings):
 
 
 def _make_backend(settings):
+    if settings.backend == "claude":
+        from litetui.claude_backend import ClaudeBackend
+        return ClaudeBackend(settings)
     if settings.backend == "custom":
         from litetui.custom_backend import CustomBackend
         return CustomBackend(settings)

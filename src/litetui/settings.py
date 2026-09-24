@@ -138,6 +138,8 @@ class Settings:
     #: owns the loop, tools, history and compaction (0.23.0 behaviour).
     #: Takes effect on /reconnect or the next launch.
     codex_native_engine: bool = False
+    #: Claude uses its pinned SDK-bundled CLI unless explicitly overridden.
+    claude_executable: str = ""
     #: OUR router instance. 7470 sits in the ecosystem's 74xx block — the
     #: 8xxx range is crowded on dev machines (Ryan, 2026-08-21).
     custom_base_url: str = ""

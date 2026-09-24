@@ -729,6 +729,13 @@ class SettingsBody(Widget):
                             "official Codex engine owns tools, history and compaction. "
                             "Applies on /reconnect.",
                         )
+                        yield from self._text_row(
+                            "claude_executable", "Claude executable override",
+                            "Blank uses the pinned SDK's bundled CLI. An override must match "
+                            "the tested CLI version; applies on /reconnect. Authentication "
+                            "remains with the official Claude CLI.",
+                            placeholder="unset — bundled Claude CLI",
+                        )
                         yield self._section_header("model-router")
                         yield from self._text_row(
                             "custom_base_url", "Custom server URL",

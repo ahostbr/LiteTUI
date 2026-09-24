@@ -29,7 +29,7 @@ tool_deny tools_disabled tool_context_mode tool_context_threshold_chars
 compact_max_tool_iters compact_max_tokens compact_keep_recent compact_thinking_level
 autocompact_enabled autocompact_at_percent wake_after_compact seat_name skills_enabled
 skill_roots mcp_enabled mcp_disabled_servers plugins_disabled'''.split()
-_DEVICE = '''llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
+_DEVICE = '''claude_executable llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
 llama_models_dirs enter_interrupts clear_screen_after_compact theme_name custom_themes
 show_thinking show_stop_line show_stop_time autoscroll error_message_style dialog_style dialog_side
 image_viewer_enabled footer_show_seat footer_show_thinking footer_show_bg
@@ -37,7 +37,7 @@ footer_show_subagents footer_show_convo footer_show_context footer_show_context_
 footer_show_tps footer_order tts_enabled tts_timeout tts_engine tts_voice tts_edge_voice
 stt_model stt_mic stt_hotkey'''.split()
 _DEFAULTS = ['backend_chosen', 'llama_presets']
-_RECONNECT = set('custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host llama_host backend default_model codex_native_engine pin_default_model skills_enabled skill_roots mcp_enabled mcp_disabled_servers'.split())
+_RECONNECT = set('claude_executable custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host llama_host backend default_model codex_native_engine pin_default_model skills_enabled skill_roots mcp_enabled mcp_disabled_servers'.split())
 _RESTART = set('ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency llama_executable llama_attach_hosts llama_models_max plugins_disabled'.split())
 
 SETTING_SPECS = {}

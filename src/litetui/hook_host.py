@@ -138,6 +138,9 @@ def accept_prompt(app, item):
     if materialise is not None:
         materialise()
     message = {"role": "user", "content": item["content"]}
+    if getattr(getattr(app, "backend", None), "owns_native_turns", False):
+        from litetui.claude_turn import accept_input
+        message["claude_delivery"] = accept_input(app, item)
     entry = item.get("_codex_entry")
     if entry:
         message["codex_delivery"] = {"id": entry["id"], "threadId": entry["threadId"],
