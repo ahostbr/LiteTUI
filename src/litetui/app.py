@@ -3967,8 +3967,9 @@ class LiteTUI(App):
 
     @property
     def thinking_level(self) -> str | None:
-        if getattr(getattr(self, "_backend", None), "owns_native_turns", False):
-            return None  # Native default; local thinking settings are not forwarded.
+        # Claude forwards it as its effort level (claude_turn.effort_for, which
+        # sends only a level the model takes). This returned None on Claude,
+        # so /think's level never reached the session.
         return self._thinking_level
 
     @thinking_level.setter

@@ -523,3 +523,21 @@ async def test_back_to_default_reopens_the_session_because_it_has_no_live_contro
     assert [kind for kind, _ in asked] == ["effort"] and "high to default" in asked[0][1]
     assert app.backend.closes >= 1 and opened and opened[0][1] is None
     assert session.efforts == []
+
+
+def test_the_think_level_reaches_claude_as_its_effort():
+    """/think max on Claude used to be read back as None by the app's
+    thinking_level property, so effort_for never saw it."""
+    from litetui.app import LiteTUI
+    from litetui.claude_turn import effort_for
+
+    backend = SimpleNamespace(name="claude", owns_native_turns=True,
+                              reasoning_levels=lambda key: ["low", "high", "max"])
+    host = SimpleNamespace(_backend=backend, _thinking_level="max")
+    level = LiteTUI.thinking_level.fget(host)
+    assert level == "max"
+    app = SimpleNamespace(backend=backend, model_id="default", thinking_level=level,
+                          settings=SimpleNamespace(model_infer_overrides={}))
+    assert effort_for(app) == "max"
+    app.thinking_level = "off"          # a local-backend level Claude does not take
+    assert effort_for(app) is None
