@@ -225,3 +225,17 @@ def test_settings_controls_mark_what_applies_to_clinepass():
     for name in ('temperature', 'autocompact_enabled', 'compact_keep_recent', 'tools_enabled', 'max_tokens_chat'):
         assert codex_settings.control(backend, name) is None, name
 
+
+
+def test_clinepass_backend_saved_on_one_conversation_stays_there(tmp_path):
+    """Ryan: separate LiteTUI instances must stay separate. Choosing ClinePass
+    in one conversation's settings leaves another conversation's backend alone."""
+    from litetui.settings_scope import SETTING_SPECS
+    from litetui.settings_service import SettingChange, SettingsService
+
+    svc = SettingsService(tmp_path)
+    a, b = svc.snapshot('a'), svc.snapshot('b')
+    scope = SETTING_SPECS['backend'].scope.value
+    assert svc.save_patch('a', [SettingChange('backend', 'cline', scope)], a.revisions).fully_saved
+    assert svc.snapshot('a').saved.backend == 'cline'
+    assert svc.snapshot('b').saved.backend == b.saved.backend
