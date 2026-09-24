@@ -613,7 +613,9 @@ class SettingsBody(Widget):
             yield Static(help_text, classes="set-help")
 
     def _thinking_choices(self, name="thinking_level"):
-        return thinking_choices(getattr(self.app, "backend", None), self.app.model_id,
+        # getattr: the method used to read model_id only on codex/claude, and
+        # test hosts (and any plugin App) without one must still compose.
+        return thinking_choices(getattr(self.app, "backend", None), getattr(self.app, "model_id", None),
                                 getattr(self._start, name))
 
     def _select_row(self, name: str, label: str, choices, help_text: str):

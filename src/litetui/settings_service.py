@@ -33,6 +33,21 @@ class SettingsSnapshot:
     revisions: dict[str, str]
 
 
+_LITERALS: dict[str, tuple] | None = None
+
+
+def _literal_values() -> dict[str, tuple]:
+    """{field: allowed values} for every Literal-typed Settings field, resolved once."""
+    global _LITERALS
+    if _LITERALS is None:
+        import typing
+
+        _LITERALS = {name: typing.get_args(hint)
+                     for name, hint in typing.get_type_hints(st.Settings).items()
+                     if typing.get_origin(hint) is typing.Literal}
+    return _LITERALS
+
+
 def _read(path):
     try:
         data = path.read_bytes()
@@ -133,6 +148,13 @@ class SettingsService:
                 valid = isinstance(value, str)
             if not valid:
                 raise ValueError(f'Invalid value for {change.key}: expected {declared}')
+            # A Literal field (thinking_level, compact_thinking_level) is a
+            # STRING annotation here, so the chain above only asked "is it a
+            # str?" and saved 'none' or 'banana'. The TUI's Select hid that; an
+            # editable sidecar patch is not constrained by one (PassLink's find).
+            allowed = _literal_values().get(change.key)
+            if allowed is not None and value not in allowed:
+                raise ValueError(f'Invalid value for {change.key}: expected one of {allowed}')
             from litetui.llm_backend import BACKEND_NAMES
             if change.key == 'backend' and value not in BACKEND_NAMES:
                 raise ValueError('Unknown backend')
