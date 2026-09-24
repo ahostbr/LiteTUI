@@ -86,6 +86,41 @@ THINKING_CHOICES = [
     ("xhigh — most expensive", "xhigh"),
 ]
 
+
+#: Settings fields /settings deliberately gives no control of their own; the
+#: sidecar settings view shows them read-only for the same reasons.
+NOT_A_SETTINGS_CONTROL = frozenset({
+    "mcp_disabled_servers", "custom_themes", "plugins_disabled",
+    # Per-model dicts, edited through /modelcfg — a flat text box
+    # for a nested dict would be a control that corrupts on save.
+    "llama_load_settings", "model_infer_overrides", "llama_presets",
+    # Set by the first-boot picker, not by a visible control.
+    "backend_chosen",
+})
+
+
+def thinking_choices(backend, model_id, current):
+    """(label, value) rows the Thinking level select offers on `backend`.
+
+    Module-level so the sidecar settings view offers exactly these rows too
+    (sidecar_settings.public_snapshot); it was SettingsScreen._thinking_choices.
+    Backends that report their own levels list those; "cline" is here for
+    PassLink's Cline backend, so the Cline card does not edit this line again.
+    """
+    if getattr(backend, "name", "") in ("codex", "claude", "cline"):
+        from litetui.thinking_capabilities import _as_choices
+
+        # Wire spellings -> saved ones ("none" -> "off", the one translation):
+        # "none" is not a ThinkingLevel and would fail validation on save
+        # (PassLink: Cline reports it first). Codex (live cache: high, low,
+        # max, medium, ultra, xhigh) and Claude report none today.
+        choices = [(level.title() if level != "xhigh" else "Extra high", level)
+                   for level in _as_choices(backend.reasoning_levels(model_id))]
+        if current not in [value for _, value in choices]:
+            choices.append((f"{current} (saved; not supported by this model)", current))
+        return choices
+    return THINKING_CHOICES
+
 def _theme_choices(custom: dict | None = None):
     """Built-ins (lights stripped) + the LiteSuite ports + the shades + any
     custom themes, computed at call time — a module-level constant missed
@@ -590,15 +625,10 @@ class SettingsBody(Widget):
             yield Static(help_text, classes="set-help")
 
     def _thinking_choices(self, name="thinking_level"):
-        backend = getattr(self.app, "backend", None)
-        if getattr(backend, "name", "") in ("codex", "claude"):
-            choices = [(level.title() if level != "xhigh" else "Extra high", level)
-                       for level in backend.reasoning_levels(self.app.model_id)]
-            current = getattr(self._start, name)
-            if current not in [value for _, value in choices]:
-                choices.append((f"{current} (saved; not supported by this model)", current))
-            return choices
-        return THINKING_CHOICES
+        # getattr: the method used to read model_id only on codex/claude, and
+        # test hosts (and any plugin App) without one must still compose.
+        return thinking_choices(getattr(self.app, "backend", None), getattr(self.app, "model_id", None),
+                                getattr(self._start, name))
 
     def _select_row(self, name: str, label: str, choices, help_text: str):
         locked = settings_mod.source_of(name)
@@ -1434,14 +1464,7 @@ class SettingsBody(Widget):
 
         for f in fields(Settings):
             name = f.name
-            if name in (
-                "mcp_disabled_servers", "custom_themes", "plugins_disabled",
-                # Per-model dicts, edited through /modelcfg — a flat text box
-                # for a nested dict would be a control that corrupts on save.
-                "llama_load_settings", "model_infer_overrides", "llama_presets",
-                # Set by the first-boot picker, not by a visible control.
-                "backend_chosen",
-            ):
+            if name in NOT_A_SETTINGS_CONTROL:
                 continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
                 continue  # env owns it; the control is disabled

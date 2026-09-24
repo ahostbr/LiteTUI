@@ -311,3 +311,18 @@ def test_effort_levels_come_from_cli_metadata_with_a_static_fallback():
     assert backend.reasoning_levels("claude-opus-5-5") == list(STATIC_EFFORT)
     assert backend.reasoning_levels("claude-haiku-4-5-20251001") == []
     assert backend.reasoning_levels("nope") == []
+
+
+def test_backend_rows_is_the_one_source_for_the_picker_and_the_sidecar(monkeypatch):
+    from litetui import gpu_gate
+    from litetui.plugins import model_switch
+
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: False)
+    app = SimpleNamespace(settings=Settings(), backend=SimpleNamespace(name="lmstudio"))
+    rows = model_switch.backend_rows(app)
+    assert [k for k, _ in rows] == [k for k, _ in llm_backend.visible_backends()]
+    assert dict(rows)["claude"].startswith("Claude Agent  · ")
+    seen = {}
+    monkeypatch.setattr(model_switch, "pick", lambda app, title, rows, cb, current=None: seen.update(rows=rows))
+    model_switch._cmd_backend(app, "/backend", "")
+    assert seen["rows"] == rows

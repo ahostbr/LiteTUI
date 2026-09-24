@@ -78,6 +78,29 @@ def effort_for(app):
     return level if level and callable(levels) and level in levels(app.model_id) else None
 
 
+def effort_change_warning(app, level):
+    """(kind, text) the send-time cache gate WILL raise if the saved thinking
+    level becomes `level`, else None. The sidecar asks this before saving an
+    effort change, so its confirm/cancel shows the same warning the TUI shows
+    (Ryan 2026-09-24: "it has to go through the warning system").
+
+    Read-only: no ledger is created and nothing is sent. Only a live session
+    has a cache to lose, as in _cache_ok."""
+    backend = getattr(app, "backend", None)
+    ledger = getattr(app, "_claude_ledger", None)
+    segment = ledger.selected if ledger is not None else None
+    if getattr(backend, "name", "") != "claude" or segment is None:
+        return None
+    if backend.session is None or backend.segment_id != segment["id"]:
+        return None
+    override = ((getattr(app.settings, "model_infer_overrides", {}) or {}).get(app.model_id) or {}).get("reasoning_effort")
+    wanted = override or (None if level in (None, "default") else level)
+    effort = wanted if wanted in backend.reasoning_levels(app.model_id) else None
+    cold = claude_cache.cold_reason(claude_cache.clock_for(app, segment["id"]), live=True,
+                                    resuming=False, model=app.model_id, effort=effort)
+    return cold if cold is not None and cold[0] == "effort" else None
+
+
 def _restore_effort(app, effort):
     """Put the effort back to what the live session runs at (a cancelled change)."""
     level = None if effort in (None, "default") else effort
@@ -103,7 +126,14 @@ async def _cache_ok(app, backend, segment):
         clock, live=live, resuming=not live and bool(segment.get("session_id")),
         model=app.model_id, used_at=segment.get("cache_used_at"), effort=effort_for(app),
     )
-    if cold is None or await claude_cache.confirm_cold(app, cold):
+    if cold is None:
+        return True
+    approved = getattr(app, "_claude_cache_preapproved", None)
+    if cold[0] == "effort" and approved == ("effort", effort_for(app) or "default"):
+        # Already confirmed in the sidecar for exactly this change: once.
+        app._claude_cache_preapproved = None
+        return True
+    if await claude_cache.confirm_cold(app, cold):
         return True
     if cold[0] == "effort" and not getattr(app, "_rpc", None):
         # Cancel means the change did not happen: effort AND session unchanged.

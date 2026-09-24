@@ -11,6 +11,7 @@ from litetui.plugins import PluginManifest
 from litetui.sidecar_dispatch import SettingsPatchDispatcher
 from litetui.sidecar_jobs import public_jobs
 from litetui.sidecar_launch import SidecarWindow
+from litetui.sidecar_patch import apply_patch
 from litetui.sidecar_settings import public_snapshot
 
 VIEWS = frozenset({"timeline", "calendar", "settings", "job"})
@@ -22,10 +23,31 @@ def _new_window(app) -> SidecarWindow:
     return SidecarWindow(executable)
 
 
+def settings_snapshot(app) -> dict:
+    """THIS instance's settings, as the TUI's /settings shows them on its backend.
+
+    Always read from disk through the settings service, scoped to this app's own
+    conversation, so a sidecar never sees or edits another instance's state.
+    """
+    from litetui.plugins.model_switch import backend_rows
+
+    return public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name),
+                           backend=app.backend, backends=backend_rows(app),
+                           models=list(app.available_models), model_id=app.model_id)
+
+
+def _apply_and_refresh(app, payload: dict) -> dict:
+    """The existing write contract (sidecar_patch), plus a fresh snapshot so the
+    page's next edit carries current revisions instead of stale ones."""
+    result = apply_patch(app, payload)
+    result["snapshot"] = settings_snapshot(app)
+    return result
+
+
 def _open_background(app, owner: SidecarWindow, view: str) -> None:
     try:
         if view == "settings" and getattr(app, "convo_dir", None) is not None:
-            snapshot = public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name))
+            snapshot = settings_snapshot(app)
             opened = owner.open_settings_snapshot(snapshot)
         elif view in {"calendar", "job", "timeline"} and hasattr(app, "jobs"):
             # The monitor may update in-memory jobs; capture its state on the UI thread.
@@ -34,7 +56,9 @@ def _open_background(app, owner: SidecarWindow, view: str) -> None:
         else:
             opened = owner.open(view)
         if opened:
-            app.call_from_thread(app.system_message, f"[sidecar] Native {view} preview opened; working editors remain Textual.")
+            app.call_from_thread(app.system_message, (
+                "[sidecar] Native settings opened; edits there save to this instance." if view == "settings"
+                else f"[sidecar] Native {view} preview opened; its editor remains Textual."))
         else:
             app.call_from_thread(app.system_message, "[sidecar] Preview unavailable; use Textual /settings, /calendar or /job.")
     except Exception as exc:  # noqa: BLE001 - worker failure must be visible, never take down UI
@@ -52,7 +76,8 @@ def _handle(app, name: str, arg: str) -> None:
     owner = getattr(app, "_sidecar_preview", None)
     if owner is None:
         owner = _new_window(app)
-        owner.on_event = SettingsPatchDispatcher(app, owner)
+        owner.settings_write = True
+        owner.on_event = SettingsPatchDispatcher(app, owner, apply=_apply_and_refresh)
         app._sidecar_preview = owner
     # A command never awaits the child handshake or a failed process termination.
     threading.Thread(target=lambda: _open_background(app, owner, view),
@@ -61,7 +86,7 @@ def _handle(app, name: str, arg: str) -> None:
 
 def _register(ctx) -> None:
     ctx.command(("/sidecar",), _handle, palette="Native sidecar preview",
-                help="Open the optional visual-only native preview (no edits).",
+                help="Open the native sidecar; its settings view edits this instance's settings.",
                 group="app", order=12)
 
 

@@ -345,14 +345,13 @@ def _cmd_engine(app, name: str, arg: str) -> None:
     app.run_worker(_go(), exclusive=False, name="ninfer-engine-start")
 
 
-def _cmd_backend(app, name: str, arg: str) -> None:
-    choice = arg.strip().lower()
-    if choice in llm_backend.BACKEND_NAMES or choice in model_transport.OAUTH_PROVIDERS:
-        _switch_backend(app, choice)
-        return
-    if choice:
-        app.system_message(f"Unknown backend {choice!r} — {', '.join(llm_backend.BACKEND_NAMES)}")
-        return
+def backend_rows(app) -> list[tuple[str, str]]:
+    """(name, "Label  · readiness") for every engine /backend offers.
+
+    ONE source for the /backend picker and the sidecar settings view
+    (sidecar_settings.public_snapshot), so the two cannot disagree about
+    which engines exist or whether one is ready.
+    """
     lms_mark = "installed" if shutil.which("lms") else "not detected"
     llama_mark = (
         f"installed ({llm_backend.configured_build(app.settings)})"
@@ -371,11 +370,34 @@ def _cmd_backend(app, name: str, arg: str) -> None:
         "ninfer": _ninfer_mark(app),
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
+        **_cline_mark(),
     }
     rows = [
         (key, f"{label}  · {marks[key]}" if key in marks else label)
         for key, label in llm_backend.visible_backends()
     ]
+    return rows
+
+
+def _cline_mark() -> dict:
+    """The Cline backend's readiness, once its module exists (PassLink's card)."""
+    try:
+        from litetui import cline_backend  # type: ignore[attr-defined]
+    except ImportError:
+        return {}
+    status = getattr(cline_backend, "auth_status", None)
+    return {"cline": status()} if callable(status) else {}
+
+
+def _cmd_backend(app, name: str, arg: str) -> None:
+    choice = arg.strip().lower()
+    if choice in llm_backend.BACKEND_NAMES or choice in model_transport.OAUTH_PROVIDERS:
+        _switch_backend(app, choice)
+        return
+    if choice:
+        app.system_message(f"Unknown backend {choice!r} — {', '.join(llm_backend.BACKEND_NAMES)}")
+        return
+    rows = backend_rows(app)
 
     def _picked(choice: str | None) -> None:
         if choice:
