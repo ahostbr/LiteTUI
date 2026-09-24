@@ -133,7 +133,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "ninfer", "NInfer", "ninfer-envelope", "Runtime envelope",
         "The startup flags that shape memory and parallel work.",
-        ("ninfer_max_context", "ninfer_max_concurrency"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
+        ("ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
     ),
     _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",

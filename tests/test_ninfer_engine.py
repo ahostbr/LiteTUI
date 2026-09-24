@@ -242,6 +242,38 @@ def test_start_passes_the_settings_concurrency_and_keeps_the_argv_on_the_handle(
     eng.stop(owned)
 
 
+def test_kv_flags_default_to_fp8_and_are_omitted_until_chosen():
+    """T911: fp8 stays the default; --kv-capacity / --host-kv-mib only when set (serving.md:759/786)."""
+    args = eng.build_ninfer_args(Path("a"), 1, "m")
+    assert args[args.index("--kv-dtype") + 1] == "fp8"
+    assert "--kv-capacity" not in args and "--host-kv-mib" not in args
+    chosen = eng.build_ninfer_args(Path("a"), 1, "m", kv_dtype="nvfp4", kv_capacity="auto", host_kv_mib=4096)
+    assert chosen[chosen.index("--kv-dtype") + 1] == "nvfp4"
+    assert chosen[chosen.index("--kv-capacity") + 1] == "auto"
+    assert chosen[chosen.index("--host-kv-mib") + 1] == "4096"
+    assert "240000" in eng.build_ninfer_args(Path("a"), 1, "m", kv_capacity=" 240000 ")
+
+
+def test_invalid_kv_values_fall_back_instead_of_reaching_the_engine():
+    args = eng.build_ninfer_args(Path("a"), 1, "m", kv_dtype="fp16", kv_capacity="lots", host_kv_mib=0)
+    assert args[args.index("--kv-dtype") + 1] == "fp8"
+    assert "--kv-capacity" not in args and "--host-kv-mib" not in args
+    assert "--kv-capacity" not in eng.build_ninfer_args(Path("a"), 1, "m", kv_capacity="0")
+    assert "--host-kv-mib" not in eng.build_ninfer_args(Path("a"), 1, "m", host_kv_mib=True)
+
+
+def test_start_passes_the_kv_settings_to_the_spawn(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    monkeypatch.setattr(eng.atexit, "register", lambda *a, **k: None)
+    s.ninfer_kv_dtype, s.ninfer_kv_capacity, s.ninfer_host_kv_mib = "bf16", "auto", 2048
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn)
+    cmd = spawned["cmd"]
+    assert cmd[cmd.index("--kv-dtype") + 1] == "bf16"
+    assert cmd[cmd.index("--kv-capacity") + 1] == "auto"
+    assert cmd[cmd.index("--host-kv-mib") + 1] == "2048"
+    eng.stop(owned)
+
+
 def test_an_earlier_runs_ready_line_does_not_count(tmp_path, monkeypatch):
     """14:1x 2026-09-17: the log is appended across spawns; the 12:xx run's "listening on"
     made start() return at SPAWN while 20.6 GiB were still loading, and the caller's

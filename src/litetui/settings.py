@@ -111,6 +111,14 @@ class Settings:
     #: (serving.md:929-933, :949-955): no extra VRAM, less context each under load.
     #: A startup flag — applies on the next /engine start.
     ninfer_max_concurrency: int = 1
+    #: --kv-dtype (serving.md:775): bf16 | int8 | fp8 | nvfp4 | k8v4. fp8 is what the
+    #: VRAM envelope was measured at. Startup flag — next /engine start.
+    ninfer_kv_dtype: str = "fp8"
+    #: --kv-capacity (serving.md:759): blank = follow ninfer_max_context (unchanged
+    #: behaviour), "auto" = fill the remaining GPU memory, or a token count.
+    ninfer_kv_capacity: str = ""
+    #: --host-kv-mib (serving.md:786): pinned host RAM for spilled KV. None = engine default 8192.
+    ninfer_host_kv_mib: int | None = None
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
