@@ -654,3 +654,21 @@ def test_usage_is_comparable_by_value():
         source="result", input_tokens=1
     )
     assert ClaudeUsage(source="result") != ClaudeUsage(source="message")
+
+
+def test_a_snapshot_without_a_text_block_never_wipes_streamed_text():
+    """Per-block snapshots (live, CLI 2.1.281): a thinking- or tool-only snapshot says
+    nothing about the text, so it must not replace what streamed with ""; and deltas after
+    it keep their message id until the stream's message_stop."""
+    _, events = drive(
+        start(),
+        delta("Hello"),
+        snapshot("", blocks=[{"type": "thinking", "thinking": "hm", "signature": "s"}]),
+        delta(" world"),
+        snapshot("Hello world"),
+        {"type": "stream_event", "uuid": "u", "session_id": "sess-abc", "event": {"type": "message_stop"}},
+    )
+    assert [e.message_id for e in only(events, "text_delta")] == ["msg_01", "msg_01"]
+    first, last = only(events, "message")
+    assert (first.reconcile, first.text) == ("append", "")
+    assert (last.reconcile, last.text) == ("append", "")

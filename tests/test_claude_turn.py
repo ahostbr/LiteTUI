@@ -742,3 +742,76 @@ def test_a_folder_switch_never_abandons_an_uncertain_delivery(tmp_path):
     with pytest.raises(ValueError, match="/claude resolve"):
         prepare_input(app, "two", "strict", "typed")
     assert ledger.selected["id"] == old["id"], "nothing switched"
+
+
+@pytest.mark.asyncio
+async def test_a_thinking_turn_stores_its_answer_once(tmp_path):
+    """The frames a thinking model sent live (CLI 2.1.281, default model, 2026-09-24): the
+    thinking block's snapshot arrives BEFORE the text streams, under the same message id.
+    The answer landed in conversation[-1] twice ("yes\nno\nyes\n\nyes\nno\nyes"), and a
+    thinking-only snapshot left a stray leading blank line. Real normalizer, real turn."""
+    from litetui.claude_events import ClaudeEventStream
+
+    def stream(event):
+        return {"type": "stream_event", "uuid": "u", "session_id": "sess-1", "event": event}
+
+    def assistant(blocks):
+        return {"type": "assistant", "uuid": "u-snap", "session_id": "sess-1",
+                "message": {"id": "msg_01", "model": "claude-opus-5-5", "content": blocks}}
+
+    def text(t):
+        return stream({"type": "content_block_delta", "delta": {"type": "text_delta", "text": t}})
+
+    frames = [
+        stream({"type": "message_start", "message": {"id": "msg_01", "model": "claude-opus-5-5"}}),
+        stream({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "Easy."}}),
+        assistant([{"type": "thinking", "thinking": "Easy.", "signature": "sig"}]),
+        text("yes\nno"), text("\nyes"),
+        assistant([{"type": "text", "text": "yes\nno\nyes"}]),
+        stream({"type": "message_stop"}),
+        {"type": "result", "uuid": "u-res", "session_id": "sess-1", "is_error": False,
+         "subtype": "success", "result": "yes\nno\nyes"},
+    ]
+    app = turn_app(tmp_path, messages=frames)
+    app.backend._claude_events = ClaudeEventStream(session_id="sess-1")
+    app._scroll_down = lambda **k: None
+    app.settings.show_thinking = False   # no Textual widget; the thinking events still flow
+    await stream_turn(app)
+    answers = [row["content"] for row in app.appended if row.get("role") == "assistant"]
+    assert answers == ["yes\nno\nyes"], (answers, app.notices)
+
+
+@pytest.mark.asyncio
+async def test_a_message_with_no_text_adds_no_blank_line(tmp_path, monkeypatch):
+    """Live (image smoke): the first message only called a tool, and the answer began with a
+    stray blank line because every message's text was joined, the empty one included."""
+    from litetui.claude_events import ClaudeEventStream
+
+    def stream(event):
+        return {"type": "stream_event", "uuid": "u", "session_id": "sess-1", "event": event}
+
+    def assistant(message_id, blocks):
+        return {"type": "assistant", "uuid": "u-" + message_id, "session_id": "sess-1",
+                "message": {"id": message_id, "model": "claude-opus-5-5", "content": blocks}}
+
+    frames = [
+        stream({"type": "message_start", "message": {"id": "msg_01", "model": "m"}}),
+        assistant("msg_01", [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "x.png"}}]),
+        stream({"type": "message_stop"}),
+        stream({"type": "message_start", "message": {"id": "msg_02", "model": "m"}}),
+        stream({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "LEFT=red"}}),
+        assistant("msg_02", [{"type": "text", "text": "LEFT=red"}]),
+        stream({"type": "message_stop"}),
+        {"type": "result", "uuid": "u-res", "session_id": "sess-1", "is_error": False,
+         "subtype": "success", "result": "LEFT=red"},
+    ]
+    app = turn_app(tmp_path, messages=frames)
+    app.backend._claude_events = ClaudeEventStream(session_id="sess-1")
+    app._scroll_down = lambda **k: None
+    app.settings.show_thinking = False
+    card = SimpleNamespace(set_args=lambda text: None, set_result=lambda text, ok: None)
+    monkeypatch.setattr("litetui.widgets.ToolMessage", lambda title: card)   # the Textual boundary
+    app.query_one = lambda selector: SimpleNamespace(mount=lambda widget: None)
+    await stream_turn(app)
+    answers = [row["content"] for row in app.appended if row.get("role") == "assistant"]
+    assert answers == ["LEFT=red"], (answers, app.notices)
