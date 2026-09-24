@@ -1,7 +1,10 @@
 """Validate native settings edits, then reuse the Textual settings save adapter."""
 from __future__ import annotations
 
+from copy import copy
+
 from litetui import settings_runtime
+from litetui.settings_apply import RuntimeSettingStatus, SettingsSaveResult
 from litetui.settings_scope import SETTING_SPECS
 from litetui.settings_ui_adapter import SettingsUiAdapter
 from litetui.sidecar_settings import is_sensitive
@@ -30,6 +33,7 @@ def apply_patch(app, payload: dict) -> dict:
         raise ValueError("Settings patch requires a conversation")
     service = settings_runtime.service_for(app)
     snapshot = service.snapshot(directory.name)
+    launch = getattr(app, "_invocation_saved_values", {})
     keys = set()
     for change in changes:
         if not isinstance(change, dict) or set(change) != {"key", "value", "scope"}:
@@ -45,14 +49,13 @@ def apply_patch(app, payload: dict) -> dict:
         keys.add(key)
         if change["scope"] != SETTING_SPECS[key].scope.value:
             raise ValueError("Invalid settings scope")
-        if getattr(snapshot.saved, key) == change["value"]:
+        # A field set at launch (--backend ...) is edited against the value in
+        # effect, as the TUI's /settings shows it, not against the saved one.
+        current = getattr(app.settings, key) if key in launch else getattr(snapshot.saved, key)
+        if current == change["value"]:
             raise ValueError("No change to saved setting")
-        if getattr(snapshot.effective, key) != getattr(snapshot.saved, key):
+        if key not in launch and getattr(snapshot.effective, key) != getattr(snapshot.saved, key):
             raise ValueError("Overridden setting not editable from sidecar")
-        # Set at launch (--backend ...): a saved edit would be undone on the
-        # next reconnect, which re-applies the launch value (prepare_reconnect).
-        if key in getattr(app, "_invocation_saved_values", {}):
-            raise ValueError("Set at launch for this instance; not editable from sidecar")
     if snapshot.revisions != expected:
         return {"saved": False, "conflict": True, "revisions": snapshot.revisions,
                 "persistence": [], "runtime": []}
@@ -72,12 +75,17 @@ def apply_patch(app, payload: dict) -> dict:
         save_patch=lambda requested, revisions: service.save_patch(directory.name, requested, revisions),
         runtime_apply=lambda requested, result: settings_runtime.apply_saved_result(app, requested, result),
     )
+    # Choosing the SAVED value for a launch-set field writes nothing: it only
+    # releases the launch value, so the saved preference governs from here on.
+    released = [c for c in changes if c["key"] in launch and c["value"] == getattr(snapshot.saved, c["key"])]
+    writes = [c for c in changes if c not in released]
     target = adapter.effective
-    for change in changes:
+    for change in writes:
         setattr(target, change["key"], change["value"])
-    result = adapter.save(target)
+    result = adapter.save(target) if writes else SettingsSaveResult((), ())
     if result is None:
         raise RuntimeError("Settings service unavailable")
+    result = SettingsSaveResult(result.persistence, result.runtime + _release(app, released))
     if warning is not None and result.fully_saved:
         # Confirmed here, so the next send does not ask again for this change.
         app._claude_cache_preapproved = ("effort", claude_turn.effort_for(app) or "default")
@@ -88,7 +96,27 @@ def apply_patch(app, payload: dict) -> dict:
                    for item in result.persistence]
     runtime = [{"field": item.field, "status": item.status, "action": item.action,
                 "reason": item.reason} for item in result.runtime]
-    return {"saved": result.fully_saved, "conflict": any(
+    return {"saved": result.fully_saved if writes else True, "conflict": any(
         "Stale" in (item.error or "") for item in result.persistence),
         "revisions": service.snapshot(directory.name).revisions,
         "persistence": persistence, "runtime": runtime}
+
+
+def _release(app, released) -> tuple:
+    """Drop the launch value for fields set back to their saved preference,
+    exactly as a saved edit does (settings_runtime.retire_invocation)."""
+    statuses = []
+    for change in released:
+        key, spec = change["key"], SETTING_SPECS[change["key"]]
+        candidate = copy(app.settings)
+        setattr(candidate, key, change["value"])
+        settings_runtime.retire_invocation(app, candidate, {key})
+        if spec.apply_timing in ("restart", "reconnect", "reload"):
+            statuses.append(RuntimeSettingStatus(key, spec.scope.value, "pending", spec.apply_timing,
+                                                 change["value"], getattr(app.settings, key),
+                                                 f"Launch value released; saved preference applies on {spec.apply_timing}"))
+        else:
+            setattr(app.settings, key, change["value"])
+            statuses.append(RuntimeSettingStatus(key, spec.scope.value, "applied",
+                                                 requested=change["value"], effective=change["value"]))
+    return tuple(statuses)

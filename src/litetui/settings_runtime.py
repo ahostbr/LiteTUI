@@ -53,7 +53,7 @@ def without_invocation(app, candidate):
     return result
 
 
-def _retire_saved_invocation(app, candidate, keys):
+def retire_invocation(app, candidate, keys):
     saved = getattr(app, '_invocation_saved_values', {})
     for key in list(saved):
         if key in keys and getattr(candidate, key) != getattr(app.settings, key):
@@ -69,7 +69,7 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
         path = st.save(persisted)
         from copy import deepcopy
         object.__setattr__(candidate, '_saved_values', deepcopy(asdict(persisted)))
-        _retire_saved_invocation(app, candidate, {f.name for f in fields(st.Settings)})
+        retire_invocation(app, candidate, {f.name for f in fields(st.Settings)})
         return SettingsSaveResult(persistence=(PersistenceDestinationResult(str(path), 'defaults', True),))
     service = service_for(app)
     snapshot = service.snapshot(directory.name)
@@ -94,7 +94,7 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
     next_baseline = dict(baseline_values)
     for outcome in result.persistence:
         if outcome.saved:
-            _retire_saved_invocation(app, candidate, outcome.fields)
+            retire_invocation(app, candidate, outcome.fields)
             for key in outcome.fields:
                 next_baseline[key] = getattr(candidate, key)
                 next_saved[key] = deepcopy(getattr(candidate, key))
@@ -138,6 +138,12 @@ def apply_saved_result(app, requested, result):
     from litetui.settings_apply import RuntimeSettingStatus
     statuses = []
     effective = app.settings
+    # A saved change to a field set at launch (--backend ...) retires the launch
+    # value, as persist_settings does; otherwise prepare_reconnect re-applies it
+    # and the saved edit silently never takes effect. Before the loop: it
+    # compares against the value still in effect.
+    retire_invocation(app, requested, {key for outcome in result.persistence if outcome.saved
+                                       for key in outcome.fields})
     for outcome in result.persistence:
         if not outcome.saved:
             continue
