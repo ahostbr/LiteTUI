@@ -32,5 +32,5 @@ def test_failure_reports_stderr(monkeypatch):
 
 def test_success_requires_importable_dependencies(monkeypatch):
     monkeypatch.setattr(voice_install, 'edge_available', lambda: False)
-    monkeypatch.setattr(voice_install.subprocess, 'run', lambda *a, **k: None)
+    monkeypatch.setattr(voice_install.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a[0], 0, '', ''))
     assert 'not importable' in voice_install.install_edge()

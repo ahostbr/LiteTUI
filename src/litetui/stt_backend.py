@@ -66,10 +66,9 @@ def record_start(device: str | None = None):
     cmd = [ff, "-y", "-f", "dshow", "-i", f"audio={dev}",
            "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(_WAV)]
     try:
-        return subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                creationflags=_NO_WINDOW)
+        from litetui import ttyguard
+        return ttyguard.popen(cmd, stdin=subprocess.PIPE,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         return None
 
@@ -81,7 +80,7 @@ def record_stop(proc) -> "str | None":
     if proc is None:
         return None
     try:
-        proc.stdin.write(b"q")
+        proc.stdin.write("q")  # ttyguard.popen opens the pipes in text mode
         proc.stdin.flush()
     except Exception:
         pass

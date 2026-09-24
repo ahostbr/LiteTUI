@@ -33,7 +33,7 @@ async def test_controls_share_input_border_and_click():
         assert actions.y == box.bottom - 1
         assert box.right - 3 <= lock.right <= box.right
         assert box.right - 3 <= actions.right <= box.right
-        for selector, result in [('#scroll-lock','lock'), ('#speak-toggle','speak'), ('.mic-button','mic'), ('.pause-button','pause')]:
+        for selector, result in [('#scroll-lock','lock'), ('.mic-button','mic'), ('.pause-button','pause')]:
             assert await pilot.click(selector)
             assert app.clicked == result
         app.save_screenshot('prompt-controls.svg', path='C:/Projects/LiteTUI/artifacts')
@@ -133,6 +133,11 @@ def test_long_speech_uses_file_not_windows_command_line(monkeypatch):
         def __init__(self, target, args, **kwargs): self.target, self.args = target, args
         def start(self): self.target(*self.args)
     monkeypatch.setattr(voice, '_has', lambda name: True)
+    # Pin the interpreter: an un-warmed resolve() would probe through the fake
+    # Popen below and fail, so this test used to pass only after another test
+    # had filled optional_python's cache.
+    import sys
+    monkeypatch.setattr(voice.optional_python, 'resolve', lambda *m: sys.executable)
     monkeypatch.setattr(voice.subprocess, 'Popen', launch)
     monkeypatch.setattr(voice.threading, 'Thread', Thread)
     assert voice.speak('hello ' * 10000, timeout=450)
@@ -185,3 +190,24 @@ def test_mic_and_pause_tooltips_track_state():
     pause.set_paused(False)
     assert mic.tooltip == 'Start microphone recording'
     assert pause.tooltip == 'Pause before the next model round'
+
+
+@pytest.mark.asyncio
+async def test_tts_enabled_shows_and_hides_the_response_speak_button():
+    """Ryan 2026-09-24: tts_enabled toggles the Speak button on responses."""
+    from types import SimpleNamespace
+    from litetui.response_speech import ResponseSpeakButton
+
+    class Host(App):
+        settings = SimpleNamespace(tts_enabled=True)
+        def compose(self):
+            yield ResponseSpeakButton(SimpleNamespace(answer_text="hello"))
+
+    app = Host()
+    async with app.run_test() as pilot:
+        button = app.query_one(ResponseSpeakButton)
+        button.refresh_playback()
+        assert button.display
+        app.settings.tts_enabled = False
+        button.refresh_playback()
+        assert not button.display

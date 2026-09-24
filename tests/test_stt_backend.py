@@ -43,7 +43,7 @@ def test_record_stop_sends_q_then_returns_path_when_wav_exists(monkeypatch, tmp_
         def flush(self): pass
         def wait(self, timeout=None): pass
     assert s.record_stop(P()) == str(wav)
-    assert P.wrote == b"q"
+    assert P.wrote == "q"  # ttyguard.popen pipes are text mode
 
 
 def test_hallucination_and_silence_are_dropped(monkeypatch, tmp_path):

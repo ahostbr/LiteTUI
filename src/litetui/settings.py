@@ -460,9 +460,10 @@ class Settings:
     )
 
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
-    #: Speak the agent's replies aloud (Ryan 2026-09-18). OFF by default — opt-in.
-    #: Controlled from Voice settings and the input-border Speak button.
-    tts_enabled: bool = False
+    #: Show the "♫ Speak" button on each response (Ryan 2026-09-24: "tts_enabled
+    #: should toggle displaying the speach button on responses"). Replies are never
+    #: spoken automatically; off hides the buttons and stops any playback.
+    tts_enabled: bool = True
     #: Maximum duration of a speech child, seconds.
     tts_timeout: int = 300
     #: "pyttsx3" (Windows SAPI direct, offline, no download — the default) or
