@@ -575,3 +575,62 @@ def test_effort_change_warning_reads_the_same_gate_without_a_ledger_side_effect(
     app = SimpleNamespace(backend=SimpleNamespace(name="claude"), settings=SimpleNamespace())
     assert effort_change_warning(app, "max") is None, "no ledger, no live session: nothing to warn about"
     assert not hasattr(app, "_claude_ledger")
+
+
+def _png_b64():
+    import base64
+    import io
+
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (4, 4), (255, 0, 0)).save(out, format="PNG")
+    return base64.b64encode(out.getvalue()).decode()
+
+
+def image_app(tmp_path):
+    from litetui.app import LiteTUI
+    app = app_for(tmp_path)
+    app._spill_image_for_reclick = LiteTUI._spill_image_for_reclick.__get__(app)
+    return app
+
+
+def test_an_image_becomes_the_path_of_its_conversation_copy(tmp_path):
+    """Ryan 2026-09-24: "convert it to a path on disk for claude and paste it to him"."""
+    from pathlib import Path
+
+    from litetui.claude_turn import inline_images
+    app = image_app(tmp_path)
+    b64 = _png_b64()
+    text, saved = inline_images(app, [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                                      {"type": "text", "text": "what colour is this?"}])
+    assert len(saved) == 1
+    path = Path(saved[0])
+    assert path.parent == tmp_path / "images" and path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert text.startswith("what colour is this?") and str(path) in text
+    # The text is what the ledger keeps and Claude receives: a plain string, admitted as usual.
+    item = prepare_input(app, text, "strict", "typed")
+    assert item["_claude_entry"]["content"] == text
+
+
+def test_the_submits_own_spill_is_reused_not_written_twice(tmp_path):
+    from litetui.claude_turn import inline_images
+    app = image_app(tmp_path)
+    b64 = _png_b64()
+    spilled = app._spill_image_for_reclick(b64)
+    text, saved = inline_images(app, [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}], spilled)
+    assert saved == [spilled] and len(list((tmp_path / "images").iterdir())) == 1
+    assert spilled in text
+
+
+def test_an_image_that_cannot_be_saved_is_refused_not_sent_blind(tmp_path):
+    from litetui.claude_turn import inline_images
+    app = app_for(tmp_path)
+    app._spill_image_for_reclick = lambda b64: None
+    with pytest.raises(OSError, match="nothing was sent"):
+        inline_images(app, [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}])
+    assert not (tmp_path / "claude_ledger.json").exists()
+
+
+def test_text_passes_through_untouched(tmp_path):
+    from litetui.claude_turn import inline_images
+    assert inline_images(app_for(tmp_path), "hello") == ("hello", [])
