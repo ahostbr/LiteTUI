@@ -46,6 +46,19 @@ async def test_manual_compaction_uses_shared_card_rpc_status_and_saved_trace(sto
                         },
                     }
                 )
+                # 48c14c7 (2026-09-20) only accepts a completion correlated
+                # with the native contextCompaction item of the same turn;
+                # real Codex emits it, and this fake predated that rule.
+                await self.events.put(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "compact-turn",
+                            "item": {"id": "compact-item", "type": "contextCompaction"},
+                        },
+                    }
+                )
                 if not stopped:
                     await self.done("completed")
                 return {}

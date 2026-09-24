@@ -123,7 +123,8 @@ def _app(**overrides) -> app_mod.LiteTUI:
     base.update(overrides)
     a.settings = Settings(**base)
     a._system = lambda *a, **k: None
-    return a
+    from test_compaction_ui import off_local_lm_studio
+    return off_local_lm_studio(a)   # WS3 b5f1f40: local LM Studio inference is refused
 
 
 def _seed(a: app_mod.LiteTUI) -> None:

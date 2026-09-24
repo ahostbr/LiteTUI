@@ -35,7 +35,14 @@ figure rather than any number computed here.
 from __future__ import annotations
 
 import pytest
-from test_compaction_ui import _Chunk, _run, _scripted_create, _seed, _settle
+from test_compaction_ui import (
+    _Chunk,
+    _run,
+    _scripted_create,
+    _seed,
+    _settle,
+    off_local_lm_studio,
+)
 
 from litetui import app as app_mod
 from litetui.settings import Settings
@@ -58,6 +65,7 @@ def _app(**overrides):
     a.settings = Settings(**base)
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
+    off_local_lm_studio(a)   # WS3 b5f1f40: see test_compaction_ui.off_local_lm_studio
     a._apply_context_length = lambda: None
     a.emitted = []
     a._rpc_emit = a.emitted.append

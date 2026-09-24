@@ -151,7 +151,8 @@ def _app(**overrides) -> app_mod.LiteTUI:
     a.tools_enabled = False
     a.said: list[str] = []
     a._system = lambda msg, *x, **k: a.said.append(str(msg))
-    return a
+    from test_compaction_ui import off_local_lm_studio
+    return off_local_lm_studio(a)   # WS3 b5f1f40: local LM Studio inference is refused
 
 
 def _seed(a: app_mod.LiteTUI) -> None:
