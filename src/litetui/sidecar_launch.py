@@ -38,36 +38,63 @@ class SidecarWindow:
         finally:
             self._exchange_lock.release()
 
+    def _start_reader(self, process) -> None:
+        assert process.stdout is not None
+        stdout = process.stdout
+        self._pending: dict[int, queue.Queue] = {}
+        self._reader_error: Exception | None = None
+
+        def read_replies() -> None:
+            try:
+                while self.process is process:
+                    raw = stdout.readline(sidecar_protocol.MAX_FRAME_BYTES + 2)
+                    if not raw:
+                        raise RuntimeError("Sidecar disconnected")
+                    if len(raw) > sidecar_protocol.MAX_FRAME_BYTES + 1 or not raw.endswith(b"\n"):
+                        raise ValueError("Invalid sidecar reply length")
+                    frame = sidecar_protocol.decode(raw[:-1], self.token)
+                    if frame["command"] != "reply" or not isinstance(frame["payload"], dict):
+                        raise ValueError("Unexpected sidecar reply")
+                    pending = self._pending.get(frame["id"])
+                    if pending is None:
+                        raise ValueError("Unmatched sidecar reply")
+                    pending.put_nowait(frame["payload"])
+            except (OSError, RuntimeError, ValueError) as exc:
+                self._reader_error = exc
+            finally:
+                error = self._reader_error or RuntimeError("Sidecar disconnected")
+                for pending in tuple(self._pending.values()):
+                    try:
+                        pending.put_nowait(error)
+                    except queue.Full:
+                        pass
+
+        self._reader = threading.Thread(target=read_replies, name="sidecar-replies", daemon=True)
+        self._reader.start()
+
     def _exchange_locked(self, command: str, payload: object) -> dict:
         process = self.process
+        if self._reader_error is not None:
+            raise RuntimeError("Sidecar disconnected") from self._reader_error
         if process is None or process.poll() is not None or process.stdin is None or process.stdout is None:
-            raise RuntimeError("Sidecar child is unavailable")
+            raise RuntimeError("Sidecar disconnected")
         request_id = self._next_id
         self._next_id += 1
         raw = sidecar_protocol.encode(request_id, self.token, command, payload)
-        process.stdin.write(raw + b"\n")
-        process.stdin.flush()
-        response: queue.Queue[bytes | OSError] = queue.Queue(maxsize=1)
-
-        def read_reply() -> None:
-            try:
-                response.put(process.stdout.readline(sidecar_protocol.MAX_FRAME_BYTES + 2))
-            except OSError as exc:
-                response.put(exc)
-
-        threading.Thread(target=read_reply, daemon=True).start()
+        response: queue.Queue[dict | Exception] = queue.Queue(maxsize=1)
+        self._pending[request_id] = response
         try:
-            value = response.get(timeout=self.timeout)
-        except queue.Empty as exc:
-            raise TimeoutError("Sidecar did not respond") from exc
-        if isinstance(value, OSError):
-            raise value
-        if not value or len(value) > sidecar_protocol.MAX_FRAME_BYTES + 1 or not value.endswith(b"\n"):
-            raise ValueError("Invalid sidecar reply length")
-        frame = sidecar_protocol.decode(value[:-1], self.token)
-        if frame["id"] != request_id or frame["command"] != "reply" or not isinstance(frame["payload"], dict):
-            raise ValueError("Unexpected sidecar reply")
-        return frame["payload"]
+            process.stdin.write(raw + b"\n")
+            process.stdin.flush()
+            try:
+                value = response.get(timeout=self.timeout)
+            except queue.Empty as exc:
+                raise TimeoutError("Sidecar did not respond") from exc
+            if isinstance(value, Exception):
+                raise value
+            return value
+        finally:
+            self._pending.pop(request_id, None)
 
     def open(self, view: str, *, enabled: bool = True) -> bool:
         if view not in VIEWS:
@@ -94,6 +121,7 @@ class SidecarWindow:
             self.process = self.spawn([str(self.executable), "--view", view, "--parent-pipe"],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, close_fds=True, env=env)
+            self._start_reader(self.process)
             result = self._exchange("hello", {})
             if result.get("version") != sidecar_protocol.VERSION or result.get("ready") is not True:
                 raise ValueError("Incompatible sidecar handshake")
