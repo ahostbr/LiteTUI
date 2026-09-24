@@ -81,3 +81,44 @@ def test_invalid_type_and_duplicate_fields_never_write(tmp_path):
     with pytest.raises(ValueError, match="Duplicate"):
         apply_patch(app, duplicate)
     assert app._settings_service.snapshot("abc").revisions == before
+
+
+def test_cross_destination_race_reports_conversation_saved_global_stale(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from litetui import settings_service as service_mod
+    from litetui.settings_service import SettingChange
+
+    app = host(tmp_path)
+    service = app._settings_service
+    # Materialize first; this isolates the race at the two destination locks.
+    service.create_conversation("abc")
+    expected = service.snapshot("abc").revisions
+    global_path = service._paths("abc")["global"]
+    real_lock = service_mod.coordinated_write
+    raced = False
+
+    @contextmanager
+    def interleave(path):
+        nonlocal raced
+        if path == global_path and not raced:
+            raced = True
+            # Another instance edits the device setting after the conversation
+            # destination has committed but before our global lock/read.
+            service.save_patch("abc", [SettingChange("theme_name", "monokai", "device")],
+                               service.snapshot("abc").revisions)
+        with real_lock(path):
+            yield
+
+    monkeypatch.setattr(service_mod, "coordinated_write", interleave)
+    result = apply_patch(app, {"changes": [
+        {"key": "tool_iterations", "scope": "conversation", "value": 77},
+        {"key": "sidecar_enabled", "scope": "device", "value": True},
+    ], "expected_revisions": expected})
+    assert [(p["scope"], p["saved"]) for p in result["persistence"]] == [
+        ("conversation", True), ("device", False)]
+    assert result["conflict"] and not result["saved"]
+    fresh = service.snapshot("abc")
+    assert fresh.saved.tool_iterations == 77
+    assert fresh.saved.theme_name == "monokai"
+    assert fresh.saved.sidecar_enabled is False
