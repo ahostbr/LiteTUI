@@ -36,11 +36,13 @@ async def test_claude_settings_preserve_unsupported_values_and_disable_controls(
         await pilot.pause()
         body = app.screen.query_one(SettingsBody)
         for name in ("temperature", "tool_iterations",
-                     "default_context_length", "autocompact_enabled",
+                     "default_context_length",
                      "mcp_enabled", "skills_enabled"):
             assert body.query_one(f"#f-{name}").disabled, name
         # Effort is Claude's own control now (Ryan 2026-09-24: "Yes, add effort levels too").
-        for name in ("tools_enabled", "tools_disabled", "tool_policy_profile", "thinking_level"):
+        # LiteTUI compacts Claude itself now (Ryan 2026-09-24: "I would rather keep it").
+        for name in ("tools_enabled", "tools_disabled", "tool_policy_profile", "thinking_level",
+                     "autocompact_enabled"):
             assert not body.query_one(f"#f-{name}").disabled, name
         collected = body._collect()
         assert collected.temperature == 0.85

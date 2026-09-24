@@ -5377,9 +5377,10 @@ class LiteTUI(App):
         needs off the app. See that function for why each refusal to answer is
         load bearing.
         """
-        if (hasattr(getattr(self, "backend", None), "app_server")
-                or getattr(getattr(self, "backend", None), "owns_native_turns", False)):
-            return None  # Native runtimes own context and automatic compaction.
+        if hasattr(getattr(self, "backend", None), "app_server"):
+            return None  # The Codex engine owns context and automatic compaction.
+        # Claude does NOT: its autocompact is off (claude_backend.AUTOCOMPACT_ENV)
+        # and LiteTUI's threshold decides, from the native usage frames.
         return TurnEngine.autocompact_due(
             enabled=self.settings.autocompact_enabled,
             at_percent=self.settings.autocompact_at_percent,
@@ -8401,7 +8402,12 @@ class LiteTUI(App):
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
         if getattr(self.backend, "owns_native_turns", False):
-            self._system("Claude owns native automatic compaction; host /compact is unsupported.")
+            # LiteTUI's own compaction, adapted in the Claude layer (Ryan
+            # 2026-09-24: "I want to only change Claude"). Nothing below runs.
+            from litetui.claude_compact import compact
+            auto = getattr(self, "_compact_is_auto", False)
+            self._compact_is_auto = False
+            await compact(self, extra, auto=auto, handoff=handoff)
             return
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False

@@ -125,6 +125,9 @@ def control(backend, name):
         if name == "thinking_level":
             return Control("native", "Claude effort level, from the CLI's model metadata. Applies from the next message; "
                            "a cache warning asks first, because the cache is built at one effort level.")
+        if name in {"autocompact_enabled", "autocompact_at_percent", "clear_screen_after_compact", "wake_after_compact"}:
+            return Control("host", "LiteTUI compacts Claude conversations itself (Claude's own autocompact is off): "
+                           "Claude writes the summary, and the next message starts a fresh session carrying it.")
         if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
             return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
         return None

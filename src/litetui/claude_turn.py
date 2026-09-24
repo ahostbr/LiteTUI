@@ -113,10 +113,42 @@ async def _cache_ok(app, backend, segment):
     return False
 
 
-async def stream_turn(app):
-    from litetui.claude_backend import settle_close
+async def session_for(app, backend, segment, effort):
+    """(session, tool bridge, event normalizer) for `segment`, at `effort`.
+
+    ONE door for a turn and for a compaction: reuse the live session (model and
+    effort switched live), or open one, resuming the segment's native session."""
     from litetui.claude_events import ClaudeEventStream
     from litetui.claude_tools import ClaudeTools
+
+    if backend.session is not None and (backend.segment_id != segment["id"] or (
+            effort is None and getattr(backend.session, "effort", None) is not None)):
+        # Back to the model default has no live control (set_effort), so
+        # that one change reopens: close, then resume the same session id.
+        await backend.close()
+    if backend.session is None:
+        if segment.get("session_id"):
+            app._system(f"Resuming Claude session {segment['session_id']} - intervening other-provider messages are not imported.")
+        bridge = ClaudeTools(app, backend, segment["id"], workspace=segment["workspace"])
+        backend._claude_tools = bridge
+        normalizer = ClaudeEventStream(session_id=segment.get("session_id"))
+        backend._claude_events = normalizer
+        # Tool permission remains enforced on every callback. Inventory is
+        # fixed for this session; changed inventory requires /claude new.
+        session = await backend.open_session(segment, app.model_id, effort=effort, **bridge.sdk_options())
+        return session, bridge, normalizer
+    session = backend.session
+    bridge, normalizer = backend._claude_tools, backend._claude_events
+    bridge.cancelled.clear()
+    await session.set_model(app.model_id)
+    if effort != getattr(session, "effort", None):
+        await session.set_effort(effort)
+    normalizer.reset_turn()
+    return session, bridge, normalizer
+
+
+async def stream_turn(app):
+    from litetui.claude_backend import settle_close
 
     backend = app.backend
     ledger = ledger_for(app)
@@ -179,28 +211,7 @@ async def stream_turn(app):
 
         require_current_segment()
         effort = effort_for(app)
-        if backend.session is not None and (backend.segment_id != segment["id"] or (
-                effort is None and getattr(backend.session, "effort", None) is not None)):
-            # Back to the model default has no live control (set_effort), so
-            # that one change reopens: close, then resume the same session id.
-            await backend.close()
-        if backend.session is None:
-            if segment.get("session_id"):
-                app._system(f"Resuming Claude session {segment['session_id']} - intervening other-provider messages are not imported.")
-            bridge = ClaudeTools(app, backend, segment["id"], workspace=segment["workspace"])
-            backend._claude_tools = bridge
-            normalizer = ClaudeEventStream(session_id=segment.get("session_id"))
-            backend._claude_events = normalizer
-            # Tool permission remains enforced on every callback. Inventory is
-            # fixed for this session; changed inventory requires /claude new.
-            session = await backend.open_session(segment, app.model_id, effort=effort, **bridge.sdk_options())
-        else:
-            session = backend.session
-            bridge.cancelled.clear()
-            await session.set_model(app.model_id)
-            if effort != getattr(session, "effort", None):
-                await session.set_effort(effort)
-            normalizer.reset_turn()
+        session, bridge, normalizer = await session_for(app, backend, segment, effort)
         require_current_segment()  # Startup/model control awaited; ownership may have changed.
         ledger.update_delivery(entry_id, "submitted")
         submitted = True
@@ -303,7 +314,8 @@ async def stream_turn(app):
                         card.set_result(str(event.tool_result), not event.is_error)
 
                 elif event.kind == "compaction":
-                    app._system("Claude compacted its native context; display history is unchanged.")
+                    from litetui.claude_compact import native_compaction
+                    native_compaction(app, event)
                 elif event.kind == "usage":
                     from dataclasses import asdict
                     app._claude_usage = event.usage
@@ -312,16 +324,24 @@ async def stream_turn(app):
                         ledger.note_cache(segment["id"], clock.used_at, app.model_id)
                         claude_cache.ensure_ticker(app)
                         app._refresh_ctx_label()
-                    if event.usage and event.usage.source == "message":
+                    if event.usage and event.usage.max_context_tokens:
                         # WINDOW FIRST. `ctx_used` is a reactive and
                         # `watch_ctx_used` reads `ctx_max` to render
                         # "used/total" — assigning it first fired the watcher
                         # against the previous window (None on the first
                         # observation, so the footer said "unknown"), and a
                         # reactive does not re-fire for an unchanged value.
+                        # 🔴 The window rides on the RESULT frame
+                        # (modelUsage.contextWindow); message frames carry
+                        # none. Reading it only from message frames set None
+                        # on every turn: the footer said "ctx 11,264 / ?"
+                        # (live, 2026-09-24) and LiteTUI's autocompact, which
+                        # needs a window, could never fire. Kept once known.
                         app.ctx_max = event.usage.max_context_tokens
-                        app.ctx_loaded = event.usage.max_context_tokens is not None
+                        app.ctx_loaded = True
+                    if event.usage and event.usage.source == "message":
                         app.ctx_used = event.usage.context_tokens
+                    if event.usage and (event.usage.source == "message" or event.usage.max_context_tokens):
                         app._refresh_ctx_label()
                     app._rpc_emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
                 elif event.kind in {"diagnostic", "notice", "rate_limit", "task", "session", "user_text"}:
@@ -391,6 +411,11 @@ async def stream_turn(app):
         widget.settled = True
         app._settle_turn_stop_line(widget, started_at=started, final_tps=None, stopped=reason != "stop")
         app._emit_turn_end(reason, None, error=failure)
+        if reason == "stop" and hasattr(app, "call_after_refresh"):
+            # LiteTUI's threshold decides for Claude too (its own autocompact
+            # is off). Scheduled, like the host path: never from inside the
+            # chat worker, which _compact would cancel.
+            app.call_after_refresh(app._maybe_autocompact)
 
 
 def command(app, argument):
