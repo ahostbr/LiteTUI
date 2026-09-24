@@ -1309,16 +1309,21 @@ class SettingsBody(Widget):
                             "footer_show_tps", "Tokens per second",
                             "Generation speed of the last turn.",
                         )
+                        yield from self._switch_row(
+                            "footer_show_cache", "Claude cache",
+                            "Whether Claude's prompt cache is warm, its hit rate, and the time "
+                            "left before it expires. Only shown on the Claude backend.",
+                        )
                         yield from self._text_row(
                             "footer_order", "Footer order (left to right)",
                             "Comma-separated ids. Use authority, plan, seat, think, "
-                            "bg, agents, convo, ctx, pct, and tps. The switches "
+                            "bg, agents, convo, ctx, pct, cache, and tps. The switches "
                             "above control visibility; authority and plan stay "
                             "available because they are interactive status controls. "
                             "Unknown or repeated ids are ignored and missing ids "
                             "are appended in the default order.",
                             placeholder="authority, plan, seat, think, bg, agents, "
-                            "convo, ctx, pct, tps",
+                            "convo, ctx, pct, cache, tps",
                         )
 
             # One error line + one button row, OUTSIDE TabbedContent so both

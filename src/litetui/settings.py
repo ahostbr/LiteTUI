@@ -60,6 +60,7 @@ FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
     "convo",
     "ctx",
     "pct",
+    "cache",
     "tps",
 )
 
@@ -461,6 +462,8 @@ class Settings:
     footer_show_context: bool = True
     footer_show_context_pct: bool = True
     footer_show_tps: bool = True
+    #: Claude prompt-cache health and time left on it, e.g. "cache warm 97% 52m" (T911).
+    footer_show_cache: bool = True
     #: Footer item ids in left-to-right order. Visibility remains controlled by
     #: the switches above; omitted/unknown ids are repaired on load/save.
     footer_order: list[str] = field(

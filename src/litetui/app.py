@@ -4867,6 +4867,13 @@ class LiteTUI(App):
         if s.footer_show_context_pct and pct is not None:
             add("pct", f"{pct * 100:.0f}%", ctx_style)
 
+        # T911: Claude's prompt cache, warm/cold plus the time left on it.
+        cache = getattr(self, "_claude_cache", None)
+        if getattr(s, "footer_show_cache", True) and cache is not None and getattr(self.backend, "name", "") == "claude":
+            shown = cache.label()
+            if shown:
+                add("cache", *shown)
+
         if s.footer_show_tps:
             stats = Text()
             appsvc.append_tps_into(self, stats, sep)
@@ -4897,7 +4904,7 @@ class LiteTUI(App):
         # Display order never changes; only membership does. Calculate against
         # Rich cell widths (not len()) so wide glyphs cannot reintroduce clipping.
         if available is not None:
-            for drop_key in ("tps", "convo", "bg", "agents", "think", "ctx"):
+            for drop_key in ("tps", "convo", "bg", "agents", "think", "cache", "ctx"):
                 total = sum(chunk.cell_len for _, chunk in chunks)
                 total += Text(sep).cell_len * max(0, len(chunks) - 1)
                 if total <= available:
