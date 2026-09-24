@@ -6,9 +6,10 @@ import sys
 import threading
 from pathlib import Path
 
-from litetui import paths
+from litetui import paths, settings_runtime
 from litetui.plugins import PluginManifest
 from litetui.sidecar_launch import SidecarWindow
+from litetui.sidecar_settings import public_snapshot
 
 VIEWS = frozenset({"timeline", "calendar", "settings", "job"})
 
@@ -21,7 +22,11 @@ def _new_window(app) -> SidecarWindow:
 
 def _open_background(app, owner: SidecarWindow, view: str) -> None:
     try:
-        opened = owner.open(view)
+        if view == "settings" and getattr(app, "convo_dir", None) is not None:
+            snapshot = public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name))
+            opened = owner.open_settings_snapshot(snapshot)
+        else:
+            opened = owner.open(view)
         if opened:
             app.call_from_thread(app.system_message, f"[sidecar] Native {view} preview opened; working editors remain Textual.")
         else:

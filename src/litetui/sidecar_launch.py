@@ -103,6 +103,20 @@ class SidecarWindow:
             return False
         return True
 
+    def open_settings_snapshot(self, snapshot: dict) -> bool:
+        """Send parent-owned, read-only settings; never treat a preview as an editor."""
+        if not self.open("settings"):
+            return False
+        try:
+            result = self._exchange("settings_snapshot", snapshot)
+            if result.get("settings_snapshot") is True:
+                return True
+            raise ValueError("Sidecar rejected settings snapshot")
+        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+            self.warn(f"Sidecar snapshot failed: {exc}; use Textual instead.")
+            self.close()
+            return False
+
     def close(self) -> bool:
         if self.process is None:
             return False
