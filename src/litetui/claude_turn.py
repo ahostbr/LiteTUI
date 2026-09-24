@@ -22,6 +22,33 @@ def ledger_for(app):
     return ledger
 
 
+def inline_images(app, content, saved=None):
+    """An image message as TEXT naming the image's file (Ryan, 2026-09-24: *"claude didnt
+    want to take the image, we should convert it to a path on disk for claude and paste
+    it to him"*). Returns (text, paths).
+
+    The file is the conversation's own copy (`<convo>/images/`, the same spill the bubble
+    re-opens), never temp: the ledger keeps this text and a resumed session must still
+    find the file. `saved` is the path the submit already spilled, reused so one image
+    is one file. Claude opens it with Read or LiteTUI's view_image tool.
+    """
+    if isinstance(content, str):
+        return content, []
+    ledger_for(app)  # a brand-new conversation earns its directory here
+    texts, paths_ = [], []
+    for part in content:
+        if part.get("type") == "text":
+            texts.append(part.get("text", ""))
+        elif part.get("type") == "image_url":
+            url = part.get("image_url", {}).get("url", "")
+            path = saved if saved and not paths_ else app._spill_image_for_reclick(url.split(",", 1)[-1])
+            if not path:
+                raise OSError("Could not save the image into this conversation, so Claude could not open it; nothing was sent.")
+            paths_.append(path)
+    notes = [f"[Image attached by the user, saved at: {p} - open that file to see it.]" for p in paths_]
+    return "\n\n".join([t for t in texts if t] + notes), paths_
+
+
 def prepare_input(app, content, profile, source, operation_id=None):
     if not isinstance(content, str):
         raise TypeError("Claude image attachments are not enabled yet; send text instead.")

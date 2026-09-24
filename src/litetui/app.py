@@ -6983,8 +6983,13 @@ class LiteTUI(App):
         profile = self.chosen_tool_profile
         claude_metadata = {}
         if getattr(self.backend, "owns_native_turns", False):
-            from litetui.claude_turn import prepare_input
+            from litetui.claude_turn import inline_images, prepare_input
             try:
+                content, saved = inline_images(self, content, self._last_spilled_image)
+                if saved:
+                    self._last_spilled_image = self._last_spilled_image or saved[0]
+                    if not self.tools_enabled:
+                        self._system("Claude sees an attached image only by opening its file, and tools are off; turn them on to let it look.")
                 claude_metadata = prepare_input(self, content, profile, source,
                     getattr(self, "_gui_next_operation_id", None) if source == "rpc" else None)
             except (ValueError, TypeError, OSError, RuntimeError) as exc:
