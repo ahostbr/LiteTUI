@@ -503,13 +503,19 @@ class PluginRegistry:
     def sections_sorted(self) -> list[PromptSection]:
         return sorted(self.prompt_sections, key=lambda s: s.order)
 
-    def compose_prompt(self) -> str:
+    def compose_prompt(self, replace: dict[int, str] | None = None) -> str:
         """The exact historical fold: each enabled section glued with
         (base + text).strip(), in slot order. The glue is behavior — the
-        model reads this every turn — so it lives in ONE place."""
+        model reads this every turn — so it lives in ONE place.
+
+        `replace` maps a PROMPT_ORDER slot to the text that stands in for it
+        ("" drops it): the Claude backend keeps this composition but brings
+        its own tool section, since its tools are Claude's built-ins."""
         base = ""
         for s in self.sections_sorted():
-            if s.enabled is None or s.enabled():
+            if replace and s.order in replace:
+                base = (base + replace[s.order]).strip()
+            elif s.enabled is None or s.enabled():
                 base = (base + s.render()).strip()
         return base
 

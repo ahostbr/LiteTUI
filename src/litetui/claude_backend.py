@@ -24,8 +24,16 @@ CACHE_TTL_SECONDS = 3600
 #: 2026-09-24: "I would rather keep it if it's possible"), so Claude's own
 #: autocompact is off. Measured on CLI 2.1.281 via get_context_usage():
 #: isAutoCompactEnabled True (threshold 967000) by default, False with this.
-#: DISABLE_COMPACT is NOT used: it would also refuse a hard-limit compaction.
-AUTOCOMPACT_ENV = {"DISABLE_AUTO_COMPACT": "1"}
+#: DISABLE_COMPACT turns off the rest, the hard-limit compaction included (read out
+#: of the CLI: it is checked beside DISABLE_AUTO_COMPACT wherever compaction is
+#: decided). Ryan, 2026-09-24 (plan claude-backend-litetui-identity, phase 4): hard
+#: limit = "LiteTUI only". So LiteTUI's threshold is the one compaction system, checked
+#: mid-turn too (claude_turn), and an overflow is a stated failure LiteTUI compacts from.
+AUTOCOMPACT_ENV = {"DISABLE_AUTO_COMPACT": "1", "DISABLE_COMPACT": "1"}
+#: Claude Code's own auto-memory index (MEMORY.md) is not loaded: LiteTUI's store is
+#: this session's memory. Read out of CLI 2.1.281: CLAUDE_CODE_DISABLE_AUTO_MEMORY
+#: truthy -> auto-memory "off" (the check that returns disabled_by_env_var).
+AUTO_MEMORY_ENV = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 
 #: Appended to Claude Code's preset system prompt. Fixed for the life of a
 #: session and identical across sessions, so the cache prefix it anchors holds.
@@ -228,7 +236,7 @@ class ClaudeBackend:
             "verbatim_prompts": True,
             "system_prompt": {"type": "preset", "preset": "claude_code", "append": APPEND},
             "extra_args": {"no-chrome": None, "disable-slash-commands": None, "replay-user-messages": None},
-            "env": {**cache_env(), **AUTOCOMPACT_ENV},
+            "env": {**cache_env(), **AUTOCOMPACT_ENV, **AUTO_MEMORY_ENV},
         }
         defaults.update(values)
         return sdk.ClaudeAgentOptions(**defaults)
@@ -264,13 +272,17 @@ class ClaudeBackend:
         if key not in self.models:
             raise BackendError("Choose an available Claude model with /model.")
 
-    async def open_session(self, segment, model, **options):
+    async def open_session(self, segment, model, system_prompt=None, **options):
         await self.ensure_chat_ready(model)
         if self.session is not None and self.segment_id != segment["id"]:
             await self.close()
         if self.session is None:
             self.segment_id = segment["id"]
-            if segment.get("seed"):
+            if system_prompt:
+                # LiteTUI's own prompt (claude_turn.system_prompt_for), a plain
+                # string: no Claude Code preset underneath it.
+                options["system_prompt"] = system_prompt
+            elif segment.get("seed"):
                 options["system_prompt"] = {"type": "preset", "preset": "claude_code",
                                             "append": seeded_append(segment["seed"])}
             self.session = ClaudeSession(await self._options(

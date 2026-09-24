@@ -51,6 +51,19 @@ class Card:
         self.failed = reason
 
 
+class Tool:
+    """Only what claude_compact uses of ToolMessage."""
+
+    def __init__(self, title):
+        self.title, self.args, self.result = title, None, None
+
+    def set_args(self, text):
+        self.args = text
+
+    def set_result(self, text, ok):
+        self.result = (text, ok)
+
+
 class Session:
     def __init__(self, events):
         self.session_id = "native-old"
@@ -122,6 +135,7 @@ def app_for(tmp_path, events, answer=True, monkeypatch=None):
         return answer
     monkeypatch.setattr(claude_cache, "confirm_cold", confirm)
     monkeypatch.setattr(widgets, "CompactionCard", Card)
+    monkeypatch.setattr(widgets, "ToolMessage", Tool)
     Card.made.clear()
     return app, asked
 
@@ -209,13 +223,46 @@ def test_the_seed_rides_in_the_system_prompt_of_every_open_of_its_segment(monkey
     assert seen[-1]["system_prompt"]["append"] == cb.APPEND
 
 
-def test_the_request_is_marked_and_carries_litetuis_summary_rules_without_the_store_step():
+def test_the_request_is_marked_and_keeps_litetuis_store_step_then_the_summary():
+    """Plan claude-backend-litetui-identity, phase 2 (Ryan: "Claude told its folder +
+    compaction STEP 1"): the store files are named in Claude's own prompt now, so the
+    request carries COMPACT_PROMPT whole: STEP 1 persist, then STEP 2 summary."""
     from litetui.claude_backend import APPEND, COMPACT_MARKER
 
     text = claude_compact.request("focus on the parser")
     assert text.startswith(COMPACT_MARKER) and COMPACT_MARKER in APPEND
+    assert "STEP 1" in text and "soul.md" in text and "memory.md" in text and "handoff.md" in text
+    assert text.index("STEP 1") < text.index("STEP 2")
     assert "Cover: what the user is trying to achieve" in text and text.endswith("focus on the parser")
-    assert "soul.md" not in text and "memory.md" not in text
+    assert "Use no tools" not in text
+
+
+@pytest.mark.asyncio
+async def test_the_store_files_claude_writes_before_the_summary_are_recorded(tmp_path, monkeypatch):
+    handoff, soul = tmp_path / "handoff.md", tmp_path / "soul.md"
+    handoff.write_text("in flight: the parser", encoding="utf-8")
+    soul.write_text("works in small steps", encoding="utf-8")
+    writes = [[ClaudeEvent(kind="tool_use", tool_id="t1", tool_name="Write", complete=True,
+                           tool_input={"file_path": str(handoff), "content": "in flight: the parser"})],
+              [ClaudeEvent(kind="tool_use", tool_id="t2", tool_name="Edit", complete=True,
+                           tool_input={"file_path": str(soul), "old_string": "a", "new_string": "b"})]]
+    app, _ = app_for(tmp_path, writes + summary_events(), monkeypatch=monkeypatch)
+    await claude_compact.compact(app, "")
+    measurements = app.truncated[0][3]
+    assert measurements["store_files"] == [str(handoff), str(soul)]
+    assert handoff.exists() and Card.made[0].finished
+
+
+@pytest.mark.parametrize("profile", ["strict", "interactive", "autonomous"])
+@pytest.mark.parametrize("tool", ["Write", "Edit"])
+def test_claudes_store_writes_are_self_store_and_never_asked(tmp_path, profile, tool):
+    from litetui import tool_policy
+    from litetui.claude_tools import native_policy
+
+    convo = tmp_path / ".convos" / "c1"
+    policy, args = native_policy(tool, {"file_path": str(convo / "handoff.md")})
+    decision = tool_policy.evaluate(profile, policy, args, tmp_path, tool_name=tool, active_conversation=convo)
+    assert tool_policy.SELF_STORE in decision.capabilities and decision.action == tool_policy.ALLOW
 
 
 def test_the_seed_survives_a_reload_of_the_ledger(tmp_path):
@@ -234,6 +281,9 @@ def test_claudes_own_autocompact_is_off_and_the_append_says_litetui_compacts(mon
     backend.settings = SimpleNamespace(claude_executable="")
     asyncio.run(backend._options(cwd="."))
     assert seen["env"]["DISABLE_AUTO_COMPACT"] == "1"
+    # Plan claude-backend-litetui-identity, phase 4 (Ryan: hard limit = "LiteTUI only"):
+    # Claude never compacts itself, not even at its hard limit.
+    assert seen["env"]["DISABLE_COMPACT"] == "1"
     assert seen["env"]["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "1h"
     assert "owns compaction" in seen["system_prompt"]["append"]
     assert "Do not use host compaction" not in seen["system_prompt"]["append"]

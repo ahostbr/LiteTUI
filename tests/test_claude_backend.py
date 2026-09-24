@@ -326,3 +326,105 @@ def test_backend_rows_is_the_one_source_for_the_picker_and_the_sidecar(monkeypat
     monkeypatch.setattr(model_switch, "pick", lambda app, title, rows, cb, current=None: seen.update(rows=rows))
     model_switch._cmd_backend(app, "/backend", "")
     assert seen["rows"] == rows
+
+
+def _identity_app(monkeypatch):
+    """A real LiteTUI (conftest isolates its data) with a store and a registered seat."""
+    from litetui import app as app_mod
+    app = app_mod.LiteTUI()
+    app._materialise_convo()
+    (app.convo_dir / "soul.md").write_text("SOUL-MARKER-4471", encoding="utf-8")
+    (app.convo_dir / "handoff.md").write_text("HANDOFF-MARKER-9902", encoding="utf-8")
+    real = app._all_tools
+    monkeypatch.setattr(app, "_all_tools", lambda: [*real(), {"type": "function", "function": {"name": "harness"}}])
+    return app
+
+
+def test_claude_is_told_it_is_litetui_not_claude_code(monkeypatch):
+    """Ryan 2026-09-24 (plan claude-backend-litetui-identity, phase 1): "Replace with
+    LiteTUI's prompt" = systemprompt.md (tool section for Claude's built-ins) + the
+    soul/memory/handoff snapshot + harness identity."""
+    from litetui import paths
+    from litetui.claude_backend import COMPACT_MARKER
+    from litetui.claude_turn import ledger_for, system_prompt_for
+
+    app = _identity_app(monkeypatch)
+    segment = ledger_for(app).select_segment("ws")
+    prompt = system_prompt_for(app, segment)
+    first_line = paths.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip().splitlines()[0]
+    assert isinstance(prompt, str) and first_line[:60] in prompt
+    assert "SOUL-MARKER-4471" in prompt and "HANDOFF-MARKER-9902" in prompt
+    assert app.seat.agent_id in prompt and COMPACT_MARKER in prompt
+    assert str(app.convo_dir).replace("\\", "/") in prompt, "the store folder is named"
+    assert "mcp__litetui__" in prompt and "Git Bash" in prompt, "the tool section is Claude's"
+    assert "call `subagent`" not in prompt, "LiteTUI's own tool section is swapped out"
+    assert "You are Claude Code" not in prompt
+
+
+def test_the_prompt_is_fixed_for_the_life_of_the_segment(monkeypatch):
+    from litetui.claude_turn import ledger_for, system_prompt_for
+
+    app = _identity_app(monkeypatch)
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    first = system_prompt_for(app, segment)
+    (app.convo_dir / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
+    again = system_prompt_for(app, ledger.segment(segment["id"]))
+    assert again == first, "a resume carries the same prefix (cache)"
+    fresh = ledger.select_segment("ws", new=True)
+    assert "CHANGED-LATER" in system_prompt_for(app, fresh), "a new session sees the new store"
+
+
+def test_a_segment_already_bound_under_the_preset_keeps_it(monkeypatch):
+    from litetui.claude_turn import ledger_for, system_prompt_for
+
+    app = _identity_app(monkeypatch)
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    ledger.bind_session(segment["id"], "native-legacy")
+    assert system_prompt_for(app, ledger.segment(segment["id"])) is None
+
+
+def test_open_session_sends_the_prompt_as_a_plain_string_with_auto_memory_off(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    from litetui import claude_backend as cb
+
+    seen = []
+    monkeypatch.setattr(cb, "sdk_module", lambda: NS(ClaudeAgentOptions=lambda **kw: seen.append(kw) or kw))
+
+    class FakeSession:
+        def __init__(self, options):
+            self.options = options
+
+        async def start(self):
+            return {}
+    monkeypatch.setattr(cb, "ClaudeSession", FakeSession)
+    backend = cb.ClaudeBackend(NS(claude_executable=""))
+    backend.models = {"sonnet": {"value": "sonnet"}}
+    asyncio.run(backend.open_session({"id": "s1", "workspace": ".", "session_id": None}, "sonnet",
+                                     system_prompt="LITETUI PROMPT"))
+    assert seen[-1]["system_prompt"] == "LITETUI PROMPT"
+    assert seen[-1]["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_a_session_opened_before_the_seat_registers_waits_for_it(monkeypatch):
+    """Review of phase 1: the seat registers in the background a few seconds after launch,
+    and a prompt fixed before that would carry no harness identity for the segment's life
+    (the host re-syncs its own system message; a fixed Claude prompt cannot)."""
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    app = _identity_app(monkeypatch)
+    app._seat_started = False
+    real = app._all_tools
+    monkeypatch.setattr(app, "_all_tools", lambda: [*real()] if not app._seat_started else
+                        [*real(), {"type": "function", "function": {"name": "harness"}}])
+
+    async def register_late():
+        await asyncio.sleep(0.3)
+        app._seat_started = True
+    task = asyncio.ensure_future(register_late())
+    prompt = await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
+    await task
+    assert app.seat.agent_id in prompt, "the late seat still made it into the fixed prompt"

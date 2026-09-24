@@ -52,7 +52,7 @@ async def main():
         settings.settings_path = lambda root=None: Path(directory) / "settings.json"
         original_load = settings.load
         cfg = settings.Settings(backend="claude", backend_chosen=True, default_model="sonnet",
-                                skills_enabled=False, mcp_enabled=False, tools_enabled=False,
+                                skills_enabled=False, mcp_enabled=False, tools_enabled=True,
                                 autocompact_enabled=False, wake_after_compact=False,
                                 clear_screen_after_compact=False)
         settings.load = lambda *a, **k: cfg
@@ -64,13 +64,18 @@ async def main():
             await settle(app, pilot)
             assert app.backend.name == "claude", app.backend.name
             app._submit_text("Remember two facts: the code is ORCHID-826 and the codename is BLUE HERON. "
-                             "Reply only READY.", False)
+                             "Also in flight: the PARSER-REWRITE is owed to Sam by Friday. Use no tools this turn "
+                             "(so only the compaction's STEP 1 can persist it). Reply only READY.", False)
             await settle(app, pilot)
             ledger = app._claude_ledger
             old = dict(ledger.selected)
             assert old["session_id"], "first turn bound a native session"
             assert app.ctx_max and app.ctx_loaded, ("the window from the result frame", app.ctx_max)
 
+            # Phase 2 (plan claude-backend-litetui-identity): STEP 1 persists the store.
+            handoff = app.convo_dir / "handoff.md"
+            handoff_before = handoff.stat().st_mtime if handoff.exists() else None
+            assert handoff_before is None or "PARSER-REWRITE" not in handoff.read_text(encoding="utf-8").upper(),                 "turn 1 already persisted it; STEP 1 would prove nothing"
             app._handle_command("/compact")
             warning = await answer_cache_warning(app, pilot)
             await settle(app, pilot)
@@ -80,6 +85,9 @@ async def main():
             new = dict(ledger.selected)
             assert new["id"] != old["id"] and new.get("seed"), new
             assert app.backend.session is None, "the summarised session was closed"
+            assert handoff.exists() and handoff.stat().st_mtime != handoff_before, "STEP 1 wrote handoff.md"
+            handoff_text = handoff.read_text(encoding="utf-8")
+            assert "PARSER-REWRITE" in handoff_text.upper(), handoff_text
 
             app._submit_text("From what you know, what are the code and the codename? "
                              "Reply only with both, nothing else.", False)
@@ -88,6 +96,7 @@ async def main():
             app.save_screenshot(filename="claude-compact-followup.svg", path=str(out.resolve()))
             fresh = dict(ledger.selected)
             assert fresh.get("session_id") and fresh["session_id"] != old["session_id"], "a FRESH session"
+            assert handoff_text.strip()[:80] in (fresh.get("system_prompt") or ""), "session 2's prompt carries it"
             assert "ORCHID-826" in answer and "BLUE HERON" in answer.upper(), answer
 
             # LiteTUI's OWN threshold on Claude: 1% of the window, so the next
@@ -112,7 +121,7 @@ async def main():
                 "window": app.ctx_max,
                 "cache_warning_text": warning,
                 "compaction_events": autos,
-                "manual_seed": new["seed"], "auto_seed": third["seed"],
+                "manual_seed": new["seed"], "auto_seed": third["seed"], "handoff_after_compact": handoff_text,
                 "followup_answer": answer, "final_answer": final,
                 "turn_ends": [e for e in emitted if e.get("type") == "turn_end"],
             }

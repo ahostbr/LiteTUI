@@ -198,9 +198,22 @@ class TurnApp:
         self.bubble = FakeBubble()
         self._elapsed = SimpleNamespace(start=lambda *a, **k: None, stop_body=lambda: None)
         self._events = events
+        # system_prompt_for (a fresh segment's prompt): the host composition, the store, tools.
+        self.tools_enabled = False
+        self.plugins = SimpleNamespace(compose_prompt=lambda replace=None: "HOST PROMPT")
+        self._convo_pending = False
 
     def _materialise_convo(self):
         pass
+
+    def _all_tools(self):
+        return []
+
+    def _scroll_down(self, **kwargs):
+        pass
+
+    def _read_store_file(self, name, cap):
+        return ""
 
     def _chat_running(self):
         return False
@@ -634,3 +647,98 @@ def test_an_image_that_cannot_be_saved_is_refused_not_sent_blind(tmp_path):
 def test_text_passes_through_untouched(tmp_path):
     from litetui.claude_turn import inline_images
     assert inline_images(app_for(tmp_path), "hello") == ("hello", [])
+
+
+def test_a_new_claude_session_works_in_the_folder_litetui_was_launched_from(tmp_path):
+    """Plan claude-backend-litetui-identity, phase 3. Ryan: "it should use whatever its cwd
+    is i just ran it from there". The same source the Codex backend uses
+    (codex_workspace.workspace: the folder captured at launch), not the install folder."""
+    project = tmp_path / "LiteBench"
+    project.mkdir()
+    app = app_for(tmp_path / "store")
+    app._hook_workspace = project
+    prepare_input(app, "pwd?", "strict", "typed")
+    assert ledger_for_path(app).selected["workspace"] == str(project.resolve())
+
+
+def test_a_segment_is_never_resumed_in_another_folder(tmp_path):
+    first, second = tmp_path / "A", tmp_path / "B"
+    first.mkdir()
+    second.mkdir()
+    app = app_for(tmp_path / "store")
+    app._hook_workspace = first
+    prepare_input(app, "one", "strict", "typed")
+    ledger = ledger_for_path(app)
+    old = ledger.selected
+    ledger.bind_session(old["id"], "native-A")
+    app._hook_workspace = second
+    prepare_input(app, "two", "strict", "typed")
+    new = ledger.selected
+    assert new["id"] != old["id"] and new["workspace"] == str(second.resolve()) and new["session_id"] is None
+    assert ledger.segment(old["id"])["workspace"] == str(first.resolve()), "the old session stays where it ran"
+
+
+def ledger_for_path(app):
+    from litetui.claude_turn import ledger_for
+    return ledger_for(app)
+
+
+def _compaction_watch(app, due):
+    scheduled, commands = [], []
+    app.call_after_refresh = scheduled.append
+    app._autocompact_due = lambda: due
+    app._maybe_autocompact = lambda: commands.append("maybe")
+    app._handle_command = commands.append
+    return scheduled, commands
+
+
+@pytest.mark.asyncio
+async def test_crossing_the_threshold_mid_turn_compacts_at_the_turn_end_whatever_it_ended_on(tmp_path):
+    """Plan claude-backend-litetui-identity, phase 4: LiteTUI's threshold is checked on the
+    usage frames mid-turn, not only after a normal stop; the turn is never cut short."""
+    app = turn_app(tmp_path, messages=["m1", "m2", "m3", "m4"])   # one SDK message per event batch
+    scheduled, commands = _compaction_watch(app, due=91)
+    usage = ClaudeUsage(source="message", input_tokens=10, context_tokens=910_000)
+    app._events = [[ClaudeEvent(kind="text_delta", text="partial answer", message_id="a1")],
+                   [ClaudeEvent(kind="usage", usage=usage)], [ClaudeEvent(kind="usage", usage=usage)],
+                   [ClaudeEvent(kind="result", is_error=True, detail="tool loop failed", data={})]]
+    await stream_turn(app)
+    assert [n for n in app.notices if "mid-turn" in n], app.notices
+    assert len([n for n in app.notices if "mid-turn" in n]) == 1
+    for callback in scheduled:
+        callback()
+    assert commands == ["maybe"], "compaction is scheduled after the turn even though it ended in an error"
+    assert any(row.get("role") == "assistant" and "partial answer" in row.get("content", "")
+               for row in app.appended), "the turn's own answer is kept"
+
+
+@pytest.mark.asyncio
+async def test_an_overflow_says_so_and_liteui_compacts(tmp_path):
+    app = turn_app(tmp_path, messages=["m1"])
+    scheduled, commands = _compaction_watch(app, due=None)
+    app._events = [[ClaudeEvent(kind="result", is_error=True, detail="Prompt is too long", data={})]]
+    await stream_turn(app)
+    assert any("context window is full" in n for n in app.notices), app.notices
+    for callback in scheduled:
+        callback()
+    assert commands == ["/compact"] and app._compact_is_auto is True
+
+
+def test_a_folder_switch_never_abandons_an_uncertain_delivery(tmp_path):
+    """Review of phase 3: leaving a segment for another folder is the one implicit path to
+    a new segment, so it takes the same unresolved-delivery gate the others do; otherwise
+    the old segment's uncertain entry is unreachable from /claude status."""
+    first, second = tmp_path / "A", tmp_path / "B"
+    first.mkdir()
+    second.mkdir()
+    app = app_for(tmp_path / "store")
+    app._hook_workspace = first
+    item = prepare_input(app, "one", "strict", "typed")
+    ledger = ledger_for_path(app)
+    old = ledger.selected
+    ledger.update_delivery(item["_claude_entry"]["id"], "submitted")
+    ledger.update_delivery(item["_claude_entry"]["id"], "uncertain", error="process died mid-turn")
+    app._hook_workspace = second
+    with pytest.raises(ValueError, match="/claude resolve"):
+        prepare_input(app, "two", "strict", "typed")
+    assert ledger.selected["id"] == old["id"], "nothing switched"

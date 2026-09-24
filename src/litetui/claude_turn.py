@@ -3,12 +3,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 
 from rich.text import Text
 
-from litetui import claude_cache, paths
+from litetui import claude_cache
 from litetui.claude_persistence import ClaudeLedger
+
+
+def launch_workspace(app):
+    """The folder LiteTUI was launched from: a Claude session's cwd and the root its
+    writes are judged against. Plan claude-backend-litetui-identity, phase 3 (Ryan: "it
+    should use whatever its cwd is i just ran it from there"). The same source as the
+    Codex backend (codex_workspace), captured once at launch, not paths.ROOT."""
+    from litetui.codex_workspace import workspace
+    return str(workspace(app))
 
 
 def ledger_for(app):
@@ -20,6 +30,95 @@ def ledger_for(app):
         app._claude_ledger = ledger
         app._claude_ledger_path = path
     return ledger
+
+
+#: Claude's tools are off entirely when LiteTUI's are (claude_tools.sdk_options), so the
+#: host's "advertised but disabled" note would be false here.
+CLAUDE_TOOLS_OFF = "\nTools are off in LiteTUI, so you have none this session. Only the user can turn them on (Ctrl+T).\n"
+
+
+def system_prompt_for(app, segment):
+    """The system prompt a Claude session of `segment` runs under: LiteTUI's, not Claude Code's.
+
+    Ryan, 2026-09-24 (plan claude-backend-litetui-identity): "Replace with LiteTUI's
+    prompt". The host's own composition (systemprompt.md, plan mode, the store
+    folder, skills) with the tool section swapped for Claude's built-ins, then the
+    soul/memory/handoff snapshot, the harness identity when the seat is registered,
+    and the LiteTUI note that makes a compaction request trusted.
+
+    Built ONCE per segment and recorded (ledger.fix_system_prompt): a resume carries
+    the same prefix. A segment already bound to a native session before this existed
+    returns None and keeps the preset it was created with.
+    """
+    from litetui import appsvc
+    from litetui.claude_backend import APPEND, seeded_append
+    from litetui.plugins import PROMPT_ORDER
+    from litetui.textfmt import load_prompt
+
+    segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
+    if segment.get("system_prompt"):
+        return segment["system_prompt"]
+    if segment.get("session_id"):
+        return None
+    tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
+    parts = [app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
+    parts.append(appsvc.store_block(app).strip())
+    if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
+        parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
+    parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
+    text = "\n\n".join(p for p in parts if p)
+    return ledger_for(app).fix_system_prompt(segment["id"], text)
+
+
+#: The CLI's own words for a context that no longer fits (read out of CLI 2.1.281).
+#: With its compaction off (DISABLE_COMPACT) this is how a full window ends a turn.
+OVERFLOW = re.compile(r"prompt is too long|context limit reached|exceed context limit", re.IGNORECASE)
+OVERFLOW_SENTENCE = ("Claude's context window is full, so this turn could not finish. LiteTUI is compacting "
+                     "the conversation now; send your message again once it is done. If the compaction "
+                     "itself fails, /claude new starts a fresh session.")
+MIDTURN_SENTENCE = "Context passed LiteTUI's compaction threshold mid-turn; LiteTUI compacts when this turn ends."
+
+
+def after_turn(app, reason, failure, crossed):
+    """LiteTUI's compaction after a Claude turn: the only compaction Claude gets.
+
+    Scheduled, never run from inside the chat worker (_compact would cancel it), and
+    only after the turn's own answer is saved, so a compaction never loses a turn.
+    """
+    if not hasattr(app, "call_after_refresh"):
+        return
+    if failure and OVERFLOW.search(failure):
+        app._system(OVERFLOW_SENTENCE)
+
+        def force():
+            if not app._chat_running():
+                app._compact_is_auto = True
+                app._handle_command("/compact")
+        app.call_after_refresh(force)
+    elif reason == "stop" or crossed:
+        app.call_after_refresh(app._maybe_autocompact)
+
+
+#: How long a new session waits for the harness seat's first register attempt
+#: (app._inbox_monitor: a 2 s settle, then a registry write).
+SEAT_WAIT_S = 15.0
+
+
+async def prompt_for_new_session(app, segment):
+    """system_prompt_for, after the harness seat's first register attempt has ended.
+
+    The prompt is fixed for the segment's life, and so is the session's tool inventory.
+    A session opened in the first seconds after launch, before the seat registered,
+    would carry neither the harness identity nor the harness tool for as long as it
+    lives. The host re-syncs its own system message when the seat lands late; a fixed
+    Claude prompt cannot, so a NEW segment waits for it (bounded) instead.
+    """
+    fresh = ledger_for(app).segment(segment["id"]) or segment
+    if not fresh.get("system_prompt") and not fresh.get("session_id"):
+        deadline = time.monotonic() + SEAT_WAIT_S
+        while not getattr(app, "_seat_started", True) and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+    return system_prompt_for(app, segment)
 
 
 def inline_images(app, content, saved=None):
@@ -54,9 +153,22 @@ def prepare_input(app, content, profile, source, operation_id=None):
         raise TypeError("Claude image attachments are not enabled yet; send text instead.")
     ledger = ledger_for(app)
     segment = ledger.selected
+    here = launch_workspace(app)
     if segment is None:
-        segment = ledger.select_segment(str(paths.ROOT))
+        segment = ledger.select_segment(here)
         app._system("New Claude session - other-provider history is not imported.")
+    elif segment["workspace"] != here:
+        # A native session only ever resumes in the folder it ran in; launched from
+        # another one, this conversation continues in a session of its own here.
+        previous = segment["workspace"]
+        # The same gate as below, on the segment being LEFT: once another is selected,
+        # /claude status and resolve can no longer reach its uncertain entries.
+        if any(e["state"] != "prepared" for e in ledger.pending(segment["id"])):
+            raise ValueError(f"The Claude session in {previous} has an uncertain delivery, so a new one in "
+                             f"{here} was not started. Relaunch from {previous} and use /claude resolve "
+                             "(or /claude continue) to settle it first; nothing was sent.")
+        segment = ledger.select_segment(here)
+        app._system(f"New Claude session in {here}; the previous one ran in {previous} and stays there.")
     active = getattr(app, "_claude_active_input", {}).get("_claude_entry", {}).get("id") if app._chat_running() else None
     unresolved = [e for e in ledger.pending(segment["id"]) if e["state"] != "prepared" and e["id"] != active]
     if unresolved:
@@ -192,7 +304,10 @@ async def session_for(app, backend, segment, effort):
         backend._claude_events = normalizer
         # Tool permission remains enforced on every callback. Inventory is
         # fixed for this session; changed inventory requires /claude new.
-        session = await backend.open_session(segment, app.model_id, effort=effort, **bridge.sdk_options())
+        # The prompt first: it may wait for the seat, and the inventory is read after it.
+        system_prompt = await prompt_for_new_session(app, segment)
+        session = await backend.open_session(segment, app.model_id, effort=effort,
+                                             system_prompt=system_prompt, **bridge.sdk_options())
         return session, bridge, normalizer
     session = backend.session
     bridge, normalizer = backend._claude_tools, backend._claude_events
@@ -246,6 +361,7 @@ async def stream_turn(app):
     activity_records = []
     thinking = None
     thinking_text = ""
+    crossed = False   # LiteTUI's compaction threshold, seen on a usage frame this turn
     terminal = False
     submitted = False
     monitor = None
@@ -398,6 +514,9 @@ async def stream_turn(app):
                         app.ctx_loaded = True
                     if event.usage and event.usage.source == "message":
                         app.ctx_used = event.usage.context_tokens
+                        if not crossed and getattr(app, "_autocompact_due", lambda: None)() is not None:
+                            crossed = True
+                            app._system(MIDTURN_SENTENCE)
                     if event.usage and (event.usage.source == "message" or event.usage.max_context_tokens):
                         app._refresh_ctx_label()
                     app._rpc_emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
@@ -468,11 +587,7 @@ async def stream_turn(app):
         widget.settled = True
         app._settle_turn_stop_line(widget, started_at=started, final_tps=None, stopped=reason != "stop")
         app._emit_turn_end(reason, None, error=failure)
-        if reason == "stop" and hasattr(app, "call_after_refresh"):
-            # LiteTUI's threshold decides for Claude too (its own autocompact
-            # is off). Scheduled, like the host path: never from inside the
-            # chat worker, which _compact would cancel.
-            app.call_after_refresh(app._maybe_autocompact)
+        after_turn(app, reason, failure, crossed)
 
 
 def command(app, argument):
@@ -528,7 +643,7 @@ def command(app, argument):
                 app._system(f"Claude session did not close cleanly: {exc}. "
                             "The previous runtime may still be alive; no new session was selected.")
                 return
-            ledger_for(app).select_segment(str(paths.ROOT), new=True)
+            ledger_for(app).select_segment(launch_workspace(app), new=True)
             app._system("New Claude session selected. Old session and held inputs remain saved; no history imported.")
         app.run_worker(create(), group="claude-session", exclusive=True, exit_on_error=False)
     else:
