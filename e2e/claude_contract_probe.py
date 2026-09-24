@@ -185,7 +185,10 @@ async def inspect_runtime(root: Path, control: bool = False, with_query: bool = 
     if control:
         if not result["markers"] and not result["mcp_server_count"]:
             raise RuntimeError("Positive control failed: seeded config never fired, so the probe cannot detect inheritance")
-    elif result["markers"] or result["mcp_server_count"]:
+        if with_query and (len([e for e in result.get("hook_events", []) if e.get("subtype") == "hook_started"]) < 4
+                           or "plugin-mcp.marker" not in result["markers"]):
+            raise RuntimeError("Positive control did not exercise settings/plugin hooks and plugin MCP")
+    elif result["markers"] or result["mcp_server_count"] or result.get("hook_events"):
         raise RuntimeError("Unexpected configuration inheritance")
     return result
 
@@ -228,8 +231,9 @@ def run_offline(output: Path, timeout: float = 90, control: bool = False, with_q
             "markers": sorted(path.name for path in root.glob("*.marker")),
             "limitations": [
                 "No authenticated model call, native tool call or permission callback exercised.",
-                "No resume, interrupt/drain, plugin inheritance or context-content verification.",
-                "Sentinel absence is preliminary: positive-control fixture execution not yet verified.",
+                "No resume, interrupt/drain or context-content verification.",
+                "Evaluate alongside the matching positive/negative run; absence alone does not prove isolation.",
+                "Hook execution is evidenced by native hook events, not hook marker files; MCP markers are checked.",
                 "Normal disconnect returned; process-tree absence is not independently verified.",
                 "Temporary config/environment is probe isolation, not the product's finalized auth/config policy.",
             ],
