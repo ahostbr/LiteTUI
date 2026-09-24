@@ -1,0 +1,12 @@
+{
+  "context": true,
+  "durable_queue": true,
+  "native_approved_write": true,
+  "native_denied_write": true,
+  "question_answer": true,
+  "stop_pending_question_then_next_turn": true,
+  "process_exit": 0,
+  "host_chrome_calls": 1,
+  "assertions": "Chosen question answer and AFTER-STOP output checked, not only terminal status.",
+  "verified_after_commit": "fd9b568"
+}

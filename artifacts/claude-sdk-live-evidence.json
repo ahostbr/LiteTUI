@@ -1,0 +1,34 @@
+{
+  "sdk_version": "0.2.159",
+  "two_turn_context": true,
+  "result_keys": [
+    "api_error_status",
+    "deferred_tool_use",
+    "duration_api_ms",
+    "duration_ms",
+    "errors",
+    "is_error",
+    "model_usage",
+    "num_turns",
+    "origin",
+    "permission_denials",
+    "result",
+    "session_id",
+    "stop_reason",
+    "structured_output",
+    "subtype",
+    "terminal_reason",
+    "total_cost_usd",
+    "usage",
+    "uuid"
+  ],
+  "exact_resume": true,
+  "missing_session_error": "ResultError",
+  "native_denial": true,
+  "hook_calls": [
+    {
+      "tool_name": "Write",
+      "tool_use_id": "toolu_015PsFptZ2h4cDQtKpSwz6tE"
+    }
+  ]
+}

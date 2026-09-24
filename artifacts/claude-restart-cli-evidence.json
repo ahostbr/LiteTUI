@@ -1,0 +1,14 @@
+{
+  "result": "PASS",
+  "resume_entry": "cli",
+  "python": "3.11.9",
+  "phase1_exit": 0,
+  "phase2_exit": 0,
+  "phase1_leaked_children": [],
+  "phase2_leaked_children": [],
+  "resumed_same_session_id": true,
+  "phase2_started_a_second_conversation": false,
+  "phase2_prompt_in_original_segment": true,
+  "phase2_reply": "1) ORCHID-321D19F1\n2) NO-SECRET",
+  "scope": "Two actual processes using --convo; foreign-provider display records injected, no second-provider inference."
+}

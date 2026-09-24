@@ -1,0 +1,176 @@
+{
+  "snapshot": "<user>\\AppData\\Local\\Temp\\claude\\C--Projects-LiteTUI-worktrees-claude-persistence\\935ff76d-c67d-4777-a462-6bcc0a798a1c\\scratchpad\\snapshot",
+  "batches": {
+    "1-claude-native": {
+      "pytest_files": [
+        "test_claude_backend",
+        "test_claude_events",
+        "test_claude_persistence",
+        "test_claude_session",
+        "test_claude_tools",
+        "test_claude_turn",
+        "test_claude_ui"
+      ],
+      "script_files": [],
+      "pytest": {
+        "exit": 0,
+        "summary": "163 passed in 3.97s",
+        "failed": []
+      }
+    },
+    "2-backend-selection-lifecycle": {
+      "pytest_files": [
+        "test_backend_session_lifecycle",
+        "test_backend_switch",
+        "test_backend_label",
+        "test_backend_load_admission",
+        "test_cli_backend_flag",
+        "test_custom_launch"
+      ],
+      "script_files": [],
+      "pytest": {
+        "exit": 0,
+        "summary": "53 passed in 19.80s",
+        "failed": []
+      }
+    },
+    "3-launch-and-model-flags": {
+      "pytest_files": [
+        "test_agent_launcher",
+        "test_cli_model_flag",
+        "test_no_implicit_model_load",
+        "test_model_picked"
+      ],
+      "script_files": [],
+      "pytest": {
+        "exit": 1,
+        "summary": "1 failed, 38 passed in 7.90s",
+        "failed": [
+          "FAILED tests/test_agent_launcher.py::test_actual_child_gets_no_prompt_until_authenticated"
+        ]
+      }
+    },
+    "4-existing-native-codex": {
+      "pytest_files": [
+        "test_codex_app_server",
+        "test_codex_runtime",
+        "test_codex_persistence",
+        "test_codex_compaction_ui"
+      ],
+      "script_files": [],
+      "pytest": {
+        "exit": 1,
+        "summary": "4 failed, 43 passed in 123.49s (0:02:03)",
+        "failed": [
+          "FAILED tests/test_codex_persistence.py::test_older_conversation_choice_is_not_overridden_by_another_conversations_xhigh[medium]",
+          "FAILED tests/test_codex_persistence.py::test_older_conversation_choice_is_not_overridden_by_another_conversations_xhigh[default]",
+          "FAILED tests/test_codex_persistence.py::test_codex_specific_saved_effort_keeps_header_and_request_override_consistent",
+          "FAILED tests/test_codex_compaction_ui.py::test_manual_compaction_uses_shared_card_rpc_status_and_saved_trace[False]"
+        ]
+      }
+    },
+    "5-app-and-settings": {
+      "pytest_files": [
+        "test_turn_engine",
+        "test_settings_scope",
+        "test_settings_runtime",
+        "test_settings_ui_model",
+        "test_convo_settings",
+        "test_prompt_compiler"
+      ],
+      "script_files": [],
+      "pytest": {
+        "exit": 0,
+        "summary": "113 passed in 2.32s",
+        "failed": []
+      }
+    },
+    "6-authority-and-rpc": {
+      "pytest_files": [
+        "test_tool_policy",
+        "test_tool_policy_wiring",
+        "test_approval_over_rpc",
+        "test_ask_over_rpc",
+        "test_rpc_model_switch"
+      ],
+      "script_files": [
+        "test_rpc"
+      ],
+      "pytest": {
+        "exit": 0,
+        "summary": "35 passed in 33.75s",
+        "failed": []
+      }
+    },
+    "7-approval-question-ui": {
+      "pytest_files": [
+        "test_ask_user_question",
+        "test_ask_user_question_sidebar",
+        "test_rpc_approval_types",
+        "test_compaction_card_renders",
+        "test_image_viewer",
+        "test_stt_backend"
+      ],
+      "script_files": [],
+      "pytest": {
+        "exit": 0,
+        "summary": "57 passed in 20.00s",
+        "failed": []
+      }
+    },
+    "8-compaction-and-subagent": {
+      "pytest_files": [
+        "test_autocompact",
+        "test_compaction_event",
+        "test_compaction_meter",
+        "test_compaction_ui",
+        "test_subagent_set"
+      ],
+      "script_files": [
+        "test_subagent"
+      ],
+      "pytest": {
+        "exit": 0,
+        "summary": "40 passed in 13.29s",
+        "failed": []
+      }
+    },
+    "9-settings-surface": {
+      "pytest_files": [
+        "test_settings",
+        "test_settings_apply",
+        "test_settings_live"
+      ],
+      "script_files": [],
+      "pytest": {
+        "exit": 1,
+        "summary": "2 failed, 23 passed in 17.78s",
+        "failed": [
+          "FAILED tests/test_settings.py::test_screen_mounts_and_reads_back_edits - asse...",
+          "FAILED tests/test_settings.py::test_every_field_is_reachable_without_opening_its_tab"
+        ]
+      }
+    }
+  },
+  "missing": [],
+  "scripts": {
+    "test_rpc": {
+      "exit": 0,
+      "tail": ""
+    },
+    "test_subagent": {
+      "exit": 0,
+      "tail": ""
+    }
+  },
+  "python": [
+    "3.11.9",
+    "<repo>\\.venv\\Scripts\\python.exe"
+  ],
+  "versions": {
+    "pytest": "9.1.1",
+    "pytest_asyncio": "1.4.0",
+    "claude_agent_sdk": "0.2.159",
+    "textual": "8.1.0"
+  }
+}

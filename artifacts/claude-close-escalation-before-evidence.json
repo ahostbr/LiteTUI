@@ -1,0 +1,21 @@
+{
+  "result": "LEAKS",
+  "wedge": "disconnect never returns until released",
+  "close_bound_s": 25,
+  "started": true,
+  "child_alive_before_close": true,
+  "close_returned": false,
+  "close_seconds": 25.0,
+  "disconnect_entered": true,
+  "disconnect_swallowed_cancel": true,
+  "owner_done": false,
+  "cleanup_errors": [],
+  "lifecycle_failure": null,
+  "child_alive_after_close": true,
+  "leaked": true,
+  "close_returned_after_release": true,
+  "child_alive_after_release": true,
+  "probe_cleanup": "SUCCESS: The process with PID 61588 (child process of PID 33604) has been terminated.",
+  "child_alive_after_probe_cleanup": false,
+  "scope": "Windows verified owned process only. Artificial disconnect resists cancellation and child death until probe releases it; a still-pending Python owner is reported explicitly."
+}

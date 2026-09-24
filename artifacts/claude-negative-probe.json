@@ -1,0 +1,33 @@
+{
+  "tool_free_native_and_host_denied": true,
+  "agent_launch_denied": true,
+  "host_executions": [],
+  "calls": [
+    {
+      "name": "Write",
+      "decision": "deny"
+    },
+    {
+      "name": "mcp__litetui__chrome",
+      "decision": "deny"
+    },
+    {
+      "name": "Agent",
+      "decision": "deny"
+    }
+  ],
+  "results": [
+    {
+      "subtype": "success",
+      "is_error": false
+    },
+    {
+      "subtype": "success",
+      "is_error": false
+    },
+    {
+      "subtype": "success",
+      "is_error": false
+    }
+  ]
+}

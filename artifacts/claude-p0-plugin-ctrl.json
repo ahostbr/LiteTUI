@@ -1,0 +1,100 @@
+{
+  "sdk_version": "0.2.159",
+  "cli_version": "2.1.281 (Claude Code)",
+  "initialize_keys": [
+    "account",
+    "agents",
+    "analytics_disabled",
+    "available_output_styles",
+    "commands",
+    "current_permission_mode",
+    "fast_mode_disabled_reason",
+    "fast_mode_state",
+    "ide_rc_auto_enable_gate",
+    "models",
+    "output_style",
+    "pid",
+    "remote_control_auto_connect_default",
+    "remote_control_auto_enable",
+    "remote_control_auto_on_by_default",
+    "remote_control_available",
+    "session_state",
+    "user_output_styles_dir"
+  ],
+  "model_ids": [
+    "default",
+    "opus[1m]",
+    "claude-fable-5-1",
+    "sonnet",
+    "sonnet[1m]",
+    "haiku"
+  ],
+  "command_names": [],
+  "query_message_types": [
+    "HookEventMessage",
+    "HookEventMessage",
+    "HookEventMessage",
+    "HookEventMessage",
+    "HookEventMessage",
+    "HookEventMessage",
+    "HookEventMessage",
+    "HookEventMessage",
+    "SystemMessage",
+    "AssistantMessage",
+    "ResultMessage"
+  ],
+  "hook_events": [
+    {
+      "subtype": "hook_started",
+      "data": "{'type': 'system', 'subtype': 'hook_started', 'hook_id': '22da6341-6620-4802-a2e0-a9216526d03c', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionStar"
+    },
+    {
+      "subtype": "hook_started",
+      "data": "{'type': 'system', 'subtype': 'hook_started', 'hook_id': 'a787f50e-4cb1-4db0-a490-39b8b0788c46', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionStar"
+    },
+    {
+      "subtype": "hook_started",
+      "data": "{'type': 'system', 'subtype': 'hook_started', 'hook_id': '6c34049d-81f4-4764-9247-02ac9cdf1154', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionStar"
+    },
+    {
+      "subtype": "hook_started",
+      "data": "{'type': 'system', 'subtype': 'hook_started', 'hook_id': '9e24cd98-e3a6-4b39-a5ce-6986dacebfff', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionStar"
+    },
+    {
+      "subtype": "hook_response",
+      "data": "{'type': 'system', 'subtype': 'hook_response', 'hook_id': '22da6341-6620-4802-a2e0-a9216526d03c', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionSta"
+    },
+    {
+      "subtype": "hook_response",
+      "data": "{'type': 'system', 'subtype': 'hook_response', 'hook_id': '6c34049d-81f4-4764-9247-02ac9cdf1154', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionSta"
+    },
+    {
+      "subtype": "hook_response",
+      "data": "{'type': 'system', 'subtype': 'hook_response', 'hook_id': 'a787f50e-4cb1-4db0-a490-39b8b0788c46', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionSta"
+    },
+    {
+      "subtype": "hook_response",
+      "data": "{'type': 'system', 'subtype': 'hook_response', 'hook_id': '9e24cd98-e3a6-4b39-a5ce-6986dacebfff', 'hook_name': 'SessionStart:startup', 'hook_event': 'SessionSta"
+    }
+  ],
+  "mcp_server_count": 3,
+  "connected": true,
+  "disconnected": true,
+  "elapsed_seconds": 0.609,
+  "markers": [
+    "plugin-mcp.marker",
+    "project-mcp.marker"
+  ],
+  "positive_control": true,
+  "mode": "offline-positive-control+unauthenticated-query",
+  "inference_submitted": false,
+  "worker_exit": 0,
+  "limitations": [
+    "No authenticated model call, native tool call or permission callback exercised.",
+    "No resume, interrupt/drain or context-content verification.",
+    "Evaluate alongside the matching positive/negative run; absence alone does not prove isolation.",
+    "Hook execution is evidenced by native hook events, not hook marker files; MCP markers are checked.",
+    "Normal disconnect returned; process-tree absence is not independently verified.",
+    "Temporary config/environment is probe isolation, not the product's finalized auth/config policy."
+  ]
+}

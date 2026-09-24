@@ -1,0 +1,24 @@
+{
+  "result": "NO LEAK",
+  "wedge": "disconnect never returns until released",
+  "close_bound_s": 25,
+  "started": true,
+  "child_alive_before_close": true,
+  "close_returned": true,
+  "close_seconds": 22.2,
+  "disconnect_entered": true,
+  "disconnect_swallowed_cancel": true,
+  "owner_done": false,
+  "cleanup_errors": [
+    "close did not settle within 12s; owned Claude CLI pid 51180 was force-killed: SUCCESS: The process with PID 51180 (child process of PID 66200) has been terminated.",
+    "owner task still running 10s after cancellation; this session has stopped waiting for it"
+  ],
+  "lifecycle_failure": null,
+  "child_alive_after_close": false,
+  "leaked": false,
+  "close_returned_after_release": true,
+  "child_alive_after_release": false,
+  "probe_cleanup": "already gone",
+  "child_alive_after_probe_cleanup": false,
+  "scope": "Windows verified owned process only. Artificial disconnect resists cancellation and child death until probe releases it; a still-pending Python owner is reported explicitly."
+}

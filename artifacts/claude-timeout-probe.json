@@ -1,0 +1,14 @@
+{
+  "unanswered_native_approval_denied": true,
+  "owned_decisions_cancelled": 1,
+  "file_created": false,
+  "decision_deadline_seconds": 0.2,
+  "hook_deadline_seconds": 2,
+  "limitation": "Accelerated local deadline; production 315s/360s duration not waited out.",
+  "results": [
+    {
+      "subtype": "success",
+      "is_error": false
+    }
+  ]
+}

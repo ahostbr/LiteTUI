@@ -1,0 +1,147 @@
+{
+  "nonce": "ORCHID-8FC16EB0",
+  "sentinel": "MAGPIE-C243F0F1",
+  "python": "3.11.9",
+  "data_root": "<user>\\AppData\\Local\\Temp\\litetui-claude-restart-3tbyyla3",
+  "child_source": "Win32_Process (psutil absent)",
+  "phase1_children": [
+    {
+      "pid": 51312,
+      "name": "python.exe",
+      "create_time": "/Date(1790217278074)/"
+    },
+    {
+      "pid": 57236,
+      "name": "claude.exe",
+      "create_time": "/Date(1790217281265)/"
+    }
+  ],
+  "phase1_exit": 0,
+  "phase1_leaked_children": [],
+  "convo_id": "90cd3f84-d280-4a2f-9aa4-d79aeed7d4bb",
+  "segment_before": {
+    "id": "b71fa58498de456c99ca27bb892661ab",
+    "session_id": "d61e34df-bbba-4578-8da4-c545e6eea6d5",
+    "workspace": "<repo>",
+    "created_at": 1790217281.2196789,
+    "entries": [
+      {
+        "id": "cfcbfa588c944d4485de7494d286cc54",
+        "segment_id": "b71fa58498de456c99ca27bb892661ab",
+        "state": "terminal",
+        "content": "Remember this token: ORCHID-8FC16EB0. Reply only READY.",
+        "profile": "strict",
+        "source": "rpc",
+        "operation_id": "teach",
+        "prepared_at": 1790217281.2216792,
+        "submitted_at": 1790217281.8158495,
+        "stop_reason": "stop",
+        "terminal_at": 1790217283.2424881
+      }
+    ]
+  },
+  "reopened_session_id": "90cd3f84-d280-4a2f-9aa4-d79aeed7d4bb",
+  "phase2_reply": "1) ORCHID-8FC16EB0\n2) NO-SECRET",
+  "convo_dirs_after": [
+    "90cd3f84-d280-4a2f-9aa4-d79aeed7d4bb"
+  ],
+  "ledgers_after": {
+    "90cd3f84-d280-4a2f-9aa4-d79aeed7d4bb": {
+      "schema_version": 1,
+      "selected_segment": "b71fa58498de456c99ca27bb892661ab",
+      "segments": {
+        "b71fa58498de456c99ca27bb892661ab": {
+          "id": "b71fa58498de456c99ca27bb892661ab",
+          "session_id": "d61e34df-bbba-4578-8da4-c545e6eea6d5",
+          "workspace": "<repo>",
+          "created_at": 1790217281.2196789,
+          "entries": [
+            {
+              "id": "cfcbfa588c944d4485de7494d286cc54",
+              "segment_id": "b71fa58498de456c99ca27bb892661ab",
+              "state": "terminal",
+              "content": "Remember this token: ORCHID-8FC16EB0. Reply only READY.",
+              "profile": "strict",
+              "source": "rpc",
+              "operation_id": "teach",
+              "prepared_at": 1790217281.2216792,
+              "submitted_at": 1790217281.8158495,
+              "stop_reason": "stop",
+              "terminal_at": 1790217283.2424881
+            },
+            {
+              "id": "7ec2d915ea47470abad367ab744834f7",
+              "segment_id": "b71fa58498de456c99ca27bb892661ab",
+              "state": "terminal",
+              "content": "Two questions, one line each. 1) What token did I ask you to remember? 2) Do you know a secret word beginning with MAGPIE? Answer NO-SECRET if you do not.",
+              "profile": "strict",
+              "source": "rpc",
+              "operation_id": "recall",
+              "prepared_at": 1790217287.8762722,
+              "submitted_at": 1790217288.5638945,
+              "stop_reason": "stop",
+              "terminal_at": 1790217290.2030568
+            }
+          ]
+        }
+      }
+    }
+  },
+  "phase2_system_notices": [],
+  "segment_after": {
+    "id": "b71fa58498de456c99ca27bb892661ab",
+    "session_id": "d61e34df-bbba-4578-8da4-c545e6eea6d5",
+    "workspace": "<repo>",
+    "created_at": 1790217281.2196789,
+    "entries": [
+      {
+        "id": "cfcbfa588c944d4485de7494d286cc54",
+        "segment_id": "b71fa58498de456c99ca27bb892661ab",
+        "state": "terminal",
+        "content": "Remember this token: ORCHID-8FC16EB0. Reply only READY.",
+        "profile": "strict",
+        "source": "rpc",
+        "operation_id": "teach",
+        "prepared_at": 1790217281.2216792,
+        "submitted_at": 1790217281.8158495,
+        "stop_reason": "stop",
+        "terminal_at": 1790217283.2424881
+      },
+      {
+        "id": "7ec2d915ea47470abad367ab744834f7",
+        "segment_id": "b71fa58498de456c99ca27bb892661ab",
+        "state": "terminal",
+        "content": "Two questions, one line each. 1) What token did I ask you to remember? 2) Do you know a secret word beginning with MAGPIE? Answer NO-SECRET if you do not.",
+        "profile": "strict",
+        "source": "rpc",
+        "operation_id": "recall",
+        "prepared_at": 1790217287.8762722,
+        "submitted_at": 1790217288.5638945,
+        "stop_reason": "stop",
+        "terminal_at": 1790217290.2030568
+      }
+    ]
+  },
+  "phase2_started_a_second_conversation": false,
+  "phase2_prompt_in_original_segment": true,
+  "resumed_same_segment": true,
+  "resumed_same_session_id": true,
+  "remembered_nonce": true,
+  "sentinel_absent": true,
+  "sentinel_absent_from_ledger": true,
+  "phase2_children": [
+    {
+      "pid": 21528,
+      "name": "python.exe",
+      "create_time": "/Date(1790217284762)/"
+    },
+    {
+      "pid": 57232,
+      "name": "claude.exe",
+      "create_time": "/Date(1790217287919)/"
+    }
+  ],
+  "phase2_exit": 0,
+  "phase2_leaked_children": [],
+  "result": "PASS"
+}

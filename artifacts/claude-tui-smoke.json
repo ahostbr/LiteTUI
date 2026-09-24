@@ -1,0 +1,29 @@
+{
+  "backend": "claude",
+  "two_turn_context": true,
+  "exact_resume": true,
+  "session_id": "b885a875-7f60-4527-bec7-e7305aa5165e",
+  "turn_end_events": [
+    {
+      "type": "turn_end",
+      "stopReason": "stop",
+      "tps": null,
+      "tpsSource": null,
+      "error": null
+    },
+    {
+      "type": "turn_end",
+      "stopReason": "stop",
+      "tps": null,
+      "tpsSource": null,
+      "error": null
+    },
+    {
+      "type": "turn_end",
+      "stopReason": "stop",
+      "tps": null,
+      "tpsSource": null,
+      "error": null
+    }
+  ]
+}
