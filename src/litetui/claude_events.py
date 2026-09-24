@@ -46,7 +46,7 @@ DIAGNOSTIC_LIMIT = 500
 
 #: Stream sub-events that carry no display fact. Everything else unknown gets
 #: a diagnostic — these would make that signal pure noise.
-_BENIGN_STREAM_EVENTS = frozenset({"ping", "message_stop", "content_block_stop"})
+_BENIGN_STREAM_EVENTS = frozenset({"ping", "content_block_stop"})  # message_stop ends a message (_stream)
 
 #: The API reports usage in snake_case; the CLI's `modelUsage` passthrough uses
 #: camelCase (types.py:1314 says so outright). Both spellings reach this layer,
@@ -454,9 +454,15 @@ class ClaudeEventStream:
         # diagnoses what it cannot use, so the good siblings survive.
         usable = [block for block in blocks if isinstance(block, dict)]
 
-        streamed = self._streamed.pop(message_id, {}) if message_id else {}
-        if self._active == message_id:
-            self._active = None
+        # 🔴 A SNAPSHOT IS NOT THE END OF ITS MESSAGE. With thinking on, the CLI sends
+        # one snapshot per content block, under the message's id, and the thinking
+        # block's arrives BEFORE the text streams (live, CLI 2.1.281, 2026-09-24).
+        # Popping the stream state and clearing `_active` here sent the text deltas
+        # out with message_id=None and made the final text snapshot a full replace
+        # under the real id: the turn held the answer twice. The stream's own
+        # `message_stop` ends the message; a snapshot only consumes what it carries.
+        slot = self._streamed.get(message_id) if message_id else None
+        streamed = dict(slot) if slot else {}
 
         events: list[ClaudeEvent] = []
         usage = self._usage(message.get("usage"), source="message")
@@ -464,11 +470,21 @@ class ClaudeEventStream:
             self.usage = usage
             events.append(ClaudeEvent(kind="usage", usage=usage, model=model, **common))
 
+        def consume(kind: str, full: str) -> tuple[str, str]:
+            # Reconcile against what streamed, then drop what this snapshot covered,
+            # so a later snapshot of the same message reconciles against the rest.
+            mode, payload = _reconcile(streamed.get(kind, ""), full)
+            if slot is not None:
+                done = slot.get(kind, "")
+                slot[kind] = done[len(full):] if done.startswith(full) else ""
+            return mode, payload
+
+        has = {b.get("type") for b in usable}
         thinking = "".join(
             str(b.get("thinking") or "") for b in usable if b.get("type") == "thinking"
         )
-        if thinking or streamed.get("thinking"):
-            mode, payload = _reconcile(streamed.get("thinking", ""), thinking)
+        if "thinking" in has:
+            mode, payload = consume("thinking", thinking)
             events.append(
                 ClaudeEvent(
                     kind="thinking",
@@ -483,7 +499,9 @@ class ClaudeEventStream:
         text = "".join(
             str(b.get("text") or "") for b in usable if b.get("type") == "text"
         )
-        mode, payload = _reconcile(streamed.get("text", ""), text)
+        # A snapshot with no text block (a thinking or tool block's own) says nothing
+        # about the text: a no-op, never a replace with "" that wipes what streamed.
+        mode, payload = consume("text", text) if "text" in has else ("append", "")
         events.append(
             ClaudeEvent(
                 kind="message",
@@ -814,6 +832,11 @@ class ClaudeEventStream:
             # the parsed whole, so there is nothing here worth half-parsing.
             return []
 
+        if kind == "message_stop":
+            # The end of the message, and so of its reconciliation (see _assistant).
+            self._streamed.pop(self._active or "", None)
+            self._active = None
+            return []
         if kind in _BENIGN_STREAM_EVENTS or kind == "message_delta":
             return []
         return [

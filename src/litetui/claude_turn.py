@@ -319,6 +319,12 @@ async def session_for(app, backend, segment, effort):
     return session, bridge, normalizer
 
 
+def _joined(message_texts):
+    """The turn's answer: each native message's text, in order. A message with no text
+    (a tool call, a thinking block) adds nothing, not a stray blank line."""
+    return "\n\n".join(t for t in message_texts.values() if t)
+
+
 async def stream_turn(app):
     from litetui.claude_backend import settle_close
 
@@ -412,7 +418,7 @@ async def stream_turn(app):
                 if event.kind == "text_delta":
                     key = event.message_id or "current"
                     message_texts[key] = message_texts.get(key, "") + event.text
-                    text = "\n\n".join(message_texts.values())
+                    text = _joined(message_texts)
                     widget.body.content = Text(text + " |")
                     app._rpc_emit({"type": "text_delta", "text": event.text})
                     app._scroll_down()
@@ -425,7 +431,7 @@ async def stream_turn(app):
                     else:
                         message_texts[key] = event.text
                         app._rpc_emit({"type": "native_text_snapshot", "provider": "claude", "message_id": key, "text": event.text})
-                    text = "\n\n".join(message_texts.values())
+                    text = _joined(message_texts)
                     widget.set_answer(text)
                 elif event.kind in {"thinking_delta", "thinking"}:
                     from litetui.widgets import ThinkingBlock
