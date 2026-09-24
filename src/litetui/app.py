@@ -1929,6 +1929,9 @@ class LiteTUI(App):
         await self._settle_before_teardown()
         from litetui.launch_options import stop_custom
         await asyncio.to_thread(stop_custom, self)
+        sidecar = getattr(self, "_sidecar_preview", None)
+        if sidecar is not None:
+            await asyncio.to_thread(sidecar.close)
         if getattr(getattr(self, "backend", None), "name", None) == "codex":
             if hasattr(self.backend, "app_server"):
                 await self.backend.app_server.close()

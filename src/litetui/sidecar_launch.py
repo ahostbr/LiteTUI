@@ -15,7 +15,7 @@ from pathlib import Path
 
 from litetui import sidecar_protocol
 
-VIEWS = frozenset({"settings", "calendar", "job"})
+VIEWS = frozenset({"timeline", "settings", "calendar", "job"})
 
 
 class SidecarWindow:
