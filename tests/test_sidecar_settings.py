@@ -102,3 +102,22 @@ def test_an_effort_saved_through_settings_reaches_claude_and_its_cache_gate():
     kind, text = claude_cache.cold_reason(clock, live=True, resuming=False, model="default",
                                           effort=effort_for(app), now=10**12 + 60)
     assert kind == "effort" and "high to max" in text
+
+
+def test_a_launch_override_is_effective_and_marked_as_set_at_launch(tmp_path, monkeypatch):
+    """A `--backend codex` instance shows codex, as the TUI's /settings does,
+    not the saved engine. Environment overrides keep their own label."""
+    from types import SimpleNamespace
+
+    from litetui.plugins.sidecar_plugin import launch_overrides
+    from litetui.settings import Settings
+
+    app = SimpleNamespace(settings=Settings(backend="codex"), _invocation_saved_values={"backend": "lmstudio"})
+    monkeypatch.setenv("LM_TOOL_ITERS", "77")
+    result = public_snapshot(SettingsService(tmp_path).snapshot("abc"), launch=launch_overrides(app))
+    backend = result["fields"]["backend"]
+    assert (backend["effective"], backend["source"], backend["override_by"]) == ("codex", "override", "launch")
+    assert backend["saved"] != "codex"
+    iters = result["fields"]["tool_iterations"]
+    assert (iters["effective"], iters["source"], iters["override_by"]) == (77, "override", "environment")
+    assert "override_by" not in result["fields"]["sidecar_enabled"]

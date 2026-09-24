@@ -157,3 +157,69 @@ def test_confirm_cache_must_be_a_bool(tmp_path):
     app = host(tmp_path)
     with pytest.raises(ValueError, match="cache confirmation"):
         apply_patch(app, {**payload(app), "confirm_cache": "yes"})
+
+
+
+@pytest.fixture
+def no_backend_env(monkeypatch):
+    """conftest pins LITETUI_BACKEND for the suite; a launch flag is the only
+    override these arms are about."""
+    monkeypatch.delenv("LITETUI_BACKEND", raising=False)
+
+
+def launched(tmp_path, convo="abc", *, backend="codex"):
+    """An instance started with `--backend <backend>`: the launch value is in
+    effect, the saved preference is kept aside (app.py initial_backend)."""
+    app = host(tmp_path) if convo == "abc" else _host_for(tmp_path, convo)
+    app._invocation_saved_values = {"backend": app.settings.backend}
+    app._cli_initial_backend = backend
+    app.settings.backend = backend
+    return app
+
+
+def _host_for(tmp_path, convo):
+    directory = tmp_path / ".convos" / convo
+    directory.mkdir(parents=True)
+    return SimpleNamespace(settings=Settings(), convo_dir=directory, _settings_service=SettingsService(tmp_path))
+
+
+def test_a_launch_set_field_edited_in_the_sidecar_survives_reconnect(tmp_path, no_backend_env):
+    """Ryan: full parity. The TUI's save retires the launch value
+    (settings_runtime.retire_invocation), so the edit is what the next
+    reconnect adopts; the other instance's conversation is untouched."""
+    from litetui.settings_runtime import prepare_reconnect
+
+    a = launched(tmp_path)
+    b = launched(tmp_path, "xyz", backend="ninfer")
+    b_saved = b._settings_service.snapshot("xyz").saved.backend
+    result = apply_patch(a, {"changes": [{"key": "backend", "scope": "conversation", "value": "llamacpp"}],
+                             "expected_revisions": a._settings_service.snapshot("abc").revisions})
+    assert result["saved"] is True
+    assert result["runtime"][0]["status"] == "pending" and result["runtime"][0]["action"] == "reconnect"
+    assert a._settings_service.snapshot("abc").saved.backend == "llamacpp"
+    assert "backend" not in a._invocation_saved_values and a._cli_initial_backend is None
+    prepare_reconnect(a)
+    assert a.settings.backend == "llamacpp"
+    assert b._settings_service.snapshot("xyz").saved.backend == b_saved
+    assert b._invocation_saved_values == {"backend": b_saved} and b.settings.backend == "ninfer"
+
+
+def test_choosing_the_saved_value_releases_the_launch_value_without_writing(tmp_path, no_backend_env):
+    from litetui.settings_runtime import prepare_reconnect
+
+    a = launched(tmp_path)
+    before = a._settings_service.snapshot("abc")
+    result = apply_patch(a, {"changes": [{"key": "backend", "scope": "conversation", "value": before.saved.backend}],
+                             "expected_revisions": before.revisions})
+    assert result["saved"] is True and result["persistence"] == []
+    assert a._settings_service.snapshot("abc").revisions == before.revisions
+    assert "backend" not in a._invocation_saved_values
+    prepare_reconnect(a)
+    assert a.settings.backend == before.saved.backend
+
+
+def test_the_launch_value_itself_is_no_change(tmp_path, no_backend_env):
+    a = launched(tmp_path)
+    with pytest.raises(ValueError, match="No change"):
+        apply_patch(a, payload(a, key="backend", value="codex"))
+    assert a._invocation_saved_values == {"backend": a._settings_service.snapshot("abc").saved.backend}
