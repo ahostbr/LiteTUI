@@ -729,7 +729,7 @@ class AppServerTransport:
             restricted = (
                 not self.app
                 or not self.app.tools_enabled
-                or getattr(self.app, "_active_tool_profile", "scheduled")
+                or getattr(self.app, "_active_tool_profile", "strict")
                 != "autonomous"
             )
             params = {

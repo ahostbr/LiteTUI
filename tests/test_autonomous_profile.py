@@ -6,8 +6,8 @@ nothing. This is the supported way to say "do not ask me".
 
 🔴 THE HANG THIS FILE EXISTS TO PREVENT. `MCP_UNKNOWN_POLICY` sets
 `confirm_always=True`, which forces a prompt REGARDLESS of capabilities.
-`scheduled` never reached that branch only by construction — everything it does
-not allow is refused earlier. `autonomous` allows everything, so nothing is
+`scheduled` (removed 2026-09-24) never reached that branch only by construction
+— everything it did not allow was refused earlier. `autonomous` allows everything, so nothing is
 refused earlier, and it WOULD have reached it and opened a modal in an
 unattended run. The turn then waits forever for a human who is not there. An
 autonomous profile that can block on a prompt is not autonomous.
@@ -31,8 +31,8 @@ from litetui.tool_policy import (
     MCP_UNKNOWN_POLICY,
     PROFILES,
     READ_POLICY,
-    SCHEDULED,
     SHELL_POLICY,
+    STRICT,
     WRITE_POLICY,
     evaluate,
     rule_key,
@@ -92,13 +92,14 @@ def test_CONTROL_interactive_still_confirms_the_same_confirm_always_tool(ws):
     assert _act(INTERACTIVE, MCP_UNKNOWN_POLICY, {}, ws) == CONFIRM
 
 
-def test_CONTROL_scheduled_is_unchanged_by_the_confirm_guard(ws):
-    """The `profile.confirm and (...)` edit touches every profile with an empty
-    confirm set, and `scheduled` is one. It must still REFUSE rather than
-    silently start allowing — it reaches DENY earlier, above that branch."""
-    assert _act(SCHEDULED, MCP_UNKNOWN_POLICY, {}, ws) == DENY
-    assert _act(SCHEDULED, SHELL_POLICY, {"command": "git status"}, ws) == DENY
-    assert _act(SCHEDULED, READ_POLICY, {}, ws) == ALLOW
+def test_CONTROL_strict_is_unchanged_by_the_confirm_guard(ws):
+    """Was the `scheduled` control; that profile is gone (Ryan 2026-09-24,
+    "remove scheduled completely it makes no sense to me"). The guard must
+    still leave the narrowest level asking: strict confirms the undeclared
+    MCP tool and an ordinary command, and reads stay silent."""
+    assert _act(STRICT, MCP_UNKNOWN_POLICY, {}, ws) == CONFIRM
+    assert _act(STRICT, SHELL_POLICY, {"command": "git status"}, ws) == CONFIRM
+    assert _act(STRICT, READ_POLICY, {}, ws) == ALLOW
 
 
 # ── the only brake left ────────────────────────────────────────────────────

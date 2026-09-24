@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from litetui import row_store
-from litetui.tool_policy import SCHEDULED
+from litetui.tool_policy import AUTONOMOUS
 
 #: How often the app polls. Cron resolves to the minute, so anything under 60s
 #: is enough; 20s keeps a job's fire within a third of a minute of its slot
@@ -248,7 +248,7 @@ class Job:
     #: that. Removing it is safe (`load` filters to `__dataclass_fields__`, so
     #: old job files keep parsing) but it is a schema change and belongs in its
     #: own commit rather than in an authority change.
-    tool_profile: str = SCHEDULED
+    tool_profile: str = AUTONOMOUS
     #: ``cron`` keeps the historical path. ``loop`` is a fixed cadence owned
     #: by one conversation and is polled by the SAME monitor.
     kind: str = "cron"
@@ -263,7 +263,7 @@ class Job:
         prompt: str,
         interval_minutes: int,
         owner_convo_id: str,
-        tool_profile: str = SCHEDULED,
+        tool_profile: str = AUTONOMOUS,
         now: datetime | str | None = None,
     ) -> "Job":
         if interval_minutes < 1:

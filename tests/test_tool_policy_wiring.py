@@ -10,9 +10,7 @@ from litetui.tool_approval import DENIED, ONCE, ToolApprovalScreen
 from litetui.tool_policy import (
     AUTONOMOUS,
     INTERACTIVE,
-    NETWORK_READ_POLICY,
     READ_POLICY,
-    SCHEDULED,
     SHELL_POLICY,
     STRICT,
     WRITE_POLICY,
@@ -159,11 +157,19 @@ async def test_interactive_destructive_shell_call_still_requires_one_host_decisi
 
 
 @pytest.mark.asyncio
-async def test_denied_modal_and_scheduled_profile_never_execute(tmp_path):
+async def test_denied_modal_and_unattended_confirm_never_execute(tmp_path):
+    """Was `..._and_scheduled_profile_never_execute`. The `scheduled` read-only
+    floor is gone (Ryan 2026-09-24: "remove scheduled completely it makes no
+    sense to me ... make interactive ask only for dangerous cmds any deletions
+    or zip expansions weird procc runs that arent its tools and dangerous cmds
+    threw PS and bash"). Its replacement is asserted here: an unattended turn
+    KEEPS interactive -- ordinary calls run -- and only a CONFIRM, which nobody
+    can answer, is refused in words, with no modal."""
     called = []
     host, screens = _host(
         WRITE_POLICY,
         lambda args: called.append(args) or "wrote",
+        profile=STRICT,
         approve=DENIED,
     )
     result, ok = await app_mod.LiteTUI._execute_tool(
@@ -172,16 +178,26 @@ async def test_denied_modal_and_scheduled_profile_never_execute(tmp_path):
     assert not ok and "denied by user" in result
     assert len(screens) == 1 and called == []
 
-    scheduled, scheduled_screens = _host(
-        NETWORK_READ_POLICY,
-        lambda args: called.append(args) or "fetched",
-        profile=SCHEDULED,
+    unattended, unattended_screens = _host(
+        SHELL_POLICY,
+        lambda args: called.append(args) or "ran",
+        profile=INTERACTIVE,
+        approve=ONCE,  # a modal, if one opened, would approve: it must not open
     )
+    unattended._hook_source = "harness"
     result, ok = await app_mod.LiteTUI._execute_tool(
-        scheduled, "web_fetch", {"url": "https://example.com"}
+        unattended, "powershell", {"command": "rm -rf ./build"}
     )
-    assert not ok and "scheduled profile" in result
-    assert scheduled_screens == [] and called == []
+    assert not ok and "nobody is here to confirm" in result
+    assert "deletion" in result
+    assert unattended_screens == [] and called == []
+
+    # CONTROL: the same unattended turn still has interactive's powers.
+    result, ok = await app_mod.LiteTUI._execute_tool(
+        unattended, "powershell", {"command": "git status"}
+    )
+    assert (result, ok) == ("ran", True)
+    assert unattended_screens == []
 
 
 def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypatch):
@@ -206,18 +222,22 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
     different pair of values, one paragraph above where it then did it:
         AN ASSERTION SATISFIABLE BY THE WRONG ANSWER IS NOT A MEASUREMENT.
     Setting the conversation to `interactive` makes the three candidate
-    sources -- the job's field (scheduled), the conversation setting
+    sources -- the job's field (strict), the conversation setting
     (interactive) and the hardcode (autonomous) -- mutually distinct, so the
     asserted value names its own origin.
+
+    📌 2026-09-24: `scheduled` was removed and `Job.tool_profile` now DEFAULTS
+    to AUTONOMOUS, which would collapse the job's field onto the hardcode. The
+    job is therefore built with STRICT explicitly, keeping all three distinct.
     """
     monkeypatch.setattr(app_mod.sched_mod, "save", lambda *_a, **_k: None)
-    job = scheduler.Job(prompt="inspect", schedule="@daily")
-    assert job.tool_profile == SCHEDULED, "premise: the job's own answer differs"
+    job = scheduler.Job(prompt="inspect", schedule="@daily", tool_profile=STRICT)
+    assert job.tool_profile == STRICT, "premise: the job's own answer differs"
 
     settings = Settings()
     # ASK-FIRST, so a delivered AUTONOMOUS can only have come from the hardcode.
     settings.tool_policy_profile = INTERACTIVE
-    assert INTERACTIVE != AUTONOMOUS != SCHEDULED, "premise: all three differ"
+    assert len({INTERACTIVE, AUTONOMOUS, STRICT}) == 3, "premise: all three differ"
 
     queued = SimpleNamespace(
         jobs=[job],
@@ -315,7 +335,7 @@ def test_midturn_queue_adopts_the_delivered_items_profile():
     appended = []
     host = SimpleNamespace(
         _pending_input=[
-            {"content": "scheduled", "text": "scheduled", "tool_profile": SCHEDULED}
+            {"content": "scheduled", "text": "scheduled", "tool_profile": STRICT}
         ],
         _stop_requested=False,
         _active_tool_profile=INTERACTIVE,
@@ -323,5 +343,5 @@ def test_midturn_queue_adopts_the_delivered_items_profile():
         _append=lambda msg: appended.append(msg),
     )
     assert app_mod.LiteTUI._deliver_queued_input(host)
-    assert host._active_tool_profile == SCHEDULED
+    assert host._active_tool_profile == STRICT
     assert appended == [{"role": "user", "content": "scheduled"}]

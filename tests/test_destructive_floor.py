@@ -169,11 +169,20 @@ def test_a_profile_that_grants_destructive_outright_still_confirms(workspace):
             tp.PROFILES[permissive.name] = original
 
 
-def test_scheduled_still_refuses_rather_than_prompting(workspace):
-    """⬜ STRICTER BEATS THE FLOOR. An unattended profile that does not grant
-    the capability at all must still DENY — softening that to a prompt would
-    park a scheduled turn on a human who is not there."""
-    assert _decide(tp.SCHEDULED, f"rm -rf {workspace}", workspace).action == tp.DENY
+def test_strict_asks_and_an_unattended_turn_is_refused_in_words(workspace):
+    """⬜ Was `test_scheduled_still_refuses_rather_than_prompting`. `scheduled`
+    (the refusing floor) is gone — Ryan 2026-09-24: "remove scheduled
+    completely it makes no sense to me ... make interactive ask only for
+    dangerous cmds any deletions or zip expansions weird procc runs that arent
+    its tools and dangerous cmds threw PS and bash". Strict ASKS; a turn nobody
+    is watching must not park on that question, so the door
+    (`_authorize_action`, tool_policy.UNATTENDED_SOURCES) turns it into this
+    refusal, which names the danger class."""
+    decision = _decide(tp.STRICT, f"rm -rf {workspace}", workspace)
+    assert decision.action == tp.CONFIRM
+    assert decision.danger == tp.DELETION
+    refusal = tp.unattended_refusal(decision)
+    assert "nobody is here to confirm" in refusal and tp.DELETION in refusal
 
 
 # ── the floor against the human's standing rules ─────────────────────────────

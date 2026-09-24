@@ -14,12 +14,19 @@ THE TWO ORDERINGS BELOW ARE THE WHOLE SAFETY OF THE FEATURE:
   never saw.
 
   an allow rule turns CONFIRM into ALLOW and NEVER DENY into ALLOW. Otherwise
-  clicking "always" in an interactive modal would hand the unattended scheduled
-  profile something it deliberately refuses. The rule records that a question
-  was answered; it does not move the authority boundary.
+  clicking "always" in an interactive modal would hand a narrower profile
+  something it deliberately refuses. The rule records that a question was
+  answered; it does not move the authority boundary.
+
+📌 2026-09-24: `scheduled`, the profile that used to be the refusing one, is
+gone (Ryan: "remove scheduled completely it makes no sense to me ... make
+interactive ask only for dangerous cmds any deletions or zip expansions weird
+procc runs that arent its tools and dangerous cmds threw PS and bash"). The
+prompting arms now run on strict, and the never-widen arm on a probe profile.
 """
 from pathlib import Path
 
+from litetui import tool_policy
 from litetui.tool_policy import (
     ALLOW,
     CONFIRM,
@@ -27,8 +34,10 @@ from litetui.tool_policy import (
     DESTRUCTIVE_IRREVERSIBLE,
     INTERACTIVE,
     PROCESS_EXECUTION,
-    SCHEDULED,
+    READ_ONLY,
     SHELL_POLICY,
+    STRICT,
+    ToolProfile,
     WRITE_POLICY,
     evaluate,
     rule_key,
@@ -51,11 +60,11 @@ def test_a_rule_is_scoped_to_the_capabilities_not_just_the_tool():
 
 
 def test_an_allow_rule_silences_a_confirm(tmp_path):
-    asked = decide(INTERACTIVE, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
+    asked = decide(STRICT, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
                    tool_name="write")
     assert asked.action == CONFIRM, "precondition: this call normally prompts"
     key = rule_key("write", asked.capabilities)
-    quiet = decide(INTERACTIVE, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
+    quiet = decide(STRICT, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
                    tool_name="write", always_allow=frozenset({key}))
     assert quiet.action == ALLOW
     assert "standing rule" in quiet.reason
@@ -79,16 +88,24 @@ def test_an_allow_rule_for_LESS_authority_does_not_cover_MORE(tmp_path):
     )
 
 
-def test_an_allow_rule_never_turns_a_profile_denial_into_allow(tmp_path):
-    """Scheduled is unattended by design. A rule made in an interactive modal
-    must not widen it."""
-    refused = decide(SCHEDULED, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
+def test_an_allow_rule_never_turns_a_profile_denial_into_allow(tmp_path, monkeypatch):
+    """A rule made in a modal must not widen a profile that REFUSES.
+
+    This was pinned on `scheduled`, the read-only floor; that profile is gone
+    (Ryan 2026-09-24) and no shipped profile refuses a capability any more
+    (strict asks, interactive asks only for dangers, autonomous never asks).
+    The ORDERING in `evaluate` is still the safety, so it is held here with a
+    read-only probe profile rather than dropped.
+    """
+    probe = ToolProfile("probe", allow=frozenset({READ_ONLY}), confirm=frozenset())
+    monkeypatch.setattr(tool_policy, "PROFILES", {**tool_policy.PROFILES, "probe": probe})
+    refused = decide("probe", WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
                      tool_name="write")
-    assert refused.action == DENY, "precondition: scheduled does not grant writes"
+    assert refused.action == DENY, "precondition: the probe does not grant writes"
     key = rule_key("write", refused.capabilities)
-    still = decide(SCHEDULED, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
+    still = decide("probe", WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
                    tool_name="write", always_allow=frozenset({key}))
-    assert still.action == DENY, "an allow rule widened an unattended profile"
+    assert still.action == DENY, "an allow rule widened a refusing profile"
 
 
 def test_deny_wins_over_an_allow_rule_and_over_the_profile(tmp_path):
@@ -103,8 +120,8 @@ def test_deny_wins_over_an_allow_rule_and_over_the_profile(tmp_path):
 
 def test_rules_cannot_apply_without_a_tool_name(tmp_path):
     """The fail-safe direction: an unnamed call matches no rule at all."""
-    d = decide(INTERACTIVE, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path)
+    d = decide(STRICT, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path)
     key = rule_key("", d.capabilities)
-    same = decide(INTERACTIVE, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
+    same = decide(STRICT, WRITE_POLICY, {"path": str(tmp_path / "f")}, tmp_path,
                   always_allow=frozenset({key}))
     assert same.action == CONFIRM, "a nameless call matched a stored rule"

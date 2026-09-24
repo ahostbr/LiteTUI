@@ -35,6 +35,7 @@ def main() -> None:
     parser.add_argument("--version", "-V", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--rpc", action="store_true", help="headless JSONL-over-stdio mode")
     from litetui.llm_backend import BACKEND_NAMES
+    from litetui.tool_policy import PROFILE_NAMES
     parser.add_argument("--backend", choices=BACKEND_NAMES, default=None, help='invocation-only backend selection')
     from litetui.launch_options import add_arguments, from_args
     add_arguments(parser)
@@ -49,7 +50,7 @@ def main() -> None:
         "--tool-profile",
         type=str,
         default=None,
-        choices=["autonomous", "interactive", "scheduled"],
+        choices=list(PROFILE_NAMES),
         help="tool policy profile (default: autonomous when --rpc, else settings)",
     )
     parser.add_argument(

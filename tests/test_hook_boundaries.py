@@ -83,10 +83,16 @@ async def test_hook_process_cannot_escape_effective_policy(app, tmp_path):
     configure(app, tmp_path, code='print(\'{"decision":"allow"}\')')
     calls = []
     tool(app, lambda args: calls.append(1))
-    app._active_tool_profile = tool_policy.SCHEDULED
+    # Was the `scheduled` floor, which DENIED the hook's process outright; that
+    # profile is gone (Ryan 2026-09-24, "remove scheduled completely it makes
+    # no sense to me"). Strict ASKS for process execution, and on a turn nobody
+    # is watching that question becomes a refusal -- the hook still cannot run
+    # with more authority than the turn holds.
+    app._active_tool_profile = tool_policy.STRICT
+    app._hook_source = "harness"
     result, ok = await app._execute_tool("hook_probe", {})
     assert not ok and not calls
-    assert "profile" in result or "process_execution" in result
+    assert "nobody is here to confirm" in result
 
 
 @pytest.mark.asyncio

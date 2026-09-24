@@ -1622,9 +1622,8 @@ class LiteTUI(App):
         # T507-T1: CLI overrides, applied in on_mount after _connect.
         if self._cli_tool_profile:
             from litetui import tool_policy
-            profile_map = {"autonomous": tool_policy.AUTONOMOUS, "interactive": tool_policy.INTERACTIVE, "scheduled": tool_policy.SCHEDULED}
-            if self._cli_tool_profile in profile_map:
-                self._active_tool_profile = profile_map[self._cli_tool_profile]
+            if self._cli_tool_profile in tool_policy.PROFILES:
+                self._active_tool_profile = self._cli_tool_profile
         #: Cron jobs, loaded once at construction. A scheduled prompt is an
         #: INPUT nobody typed, so it rides the same held/flushed path as inbox
         #: mail rather than growing a second delivery route.
@@ -2254,13 +2253,16 @@ class LiteTUI(App):
         # workspace_write denial while Settings showed autonomous. A control
         # that names a case it does not govern is worse than no control.
         #
-        # NOT a bare read: `unattended()` degrades a CONFIRM-CAPABLE profile
-        # to the read-only floor, because nobody is here to answer a modal.
-        # The default is `autonomous` (Ryan: "b default to auto") and needs no
-        # degrading -- its confirm set is empty. This still fires for a user
-        # who explicitly chose `interactive` and then received mail. See
-        # tool_policy.unattended.
-        profile = tool_policy.unattended(self.settings.tool_policy_profile)
+        # The turn keeps the CHOSEN profile, whole. Ryan 2026-09-24: "remove
+        # scheduled completely" -- mail no longer degrades to a read-only
+        # floor. Nobody is here to answer a modal, so only a CONFIRM becomes a
+        # refusal (`_authorize_action`, tool_policy.UNATTENDED_SOURCES), and
+        # the model is told that rule up front so it plans around it instead
+        # of retrying.
+        profile = self.settings.tool_policy_profile
+        content = text
+        if tool_policy.PROFILES.get(profile) and tool_policy.PROFILES[profile].confirm:
+            content = f"{text}\n\n{tool_policy.INBOX_TURN_RULE}"
         if self._chat_running():
             # HELD, never appended: an appended mid-turn message lands where
             # nothing announces it and the model trusts its inbox tool over its
@@ -2269,11 +2271,11 @@ class LiteTUI(App):
             # Why: Docs/adr/0001-mid-turn-mail-is-held-not-appended.md
             self._user_bubble(text, False, queued=True)
             self._pending_input.append(
-                {"content": text, "text": text, "tool_profile": profile, "source": "harness"}
+                {"content": content, "text": text, "tool_profile": profile, "source": "harness"}
             )
             return
         self._user_bubble(text, False)
-        hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "harness"})
+        hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": "harness"})
 
     def _fire_job(self, job, *, manual: bool = False) -> None:
         from litetui.shared_state import Lease, OwnershipError
@@ -2356,9 +2358,8 @@ class LiteTUI(App):
         # the CHAT is must not silently change what every saved automation may
         # do.
         #
-        # 📌 `unattended()` is deliberately NOT applied: autonomous has an
-        # EMPTY confirm set, so the degrade would be a no-op. Inbox mail is NOT
-        # a job -- it still reads the setting through `unattended()`.
+        # 📌 Inbox mail is NOT a job -- it reads the chat's profile and only
+        # its confirms are refused (tool_policy.UNATTENDED_SOURCES).
         profile = tool_policy.AUTONOMOUS
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         header = f"{source} {label} \u00b7 {job.schedule}"
@@ -2494,7 +2495,7 @@ class LiteTUI(App):
             # also the settings default, so the two agreed by coincidence;
             # T084 moved the default to `autonomous` and that coincidence
             # became a contradiction pointing the permissive way.
-            profile or getattr(self, "_active_tool_profile", None) or tool_policy.SCHEDULED,
+            profile or getattr(self, "_active_tool_profile", None) or tool_policy.STRICT,
             policy,
             args,
             workspace or paths.ROOT,
@@ -2508,6 +2509,10 @@ class LiteTUI(App):
         if decision.action == tool_policy.CONFIRM:
             if not allow_prompt:
                 return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
+            # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
+            # refuse this ONE action in words, and let the rest of the turn go on.
+            if getattr(self, "_hook_source", None) in tool_policy.UNATTENDED_SOURCES:
+                return tool_denied("profile", name=name, reason=tool_policy.unattended_refusal(decision)), False
             # Sidebar or modal, decided by the setting. `show_dialog` — not
             # `open_dialog` — because this frame ALREADY awaits, and the whole
             # turn is blocked on the answer. It returns the body's value, or
@@ -2717,7 +2722,7 @@ class LiteTUI(App):
         policy = self.plugins.policy_for(name)
         if policy is None:
             return tool_denied("no-metadata", name=name), False
-        hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.SCHEDULED
+        hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.STRICT
         authorize = getattr(self, "_authorize_action", partial(LiteTUI._authorize_action, self))
         refusal = await authorize(name, args, policy, profile=hook_profile)
         if refusal:
@@ -3848,7 +3853,7 @@ class LiteTUI(App):
         self._update_header()
         return True
 
-    def action_cycle_tool_profile(self) -> None:
+    def action_cycle_tool_profile(self, source: str = "shift+tab") -> None:
         """shift+tab: one step down the authority scale, wrapping.
 
         Ryan's order, from his own screenshots of Claude Code:
@@ -3874,9 +3879,9 @@ class LiteTUI(App):
             # keeps Tab from walking out of a pending approval -- the app
             # binding is priority, so nothing else would stop it.
             return
-        self.set_tool_profile(tool_policy.cycle(self.settings.tool_policy_profile))
+        self.set_tool_profile(tool_policy.cycle(self.settings.tool_policy_profile), source=source)
 
-    def set_tool_profile(self, profile: str, *, announce: bool = True) -> bool:
+    def set_tool_profile(self, profile: str, *, announce: bool = True, source: str = "wire") -> bool:
         """Authority to an EXPLICIT profile. False when the name is unknown.
 
         shift+tab cycles; the wire sets (T558-B). One body, so the two cannot
@@ -3893,6 +3898,10 @@ class LiteTUI(App):
         """
         if profile not in tool_policy.PROFILES:
             return False
+        previous = self.settings.tool_policy_profile
+        # Every change leaves a record and says where it came from: Ryan's
+        # "it switched on its own" had none (the footer chip had eaten an Enter).
+        runtime_log.record("authority_change", previous=previous, profile=profile, source=source)
         self.settings.tool_policy_profile = profile
         self._active_tool_profile = profile
         # 🔴 THE ONE PLACE A PROFILE IS CHOSEN (T695), so the one place it is
@@ -3908,7 +3917,8 @@ class LiteTUI(App):
         self._refresh_ctx_label()
         if announce:
             self._system(
-                f"{profile_text(profile)} — {tool_policy.PROFILES[profile].summary}"
+                f"{profile_text(profile)} — authority {previous} → {profile} ({source}). "
+                f"{tool_policy.PROFILES[profile].summary}"
             )
         return True
 
@@ -4005,7 +4015,7 @@ class LiteTUI(App):
         🔴 NOT A PROPERTY OVER `_active_tool_profile`, AND THE DISTINCTION IS
         THE WHOLE CARD (T695). `_active_tool_profile` is what `_execute_tool`
         reads for the turn in flight, and most of what writes it is TRANSIENT:
-        inbox mail degrades through `unattended()`, a cron or loop fire pins
+        inbox mail carries the chosen profile, a cron or loop fire pins
         AUTONOMOUS, a goal loop restores its own, and the flush re-stamps
         whatever a queued item carried. Persisting any of those would record a
         temporary elevation as the conversation's standing choice — a
@@ -4905,7 +4915,7 @@ class LiteTUI(App):
         """
         chip = self._footer_nav
         if chip == "authority":
-            self.action_cycle_tool_profile()
+            self.action_cycle_tool_profile(source="footer chip")
         elif chip == "plan":
             # The SAME body Ctrl+P runs, for the reason the note above gives:
             # `set_plan_mode` is where entering and leaving the mode is defined

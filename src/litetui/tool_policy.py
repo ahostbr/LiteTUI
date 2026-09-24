@@ -67,7 +67,6 @@ DENY = "deny"
 
 INTERACTIVE = "interactive"
 STRICT = "strict"
-SCHEDULED = "scheduled"
 AUTONOMOUS = "autonomous"
 #: PROFILE_NAMES is DERIVED from PROFILES, below — see the note there. It used
 #: to be a hand-written tuple here, which meant the same set of profiles was
@@ -109,17 +108,6 @@ class ToolProfile:
     #: adding a profile cannot produce an option with no explanation, because
     #: there is no second list to forget to update.
     summary: str = ""
-    #: Can a human CHOOSE this as their conversation authority?
-    #:
-    #: T085, Ryan: "scheduled should not be its own mode". `scheduled` remains
-    #: the read-only FLOOR that `unattended()` degrades to -- it is a mechanism,
-    #: not a mode -- but shift+tab and the settings dropdown must not offer it.
-    #:
-    #: 🔴 A FLAG ON THE PROFILE, NOT A SECOND TUPLE OF NAMES. `SELECTABLE_
-    #: PROFILES` is derived from this, so a profile added later declares its own
-    #: visibility next to its own behaviour and there is nothing to keep in
-    #: agreement. Same reason PROFILE_NAMES is derived from PROFILES.
-    selectable: bool = True
 
 
 @dataclass(frozen=True)
@@ -128,6 +116,9 @@ class PolicyDecision:
     profile: str
     capabilities: frozenset[str]
     reason: str
+    #: The danger CLASS behind a confirm (DANGER_TABLE's first column), so an
+    #: unattended refusal can say what it needs a person for.
+    danger: str = ""
 
     @property
     def allowed(self) -> bool:
@@ -138,21 +129,17 @@ class PolicyDecision:
         return self.action == CONFIRM
 
 
-# Interactive conversation turns may inspect the machine and fetch information
-# without ceremony.  Mutating the machine, launching processes, or controlling
-# another UI is visible to the host and therefore requires Ryan's confirmation.
+# Interactive asks ONLY for the danger table (Ryan, 2026-09-24: "make
+# interactive ask only for dangerous cmds any deletions or zip expansions weird
+# procc runs that arent its tools and dangerous cmds threw PS and bash").
+# Its own tools, file writes anywhere, desktop control and ordinary commands run
+# without asking; `destructive_irreversible` is what DANGER_TABLE (and a
+# pccontrol launch, and an MCP tool's undeclared effects) classify as dangerous.
 INTERACTIVE_PROFILE = ToolProfile(
     INTERACTIVE,
-    allow=frozenset({READ_ONLY, NETWORK, SELF_STORE, PROCESS_EXECUTION}),
-    confirm=frozenset(
-        {
-            WORKSPACE_WRITE,
-            EXTERNAL_WRITE,
-            DESKTOP_CONTROL,
-            DESTRUCTIVE_IRREVERSIBLE,
-        }
-    ),
-    summary="inspect freely, confirm sensitive actions",
+    allow=frozenset(CAPABILITIES - {DESTRUCTIVE_IRREVERSIBLE}),
+    confirm=frozenset({DESTRUCTIVE_IRREVERSIBLE}),
+    summary="acts freely, asks before deleting, extracting, launching programs or dangerous commands",
 )
 
 # Strict supervision confirms every sensitive action, including ordinary
@@ -169,19 +156,6 @@ STRICT_PROFILE = ToolProfile(
         DESTRUCTIVE_IRREVERSIBLE,
     }),
     summary="confirm every command and sensitive action",
-)
-
-# Scheduled prompts are unattended.  Their default is intentionally narrower:
-# inspection is allowed, every other authority is refused rather than opening a
-# modal nobody is present to answer.
-SCHEDULED_PROFILE = ToolProfile(
-    SCHEDULED,
-    allow=frozenset({READ_ONLY, SELF_STORE}),
-    confirm=frozenset(),
-    summary="read-only tools only",
-    # NOT user-selectable since T085 -- the floor, not a mode. See
-    # ToolProfile.selectable.
-    selectable=False,
 )
 
 #: Everything, unattended, no questions. The point of the row: Ryan killed his
@@ -226,12 +200,11 @@ AUTONOMOUS_PROFILE = ToolProfile(
 #: order would have put `autonomous` next to `interactive`, which hides that it
 #: is the extreme.
 #:
-#: 📌 This REORDERS an existing dropdown (interactive/scheduled becomes
-#: scheduled/interactive). Held out of the derivation commit deliberately, so a
-#: reviewer could verify that one changed nothing visible; it belongs here,
-#: with the change that makes ordering matter.
+#: `scheduled` (the read-only floor) is GONE, Ryan 2026-09-24: "remove
+#: scheduled completely it makes no sense to me". A stored "scheduled" migrates
+#: to interactive (settings._selectable_profile); a turn nobody is watching keeps
+#: its profile and only its CONFIRMs are refused (UNATTENDED_SOURCES).
 PROFILES = {
-    SCHEDULED: SCHEDULED_PROFILE,
     STRICT: STRICT_PROFILE,
     INTERACTIVE: INTERACTIVE_PROFILE,
     AUTONOMOUS: AUTONOMOUS_PROFILE,
@@ -243,8 +216,7 @@ PROFILE_NAMES = tuple(PROFILES)
 def selectable_profile_names() -> tuple[str, ...]:
     """The levels a human may CHOOSE -- shift+tab and the settings dropdown.
 
-    Derived from `ToolProfile.selectable`, so this can never disagree with the
-    profiles themselves: `scheduled` is absent by DECLARATION, not by omission.
+    Every profile, since `scheduled` (the one non-selectable floor) was removed.
 
     🔴 A FUNCTION, NOT A MODULE CONSTANT, AND I SHIPPED THE CONSTANT FIRST.
     `settings_screen.tool_profile_choices` already carried this exact warning
@@ -255,33 +227,31 @@ def selectable_profile_names() -> tuple[str, ...]:
     side_panel: the rule was written down, in a file I had read, about the very
     thing I was doing.
     """
-    return tuple(name for name, p in PROFILES.items() if p.selectable)
+    return PROFILE_NAMES
 
 
-def unattended(profile_name: str) -> str:
-    """The profile a turn NOBODY IS WATCHING actually runs under.
+#: Turn sources with nobody at the keyboard (hook_host stamps `_hook_source`):
+#: inbox mail, cron/loop fires, a child's result waking its parent. Such a turn
+#: keeps its FULL profile (Ryan 2026-09-24: interactive powers, not a read-only
+#: floor); only a CONFIRM, which nobody can answer, becomes a refusal.
+UNATTENDED_SOURCES = frozenset({"harness", "scheduled", "child-result"})
 
-    Honours the human's choice, with one mechanical exception: **a profile
-    whose mechanism is ASKING cannot be honoured when there is nobody to
-    ask.** It degrades to the read-only floor rather than opening a modal
-    against an empty room — the hang `evaluate` documents at its `profile.
-    confirm` guard, arriving by the other door.
 
-    🔴 THE TEST IS `.confirm`, NEVER THE PROFILE NAME. `interactive` is not
-    special; it is simply the profile that currently has a confirm set. A
-    fourth profile added later is classified by WHAT IT DOES, so this cannot
-    become a second table that has to agree with `PROFILES`.
+#: Appended to an inbox turn's message when its profile can ask, so the model
+#: knows the rule before it tries (it used to retry the shell six times).
+INBOX_TURN_RULE = (
+    "[This turn came from the inbox; nobody is at the keyboard. Act normally, "
+    "but anything that needs a person's OK -- deletions, archive extraction, "
+    "launching programs that aren't your tools, dangerous system commands -- "
+    "will be refused this turn. Leave those for a person and say so.]"
+)
 
-    ⚠️ THE DEGRADE DIRECTION IS DOWN, NEVER UP. An unrecognised name (a
-    hand-edited settings.json, a profile removed in a later version) also
-    returns the floor. `evaluate` would deny it outright anyway; returning
-    SCHEDULED here means such a turn can still read and still write its own
-    store, instead of failing every tool call it makes.
-    """
-    profile = PROFILES.get(profile_name)
-    if profile is None or profile.confirm:
-        return SCHEDULED
-    return profile_name
+
+def unattended_refusal(decision: PolicyDecision) -> str:
+    """The sentence an unattended turn gets instead of a modal. The rest of the
+    turn proceeds; the model is told to leave the action for a person."""
+    what = decision.danger or "a sensitive action"
+    return f"needs a person's OK ({what}) and nobody is here to confirm; leave it for them"
 
 
 def stops_you(profile_name: str) -> bool:
@@ -294,10 +264,9 @@ def stops_you(profile_name: str) -> bool:
     you at a glance whether this level will interrupt you, without reading the
     words.
 
-    📌 NOTE THIS IS NOT `profile.confirm`. `scheduled` has an EMPTY confirm set
-    and still stops you constantly -- it refuses. Asking and refusing are both
-    interruptions from the user's side, and the glyph answers the user's
-    question ("will this run?"), not the implementation's.
+    📌 NOTE THIS IS NOT `profile.confirm`: a profile that REFUSES stops you as
+    surely as one that asks. The glyph answers the user's question ("will this
+    run?"), not the implementation's.
     """
     profile = PROFILES.get(profile_name)
     if profile is None:
@@ -308,14 +277,8 @@ def stops_you(profile_name: str) -> bool:
 def cycle(profile_name: str) -> str:
     """shift+tab: one step DOWN the authority scale, wrapping.
 
-    Ryan's order, from his own screenshots of Claude Code:
-    autonomous -> interactive -> scheduled -> autonomous.
-
-    Since T085 it walks `SELECTABLE_PROFILE_NAMES`, not every profile: Ryan
-    ruled that "scheduled should not be its own mode", so the cycle is
-    autonomous <-> interactive and the floor is unreachable from the keyboard.
-    That set is DERIVED from `ToolProfile.selectable`, so removing a level from
-    the cycle is one flag on the profile rather than an edit here.
+    Today: interactive -> strict -> autonomous -> interactive. `scheduled` is
+    gone (Ryan 2026-09-24), so every profile is on the cycle.
 
     `PROFILES` is ordered by authority ASCENDING, so descending is that same
     order stepped backwards -- the direction is expressed ONCE here rather
@@ -326,16 +289,13 @@ def cycle(profile_name: str) -> str:
     that is not a profile. Nothing was actually granted by it (`evaluate`
     denies an unknown profile outright, so such a turn has no authority to
     escalate FROM), but it is the same permissive-on-an-error-path shape that
-    T084 removed from three `app.py` fallbacks in the same commit, and it
-    contradicted `unattended()`, which sends unknown DOWN. Corrupt settings
-    plus one keypress should not be a route to full authority.
+    T084 removed from three `app.py` fallbacks in the same commit. Corrupt
+    settings plus one keypress should not be a route to full authority.
     """
     order = selectable_profile_names()
     if profile_name not in order:
-        # Includes `scheduled` itself, which is no longer selectable: someone
-        # arriving on it (an old settings.json, or the floor written back by an
-        # earlier build) cycles INTO the selectable set rather than being stuck
-        # outside it. Lands on the narrowest selectable level, never the widest.
+        # An old "scheduled" or a hand-edited name: land on the narrowest
+        # level, never the widest.
         return order[0]
     i = order.index(profile_name)
     return order[(i - 1) % len(order)]
@@ -439,13 +399,26 @@ def evaluate(
                 capabilities,
                 f"allowed by a standing rule for {key}",
             )
+        what = _danger_of(policy, args or {}, Path(workspace).resolve())
         return PolicyDecision(
             CONFIRM,
             profile.name,
             capabilities,
-            f"human confirmation required for {names}",
+            f"human confirmation required for {what or names}",
+            danger=what,
         )
     return PolicyDecision(ALLOW, profile.name, capabilities, f"allowed: {names}")
+
+
+def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path) -> str:
+    """Which DANGER_TABLE class a confirm is for, in words a person reads."""
+    if policy.classify_args is classify_shell:
+        return danger(str(args.get("command") or ""), workspace) or ""
+    if policy.classify_args is classify_pccontrol:
+        return FOREIGN_PROCESS
+    if policy.confirm_always:
+        return UNDECLARED
+    return ""
 
 
 _SECRET_KEY = re.compile(r"(?i)(?:password|passwd|secret|token|api[_-]?key|credential)")
@@ -510,9 +483,11 @@ def classify_write(args: Mapping[str, object], workspace: Path, *, active_conver
 
 
 #: Where a COMMAND can begin: the start of the string, after a shell
-#: separator, or after `sudo`. Only the bare verbs that are also ordinary
-#: words need it.
-_CMD_POSITION = r"(?:^|[;&|]\s*|\bsudo\s+)"
+#: separator or `(`, after `sudo`/`xargs`, or as the first word of a
+#: `-c "..."` / `-Command "..."` / `cmd /c "..."` string. Only the bare verbs
+#: that are also ordinary words need it.
+_CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
+                 r"|\s(?:-c|-command|/c)\s+[\"'])")
 
 #: 🔴 EVERY MATCH IS NOW AN UNSKIPPABLE PROMPT, so this pattern is held to
 #: BOTH polarities. Before the floor a false positive cost an extra confirm
@@ -566,31 +541,107 @@ _CMD_POSITION = r"(?:^|[;&|]\s*|\bsudo\s+)"
 #: `--staged` but `-s` is `--source`, and `git restore -s HEAD~1 x` DOES
 #: overwrite the worktree -- so an `(?i)` test for `-S` would have excused the
 #: destructive one. Both short flags are matched inside `(?-i:...)`.
-_DESTRUCTIVE_COMMAND = re.compile(
-    r"(?ix)(?:"
-    r"\brm\s+(?:-[a-z]*[rf][a-z]*|--recursive|--force|--no-preserve-root)\b|"
-    r"\b(?:del|erase|rmdir|rd)\b|"
-    r"\bremove-item\b|"
-    + _CMD_POSITION + r"format(?:\.com)?\b|"
-    r"\bdiskpart\b|"
-    r"\bgit\s+(?:clean\b|reset\s+--hard\b|checkout\s+--\s)|"
-    r"\b(?:shutdown|restart-computer|stop-computer)\b|"
-    r"\bshred\b|"
-    r"\bmkfs(?:\.[a-z0-9]+)?\b|"
-    + _CMD_POSITION + r"truncate\b|"
-    + _CMD_POSITION + r"dd\s+(?:[^;&|]*\s)?of=|"
-    r"\bfind\b[^;&|]*\s-delete\b|"
-    r"\bgit\s+restore\b(?:"
-    r"[^;&|]*(?:--worktree\b|(?-i:\s-W\b))|"
-    r"(?![^;&|]*(?:--staged\b|(?-i:\s-S\b)))\s+[^;&|]*\S"
-    r")"
-    r")"
+_C = _CMD_POSITION
+
+#: 🔴 THE DANGER TABLE: the ONLY things `interactive` asks about.
+#: Ryan, 2026-09-24 (via Sentinel 068bf9c7): "make interactive ask only for
+#: dangerous cmds any deletions or zip expansions weird procc runs that arent
+#: its tools and dangerous cmds threw PS and bash". One row per pattern; the
+#: first element is the CLASS the unattended refusal names. Both shells: the
+#: patterns are case-insensitive and PowerShell's aliases sit beside the bash
+#: verbs. Positives AND negatives are pinned per class and shell in
+#: tests/test_danger_table.py, because a false positive is a prompt on an
+#: ordinary command (the `format` lesson above).
+DELETION = "deletion"
+ARCHIVE = "archive expansion"
+FOREIGN_PROCESS = "launching a program that isn't one of its tools"
+DANGEROUS = "a dangerous system command"
+UNDECLARED = "a tool whose effects aren't declared"
+
+DANGER_TABLE: tuple[tuple[str, str], ...] = (
+    # ── A. deletion ─────────────────────────────────────────────────────────
+    (DELETION, _C + r"(?:rm|del|erase|rmdir|rd|ri|unlink|shred)\b"),
+    (DELETION, r"\b(?:remove-item|rimraf)\b"),
+    (DELETION, (r"\bgit\s+(?:clean\b|rm\b(?![^;&|]*--cached)|worktree\s+remove\b"
+                r"|branch\s+(?:[^;&|]*\s)?(?:-[a-z]*d[a-z]*|--delete)\b)")),
+    (DELETION, r"\bfind\b[^;&|]*\s(?:-delete\b|-exec\s+rm\b)"),
+    (DELETION, _C + r"truncate\b"),
+    (DELETION, r"\b(?:shutil\.rmtree|os\.(?:remove|unlink|rmdir|removedirs))\s*\(|\.unlink\s*\("),
+    # ── B. archive expansion ─────────────────────────────────────────────────
+    (ARCHIVE, r"\bexpand-archive\b"),
+    (ARCHIVE, _C + r"unzip\b(?![^;&|]*\s-[lvz]\b)"),
+    (ARCHIVE, _C + r"(?:bsd)?tar\s+(?:-?[a-z]*x[a-z]*\b|[^;&|]*\s-[a-z]*x[a-z]*\b|[^;&|]*--(?:extract|get)\b)"),
+    (ARCHIVE, _C + r"7z[a-z]?(?:\.exe)?\s+[xe]\b"),
+    (ARCHIVE, _C + r"(?:gunzip|bunzip2|unxz|unrar|unar|unlzma|unzstd)\b"),
+    (ARCHIVE, _C + r"(?:gzip|xz|bzip2|zstd)\s+(?:[^;&|]*\s)?-[a-z]*d"),
+    (ARCHIVE, _C + r"expand(?:\.exe)?\s+[^;&|]*(?:-f:|\.cab\b)"),
+    (ARCHIVE, r"\b(?:extractall|unpack_archive)\s*\("),
+    # ── C. launching a program that isn't one of its tools ───────────────────
+    #    (plus the workspace-aware path/script check in `danger()` below)
+    (FOREIGN_PROCESS, r"\b(?:start-process|invoke-item)\b"),
+    (FOREIGN_PROCESS, _C + r"(?:saps|ii|start)\s"),
+    (FOREIGN_PROCESS, _C + r"cmd(?:\.exe)?\s+/[ck]\b"),
+    (FOREIGN_PROCESS, r"(?:^|[;|(]\s*)&\s*[\"'$]"),
+    (FOREIGN_PROCESS, _C + r"(?:pwsh|powershell)(?:\.exe)?\s+(?:[^;&|]*\s)?-f(?:ile)?\s"),
+    (FOREIGN_PROCESS, _C + r"(?:wscript|cscript|mshta|rundll32|regsvr32|msiexec|runas|psexec(?:64)?)\b"),
+    (FOREIGN_PROCESS, r"\bschtasks\b[^;&|]*/create\b|\bregister-scheduledtask\b"),
+    # ── D. dangerous system commands ─────────────────────────────────────────
+    (DANGEROUS, _C + r"format(?:\.com)?\b"),
+    (DANGEROUS, r"\b(?:diskpart|bcdedit|takeown)\b|\bmkfs(?:\.[a-z0-9]+)?\b"),
+    (DANGEROUS, _C + r"dd\s+(?:[^;&|]*\s)?of="),
+    (DANGEROUS, r"\bvssadmin\s+delete\b|\bcipher(?:\.exe)?\s+/w\b|\bwevtutil\s+cl\b|\bclear-eventlog\b"),
+    (DANGEROUS, _C + r"reg(?:\.exe)?\s+(?:delete|add|import|load|restore)\b"),
+    (DANGEROUS, r"\b(?:set|remove|new)-itemproperty\b[^;&|]*\bhk(?:lm|cu|cr|u|cc):"),
+    (DANGEROUS, r"\bset-executionpolicy\b"),
+    (DANGEROUS, _C + r"(?:chmod|chown)\s+(?:[^;&|]*\s)?-[a-z]*r"),
+    (DANGEROUS, r"\bicacls\b[^;&|]*/(?:grant|reset|setowner|remove|deny|t)\b"),
+    (DANGEROUS, r"\b(?:curl|wget)\b[^;]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b"),
+    (DANGEROUS, r"\b(?:iex|invoke-expression)\b"),
+    (DANGEROUS, r"\b(?:shutdown|restart-computer|stop-computer)\b"),
+    (DANGEROUS, _C + r"(?:kill|pkill|killall|taskkill|tskill)\b|\bstop-process\b"),
+    (DANGEROUS, r"\bgit\s+push\b[^;&|]*(?:\s--force(?:-with-lease)?\b|(?-i:\s-f\b)|\s\+\S)"),
+    (DANGEROUS, r"\bgit\s+(?:reset\s+--hard\b|checkout\s+--\s|filter-branch\b|filter-repo\b|reflog\s+expire\b)"),
+    (DANGEROUS, (r"\bgit\s+restore\b(?:"
+                 r"[^;&|]*(?:--worktree\b|(?-i:\s-W\b))|"
+                 r"(?![^;&|]*(?:--staged\b|(?-i:\s-S\b)))\s+[^;&|]*\S"
+                 r")")),
+    (DANGEROUS, (r"\bnetsh\s+(?:advfirewall|firewall)\b|\bset-mppreference\b[^;&|]*-disable"
+                 r"|\badd-mppreference\b[^;&|]*-exclusion")),
+    (DANGEROUS, _C + r"sc(?:\.exe)?\s+(?:delete|config)\b"),
 )
+_DANGER = tuple((label, re.compile(r"(?ix)" + pattern)) for label, pattern in DANGER_TABLE)
+
+#: A program run BY PATH, or an interpreter running a script FILE. Ordinary when
+#: the file is inside the workspace (Sentinel b362b4ed: "his project scripts
+#: aren't weird"); class C when it is anywhere else.
+_PATH_RUN = re.compile(
+    r"(?ix)" + _C + r"(?:&\s*)?[\"']?(?P<path>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\s;&|\"']+)")
+_SCRIPT_RUN = re.compile(
+    r"(?ix)" + _C + r"(?:python3?|py|node|bun|deno|ruby|perl|php|bash|sh|zsh|pwsh|powershell)(?:\.exe)?"
+    r"(?:\s+-{1,2}[a-z][\w-]*)*\s+[\"']?(?P<path>[^\s;&|\"']+\.(?:py|js|mjs|cjs|ts|rb|pl|php|sh|bash|ps1))\b")
 
 
-def classify_shell(args: Mapping[str, object], _workspace: Path) -> Iterable[str]:
-    command = str(args.get("command") or "")
-    if _DESTRUCTIVE_COMMAND.search(command):
+def _outside_workspace(raw: str, workspace: Path) -> bool:
+    msys = re.match(r"^/([a-z])/(.*)$", raw, re.IGNORECASE)  # git-bash /c/Projects -> C:/Projects
+    if msys:
+        raw = f"{msys.group(1)}:/{msys.group(2)}"
+    return not _inside(_resolve_path(raw, workspace), Path(workspace).resolve())
+
+
+def danger(command: str, workspace: Path) -> str | None:
+    """The danger CLASS of a shell command, or None when it is ordinary."""
+    for label, pattern in _DANGER:
+        if pattern.search(command):
+            return label
+    for pattern in (_SCRIPT_RUN, _PATH_RUN):
+        for match in pattern.finditer(command):
+            if _outside_workspace(match.group("path"), workspace):
+                return FOREIGN_PROCESS
+    return None
+
+
+def classify_shell(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
+    if danger(str(args.get("command") or ""), workspace):
         return (DESTRUCTIVE_IRREVERSIBLE,)
     return ()
 
@@ -600,7 +651,9 @@ def classify_pccontrol(args: Mapping[str, object], _workspace: Path) -> Iterable
     if action in {"windows", "status", "screenshot"}:
         return (READ_ONLY,)
     if action == "launch":
-        return (DESKTOP_CONTROL, PROCESS_EXECUTION)
+        # Launching an application is danger class C ("weird procc runs that
+        # arent its tools"); clicking and typing are its own desktop tools.
+        return (DESKTOP_CONTROL, PROCESS_EXECUTION, DESTRUCTIVE_IRREVERSIBLE)
     return (DESKTOP_CONTROL,)
 
 

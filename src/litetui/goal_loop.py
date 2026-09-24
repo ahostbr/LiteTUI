@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from litetui import paths, scheduler, textfmt
-from litetui.tool_policy import INTERACTIVE, SCHEDULED
+from litetui.tool_policy import AUTONOMOUS, INTERACTIVE
 
 GOAL_FILENAME = "goal.json"
 _INTERVAL = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
@@ -477,7 +477,7 @@ def loop_command(app: Any, arg: str) -> None:
         prompt=prompt.strip(),
         interval_minutes=minutes,
         owner_convo_id=app.convo_id,
-        tool_profile=SCHEDULED,
+        tool_profile=AUTONOMOUS,
     )
     app.jobs.append(job)
     scheduler.save(app.jobs, paths.data_root())

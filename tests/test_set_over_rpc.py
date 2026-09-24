@@ -69,11 +69,11 @@ def test_set_moves_the_field_the_tools_actually_read():
 def test_set_acks_what_is_in_force_not_what_was_asked_for():
     a = make_app()
     a._active_tool_profile = tool_policy.AUTONOMOUS
-    out = dispatch(a, {"type": "set", "id": "c1", "profile": tool_policy.SCHEDULED})
+    out = dispatch(a, {"type": "set", "id": "c1", "profile": tool_policy.STRICT})
     ack = out[-1]
     assert ack["ok"] is True
-    assert ack["result"]["tool_policy_profile"] == tool_policy.SCHEDULED
-    assert ack["result"]["changed"] == {"profile": tool_policy.SCHEDULED}
+    assert ack["result"]["tool_policy_profile"] == tool_policy.STRICT
+    assert ack["result"]["changed"] == {"profile": tool_policy.STRICT}
 
 
 def test_an_unknown_profile_is_refused_and_changes_nothing():
@@ -189,7 +189,7 @@ def test_a_prompt_with_an_unknown_profile_does_not_run_the_turn():
 
 def test_a_prompt_without_the_field_is_unchanged():
     a = make_app()
-    a._active_tool_profile = tool_policy.SCHEDULED
+    a._active_tool_profile = tool_policy.STRICT
     submitted: list[str] = []
     def submit(text, alt_chord=False, *, source="typed"):
         assert source == "rpc"
@@ -199,7 +199,7 @@ def test_a_prompt_without_the_field_is_unchanged():
     dispatch(a, {"type": "prompt", "id": "p1", "message": "hello"})
 
     assert submitted == ["hello"]
-    assert a._active_tool_profile == tool_policy.SCHEDULED
+    assert a._active_tool_profile == tool_policy.STRICT
 
 
 # ── one path, not two ──────────────────────────────────────────────────────

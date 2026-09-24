@@ -26,7 +26,7 @@ from litetui.tool_policy import (
     INTERACTIVE,
     PROFILE_NAMES,
     PROFILES,
-    SCHEDULED,
+    STRICT,
 )
 
 
@@ -39,13 +39,19 @@ def test_the_original_labels_are_still_word_for_word():
     authority), so the order assertion moved to its own test below. What must
     NOT drift is the wording of the two labels that already existed — a
     refactor is allowed to add an option, not to silently reword the others.
+
+    📌 2026-09-24: interactive's wording changed DELIBERATELY with its
+    meaning (Ryan: "make interactive ask only for dangerous cmds any deletions
+    or zip expansions weird procc runs that arent its tools and dangerous cmds
+    threw PS and bash"), and `scheduled` was removed outright ("remove
+    scheduled completely it makes no sense to me").
     """
     labels = dict((v, k) for k, v in tool_profile_choices())
-    assert labels[INTERACTIVE] == "interactive — inspect freely, confirm sensitive actions"
-    # T085 removed `scheduled` from the dropdown ("scheduled should not be its
-    # own mode"); it survives as the floor `unattended()` degrades to, so its
-    # summary still exists on the profile and simply is not offered.
-    assert SCHEDULED not in labels, "the floor is offered as a mode again"
+    assert labels[INTERACTIVE] == (
+        "interactive — acts freely, asks before deleting, extracting, "
+        "launching programs or dangerous commands"
+    )
+    assert "scheduled" not in labels, "the removed profile is offered again"
 
 
 def test_the_dropdown_is_ordered_by_ascending_authority():
@@ -55,9 +61,9 @@ def test_the_dropdown_is_ordered_by_ascending_authority():
     trust and the widest option sits visibly at the end.
 
     ⚠️ `scheduled` USED TO LEAD THIS LIST. T085 removed it from the dropdown
-    ("scheduled should not be its own mode"); it remains the floor that
-    `unattended()` degrades to, so the ordering principle is unchanged and the
-    scale is simply shorter.
+    ("scheduled should not be its own mode") and on 2026-09-24 Ryan removed it
+    entirely ("remove scheduled completely it makes no sense to me"); the
+    ordering principle is unchanged and the scale is simply shorter.
     """
     assert [v for _l, v in tool_profile_choices()] == ["strict", INTERACTIVE, AUTONOMOUS]
 
@@ -76,11 +82,9 @@ def test_a_new_profile_appears_without_touching_the_screen(monkeypatch):
     This is the drift that used to be silent, and it is why the choices are a
     function rather than a module constant computed once at import.
     """
-    # selectable=True stated EXPLICITLY, because the base being copied here is
-    # the floor and T085 made the floor non-selectable. Without it this probe
-    # tests "an unselectable profile stays hidden", which is a different claim.
-    extra = replace(PROFILES[SCHEDULED], name="probeprofile",
-                    summary="a test profile", selectable=True)
+    # `selectable` no longer exists: with `scheduled` gone (2026-09-24) every
+    # profile is offered, so any base will do.
+    extra = replace(PROFILES[STRICT], name="probeprofile", summary="a test profile")
     patched = dict(PROFILES)
     patched["probeprofile"] = extra
     monkeypatch.setattr(tool_policy, "PROFILES", patched)
@@ -88,8 +92,7 @@ def test_a_new_profile_appears_without_touching_the_screen(monkeypatch):
 
     labels = dict((v, k) for k, v in tool_profile_choices())
     assert "probeprofile" in labels, (
-        "a SELECTABLE profile the engine knows was not offered — note the probe "
-        "profile must set selectable=True (the default) to appear at all"
+        "a profile the engine knows was not offered"
     )
     assert labels["probeprofile"] == "probeprofile — a test profile"
 
@@ -104,10 +107,8 @@ def test_every_offered_value_is_a_real_profile():
 
 def test_no_profile_is_left_out_of_the_dropdown():
     offered = {value for _label, value in tool_profile_choices()}
-    assert offered == {n for n, p in PROFILES.items() if p.selectable}, (
-        "the dropdown and ToolProfile.selectable disagree"
-    )
-    assert SCHEDULED not in offered, "the floor is selectable again"
+    assert offered == set(PROFILES), "the dropdown and PROFILES disagree"
+    assert "scheduled" not in offered, "the removed profile is offered again"
 
 
 def test_profile_names_is_derived_from_profiles_not_hand_written():
@@ -126,7 +127,7 @@ def test_every_profile_explains_itself():
 def test_a_profile_with_no_summary_still_renders_as_something(monkeypatch):
     """Degradation, not a crash or a bare em dash. A profile someone adds in a
     hurry must still be selectable."""
-    bare = replace(PROFILES[SCHEDULED], name="bare", summary="", selectable=True)
+    bare = replace(PROFILES[STRICT], name="bare", summary="")
     patched = dict(PROFILES)
     patched["bare"] = bare
     monkeypatch.setattr(tool_policy, "PROFILES", patched)
