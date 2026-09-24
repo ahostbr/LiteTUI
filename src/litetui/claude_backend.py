@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import os
 import subprocess
 
 from litetui.claude_session import ClaudeSession
@@ -10,6 +11,30 @@ from litetui.llm_backend import BackendError, ModelRow
 
 SDK_VERSION = "0.2.159"
 CLI_VERSION = "2.1.281"
+
+#: The prompt-cache lifetime LiteTUI pins for the main conversation (T911, Ryan
+#: 2026-09-24). CLI 2.1.281 reads CLAUDE_CODE_PROMPT_CACHE_TTL (code.claude.com
+#: /docs/en/prompt-caching; string present in the bundled claude.exe). With
+#: setting_sources=[] the user's promptCacheTtl setting is never read, so the env
+#: is the only way to pin it.
+CACHE_TTL = "1h"
+CACHE_TTL_SECONDS = 3600
+
+
+def cache_env(environ=None):
+    """Child env that pins the cache lifetime and neutralises inherited switches.
+
+    The SDK builds the child env as {**os.environ, **options.env}, so an inherited
+    key can be overridden but not removed. The CLI treats an empty value as unset,
+    so a stray DISABLE_PROMPT_CACHING* or FORCE_PROMPT_CACHING_5M in the launching
+    shell is blanked here rather than silently turning caching off or down to 5m."""
+    environ = os.environ if environ is None else environ
+    env = {"CLAUDE_CODE_PROMPT_CACHE_TTL": CACHE_TTL, "FORCE_PROMPT_CACHING_5M": ""}
+    for key in environ:
+        if key.upper().startswith("DISABLE_PROMPT_CACHING"):
+            env[key] = ""
+    env.setdefault("DISABLE_PROMPT_CACHING", "")
+    return env
 
 
 def sdk_module():
@@ -149,6 +174,7 @@ class ClaudeBackend:
             "verbatim_prompts": True,
             "system_prompt": {"type": "preset", "preset": "claude_code", "append": "You are running inside LiteTUI. Claude owns this session, its native tools and context. LiteTUI presents your answers and enforces user authority. Do not use host compaction or model-changing tools."},
             "extra_args": {"no-chrome": None, "disable-slash-commands": None, "replay-user-messages": None},
+            "env": cache_env(),
         }
         defaults.update(values)
         return sdk.ClaudeAgentOptions(**defaults)

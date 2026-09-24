@@ -188,6 +188,14 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
+    def note_cache(self, segment_id: str, used_at: float, model: str | None) -> None:
+        """Remember when this segment last read or wrote Claude's prompt cache, and
+        with which model, so a resume after a restart can tell warm from cold (T911)."""
+        segment = self._require_segment(segment_id)
+        segment["cache_used_at"] = used_at
+        segment["cache_model"] = model
+        self._save()
+
     def prepare(
         self,
         segment_id: str,

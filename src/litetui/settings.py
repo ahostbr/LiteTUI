@@ -60,6 +60,7 @@ FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
     "convo",
     "ctx",
     "pct",
+    "cache",
     "tps",
 )
 
@@ -111,6 +112,14 @@ class Settings:
     #: (serving.md:929-933, :949-955): no extra VRAM, less context each under load.
     #: A startup flag — applies on the next /engine start.
     ninfer_max_concurrency: int = 1
+    #: --kv-dtype (serving.md:775): bf16 | int8 | fp8 | nvfp4 | k8v4. fp8 is what the
+    #: VRAM envelope was measured at. Startup flag — next /engine start.
+    ninfer_kv_dtype: str = "fp8"
+    #: --kv-capacity (serving.md:759): blank = follow ninfer_max_context (unchanged
+    #: behaviour), "auto" = fill the remaining GPU memory, or a token count.
+    ninfer_kv_capacity: str = ""
+    #: --host-kv-mib (serving.md:786): pinned host RAM for spilled KV. None = engine default 8192.
+    ninfer_host_kv_mib: int | None = None
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
@@ -453,6 +462,8 @@ class Settings:
     footer_show_context: bool = True
     footer_show_context_pct: bool = True
     footer_show_tps: bool = True
+    #: Claude prompt-cache health and time left on it, e.g. "cache warm 97% 52m" (T911).
+    footer_show_cache: bool = True
     #: Footer item ids in left-to-right order. Visibility remains controlled by
     #: the switches above; omitted/unknown ids are repaired on load/save.
     footer_order: list[str] = field(

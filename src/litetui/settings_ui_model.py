@@ -133,7 +133,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "ninfer", "NInfer", "ninfer-envelope", "Runtime envelope",
         "The startup flags that shape memory and parallel work.",
-        ("ninfer_max_context", "ninfer_max_concurrency"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
+        ("ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
     ),
     _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",
@@ -273,7 +273,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "interface", "Interface", "interface-footer", "Footer telemetry",
         "Choose which runtime facts stay in the footer, then arrange them left to right.",
-        ("footer_show_seat", "footer_show_thinking", "footer_show_bg", "footer_show_subagents", "footer_show_convo", "footer_show_context", "footer_show_context_pct", "footer_show_tps", "footer_order"), scope="app", keywords=("footer", "telemetry", "left to right", "ordering", "status"), field_keywords={"footer_order": ("ordering", "left to right", "position",)}, default_expanded=True,
+        ("footer_show_seat", "footer_show_thinking", "footer_show_bg", "footer_show_subagents", "footer_show_convo", "footer_show_context", "footer_show_context_pct", "footer_show_tps", "footer_show_cache", "footer_order"), scope="app", keywords=("footer", "telemetry", "left to right", "ordering", "status"), field_keywords={"footer_order": ("ordering", "left to right", "position",)}, default_expanded=True,
     ),
 )
 

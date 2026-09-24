@@ -1,0 +1,82 @@
+{
+  "pass": true,
+  "turns": [
+    {
+      "id": "t1",
+      "requests": 2,
+      "cache_read": [
+        540,
+        540
+      ],
+      "cache_write": [
+        3533,
+        3533
+      ],
+      "uncached": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "t2",
+      "requests": 2,
+      "cache_read": [
+        2218,
+        2218
+      ],
+      "cache_write": [
+        1878,
+        1878
+      ],
+      "uncached": [
+        4,
+        4
+      ]
+    },
+    {
+      "id": "t3",
+      "requests": 3,
+      "cache_read": [
+        4096,
+        4096,
+        4096
+      ],
+      "cache_write": [
+        28,
+        28,
+        28
+      ],
+      "uncached": [
+        4,
+        4,
+        4
+      ]
+    }
+  ],
+  "cache_read_grows": true,
+  "saved_last_use_s_ago": 0.8,
+  "cold_first_event": "cache_warning",
+  "cold_warning": {
+    "type": "cache_warning",
+    "provider": "claude",
+    "kind": "resume",
+    "reason": "Resuming a saved Claude session last used 2 h ago; its cache has expired. Claude re-reads the whole conversation at full input price."
+  },
+  "sent_before_ack": false,
+  "after_ack": {
+    "id": "cold-ack",
+    "requests": 2,
+    "cache_read": [
+      4124,
+      4124
+    ],
+    "cache_write": [
+      50,
+      50
+    ],
+    "uncached": [
+      4,
+      4
+    ]
+  }
+}

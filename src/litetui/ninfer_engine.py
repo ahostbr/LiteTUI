@@ -52,6 +52,9 @@ NINFER_DEFAULT_SPEC = "mtp"
 NINFER_DEFAULT_DRAFT_TOKENS = 3
 NINFER_DRAFT_TOKEN_RANGE = {"mtp": (1, 3), "dflash": (1, 7), "dflash2": (1, 7)}
 NINFER_DEFAULT_KV_DTYPE = "fp8"
+#: `--kv-dtype` choices (serving.md:775). fp8 stays the default: the envelope above
+#: (NINFER_MIN_FREE_MIB) was measured at fp8.
+NINFER_KV_DTYPES = ("bf16", "int8", "fp8", "nvfp4", "k8v4")
 
 #: The engine's own words (ninfer-args.ts:184/195). A failure line ends the wait
 #: NOW rather than at the timeout.
@@ -175,6 +178,8 @@ def build_ninfer_args(
     components: tuple[str, ...] = (),
     draft_tokens: int | None = None,
     kv_dtype: str = NINFER_DEFAULT_KV_DTYPE,
+    kv_capacity: str | int | None = None,
+    host_kv_mib: int | None = None,
     preserve_thinking: bool = True,
     vision: bool = True,
 ) -> list[str]:
@@ -194,7 +199,15 @@ def build_ninfer_args(
         lo, hi = NINFER_DRAFT_TOKEN_RANGE.get(want, (1, 3))
         chosen = draft_tokens if isinstance(draft_tokens, int) and draft_tokens > 0 else NINFER_DEFAULT_DRAFT_TOKENS
         args += ["--spec", want, "--draft-tokens", str(min(hi, max(lo, chosen))), "--lm-head-draft"]
-    args += ["--kv-dtype", kv_dtype]
+    args += ["--kv-dtype", kv_dtype if kv_dtype in NINFER_KV_DTYPES else NINFER_DEFAULT_KV_DTYPE]
+    # `--kv-capacity N|auto` (serving.md:759, :949-952): omitted = follows --max-context,
+    # the old behaviour. Anything that is neither "auto" nor a positive count is omitted.
+    cap = str(kv_capacity).strip().lower() if kv_capacity is not None and not isinstance(kv_capacity, bool) else ""
+    if cap == "auto" or (cap.isdigit() and int(cap) > 0):
+        args += ["--kv-capacity", cap]
+    # `--host-kv-mib N` (serving.md:786): pinned host KV; omitted = the engine's 8192.
+    if isinstance(host_kv_mib, int) and not isinstance(host_kv_mib, bool) and host_kv_mib > 0:
+        args += ["--host-kv-mib", str(host_kv_mib)]
     if preserve_thinking:
         args.append("--preserve-thinking")
     # 15:0x 2026-09-17, Ryan's screenshot: the 35B-A3B carries a `vision` component, the
@@ -507,6 +520,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
         max_context=ctx if isinstance(ctx, int) else None,
         max_concurrency=conc if isinstance(conc, int) else None,
         components=artifact_components(directory),
+        kv_dtype=getattr(settings, "ninfer_kv_dtype", None) or NINFER_DEFAULT_KV_DTYPE,
+        kv_capacity=getattr(settings, "ninfer_kv_capacity", None),
+        host_kv_mib=getattr(settings, "ninfer_host_kv_mib", None),
     )
     lp = log_path()
     lp.parent.mkdir(parents=True, exist_ok=True)

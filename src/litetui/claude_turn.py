@@ -7,7 +7,7 @@ import time
 
 from rich.text import Text
 
-from litetui import paths
+from litetui import claude_cache, paths
 from litetui.claude_persistence import ClaudeLedger
 
 
@@ -65,6 +65,19 @@ def accept_input(app, item):
     return {"id": metadata["_claude_entry"]["id"], "segment_id": metadata["_claude_segment"], "state": "prepared"}
 
 
+async def _cache_ok(app, backend, segment):
+    """True when the turn may go: the cache is warm, or the user chose to send anyway."""
+    clock = claude_cache.clock_for(app, segment["id"])
+    live = backend.session is not None and backend.segment_id == segment["id"]
+    if not live and clock.model is None:
+        clock.model = segment.get("cache_model")
+    cold = claude_cache.cold_reason(
+        clock, live=live, resuming=not live and bool(segment.get("session_id")),
+        model=app.model_id, used_at=segment.get("cache_used_at"),
+    )
+    return cold is None or await claude_cache.confirm_cold(app, cold)
+
+
 async def stream_turn(app):
     from litetui.claude_backend import settle_close
     from litetui.claude_events import ClaudeEventStream
@@ -81,6 +94,17 @@ async def stream_turn(app):
         return
     entry_id = item["_claude_entry"]["id"]
     segment = ledger.segment(item["_claude_segment"])
+    # T911: WARN FIRST. Before a bubble, a turn_start or any byte to Claude, so a
+    # cancel leaves nothing half-started and the entry stays `prepared`.
+    if segment is not None and not await _cache_ok(app, backend, segment):
+        if getattr(app, "_rpc", None):
+            # A headless host confirms by sending again, which prepares a new
+            # entry; closing this one keeps /claude continue from sending both.
+            ledger.update_delivery(entry_id, "terminal", stop_reason="not_sent_cache_warning")
+        else:
+            app._system("Not sent: cancelled at the cache warning. Your message is kept; "
+                        "/claude continue sends it when you are ready.")
+        return
     started = time.monotonic()
     app._active_turn_started_at = started
     app._stop_requested = False
@@ -140,6 +164,7 @@ async def stream_turn(app):
         ledger.update_delivery(entry_id, "submitted")
         submitted = True
         await session.query(entry_id, item["content"])
+        claude_cache.clock_for(app, segment["id"]).model = app.model_id
 
         async def watch_stop():
             while not terminal:
@@ -240,6 +265,11 @@ async def stream_turn(app):
                 elif event.kind == "usage":
                     from dataclasses import asdict
                     app._claude_usage = event.usage
+                    clock = claude_cache.clock_for(app, segment["id"])
+                    if clock.observe(event.usage) and clock.used_at is not None:
+                        ledger.note_cache(segment["id"], clock.used_at, app.model_id)
+                        claude_cache.ensure_ticker(app)
+                        app._refresh_ctx_label()
                     if event.usage and event.usage.source == "message":
                         # WINDOW FIRST. `ctx_used` is a reactive and
                         # `watch_ctx_used` reads `ctx_max` to render

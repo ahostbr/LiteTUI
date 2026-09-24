@@ -18,7 +18,7 @@ class SettingSpec:
 
 
 _CONVERSATION = '''custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host ninfer_executable ninfer_artifact
-ninfer_max_context ninfer_max_concurrency default_model default_context_length
+ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib default_model default_context_length
 pin_default_model backend codex_native_engine llama_host llama_executable
 llama_attach_hosts llama_models_max llama_load_settings model_infer_overrides
 lms_load_timeout_s max_tokens_tools max_tokens_chat thinking_level
@@ -34,11 +34,11 @@ llama_models_dirs enter_interrupts clear_screen_after_compact theme_name custom_
 show_thinking show_stop_line show_stop_time autoscroll error_message_style dialog_style dialog_side
 image_viewer_enabled footer_show_seat footer_show_thinking footer_show_bg
 footer_show_subagents footer_show_convo footer_show_context footer_show_context_pct
-footer_show_tps footer_order tts_enabled tts_timeout tts_engine tts_voice tts_edge_voice
+footer_show_tps footer_show_cache footer_order tts_enabled tts_timeout tts_engine tts_voice tts_edge_voice
 stt_model stt_mic stt_hotkey'''.split()
 _DEFAULTS = ['backend_chosen', 'llama_presets']
 _RECONNECT = set('claude_executable custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host llama_host backend default_model codex_native_engine pin_default_model skills_enabled skill_roots mcp_enabled mcp_disabled_servers'.split())
-_RESTART = set('ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency llama_executable llama_attach_hosts llama_models_max plugins_disabled'.split())
+_RESTART = set('ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib llama_executable llama_attach_hosts llama_models_max plugins_disabled'.split())
 
 SETTING_SPECS = {}
 for scope, names in ((SettingScope.CONVERSATION, _CONVERSATION),

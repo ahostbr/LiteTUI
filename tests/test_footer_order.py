@@ -19,7 +19,7 @@ def test_footer_order_defaults_and_repairs_partial_values():
         ["tps", "think", "think", "not-a-field"]
     ) == [
         "tps", "think", "authority", "plan", "seat", "bg", "agents",
-        "convo", "ctx", "pct",
+        "convo", "ctx", "pct", "cache",
     ]
 
 
@@ -31,7 +31,7 @@ def test_settings_load_repairs_an_old_or_hand_edited_footer_order(tmp_path):
     loaded = settings_mod.load(tmp_path)
     assert loaded.footer_order == [
         "ctx", "seat", "authority", "plan", "think", "bg", "agents",
-        "convo", "pct", "tps",
+        "convo", "pct", "cache", "tps",
     ]
 
 
@@ -50,5 +50,5 @@ async def test_interface_exposes_and_collects_footer_order():
         saved = body._collect()
         assert saved.footer_order == [
             "tps", "pct", "ctx", "convo", "think", "seat", "plan",
-            "authority", "bg", "agents",
+            "authority", "bg", "agents", "cache",
         ]

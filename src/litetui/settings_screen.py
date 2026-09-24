@@ -836,6 +836,23 @@ class SettingsBody(Widget):
                                 "Applies on the next /engine start; /engine status shows the running value.",
                                 placeholder="1",
                             )
+                            yield from self._select_row(
+                                "ninfer_kv_dtype", "NInfer: KV cache type (--kv-dtype)",
+                                [(v, v) for v in ("fp8", "bf16", "int8", "nvfp4", "k8v4")],
+                                "fp8 is the default the memory check was measured at. bf16 roughly doubles "
+                                "KV memory; nvfp4/k8v4 shrink it. Applies on the next /engine start.",
+                            )
+                            yield from self._text_row(
+                                "ninfer_kv_capacity", "NInfer: shared KV capacity (--kv-capacity)",
+                                "Blank follows the context length. 'auto' fills the remaining GPU memory; "
+                                "or a token count. Applies on the next /engine start.",
+                                placeholder="blank, auto, or tokens",
+                            )
+                            yield from self._text_row(
+                                "ninfer_host_kv_mib", "NInfer: host KV memory, MiB (--host-kv-mib)",
+                                "Pinned system RAM for KV moved off the GPU. Blank uses the engine's 8192.",
+                                placeholder="8192",
+                            )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
                         yield self._section_header("voice-speak")
@@ -1296,16 +1313,21 @@ class SettingsBody(Widget):
                             "footer_show_tps", "Tokens per second",
                             "Generation speed of the last turn.",
                         )
+                        yield from self._switch_row(
+                            "footer_show_cache", "Claude cache",
+                            "Whether Claude's prompt cache is warm, its hit rate, and the time "
+                            "left before it expires. Only shown on the Claude backend.",
+                        )
                         yield from self._text_row(
                             "footer_order", "Footer order (left to right)",
                             "Comma-separated ids. Use authority, plan, seat, think, "
-                            "bg, agents, convo, ctx, pct, and tps. The switches "
+                            "bg, agents, convo, ctx, pct, cache, and tps. The switches "
                             "above control visibility; authority and plan stay "
                             "available because they are interactive status controls. "
                             "Unknown or repeated ids are ignored and missing ids "
                             "are appended in the default order.",
                             placeholder="authority, plan, seat, think, bg, agents, "
-                            "convo, ctx, pct, tps",
+                            "convo, ctx, pct, cache, tps",
                         )
 
             # One error line + one button row, OUTSIDE TabbedContent so both
