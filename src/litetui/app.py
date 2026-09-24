@@ -1930,6 +1930,9 @@ class LiteTUI(App):
         await self._settle_before_teardown()
         from litetui.launch_options import stop_custom
         await asyncio.to_thread(stop_custom, self)
+        sidecar = getattr(self, "_sidecar_preview", None)
+        if sidecar is not None:
+            await asyncio.to_thread(sidecar.close)
         backend = getattr(self, "backend", None)
         native = getattr(backend, "owns_native_turns", False)
         # 🔴 THIS BRANCH USED TO SIT INSIDE `if backend.name == "codex"`, WHICH

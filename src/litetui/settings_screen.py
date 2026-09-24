@@ -1273,6 +1273,12 @@ class SettingsBody(Widget):
                             "viewer as real pixels. OFF still attaches the image to "
                             "the model — this only toggles the automatic preview.",
                         )
+                        yield from self._switch_row(
+                            "sidecar_enabled", "Prefer optional native sidecar",
+                            "When installed, open the sidecar for settings and calendar; "
+                            "Textual remains the fallback if it cannot launch. "
+                            "The preview build is not connected yet.",
+                        )
                         yield self._section_header("interface-footer")
                         yield Static("FOOTER", classes="set-subhead")
                         yield from self._switch_row(
