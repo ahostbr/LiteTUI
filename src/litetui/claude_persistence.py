@@ -252,6 +252,11 @@ class ClaudeLedger:
                 f"Delivery metadata may not set {', '.join(sorted(clashes))}"
             )
         entry.update(metadata)
+        if state == UNCERTAIN:
+            # Same field the load-time rule writes, so an uncertain entry always
+            # says which state it was in when the answer stopped coming —
+            # whether a reader failure marked it live or a restart derived it.
+            entry["uncertain_from"] = entry["state"]
         entry["state"] = state
         entry[f"{state}_at"] = time.time()
         self._save()

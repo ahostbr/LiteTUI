@@ -126,6 +126,35 @@ def test_an_uncertain_delivery_cannot_be_submitted_again(convo):
     assert restarted.update_delivery(entry["id"], TERMINAL)["state"] == TERMINAL
 
 
+@pytest.mark.parametrize("reached", [SUBMITTED, ACKNOWLEDGED])
+def test_a_live_reader_failure_can_mark_a_delivery_uncertain(convo, reached):
+    """OpenBolt's integration path: uncertain without waiting for a restart.
+
+    A reader that dies mid-turn knows the answer will never come, so the app
+    marks it uncertain there and then. It must record which state it left, and
+    it must be just as unsendable as one a restart derived.
+    """
+    ledger = ClaudeLedger(convo)
+    segment = ledger.select_segment(WORKSPACE)
+    entry = prepared(ledger, segment["id"])
+    ledger.update_delivery(entry["id"], SUBMITTED)
+    if reached == ACKNOWLEDGED:
+        ledger.update_delivery(entry["id"], ACKNOWLEDGED)
+
+    marked = ledger.update_delivery(
+        entry["id"], UNCERTAIN, error="reader died", stop_reason=None
+    )
+    assert marked["state"] == UNCERTAIN
+    assert marked["uncertain_from"] == reached
+    assert marked["error"] == "reader died"
+
+    with pytest.raises(LedgerError):
+        ledger.update_delivery(entry["id"], SUBMITTED)
+    restarted = ClaudeLedger(convo).pending(segment["id"])[0]
+    assert restarted["state"] == UNCERTAIN
+    assert restarted["uncertain_from"] == reached
+
+
 def test_reading_a_ledger_never_writes_one(convo):
     ledger = ClaudeLedger(convo)
     segment = ledger.select_segment(WORKSPACE)
