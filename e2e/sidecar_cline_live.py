@@ -10,16 +10,18 @@ Checked on A's sidecar, against what the TUI shows for ClinePass:
   - engine choices carry ClinePass with its /backend readiness mark;
   - default-model choices are the 14 cline-pass ids;
   - local-server rows are shown as unsupported with no editor;
-  - thinking choices are ClinePass's per-model levels (off, never the wire 'none').
+  - thinking choices are ClinePass's per-model levels (off, never the wire 'none');
+  - the launch-set engine shows the value in effect and is EDITABLE (full parity).
 Then an edit in A's sidecar (thinking level, then compaction threshold) lands
 in A only, B's TUI and sidecar never see it, and a live ClinePass turn runs in
-A after the edit.
+A after the edit. Last, A changes its launch-set engine to codex in the sidecar;
+A's next /reconnect adopts it and B does not move.
 
     python e2e/sidecar_cline_live.py <path-to-litetui-sidecar.exe>
 
-Needs a ClinePass login (`cline auth`, read from ~/.cline) and the Claude CLI
-login for B. The launch-pinned engine checks need fix/sidecar-invocation-override
-(LiteTUI) and the matching litetui-sidecar branch merged too.
+Needs a ClinePass login (`cline auth`, read from ~/.cline), the Claude CLI login
+for B and the Codex login for A's final engine, and a sidecar built from
+litetui-sidecar 2b27b6e or later.
 """
 import asyncio
 import json
@@ -85,9 +87,9 @@ async def main(exe: Path):
         check("A's engine field shows the LAUNCH value, as the TUI's /settings does",
               engine["effective"] == "cline" and engine["source"] == "override" and engine.get("override_by") == "launch",
               json.dumps({k: engine.get(k) for k in ("saved", "effective", "source", "override_by")}))
-        check("a launch-pinned engine has no editor in A's sidecar",
-              await a.page.js("!document.querySelector('[data-edit=\"backend\"]')"))
-        check("the lock says why",
+        check("the launch-set engine is EDITABLE in A's sidecar (full parity), showing the value in effect",
+              await a.page.js("(document.querySelector('select[data-edit=\"backend\"]')||{}).value") == "cline")
+        check("the row says it was set at launch",
               "set when this LiteTUI was started" in await a.page.js("document.querySelector('.settingsPanel').innerText"))
         b_engine = await b.page.js(f"{snap}.fields.backend")
         check("B (no launch flag) keeps an editable engine field",
@@ -134,6 +136,26 @@ async def main(exe: Path):
               and bool(sa["last_reply"]), repr((sa["last_reply"] or "")[:80]))
         await a.page.goto("Generation"); await a.page.shot("sidecar-A-cline-after-edit.png")
         await b.page.goto("Generation"); await b.page.shot("sidecar-B-claude-untouched.png")
+        # Full parity: change A's launch-set engine in A's sidecar; it must be what
+        # A's next reconnect adopts, and B must not move.
+        b_before = await b.ask()
+        await a.page.edit("Model", "backend", "codex")
+        await a.page.wait("SidecarShell.state().status.startsWith('Saved')", "A's engine save")
+        sa, sb = await a.ask(), await b.ask()
+        record["after_A_engine_edit"] = {"A": sa, "B": sb}
+        check("A saved codex and released its launch value; still on cline until reconnect",
+              sa["disk_saved"]["backend"] == "codex" and "backend" not in sa["launch_pin"] and sa["backend"] == "cline",
+              json.dumps({"saved": sa["disk_saved"]["backend"], "pin": sa["launch_pin"], "running": sa["backend"]}))
+        check("B's engine, saved value and pin are untouched",
+              sb["backend"] == "claude" and sb["disk_saved"]["backend"] == b_before["disk_saved"]["backend"]
+              and sb["launch_pin"] == b_before["launch_pin"])
+        sa = await a.ask("reconnect", timeout=180)
+        sb = await b.ask()
+        record["after_A_reconnect"] = {"A": sa, "B": sb}
+        check("A's edit SURVIVES reconnect: A now runs codex", sa["backend"] == "codex" and sa["disk_saved"]["backend"] == "codex",
+              f"running={sa['backend']} saved={sa['disk_saved']['backend']}")
+        check("B still runs claude, its saved engine unchanged",
+              sb["backend"] == "claude" and sb["disk_saved"]["backend"] == b_before["disk_saved"]["backend"])
         print("PASS live: ClinePass in the editable sidecar, TUI-exact choices, edits isolated from instance B")
     finally:
         ART.mkdir(exist_ok=True)

@@ -43,6 +43,7 @@ def state(app, n):
         "disk_saved": {k: getattr(snap.saved, k) for k in FIELDS},
         "disk_effective": {k: getattr(snap.effective, k) for k in FIELDS},
         "revisions": snap.revisions,
+        "launch_pin": dict(getattr(app, "_invocation_saved_values", {})),
         "last_reply": next((m.get("content") for m in reversed(app.conversation)
                             if m.get("role") == "assistant" and m.get("content")), None),
         "preapproved": getattr(app, "_claude_cache_preapproved", None),
@@ -78,6 +79,9 @@ async def main(work: Path):
             seen = cmd["n"]
             if cmd["cmd"] == "quit":
                 break
+            if cmd["cmd"] == "reconnect":
+                app._handle_command("/reconnect")
+                await settle(app, pilot)
             if cmd["cmd"] == "turn":
                 app._submit_text(cmd.get("text", "Reply only OK."), False)
                 await settle(app, pilot)
