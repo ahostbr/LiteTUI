@@ -243,3 +243,55 @@ async def test_app_exit_survives_a_cleanup_failure(tmp_path, monkeypatch):
     async with app.run_test():
         app.backend = backend
     assert backend.closes == 1
+
+
+# -- /backend lists Claude; /model offers every spelling the CLI accepts ------
+
+def test_backend_picker_lists_every_registered_backend_including_claude(monkeypatch):
+    """Ryan 2026-09-24: "slash backend list doesnt list claude you have to
+    manually type it". The picker had its own row list; it now reads BACKENDS."""
+    from litetui import gpu_gate
+    from litetui.plugins import model_switch
+
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: True)
+    monkeypatch.setattr(model_switch, "_ninfer_mark", lambda app: "n/a")
+    seen = {}
+    monkeypatch.setattr(model_switch, "pick", lambda app, title, rows, cb, current=None: seen.update(rows=rows))
+    app = SimpleNamespace(settings=Settings(), backend=SimpleNamespace(name="lmstudio"))
+    model_switch._cmd_backend(app, "/backend", "")
+    keys = [k for k, _ in seen["rows"]]
+    assert keys == list(llm_backend.BACKEND_NAMES)
+    claude = dict(seen["rows"])["claude"]
+    assert claude.startswith("Claude Agent  · ")
+    assert claude.split("· ")[1] in (
+        "OAuth signed in", "subscription login required", "SDK not installed — uv sync --extra claude")
+
+
+@pytest.mark.asyncio
+async def test_catalog_keeps_cli_rows_first_and_adds_every_context_variant(monkeypatch):
+    from litetui import claude_backend
+
+    queried = ["default", "opus[1m]", "claude-fable-5-1[1m]", "sonnet", "haiku"]
+
+    class _Session:
+        def __init__(self, options):
+            pass
+        async def start(self):
+            return {"models": [{"value": v} for v in queried]}
+        async def close(self):
+            pass
+
+    async def _options(self, **values):
+        return values
+
+    monkeypatch.setattr(claude_backend, "ClaudeSession", _Session)
+    monkeypatch.setattr(ClaudeBackend, "_options", _options)
+    backend = ClaudeBackend(Settings(backend="claude"))
+    keys = [row.key for row in await backend.list_models()]
+    assert keys[:len(queried)] == queried
+    for key in ("claude-opus-5-5", "claude-opus-5-5[1m]", "claude-sonnet-5[1m]",
+                "claude-fable-5-1", "claude-haiku-4-5-20251001", "fable", "opus"):
+        assert key in keys
+    assert len(keys) == len(set(keys))
+    assert "claude-haiku-4-5-20251001[1m]" not in keys and "haiku[1m]" not in keys
+    await backend.ensure_chat_ready("claude-sonnet-5[1m]")   # selectable, not refused

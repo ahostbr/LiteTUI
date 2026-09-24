@@ -222,6 +222,15 @@ def _ninfer_mark(app) -> str:
             else "not installed — LiteSuite's Model Hub installs it")
 
 
+def _claude_mark() -> str:
+    """Readiness without starting the CLI: SDK importable + subscription login."""
+    import importlib.util
+
+    if importlib.util.find_spec("claude_agent_sdk") is None:
+        return "SDK not installed — uv sync --extra claude"
+    return model_transport.auth_status("claude")
+
+
 def _set_lanes(app, raw: str) -> str:
     """`/engine lanes N` — the --max-concurrency of the NEXT start (T892).
 
@@ -349,17 +358,24 @@ def _cmd_backend(app, name: str, arg: str) -> None:
         f"installed ({llm_backend.configured_build(app.settings)})"
         if llm_backend.llama_available(app.settings) else "not installed — choose an installed executable in Settings"
     )
+    # Rows come from THE backend list (llm_backend.BACKENDS via visible_backends,
+    # which also drops NInfer off a 5090 — T893). This picker used to carry its
+    # own five-row copy, and "claude" was added to BACKENDS without it, so the
+    # Claude Agent backend worked when typed and never appeared here (Ryan
+    # 2026-09-24). Only the status marks live here; a backend without one still
+    # gets its row.
+    marks = {
+        "custom": app.settings.custom_base_url or "set URL in /settings",
+        "lmstudio": lms_mark,
+        "llamacpp": llama_mark,
+        "ninfer": _ninfer_mark(app),
+        "codex": model_transport.auth_status("codex"),
+        "claude": _claude_mark(),
+    }
     rows = [
-        ("custom", f"Custom server  · {app.settings.custom_base_url or 'set URL in /settings'}"),
-        ("lmstudio", f"LM Studio desktop  · {lms_mark}"),
-        ("llamacpp", f"llama.cpp (our engine)  · {llama_mark}"),
-        ("ninfer", f"NInfer (5090 engine)  · {_ninfer_mark(app)}"),
-        ("codex", f"Codex subscription  · {model_transport.auth_status('codex')}"),
+        (key, f"{label}  · {marks[key]}" if key in marks else label)
+        for key, label in llm_backend.visible_backends()
     ]
-    from litetui import gpu_gate
-
-    if not gpu_gate.is_rtx_5090():
-        rows = [r for r in rows if r[0] != "ninfer"]   # T893: not a 5090 -> no such row
 
     def _picked(choice: str | None) -> None:
         if choice:
