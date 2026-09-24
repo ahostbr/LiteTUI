@@ -303,6 +303,16 @@ async def test_an_ordinary_failure_is_still_absorbed_into_the_turn(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_error_result_preserves_native_detail_even_when_subtype_is_success(tmp_path):
+    app = turn_app(tmp_path, messages=["terminal"], events=[[
+        ClaudeEvent(kind="result", is_error=True, text="Authentication expired", data={"subtype": "success"}),
+    ]])
+    await stream_turn(app)
+    assert any("Authentication expired" in note for note in app.notices)
+    assert {"turn_end": "error"} in app.emitted
+
+
+@pytest.mark.asyncio
 async def test_a_turn_without_admission_says_so_instead_of_raising(tmp_path):
     app = turn_app(tmp_path, messages=[])
     del app._claude_active_input

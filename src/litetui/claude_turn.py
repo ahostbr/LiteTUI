@@ -267,7 +267,7 @@ async def stream_turn(app):
                     reason = "error" if event.is_error or failure else ("cancelled" if app._stop_requested else "stop")
                     ledger.update_delivery(entry_id, "terminal", stop_reason=reason)
                     if event.is_error:
-                        failure = event.data.get("result") or event.data.get("subtype") or "Claude turn failed"
+                        failure = event.detail or event.text or failure or "Claude turn failed"
         if not terminal:
             raise RuntimeError("Claude ended without a terminal result; delivery is uncertain")
     except BaseException as exc:
