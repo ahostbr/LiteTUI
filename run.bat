@@ -11,5 +11,11 @@ REM `--locked` is the load-bearing flag: it refuses to run if uv.lock is out
 REM of date with pyproject.toml rather than silently resolving something new,
 REM so the app and the test gate cannot drift apart without someone being told.
 cd /d "%~dp0"
-uv run --locked litetui %*
+REM Sync deps from the lock WITHOUT reinstalling the project: reinstalling rewrites
+REM .venv\Scripts\litetui.exe, which fails (os error 32) whenever another LiteTUI is
+REM running from this .venv - e.g. an agent seat. The package is an editable install,
+REM so the code is live without it. --extra claude keeps the pinned Claude SDK.
+uv sync --locked --inexact --no-install-project --extra claude || goto :done
+uv run --no-sync python -c "import sys; from litetui.cli import main; sys.exit(main())" %*
+:done
 pause
