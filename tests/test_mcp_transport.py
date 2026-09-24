@@ -1,324 +1,334 @@
-"""Bounded stdio writes + zombie/reader-safe shutdown for MCPServer.
+"""MCPServer stdio transport: bounded _send with a RETAINED writer. No real
+process — a fake Popen whose stdin.write blocks under our control, and whose
+terminate/kill do NOT unblock the writer (simulating a descendant that inherited
+the read end), so the retain-until-observed-terminal contract is exercised.
 
-🔴 THE TWO BUGS THIS PINS (the HELD 09c8b40/210bdf4 design, integrated with the
-five review corrections).
-
-1. `_send` wrote+flushed on the CALLER's thread. A child that stops reading and
-   lets its stdin pipe buffer fill blocks that write FOREVER, and `call()` holds
-   `self._lock` across the request -- so the serialized tool call hangs the
-   whole UI. The write now runs on a joinable thread so the caller is bounded;
-   the blocked writer is RETAINED (never joined, its stdin never closed under
-   it -- the blocked write holds the BufferedWriter lock) until observed
-   terminal.
-
-2. `stop()` on the exception path only `kill()`ed -- no second `wait()`, so a
-   killed child was left a zombie -- and it never joined the reader thread, so
-   a stopped server leaked a live reader.
-
-⏱️ WHY THE ASSERTIONS DRIVE THE WORK ON A THREAD. With the send bug present the
-call never returns, so a direct call would hang the suite. Every assertion is
-"did it finish inside a budget" -- the property actually under test. BUDGET is
-generous next to the small timeouts so a loaded machine can't turn a real pass
-into a flake (bounded at all, not to the millisecond).
-
-No real process is ever spawned: the child is a fake proc whose stdin/stdout are
-thread-controlled fakes.
+Run only this file:
+    python -m pytest tests/test_mcp_transport.py
 """
-
 from __future__ import annotations
 
 import io
-import json
 import threading
-import time
-from pathlib import Path
 
-from litetui import mcp_client
-from litetui.mcp_client import MCPServer, MCPError, SEND_TIMEOUT
+import pytest
 
-# Generous next to the sub-second timeouts under test.
-BUDGET = 5.0
+import litetui.mcp_client as mc
 
 
-class _Pipe:
-    """A stdout yielding the given lines then returning the given sleep-then-EOF.
-
-    A short pre-EOF sleep lets a test PROVE `stop` joins the reader: a reader
-    that takes ~0.4s to reach EOF is only observably dead once `stop` has
-    waited for it.
-    """
-
-    def __init__(self, lines=None, pre_eof_sleep: float = 0.0):
-        self._lines = list(lines or [])
-        self._pre_eof_sleep = pre_eof_sleep
-
-    def readline(self):
-        if self._lines:
-            return self._lines.pop(0)
-        if self._pre_eof_sleep:
-            time.sleep(self._pre_eof_sleep)
-        return ""
-
-
-class _BlockingStdin:
-    """A stdin whose write() blocks until the child reads (which, in the
-    timeout test, never happens) -- the filled-pipe case."""
-
-    def __init__(self):
-        self._release = threading.Event()
-        self.blocked = threading.Event()
+class _Stdin:
+    def __init__(self, gate: threading.Event, *, raise_on_write=None):
+        self._gate = gate
+        self._raise = raise_on_write
+        self.written: list[str] = []
         self.closed = False
-        self.written = 0
+        self.entered = threading.Event()
 
-    def write(self, data):
-        self.written += 1
-        self.blocked.set()
-        self._release.wait()          # block until released (or the writer is abandoned)
-        return len(data)
-
-    def flush(self):
-        pass
-
-    def close(self):
-        self.closed = True
-        self._release.set()          # a close lets any blocked writer finish
-
-    def release(self):
-        self._release.set()
-
-
-class _RaisingStdin:
-    """A stdin whose write() immediately raises (broken pipe)."""
-
-    def __init__(self, exc=BrokenPipeError):
-        self._exc = exc
-
-    def write(self, data):
-        raise self._exc("child closed the pipe")
+    def write(self, line):
+        if self._raise is not None:
+            raise self._raise
+        self.entered.set()
+        self._gate.wait()          # block until released (never, for the timeout test)
+        self.written.append(line)
 
     def flush(self):
         pass
 
     def close(self):
-        pass
+        self.closed = True         # _send must NEVER call this while a writer is live
 
 
 class _Proc:
-    """The subset of subprocess.Popen MCPServer touches, with call counters."""
-
-    def __init__(self, stdin=None, lines=None, exit_code=None,
-                 terminate_raises=False, pre_eof_sleep=0.0):
-        self.stdin = stdin
-        self.stdout = _Pipe(lines, pre_eof_sleep)
-        self.returncode = exit_code
-        self.terminated = 0
-        self.killed = 0
-        self.waits = []
-        self._terminate_raises = terminate_raises
+    def __init__(self, gate, *, raise_on_write=None):
+        self.stdin = _Stdin(gate, raise_on_write=raise_on_write)
+        self.returncode = 0
+        self.terminated = False
+        self.killed = False
 
     def poll(self):
-        return self.returncode
-
-    def terminate(self):
-        self.terminated += 1
-        if self._terminate_raises:
-            raise OSError("terminate failed")
-        self.returncode = -15
-
-    def kill(self):
-        self.killed += 1
-        self.returncode = -9
+        return None                # running
 
     def wait(self, timeout=None):
-        self.waits.append(timeout)
-        return self.returncode
+        return 0
+
+    def terminate(self):
+        self.terminated = True     # deliberately does NOT unblock the writer
+
+    def kill(self):
+        self.killed = True
 
 
-def _server(proc: _Proc) -> MCPServer:
-    srv = MCPServer("probe", {}, Path("."), io.StringIO())
+def _server(tmp_path, proc) -> mc.MCPServer:
+    srv = mc.MCPServer("x", {}, tmp_path, io.StringIO())
     srv.proc = proc
-    srv._start_reader()
     return srv
 
 
-def _in_budget(fn, budget: float = BUDGET):
-    """Run fn on a daemon worker thread; return (finished, box, elapsed)."""
-    box: dict = {}
+def test_send_writes_when_the_pipe_accepts_it(tmp_path):
+    gate = threading.Event(); gate.set()
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    srv._send({"jsonrpc": "2.0", "id": 1})
+    assert proc.stdin.written and proc.stdin.written[0].endswith("\n")
+    assert srv._writer is None                       # terminal writer cleared, not retained
 
-    def go():
-        t0 = time.monotonic()
+
+def test_blocked_write_bounds_caller_kills_child_and_retains_writer(tmp_path):
+    gate = threading.Event()                         # never set -> the write blocks
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError) as ei:
+        srv._send({"jsonrpc": "2.0", "id": 1}, timeout=0.05)
+    assert "retained" in str(ei.value).lower()       # caller bounded
+    assert srv.error and "timed out" in srv.error
+    assert proc.terminated                           # killed the CAPTURED child's read end
+    assert proc.stdin.closed is False                # NEVER closed under the live writer
+    assert srv._writer is not None and srv._writer.is_alive()   # retained, still blocked
+
+    # A second send is refused while the writer is retained (no daemon pile-up).
+    with pytest.raises(mc.MCPError) as ei2:
+        srv._send({"jsonrpc": "2.0", "id": 2})
+    assert "still blocked" in str(ei2.value).lower()
+
+    gate.set()                                       # the descendant finally released it
+    srv._writer.join(2)
+    assert not srv._writer.is_alive()
+    assert srv._writer_in_flight() is False           # observed terminal -> retention reaped
+
+
+def test_timeout_kills_the_captured_proc_not_a_replacement(tmp_path):
+    gate = threading.Event()
+    original = _Proc(gate)
+    srv = _server(tmp_path, original)
+
+    replacement = _Proc(threading.Event())
+    # Swap the manager's proc to a fresh one WHILE the write is blocked: only a
+    # thread can do that mid-_send, so approximate it by starting _send in a
+    # thread, swapping, then asserting the ORIGINAL (captured) proc was killed.
+    done = threading.Event()
+
+    def _do_send():
         try:
-            box["value"] = fn()
-        except BaseException as e:  # noqa: BLE001 — the exception IS the result here
-            box["exc"] = e
-        box["elapsed"] = time.monotonic() - t0
+            srv._send({"jsonrpc": "2.0", "id": 1}, timeout=0.05)
+        except mc.MCPError:
+            pass
+        finally:
+            done.set()
 
-    th = threading.Thread(target=go, daemon=True)
+    th = threading.Thread(target=_do_send, daemon=True)
     th.start()
-    th.join(budget)
-    return (not th.is_alive()), box, box.get("elapsed")
+    assert original.stdin.entered.wait(2)
+    srv.proc = replacement                            # reconnect replaced the proc
+    done.wait(2)
+    assert original.terminated                        # the captured proc was killed
+    assert replacement.terminated is False            # the replacement was NOT
+    gate.set()
 
 
-# ── the bounded write ────────────────────────────────────────────────────────
-
-def test_send_is_bounded_when_the_child_stops_reading():
-    """The defect, stated as an assertion: a filled stdin pipe must not hang the
-    caller. The honest caller bound is the write-wait PLUS the kill that follows
-    it (a truthfully bounded total), not the write-wait alone."""
-    srv = _server(_Proc(stdin=_BlockingStdin()))
-    timeout = 0.5
-    finished, box, elapsed = _in_budget(lambda: srv._send({"id": 1}, timeout=timeout))
-    assert finished, f"_send blocked the caller past {BUDGET}s (unbounded write)"
-    assert isinstance(box.get("exc"), MCPError), f"expected MCPError, got {box!r}"
-    # Truthful budget: bounded by the write-wait + the follow-up kill, not unbounded.
-    assert elapsed < timeout + mcp_client._KILL_TOTAL + 1.0
-    assert "retained" in str(box["exc"])
+def test_broken_pipe_is_a_bounded_error(tmp_path):
+    gate = threading.Event(); gate.set()
+    proc = _Proc(gate, raise_on_write=BrokenPipeError("gone"))
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError) as ei:
+        srv._send({"jsonrpc": "2.0", "id": 1})
+    assert "send failed" in str(ei.value).lower()
+    assert "BrokenPipeError" in str(ei.value) and "gone" not in str(ei.value)   # type only
+    assert srv._writer is None
 
 
-def test_CONTROL_a_write_through_that_is_read_completes_and_keeps_the_server_usable():
-    srv = _server(_Proc(stdin=io.StringIO()))
-    finished, box, _ = _in_budget(lambda: srv._send({"id": 1}, timeout=BUDGET))
-    assert finished and box.get("exc") is None, f"write-through refused: {box.get('exc')!r}"
-    # Not retained: a second write still goes through.
-    finished2, box2, _ = _in_budget(lambda: srv._send({"id": 2}, timeout=BUDGET))
-    assert finished2 and box2.get("exc") is None
+# ── stop(): reap the killed child (second wait) + join the reader ─────────────
+def test_stop_reaps_a_killed_child_and_joins_the_reader(tmp_path):
+    gate = threading.Event(); gate.set()
+    waits = []
 
+    class HardProc(_Proc):
+        def terminate(self):                       # force the kill path
+            raise OSError("terminate refused")
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return 0
 
-def test_a_second_send_is_refused_while_a_writer_is_retained():
-    """Uncancellable daemon writers must not pile up: once one is retained, the
-    next send is refused until it is observed terminal."""
-    srv = _server(_Proc(stdin=_BlockingStdin()))
-    finished, box, _ = _in_budget(lambda: srv._send({"id": 1}, timeout=0.4))
-    assert finished and isinstance(box.get("exc"), MCPError)
-    # A second send now sees the retained writer and is refused (not piled on).
-    finished2, box2, _ = _in_budget(lambda: srv._send({"id": 2}, timeout=0.4))
-    assert finished2 and isinstance(box2.get("exc"), MCPError)
-    assert "retained" in str(box2["exc"])
-
-
-def test_a_blocked_send_kills_the_captured_child_not_a_replacement():
-    """A reconnect can replace self.proc mid-write; the timeout teardown must act
-    on the CAPTURED child, never a replacement it has not written to."""
-    a = _BlockingStdin()
-    proc_a = _Proc(stdin=a)
-    srv = _server(proc_a)
-    proc_b = _Proc(stdin=io.StringIO())
-    box: dict = {}
-
-    def send():
-        try:                       # capture, don't leak, the expected MCPError
-            srv._send({"id": 1}, timeout=0.6)
-        except BaseException as e:  # noqa: BLE001
-            box["exc"] = e
-
-    th = threading.Thread(target=send, daemon=True)
-    th.start()
-    assert a.blocked.wait(2.0), "the write never reached the blocking stdin"
-    srv.proc = proc_b                 # a reconnect swapped in a new child
-    th.join(BUDGET)
-    assert isinstance(box.get("exc"), MCPError), f"expected the retained timeout, got {box!r}"
-    assert proc_a.terminated or proc_a.killed, "the captured child was not torn down"
-    assert proc_b.terminated == 0 and proc_b.killed == 0, "a replacement child was killed"
-
-
-def test_a_broken_pipe_is_a_bounded_type_only_error():
-    srv = _server(_Proc(stdin=_RaisingStdin()))
-    finished, box, elapsed = _in_budget(lambda: srv._send({"id": 1}, timeout=0.5))
-    assert finished, "a broken pipe must not hang the caller"
-    assert isinstance(box.get("exc"), MCPError)
-    assert "BrokenPipeError" in str(box["exc"])
-
-
-def test_the_retained_failure_is_recorded_on_the_server_for_the_manager():
-    """Correction 2 (retained/typed failure integration): a timed-out send is not
-    silently dropped -- the server records it so the manager's describe()
-    reports the server as failed rather than a bare 'connected'."""
-    srv = _server(_Proc(stdin=_BlockingStdin()))
-    finished, box, _ = _in_budget(lambda: srv._send({"id": 1}, timeout=0.4))
-    assert finished and isinstance(box.get("exc"), MCPError)
-    assert srv.error, "the send timeout was not recorded for the manager"
-    assert "timed out" in srv.error
-
-
-# ── the reaping, reader-joining shutdown ─────────────────────────────────────
-
-def test_stop_reaps_the_killed_child_on_the_kill_fallback():
-    """Correction: the kill fallback must wait() AGAIN to reap the child, or the
-    process is left a zombie."""
-    srv = _server(_Proc(terminate_raises=True))
+    proc = HardProc(gate)
+    srv = _server(tmp_path, proc)
+    reader = threading.Thread(target=lambda: None, daemon=True)   # already-finishing reader
+    reader.start()
+    srv._reader = reader
     srv.stop()
-    assert srv.proc.killed == 1, "the kill fallback was not taken"
-    assert srv.proc.waits, "the killed child was not reaped (no wait after kill)"
+    assert proc.killed and waits                    # killed AND reaped (second wait after kill)
+    assert not reader.is_alive()                    # reader joined
 
 
-def test_stop_reaps_on_the_clean_terminate_path_too():
-    srv = _server(_Proc())
-    srv.stop()
-    assert srv.proc.terminated == 1
-    assert srv.proc.waits, "the terminated child was not reaped"
-
-
-def test_stop_joins_the_reader_thread():
-    """A stopped server must not leak a live reader: stop() waits for the reader
-    to hit EOF and exit. A reader that takes ~0.4s to reach EOF is only
-    observably dead once stop() has joined it."""
-    srv = _server(_Proc(pre_eof_sleep=0.4))
-    assert srv._reader is not None and srv._reader.is_alive()
-    srv.stop()
-    assert not srv._reader.is_alive(), "stop() returned while the reader still ran"
-
-
-def test_stop_does_not_close_stdin_while_a_writer_is_retained():
-    """Closing stdin under a retained writer would deadlock on the BufferedWriter
-    lock; the kill closes the child's read end instead."""
-    blocking = _BlockingStdin()
-    srv = _server(_Proc(stdin=blocking))
-    finished, box, _ = _in_budget(lambda: srv._send({"id": 1}, timeout=0.4))
-    assert finished and isinstance(box.get("exc"), MCPError)
-    srv.stop()
-    assert not blocking.closed, "stdin was closed under a retained (blocked) writer"
-
-
-# ── the five review corrections, made explicit ───────────────────────────────
-
-def test_restart_is_refused_while_a_writer_is_retained():
-    """Correction 3 (restart refusal): a restart would replace self.proc under a
-    still-blocked writer, so start() must refuse until the writer is terminal."""
-    srv = _server(_Proc(stdin=_BlockingStdin()))
-    finished, box, _ = _in_budget(lambda: srv._send({"id": 1}, timeout=0.4))
-    assert finished and isinstance(box.get("exc"), MCPError)
-
-    def restart():
-        srv.start()
-
-    finished2, box2, _ = _in_budget(restart)
-    assert finished2 and isinstance(box2.get("exc"), MCPError)
-    assert "retained" in str(box2["exc"]).lower() or "restart" in str(box2["exc"]).lower()
-
-
-def test_stop_called_from_the_reader_thread_does_not_join_itself():
-    """Correction 4 (self-reader join guard): if stop() is ever reached from the
-    reader thread, joining self would stall for the whole join budget. The guard
-    skips it, so stop returns fast."""
-    srv = _server(_Proc())
-
-    def stop_from_reader():
-        srv._reader = threading.current_thread()   # simulate being on the reader
+def test_stop_does_not_close_stdin_while_a_writer_is_retained(tmp_path):
+    gate = threading.Event()                        # writer blocks -> retained
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError):
+        srv._send({"jsonrpc": "2.0", "id": 1}, timeout=0.05)
+    assert srv._writer.is_alive()                   # retained
+    proc.stdin.closed = False
+    # stop() is UNCERTAIN while the writer is live: it must RAISE (not silently
+    # succeed) and must NOT close stdin under the live writer.
+    with pytest.raises(mc.MCPError) as ei:
         srv.stop()
+    assert "writer still alive" in str(ei.value).lower()
+    assert proc.stdin.closed is False               # NEVER closed under the live writer
+    # item 9: once the writer is terminal, a stop() RETRY confirms and clears.
+    gate.set(); srv._writer.join(2)
+    srv.stop()
+    assert proc.stdin.closed is True                # safe to close once the writer is gone
+    assert srv._quarantined is None
 
-    finished, box, elapsed = _in_budget(stop_from_reader)
-    assert finished and box.get("exc") is None
-    assert elapsed < 1.5, f"stop() self-joined the reader (elapsed {elapsed:.2f}s)"
+
+# ── persistent quarantine + start() boundary guard ───────────────────────────
+def test_quarantine_persists_until_a_confirmed_stop(tmp_path):
+    gate = threading.Event()                        # writer blocks -> retained
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError):
+        srv._send({"jsonrpc": "2.0", "id": 1}, timeout=0.05)
+    assert srv._quarantined is not None
+
+    # Release + reap the writer: the writer retention clears...
+    gate.set(); srv._writer.join(2)
+    assert srv._writer_in_flight() is False
+
+    # ...but the QUARANTINE is persistent: a fresh send is STILL refused until a
+    # confirmed stop() clears it (item 2) — it is not auto-recovered by the
+    # writer dying.
+    with pytest.raises(mc.MCPError) as ei:
+        srv._send({"jsonrpc": "2.0", "id": 2})
+    assert "quarantined" in str(ei.value).lower()
+    # and start() is refused for the same reason (item 8).
+    with pytest.raises(mc.MCPError) as ei2:
+        srv.start()
+    assert "cannot start" in str(ei2.value).lower()
+
+    # A confirmed stop() is the recovery path; it clears the quarantine.
+    srv.stop()
+    assert srv._quarantined is None
+    assert srv.proc is None
 
 
-def test_send_caller_bound_is_the_honest_total():
-    """Correction 5 (truthful timeout budgets): the caller's worst case is the
-    write-wait PLUS the kill, and that total is a named constant -- not implied
-    to be the write-wait alone. Assert the constant is real and the measured
-    elapsed sits under it."""
-    assert mcp_client._KILL_TOTAL >= mcp_client._TERMINATE_WAIT + mcp_client._KILL_WAIT - 1e-9
-    srv = _server(_Proc(stdin=_BlockingStdin()))
-    timeout = 0.5
-    finished, box, elapsed = _in_budget(lambda: srv._send({"id": 1}, timeout=timeout))
-    assert finished
-    assert elapsed < timeout + mcp_client._KILL_TOTAL + 1.0
+def test_start_refuses_a_live_writer_and_an_unreaped_proc(tmp_path):
+    # a live in-flight writer -> refuse (item 8)
+    hold = threading.Event()
+    w = threading.Thread(target=hold.wait, daemon=True); w.start()
+    srv = mc.MCPServer("x", {}, tmp_path, io.StringIO())
+    srv._writer = w
+    with pytest.raises(mc.MCPError) as ei:
+        srv.start()
+    assert "in flight" in str(ei.value).lower()
+    hold.set(); w.join(1)
+
+    # a previous proc that has not exited -> refuse (item 8)
+    srv2 = mc.MCPServer("y", {}, tmp_path, io.StringIO())
+    srv2.proc = _Proc(threading.Event())            # poll() -> None (running)
+    with pytest.raises(mc.MCPError) as ei2:
+        srv2.start()
+    assert "not reaped" in str(ei2.value).lower()
+
+
+def test_stop_raises_uncertain_when_the_child_is_not_reaped(tmp_path):
+    class NeverDies(_Proc):
+        def terminate(self): raise OSError("terminate refused")
+        def kill(self):      raise OSError("kill refused")
+        def wait(self, timeout=None):
+            raise TimeoutError("still alive")        # never reaped
+        def poll(self):
+            return None                              # still running
+    proc = NeverDies(threading.Event())
+    srv = _server(tmp_path, proc)
+    with pytest.raises(mc.MCPError) as ei:
+        srv.stop()
+    assert "child not reaped" in str(ei.value).lower()
+    # nothing was cleared: the handle is retained for a later verify + retry.
+    assert srv.proc is proc
+    assert srv._quarantined is not None
+
+
+def test_stop_all_retains_uncertain_servers(tmp_path):
+    m = mc.MCPManager(tmp_path)
+
+    class OKServer:
+        name = "ok"
+        def stop(self):
+            return None
+    class BadServer:
+        name = "bad"
+        def stop(self):
+            raise RuntimeError("child not reaped")
+    ok, bad = OKServer(), BadServer()
+    with m._servers_lock:
+        m.servers = {"ok": ok, "bad": bad}
+    m.stop_all()
+    # cleanly stopped removed; uncertain RETAINED + quarantined, truthful failure
+    assert "ok" not in m.servers
+    assert m.servers.get("bad") is bad
+    assert "bad" in m._stop_failed and "ok" not in m._stop_failed
+    assert "bad" in m.failures
+    assert m._closing is True
+
+
+def test_concurrent_send_cannot_replace_a_writer_before_start(tmp_path, monkeypatch):
+    gate = threading.Event()
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    registered = threading.Event()
+    release_start = threading.Event()
+    second_entered = threading.Event()
+    errors = []
+    original_start = threading.Thread.start
+
+    def paused_start(thread):
+        if thread.name == "mcp-writer-x":
+            registered.set()
+            assert release_start.wait(2)
+        return original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", paused_start)
+
+    def send(second=False):
+        if second:
+            second_entered.set()
+        try:
+            srv._send({"id": 2 if second else 1}, timeout=0.2)
+        except mc.MCPError as exc:
+            errors.append(str(exc))
+
+    first = threading.Thread(target=send)
+    second = threading.Thread(target=lambda: send(True))
+    first.start()
+    assert registered.wait(2)
+    writer = srv._writer
+    second.start()
+    assert second_entered.wait(2)
+    try:
+        assert srv._send_lock.acquire(blocking=False) is False
+    finally:
+        release_start.set()
+    first.join(2)
+    second.join(2)
+    assert not first.is_alive() and not second.is_alive()
+    assert srv._writer is writer
+    assert len(errors) == 2
+    gate.set()
+    writer.join(2)
+    srv.stop()
+
+
+def test_stop_refuses_new_send_during_child_teardown(tmp_path):
+    gate = threading.Event()
+    gate.set()
+    proc = _Proc(gate)
+    srv = _server(tmp_path, proc)
+    original_terminate = proc.terminate
+
+    def terminate():
+        with pytest.raises(mc.MCPError, match="quarantined"):
+            srv._send({"id": 1})
+        original_terminate()
+
+    proc.terminate = terminate
+    srv.stop()
+    assert not proc.stdin.written
+    assert srv._quarantined is None

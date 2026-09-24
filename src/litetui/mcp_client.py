@@ -104,12 +104,17 @@ class MCPServer:
         # terminal; while it lives, new sends/reconnects are refused so blocked
         # daemon writers cannot pile up. See _send / _writer_in_flight.
         self._writer: threading.Thread | None = None
-        # Guards self._writer (and the proc capture in _send). A send registers
-        # its writer and start()s it under this lock so there is no window where
-        # _writer is set-but-not-running and a racing send would misread it;
-        # start()'s restart-refusal takes the same lock, so proc is stable across
-        # a writer registration. Always acquired AFTER self._lock, never before.
-        self._writer_lock = threading.Lock()
+        # Serialises the ADMISSION of a send (decide "no writer in flight", reap
+        # a finished retained writer, and register THIS send's writer) so the
+        # register->start window is never observable to a racer. Admission never
+        # polls is_alive() for the admit decision; it only reads/writes
+        # self._writer under this lock. See _send.
+        self._send_lock = threading.Lock()
+        #: Set on a send-timeout (and on a poisoned server) and cleared only by a
+        # CONFIRMED stop. While set, _send and start() refuse regardless of the
+        # writer's state, so a server whose cleanup is uncertain can neither be
+        # written to nor restarted over. See _send / stop / _poison.
+        self._quarantined: str | None = None
 
     # ── wire ────────────────────────────────────────────────────────────────
     def _next_id(self) -> int:
@@ -117,41 +122,55 @@ class MCPServer:
         return self._id
 
     def _writer_in_flight(self) -> bool:
-        """True while a timed-out writer is retained and not yet observed
-        terminal. Reaps a writer that HAS finished. While one is in flight, new
-        sends and reconnects are refused so uncancellable daemon writers cannot
-        pile up."""
-        with self._writer_lock:
+        """True while a writer is admitted and not yet observed terminal.
+
+        Reaps (clears) a retained writer that has since finished. While one is
+        in flight, new sends and reconnects are refused so uncancellable daemon
+        writers cannot pile up. The actual ADMISSION decision is made under
+        _send_lock in _send; this is the read-only view (also used by stop /
+        start)."""
+        with self._send_lock:
             w = self._writer
-            if w is None:
-                return False
-            if w.is_alive():
-                return True
-            self._writer = None      # observed terminal -> reap the retention
-            return False
+            if w is not None and not w.is_alive():
+                self._writer = None          # observed terminal -> reap the retention
+            return self._writer is not None
 
     def _send(self, payload: dict, *, timeout: float = SEND_TIMEOUT) -> None:
-        # Refuse (if a retained writer is live), capture proc/stdin ONCE, and
-        # register+start OUR writer -- all under the writer lock. Atomic: there is
-        # no window where _writer is set-but-not-running (a racing send would
-        # misread it), and self.proc is stable against a concurrent restart (see
-        # start). A reconnect can still replace self.proc AFTER we capture; the
-        # writer and the timeout teardown act on the process we wrote to, never
-        # late-bind and kill a replacement.
-        with self._writer_lock:
-            if self._writer is not None:
-                if self._writer.is_alive():
-                    raise MCPError("a previous send is still blocked; server retained")
-                self._writer = None          # reap an observed-terminal writer
+        # ADMISSION is decided and registered ATOMICALLY under _send_lock: refuse
+        # a live writer, refuse while quarantined, reap a finished retained
+        # writer, capture proc/stdin, and register THIS send's writer all in one
+        # critical section. A racer can never observe the register->start window,
+        # so it is refused (live writer / quarantine) rather than admitted on a
+        # stale is_alive()==False. The caller's wait is bounded by `timeout` PLUS
+        # the kill's bounded waits (see the SEND_TIMEOUT note) — not `timeout`
+        # alone.
+        line = json.dumps(payload, ensure_ascii=False) + "\n"
+        with self._send_lock:
+            w = self._writer
+            if w is not None and w.is_alive():
+                raise MCPError("a previous send is still blocked; server retained")
+            if self._quarantined is not None:
+                # A previous send timed out and its stop was never confirmed.
+                # Refuse even if the writer has since finished: a clean, verified
+                # stop() is what clears the quarantine (persistent quarantine).
+                raise MCPError(
+                    f"quarantined ({self._quarantined}); a confirmed stop is required"
+                )
+            if w is not None:
+                self._writer = None          # terminal retained writer -> reap before admit
+            # Capture proc/stdin ONCE. A reconnect can replace self.proc while
+            # this write is in flight; the writer and the timeout teardown must
+            # act on the process we are writing to, never late-bind a replacement.
             proc = self.proc
             if not proc or not proc.stdin:
                 raise MCPError("server is not running")
-            # A poisoned server keeps its Popen object, with a closed stdin and an
-            # exit code. Writing would raise three frames down; say what happened.
+            # A poisoned server keeps its Popen object, with a closed stdin and
+            # an exit code. Writing would raise three frames down; say what
+            # happened.
             if proc.poll() is not None:
                 raise MCPError(f"server is not running (exit {proc.returncode})")
-            line = json.dumps(payload, ensure_ascii=False) + "\n"
             stdin = proc.stdin
+
             err: dict = {}
 
             def _write() -> None:
@@ -163,41 +182,62 @@ class MCPServer:
 
             # 🔴 BOUNDED FOR THE CALLER, RETAINED FOR THE WRITER. write()/flush()
             # block when the child stops reading and its stdin pipe buffer fills.
-            # A daemon thread joined for `timeout` bounds THIS call; the write has
-            # NO safe cancel here. On timeout we kill the CAPTURED child's read end
-            # to encourage a BrokenPipeError, but a descendant can hold it open, so
-            # the writer is RETAINED (never joined, its stdin never closed under it)
-            # until a later call observes it terminal.
+            # Running them on a daemon thread joined for `timeout` bounds THIS call;
+            # the write itself has NO safe cancel implemented here (OS APIs exist).
+            # On timeout we kill the child's READ end to encourage a BrokenPipeError
+            # — but a descendant that inherited the read end can keep it open, so we
+            # do NOT assume the writer exits: it is RETAINED (never joined, its stdin
+            # never closed under it) until a later call observes the thread terminal.
             t = threading.Thread(target=_write, name=f"mcp-writer-{self.name}", daemon=True)
             self._writer = t
             t.start()
         t.join(timeout)
         if t.is_alive():
-            self.error = f"send timed out after {timeout:.0f}s (server not reading stdin)"
-            self._kill_child(proc)   # the CAPTURED proc, never self.proc (a replacement)
+            # Timeout: the write is bounded (we return) but the writer is
+            # UNCANCELLABLE. Retain it (self._writer is still = t), quarantine
+            # the server (refuse reuse until a confirmed stop), and kill the
+            # CAPTURED proc — never self.proc, which a reconnect may have
+            # replaced.
+            why = f"send timed out after {timeout:.0f}s (server not reading stdin)"
+            self.error = why
+            with self._send_lock:
+                self._quarantined = why
+            self._kill_child(proc)
             raise MCPError("send timed out; server retained")
-        with self._writer_lock:
+        with self._send_lock:
             if self._writer is t:
-                self._writer = None       # writer terminal, retention cleared
+                self._writer = None              # writer terminal, retention cleared
         if "e" in err:
             raise MCPError(f"send failed ({type(err['e']).__name__})")
 
-    def _kill_child(self, proc) -> None:
+    def _kill_child(self, proc) -> bool:
         """Kill the CAPTURED child WITHOUT touching stdin — a retained writer may
         hold the stdin lock, so closing it here would deadlock. terminate ->
         bounded wait -> kill -> bounded wait so the process is reaped, not left a
-        zombie. All failures swallowed (type-only elsewhere); no raw output."""
+        zombie. No raw output (type-only elsewhere).
+
+        Returns whether the child was REAPED — a confirmed exit — rather than
+        swallowing reaping uncertainty: the caller (stop) needs that proof before
+        it may claim the server is down. Returns False on a None proc or an
+        unconfirmed exit."""
         if proc is None:
-            return
+            return False
         try:
             proc.terminate()
             proc.wait(timeout=_TERMINATE_WAIT)
+            return True
         except Exception:
             try:
                 proc.kill()
                 proc.wait(timeout=_KILL_WAIT)   # reap the killed child; no zombie
+                return True
             except Exception:
-                pass
+                # Could not confirm via wait(); report what poll() says so the
+                # caller can decide "reaped" vs "still uncertain".
+                try:
+                    return proc.poll() is not None
+                except Exception:
+                    return False
 
     def _start_reader(self) -> None:
         """Drain stdout on a thread of its own. Idempotent.
@@ -271,10 +311,11 @@ class MCPServer:
         stale reply. So the process goes, and the next call starts clean.
         """
         self.error = why
+        self._quarantined = why      # a poisoned server is not safe to reuse
         try:
-            self.stop()
+            self.stop()              # a confirmed stop clears the quarantine
         except Exception:
-            pass
+            pass                     # uncertain stop: the quarantine stays until a clean one
 
     def _read_until(self, want_id: int, timeout: float) -> dict:
         """Wait for the frame matching want_id, bounded by `timeout`.
@@ -325,12 +366,26 @@ class MCPServer:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
     def start(self) -> None:
-        # Refuse a restart while a timed-out writer is still retained: restarting
-        # would replace self.proc under a writer still blocked on the OLD child's
-        # stdin, leaving an uncancellable daemon writer and a kill that could hit
-        # the wrong process. Wait until the retained writer is observed terminal.
-        if self._writer_in_flight():
-            raise MCPError("cannot restart: a previous send is still blocked (server retained)")
+        # BOUNDARY GUARD: never start a second process over one we have not
+        # confirmed is gone. Refuse while quarantined, while a writer is still
+        # in flight, or while the previous proc/reader has not reached a
+        # terminal state — starting over any of those would orphan a live child
+        # or race a handshake against the old one. A clean, verified stop()
+        # clears the quarantine, so a stop RETRY is the recovery path (no
+        # auto-restart: the coordinator decides).
+        with self._send_lock:
+            if self._quarantined is not None:
+                raise MCPError(f"cannot start {self.name!r}: {self._quarantined}")
+            w = self._writer
+            if w is not None and w.is_alive():
+                raise MCPError(f"cannot start {self.name!r}: a send is still in flight")
+            old_proc = self.proc
+            old_reader = self._reader
+        if old_proc is not None and old_proc.poll() is None:
+            raise MCPError(f"cannot start {self.name!r}: previous process not reaped")
+        if (old_reader is not None and old_reader is not threading.current_thread()
+                and old_reader.is_alive()):
+            raise MCPError(f"cannot start {self.name!r}: previous reader still alive")
         command = self.cfg.get("command")
         if not command:
             raise MCPError("no `command` in config")
@@ -373,33 +428,74 @@ class MCPServer:
         return _flatten_content(result)
 
     def stop(self) -> None:
-        proc = self.proc
-        if proc is None:
-            return
-        # Do NOT close stdin while a timed-out writer is still retained on it: the
-        # blocked write holds the BufferedWriter lock, so close() would deadlock.
-        # The kill below closes the child's READ end instead.
-        writer_live = self._writer_in_flight()
-        try:
-            if proc.stdin and not writer_live:
-                proc.stdin.close()
-            proc.terminate()
-            proc.wait(timeout=_TERMINATE_WAIT)
-        except Exception:
+        """Stop and VERIFY this server. Returns None on a CONFIRMED stop and
+        raises MCPError when the cleanup is UNCERTAIN — rather than silently
+        claiming success and letting the coordinator drop the handle.
+
+        Verification uses CAPTURED refs, never self.proc / self._reader /
+        self._writer read live: a reconnect can replace them mid-teardown.
+        Uncertain = the child was not reaped, OR the writer is still alive, OR
+        the reader is still alive. Only a clean, verified stop clears the
+        quarantine and the writer retention — so a stop() RETRY (once the writer
+        has finished) is the recovery path, and nothing auto-restarts.
+        """
+        with self._send_lock:
+            proc = self.proc
+            reader = self._reader
+            writer = self._writer
+            self._quarantined = "stop in progress"
+        writer_live = writer is not None and writer.is_alive()
+
+        if proc is not None:
+            # Do NOT close stdin while a writer is retained on it: the blocked
+            # write holds the BufferedWriter lock, so close() would deadlock.
+            # With no live writer the child's read end is the only way to kill it.
             try:
-                proc.kill()
-                proc.wait(timeout=_KILL_WAIT)   # SECOND wait: reap the killed child, no zombie
+                if proc.stdin and not writer_live:
+                    proc.stdin.close()
             except Exception:
                 pass
-        # Join the reader: stdin/stdout are closed (or the child is dead), so
-        # readline() returns EOF and _reader_loop exits. Bounded so a wedged
-        # reader cannot hang teardown.
-        reader = self._reader
-        # Guard: if stop() is ever reached FROM the reader thread, joining self
-        # would stall for the whole budget (or raise); skip it and let the
-        # thread exit on its own.
-        if reader is not None and reader.is_alive() and reader is not threading.current_thread():
+            reaped = self._kill_child(proc)      # terminate -> wait -> kill -> wait
+        else:
+            reaped = True                        # no child to verify against
+
+        # Join the reader: stdin/stdout closed (or child dead) -> readline() EOF
+        # -> _reader_loop exits. Bounded so a wedged reader cannot hang teardown.
+        # Self-guard: never join the thread we are running on.
+        reader_alive = (reader is not None
+                        and reader is not threading.current_thread()
+                        and reader.is_alive())
+        if reader_alive:
             reader.join(timeout=_READER_JOIN)
+            reader_alive = reader.is_alive()
+
+        writer_live = writer is not None and writer.is_alive()
+        if not reaped or writer_live or reader_alive:
+            # UNCERTAIN: we cannot prove the child is reaped / the writer and
+            # reader are terminal. Keep the handle and the quarantine (nothing
+            # was cleared) so a caller can verify and RETRY; raising is the
+            # honest outcome, not a silent success.
+            reasons = ", ".join(
+                r for r, bad in (
+                    ("child not reaped", not reaped),
+                    ("writer still alive", writer_live),
+                    ("reader still alive", reader_alive),
+                ) if bad
+            )
+            with self._send_lock:
+                self._quarantined = reasons
+            raise MCPError(f"stop uncertain for {self.name!r}: {reasons}")
+
+        # Verified clean: clear the process, reader, writer and the quarantine.
+        with self._send_lock:
+            if self.proc is proc:
+                self.proc = None
+            if self._reader is reader:
+                self._reader = None
+            if self._writer is writer:
+                self._writer = None
+            self._quarantined = None
+        return None
 
 
 class HTTPMCPServer:
@@ -1167,20 +1263,44 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
     def stop_all(self) -> None:
         """Shutdown: JOIN any in-flight lifecycle op (bounded by that op's own
         connect/stop timeouts) via _op_lock, then stop every server. Never
-        refuses busy and never leaks a transport — shutdown is terminal."""
+        refuses busy and never leaks a transport — shutdown is terminal.
+
+        A server whose stop() comes back UNCERTAIN (raises) is RETAINED: kept in
+        `servers` and flagged in `_stop_failed` with a truthful failure, rather
+        than silently discarded. Only cleanly-stopped servers are removed —
+        dropping an uncertain handle here would orphan a possibly-live child."""
         # Set BEFORE acquiring the lock so a connect racing right now is refused
         # immediately (see _connect_locked) rather than starting a server this
         # shutdown will not see.
         self._closing = True
         with self._op_lock:
             with self._servers_lock:
-                servers = list(self.servers.values())
-                self.servers.clear()
-        for s in servers:
+                servers = list(self.servers.items())   # name -> server snapshot
+            # do NOT clear up front: retention below decides what stays.
+        for name, s in servers:
             try:
                 s.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                # Uncertain cleanup: the child may be live. RETAIN the handle +
+                # quarantine so a later stop can confirm; a lie ("stopped") would
+                # be worse than keeping the reference.
+                runtime_log.record(
+                    "mcp_server_stop_failed",
+                    site="mcp.manager.stop_all",
+                    component="mcp",
+                    server=name,
+                    operation="stop",
+                    error_type=type(e).__name__,
+                )
+                with self._servers_lock:
+                    self.servers[name] = s
+                self._stop_failed.add(name)
+                self.failures[name] = f"stop failed: {type(e).__name__}: {e}"
+                continue
+            with self._servers_lock:
+                self.servers.pop(name, None)
+            self._stop_failed.discard(name)
+            self.failures.pop(name, None)
         if self._log_handle:
             try:
                 self._log_handle.close()

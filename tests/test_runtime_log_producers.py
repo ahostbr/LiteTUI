@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # changes the number.
 PRODUCER_FILES = tuple(sorted((ROOT / "src" / "litetui").rglob("*.py")))
 EXPECTED_EVENTS = {
+    "monitor_sweep_failed",
+    "sidecar_frame_rejected",
     "persistence_failure",
     "harness_registration_failed",
     # harness_rebind_failed was here and is GONE ON PURPOSE (f64442b, T5: "one
@@ -158,7 +160,10 @@ def test_exactly_the_approved_producers_exist_and_no_body_key_is_present() -> No
     # the smallest fix for that — it does the tracing FOR the next reader
     # instead of making them re-derive it, which is what the comments above
     # record three people doing.
-    assert len(calls) == 21, (
+    # Integration 2026-09-24: baseline main has 22 (monitor_sweep_failed,
+    # fab8d0b). Sidecar adds sidecar_frame_rejected (261712e), and WS7
+    # adds the stop_all mcp_server_stop_failed site (62bf9c2): total 24.
+    assert len(calls) == 24, (
         "the producer count moved. Name each delta and its commit before changing "
         "this number — the list is:\n  "
         + "\n  ".join(f"{f}:{n} {e}" for f, n, e in _located(calls))
