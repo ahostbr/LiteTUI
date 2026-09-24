@@ -30,6 +30,7 @@ from textual.widget import Widget
 from textual.widgets import Input, Label, Select, Static, Switch, TabbedContent, TabPane
 
 from litetui import settings_runtime
+from litetui import cline_backend
 from litetui import llm_backend
 from litetui import model_transport
 from litetui import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
@@ -370,23 +371,13 @@ def backend_rows(app) -> list[tuple[str, str]]:
         "ninfer": _ninfer_mark(app),
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
-        **_cline_mark(),
+        "cline": cline_backend.auth_status(),
     }
     rows = [
         (key, f"{label}  · {marks[key]}" if key in marks else label)
         for key, label in llm_backend.visible_backends()
     ]
     return rows
-
-
-def _cline_mark() -> dict:
-    """The Cline backend's readiness, once its module exists (PassLink's card)."""
-    try:
-        from litetui import cline_backend  # type: ignore[attr-defined]
-    except ImportError:
-        return {}
-    status = getattr(cline_backend, "auth_status", None)
-    return {"cline": status()} if callable(status) else {}
 
 
 def _cmd_backend(app, name: str, arg: str) -> None:

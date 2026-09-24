@@ -4360,8 +4360,12 @@ class LiteTUI(App):
             # moved, the existing client object survives — anything attached
             # to it (a test's stubbed create, a keep-alive pool) stays valid.
             new_base = self.backend.base_url().rstrip("/")
-            api_key = getattr(self.backend, 'api_key', lambda: 'litetui')()
-            if str(self.client.base_url).rstrip("/") != new_base or self.client.api_key != api_key:
+            # A backend whose key expires (ClinePass OAuth) hands over a
+            # provider that the client awaits before every request.
+            api_key = (getattr(self.backend, 'api_key_provider', None)
+                       or getattr(self.backend, 'api_key', lambda: 'litetui')())
+            if (str(self.client.base_url).rstrip("/") != new_base or callable(api_key)
+                    or self.client.api_key != api_key):
                 self.client = AsyncOpenAI(base_url=new_base, api_key=api_key)
             # Re-bind (re-authorize) the current client for the rebuilt backend: a
             # same-endpoint reconnect keeps the client, and this revalidates it
