@@ -8,6 +8,7 @@ from pathlib import Path
 
 from litetui import paths, settings_runtime
 from litetui.plugins import PluginManifest
+from litetui.sidecar_jobs import public_jobs
 from litetui.sidecar_launch import SidecarWindow
 from litetui.sidecar_settings import public_snapshot
 
@@ -25,6 +26,10 @@ def _open_background(app, owner: SidecarWindow, view: str) -> None:
         if view == "settings" and getattr(app, "convo_dir", None) is not None:
             snapshot = public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name))
             opened = owner.open_settings_snapshot(snapshot)
+        elif view in {"calendar", "job", "timeline"} and hasattr(app, "jobs"):
+            # The monitor may update in-memory jobs; capture its state on the UI thread.
+            snapshot = app.call_from_thread(lambda: public_jobs(app.jobs))
+            opened = owner.open_jobs_snapshot(view, snapshot)
         else:
             opened = owner.open(view)
         if opened:

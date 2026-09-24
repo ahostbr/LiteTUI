@@ -117,6 +117,22 @@ class SidecarWindow:
             self.close()
             return False
 
+    def open_jobs_snapshot(self, view: str, snapshot: dict) -> bool:
+        """Show parent-owned jobs without scheduling or editing in the child."""
+        if view not in {"calendar", "job", "timeline"}:
+            raise ValueError(f"Unknown jobs view: {view}")
+        if not self.open(view):
+            return False
+        try:
+            result = self._exchange("jobs_snapshot", snapshot)
+            if result.get("jobs_snapshot") is True:
+                return True
+            raise ValueError("Sidecar rejected jobs snapshot")
+        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+            self.warn(f"Sidecar jobs snapshot failed: {exc}; use Textual instead.")
+            self.close()
+            return False
+
     def close(self) -> bool:
         if self.process is None:
             return False

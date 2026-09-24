@@ -28,7 +28,8 @@ def test_non_settings_preview_does_not_read_settings():
     owner = Mock()
     owner.open.return_value = True
     app = Mock()
-    app.call_from_thread.side_effect = lambda fn, text: fn(text)
+    app.jobs = []
+    app.call_from_thread.side_effect = lambda fn, *args: fn(*args)
     sidecar_plugin._open_background(app, owner, "timeline")
-    owner.open.assert_called_once_with("timeline")
+    owner.open_jobs_snapshot.assert_called_once_with("timeline", {"jobs": []})
     owner.open_settings_snapshot.assert_not_called()
