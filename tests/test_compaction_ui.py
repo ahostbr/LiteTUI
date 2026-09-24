@@ -85,6 +85,26 @@ def _scripted_create(rounds):
     return create, calls
 
 
+def off_local_lm_studio(a):
+    """Run the host compaction path on a backend the product still sends to.
+
+    b5f1f40 (2026-09-21, WS3) refuses LOCAL LM Studio inference before any
+    HTTP, because LM Studio JIT-loads a model into VRAM on the request itself;
+    `test_a_local_lm_studio_compaction_is_refused_and_changes_nothing` below
+    defends that. The app these tests build boots on LM Studio, so after WS3
+    every compaction here failed with "BLOCKED" before reaching the card, the
+    meter or the wake it exists to test. A custom server is not request-JIT and
+    not VRAM-gated; the client is rebound as the app's own factory does, so
+    for_app's stale-pair guard (also WS3) is satisfied, not bypassed.
+    """
+    from litetui import model_transport
+    from litetui.custom_backend import CustomBackend
+
+    a.backend = CustomBackend(a.settings)
+    a._client_binding = model_transport.bind_client(a.client, a.backend)
+    return a
+
+
 def _app(**overrides):
     a = app_mod.LiteTUI()
     base = dict(clear_screen_after_compact=False, compact_keep_recent=2,
@@ -93,7 +113,7 @@ def _app(**overrides):
     a.settings = Settings(**base)
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    return a
+    return off_local_lm_studio(a)
 
 
 def _seed(a):
@@ -353,4 +373,31 @@ def test_the_request_actually_streams():
             a._compact()
             await _settle(a, pilot)
             assert calls and calls[0].get("stream") is True
+    _run(body())
+
+
+def test_a_local_lm_studio_compaction_is_refused_and_changes_nothing():
+    """WS3 (b5f1f40) on the compaction path: a local LM Studio request JIT-loads
+    VRAM, so the compaction is refused before any request, says so on the card
+    and in the chat, and leaves the conversation exactly as it was."""
+    async def body():
+        create, calls = _scripted_create([[_Chunk(content="s")]])
+        a = app_mod.LiteTUI()
+        a.settings = Settings(clear_screen_after_compact=False, compact_keep_recent=2,
+                              wake_after_compact=False)
+        a._connect = lambda: None
+        a._fetch_ctx_window = lambda: None
+        said = []
+        a._system = lambda msg, *x, **k: said.append(str(msg))
+        from litetui.llm_backend import LMStudioBackend
+        assert isinstance(a.backend, LMStudioBackend), "premise: the app boots on LM Studio"
+        async with a.run_test(size=(120, 40)) as pilot:
+            _seed(a)
+            before = list(a.conversation)
+            a.client.chat.completions.create = create
+            a._compact()
+            await _settle(a, pilot)
+            assert calls == [], "no request may leave for a local LM Studio"
+            assert a.conversation == before
+            assert any("BLOCKED" in s and "LM Studio" in s for s in said), said
     _run(body())

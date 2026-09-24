@@ -65,12 +65,25 @@ def _store():
     return paths.CONVO_DIR
 
 
-def _act(profile, path):
-    return evaluate(profile, WRITE_POLICY, {"path": str(path)}, ROOT, tool_name="write").action
+def _own():
+    """The ACTIVE conversation's directory, as the one policy door passes it.
+
+    a62a153 (2026-09-20, "narrow self-store policy") made the exception need
+    the host's active conversation: `LiteTUI._authorize_action` passes
+    `active_conversation=convo_dir`, and with no conversation named nothing is
+    self-store. These tests used to call without one, which after that commit
+    tested a path production never takes.
+    """
+    return _store() / "abc123"
 
 
-def _caps(path):
-    return set(classify_write({"path": str(path)}, ROOT))
+def _act(profile, path, own=None):
+    return evaluate(profile, WRITE_POLICY, {"path": str(path)}, ROOT, tool_name="write",
+                    active_conversation=own or _own()).action
+
+
+def _caps(path, own=None):
+    return set(classify_write({"path": str(path)}, ROOT, active_conversation=own or _own()))
 
 
 # ── control 1: the agent can persist itself, on every profile ──────────────
@@ -79,10 +92,19 @@ def _caps(path):
 @pytest.mark.parametrize(
     "rel",
     ["abc123/handoff.md", "abc123/memory.md", "abc123/soul.md",
-     "abc123/memories/i-learned-this.md", "abc123/convo.jsonl"],
+     "abc123/memories/i-learned-this.md"],
 )
 def test_the_agent_may_always_write_its_own_store(profile, rel):
     assert _act(profile, _store() / rel) == ALLOW
+
+
+def test_the_transcript_is_not_part_of_the_store_any_more():
+    """convo.jsonl WAS in the list above. a62a153 narrowed the store to the
+    memory index, soul, handoff and memories/ ("Configuration and transcript
+    remain ordinary writes"), so the agent editing its own transcript is a
+    workspace write again: denied unattended, confirmed interactively."""
+    assert SELF_STORE not in _caps(_own() / "convo.jsonl")
+    assert _act(SCHEDULED, _own() / "convo.jsonl") == DENY
 
 
 def test_the_scheduled_denial_ryan_saw_is_gone():
@@ -138,7 +160,7 @@ def test_a_path_escaping_the_store_is_not_a_self_store_write(escape):
 # ── the classifier's three answers ─────────────────────────────────────────
 
 def test_the_classifier_has_three_answers_not_two():
-    assert _caps(_store() / "abc" / "handoff.md") == {SELF_STORE}
+    assert _caps(_store() / "abc123" / "handoff.md") == {SELF_STORE}
     assert _caps(ROOT / "src" / "x.py") == {WORKSPACE_WRITE}
     assert SELF_STORE not in _caps(ROOT.parent / "x.py")
 
@@ -168,12 +190,13 @@ def test_the_store_check_comes_FIRST_when_the_store_is_INSIDE_the_workspace(monk
     assert production_store.resolve().is_relative_to(ROOT.resolve()), (
         "premise changed: .convos is no longer inside the repo"
     )
-    target = production_store / "abc" / "handoff.md"
-    assert _caps(target) == {SELF_STORE}, (
+    own = production_store / "abc"
+    target = own / "handoff.md"
+    assert _caps(target, own) == {SELF_STORE}, (
         "a path inside BOTH the store and the workspace classified as the "
         "workspace — the store check is no longer first"
     )
-    assert _act(SCHEDULED, target) == ALLOW
+    assert _act(SCHEDULED, target, own) == ALLOW
 
 
 def test_self_store_is_a_declared_capability():
