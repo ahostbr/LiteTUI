@@ -31,9 +31,8 @@ def supports(executable, modules):
     # as unavailable too. Probe is bounded and cannot write bytecode.
     code = 'import importlib,json,sys; [importlib.import_module(m) for m in json.loads(sys.argv[1])]'
     try:
-        result = subprocess.run([executable, '-E', '-B', '-c', code, json.dumps(modules)],
-            capture_output=True, timeout=15,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        from litetui import ttyguard
+        result = ttyguard.run([executable, '-E', '-B', '-c', code, json.dumps(modules)], timeout=15)
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False

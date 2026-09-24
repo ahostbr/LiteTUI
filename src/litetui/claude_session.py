@@ -116,8 +116,8 @@ def _force_kill_tree(pid):
     that fails loudly: the caller stops looking.
     """
     try:
-        done = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                              capture_output=True, text=True, timeout=30, check=False)
+        from litetui import ttyguard
+        done = ttyguard.run(["taskkill", "/T", "/F", "/PID", str(pid)], timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"taskkill did not run: {type(exc).__name__}: {exc}"
     text = (done.stdout or done.stderr or "").strip()[:200]

@@ -19,7 +19,9 @@ class ResponseSpeakButton(Static):
 
     def refresh_playback(self):
         self.update('■ Stop' if voice_backend.is_playing(self) else '♫ Speak')
-        self.display = bool(self.response.answer_text.strip())
+        # tts_enabled is the show/hide switch for these buttons (Ryan 2026-09-24).
+        shown = getattr(getattr(self.app, 'settings', None), 'tts_enabled', True)
+        self.display = bool(shown and self.response.answer_text.strip())
 
     def on_click(self, event):
         event.stop()

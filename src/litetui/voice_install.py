@@ -25,8 +25,10 @@ def install_edge():
     if edge_available():
         return 'Edge support already installed — pick edge and Test.'
     try:
-        subprocess.run(install_command(), check=True, capture_output=True,
-                       text=True, timeout=240)
+        from litetui import ttyguard
+        done = ttyguard.run(install_command(), timeout=240)
+        if done.returncode:
+            raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
         if not edge_available():
             return 'Edge install finished but dependencies are not importable in this Python environment.'
         return 'Edge support installed — pick edge and Test.'

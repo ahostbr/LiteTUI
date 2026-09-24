@@ -173,7 +173,7 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeo
         child = _EDGE_CHILD.format(text=text, voice=voice or DEFAULT_EDGE_VOICE)
     else:
         child = _SAPI_CHILD.format(text=text, voice=voice or "")
-    py, flags = _speaker(executable)
+    py, _flags = _speaker(executable)
     script = None
     try:
         # A long reply exceeds Windows' command-line limit with python -c.
@@ -181,7 +181,11 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeo
             script = output.name
             output.write(child)
         with _active_lock:
-            proc = subprocess.Popen([py, script], creationflags=flags)
+            # ttyguard adds CREATE_NO_WINDOW; for pythonw (flags 0) that is a
+            # no-op, since a GUI-subsystem child has no console to hide.
+            from litetui import ttyguard
+            proc = ttyguard.popen([py, script], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             proc._speech_owner = owner
             _active.add(proc)
         threading.Thread(target=_reap, args=(proc, timeout, script), daemon=True).start()

@@ -842,6 +842,10 @@ class SettingsBody(Widget):
                         yield Label("Speak — replies read aloud (TTS out)",
                                     classes="set-label")
                         yield Static("Use Speak / Stop on each response to control playback. Replies are never spoken automatically.")
+                        yield from self._switch_row(
+                            "tts_enabled", "Show the Speak button on responses",
+                            "Off hides the ♫ Speak button on every response and stops any playback.",
+                        )
                         yield from self._select_row(
                             "tts_engine", "TTS engine",
                             [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
@@ -1409,9 +1413,6 @@ class SettingsBody(Widget):
                 "llama_load_settings", "model_infer_overrides", "llama_presets",
                 # Set by the first-boot picker, not by a visible control.
                 "backend_chosen",
-                # Legacy preference: playback is now explicitly controlled on
-                # each response. There is deliberately no auto-speech checkbox.
-                "tts_enabled",
             ):
                 continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
@@ -1794,9 +1795,12 @@ class SettingsBody(Widget):
 
         try:
             if importlib.util.find_spec("faster_whisper") is None:
-                subprocess.run([sys.executable, "-m", "pip", "install",
-                                "faster-whisper"],
-                               check=True, capture_output=True, timeout=600)
+                from litetui import ttyguard
+                done = ttyguard.run([sys.executable, "-m", "pip", "install", "faster-whisper"],
+                                    timeout=600)
+                if done.returncode:
+                    raise subprocess.CalledProcessError(done.returncode, done.args,
+                                                        done.stdout, done.stderr)
             from faster_whisper import WhisperModel
             WhisperModel(size, device="cpu", compute_type="int8")
             msg = f"{size} ready — the mic button and record hotkey now work."
