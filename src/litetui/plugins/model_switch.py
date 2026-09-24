@@ -372,6 +372,7 @@ def backend_rows(app) -> list[tuple[str, str]]:
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
         "cline": cline_backend.auth_status(),
+        "free": cline_backend.auth_status(),
     }
     rows = [
         (key, f"{label}  · {marks[key]}" if key in marks else label)

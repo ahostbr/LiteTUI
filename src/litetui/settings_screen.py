@@ -107,7 +107,7 @@ def thinking_choices(backend, model_id, current):
     Backends that report their own levels list those; "cline" is here for
     PassLink's Cline backend, so the Cline card does not edit this line again.
     """
-    if getattr(backend, "name", "") in ("codex", "claude", "cline"):
+    if getattr(backend, "name", "") in ("codex", "claude", "cline", "free"):
         from litetui.thinking_capabilities import _as_choices
 
         # Wire spellings -> saved ones ("none" -> "off", the one translation):

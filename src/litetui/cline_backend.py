@@ -45,9 +45,10 @@ _TRANSIENT_GRACE_S = 30
 _RELOGIN = 'run `cline auth` again, then /reconnect'
 
 #: id -> (context window, reasoning effort levels), from the @cline/llms
-#: dist/models.js catalog. The live list (GET /api/v1/ai/cline/recommended-models,
-#: "clinePass") matched these 14 ids on 2026-09-24. None = no usable window in the
-#: catalog (it lists qwen3.7-* as 1 token).
+#: dist/models.js catalog. It is the fallback list when the live feed is
+#: unreachable (it matched the feed's "clinePass" bucket on 2026-09-24) and the
+#: metadata source for ids it knows; others get no window and no levels.
+#: None = no usable window in the catalog (it lists qwen3.7-* as 1 token).
 CLINE_MODELS = {
     'cline-pass/glm-5.3-flash': (1310720, ('low', 'high', 'max')),
     'cline-pass/glm-5.3': (1310720, ('low', 'high', 'max')),
@@ -64,6 +65,76 @@ CLINE_MODELS = {
     'cline-pass/qwen3.7-plus': (None, ()),
     'cline-pass/muse-spark-1.3-contributor': (1048576, ('minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
 }
+
+_FEED_PATH = '/api/v1/ai/cline/recommended-models'
+_feed_cache: dict | None = None  # ponytail: one successful fetch per process; restart to see a new feed
+
+
+def _fetch_feed() -> dict:
+    """Cline's keyless model feed, the list its own pickers trust over the bundled
+    catalog (@cline/llms catalog-live.ts fetchLiveProviderModels; 5s like theirs)."""
+    response = httpx.get(f'{CLINE_API}{_FEED_PATH}', timeout=5)
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise TypeError('feed is not an object')
+    return body
+
+
+def recommended_feed() -> dict:
+    global _feed_cache
+    if _feed_cache is None:
+        try:
+            _feed_cache = _fetch_feed()
+        except (httpx.HTTPError, ValueError, TypeError):
+            return {}  # not cached: the next connect tries again
+    return _feed_cache
+
+
+def feed_ids(feed: dict, bucket: str) -> list[str]:
+    return [entry['id'] for entry in feed.get(bucket) or []
+            if isinstance(entry, dict) and isinstance(entry.get('id'), str)]
+
+
+#: Measured live 2026-09-24: the feed's "free" bucket (cline-free/*, stealth/*)
+#: is refused outside Cline's own apps: HTTP 403 "cline-free/deepseek-v4.1-flash
+#: is only available via Cline product surfaces". Cline's SDK offers them because
+#: it IS a Cline surface; LiteTUI does not pose as one, so they are not listed.
+
+
+def clinepass_ids() -> list[str]:
+    """What the ClinePass picker offers: the feed's "clinePass" bucket, or the
+    vendored snapshot when the feed is unreachable."""
+    return list(dict.fromkeys(feed_ids(recommended_feed(), 'clinePass') or list(CLINE_MODELS)))
+
+
+def _retry_hint(text: str) -> str:
+    """"... try again in 12m." -> "try again in 12m" (llms/src/providers/errors.ts)."""
+    start = text.find('try again in ')
+    if start < 0:
+        return 'try again later'
+    return text[start:].split('.')[0].split('"')[0].strip()
+
+
+#: Cline refusal markers (lower-case, all must appear) -> the sentence shown.
+#: Markers are the ones @cline/llms matches (llms/src/providers/errors.ts,
+#: shared account-errors), plus OpenRouter's shared free-pool 429 that Cline
+#: forwards (measured 2026-09-24, qwen/qwen3.8-27b:free, x-request-id
+#: dCEmyApjBxUwoVMGzszvkuXKrcrNoFnL).
+_CLINE_ERRORS = (
+    (('free limit reached on model',),
+     lambda t: f'Free limit reached on this model; {_retry_hint(t)}, or pick another free model (/model).'),
+    (('only available via cline product surfaces',),
+     lambda t: "This model is reserved for Cline's own apps; pick another model (/model)."),
+    (('rate-limited upstream',),
+     lambda t: 'This free model is busy upstream (the shared free pool is full); try again shortly or pick another free model (/model).'),
+    (('clinepass limit',),
+     lambda t: 'ClinePass usage limit reached; it resets with your plan period (see app.cline.bot).'),
+    (('no access to clinepass subscription models',),
+     lambda t: 'This account has no ClinePass subscription; subscribe at app.cline.bot, or use /backend free.'),
+    (('organization accounts cannot use individual model inference subscriptions',),
+     lambda t: 'Organization accounts cannot use ClinePass; switch to your personal account at app.cline.bot.'),
+)
 
 
 def store_path() -> Path:
@@ -223,8 +294,11 @@ class ClineBackend(CustomBackend):
         import asyncio
         return await asyncio.to_thread(self.api_key)
 
+    def _ids(self) -> list[str]:
+        return clinepass_ids()
+
     def _rows(self):
-        return [ModelRow(key=k, path=None, source='server', loaded=True) for k in CLINE_MODELS]
+        return [ModelRow(key=k, path=None, source='server', loaded=True) for k in self._ids()]
 
     async def ensure_running(self):
         import asyncio
@@ -232,9 +306,10 @@ class ClineBackend(CustomBackend):
         return 'ok'
 
     async def model_info(self, key):
-        if key not in CLINE_MODELS:
+        import asyncio
+        if key not in await asyncio.to_thread(self._ids):
             return None
-        return CLINE_MODELS[key][0], 'llm', True
+        return CLINE_MODELS.get(key, (None, ()))[0], 'llm', True
 
     def reasoning_levels(self, key):
         return ['none', *CLINE_MODELS.get(key, (None, ()))[1]]
@@ -247,3 +322,89 @@ class ClineBackend(CustomBackend):
 
     def empty_state_hint(self):
         return f'Run `cline auth` (or set {CLINE_KEY_ENV}), then /reconnect.'
+
+    def error_sentence(self, error: BaseException) -> str | None:
+        """Cline's refusals in plain words (app._plain_backend_error asks).
+        Cline reports a failed stream as HTTP 200 plus one `data: {"error": ...}`
+        event, so these arrive as an openai APIError with no status code and
+        would otherwise read "Something went wrong talking to the model server"."""
+        cause = error.__cause__ or error.__context__
+        if isinstance(cause, BackendError):  # raised by a request hook, wrapped by openai
+            return str(cause)
+        text = f"{getattr(error, 'message', '')} {getattr(error, 'body', '')} {error}".lower()
+        for markers, sentence in _CLINE_ERRORS:
+            if all(marker in text for marker in markers):
+                return sentence(text)
+        return None
+
+
+# ── The free tier ─────────────────────────────────────────────────────────────
+#: Ryan 2026-09-17 (liteask a-ae48d020): "card a new free provider backend we
+#: recreate based on that repo" (freellmapi), and 2026-09-24: "they got qwen 27B
+#: for free ! ... thats a crazy subagent route !". Source 1 is Cline: the same
+#: endpoint and login as ClinePass, restricted to its $0 models. More sources
+#: (keyless or keyed free endpoints) plug in later; see the design note in the
+#: commit body.
+
+_MODELS_PATH = '/api/v1/models'
+_free_models_cache: list[str] | None = None  # ponytail: once per process, like the feed
+
+
+def _fetch_model_ids() -> list[str]:
+    response = httpx.get(f'{CLINE_API}{_MODELS_PATH}', timeout=5)
+    response.raise_for_status()
+    return [m['id'] for m in response.json().get('data') or []
+            if isinstance(m, dict) and isinstance(m.get('id'), str)]
+
+
+def free_ids() -> list[str]:
+    """Every OpenRouter ":free" id Cline serves (priced 0 in models.dev, reached
+    through Cline's usage-billing path). Nothing else, ever: not the feed's
+    product-only free bucket, not a paid id."""
+    global _free_models_cache
+    if _free_models_cache is None:
+        try:
+            _free_models_cache = [m for m in _fetch_model_ids() if m.endswith(':free')]
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            pass  # not cached: the next connect tries again
+    return list(_free_models_cache or [])
+
+
+def is_free(model: str) -> bool:
+    return model.endswith(':free')
+
+
+class FreeBackend(ClineBackend):
+    name = 'free'
+    label = 'Free tier'
+
+    def _ids(self) -> list[str]:
+        return free_ids()
+
+    def http_client(self):
+        """The client app.py builds for this backend. Every chat request passes
+        this hook before it leaves the process, so a paid id (a stale
+        default_model, subagent_model or tool_summary_model from another
+        backend) is refused instead of billed to Cline credits."""
+        from openai import DefaultAsyncHttpxClient
+
+        async def only_free(request):
+            if not request.url.path.endswith('/chat/completions'):
+                return
+            try:
+                model = json.loads(request.content or b'{}').get('model', '')
+            except ValueError:
+                model = ''
+            if not is_free(str(model)):
+                raise BackendError(f'{model or "That model"} is not a free model; the Free tier only sends free models. Pick one with /model.')
+
+        return DefaultAsyncHttpxClient(event_hooks={'request': [only_free]})
+
+    async def load(self, key, *, ctx=None, notice=None):
+        raise BackendError('Free-tier models are remote; pick one with /model.')
+
+    async def unload(self, key):
+        raise BackendError('Free-tier models are remote; nothing to unload.')
+
+    def empty_state_hint(self):
+        return f'The Free tier uses your Cline login: run `cline auth` (or set {CLINE_KEY_ENV}), then /reconnect.'
