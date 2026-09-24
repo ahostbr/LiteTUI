@@ -122,3 +122,38 @@ def test_cross_destination_race_reports_conversation_saved_global_stale(tmp_path
     assert fresh.saved.tool_iterations == 77
     assert fresh.saved.theme_name == "monokai"
     assert fresh.saved.sidecar_enabled is False
+
+
+# -- editable parity (Ryan 2026-09-24: "Yes, make it editable (full parity)") --
+
+def test_a_field_settings_gives_no_control_is_not_editable_from_the_sidecar(tmp_path):
+    """backend_chosen and the per-model dicts have no /settings control; the
+    parent refuses them even if a page sent them."""
+    app = host(tmp_path)
+    for key in ("backend_chosen", "model_infer_overrides"):
+        with pytest.raises(ValueError, match="not editable"):
+            apply_patch(app, payload(app, key=key, value=True))
+
+
+def test_an_effort_change_on_a_live_claude_session_asks_first_and_cancel_saves_nothing(tmp_path, monkeypatch):
+    from litetui import claude_turn
+
+    app = host(tmp_path)
+    warn = ("effort", "Changing effort from high to max. ... full input price.")
+    monkeypatch.setattr(claude_turn, "effort_change_warning", lambda app_, level: warn if level == "max" else None)
+    monkeypatch.setattr(claude_turn, "effort_for", lambda app_: "max")
+    asked = apply_patch(app, payload(app, key="thinking_level", value="max"))
+    assert asked["saved"] is False and asked["conflict"] is False
+    assert asked["cache_warning"]["kind"] == "effort" and "full input price" in asked["cache_warning"]["text"]
+    assert app._settings_service.snapshot("abc").saved.thinking_level != "max", "nothing saved before the answer"
+    assert not hasattr(app, "_claude_cache_preapproved")
+    confirmed = apply_patch(app, {**payload(app, key="thinking_level", value="max"), "confirm_cache": True})
+    assert confirmed["saved"] is True
+    assert app._settings_service.snapshot("abc").saved.thinking_level == "max"
+    assert app._claude_cache_preapproved == ("effort", "max"), "the next send does not ask again"
+
+
+def test_confirm_cache_must_be_a_bool(tmp_path):
+    app = host(tmp_path)
+    with pytest.raises(ValueError, match="cache confirmation"):
+        apply_patch(app, {**payload(app), "confirm_cache": "yes"})

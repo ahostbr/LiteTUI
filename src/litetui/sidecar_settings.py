@@ -50,12 +50,16 @@ def public_snapshot(snapshot: SettingsSnapshot, *, backend=None, backends=(), mo
                        "saved": saved, "effective": effective,
                        "source": "override" if saved != effective else "saved"}
         if backend is not None:
+            from litetui.settings_screen import NOT_A_SETTINGS_CONTROL
+
             fields[key]["control"] = _control(backend, key)
+            # /settings shows no control for these; neither does the sidecar.
+            fields[key]["settings_control"] = key not in NOT_A_SETTINGS_CONTROL
     result = {"revisions": dict(snapshot.revisions), "fields": fields}
     if backend is not None:
         from litetui.settings_screen import thinking_choices
 
-        rows = thinking_choices(backend, model_id, getattr(snapshot.effective, "thinking_level"))
+        rows = thinking_choices(backend, model_id, snapshot.effective.thinking_level)
         result["backend"] = getattr(backend, "name", None)
         result["choices"] = {
             "backend": [{"value": value, "label": label} for value, label in backends],

@@ -46,7 +46,14 @@ def _tree() -> ast.Module:
 
 
 def _exempt(tree: ast.Module) -> set[str]:
-    """The names `_collect` deliberately skips, read out of its own `if name in (...)`."""
+    """The names `_collect` deliberately skips: its `if name in NOT_A_SETTINGS_CONTROL`.
+
+    The set moved out of an inline tuple into settings_screen.NOT_A_SETTINGS_CONTROL
+    so the sidecar settings view shows the same fields read-only. Still read from
+    the implementation, never retyped, and `_collect` must still skip BY it.
+    """
+    from litetui.settings_screen import NOT_A_SETTINGS_CONTROL
+
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_collect":
             for inner in ast.walk(node):
@@ -56,14 +63,11 @@ def _exempt(tree: ast.Module) -> set[str]:
                     and inner.left.id == "name"
                     and inner.ops
                     and isinstance(inner.ops[0], ast.In)
-                    and isinstance(inner.comparators[0], ast.Tuple)
+                    and isinstance(inner.comparators[0], ast.Name)
+                    and inner.comparators[0].id == "NOT_A_SETTINGS_CONTROL"
                 ):
-                    return {
-                        e.value
-                        for e in inner.comparators[0].elts
-                        if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                    }
-    raise AssertionError("could not find the exempt tuple in _collect — did it move?")
+                    return set(NOT_A_SETTINGS_CONTROL)
+    raise AssertionError("_collect no longer skips by NOT_A_SETTINGS_CONTROL — did it move?")
 
 
 def _controlled(tree: ast.Module) -> set[str]:

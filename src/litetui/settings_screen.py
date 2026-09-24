@@ -87,6 +87,18 @@ THINKING_CHOICES = [
 ]
 
 
+#: Settings fields /settings deliberately gives no control of their own; the
+#: sidecar settings view shows them read-only for the same reasons.
+NOT_A_SETTINGS_CONTROL = frozenset({
+    "mcp_disabled_servers", "custom_themes", "plugins_disabled",
+    # Per-model dicts, edited through /modelcfg — a flat text box
+    # for a nested dict would be a control that corrupts on save.
+    "llama_load_settings", "model_infer_overrides", "llama_presets",
+    # Set by the first-boot picker, not by a visible control.
+    "backend_chosen",
+})
+
+
 def thinking_choices(backend, model_id, current):
     """(label, value) rows the Thinking level select offers on `backend`.
 
@@ -1452,14 +1464,7 @@ class SettingsBody(Widget):
 
         for f in fields(Settings):
             name = f.name
-            if name in (
-                "mcp_disabled_servers", "custom_themes", "plugins_disabled",
-                # Per-model dicts, edited through /modelcfg — a flat text box
-                # for a nested dict would be a control that corrupts on save.
-                "llama_load_settings", "model_infer_overrides", "llama_presets",
-                # Set by the first-boot picker, not by a visible control.
-                "backend_chosen",
-            ):
+            if name in NOT_A_SETTINGS_CONTROL:
                 continue  # not one control; custom_themes is read from ct-*
             if settings_mod.source_of(name):
                 continue  # env owns it; the control is disabled

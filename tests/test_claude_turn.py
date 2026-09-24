@@ -555,3 +555,23 @@ async def test_the_window_comes_from_the_result_frame_and_is_not_cleared_by_mess
                    [ClaudeEvent(kind="usage", usage=result)], [result_event()]]
     await stream_turn(app)
     assert (app.ctx_used, app.ctx_max, app.ctx_loaded) == (9500, 1_000_000, True)
+
+
+@pytest.mark.asyncio
+async def test_a_change_confirmed_in_the_sidecar_is_not_asked_again_at_send(tmp_path, monkeypatch):
+    """The sidecar showed the same warning and the user chose Send anyway:
+    the send-time gate honours that once, for exactly that effort."""
+    app, session, asked = effort_app(tmp_path, monkeypatch, answer=False)
+    app._claude_cache_preapproved = ("effort", "max")
+    await stream_turn(app)
+    assert asked == [], "no second dialog for the change already confirmed"
+    assert session.efforts == ["max"] and session.queried
+    assert app._claude_cache_preapproved is None, "used once"
+
+
+def test_effort_change_warning_reads_the_same_gate_without_a_ledger_side_effect(tmp_path):
+    from litetui.claude_turn import effort_change_warning
+
+    app = SimpleNamespace(backend=SimpleNamespace(name="claude"), settings=SimpleNamespace())
+    assert effort_change_warning(app, "max") is None, "no ledger, no live session: nothing to warn about"
+    assert not hasattr(app, "_claude_ledger")
