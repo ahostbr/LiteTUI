@@ -20,6 +20,21 @@ CLI_VERSION = "2.1.281"
 CACHE_TTL = "1h"
 CACHE_TTL_SECONDS = 3600
 
+#: Every model spelling `claude --model` accepts, standard and 1M context.
+#: The CLI's initialize metadata is its own curated picker (five rows on CLI
+#: 2.1.281: default, opus[1m], claude-fable-5-1[1m], sonnet, haiku), so the
+#: queried list comes first and this fills in the rest. [1m] only where the CLI
+#: offers it: Opus 5.5, Fable 5.1 and Sonnet 5; Haiku 4.5 has no 1M window (the
+#: CLI refuses it with "doesn't have a 1M context window").
+# ponytail: static list, refresh when the CLI pin (CLI_VERSION) moves.
+STATIC_MODELS = (
+    "default", "opus", "opus[1m]", "fable", "fable[1m]", "sonnet", "sonnet[1m]", "haiku",
+    "claude-opus-5-5", "claude-opus-5-5[1m]",
+    "claude-fable-5-1", "claude-fable-5-1[1m]",
+    "claude-sonnet-5", "claude-sonnet-5[1m]",
+    "claude-haiku-4-5-20251001",
+)
+
 
 def cache_env(environ=None):
     """Child env that pins the cache lifetime and neutralises inherited switches.
@@ -194,6 +209,8 @@ class ClaudeBackend:
                     await session.close()
             if not self.models:
                 raise BackendError("Claude returned no model metadata. Check CLI installation/auth and reconnect.")
+            for key in STATIC_MODELS:
+                self.models.setdefault(key, {"value": key})
         return "ok"
 
     async def list_models(self):
