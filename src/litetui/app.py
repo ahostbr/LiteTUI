@@ -3901,7 +3901,9 @@ class LiteTUI(App):
         previous = self.settings.tool_policy_profile
         # Every change leaves a record and says where it came from: Ryan's
         # "it switched on its own" had none (the footer chip had eaten an Enter).
-        runtime_log.record("authority_change", previous=previous, profile=profile, source=source)
+        # runtime_log accepts only its allow-listed keys and single-token values.
+        runtime_log.record("authority_change", name=profile, status=previous,
+                           operation=source.replace(" ", "-"))
         self.settings.tool_policy_profile = profile
         self._active_tool_profile = profile
         # 🔴 THE ONE PLACE A PROFILE IS CHOSEN (T695), so the one place it is
