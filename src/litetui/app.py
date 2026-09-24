@@ -1831,7 +1831,8 @@ class LiteTUI(App):
         if self.settings.mcp_enabled and self.mcp.configs:
             self._mcp_connect()
         # T507-T1: apply CLI args after connection is up.
-        if self._cli_initial_model or self._first_prompt or self._cli_system_prompt or self._cli_thinking_level or self._launch_options:
+        if (self._cli_initial_model or self._first_prompt or self._cli_system_prompt
+                or self._cli_thinking_level or self._launch_options or self._cli_convo_id):
             self._cli_args_done = asyncio.Event()
             self._apply_cli_args()
         # T507-T2: start the RPC bridge in headless mode.
@@ -1935,7 +1936,7 @@ class LiteTUI(App):
         # NO CLAUDE BACKEND CAN EVER SATISFY (ClaudeBackend.name is "claude").
         # It read as the exit path for native runtimes and was dead code, so a
         # normal app exit never closed the owned claude.exe at all.
-        if not native and getattr(backend, "name", None) == "codex":
+        if backend is not None and not native and getattr(backend, "name", None) == "codex":
             if hasattr(backend, "app_server"):
                 await backend.app_server.close()
             else:
@@ -1946,12 +1947,12 @@ class LiteTUI(App):
         if native or getattr(self, "_claude_closing", None):
             from litetui.claude_backend import close_native, settle_close
             close_native(self, backend)
-            failures = await settle_close(self)
-            if failures:
-                try:
-                    self._system("Claude cleanup: " + "; ".join(failures))
-                except Exception:  # noqa: BLE001 - the tree is being torn down
-                    pass
+            for failure in await settle_close(self):
+                # Straight to the sink, not to chat: the widget tree is being
+                # pruned around this call, so a _system line can raise or land
+                # on a screen nobody will see again — and a cleanup failure is
+                # exactly the thing that must outlive the window.
+                runtime_log.record_error("claude_cleanup_failed", detail=failure)
         await super()._shutdown()
 
     async def on_unmount(self) -> None:
@@ -4491,6 +4492,62 @@ class LiteTUI(App):
         })
         self._rpc_ready_sent = True
 
+    def _resume_cli_convo(self) -> bool:
+        """`--convo <id>`: resume that conversation instead of the fresh one.
+
+        🔴 THE FLAG WAS WIRED EVERYWHERE EXCEPT INTO AN EFFECT. cli.py:62
+        parses it and documents "resume a conversation by id", cli.py threads
+        it to `LiteTUI(convo_id=...)`, and __init__ stores it on
+        `self._cli_convo_id` — where nothing read it. Every launch that named a
+        conversation got a NEW one, silently, which is the single outcome the
+        flag exists to prevent. Wired rather than removed: the flag is
+        documented and the behaviour it promises is the useful one.
+
+        RESOLUTION stays with the command registry: `/resume` matches an exact
+        or prefix conversation uuid (the `.convos/<uuid>/` folder name, not the
+        transcript stem — every transcript is `convo.jsonl`) and owns the
+        sentence printed when nothing matches, so this does not re-implement
+        it. The id list read below is an AMBIGUITY CHECK, not a second
+        resolver: it decides whether to dispatch at all, never which
+        conversation is chosen.
+
+        A blank id deliberately does nothing: `/resume` with no argument opens
+        the conversation picker, and a launch flag that degraded into a modal
+        on a headless start would be worse than the dead flag it replaces.
+
+        🔴 THE RETURN VALUE IS LOAD BEARING. `--convo <unknown> --prompt "..."`
+        reported "no conversation matches" and then sent the prompt into the
+        fresh chat anyway — a silent fallback onto the exact target the user
+        ruled out, which is worse than the dead flag because it looks like it
+        worked. False blocks the launch prompt, the same way an unavailable
+        `--model` does.
+        """
+        wanted = (getattr(self, "_cli_convo_id", None) or "").strip()
+        if not wanted:
+            return True
+        # `/resume` takes a prefix and picks the FIRST row that matches. That
+        # is fine for a human reading the list, who can see the choice and try
+        # again; a launch flag would silently pick between conversations. An
+        # exact id always wins; an ambiguous prefix is refused, not resolved.
+        ids = [row[0].parent.name for row in ConversationRepository.list_all()]
+        if wanted not in ids and len([i for i in ids if i.startswith(wanted)]) > 1:
+            self._cli_launch_error = f"--convo {wanted!r} matches more than one conversation"
+            self._system(
+                f"[cli] --convo {wanted!r} matches more than one conversation — "
+                "pass the full id. Launch prompt blocked; nothing was resumed."
+            )
+            return False
+        self._handle_command(f"/resume {wanted}")
+        current = self.convo_id or ""
+        if current == wanted or current.startswith(wanted):
+            return True
+        self._cli_launch_error = f"--convo {wanted!r} did not match a saved conversation"
+        self._system(
+            f"[cli] --convo {wanted!r}: launch prompt blocked. Nothing was resumed "
+            "and no conversation was created for it."
+        )
+        return False
+
     @work(exclusive=True, group="cli-args")
     async def _apply_cli_args(self) -> None:
         try:
@@ -4507,6 +4564,12 @@ class LiteTUI(App):
             self._cli_launch_error = None
             if getattr(self, '_launch_options', None) is not None and not self._gui_connection_success:
                 self._cli_launch_error = 'Backend connection/startup failed; launch prompt blocked'
+                return
+            # --convo BEFORE model/thinking/system-prompt/first-prompt, and
+            # after the connect wait above so a resume cannot race the backend
+            # coming up. Below the _cli_launch_error reset on purpose: a
+            # refusal set here must survive to the caller.
+            if not self._resume_cli_convo():
                 return
             if self._cli_initial_model:
                 want = self._cli_initial_model

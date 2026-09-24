@@ -58,14 +58,12 @@ ARTIFACT = ROOT / "artifacts" / "claude-restart-probe.json"
 class Rpc:
     """One actual `--rpc` child, read on a thread. Mirrors claude_rpc_smoke.py."""
 
-    def __init__(self, root: Path):
-        # NOT `--convo <id>`. That flag is DEAD: cli.py:62 threads it to
-        # app.py:1496 `self._cli_convo_id` and nothing in the codebase ever reads
-        # it, so the app silently starts a NEW conversation and a restart probe
-        # built on it measures nothing. Phase 2 resumes through the same path the
-        # GUI uses — `gui.conversations.open`, which calls app._resume().
+    def __init__(self, root: Path, convo_id: str | None = None):
+        # Both public resume entry points are probeable: GUI RPC and --convo.
         self.command = [sys.executable, "-m", "litetui.cli", "--rpc",
                         "--backend", "claude"]
+        if convo_id:
+            self.command += ["--convo", convo_id]
         self.process = subprocess.Popen(
             self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -267,6 +265,10 @@ def selected(ledger: dict) -> dict:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--via-cli", action="store_true", help="Resume phase 2 with --convo instead of GUI RPC")
+    args = parser.parse_args()
     if os.environ.get("LITETUI_CLAUDE_LIVE") != "1":
         raise SystemExit("Set LITETUI_CLAUDE_LIVE=1; no model call made")
     from litetui import settings
@@ -274,7 +276,7 @@ def main():
     nonce = "ORCHID-" + secrets.token_hex(4).upper()
     sentinel = "MAGPIE-" + secrets.token_hex(4).upper()
     evidence: dict = {"nonce": nonce, "sentinel": sentinel,
-                      "python": sys.version.split()[0]}
+                      "python": sys.version.split()[0], "resume_entry": "cli" if args.via_cli else "gui"}
     first = second = None
     # NOT TemporaryDirectory: a failure here is only diagnosable with the data
     # root still on disk. Removed at the end only when everything passed.
@@ -326,12 +328,13 @@ def main():
                     handle.write(json.dumps(record) + "\n")
 
             # ---- PHASE 2: a NEW process, same conversation -------------------
-            second = Rpc(root)
+            second = Rpc(root, convo_id if args.via_cli else None)
             second.until("ready")
-            second.request("gui.hello", protocol_version=1)
-            opened = second.request("gui.conversations.open", session_id=convo_id)
-            evidence["reopened_session_id"] = (opened or {}).get("session_id")
-            assert evidence["reopened_session_id"] == convo_id, opened
+            if not args.via_cli:
+                second.request("gui.hello", protocol_version=1)
+                opened = second.request("gui.conversations.open", session_id=convo_id)
+                evidence["reopened_session_id"] = (opened or {}).get("session_id")
+                assert evidence["reopened_session_id"] == convo_id, opened
             second.send("prompt", id="recall", message=(
                 "Two questions, one line each. 1) What token did I ask you to "
                 "remember? 2) Do you know a secret word beginning with MAGPIE? "
@@ -410,13 +413,13 @@ def main():
                 if rpc is not None:
                     rpc.kill_if_alive()
             ARTIFACT.parent.mkdir(parents=True, exist_ok=True)
-            ARTIFACT.write_text(json.dumps(evidence, indent=2, default=str),
-                                encoding="utf-8")
+            artifact = ARTIFACT.with_name("claude-restart-cli-probe.json") if args.via_cli else ARTIFACT
+            artifact.write_text(json.dumps(evidence, indent=2, default=str), encoding="utf-8")
             if evidence.get("result") == "PASS":
                 shutil.rmtree(root, ignore_errors=True)
             else:
                 print(f"data root kept for diagnosis: {root}")
-            print(f"{evidence.get('result', 'FAIL')} {ARTIFACT}")
+            print(f"{evidence.get('result', 'FAIL')} {artifact}")
 
 
 if __name__ == "__main__":
