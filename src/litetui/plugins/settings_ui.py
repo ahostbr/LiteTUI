@@ -89,7 +89,7 @@ def _cmd_settings(app, name: str, arg: str) -> None:
             return settings_runtime.apply_saved_result(app, requested, result)
 
         bindings = {
-            'snapshot_provider': lambda: service.snapshot(conversation_id),
+            'snapshot_provider': lambda: settings_runtime.snapshot_with_launch(app, conversation_id),
             'save_patch': save_patch,
             'runtime_apply': runtime_apply,
         }

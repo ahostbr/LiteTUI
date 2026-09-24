@@ -53,6 +53,19 @@ def without_invocation(app, candidate):
     return result
 
 
+def snapshot_with_launch(app, conversation_id):
+    """The service snapshot with this process's launch values (--backend ...)
+    as effective: what the TUI form shows. Diffing a form against it makes an
+    untouched launch value "no change" instead of a write."""
+    from copy import deepcopy
+    from dataclasses import replace
+    snapshot = service_for(app).snapshot(conversation_id)
+    effective = deepcopy(snapshot.effective)
+    for key in getattr(app, '_invocation_saved_values', {}):
+        setattr(effective, key, deepcopy(getattr(app.settings, key)))
+    return replace(snapshot, effective=effective)
+
+
 def retire_invocation(app, candidate, keys):
     saved = getattr(app, '_invocation_saved_values', {})
     for key in list(saved):
