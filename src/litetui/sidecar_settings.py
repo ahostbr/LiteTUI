@@ -31,7 +31,7 @@ def _control(backend, key):
 
 
 def public_snapshot(snapshot: SettingsSnapshot, *, backend=None, backends=(), models=(),
-                    model_id: str | None = None) -> dict:
+                    model_id: str | None = None, launch: dict | None = None) -> dict:
     """Return a detached wire payload; no write capability or secret-shaped fields.
 
     With `backend` (the app's live backend), each field also carries the TUI's
@@ -39,16 +39,25 @@ def public_snapshot(snapshot: SettingsSnapshot, *, backend=None, backends=(), mo
     offer: the engines with their /backend readiness marks (`backends`, built by
     model_switch.backend_rows), the models the app already holds (`models`,
     never a fresh network list), and the backend's own thinking levels.
+
+    `launch` holds what this process was STARTED with (`--backend`, `--model`,
+    ...: the app's invocation overrides, key -> the value in effect). The
+    settings service only knows environment overrides, so without this a
+    `--backend cline` instance showed its saved engine. Those fields are
+    effective here with source "override", as the TUI shows them.
     """
+    launch = launch or {}
     fields = {}
     for key, spec in SETTING_SPECS.items():
         if is_sensitive(key):
             continue
         saved = deepcopy(getattr(snapshot.saved, key))
-        effective = deepcopy(getattr(snapshot.effective, key))
+        effective = deepcopy(launch[key] if key in launch else getattr(snapshot.effective, key))
         fields[key] = {"scope": spec.scope.value, "apply_timing": spec.apply_timing,
                        "saved": saved, "effective": effective,
-                       "source": "override" if saved != effective else "saved"}
+                       "source": "override" if key in launch or saved != effective else "saved"}
+        if fields[key]["source"] == "override":
+            fields[key]["override_by"] = "launch" if key in launch else "environment"
         if backend is not None:
             from litetui.settings_screen import NOT_A_SETTINGS_CONTROL
 
@@ -59,7 +68,7 @@ def public_snapshot(snapshot: SettingsSnapshot, *, backend=None, backends=(), mo
     if backend is not None:
         from litetui.settings_screen import thinking_choices
 
-        rows = thinking_choices(backend, model_id, snapshot.effective.thinking_level)
+        rows = thinking_choices(backend, model_id, fields["thinking_level"]["effective"])
         result["backend"] = getattr(backend, "name", None)
         result["choices"] = {
             "backend": [{"value": value, "label": label} for value, label in backends],

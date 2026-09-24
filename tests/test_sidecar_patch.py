@@ -157,3 +157,16 @@ def test_confirm_cache_must_be_a_bool(tmp_path):
     app = host(tmp_path)
     with pytest.raises(ValueError, match="cache confirmation"):
         apply_patch(app, {**payload(app), "confirm_cache": "yes"})
+
+
+def test_a_field_set_at_launch_is_not_editable_but_others_are(tmp_path):
+    """`--backend X` pins the engine for this process (app._invocation_saved_values).
+    A sidecar save of it would be re-overwritten by the launch value on the next
+    reconnect (settings_runtime.prepare_reconnect), so the parent refuses it."""
+    app = host(tmp_path)
+    app._invocation_saved_values = {"backend": app.settings.backend}
+    app.settings.backend = "codex"
+    with pytest.raises(ValueError, match="Set at launch"):
+        apply_patch(app, payload(app, key="backend", value="ninfer"))
+    assert app._settings_service.snapshot("abc").saved.backend != "ninfer"
+    assert apply_patch(app, payload(app))["saved"] is True

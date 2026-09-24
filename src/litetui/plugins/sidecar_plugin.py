@@ -33,7 +33,14 @@ def settings_snapshot(app) -> dict:
 
     return public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name),
                            backend=app.backend, backends=backend_rows(app),
-                           models=list(app.available_models), model_id=app.model_id)
+                           models=list(app.available_models), model_id=app.model_id,
+                           launch=launch_overrides(app))
+
+
+def launch_overrides(app) -> dict:
+    """Fields this process was started with (--backend, --model, ...), and the
+    value in effect: the TUI shows these, the settings service cannot see them."""
+    return {key: getattr(app.settings, key) for key in getattr(app, "_invocation_saved_values", {})}
 
 
 def _apply_and_refresh(app, payload: dict) -> dict:

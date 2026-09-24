@@ -49,6 +49,10 @@ def apply_patch(app, payload: dict) -> dict:
             raise ValueError("No change to saved setting")
         if getattr(snapshot.effective, key) != getattr(snapshot.saved, key):
             raise ValueError("Overridden setting not editable from sidecar")
+        # Set at launch (--backend ...): a saved edit would be undone on the
+        # next reconnect, which re-applies the launch value (prepare_reconnect).
+        if key in getattr(app, "_invocation_saved_values", {}):
+            raise ValueError("Set at launch for this instance; not editable from sidecar")
     if snapshot.revisions != expected:
         return {"saved": False, "conflict": True, "revisions": snapshot.revisions,
                 "persistence": [], "runtime": []}
