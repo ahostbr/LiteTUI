@@ -45,9 +45,10 @@ _TRANSIENT_GRACE_S = 30
 _RELOGIN = 'run `cline auth` again, then /reconnect'
 
 #: id -> (context window, reasoning effort levels), from the @cline/llms
-#: dist/models.js catalog. The live list (GET /api/v1/ai/cline/recommended-models,
-#: "clinePass") matched these 14 ids on 2026-09-24. None = no usable window in the
-#: catalog (it lists qwen3.7-* as 1 token).
+#: dist/models.js catalog. It is the fallback list when the live feed is
+#: unreachable (it matched the feed's "clinePass" bucket on 2026-09-24) and the
+#: metadata source for ids it knows; others get no window and no levels.
+#: None = no usable window in the catalog (it lists qwen3.7-* as 1 token).
 CLINE_MODELS = {
     'cline-pass/glm-5.3-flash': (1310720, ('low', 'high', 'max')),
     'cline-pass/glm-5.3': (1310720, ('low', 'high', 'max')),
@@ -64,6 +65,44 @@ CLINE_MODELS = {
     'cline-pass/qwen3.7-plus': (None, ()),
     'cline-pass/muse-spark-1.3-contributor': (1048576, ('minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
 }
+
+_FEED_PATH = '/api/v1/ai/cline/recommended-models'
+_feed_cache: dict | None = None  # ponytail: one successful fetch per process; restart to see a new feed
+
+
+def _fetch_feed() -> dict:
+    """Cline's keyless model feed, the list its own pickers trust over the bundled
+    catalog (@cline/llms catalog-live.ts fetchLiveProviderModels; 5s like theirs)."""
+    response = httpx.get(f'{CLINE_API}{_FEED_PATH}', timeout=5)
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise TypeError('feed is not an object')
+    return body
+
+
+def recommended_feed() -> dict:
+    global _feed_cache
+    if _feed_cache is None:
+        try:
+            _feed_cache = _fetch_feed()
+        except (httpx.HTTPError, ValueError, TypeError):
+            return {}  # not cached: the next connect tries again
+    return _feed_cache
+
+
+def feed_ids(feed: dict, bucket: str) -> list[str]:
+    return [entry['id'] for entry in feed.get(bucket) or []
+            if isinstance(entry, dict) and isinstance(entry.get('id'), str)]
+
+
+def clinepass_ids() -> list[str]:
+    """What the ClinePass picker offers: the feed's "clinePass" bucket plus its
+    "free" bucket (Cline's own cline-pass list is built the same way,
+    catalog-cline-recommended.ts), or the vendored snapshot when the feed is
+    unreachable. One read of the feed, so a list is never half live."""
+    feed = recommended_feed()
+    return list(dict.fromkeys((feed_ids(feed, 'clinePass') or list(CLINE_MODELS)) + feed_ids(feed, 'free')))
 
 
 def store_path() -> Path:
@@ -224,7 +263,7 @@ class ClineBackend(CustomBackend):
         return await asyncio.to_thread(self.api_key)
 
     def _rows(self):
-        return [ModelRow(key=k, path=None, source='server', loaded=True) for k in CLINE_MODELS]
+        return [ModelRow(key=k, path=None, source='server', loaded=True) for k in clinepass_ids()]
 
     async def ensure_running(self):
         import asyncio
@@ -232,9 +271,10 @@ class ClineBackend(CustomBackend):
         return 'ok'
 
     async def model_info(self, key):
-        if key not in CLINE_MODELS:
+        import asyncio
+        if key not in await asyncio.to_thread(clinepass_ids):
             return None
-        return CLINE_MODELS[key][0], 'llm', True
+        return CLINE_MODELS.get(key, (None, ()))[0], 'llm', True
 
     def reasoning_levels(self, key):
         return ['none', *CLINE_MODELS.get(key, (None, ()))[1]]

@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from openai import AsyncOpenAI
 
@@ -12,13 +13,26 @@ from litetui.cline_backend import CLINE_MODELS, ClineBackend
 from litetui.llm_backend import BackendError, make_backend
 from litetui.settings import Settings
 
+REAL_FETCH_FEED = cline_backend._fetch_feed
+FEED = {'recommended': [{'id': 'anthropic/claude-opus-5'}],
+        'clinePass': [{'id': 'cline-pass/glm-5.3-flash'}, {'id': 'cline-pass/new-model'}],
+        'free': [{'id': 'cline-free/gemini-3.8-flash'}, {'id': 'stealth/space-bunny-alpha'}],
+        'clineCloud': [{'id': 'cloud/x'}]}
+
+
+def _unreachable():
+    raise httpx.ConnectError('offline')
+
 
 @pytest.fixture(autouse=True)
 def store(tmp_path, monkeypatch):
-    """Every test gets its own Cline store; the real ~/.cline is never read."""
+    """Every test gets its own Cline store; the real ~/.cline is never read, and
+    the model feed is offline unless a test provides one."""
     path = tmp_path / 'providers.json'
     monkeypatch.setenv('CLINE_PROVIDER_SETTINGS_PATH', str(path))
     monkeypatch.delenv('CLINE_API_KEY', raising=False)
+    monkeypatch.setattr(cline_backend, '_feed_cache', None)
+    monkeypatch.setattr(cline_backend, '_fetch_feed', _unreachable)
     return path
 
 
@@ -239,3 +253,59 @@ def test_clinepass_backend_saved_on_one_conversation_stays_there(tmp_path):
     assert svc.save_patch('a', [SettingChange('backend', 'cline', scope)], a.revisions).fully_saved
     assert svc.snapshot('a').saved.backend == 'cline'
     assert svc.snapshot('b').saved.backend == b.saved.backend
+
+
+@pytest.mark.asyncio
+async def test_the_live_feed_is_the_list_clinepass_plus_its_free_bucket(monkeypatch):
+    monkeypatch.setattr(cline_backend, '_fetch_feed', lambda: FEED)
+    backend = _backend()
+    assert [r.key for r in await backend.list_models()] == [
+        'cline-pass/glm-5.3-flash', 'cline-pass/new-model', 'cline-free/gemini-3.8-flash', 'stealth/space-bunny-alpha']
+    await backend.ensure_chat_ready('cline-free/gemini-3.8-flash')
+    with pytest.raises(BackendError):
+        await backend.ensure_chat_ready('anthropic/claude-opus-5')  # a usage-billing id from "recommended"
+    assert await backend.model_info('cline-pass/glm-5.3-flash') == (1310720, 'llm', True)
+    assert await backend.model_info('cline-pass/new-model') == (None, 'llm', True)
+
+
+def test_an_unreachable_feed_falls_back_and_is_retried_next_time(monkeypatch):
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ConnectError('offline')
+        return FEED
+
+    monkeypatch.setattr(cline_backend, '_fetch_feed', flaky)
+    assert cline_backend.clinepass_ids() == list(CLINE_MODELS)
+    assert 'cline-pass/new-model' in cline_backend.clinepass_ids()
+    assert 'cline-pass/new-model' in cline_backend.clinepass_ids()
+    assert len(calls) == 2  # a failure is not cached; a success is
+
+
+def test_the_feed_is_fetched_keyless_from_cline(monkeypatch):
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get('Authorization')))
+            body = json.dumps(FEED).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(cline_backend, 'CLINE_API', f'http://127.0.0.1:{server.server_port}')
+    try:
+        assert REAL_FETCH_FEED() == FEED
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert seen == [('/api/v1/ai/cline/recommended-models', None)]
