@@ -29,7 +29,10 @@ class SidecarWindow:
         self.token = ""
         self._next_id = 1
         self._exchange_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self.on_event: Callable[[dict], None] | None = None
+        # No native edit action/parity test exists. Never grant write in hello yet.
+        self.settings_write = False
         self.on_rejected_frame: Callable[[str], object] = lambda reason: runtime_log.record(
             "sidecar_frame_rejected", site="sidecar_launch.reader", component="sidecar", reason=reason,
         )
@@ -70,8 +73,11 @@ class SidecarWindow:
                             pending.put_nowait(frame["payload"])
                         except queue.Full:
                             self.on_rejected_frame("duplicate_reply")
-                    elif frame["command"] == "settings_patch" and self.on_event is not None:
-                        self.on_event(frame)
+                    elif frame["command"] == "settings_patch":
+                        if self.settings_write and self.on_event is not None:
+                            self.on_event(frame)
+                        else:
+                            self.on_rejected_frame("settings_write_disabled")
                     else:
                         self.on_rejected_frame("unknown_command")
             except (OSError, RuntimeError, ValueError) as exc:
@@ -99,8 +105,9 @@ class SidecarWindow:
         response: queue.Queue[dict | Exception] = queue.Queue(maxsize=1)
         self._pending[request_id] = response
         try:
-            process.stdin.write(raw + b"\n")
-            process.stdin.flush()
+            with self._write_lock:
+                process.stdin.write(raw + b"\n")
+                process.stdin.flush()
             try:
                 value = response.get(timeout=self.timeout)
             except queue.Empty as exc:
@@ -110,6 +117,15 @@ class SidecarWindow:
             return value
         finally:
             self._pending.pop(request_id, None)
+
+    def send_event_reply(self, request_id: int, result: dict) -> None:
+        process = self.process
+        if process is None or process.poll() is not None or process.stdin is None:
+            raise RuntimeError("Sidecar disconnected before event reply")
+        raw = sidecar_protocol.encode(request_id, self.token, "event_reply", result)
+        with self._write_lock:
+            process.stdin.write(raw + b"\n")
+            process.stdin.flush()
 
     def open(self, view: str, *, enabled: bool = True) -> bool:
         if view not in VIEWS:
@@ -137,7 +153,7 @@ class SidecarWindow:
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, close_fds=True, env=env)
             self._start_reader(self.process)
-            result = self._exchange("hello", {})
+            result = self._exchange("hello", {"settings_write": False})
             if result.get("version") != sidecar_protocol.VERSION or result.get("ready") is not True:
                 raise ValueError("Incompatible sidecar handshake")
         except (OSError, ValueError, RuntimeError, TimeoutError) as exc:

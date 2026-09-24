@@ -8,6 +8,7 @@ from pathlib import Path
 
 from litetui import paths, settings_runtime
 from litetui.plugins import PluginManifest
+from litetui.sidecar_dispatch import SettingsPatchDispatcher
 from litetui.sidecar_jobs import public_jobs
 from litetui.sidecar_launch import SidecarWindow
 from litetui.sidecar_settings import public_snapshot
@@ -51,6 +52,7 @@ def _handle(app, name: str, arg: str) -> None:
     owner = getattr(app, "_sidecar_preview", None)
     if owner is None:
         owner = _new_window(app)
+        owner.on_event = SettingsPatchDispatcher(app, owner)
         app._sidecar_preview = owner
     # A command never awaits the child handshake or a failed process termination.
     threading.Thread(target=lambda: _open_background(app, owner, view),

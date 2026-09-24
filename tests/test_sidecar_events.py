@@ -32,8 +32,9 @@ def test_malformed_unmatched_unknown_bad_token_drop_without_disconnect():
     ready = threading.Event()
     threading.Timer(0.05, ready.set).start()
     assert ready.wait(1)
-    assert len(rejected) == 4
-    assert [event["id"] for event in events] == [7]
+    assert len(rejected) == 5
+    assert rejected[-1] == "settings_write_disabled"
+    assert events == []
     assert owner._reader_error is None
     owner.close()
 
