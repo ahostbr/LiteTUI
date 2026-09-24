@@ -141,13 +141,18 @@ class ClaudeLedger:
 
     # ---- writes ----------------------------------------------------------
 
-    def select_segment(self, workspace: str, new: bool = False) -> dict[str, Any]:
+    def select_segment(self, workspace: str, new: bool = False,
+                       seed: str | None = None) -> dict[str, Any]:
         """Resume the selected segment for `workspace`, or start a fresh one.
 
         A DIFFERENT WORKSPACE GETS A DIFFERENT SEGMENT, even with `new=False`.
         Resume is by exact native id AND workspace (plan 3.1); reusing a
         segment whose recorded workspace no longer matches would resume a
         native session against a directory it was not created in.
+
+        `seed`: a LiteTUI compaction summary this segment's sessions carry in
+        their system prompt (claude_backend.seeded_append), on every open and
+        every resume. Saved with the segment, so it survives a restart.
         """
         current = self._data["segments"].get(self._data["selected_segment"] or "")
         if not new and current is not None and current["workspace"] == workspace:
@@ -159,6 +164,8 @@ class ClaudeLedger:
             "created_at": time.time(),
             "entries": [],
         }
+        if seed:
+            segment["seed"] = seed
         self._data["segments"][segment["id"]] = segment
         self._data["selected_segment"] = segment["id"]
         self._save()

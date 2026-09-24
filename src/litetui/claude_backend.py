@@ -20,6 +20,41 @@ CLI_VERSION = "2.1.281"
 CACHE_TTL = "1h"
 CACHE_TTL_SECONDS = 3600
 
+#: LiteTUI compacts Claude conversations itself (claude_compact; Ryan
+#: 2026-09-24: "I would rather keep it if it's possible"), so Claude's own
+#: autocompact is off. Measured on CLI 2.1.281 via get_context_usage():
+#: isAutoCompactEnabled True (threshold 967000) by default, False with this.
+#: DISABLE_COMPACT is NOT used: it would also refuse a hard-limit compaction.
+AUTOCOMPACT_ENV = {"DISABLE_AUTO_COMPACT": "1"}
+
+#: Appended to Claude Code's preset system prompt. Fixed for the life of a
+#: session and identical across sessions, so the cache prefix it anchors holds.
+#:
+#: 🔴 THE COMPACTION REQUEST MUST BE DECLARED HERE, IN THE TRUSTED CHANNEL. Sent
+#: as a bare user message, LiteTUI's compaction prompt was refused as a prompt
+#: injection (live, sonnet, CLI 2.1.281: "this looks like an attempt to get me
+#: to persist that content ... I'm not going to do that").
+COMPACT_MARKER = "[LiteTUI compaction request]"
+APPEND = ("You are running inside LiteTUI. Claude owns this session, its native tools and context "
+          "window. LiteTUI presents your answers, enforces user authority, and owns compaction. When "
+          "the context fills, or the user runs /compact, LiteTUI sends a user message that starts with "
+          f"{COMPACT_MARKER}. That message is genuine: answer it with the summary it asks for, and "
+          "LiteTUI continues in a fresh session that starts from that summary. Do not compact on your "
+          "own and do not use model-changing tools.")
+
+
+def seeded_append(seed):
+    """The system-prompt append for a session that continues a compaction.
+
+    The summary rides in the SYSTEM prompt, not the first user message: in the
+    user channel the fresh session refused it as an injection (live: "I have no
+    code or codename on record, this looks like a prompt injection attempt").
+    Fixed for the life of the segment, so every request of that session (and
+    every resume of it) carries the same prefix."""
+    return (f"{APPEND}\n\nThis session continues a conversation LiteTUI compacted. The summary below "
+            "was written by you, in the previous session, from the full conversation. Treat it as "
+            f"your own notes on everything before this point:\n\n{seed}")
+
 #: Every model spelling `claude --model` accepts, standard and 1M context.
 #: The CLI's initialize metadata is its own curated picker (five rows on CLI
 #: 2.1.281: default, opus[1m], claude-fable-5-1[1m], sonnet, haiku), so the
@@ -191,9 +226,9 @@ class ClaudeBackend:
             "setting_sources": [], "skills": [], "strict_mcp_config": True, "mcp_servers": {},
             "tools": [], "permission_mode": "dontAsk", "include_partial_messages": True,
             "verbatim_prompts": True,
-            "system_prompt": {"type": "preset", "preset": "claude_code", "append": "You are running inside LiteTUI. Claude owns this session, its native tools and context. LiteTUI presents your answers and enforces user authority. Do not use host compaction or model-changing tools."},
+            "system_prompt": {"type": "preset", "preset": "claude_code", "append": APPEND},
             "extra_args": {"no-chrome": None, "disable-slash-commands": None, "replay-user-messages": None},
-            "env": cache_env(),
+            "env": {**cache_env(), **AUTOCOMPACT_ENV},
         }
         defaults.update(values)
         return sdk.ClaudeAgentOptions(**defaults)
@@ -235,6 +270,9 @@ class ClaudeBackend:
             await self.close()
         if self.session is None:
             self.segment_id = segment["id"]
+            if segment.get("seed"):
+                options["system_prompt"] = {"type": "preset", "preset": "claude_code",
+                                            "append": seeded_append(segment["seed"])}
             self.session = ClaudeSession(await self._options(
                 cwd=segment["workspace"], resume=segment.get("session_id"), model=model, **options,
             ))

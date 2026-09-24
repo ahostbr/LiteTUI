@@ -541,3 +541,17 @@ def test_the_think_level_reaches_claude_as_its_effort():
     assert effort_for(app) == "max"
     app.thinking_level = "off"          # a local-backend level Claude does not take
     assert effort_for(app) is None
+
+
+@pytest.mark.asyncio
+async def test_the_window_comes_from_the_result_frame_and_is_not_cleared_by_message_frames(tmp_path):
+    """Live: message frames carry no window, the result frame's modelUsage does.
+    The footer read "ctx 11,264 / ?" and autocompact could never fire."""
+    app = turn_app(tmp_path, messages=["a", "b", "c"])
+    app.ctx_max, app.ctx_loaded = 1_000_000, True          # known from an earlier turn
+    message = ClaudeUsage(source="message", input_tokens=10, context_tokens=9500)
+    result = ClaudeUsage(source="result", input_tokens=10, max_context_tokens=1_000_000)
+    app._events = [[ClaudeEvent(kind="usage", usage=message)],
+                   [ClaudeEvent(kind="usage", usage=result)], [result_event()]]
+    await stream_turn(app)
+    assert (app.ctx_used, app.ctx_max, app.ctx_loaded) == (9500, 1_000_000, True)
