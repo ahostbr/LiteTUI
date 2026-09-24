@@ -2061,7 +2061,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
     ("codex", "Codex (OAuth subscription)"),
     ("claude", "Claude Agent"),
     ("cline", "ClinePass (Cline subscription)"),
-    ("free", "Free tier (no-cost models via Cline)"),
+    ("free", "Free tier (no-cost models: Cline, Kilo, OVH, + keyed)"),
 )
 BACKEND_NAMES: tuple[str, ...] = tuple(name for name, _ in BACKENDS)
 
@@ -2128,7 +2128,7 @@ def _make_backend(settings):
         from litetui.cline_backend import ClineBackend
         return ClineBackend(settings)
     if settings.backend == "free":
-        from litetui.cline_backend import FreeBackend
+        from litetui.free_tier import FreeBackend
         return FreeBackend(settings)
     if settings.backend == "codex":
         from litetui.oauth_backend import OAuthBackend

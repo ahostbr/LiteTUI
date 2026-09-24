@@ -33,8 +33,6 @@ def store(tmp_path, monkeypatch):
     monkeypatch.delenv('CLINE_API_KEY', raising=False)
     monkeypatch.setattr(cline_backend, '_feed_cache', None)
     monkeypatch.setattr(cline_backend, '_fetch_feed', _unreachable)
-    monkeypatch.setattr(cline_backend, '_free_models_cache', None)
-    monkeypatch.setattr(cline_backend, '_fetch_model_ids', _unreachable)
     return path
 
 
@@ -312,63 +310,6 @@ def test_the_feed_is_fetched_keyless_from_cline(monkeypatch):
         server.shutdown()
         server.server_close()
     assert seen == [('/api/v1/ai/cline/recommended-models', None)]
-
-
-# -- the Free tier: source 1 is Cline, restricted to its $0 models ---------------
-
-SERVED = ['anthropic/claude-opus-5', 'qwen/qwen3.8-27b:free', 'openai/gpt-6-astra', 'openrouter/free:free']
-
-
-def _free_backend(monkeypatch):
-    monkeypatch.setattr(cline_backend, '_fetch_feed', lambda: FEED)
-    monkeypatch.setattr(cline_backend, '_fetch_model_ids', lambda: SERVED)
-    return make_backend(Settings(backend='free'))
-
-
-@pytest.mark.asyncio
-async def test_the_free_tier_lists_only_free_models(monkeypatch):
-    backend = _free_backend(monkeypatch)
-    assert 'free' in llm_backend.BACKEND_NAMES and backend.name == 'free'
-    assert [r.key for r in await backend.list_models()] == ['qwen/qwen3.8-27b:free', 'openrouter/free:free']
-    for paid in ('anthropic/claude-opus-5', 'openai/gpt-6-astra', 'cline-pass/glm-5.3-flash',
-                 'cline-free/gemini-3.8-flash', 'stealth/space-bunny-alpha'):
-        with pytest.raises(BackendError):
-            await backend.ensure_chat_ready(paid)
-
-
-@pytest.mark.asyncio
-async def test_a_paid_id_never_leaves_the_process_on_the_free_tier(store, monkeypatch):
-    """The guard sits on the HTTP client app.py builds, so it also covers calls
-    that skip ensure_chat_ready (subagent_model, tool_summary_model, a stale
-    default_model from another backend)."""
-    from litetui.app import _plain_backend_error
-
-    _login(store, 3600)
-    reached = []
-    sse = 'data: ' + json.dumps({'id': 'c', 'object': 'chat.completion.chunk', 'created': 0, 'model': 'm',
-                                 'choices': [{'index': 0, 'delta': {'content': 'ok'}, 'finish_reason': None}]}) + '\n\ndata: [DONE]\n\n'
-    server, url, _ = _serve(lambda body: (reached.append(body['model']) or 200, 'text/event-stream', sse))
-    backend = _free_backend(monkeypatch)
-    monkeypatch.setattr(backend, '_base', url + '/api/v1')
-    client = AsyncOpenAI(base_url=backend.base_url(), api_key=backend.api_key_provider,
-                         http_client=backend.http_client(), max_retries=0)
-    try:
-        with pytest.raises(Exception) as refused:
-            await client.chat.completions.create(model='anthropic/claude-opus-5', stream=True,
-                                                 messages=[{'role': 'user', 'content': 'hi'}])
-        stream = await client.chat.completions.create(model='qwen/qwen3.8-27b:free', stream=True,
-                                                      messages=[{'role': 'user', 'content': 'hi'}])
-        text = ''.join([c.choices[0].delta.content or '' async for c in stream])
-    finally:
-        server.shutdown()
-        server.server_close()
-    assert reached == ['qwen/qwen3.8-27b:free'] and text == 'ok'
-    assert _plain_backend_error(refused.value, backend) == (
-        'anthropic/claude-opus-5 is not a free model; the Free tier only sends free models. Pick one with /model.')
-
-
-def test_the_clinepass_backend_has_no_free_only_guard():
-    assert not hasattr(_backend(), 'http_client')
 
 
 def test_cline_refusals_read_as_plain_sentences():

@@ -31,6 +31,7 @@ from textual.widgets import Input, Label, Select, Static, Switch, TabbedContent,
 
 from litetui import settings_runtime
 from litetui import cline_backend
+from litetui import free_tier
 from litetui import llm_backend
 from litetui import model_transport
 from litetui import paths  # noqa: F401 — path anchors come from ONE home (plugin rule)
@@ -372,7 +373,7 @@ def backend_rows(app) -> list[tuple[str, str]]:
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
         "cline": cline_backend.auth_status(),
-        "free": cline_backend.auth_status(),
+        "free": free_tier.status_mark(),
     }
     rows = [
         (key, f"{label}  · {marks[key]}" if key in marks else label)
