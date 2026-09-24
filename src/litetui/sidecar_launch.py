@@ -13,7 +13,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from litetui import sidecar_protocol
+from litetui import runtime_log, sidecar_protocol
 
 VIEWS = frozenset({"timeline", "settings", "calendar", "job"})
 
@@ -29,6 +29,10 @@ class SidecarWindow:
         self.token = ""
         self._next_id = 1
         self._exchange_lock = threading.Lock()
+        self.on_event: Callable[[dict], None] | None = None
+        self.on_rejected_frame: Callable[[str], object] = lambda reason: runtime_log.record(
+            "sidecar_frame_rejected", site="sidecar_launch.reader", component="sidecar", reason=reason,
+        )
 
     def _exchange(self, command: str, payload: object) -> dict:
         if not self._exchange_lock.acquire(blocking=False):
@@ -52,13 +56,24 @@ class SidecarWindow:
                         raise RuntimeError("Sidecar disconnected")
                     if len(raw) > sidecar_protocol.MAX_FRAME_BYTES + 1 or not raw.endswith(b"\n"):
                         raise ValueError("Invalid sidecar reply length")
-                    frame = sidecar_protocol.decode(raw[:-1], self.token)
-                    if frame["command"] != "reply" or not isinstance(frame["payload"], dict):
-                        raise ValueError("Unexpected sidecar reply")
-                    pending = self._pending.get(frame["id"])
-                    if pending is None:
-                        raise ValueError("Unmatched sidecar reply")
-                    pending.put_nowait(frame["payload"])
+                    try:
+                        frame = sidecar_protocol.decode(raw[:-1], self.token)
+                    except ValueError as exc:
+                        self.on_rejected_frame(type(exc).__name__)
+                        continue
+                    if frame["command"] == "reply" and isinstance(frame["payload"], dict):
+                        pending = self._pending.get(frame["id"])
+                        if pending is None:
+                            self.on_rejected_frame("unmatched_reply")
+                            continue
+                        try:
+                            pending.put_nowait(frame["payload"])
+                        except queue.Full:
+                            self.on_rejected_frame("duplicate_reply")
+                    elif frame["command"] == "settings_patch" and self.on_event is not None:
+                        self.on_event(frame)
+                    else:
+                        self.on_rejected_frame("unknown_command")
             except (OSError, RuntimeError, ValueError) as exc:
                 self._reader_error = exc
             finally:
