@@ -72,3 +72,6 @@ tools/convo_search.db*
 monitor-log.jsonl
 monitor-shots/
 monitor-baselines.json
+
+# locally built sidecar binary (litetui-sidecar release)
+bin/
