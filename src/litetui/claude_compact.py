@@ -13,14 +13,19 @@ the same meter reset. What differs is only what Claude needs:
   * the summary is written by Claude INSIDE its live session, because that is
     where the conversation is (LiteTUI's display rows are not the context);
     the cache is still warm there, so the summary turn is the cheap one;
+  * STEP 1 of the request has Claude persist the store (memories/, memory.md,
+    soul.md, handoff.md) with its own Write/Edit before it summarises;
   * then the session is CLOSED and a fresh segment is selected, seeded with
-    the summary (claude_turn.seeded): its first message carries it, so the
-    system prompt stays byte-identical and model, effort and identity carry
-    over through the ordinary open path.
+    the summary. The seed rides in that segment's SYSTEM prompt
+    (claude_turn.system_prompt_for / claude_backend.seeded_append), fixed for
+    the segment's life; model, effort and identity carry over through the
+    ordinary open path.
 
-Claude's own autocompact is off for LiteTUI sessions (claude_backend
-AUTOCOMPACT_ENV, measured). If Claude compacts anyway, `native_compaction`
-renders its compact_boundary through the same card.
+Claude's own compaction is off for LiteTUI sessions, the hard-limit one included
+(claude_backend AUTOCOMPACT_ENV: DISABLE_AUTO_COMPACT + DISABLE_COMPACT). LiteTUI's
+threshold is checked on the usage frames mid-turn (claude_turn.after_turn). If a CLI
+ever compacts anyway, `native_compaction` renders its compact_boundary through the
+same card.
 """
 from __future__ import annotations
 
@@ -30,9 +35,9 @@ import uuid
 
 from rich.text import Text
 
-from litetui import claude_cache, paths
+from litetui import claude_cache
 from litetui.claude_backend import COMPACT_MARKER
-from litetui.claude_turn import effort_for, ledger_for, session_for
+from litetui.claude_turn import effort_for, launch_workspace, ledger_for, session_for
 
 #: Said in the cache warning for a user-triggered /compact.
 COMPACT_COLD = ("Compacting ends this Claude session: Claude writes a summary, and your next message "
@@ -41,20 +46,20 @@ COMPACT_COLD = ("Compacting ends this Claude session: Claude writes a summary, a
 
 
 def request(extra: str = "") -> str:
-    """LiteTUI's summary instructions, as the marked request Claude's system
+    """LiteTUI's compaction instructions, whole, as the marked request Claude's system
     prompt declares genuine (claude_backend.APPEND).
 
-    STEP 2 of COMPACT_PROMPT, verbatim: what a summary must cover is LiteTUI's
-    rule for every backend. STEP 1 (write memories/, memory.md, soul.md) is
-    left out: those are LiteTUI's store files, which Claude cannot see, and
-    asking for them is what made the whole message read as an injection.
+    Plan claude-backend-litetui-identity, phase 2 (Ryan: "Claude told its folder +
+    compaction STEP 1"): STEP 1 persists memories/, memory.md, soul.md and handoff.md
+    with Claude's own Write/Edit, then STEP 2 is the summary. STEP 1 used to be cut:
+    Claude could not see the store and the whole request read as an injection. Its
+    prompt is LiteTUI's now and names that folder (the conversation-store section).
     """
     from litetui.app import COMPACT_PROMPT
 
-    _, sep, step2 = COMPACT_PROMPT.partition("STEP 2")
-    body = (sep + step2) if sep else COMPACT_PROMPT
-    return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Use no tools. Your reply "
-            f"becomes the notes the next session starts from.\n\n{body.strip()}"
+    return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
+            f"Write/Edit tools on the store files your system prompt names, then reply with STEP 2's "
+            f"summary; that reply becomes the notes the next session starts from.\n\n{COMPACT_PROMPT.strip()}"
             + (f"\n\n{extra}" if extra else ""))
 
 
@@ -146,7 +151,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                     if event.kind == "tool_use" and event.tool_input is not None:
                         msg.set_args(json.dumps(event.tool_input))
                         path = (event.tool_input or {}).get("file_path") or (event.tool_input or {}).get("path")
-                        if event.complete and path and "write" in (event.tool_name or "").lower():
+                        if event.complete and path and any(w in (event.tool_name or "").lower() for w in ("write", "edit")):
                             writes.append(str(path))
                     elif event.kind == "tool_result":
                         msg.set_result(str(event.tool_result), not event.is_error)
@@ -182,7 +187,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         await backend.close()
     except Exception as exc:  # noqa: BLE001 - reported; the new segment still owns the summary
         app._system(f"Claude cleanup after compaction: {exc}")
-    ledger.select_segment(segment.get("workspace") or str(paths.ROOT), new=True, seed=seed)
+    ledger.select_segment(segment.get("workspace") or launch_workspace(app), new=True, seed=seed)
 
     pair = [
         {"role": "user", "content": "[Summary of earlier conversation, which has been compacted away]\n\n" + seed},

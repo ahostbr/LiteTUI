@@ -195,6 +195,19 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
+    def fix_system_prompt(self, segment_id: str, text: str) -> str:
+        """Record the segment's system prompt the first time, and return the recorded one.
+
+        Fixed for the life of the segment, like its seed: every open and every resume
+        of its native session carries the same prefix, so the prompt cache holds, and
+        a store change reaches Claude at the next session rather than mid-session.
+        """
+        segment = self._require_segment(segment_id)
+        if not segment.get("system_prompt"):
+            segment["system_prompt"] = text
+            self._save()
+        return segment["system_prompt"]
+
     def note_cache(self, segment_id: str, used_at: float, model: str | None) -> None:
         """Remember when this segment last read or wrote Claude's prompt cache, and
         with which model, so a resume after a restart can tell warm from cold (T911)."""
