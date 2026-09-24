@@ -447,3 +447,79 @@ def test_the_uncertain_refusal_names_the_way_out(tmp_path):
         prepare_input(app, "two", "strict", "typed")
     assert "/claude resolve" in str(caught.value)
     assert "/claude new" in str(caught.value)
+
+
+# -- effort changes go through the T911 cache gate (Ryan 2026-09-24) ---------
+
+def effort_app(tmp_path, monkeypatch, answer):
+    """A live, warm session built at effort 'high'; the user now wants 'max'."""
+    import time
+
+    from litetui import claude_cache
+
+    app = turn_app(tmp_path, messages=["done"], events=[[result_event()]])
+    session = app.backend.session
+    session.effort = "high"
+    session.efforts = []
+
+    async def set_effort(level):
+        session.efforts.append(level)
+        session.effort = level
+    session.set_effort = set_effort
+    app.backend.reasoning_levels = lambda key: ["low", "medium", "high", "xhigh", "max"]
+    app.thinking_level = "max"
+    app.update_header = lambda: None
+    clock = claude_cache.clock_for(app, app._claude_active_input["_claude_segment"])
+    clock.model, clock.effort = app.model_id, "high"
+    clock.observe(ClaudeUsage(source="message", input_tokens=1, cache_read_tokens=100,
+                              cache_creation_tokens=0), now=time.time())
+    asked = []
+
+    async def confirm(app_, cold):
+        asked.append(cold)
+        return answer
+    monkeypatch.setattr(claude_cache, "confirm_cold", confirm)
+    return app, session, asked
+
+
+@pytest.mark.asyncio
+async def test_an_effort_change_raises_the_cache_warning_and_cancel_changes_nothing(tmp_path, monkeypatch):
+    app, session, asked = effort_app(tmp_path, monkeypatch, answer=False)
+    await stream_turn(app)
+    assert [kind for kind, _ in asked] == ["effort"]
+    assert "high to max" in asked[0][1]
+    assert app.thinking_level == "high", "cancel restores the effort the session runs at"
+    assert session.efforts == [] and session.effort == "high", "the session is untouched"
+    assert session.queried == [] and app.backend.closes == 0
+
+
+@pytest.mark.asyncio
+async def test_send_anyway_switches_the_live_session_to_the_new_effort(tmp_path, monkeypatch):
+    from litetui import claude_cache
+
+    app, session, asked = effort_app(tmp_path, monkeypatch, answer=True)
+    await stream_turn(app)
+    assert [kind for kind, _ in asked] == ["effort"]
+    assert session.efforts == ["max"] and session.queried, "same session, live switch, then sent"
+    assert app.backend.closes == 0, "a named level switches live: no restart"
+    assert claude_cache.clock_for(app, app._claude_active_input["_claude_segment"]).effort == "max"
+
+
+@pytest.mark.asyncio
+async def test_back_to_default_reopens_the_session_because_it_has_no_live_control(tmp_path, monkeypatch):
+    app, session, asked = effort_app(tmp_path, monkeypatch, answer=True)
+    app.thinking_level = None
+    opened = []
+
+    async def open_session(segment, model, **options):
+        opened.append((segment.get("session_id"), options.get("effort", "absent")))
+        app.backend.session = session
+        return session
+    app.backend.open_session = open_session
+    monkeypatch.setattr("litetui.claude_tools.ClaudeTools", lambda *a, **k: app.backend._claude_tools)
+    monkeypatch.setattr("litetui.claude_events.ClaudeEventStream",
+                        lambda **k: app.backend._claude_events)
+    await stream_turn(app)
+    assert [kind for kind, _ in asked] == ["effort"] and "high to default" in asked[0][1]
+    assert app.backend.closes >= 1 and opened and opened[0][1] is None
+    assert session.efforts == []

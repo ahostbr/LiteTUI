@@ -1258,8 +1258,9 @@ def _cmd_modelcfg(app, name: str, arg: str) -> None:
     if getattr(app.backend, "remote", False):
         target = arg.strip() or app.model_id
         levels = app.backend.reasoning_levels(target)
+        label = llm_backend.backend_label(app.backend.name)
         if not levels:
-            app.system_message("Select an available Codex model with /model first.")
+            app.system_message(f"Select a {label} model that takes an effort level with /model first.")
             return
         def selected(level):
             if level:
@@ -1268,7 +1269,10 @@ def _cmd_modelcfg(app, name: str, arg: str) -> None:
                 if target == app.model_id:
                     app.thinking_level = level
                     app.update_header()
-        pick(app, "Codex reasoning effort (response limits are provider-managed)",
+                if app.backend.name == "claude":
+                    from litetui.claude_cache import EFFORT_NOTE
+                    app.system_message(f"{target}: effort {level}{EFFORT_NOTE}")
+        pick(app, f"{label} reasoning effort (response limits are provider-managed)",
              [(level, level) for level in levels], selected, current=app.thinking_level)
         return
     target = arg.strip() or app.model_id

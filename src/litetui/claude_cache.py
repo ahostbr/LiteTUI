@@ -10,6 +10,8 @@ module does about each (the cases are enumerated in the T911 report too):
 
   WARNED — LiteTUI can see it coming, before anything is sent:
     * model switch on a live session — the cache is per model;
+    * effort change on a live session (/think, /modelcfg, /settings) — Ryan
+      2026-09-24: "anytime you change effort levels, it affects the cache";
     * idle past the cache lifetime on a live session;
     * resuming a saved session whose cache has expired, or whose last use is
       unknown (a segment written before this change).
@@ -17,8 +19,6 @@ module does about each (the cases are enumerated in the T911 report too):
     * the system prompt and tool set are fixed for the life of a session
       (claude_backend._options, claude_tools.sdk_options); changing them needs
       /claude new, which starts a new conversation with no history to re-read;
-    * effort/thinking: LiteTUI exposes no Claude reasoning levels
-      (ClaudeBackend.reasoning_levels returns []);
     * compaction is Claude's own (the host tells it not to use host compaction),
       so the CLI decides it mid-turn, where there is nothing left to warn before.
 
@@ -46,6 +46,12 @@ from litetui.side_panel import close_dialog
 COLD_MARGIN_S = 120
 #: What the warning dialog returns when the user chooses to send anyway.
 SEND = "send"
+#: What an effort change costs on Claude, said wherever one is made.
+EFFORT_NOTE = ("\nApplies from your next message, on the same Claude session. The cache is "
+               "built at one effort level, so a cache warning asks before that message is sent; "
+               "Cancel keeps the current effort. Back to default restarts the session "
+               "(resumed, conversation kept).")
+
 
 
 @dataclass
@@ -54,6 +60,9 @@ class CacheClock:
 
     segment_id: str | None = None
     model: str | None = None
+    #: The effort level the cache was built at ("default" = none sent); None
+    #: until a turn has been sent on this clock.
+    effort: str | None = None
     #: Wall-clock seconds of the last request that read or wrote the cache.
     used_at: float | None = None
     read: int = 0
@@ -102,18 +111,24 @@ def _ago(seconds):
     return f"{mins} min" if mins < 120 else f"{mins // 60} h"
 
 
-def cold_reason(clock, *, live, resuming, model, used_at=None, now=None):
+def cold_reason(clock, *, live, resuming, model, used_at=None, now=None, effort=None):
     """(kind, sentence) for why the next turn would re-read the conversation
     uncached, or None.
 
     `live`: a session is already running for this segment. `resuming`: no live
     session, but the segment names a saved native session. `used_at`: the
-    persisted last cache use for a resume (None = unknown)."""
+    persisted last cache use for a resume (None = unknown). `effort`: the level
+    the next turn runs at (None = the model default)."""
     now = time.time() if now is None else now
     if live:
         if clock.model and model and clock.model != model:
             return "model", (f"Switching model from {clock.model} to {model}. Each model keeps its own cache, "
                     "so Claude re-reads this whole conversation at full input price.")
+        effort = effort or "default"
+        if clock.effort and clock.effort != effort:
+            # Ryan 2026-09-24: "anytime you change effort levels, it affects the cache."
+            return "effort", (f"Changing effort from {clock.effort} to {effort}. The cache is built at one effort "
+                    "level, so Claude re-reads this whole conversation at full input price.")
         left = clock.remaining(now)
         if left is not None and left <= COLD_MARGIN_S:
             return "expired", (f"The prompt cache has expired (last used {_ago(now - clock.used_at)} ago; it lasts "

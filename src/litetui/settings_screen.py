@@ -591,7 +591,7 @@ class SettingsBody(Widget):
 
     def _thinking_choices(self, name="thinking_level"):
         backend = getattr(self.app, "backend", None)
-        if getattr(backend, "name", "") == "codex":
+        if getattr(backend, "name", "") in ("codex", "claude"):
             choices = [(level.title() if level != "xhigh" else "Extra high", level)
                        for level in backend.reasoning_levels(self.app.model_id)]
             current = getattr(self._start, name)

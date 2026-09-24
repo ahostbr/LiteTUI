@@ -161,6 +161,9 @@ class ClaudeSession:
     lifecycle: BackendSession = field(default_factory=BackendSession)
     info: dict = field(default_factory=dict)
     session_id: str | None = None
+    #: The effort level this CLI runs at: the spawn's --effort, then each live
+    #: set_effort. None = the model's own default (never set on this process).
+    effort: str | None = None
     #: Bound on each owned-teardown step. A field so a test can shrink it;
     #: never long enough to make a stuck reader look like a hang.
     #: Grace for a cooperative close before escalation. A field so a test can
@@ -177,6 +180,7 @@ class ClaudeSession:
 
     async def start(self):
         if self._owner is None:
+            self.effort = getattr(self.options, "effort", None)
             self._ready = asyncio.get_running_loop().create_future()
             self._owner = asyncio.create_task(self._run(), name="claude-sdk-owner")
         await asyncio.shield(self._ready)
@@ -227,6 +231,15 @@ class ClaudeSession:
                         if self.lifecycle.active_turn:
                             raise CommandRefused("Cannot change Claude model during a turn")
                         await client.set_model(pending.value)
+                    elif pending.kind == "effort":
+                        if self.lifecycle.active_turn:
+                            raise CommandRefused("Cannot change Claude effort during a turn")
+                        # No public SDK method (0.2.159). The CLI's own control
+                        # request; measured live on CLI 2.1.281: get_settings'
+                        # applied.effort went low -> high on the same process.
+                        await client._query._send_control_request(
+                            {"subtype": "apply_flag_settings", "settings": {"effortLevel": pending.value}})
+                        self.effort = pending.value
                     if not pending.reply.done():
                         pending.reply.set_result(None)
                 except CommandRefused as exc:
@@ -366,6 +379,12 @@ class ClaudeSession:
 
     async def set_model(self, model):
         await self._command("model", model)
+
+    async def set_effort(self, effort):
+        """Switch a named effort level live. There is no live way back to the
+        model default: effortLevel=None clears the flag but the applied level
+        stays (measured), so a return to default needs a new process."""
+        await self._command("effort", effort)
 
     async def events(self):
         while True:

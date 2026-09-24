@@ -25,7 +25,8 @@ async def test_claude_settings_preserve_unsupported_values_and_disable_controls(
 
     class Host(App):
         model_id = "default"
-        backend = SimpleNamespace(name="claude", owns_native_turns=True)
+        backend = SimpleNamespace(name="claude", owns_native_turns=True,
+                                  reasoning_levels=lambda key: ["low", "medium", "high", "xhigh", "max"])
 
         def on_mount(self):
             self.push_screen(SettingsScreen(saved))
@@ -34,11 +35,12 @@ async def test_claude_settings_preserve_unsupported_values_and_disable_controls(
     async with app.run_test() as pilot:
         await pilot.pause()
         body = app.screen.query_one(SettingsBody)
-        for name in ("temperature", "tool_iterations", "thinking_level",
+        for name in ("temperature", "tool_iterations",
                      "default_context_length", "autocompact_enabled",
                      "mcp_enabled", "skills_enabled"):
             assert body.query_one(f"#f-{name}").disabled, name
-        for name in ("tools_enabled", "tools_disabled", "tool_policy_profile"):
+        # Effort is Claude's own control now (Ryan 2026-09-24: "Yes, add effort levels too").
+        for name in ("tools_enabled", "tools_disabled", "tool_policy_profile", "thinking_level"):
             assert not body.query_one(f"#f-{name}").disabled, name
         collected = body._collect()
         assert collected.temperature == 0.85

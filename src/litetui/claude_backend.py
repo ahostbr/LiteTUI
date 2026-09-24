@@ -34,6 +34,10 @@ STATIC_MODELS = (
     "claude-sonnet-5", "claude-sonnet-5[1m]",
     "claude-haiku-4-5-20251001",
 )
+#: Effort levels for a STATIC_MODELS row the CLI did not describe. Every
+#: queried Opus/Fable/Sonnet row on CLI 2.1.281 reports exactly these; its
+#: Haiku row reports none (supportsEffort absent).
+STATIC_EFFORT = ("low", "medium", "high", "xhigh", "max")
 
 
 def cache_env(environ=None):
@@ -268,7 +272,14 @@ class ClaudeBackend:
         raise BackendError("Claude owns native turns; legacy model requests/sidecalls are unsupported.")
 
     def reasoning_levels(self, key):
-        return []
+        """The CLI's supportedEffortLevels for this model; the static set for a
+        catalogue row it did not describe; [] for an unknown model or Haiku."""
+        meta = self.models.get(key)
+        if meta is None:
+            return []
+        if "resolvedModel" in meta:          # queried: the CLI's word is final
+            return list(meta.get("supportedEffortLevels") or [])
+        return [] if "haiku" in key else list(STATIC_EFFORT)
 
     async def load(self, key, **kwargs):
         raise BackendError("Claude runs remotely. Use /model; local loading is unsupported.")

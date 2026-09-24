@@ -122,7 +122,10 @@ def control(backend, name):
             return Control("host", "Permission changes apply immediately to Claude calls. Advertised tool inventory is fixed for a live session; use /claude new to refresh it.")
         if name in {"tool_policy_profile", "tool_always_allow", "tool_deny", "enter_interrupts"}:
             return Control("host", "LiteTUI authority and interaction setting; enforced for Claude calls.")
-        if name in CONTROLS or name in {"thinking_level", "codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
+        if name == "thinking_level":
+            return Control("native", "Claude effort level, from the CLI's model metadata. Applies from the next message; "
+                           "a cache warning asks first, because the cache is built at one effort level.")
+        if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
             return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
         return None
     return CONTROLS.get(name) if native(backend) else None
