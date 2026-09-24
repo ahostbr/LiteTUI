@@ -188,14 +188,17 @@ def test_enter_on_the_chip_still_cycles_and_says_where_it_came_from(monkeypatch)
     said: list[str] = []
     recorded: list[dict] = []
     monkeypatch.setattr(type(a), "_system", lambda self, text, *args, **kw: said.append(text))
-    monkeypatch.setattr(runtime_log, "record", lambda event, **meta: recorded.append({"event": event, **meta}))
+    # Through the REAL sanitizer: an unknown key makes record() a silent no-op,
+    # which is how this event went missing in b41f2f3.
+    monkeypatch.setattr(runtime_log, "record",
+                        lambda event, **meta: recorded.append(runtime_log.sanitize_event({"event": event, **meta})))
     a.settings.tool_policy_profile = a._active_tool_profile = "interactive"
     a.footer_nav_enter()
     a.footer_nav_activate()
     changed = a.settings.tool_policy_profile
     assert changed != "interactive"
-    assert recorded == [{"event": "authority_change", "previous": "interactive", "profile": changed,
-                         "source": "footer chip"}]
+    assert recorded == [{"event": "authority_change", "name": changed, "status": "interactive",
+                         "operation": "footer-chip"}]
     assert any(f"interactive → {changed} (footer chip)" in line for line in said), said
 
 
