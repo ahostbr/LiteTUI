@@ -21,3 +21,84 @@ def test_key_token_secret_password_auth_names_are_excluded_even_without_flags(tm
     result = public_snapshot(service.snapshot("abc"))
     assert "custom_api_key_env" not in result["fields"]
     assert not any(is_sensitive(name) for name in result["fields"])
+
+
+# -- the sidecar mirrors the TUI's per-backend meaning (Ryan 2026-09-24:
+#    "the sidecar is a gui representation of the settings menu") ------------
+
+def _claude():
+    from litetui.claude_backend import ClaudeBackend
+    from litetui.settings import Settings
+
+    backend = ClaudeBackend(Settings(backend="claude"))
+    backend.models = {"default": {"value": "default", "resolvedModel": "claude-opus-5-5[1m]",
+                                  "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]}}
+    return backend
+
+
+def test_claude_fields_carry_the_same_control_the_tui_settings_screen_uses(tmp_path):
+    from litetui.codex_settings import control
+
+    backend = _claude()
+    result = public_snapshot(SettingsService(tmp_path).snapshot("abc"), backend=backend,
+                             backends=[("claude", "Claude Agent  · OAuth signed in")],
+                             models=["default", "opus[1m]"], model_id="default")
+    fields = result["fields"]
+    for key in fields:                      # same function, so the same answer, field by field
+        want = control(backend, key)
+        got = fields[key]["control"]
+        assert (got is None) == (want is None), key
+        if want is not None:
+            assert got == {"owner": want.owner, "help": want.help, "editable": want.editable}, key
+    assert fields["temperature"]["control"]["owner"] == "unsupported"
+    assert fields["temperature"]["control"]["editable"] is False
+    assert fields["thinking_level"]["control"]["owner"] == "native"
+    assert fields["autocompact_enabled"]["control"]["owner"] == "host"
+    assert "claude_executable" in fields
+    assert result["backend"] == "claude"
+    assert result["choices"]["backend"] == [{"value": "claude", "label": "Claude Agent  · OAuth signed in"}]
+    assert result["choices"]["default_model"] == ["default", "opus[1m]"]
+    values = [c["value"] for c in result["choices"]["thinking_level"]]
+    assert values[:5] == ["low", "medium", "high", "xhigh", "max"]
+
+
+def test_without_a_backend_the_snapshot_is_unchanged(tmp_path):
+    result = public_snapshot(SettingsService(tmp_path).snapshot("abc"))
+    assert "choices" not in result and "control" not in result["fields"]["temperature"]
+
+
+def test_thinking_choices_translate_wire_none_to_off_for_the_saved_value():
+    """PassLink: Cline reports 'none' first, and 'none' is not a ThinkingLevel."""
+    from types import SimpleNamespace
+
+    from litetui.settings_screen import thinking_choices
+
+    cline = SimpleNamespace(name="cline", reasoning_levels=lambda m: ["none", "low", "high", "max"])
+    rows = thinking_choices(cline, "glm-5.3-flash", "medium")
+    assert [v for _, v in rows] == ["off", "low", "high", "max", "medium"]
+    assert "not supported" in rows[-1][0]
+
+
+def test_an_effort_saved_through_settings_reaches_claude_and_its_cache_gate():
+    """A sidecar save runs settings_runtime.apply_saved_result (the write contract);
+    that must set the level the Claude turn reads, so the SAME send-time cache
+    warning fires as for /think and /modelcfg."""
+    from types import SimpleNamespace
+
+    from litetui import claude_cache, settings_runtime
+    from litetui.app import LiteTUI
+    from litetui.claude_turn import effort_for
+    from litetui.settings import Settings
+
+    backend = _claude()
+    app = SimpleNamespace(settings=Settings(backend="claude"), _thinking_level="high", _backend=backend,
+                          backend=backend, model_id="default")
+    result = SimpleNamespace(persistence=[SimpleNamespace(saved=True, fields=["thinking_level"])])
+    settings_runtime.apply_saved_result(app, Settings(backend="claude", thinking_level="max"), result)
+    app.thinking_level = LiteTUI.thinking_level.fget(app)
+    assert effort_for(app) == "max"
+    clock = claude_cache.CacheClock(model="default", effort="high")
+    clock.used_at, clock.read = 10**12, 100
+    kind, text = claude_cache.cold_reason(clock, live=True, resuming=False, model="default",
+                                          effort=effort_for(app), now=10**12 + 60)
+    assert kind == "effort" and "high to max" in text

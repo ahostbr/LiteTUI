@@ -25,7 +25,13 @@ def _new_window(app) -> SidecarWindow:
 def _open_background(app, owner: SidecarWindow, view: str) -> None:
     try:
         if view == "settings" and getattr(app, "convo_dir", None) is not None:
-            snapshot = public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name))
+            from litetui.plugins.model_switch import backend_rows
+
+            # The live backend's meaning of each field, and what its pickers
+            # offer, exactly as the TUI's /settings and /backend show them.
+            snapshot = public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name),
+                                       backend=app.backend, backends=backend_rows(app),
+                                       models=list(app.available_models), model_id=app.model_id)
             opened = owner.open_settings_snapshot(snapshot)
         elif view in {"calendar", "job", "timeline"} and hasattr(app, "jobs"):
             # The monitor may update in-memory jobs; capture its state on the UI thread.
