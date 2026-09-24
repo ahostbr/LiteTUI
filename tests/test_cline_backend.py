@@ -210,3 +210,18 @@ async def test_streamed_turn_sends_the_bearer_from_the_provider_and_the_cline_pa
     assert path == '/api/v1/chat/completions'
     assert auth == 'Bearer workos:jwt-old'
     assert body['model'] == 'cline-pass/glm-5.3-flash'
+
+
+def test_settings_controls_mark_what_applies_to_clinepass():
+    """The TUI settings screen (and the sidecar, from the same call) disables
+    what does not apply: ClinePass is a fixed remote endpoint driven by OUR loop."""
+    from litetui import codex_settings
+
+    backend = _backend()
+    for name in ('custom_base_url', 'lm_host', 'default_context_length', 'llama_host',
+                 'ninfer_host', 'codex_native_engine', 'claude_executable'):
+        assert codex_settings.control(backend, name).owner == 'unsupported', name
+    assert codex_settings.control(backend, 'thinking_level').owner == 'native'
+    for name in ('temperature', 'autocompact_enabled', 'compact_keep_recent', 'tools_enabled', 'max_tokens_chat'):
+        assert codex_settings.control(backend, name) is None, name
+
