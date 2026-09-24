@@ -10,6 +10,13 @@ from litetui.settings_service import SettingsSnapshot
 _SENSITIVE_NAME = re.compile(r"key|token|secret|password|auth", re.IGNORECASE)
 
 
+#: The free-tier keys (settings.py). The sidecar may SET or CLEAR them but is
+#: only ever told whether each is set, never the value (Ryan 2026-09-24,
+#: liteask a-29b8bd60: "a key field per source in /settings + sidecar").
+SECRET_FIELDS = frozenset({"groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
+                           "github_models_token", "openrouter_api_key", "gemini_api_key"})
+
+
 def is_sensitive(name: str) -> bool:
     return bool(_SENSITIVE_NAME.search(name) or SETTING_SPECS.get(name) and SETTING_SPECS[name].sensitive)
 
@@ -49,15 +56,20 @@ def public_snapshot(snapshot: SettingsSnapshot, *, backend=None, backends=(), mo
     launch = launch or {}
     fields = {}
     for key, spec in SETTING_SPECS.items():
-        if is_sensitive(key):
+        if key in SECRET_FIELDS:
+            # Whether it is set, never the value.
+            fields[key] = {"scope": spec.scope.value, "apply_timing": spec.apply_timing, "secret": True,
+                           "set": bool(getattr(snapshot.effective, key)), "source": "saved"}
+        elif is_sensitive(key):
             continue
-        saved = deepcopy(getattr(snapshot.saved, key))
-        effective = deepcopy(launch[key] if key in launch else getattr(snapshot.effective, key))
-        fields[key] = {"scope": spec.scope.value, "apply_timing": spec.apply_timing,
-                       "saved": saved, "effective": effective,
-                       "source": "override" if key in launch or saved != effective else "saved"}
-        if fields[key]["source"] == "override":
-            fields[key]["override_by"] = "launch" if key in launch else "environment"
+        else:
+            saved = deepcopy(getattr(snapshot.saved, key))
+            effective = deepcopy(launch[key] if key in launch else getattr(snapshot.effective, key))
+            fields[key] = {"scope": spec.scope.value, "apply_timing": spec.apply_timing,
+                           "saved": saved, "effective": effective,
+                           "source": "override" if key in launch or saved != effective else "saved"}
+            if fields[key]["source"] == "override":
+                fields[key]["override_by"] = "launch" if key in launch else "environment"
         if backend is not None:
             from litetui.settings_screen import NOT_A_SETTINGS_CONTROL
 

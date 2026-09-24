@@ -55,6 +55,27 @@ def test_secret_and_mismatched_scope_rejected_before_write(tmp_path):
     assert app._settings_service.snapshot("abc").revisions["global"] == "absent"
 
 
+def test_a_free_tier_key_is_write_only_from_the_sidecar(tmp_path):
+    """Set and clear through the one save path; the reply never carries it."""
+    import json
+
+    app = host(tmp_path)
+    key = "csk_fake_do_not_leak_42"
+    change = {"changes": [{"key": "cerebras_api_key", "scope": "device", "value": key}],
+              "expected_revisions": app._settings_service.snapshot("abc").revisions}
+    result = apply_patch(app, change)
+    assert result["saved"] is True
+    assert app._settings_service.snapshot("abc").saved.cerebras_api_key == key
+    assert key not in json.dumps(result)
+    clear = {"changes": [{"key": "cerebras_api_key", "scope": "device", "value": ""}],
+             "expected_revisions": result["revisions"]}
+    assert apply_patch(app, clear)["saved"] is True
+    assert app._settings_service.snapshot("abc").saved.cerebras_api_key == ""
+    with pytest.raises(ValueError, match="Invalid key value"):
+        apply_patch(app, {"changes": [{"key": "cerebras_api_key", "scope": "device", "value": 7}],
+                          "expected_revisions": app._settings_service.snapshot("abc").revisions})
+
+
 def test_mixed_destination_partial_conflict_retains_success(tmp_path):
     app = host(tmp_path)
     stale = app._settings_service.snapshot("abc").revisions

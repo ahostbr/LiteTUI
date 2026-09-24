@@ -111,6 +111,13 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         ("backend", "codex_native_engine"), scope="conversation", keywords=("backend", "engine", "Codex", "loop"),
     ),
     _section(
+        "model", "Model", "model-free-keys", "Free-tier keys",
+        "One key per keyed free source; a saved key wins over its environment variable.",
+        ("groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
+         "github_models_token", "openrouter_api_key", "gemini_api_key"),
+        scope="device", keywords=("free", "key", "Groq", "Cerebras", "NVIDIA", "Mistral", "GitHub", "OpenRouter", "Gemini"),
+    ),
+    _section(
         "model", "Model", "model-router", "llama.cpp router",
         "The local router executable, address, and safe attach order.",
         ("llama_executable", "llama_host", "llama_attach_hosts"), scope="device", keywords=("router", "server", "attach", "address"),

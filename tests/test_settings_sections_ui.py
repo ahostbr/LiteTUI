@@ -97,3 +97,24 @@ async def test_dirty_cancel_offers_three_way_choice_and_restore_is_confirmed():
         await pilot.pause()
         assert isinstance(app.screen, SettingsExitConfirm)
         assert app.screen.restore is True
+
+
+@pytest.mark.asyncio
+async def test_every_free_tier_key_row_is_masked_and_under_its_own_header():
+    """Ryan 2026-09-24 (liteask a-29b8bd60): "a key field per source in
+    /settings". A key on screen is a key in the screenshot, so each is masked."""
+    from textual.widgets import Input
+
+    from litetui.sidecar_settings import SECRET_FIELDS
+
+    app = SettingsHost()
+    app.settings.groq_api_key = "gsk-shown-masked"
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(SettingsBody)
+        header = body.query_one("#set-section-model-free-keys", SettingsSectionHeader)
+        for name in SECRET_FIELDS:
+            row = body.query_one(f"#f-{name}", Input)
+            assert row.password, f"{name} is shown in clear"
+            assert any(row in member.query(Input) for member in header._members), f"{name} is not under its header"
+        assert body.query_one("#f-groq_api_key", Input).value == "gsk-shown-masked"

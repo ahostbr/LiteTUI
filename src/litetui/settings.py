@@ -154,6 +154,19 @@ class Settings:
     custom_base_url: str = ""
     custom_api_key_env: str = ""
     custom_context_length: int = 0
+    #: Free-tier source keys (Ryan 2026-09-24, liteask a-29b8bd60: "a key field
+    #: per source in /settings + sidecar"). Each field is its env var's name
+    #: lowercased; a saved key wins and the env var is the fallback
+    #: (free_tier.source_key). The names end in API_KEY/TOKEN on purpose:
+    #: sanitize.redact_secrets masks them in any tool output, and the sidecar
+    #: never sends their values (sidecar_settings.SECRET_FIELDS).
+    groq_api_key: str = ""
+    cerebras_api_key: str = ""
+    nvidia_api_key: str = ""
+    mistral_api_key: str = ""
+    github_models_token: str = ""
+    openrouter_api_key: str = ""
+    gemini_api_key: str = ""
     llama_host: str = "http://localhost:7470"
     #: Explicit installed executable. Empty selects the ecosystem default.
     llama_executable: str = ""

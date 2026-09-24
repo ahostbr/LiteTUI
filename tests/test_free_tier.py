@@ -64,8 +64,9 @@ class Fake:
 
 
 @pytest.fixture
-def sources(monkeypatch):
+def sources(monkeypatch, tmp_path):
     """Two keyless fakes and one keyed fake, standing in for SOURCES."""
+    monkeypatch.setenv('LITETUI_DATA_ROOT', str(tmp_path))  # saved keys: an empty settings.json
     made = []
 
     def install(a_models, a_replies, b_models, b_replies, keyed_models=(), keyed_replies=()):
@@ -195,6 +196,35 @@ async def test_a_keyed_source_is_inactive_until_its_variable_is_set_and_keyless_
     ft._catalogs.clear()
     assert await _ask(_backend(), 'x') == 'ok'
     assert a.seen[-1]['auth'] is None, 'a keyless source must not be sent any key'
+
+
+@pytest.mark.asyncio
+async def test_a_key_saved_in_settings_wins_and_the_env_var_is_the_fallback(sources, monkeypatch, tmp_path):
+    """Ryan 2026-09-24 (liteask a-29b8bd60): "Add a key field per source in
+    /settings + sidecar". The saved key is read at call time, so saving it
+    activates the source on the next request with no reconnect."""
+    from dataclasses import replace
+
+    from litetui import settings as settings_mod
+
+    _a, _b, k = sources([], [], [], [], keyed_models=[{'id': 'llama-4-scout'}])
+    monkeypatch.setattr(ft, 'SOURCES', ft.SOURCES[:2] + (replace(ft.SOURCES[2], key_env='GROQ_API_KEY'),))
+    monkeypatch.delenv('GROQ_API_KEY', raising=False)
+    assert 'llama-4-scout' not in ft.catalog()
+    s = settings_mod.load(tmp_path)
+    s.groq_api_key = 'gsk-saved'
+    settings_mod.save(s, tmp_path)
+    ft._catalogs.clear()
+    assert await _ask(_backend(), 'llama-4-scout') == 'ok'
+    assert k.seen[-1]['auth'] == 'Bearer gsk-saved'
+    monkeypatch.setenv('GROQ_API_KEY', 'gsk-env')
+    assert await _ask(_backend(), 'llama-4-scout') == 'ok'
+    assert k.seen[-1]['auth'] == 'Bearer gsk-saved', 'the saved key must win over the env var'
+    s.groq_api_key = ''
+    settings_mod.save(s, tmp_path)
+    ft._catalogs.clear()
+    assert await _ask(_backend(), 'llama-4-scout') == 'ok'
+    assert k.seen[-1]['auth'] == 'Bearer gsk-env', 'a blank saved key falls back to the env var'
 
 
 def test_the_cline_source_sits_out_without_a_login(monkeypatch):

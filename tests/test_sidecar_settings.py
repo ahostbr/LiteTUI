@@ -1,7 +1,7 @@
 """Read-only parent snapshot excludes sensitive values and carries provenance."""
 from litetui.settings_scope import SETTING_SPECS
 from litetui.settings_service import SettingsService
-from litetui.sidecar_settings import is_sensitive, public_snapshot
+from litetui.sidecar_settings import SECRET_FIELDS, is_sensitive, public_snapshot
 
 
 def test_snapshot_scope_effective_and_revisions(tmp_path, monkeypatch):
@@ -12,7 +12,8 @@ def test_snapshot_scope_effective_and_revisions(tmp_path, monkeypatch):
     assert result["fields"]["sidecar_enabled"]["scope"] == "device"
     assert result["fields"]["sidecar_enabled"]["saved"] is False
     assert result["fields"]["tool_iterations"]["scope"] == "conversation"
-    assert set(result["fields"]) == set(SETTING_SPECS) - {k for k in SETTING_SPECS if is_sensitive(k)}
+    assert set(result["fields"]) == set(SETTING_SPECS) - {
+        k for k in SETTING_SPECS if is_sensitive(k) and k not in SECRET_FIELDS}
 
 
 def test_key_token_secret_password_auth_names_are_excluded_even_without_flags(tmp_path):
@@ -20,7 +21,28 @@ def test_key_token_secret_password_auth_names_are_excluded_even_without_flags(tm
     assert all(is_sensitive(name) for name in ("my_KEY", "auth_method", "secret", "access_token", "password"))
     result = public_snapshot(service.snapshot("abc"))
     assert "custom_api_key_env" not in result["fields"]
-    assert not any(is_sensitive(name) for name in result["fields"])
+    assert not any(is_sensitive(name) for name in result["fields"] if name not in SECRET_FIELDS)
+
+
+def test_a_saved_free_tier_key_is_sent_as_set_never_as_its_value(tmp_path):
+    """Ryan 2026-09-24 (liteask a-29b8bd60): "a key field per source in
+    /settings + sidecar". The sidecar learns whether each key is set, and
+    nothing else: not the value, not a prefix, not its length."""
+    import json
+
+    from litetui import settings as settings_mod
+
+    key = "gsk_fake_do_not_leak_0123456789"
+    s = settings_mod.load(tmp_path)
+    s.groq_api_key = key
+    settings_mod.save(s, tmp_path)
+    result = public_snapshot(SettingsService(tmp_path).snapshot("abc"))
+    assert result["fields"]["groq_api_key"] == {"scope": "device", "apply_timing": "immediate",
+                                                 "secret": True, "set": True, "source": "saved"}
+    assert result["fields"]["gemini_api_key"]["set"] is False
+    assert set(result["fields"]) >= SECRET_FIELDS
+    wire = json.dumps(result)
+    assert key not in wire and "gsk_" not in wire
 
 
 # -- the sidecar mirrors the TUI's per-backend meaning (Ryan 2026-09-24:
