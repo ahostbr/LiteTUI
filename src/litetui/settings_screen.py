@@ -159,11 +159,8 @@ def tool_profile_choices() -> list[tuple[str, str]]:
             else name,
             name,
         )
-        # SELECTABLE, not every profile: T085 took `scheduled` out of the
-        # user-facing set ("scheduled should not be its own mode") while
-        # keeping it as the floor `unattended()` degrades to. Derived from
-        # `ToolProfile.selectable`, so this dropdown and shift+tab read the
-        # SAME source and cannot offer different sets.
+        # The same source shift+tab cycles, so the two cannot offer different
+        # sets (`scheduled` was removed outright on 2026-09-24).
         for name in tool_policy.selectable_profile_names()
     ]
 

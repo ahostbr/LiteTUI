@@ -322,7 +322,9 @@ def test_loop_command_creates_a_conversation_owned_scheduled_job(
     [job] = app.jobs
     assert job.kind == "loop"
     assert job.owner_convo_id == "convo-a"
-    assert job.tool_profile == "scheduled"
+    # `scheduled` was removed (Ryan 2026-09-24, "remove scheduled completely it
+    # makes no sense to me"); a /loop job carries the level it fires at.
+    assert job.tool_profile == "autonomous"
     assert scheduler.load(tmp_path)[0].id == job.id
 
 

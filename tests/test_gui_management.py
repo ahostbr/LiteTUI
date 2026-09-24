@@ -172,9 +172,14 @@ async def test_host_tool_registration_goes_through_authority_and_disposes(tmp_pa
     spec = {"type": "function", "function": {"name": "fixture_host", "description": "fixture", "parameters": {"type": "object", "properties": {}}}}
     await async_dispatch(app, {"type": "gui.host_tools.register", "plugin_id": "fixture", "tools": [spec]})
     assert app.plugins.policy_for("fixture_host") == tool_policy.MCP_UNKNOWN_POLICY
-    app._active_tool_profile = tool_policy.SCHEDULED
+    # Was the `scheduled` floor (removed 2026-09-24, Ryan: "remove scheduled
+    # completely it makes no sense to me"). An undeclared host tool always
+    # asks; on a turn nobody is watching that becomes a refusal.
+    app._active_tool_profile = tool_policy.STRICT
+    app._hook_source = "harness"
     _text, ok = await app._execute_tool("fixture_host", {})
     assert ok is False
+    assert "nobody is here to confirm" in _text
     assert not app._gui_host_pending  # denial never reached the host runner
     await async_dispatch(app, {"type": "gui.host_tools.unregister", "plugin_id": "fixture"})
     assert app.plugins.dispatch_for("fixture_host") is None

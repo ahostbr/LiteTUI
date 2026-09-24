@@ -78,7 +78,7 @@ async def dispatch(app, event, data, *, profile=None, captured=None,
     if not matches:
         return hooks.HookResult(True)
     document = hooks.event_document(event, app._hook_workspace, data, **ctx)
-    profile = profile or getattr(app, "_active_tool_profile", None) or tool_policy.SCHEDULED
+    profile = profile or getattr(app, "_active_tool_profile", None) or tool_policy.STRICT
     refusals = []
     for hook in matches:
         if getattr(app, "_stop_requested", False) and event not in ("tool_after", "app_shutdown"):
@@ -129,7 +129,7 @@ def accept_prompt(app, item):
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
     app._active_tool_profile = item.get("tool_profile") or getattr(
-        getattr(app, "settings", None), "tool_policy_profile", tool_policy.SCHEDULED)
+        getattr(app, "settings", None), "tool_policy_profile", tool_policy.STRICT)
     app._hooks_suppressed = False
     app._hook_corrections = 0
     app._hook_turn_id = str(uuid.uuid4())

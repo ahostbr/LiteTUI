@@ -23,6 +23,14 @@ same set level, plus a footer that always names it and shift+tab to cycle it.
 So Control 5 is no longer "degrade to read-only" -- it is ALLOWED **and no
 confirm modal is ever constructed**. Both halves are asserted below, and the
 second one is the one that keeps an unattended turn from hanging.
+
+📌 2026-09-24: THE READ-ONLY FLOOR IS GONE. Ryan: "remove scheduled completely
+it makes no sense to me ... make interactive ask only for dangerous cmds any
+deletions or zip expansions weird procc runs that arent its tools and dangerous
+cmds threw PS and bash". `tool_policy.unattended()` no longer exists: an
+unattended turn KEEPS the chosen profile, and `_authorize_action` turns a
+CONFIRM into a worded refusal when `_hook_source` is in UNATTENDED_SOURCES --
+so "never a modal" still holds, by a different door.
 """
 from __future__ import annotations
 
@@ -34,20 +42,20 @@ from litetui.settings import Settings
 from litetui.tool_policy import (
     ALLOW,
     AUTONOMOUS,
-    DENY,
+    CONFIRM,
     INTERACTIVE,
-    SCHEDULED,
-    ToolProfile,
+    SELF_STORE,
+    STRICT,
     WRITE_POLICY,
     evaluate,
-    unattended,
 )
 
 ROOT = paths.ROOT
 
 
-def _woken_by_mail(profile_name: str) -> str:
-    """Drive the REAL `_deliver_inbox` and return the profile it stamped.
+def _mail_app(profile_name: str):
+    """Drive the REAL `_deliver_inbox`; return the app, the model-bound
+    messages and the user bubbles it produced.
 
     🔴 Never sets `_active_tool_profile` itself. A test that constructs the
     input it then checks proves the function works and says nothing about
@@ -58,11 +66,17 @@ def _woken_by_mail(profile_name: str) -> str:
     app._connect = lambda: None
     app.settings.tool_policy_profile = profile_name
     app._chat_running = lambda: False
-    app._user_bubble = lambda *a, **k: None
-    app._append = lambda *a, **k: None
+    bubbles, appended = [], []
+    app._user_bubble = lambda text, *a, **k: bubbles.append(text)
+    app._append = lambda msg, *a, **k: appended.append(msg)
     app._stream = lambda *a, **k: None
     app._deliver_inbox({"from": "ba736bd4", "priority": "normal", "body": "go"})
-    return app._active_tool_profile
+    return app, appended, bubbles
+
+
+def _woken_by_mail(profile_name: str) -> str:
+    """The profile the real `_deliver_inbox` stamped."""
+    return _mail_app(profile_name)[0]._active_tool_profile
 
 
 def _write_outside_the_store(profile_name: str):
@@ -86,12 +100,18 @@ def test_autonomous_reaches_an_INBOX_WOKEN_turn():
 
 # -- CONTROL 2: the fix is not "just grant it" ------------------------------
 
-def test_scheduled_still_DENIES_the_same_write():
-    """Without this, the fix is indistinguishable from removing the guard."""
-    stamped = _woken_by_mail(SCHEDULED)
-    assert stamped == SCHEDULED
+def test_strict_still_ASKS_for_the_same_write():
+    """Without this, the fix is indistinguishable from removing the guard.
+
+    Was `test_scheduled_still_DENIES_the_same_write`; `scheduled` is gone
+    (Ryan 2026-09-24), and strict is the narrowest level left. It reaches the
+    inbox turn intact and still asks for the write -- which, unattended, the
+    door below turns into a refusal.
+    """
+    stamped = _woken_by_mail(STRICT)
+    assert stamped == STRICT
     decision = _write_outside_the_store(stamped)
-    assert decision.action == DENY
+    assert decision.action == CONFIRM
     assert "workspace_write" in decision.reason
 
 
@@ -127,43 +147,90 @@ def test_the_default_can_never_CONSTRUCT_a_modal():
     REGARDLESS of capabilities: an unknown MCP tool. Drop `profile.confirm and`
     and this is the test that goes red rather than the app hanging in front of
     Ryan with no way to answer.
+
+    (The loop over every profile via `unattended()` is gone with that
+    function; the profiles that CAN confirm are covered by the door test
+    below, which is where their unattended confirms are now refused.)
     """
-    for name in tool_policy.PROFILE_NAMES:
-        resolved = unattended(name)
-        assert not tool_policy.PROFILES[resolved].confirm, (
-            f"{name} resolves unattended to {resolved}, which can prompt"
-        )
-        decision = evaluate(
-            resolved,
-            tool_policy.MCP_UNKNOWN_POLICY,
-            {"anything": 1},
-            ROOT,
-        )
-        assert decision.action != tool_policy.CONFIRM, (
-            f"{resolved} constructed a modal for an unknown MCP tool on an "
-            "unattended turn -- nobody is there to answer it"
-        )
+    default = Settings().tool_policy_profile
+    assert not tool_policy.PROFILES[default].confirm
+    decision = evaluate(default, tool_policy.MCP_UNKNOWN_POLICY, {"anything": 1}, ROOT)
+    assert decision.action != tool_policy.CONFIRM, (
+        f"{default} constructed a modal for an unknown MCP tool on an "
+        "unattended turn -- nobody is there to answer it"
+    )
 
 
-def test_an_explicitly_chosen_interactive_still_degrades_unattended():
-    """The default moved; this guard did not become unnecessary.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", sorted(tool_policy.UNATTENDED_SOURCES))
+@pytest.mark.parametrize("name", tool_policy.PROFILE_NAMES)
+async def test_an_unattended_CONFIRM_is_refused_in_words_never_a_modal(
+        monkeypatch, name, source):
+    """The replacement for the read-only floor (Ryan 2026-09-24).
 
-    A user who deliberately picks `interactive` still receives inbox mail, and
-    that turn still has nobody to answer a modal.
+    Every profile, every unattended source, the one tool that forces a
+    prompt (an undeclared MCP tool). The outcome is ALLOW (autonomous) or a
+    refusal that says why -- the dialog door is booby-trapped, so a modal
+    cannot be how this passes.
     """
-    assert _woken_by_mail(INTERACTIVE) == SCHEDULED
+    from litetui import app as app_mod
+
+    def _no_modal(*_a, **_k):
+        raise AssertionError(f"{name}/{source} opened a modal nobody can answer")
+
+    monkeypatch.setattr(app_mod, "show_dialog", _no_modal)
+    app = LiteTUI()
+    app._active_tool_profile = name
+    app._hook_source = source
+    refusal = await app._authorize_action(
+        "mcp_probe", {"anything": 1}, tool_policy.MCP_UNKNOWN_POLICY)
+    if tool_policy.PROFILES[name].confirm:
+        text, ok = refusal
+        assert not ok
+        assert "nobody is here to confirm" in text
+        assert tool_policy.UNDECLARED in text
+    else:
+        assert refusal is None
+
+
+def test_an_explicitly_chosen_interactive_KEEPS_interactive_unattended():
+    """Was `..._still_degrades_unattended` (to `scheduled`). Ryan 2026-09-24
+    removed that floor: the mail turn keeps the profile he chose, and the
+    model is told the one rule up front (INBOX_TURN_RULE) -- appended to what
+    the MODEL reads, never to the bubble the human sees.
+    """
+    app, appended, bubbles = _mail_app(INTERACTIVE)
+    assert app._active_tool_profile == INTERACTIVE
+    assert app._hook_source in tool_policy.UNATTENDED_SOURCES
+    sent = appended[-1]["content"]
+    assert sent.endswith("\n\n" + tool_policy.INBOX_TURN_RULE)
+    assert tool_policy.INBOX_TURN_RULE not in bubbles[-1]
+
+
+def test_an_autonomous_mail_turn_carries_no_rule_it_cannot_break():
+    """CONTROL: autonomous has no confirm set, so there is nothing that will
+    be refused and the rule is not appended."""
+    _app, appended, _bubbles = _mail_app(AUTONOMOUS)
+    assert tool_policy.INBOX_TURN_RULE not in appended[-1]["content"]
 
 
 # -- CONTROL 3: T083 is unbroken under every profile ------------------------
 
 @pytest.mark.parametrize("name", tool_policy.PROFILE_NAMES)
 def test_the_agent_may_still_write_its_own_store(name):
-    """Derived over PROFILE_NAMES so a 4th profile cannot skip this."""
+    """Derived over PROFILE_NAMES so a 4th profile cannot skip this.
+
+    The unattended turn now keeps `name` itself (no `unattended()` degrade,
+    2026-09-24), and the store is the ACTIVE conversation's, as the one
+    policy door passes it (a62a153).
+    """
+    own = paths.CONVO_DIR / "c1"
     decision = evaluate(
-        unattended(name),
+        name,
         WRITE_POLICY,
-        {"path": str(paths.CONVO_DIR / "c1" / "handoff.md")},
+        {"path": str(own / "handoff.md")},
         ROOT,
+        active_conversation=own,
     )
     assert decision.action == ALLOW, f"{name} lost its self-store: {decision.reason}"
 
@@ -171,46 +238,18 @@ def test_the_agent_may_still_write_its_own_store(name):
 # -- CONTROL 4: the escape hatch is still classified as workspace -----------
 
 def test_a_path_escaping_the_store_is_not_self_store():
+    """On strict (the narrowest level since `scheduled` went, 2026-09-24) the
+    escape is a workspace write, so it ASKS -- and is never self-store."""
+    own = paths.CONVO_DIR / "c1"
     decision = evaluate(
-        _woken_by_mail(SCHEDULED),
+        _woken_by_mail(STRICT),
         WRITE_POLICY,
-        {"path": str(paths.CONVO_DIR / ".." / "src" / "litetui" / "app.py")},
+        {"path": str(own / ".." / ".." / "src" / "litetui" / "app.py")},
         ROOT,
+        active_conversation=own,
     )
-    assert decision.action == DENY, "a `..` escape out of .convos was allowed"
-
-
-# -- the rule is DERIVED, not a second table of names -----------------------
-
-def test_unattended_tests_confirm_NOT_the_profile_name(monkeypatch):
-    """A future profile is classified by WHAT IT DOES.
-
-    If this were `if name == INTERACTIVE`, a fourth confirm-based profile
-    would sail through and hang an unattended turn -- the same
-    two-structures-that-must-agree defect this file exists to close.
-    """
-    asks = ToolProfile(
-        name="supervised",
-        allow=frozenset({tool_policy.READ_ONLY}),
-        confirm=frozenset({tool_policy.WORKSPACE_WRITE}),
-        summary="a NEW profile that asks",
-    )
-    silent = ToolProfile(
-        name="trusted",
-        allow=frozenset({tool_policy.READ_ONLY, tool_policy.WORKSPACE_WRITE}),
-        confirm=frozenset(),
-        summary="a NEW profile that does not ask",
-    )
-    monkeypatch.setitem(tool_policy.PROFILES, "supervised", asks)
-    monkeypatch.setitem(tool_policy.PROFILES, "trusted", silent)
-
-    assert unattended("supervised") == SCHEDULED, "a new confirm profile ran unattended"
-    assert unattended("trusted") == "trusted", "a silent profile was needlessly demoted"
-
-
-def test_an_unknown_profile_degrades_DOWN():
-    """Hand-edited settings.json, or a profile dropped in a later version."""
-    assert unattended("nonsense-not-a-profile") == SCHEDULED
+    assert SELF_STORE not in decision.capabilities, "a `..` escape out of .convos was self-store"
+    assert decision.action == CONFIRM, "a `..` escape out of .convos was allowed silently"
 
 
 # -- T085: EVERY SCHEDULED TURN RUNS AUTO ----------------------------------
@@ -265,14 +304,14 @@ def test_the_global_setting_does_NOT_reach_a_scheduled_turn(monkeypatch):
     """Changing how autonomous the CHAT is must not change what every saved
     automation may do. Asserted at BOTH ends of the range so this cannot pass
     by the setting happening to agree."""
-    assert _fired_by_a_job(monkeypatch, setting=SCHEDULED) == AUTONOMOUS
+    assert _fired_by_a_job(monkeypatch, setting=STRICT) == AUTONOMOUS
     assert _fired_by_a_job(monkeypatch, setting=INTERACTIVE) == AUTONOMOUS
 
 
 def test_a_stale_per_job_level_does_NOT_reach_a_scheduled_turn(monkeypatch):
     """`Job.tool_profile` still exists and still round-trips, so an old job
     file can carry any value. It is vestigial and must not govern."""
-    assert _fired_by_a_job(monkeypatch, job_level=SCHEDULED) == AUTONOMOUS
+    assert _fired_by_a_job(monkeypatch, job_level=STRICT) == AUTONOMOUS
     assert _fired_by_a_job(monkeypatch, job_level=INTERACTIVE) == AUTONOMOUS
 
 

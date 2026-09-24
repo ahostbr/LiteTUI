@@ -29,6 +29,12 @@ inside-workspace vs outside.
 ⚠️ CONTROL 2 IS THE ONE THAT MATTERS (Sentinel): a write to `src/**` must STILL
 be refused under `scheduled`. Without it this fix is indistinguishable from
 just granting `workspace_write`, which is the failure mode rather than the fix.
+
+📌 2026-09-24: `scheduled` is gone (Ryan: "remove scheduled completely it makes
+no sense to me ... make interactive ask only for dangerous cmds any deletions
+or zip expansions weird procc runs that arent its tools and dangerous cmds
+threw PS and bash"). The controls now run on strict, the narrowest level left:
+the store is allowed there, the workspace still ASKS.
 """
 from __future__ import annotations
 
@@ -39,9 +45,8 @@ from litetui.tool_policy import (
     ALLOW,
     AUTONOMOUS,
     CONFIRM,
-    DENY,
     INTERACTIVE,
-    SCHEDULED,
+    STRICT,
     SELF_STORE,
     WORKSPACE_WRITE,
     WRITE_POLICY,
@@ -88,7 +93,7 @@ def _caps(path, own=None):
 
 # ── control 1: the agent can persist itself, on every profile ──────────────
 
-@pytest.mark.parametrize("profile", [SCHEDULED, INTERACTIVE, AUTONOMOUS])
+@pytest.mark.parametrize("profile", [STRICT, INTERACTIVE, AUTONOMOUS])
 @pytest.mark.parametrize(
     "rel",
     ["abc123/handoff.md", "abc123/memory.md", "abc123/soul.md",
@@ -102,15 +107,19 @@ def test_the_transcript_is_not_part_of_the_store_any_more():
     """convo.jsonl WAS in the list above. a62a153 narrowed the store to the
     memory index, soul, handoff and memories/ ("Configuration and transcript
     remain ordinary writes"), so the agent editing its own transcript is a
-    workspace write again: denied unattended, confirmed interactively."""
+    workspace write again: confirmed under strict (the narrowest level since
+    `scheduled` was removed, Ryan 2026-09-24)."""
     assert SELF_STORE not in _caps(_own() / "convo.jsonl")
-    assert _act(SCHEDULED, _own() / "convo.jsonl") == DENY
+    assert _act(STRICT, _own() / "convo.jsonl") == CONFIRM
 
 
-def test_the_scheduled_denial_ryan_saw_is_gone():
-    """The exact two paths from his screenshot."""
-    assert _act(SCHEDULED, _store() / "abc123" / "handoff.md") == ALLOW
-    assert _act(SCHEDULED, _store() / "abc123" / "memories" / "tool-policy-denials.md") == ALLOW
+def test_the_denial_ryan_saw_is_gone_on_the_narrowest_level():
+    """The exact two paths from his screenshot. They were refused under
+    `scheduled`; that profile is gone (Ryan 2026-09-24, "remove scheduled
+    completely it makes no sense to me"), so the same writes are pinned on
+    strict, the narrowest level that remains."""
+    assert _act(STRICT, _store() / "abc123" / "handoff.md") == ALLOW
+    assert _act(STRICT, _store() / "abc123" / "memories" / "tool-policy-denials.md") == ALLOW
 
 
 def test_an_interactive_compaction_does_not_open_a_modal():
@@ -122,21 +131,26 @@ def test_an_interactive_compaction_does_not_open_a_modal():
 
 # ── control 2: THE ONE THAT MATTERS ────────────────────────────────────────
 
-def test_the_workspace_is_STILL_refused_under_scheduled():
+def test_the_workspace_STILL_asks_under_strict():
     """Without this, the fix is indistinguishable from granting workspace_write
-    to every cron and /loop turn — which is the failure mode, not the fix."""
+    outright — which is the failure mode, not the fix. Was "refused under
+    scheduled"; with `scheduled` removed (Ryan 2026-09-24) the narrowest level
+    is strict, which asks rather than refuses."""
     for rel in ("src/litetui/app.py", "settings.json", "prompts/systemprompt.md"):
-        assert _act(SCHEDULED, ROOT / rel) == DENY, rel
+        assert _act(STRICT, ROOT / rel) == CONFIRM, rel
 
 
-def test_the_workspace_still_CONFIRMS_under_interactive():
-    assert _act(INTERACTIVE, ROOT / "src" / "litetui" / "app.py") == CONFIRM
+def test_the_workspace_is_allowed_under_interactive():
+    """Ryan 2026-09-24: "make interactive ask only for dangerous cmds any
+    deletions or zip expansions weird procc runs that arent its tools and
+    dangerous cmds threw PS and bash" -- a file write is none of those."""
+    assert _act(INTERACTIVE, ROOT / "src" / "litetui" / "app.py") == ALLOW
 
 
 def test_outside_the_workspace_is_untouched():
     outside = ROOT.parent / "not-mine" / "x.txt"
-    assert _act(SCHEDULED, outside) == DENY
-    assert _act(INTERACTIVE, outside) == CONFIRM
+    assert _act(STRICT, outside) == CONFIRM
+    assert _act(INTERACTIVE, outside) == ALLOW
 
 
 # ── control 3: the escape ──────────────────────────────────────────────────
@@ -154,7 +168,7 @@ def test_a_path_escaping_the_store_is_not_a_self_store_write(escape):
     of the store is classified as whatever it actually reaches."""
     target = _store() / escape
     assert SELF_STORE not in _caps(target), f"{escape} escaped into the store"
-    assert _act(SCHEDULED, target) == DENY
+    assert _act(STRICT, target) == CONFIRM
 
 
 # ── the classifier's three answers ─────────────────────────────────────────
@@ -196,7 +210,7 @@ def test_the_store_check_comes_FIRST_when_the_store_is_INSIDE_the_workspace(monk
         "a path inside BOTH the store and the workspace classified as the "
         "workspace — the store check is no longer first"
     )
-    assert _act(SCHEDULED, target, own) == ALLOW
+    assert _act(STRICT, target, own) == ALLOW
 
 
 def test_self_store_is_a_declared_capability():

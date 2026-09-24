@@ -48,7 +48,7 @@ from litetui import tool_policy
 from litetui.side_panel import DialogController, SidePanel
 from litetui import textfmt
 from litetui.textfmt import profile_text
-from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, SCHEDULED
+from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 from litetui.widgets import ConfirmStopBody
 
 
@@ -75,14 +75,17 @@ def test_the_phrase_reads_level_on_not_mode_level():
 def test_the_glyph_separates_WILL_INTERRUPT_from_WILL_NOT():
     """The glyph is the part you read without reading.
 
-    autonomous runs everything; interactive stops to ask; scheduled stops by
-    refusing. Asking and refusing are both interruptions from the user's side,
-    which is why `scheduled` gets the stop glyph despite having an EMPTY
-    confirm set -- the glyph answers "will this run?", not "does this prompt?".
+    autonomous runs everything; interactive and strict stop to ask. (The
+    refusing `scheduled` level that took the stop glyph with an EMPTY confirm
+    set is gone -- Ryan 2026-09-24: "remove scheduled completely it makes no sense to me ... make
+    interactive ask only for dangerous cmds any deletions or zip expansions weird
+    procc runs that arent its tools and dangerous cmds threw PS and bash"; the derivation test below
+    still pins a refusing profile, because the glyph answers "will this
+    run?", not "does this prompt?".)
     """
     assert profile_text(AUTONOMOUS).startswith(">>")
     assert profile_text(INTERACTIVE).startswith("||")
-    assert profile_text(SCHEDULED).startswith("||")
+    assert profile_text(STRICT).startswith("||")
 
 
 def test_the_glyph_is_DERIVED_so_a_new_profile_cannot_be_forgotten(monkeypatch):
@@ -112,47 +115,41 @@ def test_absence_renders_as_ABSENCE(missing):
 # ── the cycle: Ryan's order, wrapping ──────────────────────────────────────
 
 def test_the_cycle_is_ryans_order_and_wraps():
-    """T085 cut it to TWO levels: "scheduled should not be its own mode"."""
+    """T085 took `scheduled` off the cycle ("scheduled should not be its own
+    mode"); 2026-09-24 removed it outright. Three levels, stepping down."""
     assert tool_policy.cycle(AUTONOMOUS) == INTERACTIVE
     assert tool_policy.cycle(INTERACTIVE) == "strict"
     assert tool_policy.cycle("strict") == AUTONOMOUS
 
 
-def test_scheduled_is_UNREACHABLE_from_the_keyboard():
-    """It survives as the floor `unattended()` degrades to — a mechanism, not
-    a mode. Pressing shift+tab must never land on it."""
-    assert SCHEDULED not in tool_policy.selectable_profile_names()
+def test_scheduled_is_GONE_and_UNREACHABLE_from_the_keyboard():
+    """It was the floor `unattended()` degraded to; both are removed --
+    Ryan 2026-09-24: "remove scheduled completely it makes no sense to me ... make
+    interactive ask only for dangerous cmds any deletions or zip expansions weird
+    procc runs that arent its tools and dangerous cmds threw PS and bash".
+    Pressing shift+tab must never land on it."""
+    assert "scheduled" not in tool_policy.PROFILES
     reached = {tool_policy.cycle(n) for n in tool_policy.PROFILE_NAMES}
-    assert SCHEDULED not in reached, "the floor is reachable by cycling again"
+    assert "scheduled" not in reached, "the removed level is reachable by cycling again"
 
 
 def test_cycling_OFF_scheduled_lands_back_in_the_selectable_set():
     """An old settings.json can still hold it. One press must escape, not
     stick — and must land on the NARROWEST selectable level, never the widest."""
-    assert tool_policy.cycle(SCHEDULED) == "strict"
+    assert tool_policy.cycle("scheduled") == STRICT
 
 
-def test_the_selectable_set_is_DERIVED_from_the_profile_flag(monkeypatch):
-    """Not a hand-written tuple. A profile marked unselectable leaves the cycle
-    and the dropdown together, because both read this one property."""
-    hidden = tool_policy.ToolProfile(
-        name="hidden", allow=frozenset({tool_policy.READ_ONLY}),
-        confirm=frozenset(), summary="not offered", selectable=False,
-    )
-    shown = tool_policy.ToolProfile(
-        name="shown", allow=frozenset({tool_policy.READ_ONLY}),
-        confirm=frozenset(), summary="offered", selectable=True,
-    )
-    monkeypatch.setitem(tool_policy.PROFILES, "hidden", hidden)
-    monkeypatch.setitem(tool_policy.PROFILES, "shown", shown)
-    names = tool_policy.selectable_profile_names()
-    assert "shown" in names and "hidden" not in names
+def test_the_selectable_set_is_every_profile():
+    """Was `..._DERIVED_from_the_profile_flag`: `ToolProfile.selectable`
+    existed only to hide `scheduled`, and went with it (2026-09-24). The
+    cycle and the dropdown still read one source, now all of PROFILES."""
+    assert tool_policy.selectable_profile_names() == tool_policy.PROFILE_NAMES
 
 
 def test_an_unrecognised_profile_cycles_DOWN_not_up():
     """Corrupt settings plus one keypress must not reach full authority.
 
-    Matches `unattended()`, which also sends an unknown name to the floor. The
+    (It used to match `unattended()`, removed 2026-09-24.) The
     first version of `cycle` returned AUTONOMOUS here and no test noticed --
     found by re-reading my own diff, not by a red.
     """
@@ -161,7 +158,7 @@ def test_an_unrecognised_profile_cycles_DOWN_not_up():
     # What is asserted is unchanged: unknown lands on the NARROWEST level a
     # human may hold, never the widest.
     landed = tool_policy.cycle("not-a-profile")
-    assert landed == tool_policy.selectable_profile_names()[0]
+    assert landed == tool_policy.selectable_profile_names()[0] == STRICT
     assert landed != AUTONOMOUS, "corrupt settings plus one keypress reached max authority"
 
 
@@ -196,25 +193,37 @@ async def test_the_footer_names_the_level_and_follows_a_cycle():
 
 
 @pytest.mark.asyncio
-async def test_the_footer_shows_the_RESOLVED_level_not_the_stored_one():
-    """They differ per turn now, and the resolved one is what governs tools.
+async def test_the_footer_shows_the_RESOLVED_level_not_the_stored_one(monkeypatch):
+    """They differ per turn, and the resolved one is what governs tools.
 
-    Settings says `interactive`; an inbox-woken turn resolves to the read-only
-    floor because nobody is there to answer a modal. The footer must say what
-    is in force, which is the entire product requirement behind "show this in
-    the footer".
+    Settings says `interactive`; a cron fire resolves to autonomous because
+    nobody is there to answer a modal (T085). The footer must say what is in
+    force, which is the entire product requirement behind "show this in the
+    footer".
+
+    📌 This drove an INBOX turn, which resolved to the `scheduled` floor. That
+    floor is gone (Ryan 2026-09-24: "remove scheduled completely it makes no sense to me ... make
+    interactive ask only for dangerous cmds any deletions or zip expansions weird
+    procc runs that arent its tools and dangerous cmds threw PS and bash") -- mail now KEEPS
+    the stored level -- so the case where stored and resolved still differ is
+    the cron fire.
     """
+    from litetui import scheduler
+    monkeypatch.setattr(m.sched_mod, "save", lambda *_a, **_k: None)
     a = make_app(INTERACTIVE)
     a._chat_running = lambda: False
     a._user_bubble = lambda *x, **k: None
     a._append = lambda *x, **k: None
     a._stream = lambda *x, **k: None
     async with a.run_test(size=(120, 45)) as pilot:
-        a._deliver_inbox({"from": "abc", "priority": "normal", "body": "go"})
+        job = scheduler.Job(prompt="nightly", schedule="@daily")
+        a.jobs[:] = [job]
+        a._fire_job(job)
         await pilot.pause()
         assert a.settings.tool_policy_profile == INTERACTIVE
-        assert profile_text(SCHEDULED) in a.ctx_label_text.plain, (
-            "the footer showed the STORED level while a narrower one governed"
+        assert a._active_tool_profile == AUTONOMOUS
+        assert profile_text(AUTONOMOUS) in a.ctx_label_text.plain, (
+            "the footer showed the STORED level while another one governed"
         )
 
 
@@ -403,14 +412,17 @@ def test_a_stored_scheduled_level_does_not_CRASH_the_settings_screen(tmp_path):
     )
     loaded = settings_mod.load(tmp_path)
     assert loaded.tool_policy_profile in tool_policy.selectable_profile_names()
-    assert loaded.tool_policy_profile == "strict", (
-        "landed somewhere other than the narrowest selectable level"
+    # 2026-09-24: `scheduled` MIGRATES to interactive (which now asks only
+    # before dangerous actions) -- a deliberate landing, not the narrowest.
+    assert loaded.tool_policy_profile == INTERACTIVE, (
+        "a stored scheduled did not migrate to interactive"
     )
 
 
 def test_the_migration_never_lands_on_AUTONOMOUS(tmp_path):
-    """The narrowest selectable level, never the widest. Someone who chose
-    read-only must not be silently upgraded to "never asks"."""
+    """Never the widest. Someone who chose read-only must not be silently
+    upgraded to "never asks" -- `scheduled` lands on interactive (2026-09-24),
+    anything unrecognised on strict, the narrowest."""
     import json
     from litetui import settings as settings_mod
 
@@ -420,6 +432,7 @@ def test_the_migration_never_lands_on_AUTONOMOUS(tmp_path):
         )
         got = settings_mod.load(tmp_path).tool_policy_profile
         assert got != AUTONOMOUS, f"{stored!r} was widened to autonomous"
+        assert got == (INTERACTIVE if stored == "scheduled" else STRICT), (stored, got)
 
 
 # ── persistence: the same ruling Ctrl+T got ────────────────────────────────

@@ -182,6 +182,14 @@ def resolved(cs: ConvoSettings, settings, name: str):
     make "off" unstorable and silently promote the global default over an
     explicit choice.
     """
+    value = _resolved(cs, settings, name)
+    if name == "tool_policy_profile" and value == "scheduled":
+        from litetui.settings import _selectable_profile  # removed 2026-09-24; old files migrate
+        return _selectable_profile(value)
+    return value
+
+
+def _resolved(cs: ConvoSettings, settings, name: str):
     own = getattr(cs, name, None)
     if own is not None:
         return own

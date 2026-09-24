@@ -30,7 +30,7 @@ from litetui.ticker import NumberTicker
 from rich.text import Text
 from litetui import paths
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
-from litetui.tool_policy import INTERACTIVE, SCHEDULED
+from litetui.tool_policy import AUTONOMOUS, PROFILES
 
 
 def _owner(widget, method: str):
@@ -849,14 +849,11 @@ class JobBody(Widget):
                 yield Switch(value=j.new_conversation if j else False,
                              id="job-newconvo")
                 yield Static("fresh conversation", classes="job-switchcap")
-            yield Static("tool authority — scheduled is read-only by default",
+            yield Static("tool authority — scheduled runs always use autonomous (nobody is there to ask)",
                          classes="job-cap")
             yield Select(
-                [
-                    ("scheduled — read-only tools only", SCHEDULED),
-                    ("interactive — ask before sensitive tools", INTERACTIVE),
-                ],
-                value=j.tool_profile if j else SCHEDULED,
+                [(f"{name} — {PROFILES[name].summary}", name) for name in PROFILES],
+                value=j.tool_profile if j and j.tool_profile in PROFILES else AUTONOMOUS,
                 allow_blank=False,
                 id="job-tool-profile",
             )

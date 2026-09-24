@@ -37,10 +37,11 @@ def validate_request(request, *, parent_profile, depth):
         raise LaunchBlocked('Unsupported backend; fallback is forbidden')
     if type(depth) is not int or depth != 0:
         raise LaunchBlocked('Child spawn depth budget exhausted')
-    if parent_profile not in ('autonomous', 'interactive', 'scheduled'):
+    from litetui.tool_policy import PROFILES
+    if parent_profile not in PROFILES:
         raise LaunchBlocked('Unknown parent policy')
     profile = request.get('tool_profile', parent_profile)
-    # Profiles are not a simple numeric hierarchy: scheduled and interactive
+    # Profiles are not a simple numeric hierarchy: strict and interactive
     # have different approval semantics. Without explicit delegation, require
     # the same profile rather than guessing that one is universally weaker.
     if profile != parent_profile:

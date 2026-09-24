@@ -282,10 +282,9 @@ class Settings:
     #: human who is not there -- not the profile's name. A profile that both
     #: ran unattended and could confirm would hang the turn forever.
     #:
-    #: 📌 An explicitly chosen `interactive` still meets unattended turns, and
-    #: those still go through `tool_policy.unattended()`, which degrades a
-    #: confirm-based level to the read-only floor. The default moved; that
-    #: guard did not become unnecessary.
+    #: 📌 An explicitly chosen `interactive` still meets unattended turns: they
+    #: keep its powers and only its confirms are refused
+    #: (tool_policy.UNATTENDED_SOURCES), since nobody is there to answer.
     tool_policy_profile: str = AUTONOMOUS
     #: The human's standing answers to the approval modal, keyed by
     #: `tool_policy.rule_key` -- "<tool>:<sorted,capabilities>", NOT the tool
@@ -537,6 +536,8 @@ def _coerce(name: str, raw: Any, current: Any) -> Any:
     ftype = {f.name: f.type for f in fields(Settings)}.get(name)
     if ftype is None:
         return current
+    if name == "tool_policy_profile" and raw == "scheduled":
+        return _selectable_profile(raw)  # removed 2026-09-24; migrates on every read
     t = str(ftype)
     try:
         if raw is None:
@@ -618,6 +619,10 @@ def _selectable_profile(name: str) -> str:
     selectable = tool_policy.selectable_profile_names()
     if name in selectable:
         return name
+    if name == "scheduled":
+        # Removed 2026-09-24 (Ryan: "remove scheduled completely"); its users
+        # land on interactive, which now asks only before dangerous actions.
+        return tool_policy.INTERACTIVE
     return selectable[0]
 
 
