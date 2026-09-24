@@ -33,6 +33,8 @@ def store(tmp_path, monkeypatch):
     monkeypatch.delenv('CLINE_API_KEY', raising=False)
     monkeypatch.setattr(cline_backend, '_feed_cache', None)
     monkeypatch.setattr(cline_backend, '_fetch_feed', _unreachable)
+    monkeypatch.setattr(cline_backend, '_free_models_cache', None)
+    monkeypatch.setattr(cline_backend, '_fetch_model_ids', _unreachable)
     return path
 
 
@@ -256,14 +258,15 @@ def test_clinepass_backend_saved_on_one_conversation_stays_there(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_the_live_feed_is_the_list_clinepass_plus_its_free_bucket(monkeypatch):
+async def test_the_live_feed_is_the_list_its_clinepass_bucket_only(monkeypatch):
+    """The "free" bucket is refused outside Cline's own apps (HTTP 403, measured
+    2026-09-24), and "recommended" ids are usage-billing: neither is offered."""
     monkeypatch.setattr(cline_backend, '_fetch_feed', lambda: FEED)
     backend = _backend()
-    assert [r.key for r in await backend.list_models()] == [
-        'cline-pass/glm-5.3-flash', 'cline-pass/new-model', 'cline-free/gemini-3.8-flash', 'stealth/space-bunny-alpha']
-    await backend.ensure_chat_ready('cline-free/gemini-3.8-flash')
-    with pytest.raises(BackendError):
-        await backend.ensure_chat_ready('anthropic/claude-opus-5')  # a usage-billing id from "recommended"
+    assert [r.key for r in await backend.list_models()] == ['cline-pass/glm-5.3-flash', 'cline-pass/new-model']
+    for other in ('cline-free/gemini-3.8-flash', 'anthropic/claude-opus-5'):
+        with pytest.raises(BackendError):
+            await backend.ensure_chat_ready(other)
     assert await backend.model_info('cline-pass/glm-5.3-flash') == (1310720, 'llm', True)
     assert await backend.model_info('cline-pass/new-model') == (None, 'llm', True)
 
@@ -309,3 +312,85 @@ def test_the_feed_is_fetched_keyless_from_cline(monkeypatch):
         server.shutdown()
         server.server_close()
     assert seen == [('/api/v1/ai/cline/recommended-models', None)]
+
+
+# -- the Free tier: source 1 is Cline, restricted to its $0 models ---------------
+
+SERVED = ['anthropic/claude-opus-5', 'qwen/qwen3.8-27b:free', 'openai/gpt-6-astra', 'openrouter/free:free']
+
+
+def _free_backend(monkeypatch):
+    monkeypatch.setattr(cline_backend, '_fetch_feed', lambda: FEED)
+    monkeypatch.setattr(cline_backend, '_fetch_model_ids', lambda: SERVED)
+    return make_backend(Settings(backend='free'))
+
+
+@pytest.mark.asyncio
+async def test_the_free_tier_lists_only_free_models(monkeypatch):
+    backend = _free_backend(monkeypatch)
+    assert 'free' in llm_backend.BACKEND_NAMES and backend.name == 'free'
+    assert [r.key for r in await backend.list_models()] == ['qwen/qwen3.8-27b:free', 'openrouter/free:free']
+    for paid in ('anthropic/claude-opus-5', 'openai/gpt-6-astra', 'cline-pass/glm-5.3-flash',
+                 'cline-free/gemini-3.8-flash', 'stealth/space-bunny-alpha'):
+        with pytest.raises(BackendError):
+            await backend.ensure_chat_ready(paid)
+
+
+@pytest.mark.asyncio
+async def test_a_paid_id_never_leaves_the_process_on_the_free_tier(store, monkeypatch):
+    """The guard sits on the HTTP client app.py builds, so it also covers calls
+    that skip ensure_chat_ready (subagent_model, tool_summary_model, a stale
+    default_model from another backend)."""
+    from litetui.app import _plain_backend_error
+
+    _login(store, 3600)
+    reached = []
+    sse = 'data: ' + json.dumps({'id': 'c', 'object': 'chat.completion.chunk', 'created': 0, 'model': 'm',
+                                 'choices': [{'index': 0, 'delta': {'content': 'ok'}, 'finish_reason': None}]}) + '\n\ndata: [DONE]\n\n'
+    server, url, _ = _serve(lambda body: (reached.append(body['model']) or 200, 'text/event-stream', sse))
+    backend = _free_backend(monkeypatch)
+    monkeypatch.setattr(backend, '_base', url + '/api/v1')
+    client = AsyncOpenAI(base_url=backend.base_url(), api_key=backend.api_key_provider,
+                         http_client=backend.http_client(), max_retries=0)
+    try:
+        with pytest.raises(Exception) as refused:
+            await client.chat.completions.create(model='anthropic/claude-opus-5', stream=True,
+                                                 messages=[{'role': 'user', 'content': 'hi'}])
+        stream = await client.chat.completions.create(model='qwen/qwen3.8-27b:free', stream=True,
+                                                      messages=[{'role': 'user', 'content': 'hi'}])
+        text = ''.join([c.choices[0].delta.content or '' async for c in stream])
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert reached == ['qwen/qwen3.8-27b:free'] and text == 'ok'
+    assert _plain_backend_error(refused.value, backend) == (
+        'anthropic/claude-opus-5 is not a free model; the Free tier only sends free models. Pick one with /model.')
+
+
+def test_the_clinepass_backend_has_no_free_only_guard():
+    assert not hasattr(_backend(), 'http_client')
+
+
+def test_cline_refusals_read_as_plain_sentences():
+    """The upstream body is the one measured on 2026-09-24 (qwen/qwen3.8-27b:free):
+    Cline sends it as HTTP 200 + one `data: {"error": ...}` event, which openai
+    raises as an APIError with no status code."""
+    from openai import APIError
+
+    from litetui.app import _plain_backend_error
+
+    backend = _backend()
+    request = httpx.Request('POST', 'https://api.cline.bot/api/v1/chat/completions')
+    busy = {'code': 'stream_initialization_failed', 'message': (
+        "Failed to create stream: ... request failed with status 429: {\"error\":{\"metadata\":{\"raw\":"
+        "\"qwen/qwen3.8-27b:free is temporarily rate-limited upstream. Please retry shortly\"}}}")}
+    assert _plain_backend_error(APIError(busy['message'], request, body=busy), backend).startswith(
+        'This free model is busy upstream')
+    limit = 'Free limit reached on model qwen/qwen3.8-27b:free. Try again in 12m.'
+    assert _plain_backend_error(APIError(limit, request, body=None), backend) == (
+        'Free limit reached on this model; try again in 12m, or pick another free model (/model).')
+    product_only = {'code': 'API_REQUEST_ERROR_CODE', 'message': (
+        'Error 403: cline-free/deepseek-v4.1-flash is only available via Cline product surfaces.')}
+    assert _plain_backend_error(APIError(product_only['message'], request, body=product_only), backend) == (
+        "This model is reserved for Cline's own apps; pick another model (/model).")
+    assert backend.error_sentence(APIError('something else', request, body=None)) is None

@@ -141,7 +141,7 @@ def control(backend, name):
         if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
             return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
         return None
-    if getattr(backend, "name", None) == "cline":
+    if getattr(backend, "name", None) in ("cline", "free"):
         # Our loop drives ClinePass (sampling, tools, compaction all apply);
         # only its endpoint is fixed and remote.
         if name == "thinking_level":

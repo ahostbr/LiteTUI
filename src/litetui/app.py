@@ -429,6 +429,18 @@ def _plain_backend_error(e: BaseException, backend: object | None = None) -> str
     # which is exactly what it could offer before.
     backend_name = getattr(backend, "name", backend)
 
+    # The backend's own words first: a Cline refusal arrives as an openai
+    # error (an in-stream event, or the Free tier's request guard wrapped as a
+    # connection error), and only the backend knows what it means.
+    sentence = getattr(backend, "error_sentence", None)
+    if callable(sentence):
+        try:
+            said = sentence(e)
+        except Exception:  # noqa: BLE001 - a message must never fail a turn
+            said = None
+        if said:
+            return said
+
     if _connection_family(e):
         if backend_name == "lmstudio":
             return "LM Studio Seems Closed. Switch Backends Or Start LM Studio."
@@ -4366,7 +4378,10 @@ class LiteTUI(App):
                        or getattr(self.backend, 'api_key', lambda: 'litetui')())
             if (str(self.client.base_url).rstrip("/") != new_base or callable(api_key)
                     or self.client.api_key != api_key):
-                self.client = AsyncOpenAI(base_url=new_base, api_key=api_key)
+                # A backend may also supply the HTTP client (the Free tier's
+                # guard refuses a paid model id before it leaves the process).
+                http_client = getattr(self.backend, 'http_client', lambda: None)()
+                self.client = AsyncOpenAI(base_url=new_base, api_key=api_key, http_client=http_client)
             # Re-bind (re-authorize) the current client for the rebuilt backend: a
             # same-endpoint reconnect keeps the client, and this revalidates it
             # against the new backend's type and endpoint.
