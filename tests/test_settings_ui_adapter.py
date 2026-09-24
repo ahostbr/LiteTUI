@@ -268,3 +268,20 @@ def test_path_destination_updates_logical_revision_and_pending_runtime_effective
 
     assert [change.key for change in calls[1][0]] == ["theme_name"]
     assert calls[1][1] == {"global": "g2", "conversation": "c1"}
+
+
+def test_success_result_keeps_applied_runtime_status(monkeypatch):
+    _install_scope_registry(monkeypatch)
+    before = Settings(sidecar_enabled=False)
+    snapshot = SimpleNamespace(saved=before, effective=before, revisions={"global": "g1", "conversation": "c1"})
+    adapter = SettingsUiAdapter(
+        before, snapshot_provider=lambda: snapshot,
+        save_patch=lambda changes, revisions: SettingsSaveResult(
+            persistence=(_success("global", ("sidecar_enabled",), "g2"),)),
+        runtime_apply=lambda target, result: SettingsSaveResult(
+            result.persistence, (RuntimeSettingStatus("sidecar_enabled", "device", "applied"),)),
+    )
+    result = adapter.save(replace(before, sidecar_enabled=True))
+    assert result is not None
+    assert [(item.field, item.status) for item in result.runtime] == [("sidecar_enabled", "applied")]
+    assert not result.has_pending_runtime

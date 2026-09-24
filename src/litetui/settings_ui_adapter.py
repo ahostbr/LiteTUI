@@ -170,7 +170,11 @@ class SettingsUiAdapter:
             else:
                 statuses[status.field] = status
         self._runtime_pending = statuses
-        return replace(result, runtime=tuple(statuses.values()))
+        # Report this save's applied outcomes as well as unresolved outcomes;
+        # pending bookkeeping must not erase evidence of a successful apply.
+        reported = dict(statuses)
+        reported.update((status.field, status) for status in result.runtime)
+        return replace(result, runtime=tuple(reported.values()))
 
     def _apply_persistence_result(
         self, result: SettingsSaveResult, target: Settings
