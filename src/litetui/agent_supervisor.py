@@ -228,7 +228,7 @@ def python_child_argv(*, module=None, script=None, args=()):
 
 
 async def finish_child(process, inbox, *, parent, child_id, branch, evidence, notify,
-                       timeout=300, data_root=None):
+                       timeout=300, data_root=None, launch_outcome=None):
     """Commit outcome after bounded process cleanup, then notify the parent.
 
     Process termination is not local-model absence; resource settlement must be
@@ -238,7 +238,8 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
     _identity(process.conversation_id)
     cancelled = None
     try:
-        outcome = await process.collect_turn(timeout=timeout)
+        outcome = (dict(launch_outcome) if launch_outcome is not None
+                   else await process.collect_turn(timeout=timeout))
     except asyncio.CancelledError as exc:
         cancelled = exc
         outcome = {'status': 'cancelled', 'summary': 'Parent cancelled child collection'}
@@ -248,6 +249,9 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
         try:
             async with asyncio.timeout(10):
                 return await process.close(), None
+        except asyncio.CancelledError:
+            # An internally cancelled close is unknown cleanup, not parent cancellation.
+            return False, 'Child cleanup was cancelled'
         except Exception as exc:
             return False, f'{type(exc).__name__}: {exc}'
 
@@ -277,7 +281,15 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
             if result['status'] == 'completed':
                 result['status'] = 'failed'
                 result['error'] = result['storage_error']
-    completion = inbox.persist(parent, result)
+    try:
+        completion = inbox.persist(parent, result)
+    except Exception as exc:
+        # No durable outcome exists; the registry claim must remain for recovery.
+        # Do not mask caller cancellation with a storage failure.
+        if cancelled is not None:
+            cancelled.add_note(f'Child outcome persistence failed: {type(exc).__name__}')
+            raise cancelled from exc
+        raise
     if cancelled is not None:
         # Durable pending result is replayable; preserve caller cancellation.
         raise cancelled

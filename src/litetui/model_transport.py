@@ -628,17 +628,80 @@ class OAuthTransport:
             raise
 
 
+def _refuse_unsupported_local_lm(backend, *, remote_marker=None):
+    """Fail-closed request-level guard for LM Studio's JIT-on-inference (WS3).
+
+    LM Studio JIT-loads a cold model into local VRAM on the FIRST inference
+    request itself — not through our load path — so the request IS a load. A
+    resident snapshot is not a safe bypass (the model can evict between the
+    check and the request), and a safe per-request usage admission does not exist
+    yet. So a LOCAL LM Studio inference is refused BEFORE any HTTP, unconditionally
+    (cold, warm, or even once calibration exists), with an actionable reason and
+    NO stream/lifecycle wrapper. A trusted REMOTE endpoint (its VRAM is not ours)
+    passes; an UNKNOWN locality blocks. Other backends (llama, ninfer, codex) are
+    not request-JIT — their loads are gated at the load/spawn path — so they pass.
+    """
+    from litetui.llm_backend import LMStudioBackend
+    if not isinstance(backend, LMStudioBackend):
+        return
+    from litetui.resource_admission_install import classify_locality
+    from litetui.model_resource_session import AdmissionBlocked
+    scope = classify_locality(backend, remote_marker=remote_marker)
+    if scope == "remote":
+        return
+    if scope == "local":
+        raise AdmissionBlocked(
+            "BLOCKED: local LM Studio inference is refused — it JIT-loads a model "
+            "into VRAM on the request, and JIT-safe per-request usage admission is "
+            "not implemented yet. Deliberate temporary block until the usage/lease "
+            "protocol lands."
+        )
+    raise AdmissionBlocked(
+        "BLOCKED: cannot confirm this LM Studio endpoint is local; the request is "
+        "refused. Remote-endpoint admission is not supported yet."
+    )
+
+
 class OpenAITransport:
-    def __init__(self, client):
+    def __init__(self, client, *, backend=None, remote_marker=None):
+        # `backend` is optional so a standalone OpenAITransport(client) keeps
+        # working; production for_app always binds the current backend so the
+        # request-level LM Studio JIT guard can fire.
         self.client = client
+        self.backend = backend
+        self.remote_marker = remote_marker
 
     async def create(self, *, purpose: str = "turn", **kwargs):
+        _refuse_unsupported_local_lm(self.backend, remote_marker=self.remote_marker)
         kwargs = dict(kwargs)
         kwargs["messages"] = [
             {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
             for m in kwargs["messages"]
         ]
         return await self.client.chat.completions.create(**kwargs)
+
+
+@dataclass(frozen=True)
+class ClientBinding:
+    """Immutable authorization created at client creation: THIS client object, for
+    THIS backend TYPE (its admission scope / JIT classification), at THIS endpoint.
+
+    for_app refuses unless the CURRENT (app.client, app.backend) still matches the
+    record. This catches (a) a client replaced by hand, (b) a same-URL backend-TYPE
+    swap (LM<->llama at one address changes JIT classification), and (c) an endpoint
+    mutation. It is NOT a caller-editable string: it binds the client OBJECT and the
+    backend CLASS, and a same-endpoint reconnect must re-bind (bind_client) to
+    re-authorize the kept client for the rebuilt backend.
+    """
+    client: object
+    backend_type: type
+    endpoint: str
+
+
+def bind_client(client, backend) -> ClientBinding:
+    """Record the client<->backend binding. Call at every client (re)build and
+    store the result on app._client_binding (see app.py factory sites)."""
+    return ClientBinding(client, type(backend), backend.base_url().rstrip("/"))
 
 
 def for_app(app) -> ModelTransport:
@@ -656,7 +719,30 @@ def for_app(app) -> ModelTransport:
             app.backend.name, models=app.backend.models,
             prompt_cache_key=getattr(app, "convo_id", None),
         )
-    return OpenAITransport(app.client)
+    # Refuse a stale client<->backend pair rather than misroute a request. The
+    # binding is recorded at client creation (app.py factory sites). Production
+    # for_app REQUIRES it: a missing binding fails closed. A mismatch — client
+    # replaced by hand, a same-URL backend-TYPE swap, or an endpoint mutation —
+    # refuses. (A standalone OpenAITransport(client) built directly, without
+    # for_app, is the optional test path and carries no binding.)
+    backend = app.backend
+    binding = getattr(app, "_client_binding", None)
+    from litetui.model_resource_session import AdmissionBlocked
+    if binding is None:
+        raise AdmissionBlocked(
+            "BLOCKED: no client<->backend binding is recorded; refusing to send "
+            "rather than route an unverified client."
+        )
+    if (binding.client is not app.client
+            or binding.backend_type is not type(backend)
+            or binding.endpoint != backend.base_url().rstrip("/")):
+        raise AdmissionBlocked(
+            "BLOCKED: the OpenAI client is a stale pair for the current backend "
+            f"(bound {binding.backend_type.__name__}@{binding.endpoint}, now "
+            f"{type(backend).__name__}@{backend.base_url().rstrip('/')}). Rebuild "
+            "the client through the factory before sending."
+        )
+    return OpenAITransport(app.client, backend=backend)
 
 
 def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
@@ -711,6 +797,9 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
             }
 
         return asyncio.run(run())
+    # Local sync sidecall: refuse LM Studio JIT-on-inference BEFORE the urllib
+    # request (synchronous raise, no event loop needed).
+    _refuse_unsupported_local_lm(backend)
     url = backend.base_url() if backend else app.settings.lm_host.rstrip("/") + "/v1"
     req = urllib.request.Request(
         url + "/chat/completions",

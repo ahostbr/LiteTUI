@@ -228,6 +228,46 @@ def classify() -> tuple[list[Path], list[Path]]:
     return pytest_style, script_style
 
 
+# Reviewed legacy-only exceptions, never inferred from absent test definitions.
+# Read-only scan at 4eccbbb found zero script-classified files. New exceptions
+# require explicit review; all other files go through pytest item accounting.
+LEGACY_SCRIPT_TESTS: frozenset[str] = frozenset()
+
+
+def explicit_inventory() -> tuple[list[Path], list[Path]]:
+    files = {path.name: path for path in TESTS.glob("test_*.py")}
+    missing = LEGACY_SCRIPT_TESTS - files.keys()
+    if missing:
+        raise ValueError(f"Declared legacy scripts missing: {sorted(missing)}")
+    pyt, scr = [], []
+    for name, path in sorted(files.items()):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeError, OSError) as exc:
+            raise ValueError(f"Unreadable/syntax-invalid test {name}: {exc}") from exc
+        if name in LEGACY_SCRIPT_TESTS:
+            scr.append(path)
+        elif module_level_hazards(tree):
+            raise ValueError(f"Import hazard requires explicit inventory review: {name}")
+        else:
+            pyt.append(path)
+    return pyt, scr
+
+
+def _run_bounded(command, *, timeout, **kwargs):
+    """Report child timeout as failure without abandoning remaining files.
+
+    subprocess.run kills/waits for the direct child on timeout. This is not
+    a process-tree cleanup guarantee; tests must still own their descendants.
+    """
+    try:
+        return subprocess.run(command, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        message = f"TIMEOUT after {timeout}s: {command[-1]}"
+        print(message)
+        return subprocess.CompletedProcess(command, 124, "", message)
+
+
 def main() -> int:
     verbose = "-v" in sys.argv
 
@@ -269,11 +309,19 @@ def main() -> int:
     if _src not in _existing.split(os.pathsep):
         os.environ["PYTHONPATH"] = _src + (os.pathsep + _existing if _existing else "")
 
-    pyt, scr = classify()
+    try:
+        pyt, scr = explicit_inventory()
+    except ValueError as exc:
+        print(f"FAILED: {exc}")
+        return 1
     if "--scripts-only" in sys.argv:
         pyt = []
 
     print(f"pytest-style: {len(pyt)}   script-style: {len(scr)}\n")
+
+    if not pyt and not scr:
+        print("FAILED: empty selected test inventory; nothing was verified")
+        return 1
 
     failures: list[str] = []
 
@@ -303,9 +351,11 @@ def main() -> int:
         # failing file and never reach the script half below — the opposite of
         # what a runner whose job is to report EVERY file wants. The return code
         # is read by name immediately after, which is the whole point.
-        proc = subprocess.run(  # noqa: PLW1510
+        proc = _run_bounded(
             [sys.executable, "-m", "pytest", "-q", "--durations=25",
-             *[str(p) for p in pyt]],
+             "-p", "readiness_collection_gate", *[str(p) for p in pyt]],
+            timeout=3600,
+            env={**os.environ, "PYTHONPATH": str(TESTS) + os.pathsep + os.environ["PYTHONPATH"]},
             cwd=str(ROOT),
         )
         # pytest's documented exit codes. NO_TESTS (5) and INTERNAL (3) are
@@ -328,7 +378,7 @@ def main() -> int:
         # Same reason as the pytest child above: `check=True` would raise on
         # the first failing script and the remaining files would never run, so
         # the report would name one failure and hide the rest.
-        proc = subprocess.run(  # noqa: PLW1510
+        proc = _run_bounded(
             [sys.executable, str(f)],
             cwd=str(ROOT),
             capture_output=True,

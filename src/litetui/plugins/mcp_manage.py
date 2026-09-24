@@ -102,6 +102,182 @@ def _entry_from_words(words: list[str]) -> tuple[dict | None, str | None]:
     return {"command": first, "args": words[1:]}, None
 
 
+def _settle_maintenance(app) -> str:
+    """Rebuild the dispatch map, clear the in-flight flag, and WAKE waiters —
+    the shared finally of every off-loop MCP mutation (reconcile AND the single
+    verbs). Returns a block-warning suffix ('' unless the rebuild failed).
+
+    A FAILED rebuild must not resume turns over a stale map, so its outcome is
+    explicit: success clears `_mcp_dispatch_blocked` (current map installed),
+    failure SETS it (bounded reason — type only, never raw error text). Waiters
+    are woken either way; the _stream gate / tool dispatch then defer on the
+    flag until a later reconcile rebuilds successfully."""
+    try:
+        app.rebuild_mcp_dispatch()
+    except Exception as e:  # noqa: BLE001 — a stale map BLOCKS, never resumes
+        app._mcp_dispatch_blocked = f"dispatch rebuild failed ({type(e).__name__})"
+    else:
+        app._mcp_dispatch_blocked = None
+    finally:
+        app._mcp_maintenance = False
+        ev = getattr(app, "_mcp_maintenance_done", None)
+        if ev is not None:
+            ev.set()
+    if getattr(app, "_mcp_dispatch_blocked", None):
+        return ("\n\n[mcp] ⚠ tool dispatch map FAILED to rebuild — tool routing is BLOCKED until a "
+                "successful /mcp reconcile or restart.")
+    return ""
+
+
+async def _reconcile_worker(app) -> None:
+    """Off-loop MCP reconcile with a cancellation-safe join. await_preparation
+    joins the worker thread even under cancellation; _settle_maintenance clears
+    the in-flight flag ONLY after it settles and wakes any awaiting turn."""
+    from litetui.agent_preparation import await_preparation
+    note = ""
+    try:
+        outcomes = await await_preparation(app.mcp.reconcile)
+    except Exception as e:  # noqa: BLE001 — report, never leave the flag stuck
+        # Bounded: exception TYPE only. A raw reconcile error can embed a server
+        # URL or a secret from mcp.json; per-server outcomes are already
+        # sanitized by the coordinator.
+        outcomes = {"": f"failed ({type(e).__name__})"}
+    finally:
+        note = _settle_maintenance(app)
+    app.system_message(_format_reconcile(outcomes) + note)
+
+
+async def _mutation_worker(app, op, describe) -> None:
+    """Run ONE MCP mutation (connect/disconnect/reconnect/remove/add) off-loop —
+    off the UI thread, through the coordinator's own claim — then settle the
+    dispatch map. `describe(result)` formats the op's return into a user line.
+    MCPBusy and any other error become a bounded message; the map is settled
+    (and blocked on rebuild failure) in every case."""
+    from litetui.agent_preparation import await_preparation
+    from litetui.mcp_client import MCPBusy
+    msg, note = "", ""
+    try:
+        msg = describe(await await_preparation(op))
+    except MCPBusy:
+        msg = "MCP maintenance is in progress — try again in a moment."
+    except Exception as e:  # noqa: BLE001 — bounded, never echo raw error text
+        msg = f"MCP operation failed ({type(e).__name__})."
+    finally:
+        note = _settle_maintenance(app)
+    app.system_message(msg + note)
+
+
+def submit_op(app, coro, *, report=None) -> bool:
+    """UNIFIED off-loop MCP mutation submission — the single entry point the /mcp
+    command, the MCP dialog AND the reconcile verb all submit through. `coro` is
+    the op's worker coroutine (run the op, format the result, settle maintenance,
+    deliver the line); the shared claim + off-loop scheduling lives here once so
+    the dialog no longer hand-rolls it.
+
+    Claims maintenance SYNCHRONOUSLY (so a second op is rejected by the gate
+    rather than racing this one), then runs `coro` off-loop via run_guarded. A
+    worker cancelled BEFORE its coroutine's first step never runs the finally
+    that settles maintenance; run_guarded's cleanup (`_release`) is the release
+    that un-sticks it in that case (and on a schedule/attach failure). The
+    release no-ops once the coro has already settled (its Event is set).
+    Lifecycle co-designed with RigidStem (worker._task done-callback + a startup
+    gate; see run_guarded). `report` formats a schedule-failure line; when None
+    the default names the exception type, the dialog passes a plainer one.
+    Returns whether the worker scheduled (run_guarded non-None)."""
+    import asyncio
+    from litetui.agent_preparation import run_guarded
+
+    def _report(e):
+        if report is not None:
+            report(e)
+        else:
+            app.system_message(
+                f"Could not start the MCP operation ({type(e).__name__ if e else 'not tracked'}).")
+
+    app._mcp_maintenance = True
+    ev = asyncio.Event()
+    app._mcp_maintenance_done = ev
+
+    def _release():
+        if not ev.is_set():
+            app._mcp_maintenance = False
+            ev.set()
+
+    return run_guarded(app, coro, group="mcp", cleanup=_release, report=_report) is not None
+
+
+def _claim_and_run(app, coro, *, report=None) -> bool:
+    """Back-compat name for submit_op (the glue test calls it by this name);
+    kept so that call site needs no change."""
+    return submit_op(app, coro, report=report)
+
+
+def _schedule_mutation(app, op, describe) -> None:
+    """Run one MCP mutation off-loop through the coordinator. A fresh completion
+    Event is what a concurrent turn's _stream gate awaits."""
+    submit_op(app, _mutation_worker(app, op, describe))
+
+
+def _format_reconcile(outcomes: dict) -> str:
+    if list(outcomes) == [""]:
+        return f"[mcp reconcile] {outcomes['']}"
+    if not outcomes:
+        return "[mcp reconcile] no changes."
+    rows = "\n".join(f"  {n}: {o}" for n, o in sorted(outcomes.items()))
+    return "[mcp reconcile]\n" + rows
+
+
+def _safe_reload(app) -> str | None:
+    """Re-read configs, returning a user message if a maintenance op holds the
+    coordinator claim. reload_configs raises MCPBusy while a reconcile is in
+    flight; the read verbs (bare/list/reload) are not in the server-changing
+    gate above, so without this the exception would escape to the command
+    dispatcher as an error instead of a one-line "try again"."""
+    from litetui.mcp_client import MCPBusy
+    try:
+        app.mcp.reload_configs()
+        return None
+    except MCPBusy:
+        # Bounded message: MCPBusy carries lock state, but never echo exception
+        # text to the user — config errors can embed URLs/tokens.
+        return "MCP maintenance is in progress; try again in a moment."
+
+
+def _mutation_blocked_reason(app, *, ignore_workers=(), ignore_screen=None) -> str | None:
+    """Why an MCP server-changing action must be refused right now, or None to
+    proceed. Shared by the /mcp command AND the dialog so neither bypasses the
+    native / maintenance / idle gates.
+
+    The idle gate (a mutation must not race an active turn/tool/child) is real
+    for both callers. The dialog is itself hosted in a worker behind a modal, so
+    it would otherwise see ITSELF as busy — it passes its own host-worker id and
+    modal screen as ignore_* so produce_activity excludes exactly that identity
+    while STILL blocking on a real turn/tool/child/busy-store or a second modal.
+    The command passes neither (full gate). Defaults empty = fail-closed."""
+    if getattr(app, "_mcp_maintenance", False):
+        return "MCP maintenance is in progress — try again in a moment."
+    if hasattr(getattr(app, "backend", None), "app_server"):
+        return ("Native Codex session: an MCP server change needs a restart to reach the model "
+                "(the thread's tool inventory is fixed for its lifetime).")
+    from pathlib import Path
+    from litetui.plugin_reload_activity import produce_activity
+    from litetui.plugin_reload_children import children_pending
+    from litetui.plugin_reload_state import blocking_reasons
+    try:
+        snap = produce_activity(
+            app,
+            children_pending=lambda: children_pending(Path.home() / ".litetui-agents", app.convo_id),
+            ignore_workers=ignore_workers,
+            ignore_screen=ignore_screen,
+        ).snapshot
+        reasons = blocking_reasons(snap)
+    except Exception:  # noqa: BLE001 — an activity-probe failure DEFERS, never proceeds
+        return "Could not confirm it is safe to change MCP servers right now — try again shortly."
+    if reasons:
+        return f"Deferred (busy): {'; '.join(reasons)}. Try the action again shortly."
+    return None
+
+
 def _cmd_mcp(app, name: str, arg: str) -> None:
     words = (arg or "").split()
     if not words:
@@ -112,7 +288,10 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         from litetui.mcp_list import MCPListBody
         from litetui.side_panel import open_dialog
 
-        app.mcp.reload_configs()
+        busy = _safe_reload(app)
+        if busy:
+            app.system_message(busy)
+            return
         # `open_dialog`, not `show_dialog`: this handler is SYNC and show_dialog
         # is a coroutine (the T078 mismatch). No callback — every action in the
         # dialog is applied when it is made, so there is no answer to collect.
@@ -122,19 +301,55 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
     verb = words[0].lower()
     rest = words[1:]
 
+    # Server-changing verbs share the reload exclusion + native/idle gates. On
+    # native the live Codex thread's dynamicTools are frozen, so a tool-set
+    # change needs a restart to reach the model; and a mutation must not race an
+    # active turn or an in-flight maintenance pass.
+    if verb in ("add", "connect", "disconnect", "stop", "reconnect", "remove",
+                "rm", "delete", "reconcile"):
+        if getattr(app, "_mcp_maintenance", False):
+            app.system_message("MCP maintenance is in progress — try again in a moment.")
+            return
+        if hasattr(getattr(app, "backend", None), "app_server"):
+            app.system_message(
+                "Native Codex session: an MCP server change needs a restart to reach the model "
+                "(the thread's tool inventory is fixed for its lifetime).")
+            return
+        from pathlib import Path
+        from litetui.plugin_reload_activity import produce_activity
+        from litetui.plugin_reload_children import children_pending
+        from litetui.plugin_reload_state import blocking_reasons
+        snap = produce_activity(
+            app,
+            children_pending=lambda: children_pending(Path.home() / ".litetui-agents", app.convo_id),
+        ).snapshot
+        reasons = blocking_reasons(snap)
+        if reasons:
+            app.system_message(f"Deferred (busy): {'; '.join(reasons)}. Run /mcp {verb} again shortly.")
+            return
+
+    if verb == "reconcile":
+        # Claim maintenance SYNCHRONOUSLY (before scheduling) so a second
+        # reconcile is rejected by the gate above rather than cancelling this
+        # one; the worker joins off-loop and clears the flag only when settled.
+        # submit_op un-sticks maintenance if scheduling itself fails.
+        if submit_op(app, _reconcile_worker(app)):
+            app.system_message("MCP reconcile started — re-reading config and reconnecting owned servers.")
+        return
+
     if verb in ("help", "?"):
         app.system_message(USAGE)
         return
 
     if verb in ("list", "ls", "status"):
-        app.mcp.reload_configs()
-        app.system_message(_render(app))
+        busy = _safe_reload(app)
+        app.system_message(busy or _render(app))
         return
 
     if verb == "reload":
-        app.mcp.reload_configs()
-        app.system_message("Re-read mcp.json / .mcp.json — nothing started or stopped.\n\n"
-                           + _render(app))
+        busy = _safe_reload(app)
+        app.system_message(busy or ("Re-read mcp.json / .mcp.json — nothing started or stopped.\n\n"
+                                    + _render(app)))
         return
 
     if verb == "add":
@@ -145,14 +360,13 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         if cfg is None:
             app.system_message(f"Cannot add {rest[0]!r}: {why}")
             return
-        err = app.mcp.add(rest[0], cfg)
-        app.rebuild_mcp_dispatch()
+        srv = rest[0]
         # A start failure still leaves the server DECLARED, so the message says
         # both halves rather than a bare "failed" that hides the write.
-        if err:
-            app.system_message(f"Declared {rest[0]!r} in .mcp.json, but it did not start: {err}")
-        else:
-            app.system_message(f"Added and connected {rest[0]!r}.\n\n" + _render(app))
+        _schedule_mutation(
+            app, lambda: app.mcp.add(srv, cfg),
+            lambda err: (f"Declared {srv!r} in .mcp.json, but it did not start: {err}" if err
+                         else f"Added and connected {srv!r}.\n\n" + _render(app)))
         return
 
     if not rest:
@@ -161,37 +375,37 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
     target = rest[0]
 
     if verb == "connect":
-        err = app.mcp.connect(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(f"Could not connect {target!r}: {err}" if err
-                           else f"Connected {target!r}.\n\n" + _render(app))
+        _schedule_mutation(
+            app, lambda: app.mcp.connect(target),
+            lambda err: (f"Could not connect {target!r}: {err}" if err
+                         else f"Connected {target!r}.\n\n" + _render(app)))
         return
 
     if verb in ("disconnect", "stop"):
-        was = app.mcp.disconnect(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(
-            f"Disconnected {target!r}. It stays declared — /mcp connect {target} brings it back."
-            if was else f"{target!r} was not running."
-        )
+        _schedule_mutation(
+            app, lambda: app.mcp.disconnect(target),
+            lambda was: (f"Disconnected {target!r}. It stays declared — /mcp connect {target} brings it back."
+                         if was else f"{target!r} was not running."))
         return
 
     if verb == "reconnect":
         # Re-read first: the usual reason to reconnect is that the config was
         # just edited, and reconnecting to the OLD entry would look like the
-        # edit did nothing.
-        app.mcp.reload_configs()
-        err = app.mcp.reconnect(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(f"Could not reconnect {target!r}: {err}" if err
-                           else f"Reconnected {target!r}.\n\n" + _render(app))
+        # edit did nothing. Both run off-loop in the mutation worker.
+        def _reconnect_op():
+            app.mcp.reload_configs()
+            return app.mcp.reconnect(target)
+        _schedule_mutation(
+            app, _reconnect_op,
+            lambda err: (f"Could not reconnect {target!r}: {err}" if err
+                         else f"Reconnected {target!r}.\n\n" + _render(app)))
         return
 
     if verb in ("remove", "rm", "delete"):
-        err = app.mcp.remove(target)
-        app.rebuild_mcp_dispatch()
-        app.system_message(f"Could not remove {target!r}: {err}" if err
-                           else f"Removed {target!r} from .mcp.json.\n\n" + _render(app))
+        _schedule_mutation(
+            app, lambda: app.mcp.remove(target),
+            lambda err: (f"Could not remove {target!r}: {err}" if err
+                         else f"Removed {target!r} from .mcp.json.\n\n" + _render(app)))
         return
 
     app.system_message(f"Unknown /mcp verb {verb!r}.\n\n{USAGE}")

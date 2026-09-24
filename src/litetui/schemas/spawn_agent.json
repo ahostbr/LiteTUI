@@ -1,0 +1,24 @@
+{
+  "type": "function",
+  "function": {
+    "name": "spawn_agent",
+    "description": "Launch a full tool-using child asynchronously, or inspect/cancel its operation. Currently supports autonomous Codex parents and Codex headless children in a retained isolated Git worktree from committed HEAD; dirty parent edits are not inherited. Explicit backend/model/workspace/prompt required for spawn. Returns an operation_id, not a completed result. Child results are durably routed to the launching conversation. Local backends, headed launch, explicit shared workspaces and native app-server parents are blocked pending integration. One managed child globally; no managed grandchildren. Existing lightweight subagent is separate. Status/cancel IDs are scoped to this running parent process; durable outcomes remain retained after restart.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["spawn", "status", "cancel"], "default": "spawn"},
+        "operation_id": {"type": "string", "description": "Required for status/cancel; omit for spawn."},
+        "prompt": {"type": "string"},
+        "backend": {"type": "string", "enum": ["codex", "lmstudio", "llamacpp", "ninfer"]},
+        "model": {"type": "string"},
+        "workspace": {"type": "string", "description": "Existing Git repository; child uses an isolated worktree at committed HEAD."},
+        "workspace_mode": {"type": "string", "enum": ["worktree", "explicit"], "default": "worktree"},
+        "headed": {"type": "boolean", "default": false},
+        "reasoning_effort": {"type": "string", "description": "Must be advertised by the connected provider for the selected model; mutually exclusive with thinking_level."},
+        "thinking_level": {"type": "string"},
+        "tool_profile": {"type": "string", "enum": ["autonomous", "interactive", "scheduled"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

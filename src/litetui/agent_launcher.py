@@ -119,6 +119,10 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
     options. Headed transport remains separate (public CLI). No prompt on argv.
     """
     from pathlib import Path
+    from litetui.agent_ancestry import require_root_launcher
+    require_root_launcher()
+    if type(spec.child_depth) is not int or spec.child_depth != 1:
+        raise LaunchBlocked('Invalid managed child depth')
     if spec.headed:
         raise LaunchBlocked('Headed child transport is not integrated')
     validate_capabilities(spec, supported_levels)
@@ -143,14 +147,16 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
         args += to_argv(options)
     try:
         await process.start_python(module='litetui.cli', args=args, cwd=target,
-                                   env={'LITETUI_DATA_ROOT': str(root)})
+                                   env={'LITETUI_DATA_ROOT': str(root),
+                                        'LITETUI_AGENT_DEPTH': str(spec.child_depth)})
         ready = await process.rpc_handshake(spec, workspace=str(target))
         if on_ready is not None:
             on_ready(ready)
         await process.send_prompt(spec.prompt)
         return ready
-    except BaseException:
+    except BaseException as original:
         import asyncio
+        cancelled = original if isinstance(original, asyncio.CancelledError) else None
         async def close_bounded():
             async with asyncio.timeout(10):
                 return await process.close()
@@ -159,7 +165,15 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
             try:
                 await asyncio.shield(cleanup)
                 break
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 if cleanup.cancelled():
                     break
+                cancelled = cancelled or exc
+            except Exception:
+                # Cleanup failure must not replace the original launch exception,
+                # especially cancellation. Bound launches persist an unconfirmed
+                # outcome through the runtime's subsequent cleanup attempt.
+                break
+        if cancelled is not None:
+            raise cancelled
         raise

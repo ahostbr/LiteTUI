@@ -644,6 +644,13 @@ class ChatLog(VerticalScroll):
         self.app._scroll_down()
 
 
+#: Seconds the inbox monitor waits before registering, to let _connect settle so
+#: the model is known. Module-level so a mounted test can drive the worker to its
+#: (wrapped, idle) poll phase quickly instead of blocking the suite on real time;
+#: production keeps the full settle.
+_INBOX_SETTLE_S = 2.0
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -1637,6 +1644,12 @@ class LiteTUI(App):
             base_url=self.backend.base_url(),
             api_key="litetui",
         )
+        # Record the client<->backend binding. model_transport.for_app refuses a
+        # request unless the CURRENT (client object, backend TYPE, endpoint) still
+        # matches — e.g. plugins/model_switch reassigns self.backend without
+        # rebuilding self.client, which would otherwise route to the previous engine
+        # or apply the wrong backend-type admission classification.
+        self._client_binding = model_transport.bind_client(self.client, self.backend)
         # Discovered ONCE, before the first system prompt is built -- the skill
         # index rides in that prompt, so discovering later would ship a prompt
         # that omits every skill for the first turn.
@@ -1821,7 +1834,8 @@ class LiteTUI(App):
         for label, f in _checks:
             if not f.exists():
                 self._system(f"[!] {label} missing: {f}\n    That section is absent from the model's context.")
-        self._connect()
+        if self._resume_cli_conversation():
+            self._connect()
         # Voice-in: bind the configurable record hotkey (default ctrl+space).
         self._bind_mic_hotkey()
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
@@ -1850,6 +1864,69 @@ class LiteTUI(App):
             _update_check.start_background_check(self)
         except Exception:
             pass  # an update check must never block or break a launch
+
+    def _start_child_delivery(self, *, parent, receipts, inbox, registry):
+        """Install one parent-owned delivery timer from trusted runtime state."""
+        from litetui.agent_parent_delivery import poll_receipts
+        prior = getattr(self, '_child_delivery_timer', None)
+        if prior is not None:
+            prior.stop()
+        last_error = None
+
+        def poll():
+            nonlocal last_error
+            try:
+                poll_receipts(self, parent=parent, receipts=receipts, inbox=inbox, registry=registry)
+                wake = getattr(self, '_schedule_child_wake', None)
+                if wake is not None:
+                    wake(parent=parent, receipts=receipts)
+                last_error = None
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                # Durable stores retain responsibility; retry without claiming
+                # delivery or spamming the same failure every timer tick.
+                detail = str(exc)
+                if detail != last_error:
+                    self._system(f"[child result delivery deferred: {detail}]")
+                    last_error = detail
+
+        import sqlite3
+        self._child_delivery_timer = self.set_interval(1.0, poll)
+        return self._child_delivery_timer
+
+    def _schedule_child_wake(self, *, parent, receipts):
+        previous = getattr(self, '_child_wake_worker', None)
+        if previous is not None and not previous.is_finished:
+            return
+        from litetui.agent_parent_wake import wake_parent
+        uncertain = receipts.uncertain_wakes(parent, self.convo_id)
+        notice_key = (parent, self.convo_id, tuple(uncertain))
+        if uncertain and notice_key != getattr(self, '_child_wake_recovery_notice', None):
+            self._system(
+                '[child-result wake needs review: ' + ', '.join(uncertain)
+                + '; the result is saved, but a previous turn may have executed tools. '
+                'No automatic retry. Review this conversation before continuing.]')
+            self._child_wake_recovery_notice = notice_key
+
+        async def wake():
+            try:
+                await wake_parent(self, parent=parent, receipts=receipts)
+            except Exception as exc:
+                self._system(f"[child-result wake interrupted; retained for recovery: {exc}]")
+
+        self._child_wake_worker = self.run_worker(
+            wake(), group='child-wake', exclusive=False, exit_on_error=False)
+
+    def _apply_child_receipts(self, *, parent, receipts) -> list[str]:
+        """Apply durable outcomes without pretending a UI notice is acceptance.
+
+        Internal launch orchestration supplies the parent identity and queue.
+        This does not start a model turn or alter native provider history.
+        """
+        from litetui.agent_parent_delivery import apply_receipts
+        applied = apply_receipts(self, parent=parent, receipts=receipts)
+        if applied:
+            self._system(f"[child results saved to this conversation: {len(applied)}]")
+        return applied
 
     def _update_available_notice(self, latest: str) -> None:
         """Delivered by the background update check via call_from_thread
@@ -1927,6 +2004,20 @@ class LiteTUI(App):
         reorders `_shutdown`, that arm goes red rather than this silently
         becoming a no-op.
         """
+        self._gui_quitting = True
+        # Block NEW model loads on every retained backend admission session BEFORE any
+        # await below can yield the loop — a load dispatched during async teardown
+        # would reserve capacity we are about to stop tracking. begin_close ONLY: no
+        # release, no unload (that needs confirmed quiescence, a separate slice). The
+        # returned report is retained for a shutdown diagnostic, never a cleanup claim.
+        from litetui import resource_session_lifecycle
+        self._shutdown_admission_report = resource_session_lifecycle.begin_shutdown(self)
+        delivery = getattr(self, '_child_delivery_timer', None)
+        if delivery is not None:
+            delivery.stop()
+        operations = getattr(self, '_agent_operations', None)
+        if operations is not None:
+            await operations.close()
         await self._settle_before_teardown()
         from litetui.launch_options import stop_custom
         await asyncio.to_thread(stop_custom, self)
@@ -2022,7 +2113,7 @@ class LiteTUI(App):
         it writes to stdout, which paints over a Textual screen. harness.poll
         claims ONLY messages addressed to this seat.
         """
-        await asyncio.sleep(2)  # let _connect settle so the model is known
+        await asyncio.sleep(_INBOX_SETTLE_S)  # let _connect settle so the model is known
         self.seat.model = self.model_id or "unknown"
         ok = await asyncio.to_thread(self.seat.register)
         self._seat_started = True
@@ -2103,9 +2194,17 @@ class LiteTUI(App):
             # while the app is plainly running -- `last_seen` is written once,
             # at registration, and never again.
             beat = 0
+            from litetui.plugin_reload_activity import idle_infra_phase
             while True:
-                await asyncio.sleep(harness_mod.POLL_SECONDS)
-                msgs = await asyncio.to_thread(self.seat.poll)
+                # The poll wait + the poll read are this worker's idle phase —
+                # registered as idle infra so an MCP-mutation gate does not read
+                # the inbox poller as busy. Initial registration above is NOT
+                # wrapped (it mutates the tool offer + system prompt, and must
+                # block). _deliver_inbox runs OUTSIDE the phase: it schedules a
+                # chat turn, visible as turn_active on its own.
+                with idle_infra_phase(self):
+                    await asyncio.sleep(harness_mod.POLL_SECONDS)
+                    msgs = await asyncio.to_thread(self.seat.poll)
                 for m in msgs:
                     self._deliver_inbox(m)
 
@@ -2123,7 +2222,8 @@ class LiteTUI(App):
                     # Silent on failure by design: a missed beat is not news,
                     # and reporting one would paint the transcript every minute
                     # that liteharness happened to be busy.
-                    await asyncio.to_thread(self.seat.heartbeat)
+                    with idle_infra_phase(self):
+                        await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
 
@@ -2563,6 +2663,19 @@ class LiteTUI(App):
         # setting exists to make.
         if not self.tools_enabled:
             return tool_denied("tools-off"), False
+        # MCP maintenance is reconnecting servers off-loop; the dispatch map is
+        # being rebuilt. Pause ALL tool dispatch (conservative — an MCP tool
+        # could route to a server mid-reconnect, and classifying non-MCP dynamic
+        # tools as safe here would be guesswork). Cleared the moment it ends.
+        if getattr(self, "_mcp_maintenance", False):
+            return "[denied] tool calls are paused during MCP maintenance; retry in a moment", False
+        # A reconcile whose dispatch rebuild FAILED leaves the map stale; tools
+        # stay blocked (not "retry in a moment") until a later reconcile rebuilds
+        # it, so a call can never route through a map that no longer matches the
+        # servers. Cleared only when a rebuild verifiably installs the map.
+        if getattr(self, "_mcp_dispatch_blocked", None):
+            return ("[denied] MCP tool dispatch is blocked: the tool map failed to rebuild. "
+                    "Run /mcp reconcile to retry, or restart."), False
         # 🔴 THE SECOND MECHANISM, AND IT IS NOT REDUNDANT WITH WITHHOLDING THE
         # SCHEMA. `PluginRegistry.tool_specs` already hides a switched-off tool
         # from the model, but `dispatch_for` deliberately does not consult
@@ -3220,7 +3333,30 @@ class LiteTUI(App):
     _flatten = staticmethod(ConversationRepository.flatten)
 
 
-    def _resume(self, path: Path) -> None:
+    def _resume_cli_conversation(self) -> bool:
+        """Restore startup ownership/settings before any backend connection."""
+        requested = getattr(self, '_cli_convo_id', None)
+        if not requested:
+            return True
+        try:
+            if (not isinstance(requested, str) or requested in ('.', '..')
+                    or any(c in requested for c in '/\\:')):
+                raise ValueError('Expected a conversation ID, not a path')
+            root = paths.CONVO_DIR.resolve()
+            target = (root / requested / 'convo.jsonl').resolve()
+            if target.parent.parent != root or not target.is_file():
+                raise ValueError('Conversation does not exist in this data root')
+            if not self._resume(target, startup=True):
+                raise ValueError('Conversation could not be restored or is already owned')
+        except (OSError, ValueError) as exc:
+            self._cli_launch_error = f'Startup conversation blocked: {exc}'
+            self._startup_resume_error = self._cli_launch_error
+            self._connect_settled = True
+            self._system(self._cli_launch_error)
+            return False
+        return True
+
+    def _resume(self, path: Path, *, startup: bool = False) -> bool:
         try:
             meta, msgs = ConversationRepository.read(path)
         except OSError as e:
@@ -3232,16 +3368,16 @@ class LiteTUI(App):
                 exc=e,
             )
             self._system(f"Could not read {path.name} — the file seems locked or unreadable.")
-            return
+            return False
         if not msgs:
             self._system(f"{path.name} holds no messages — not resuming.")
-            return
+            return False
 
         try:
             self.store.acquire(path.parent)
         except OSError as exc:
             self._system(f"Conversation is read-only: {exc}")
-            return
+            return False
         previous = getattr(self, "_backend", None)
         if getattr(previous, "owns_native_turns", False):
             bridge = getattr(previous, "_claude_tools", None)
@@ -3265,14 +3401,18 @@ class LiteTUI(App):
             self._claim_resumed_seat_name(self._resumed_seat_name, self.convo_id)
         from litetui.codex_steering import restore_queue
         restore_queue(self)
-        if self._pending_input:
+        if self._pending_input and not startup:
             self.call_after_refresh(self._flush_pending_input)
         hook_host.enter_conversation(self, "conversation_resume")
         # T691: AFTER convo_dir moves and BEFORE the seat sync — this
         # conversation's own model and think level are what /resume is
         # restoring, and reading them from the old directory would apply the
         # settings of the conversation being left.
-        self._adopt_convo_settings(born=False)
+        self._startup_adopting = startup
+        try:
+            self._adopt_convo_settings(born=False)
+        finally:
+            self._startup_adopting = False
         self._sync_seat_identity()
         self._refresh_ctx_label()   # resumed into a different conversation
         # The restored system message already names THIS store (it was written
@@ -3289,8 +3429,11 @@ class LiteTUI(App):
 
         self._render_resumed(path)
         self._native_history_worker = None
-        if hasattr(self.backend, "app_server"):
+        if startup:
+            self._startup_history_path = path
+        if not startup and hasattr(self.backend, "app_server"):
             self._native_history_worker = self._refresh_native_history(path)
+        return True
 
     @work(exclusive=True, group="native-history")
     async def _refresh_native_history(self, path: Path) -> None:
@@ -3800,8 +3943,27 @@ class LiteTUI(App):
         first-boot recovery paths). Ryan named backend FIRST in the ruling, and
         the first cut of this card declared the field and wired none of them.
         """
+        # Stop the OUTGOING backend's session taking new loads BEFORE the swap, so a
+        # stale holder cannot start a load into capacity we are about to stop
+        # tracking. begin_close() only sets the closing flag — it retains every lease
+        # and claim; the actual release/unload needs confirmed quiescence and is a
+        # separate coordinated slice. Only on a real replacement (different object);
+        # a same-object reassignment is a no-op.
+        old = getattr(self, "_backend", None)
+        if old is not None and old is not value:
+            old_session = getattr(old, "_admission_session", None)
+            if old_session is not None:
+                old_session.begin_close()
         self._backend = value
+        self._resume_backend_error = None
         self._remember_for_this_convo("backend", getattr(value, "name", None))
+        # Install fail-closed local-model admission on the new backend. Idempotent
+        # and install-only: it never releases the OLD backend's leases here, which
+        # would free capacity the old engine may still hold (release requires
+        # confirmed quiescence and is a separate coordinated slice). codex and any
+        # non-_VramGate backend are left untouched.
+        from litetui import resource_admission_install
+        resource_admission_install.install_on(self, value)
 
     @property
     def thinking_level(self) -> str | None:
@@ -4041,16 +4203,20 @@ class LiteTUI(App):
         one field over.
         """
         want = cs.backend
+        self._resume_backend_error = None
         if not want or want == getattr(getattr(self, "_backend", None), "name", None):
             return
         probe = replace(self.settings, backend=want) if is_dataclass(self.settings) else None
         try:
             new_backend = llm_backend.make_backend(probe if probe is not None else self.settings)
         except llm_backend.BackendError as e:
-            self._system(
-                f"This conversation used {want}, which is not available here "
-                f"({e}). Staying on {getattr(self._backend, 'name', 'the current engine')}."
+            if getattr(self, "_startup_adopting", False):
+                raise ValueError(f"Saved backend {want!r} is unavailable: {e}") from e
+            self._resume_backend_error = (
+                f"Saved backend {want!r} is unavailable: {e}. "
+                "Sending is blocked; choose a backend explicitly with /backend."
             )
+            self._system(self._resume_backend_error)
             return
         from litetui.claude_backend import close_native
         close_native(self, getattr(self, "_backend", None))
@@ -4196,6 +4362,10 @@ class LiteTUI(App):
             api_key = getattr(self.backend, 'api_key', lambda: 'litetui')()
             if str(self.client.base_url).rstrip("/") != new_base or self.client.api_key != api_key:
                 self.client = AsyncOpenAI(base_url=new_base, api_key=api_key)
+            # Re-bind (re-authorize) the current client for the rebuilt backend: a
+            # same-endpoint reconnect keeps the client, and this revalidates it
+            # against the new backend's type and endpoint.
+            self._client_binding = model_transport.bind_client(self.client, self.backend)
             rows = await self.backend.list_models()
             self._gui_connection_success = True
             SKIP = {"embed", "embedding"}
@@ -4246,6 +4416,10 @@ class LiteTUI(App):
                 # already resident; it must be an explicit act, never a side
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
+                startup_history = getattr(self, "_startup_history_path", None)
+                if startup_history is not None and hasattr(self.backend, "app_server"):
+                    self._native_history_worker = self._refresh_native_history(startup_history)
+                    self._startup_history_path = None
                 if self._pending_input and hasattr(self.backend, "app_server"):
                     self.call_after_refresh(self._flush_pending_input)
                 if self.tools_enabled:
@@ -4555,6 +4729,8 @@ class LiteTUI(App):
     async def _apply_cli_args(self) -> None:
         try:
             """T507-T1: apply --model, --system-prompt, --prompt after connect."""
+            if getattr(self, "_cli_launch_error", None):
+                return
             # Wait for connect to populate available_models (up to 10s) — or for
             # connect to have finished without any, which is the same T869 tax on
             # a second waiter: --model has nothing to apply against an empty list.
@@ -6797,6 +6973,16 @@ class LiteTUI(App):
         self.pending_image = None
         correlation = {"operation_id": getattr(self, "_gui_next_operation_id", None)} if source == "rpc" else {}
         correlation.update(claude_metadata)
+        if getattr(self, "_mcp_maintenance", False):
+            # Do not start a turn while MCP maintenance is reconnecting servers:
+            # queue the input (never lose it) — _flush_pending_input resends it
+            # once maintenance clears. Same queue path as a busy chat group.
+            bubble = self._user_bubble(text, has_image, queued=True)
+            self._pending_input.append(
+                {"content": content, "text": text, "bubble": bubble,
+                 "tool_profile": profile, "source": source, **correlation})
+            self.notify("Queued — sends after MCP maintenance", timeout=3)
+            return
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
@@ -6950,6 +7136,10 @@ class LiteTUI(App):
         a missing capability must mean "no opinion", never AttributeError
         mid-turn.
         """
+        if getattr(self, "_startup_resume_error", None):
+            raise llm_backend.BackendError(self._startup_resume_error)
+        if getattr(self, "_resume_backend_error", None):
+            raise llm_backend.BackendError(self._resume_backend_error)
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam
@@ -7138,10 +7328,72 @@ class LiteTUI(App):
         self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
                         "tps": tps, "tpsSource": tps_source, **extra})
 
+    async def _await_mcp_maintenance(self) -> None:
+        """Block a turn while an MCP reconcile is in flight, then let it proceed.
+
+        Awaits IN the calling worker (not a detached timer) so a parent wake
+        that awaits _stream completes only when the turn ACTUALLY runs. Raises
+        TurnDeferred — never returns silently — when the turn must be dropped,
+        so a caller cannot read a deferral as a completed turn and finish a
+        receipt for a turn that never ran.
+        """
+        from litetui.turn_deferral import TurnDeferred
+        if getattr(self, "_mcp_dispatch_blocked", None):
+            # A prior reconcile left the dispatch map stale (its rebuild failed).
+            # Block every turn until a later reconcile rebuilds it successfully —
+            # never run over a map that no longer matches the servers.
+            raise TurnDeferred("mcp dispatch map is stale; blocked until rebuild succeeds")
+        if not getattr(self, "_mcp_maintenance", False):
+            return
+        # Identity captured ONCE. The turn that resumes must be the SAME turn
+        # (conversation + backend binding) that entered, and must not resume
+        # into a stop/quit raised during the wait. Re-reading convo each pass —
+        # the e942e60 bug — compared it against itself and never saw a switch.
+        convo0 = self.convo_id
+        backend0 = self.backend
+        stop0 = self._stop_requested
+        while getattr(self, "_mcp_maintenance", False):
+            # The Event is re-read every pass: a second reconcile may have begun
+            # with a fresh (cleared) Event after the first one completed.
+            done = getattr(self, "_mcp_maintenance_done", None)
+            if done is None or done.is_set():
+                # Flag says maintaining but there is no fresh signal to await
+                # (missing, or already fired and not replaced). Awaiting a set
+                # Event busy-spins; proceeding runs the turn mid-maintenance
+                # (fail-open, the e942e60 `break`). Defer instead of either.
+                raise TurnDeferred(
+                    "mcp maintenance active without a pending completion signal")
+            await done.wait()
+            if (getattr(self, "_gui_quitting", False)
+                    or self.convo_id != convo0
+                    or self.backend is not backend0
+                    or self._stop_requested != stop0):
+                # Quit / conversation switched / backend rebound / stopped
+                # during the wait: the turn we were asked to run no longer
+                # exists. Defer (typed) — never normal-return.
+                raise TurnDeferred("turn context changed during mcp maintenance")
+        if getattr(self, "_mcp_dispatch_blocked", None):
+            # Woke because the reconcile settled, but its dispatch rebuild
+            # failed: defer rather than run this turn over a stale map.
+            raise TurnDeferred("mcp dispatch map is stale after reconcile; blocked until rebuild succeeds")
+
     @work(exclusive=True, group="chat")
     async def _stream(self) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
+        # 🔴 COMMON MCP-MAINTENANCE GATE. The one point EVERY turn passes through,
+        # whatever launched it (typed, queued, RPC, inbox wake, a direct call).
+        # The gate raises TurnDeferred (typed, testable without a live turn); we
+        # catch it HERE and return the STREAM_DEFERRED sentinel rather than let
+        # it escape the worker — @work is exit_on_error=True, so a raised
+        # exception would crash the TUI. The sentinel ends the worker SUCCESS
+        # (on_worker_state_changed then flushes/retries) and lets a parent wake
+        # tell "deferred" from "ran" without finishing a turn that never began.
+        from litetui.turn_deferral import STREAM_DEFERRED, TurnDeferred
+        try:
+            await self._await_mcp_maintenance()
+        except TurnDeferred:
+            return STREAM_DEFERRED
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import stream_turn
             await stream_turn(self)
@@ -7941,7 +8193,9 @@ class LiteTUI(App):
         """
         if not self._pending_input:
             return
-        if self._chat_running():
+        if self._chat_running() or getattr(self, "_mcp_maintenance", False):
+            # Retry shortly — do not start a turn during MCP maintenance; the
+            # queued input is preserved and resends once it clears.
             self.set_timer(0.7, self._flush_pending_input)
             return
         from litetui.claude_turn import queue_ready

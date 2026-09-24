@@ -28,6 +28,12 @@ class ModelDemand:
     concurrency: int = 1
     artifact: str = ''
     load_shape: str = ''
+    #: Calibration provenance. Either ALL blank (legacy, unverified) or ALL three
+    #: non-blank (a calibrated demand). Carried through the persisted identity so a
+    #: number measured on another host/build/weights file cannot share a lease.
+    host: str = ''
+    build: str = ''
+    artifact_fingerprint: str = ''
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,31 @@ class AdmissionDecision:
     required: ModelDemand
     reason: str
     options: tuple[str, ...] = ('reduce request', 'review loaded models', 'cancel')
+
+
+#: The full model identity persisted in the shared store and compared for lease
+#: sharing / reload. Provenance is part of it, so cross-instance matching
+#: distinguishes builds and artifacts, not only backend/endpoint/model.
+_CORE_IDENTITY = ('backend', 'endpoint', 'model', 'context', 'concurrency',
+                  'artifact', 'load_shape', 'vram_peak_by_device')
+_PROV_IDENTITY = ('host', 'build', 'artifact_fingerprint')
+
+
+def _identity_dict(source):
+    """Full identity from a ModelDemand OR a persisted demand dict.
+
+    Provenance absent in a legacy/pre-change persisted row reads as '' (via .get),
+    never KeyError — so an old row compares UNEQUAL to a calibrated
+    (non-blank-provenance) demand and can never inherit its lease, and a legacy
+    ('' provenance) demand matches only another legacy identity.
+    """
+    if isinstance(source, dict):
+        get = lambda k, d=None: source.get(k, d)  # noqa: E731
+    else:
+        get = lambda k, d=None: getattr(source, k, d)  # noqa: E731
+    identity = {k: get(k) for k in _CORE_IDENTITY}
+    identity.update({k: get(k, '') for k in _PROV_IDENTITY})
+    return identity
 
 
 class ResourceCoordinator:
@@ -53,16 +84,37 @@ class ResourceCoordinator:
             snapshot = self.telemetry()
             def blocked(reason):
                 return AdmissionDecision('blocked', None, snapshot, request, reason)
-            if not snapshot.reliable or type(snapshot.ram_available) is not int or snapshot.ram_available < 0 or not math.isfinite(snapshot.timestamp):
+            if not isinstance(owner, str) or not owner.strip():
+                return blocked('Resource owner identity unavailable')
+            if any(not isinstance(getattr(request, key), str) or not getattr(request, key).strip()
+                   for key in ('backend', 'endpoint', 'model')):
+                return blocked('Model identity incomplete')
+            if type(request.concurrency) is not int or request.concurrency <= 0:
+                return blocked('Model concurrency invalid')
+            if request.context is not None and (type(request.context) is not int or request.context <= 0):
+                return blocked('Model context invalid')
+            if not isinstance(request.vram_peak_by_device, dict) or any(
+                    not isinstance(key, str) or not key.strip() for key in request.vram_peak_by_device):
+                return blocked('GPU demand identity invalid')
+            if (snapshot.reliable is not True or type(snapshot.ram_available) is not int
+                    or snapshot.ram_available < 0 or type(snapshot.timestamp) not in (int, float)
+                    or not math.isfinite(snapshot.timestamp)):
                 return blocked('Reliable RAM/VRAM telemetry unavailable')
             if time.time() - snapshot.timestamp > 5 or snapshot.timestamp > time.time() + 1:
                 return blocked('Memory telemetry is stale')
             if type(request.ram_peak) is not int or request.ram_peak < 0:
                 return blocked('RAM peak estimate unknown')
-            if any(type(v) is not int or v < 0 for v in snapshot.vram_available.values()):
+            if (not isinstance(snapshot.vram_available, dict)
+                    or any(not isinstance(k, str) or not k.strip() for k in snapshot.vram_available)
+                    or any(type(v) is not int or v < 0 for v in snapshot.vram_available.values())):
                 return blocked('VRAM telemetry invalid')
             if any(type(v) is not int or v < 0 for v in request.vram_peak_by_device.values()):
                 return blocked('VRAM peak estimate invalid')
+            prov = (request.host, request.build, request.artifact_fingerprint)
+            all_blank = all(p == '' for p in prov)
+            all_named = all(isinstance(p, str) and p.strip() for p in prov)
+            if not (all_blank or all_named):
+                return blocked('Model provenance incomplete: host/build/fingerprint must be all set or all empty')
             for (raw_identity,) in db.execute("SELECT identity FROM models WHERE state='unloading'"):
                 identity = json.loads(raw_identity)
                 if all(identity[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model')):
@@ -78,8 +130,10 @@ class ResourceCoordinator:
                 if row is None:
                     return blocked('Reload requires an active owned lease')
                 reload_identity = row[0]
-                identity = json.loads(reload_identity)
-                if any(identity[k] != getattr(request, k) for k in identity):
+                # Full-identity equality, both sides normalized: an old/partial
+                # persisted identity (provenance keys absent) can never equal a
+                # calibrated demand, so it cannot be reloaded into it.
+                if _identity_dict(json.loads(reload_identity)) != _identity_dict(request):
                     return blocked('Reload cannot change the leased load shape')
                 users = db.execute('SELECT COUNT(*) FROM leases WHERE model=? AND active=1', (reload_identity,)).fetchone()[0]
                 if users != 1:
@@ -90,10 +144,14 @@ class ResourceCoordinator:
                         return blocked('Reload conflicts with pending model users')
             ram = 0
             gpu = {}
-            for (raw,) in db.execute("SELECT demand FROM reservations WHERE state IN ('reserved','leased')"):
+            for raw, state in db.execute("SELECT demand,state FROM reservations WHERE state IN ('reserved','leased')"):
                 demand = json.loads(raw)
                 same_model = all(demand[k] == getattr(request, k) for k in ('backend', 'endpoint', 'model'))
-                if same_model and any(demand.get(k) != getattr(request, k) for k in ('context', 'concurrency', 'artifact', 'load_shape', 'vram_peak_by_device')):
+                if same_model and state == 'reserved':
+                    # Enough free memory does not permit two clients to mutate
+                    # one backend model while the first outcome is uncertain.
+                    return blocked('Model load is pending')
+                if same_model and any(demand.get(k) != getattr(request, k) for k in ('context', 'concurrency', 'artifact', 'load_shape', 'host', 'build', 'artifact_fingerprint', 'vram_peak_by_device')):
                     return blocked('Incompatible load shape while model reserved or leased')
                 ram += demand['ram_peak']
                 for device, amount in demand['vram_peak_by_device'].items():
@@ -168,7 +226,7 @@ class ResourceCoordinator:
             if db.execute('SELECT 1 FROM reload_claims WHERE reservation=?', (reservation,)).fetchone():
                 raise ValueError('Reload peak reservation cannot become a new lease')
             demand = json.loads(row[0])
-            identity = json.dumps({k: demand[k] for k in ('backend', 'endpoint', 'model', 'context', 'concurrency', 'artifact', 'load_shape', 'vram_peak_by_device')}, sort_keys=True)
+            identity = json.dumps(_identity_dict(demand), sort_keys=True)
             model = db.execute('SELECT owned,keep_warm,state FROM models WHERE identity=?', (identity,)).fetchone()
             if model and model[2] == 'unloading':
                 raise ValueError('Model unload is pending; retry admission after reconciliation')
@@ -227,10 +285,12 @@ class ResourceCoordinator:
             db.execute('DELETE FROM unload_claims WHERE model=?', (identity,))
             return True
 
-    def reconcile(self, *, owner_alive, model_resident=None):
+    def reconcile(self, *, owner_alive, model_resident=None, model_quiescent=None):
         """Reclaim only positively dead owners; unknown evidence retains capacity.
 
-        Leased model capacity additionally needs confirmed non-residency.
+        Both backend quiescence and non-residency must be confirmed. A dead
+        client may leave an accepted server-side load running; an empty model
+        catalogue during that load is not proof that capacity can be reclaimed.
         Neither heartbeat age nor elapsed time proves a process/model is gone.
         """
         released = []
@@ -239,10 +299,21 @@ class ResourceCoordinator:
             for reservation, owner, raw, state in rows:
                 if owner_alive(owner) is not False:
                     continue
-                if model_resident is None or model_resident(json.loads(raw)) is not False:
+                demand = json.loads(raw)
+                if model_quiescent is None or model_quiescent(demand) is not True:
+                    continue
+                if model_resident is None or model_resident(demand) is not False:
                     continue
                 if state == 'leased':
+                    identities = db.execute('SELECT model FROM leases WHERE reservation=?', (reservation,)).fetchall()
                     db.execute('UPDATE leases SET active=0 WHERE reservation=?', (reservation,))
+                    for (identity,) in identities:
+                        # Absence ends this residency's ownership. Otherwise a
+                        # later borrowed load inherits stale unload authority.
+                        db.execute('UPDATE models SET owned=0 WHERE identity=?', (identity,))
+                        if not db.execute('SELECT 1 FROM leases WHERE model=? AND active=1', (identity,)).fetchone():
+                            db.execute('DELETE FROM unload_claims WHERE model=?', (identity,))
+                            db.execute('DELETE FROM models WHERE identity=?', (identity,))
                 db.execute("UPDATE reservations SET state='released' WHERE id=?", (reservation,))
                 db.execute('DELETE FROM reload_claims WHERE reservation=?', (reservation,))
                 released.append(reservation)

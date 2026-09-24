@@ -52,6 +52,11 @@ def _app(monkeypatch, tmp_path, servers):
         "_build",
         lambda self, name, sc: StubServer(name, sc, self.root, None, bool(sc.get("_fail"))),
     )
+    # Drive the inbox seat monitor to its (wrapped, idle) poll/terminal phase at
+    # once so a mutation gate can reach genuine idle without blocking the suite
+    # on the real 2s settle. _connect is stubbed below, so there is nothing to
+    # settle — the wait's condition is already met.
+    monkeypatch.setattr("litetui.app._INBOX_SETTLE_S", 0.0)
     app = LiteTUI()
     app._connect = lambda: None
     # Point the manager at the tmp repo root; the app built its own against the
@@ -73,15 +78,34 @@ async def _open(app, pilot):
 
 
 async def _settle(pilot, n: int = 8):
-    """Let the action's async re-render land.
-
-    The button handler is `async`: pressing posts a message, the handler runs on
-    a later tick, and only then does `_rerender()` rebuild the rows. A single
-    pause() is enough for the manager call and NOT for the redraw, which is
-    exactly the gap that would make these assertions flaky rather than wrong.
-    """
+    """Let the action's async re-render land."""
     for _ in range(n):
         await pilot.pause()
+
+
+async def _reach_idle(app, pilot, body, tries: int = 120):
+    """Advance to a GENUINELY idle app: materialise the staged conversation (the
+    real born step — store.pending stays a blocker, so we clear it honestly, not
+    by faking the flag) and pause until the boot infra (inbox seat monitor) has
+    left its blocking registration and the dialog's own gate is clear."""
+    app._materialise_convo()
+    for _ in range(tries):
+        if body._gate(app) is None:
+            return
+        await pilot.pause()
+    raise AssertionError("app never reached idle; gate says: " + str(body._gate(app)))
+
+
+async def _drain(app, pilot, tries: int = 120):
+    """Wait for a dispatched dialog mutation to settle (its worker clears
+    _mcp_maintenance in _settle_maintenance), then a couple ticks for the
+    completion re-render."""
+    for _ in range(tries):
+        await pilot.pause()
+        if not getattr(app, "_mcp_maintenance", False):
+            await pilot.pause()
+            await pilot.pause()
+            return
 
 
 # ── what a row offers ───────────────────────────────────────────────────────
@@ -118,11 +142,12 @@ async def test_disconnect_stops_the_real_server_and_the_row_updates(monkeypatch,
     app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
+        await _reach_idle(app, pilot, body)
         srv = app.mcp.servers["web"]
         assert body._rows[0]["state"] == "connected", "CONTROL: it starts connected"
 
         body.query_one("#mcp-act-0-disconnect").press()
-        await _settle(pilot)
+        await _drain(app, pilot)
 
         assert srv.stopped == 1, "the button did not reach the manager"
         assert "web" not in app.mcp.servers
@@ -147,8 +172,9 @@ async def test_connect_starts_it_again_from_the_same_dialog(monkeypatch, tmp_pat
         await _settle(pilot)
         assert body._rows[0]["state"] == "stopped"
 
+        await _reach_idle(app, pilot, body)
         body.query_one("#mcp-act-0-connect").press()
-        await _settle(pilot)
+        await _drain(app, pilot)
 
         assert "web" in app.mcp.servers
         assert body._rows[0]["state"] == "connected"
@@ -161,8 +187,9 @@ async def test_remove_deletes_the_entry_from_disk(monkeypatch, tmp_path):
     app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
+        await _reach_idle(app, pilot, body)
         body.query_one("#mcp-act-0-remove").press()
-        await _settle(pilot)
+        await _drain(app, pilot)
 
         doc = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))
         assert doc["mcpServers"] == {}
@@ -174,10 +201,11 @@ async def test_add_writes_the_entry_and_connects_it(monkeypatch, tmp_path):
     app = _app(monkeypatch, tmp_path, {})
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
+        await _reach_idle(app, pilot, body)
         body.query_one("#mcp-add-name").value = "files"
         body.query_one("#mcp-add-target").value = "npx -y srv"
         body.query_one("#mcp-add-go").press()
-        await _settle(pilot)
+        await _drain(app, pilot)
 
         doc = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))
         assert doc["mcpServers"]["files"]["args"] == ["-y", "srv"]
@@ -205,10 +233,11 @@ async def test_a_failed_add_still_shows_the_row_it_declared(monkeypatch, tmp_pat
     app = _app(monkeypatch, tmp_path, {})
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
+        await _reach_idle(app, pilot, body)
         body.query_one("#mcp-add-name").value = "bad"
         body.query_one("#mcp-add-target").value = '{"command": "x", "_fail": true}'
         body.query_one("#mcp-add-go").press()
-        await _settle(pilot)
+        await _drain(app, pilot)
 
         assert "did not start" in str(body.query_one("#mcp-status").render())
         assert [r["name"] for r in body._rows] == ["bad"]
@@ -230,3 +259,332 @@ async def test_the_add_form_survives_a_host_swap(monkeypatch, tmp_path):
     fresh = MCPListBody()
     fresh.set_state(state)
     assert fresh._pending == ("half", "npx -y ")
+
+
+# ── the buttons obey the same gate as the command (they must not bypass it) ────
+@pytest.mark.asyncio
+async def test_a_button_during_maintenance_is_refused_and_does_not_mutate(monkeypatch, tmp_path):
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        srv = app.mcp.servers["web"]
+        app._mcp_maintenance = True                      # a reconcile is in flight
+        body.query_one("#mcp-act-0-disconnect").press()
+        await _settle(pilot)
+        assert srv.stopped == 0                          # the manager was NOT touched
+        assert "web" in app.mcp.servers
+        assert "maintenance is in progress" in str(body.query_one("#mcp-status").render())
+
+
+@pytest.mark.asyncio
+async def test_a_button_on_native_codex_is_refused(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        srv = app.mcp.servers["web"]
+        app.backend = SimpleNamespace(app_server=object())   # native Codex thread
+        body.query_one("#mcp-act-0-disconnect").press()
+        await _settle(pilot)
+        assert srv.stopped == 0
+        assert "restart" in str(body.query_one("#mcp-status").render()).lower()
+
+
+
+# ── the narrow idle-infra classification, proven in the real mounted app ──────
+@pytest.mark.asyncio
+async def test_gate_blocks_before_the_conversation_is_materialised(monkeypatch, tmp_path):
+    """A fresh app's staged conversation is unborn (store.pending) — the gate
+    MUST block until boot completes, and the button must not mutate."""
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        assert body._gate(app) is not None            # blocked: store still pending
+        body.query_one("#mcp-act-0-disconnect").press()
+        await _settle(pilot)
+        assert app.mcp.servers["web"].stopped == 0     # did NOT reach the manager
+
+
+@pytest.mark.asyncio
+async def test_idle_background_phases_allow_a_mutation(monkeypatch, tmp_path):
+    """cron.monitor and the inbox poll are in their WRAPPED idle phase and the
+    conversation is materialised — the gate is clear even though those infra
+    workers exist and are nonterminal."""
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        await _reach_idle(app, pilot, body)
+        assert body._gate(app) is None
+
+
+@pytest.mark.asyncio
+async def test_a_different_mcp_worker_blocks_the_dialog(monkeypatch, tmp_path):
+    """The dialog excludes only its OWN host worker. A DIFFERENT mcp-group
+    worker (not idle-registered) still blocks — maintenance alone does not
+    replace that signal."""
+    import asyncio
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        await _reach_idle(app, pilot, body)
+        assert body._gate(app) is None                # control: idle
+        release = asyncio.Event()
+
+        async def _busy():
+            await release.wait()
+
+        app.run_worker(_busy(), group="mcp", exclusive=False)  # a foreign mcp worker
+        await pilot.pause()
+        assert body._gate(app) is not None            # it blocks
+        release.set()
+        await pilot.pause()
+
+
+# ── _own_modal_screen: exclude only a REAL owned modal hosting this body ───────
+from types import SimpleNamespace as _NS
+
+
+def test_own_modal_screen_none_when_docked_on_base():
+    base = object()
+    body = _NS(screen=base, app=_NS(screen_stack=[base]))
+    assert MCPListBody._own_modal_screen(body) is None      # docked → not ours to exclude
+
+
+def test_own_modal_screen_returns_the_modal_that_hosts_this_body():
+    base = object()
+    class Scr:
+        def walk_children(self, with_self=False):
+            return [self, body]
+    body = _NS()
+    modal = Scr()
+    body.screen = modal
+    body.app = _NS(screen_stack=[base, modal])
+    assert MCPListBody._own_modal_screen(body) is modal
+
+
+def test_own_modal_screen_none_for_a_foreign_overlay_not_hosting_body():
+    base = object()
+    class Scr:
+        def walk_children(self, with_self=False):
+            return [self]                                   # does NOT contain body
+    body = _NS()
+    body.screen = Scr()
+    body.app = _NS(screen_stack=[base, body.screen])
+    assert MCPListBody._own_modal_screen(body) is None      # containment mismatch → excluded
+
+
+@pytest.mark.asyncio
+async def test_run_action_uses_the_passed_app_not_self_app():
+    """The widget can be removed before the coro's first step; _run_action must
+    use the app captured at scheduling, never self.app (which would raise)."""
+    import asyncio
+    calls = []
+    mgr = object()
+    app = _NS(_mcp_maintenance=True, _mcp_maintenance_done=asyncio.Event(),
+              convo_id="c1", backend=object(), mcp=mgr, system_message=calls.append,
+              rebuild_mcp_dispatch=lambda: None)
+
+    class Detached:
+        is_mounted = False
+        def _is_active_body(self):
+            return False
+        @property
+        def app(self):
+            raise RuntimeError("NoActiveApp")
+
+    await MCPListBody._run_action(Detached(), app, lambda: None, lambda r: "done",
+                                  "c1", app.backend, mgr)
+    assert calls and "done" in calls[0]           # reported via the passed app
+    assert app._mcp_maintenance is False           # settled, not stranded
+
+
+# ── row target by name, host identity from controller, identity revalidation ──
+def test_verb_button_binds_the_exact_server_name():
+    from litetui.mcp_list import _verb_button
+    btn = _verb_button(0, "connect", "@scope/pkg")
+    assert btn._mcp_server == "@scope/pkg"        # exact name, immune to a reorder
+    assert btn.id == "mcp-act-0-connect"          # id stays index-based (legal id)
+
+
+@pytest.mark.asyncio
+async def test_dialog_body_host_worker_comes_from_the_controller(monkeypatch, tmp_path):
+    """The host worker is captured ONCE in the controller (open()) and stamped on
+    every body — so a swap that re-runs _mount_view reuses the same ref instead
+    of re-resolving to None."""
+    app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    async with app.run_test(size=(120, 45)) as pilot:
+        body = await _open(app, pilot)
+        ctrl = getattr(body, "_dialog_controller", None)
+        assert ctrl is not None
+        assert ctrl._host_worker is not None
+        assert body._dialog_host_worker is ctrl._host_worker
+
+
+@pytest.mark.asyncio
+async def test_run_action_aborts_when_manager_replaced_before_start():
+    """A backend/convo/manager transition between scheduling and the thread must
+    abort the mutation, not apply it to a changed world."""
+    import asyncio
+    ran, calls = [], []
+    mgr0, mgr1 = object(), object()
+    app = _NS(_mcp_maintenance=True, _mcp_maintenance_done=asyncio.Event(),
+              convo_id="c1", backend=object(), mcp=mgr1,   # manager REPLACED since scheduling
+              system_message=calls.append, rebuild_mcp_dispatch=lambda: None)
+
+    class Body:
+        is_mounted = False
+        def _is_active_body(self):
+            return False
+
+    await MCPListBody._run_action(Body(), app, lambda: ran.append(1), lambda r: "done",
+                                  "c1", app.backend, mgr0)   # scheduled against mgr0
+    assert ran == []                                  # op NOT run — manager changed
+    assert "context changed" in calls[0].lower()
+    assert app._mcp_maintenance is False               # settled, not stranded
+
+
+# ── controller swap/resolve while a mutation is in flight ─────────────────────
+#
+# app.mcp is assigned once (app.py:1668) and never reassigned, so the op -- bound
+# to the captured manager at dispatch -- can never retarget. The remaining
+# "controller swap/resolve race" is what happens when the DIALOG controller swaps
+# to a new body, or resolves (tears the view down), while a mutation is still in
+# flight off-loop: the op must STILL run against the bound manager, the completion
+# must be REPORTED to chat (never re-rendered onto a superseded/unmounted body),
+# and the maintenance flag must settle. These pin that the completion is attributed
+# to the right generation -- reported, not painted onto a body that is no longer
+# the active view.
+class _SwapBody:
+    """A body whose _is_active_body mirrors the real controller: active only
+    while it is the controller's current _body AND still mounted."""
+
+    def __init__(self):
+        self.is_mounted = True
+        self._dialog_controller = None
+        self.rerendered = []
+
+    def _is_active_body(self):
+        if not self.is_mounted:
+            return False
+        ctrl = getattr(self, "_dialog_controller", None)
+        return ctrl is None or getattr(ctrl, "_body", None) is self
+
+    def _say(self, text):
+        pass
+
+    async def _rerender(self):
+        self.rerendered.append(1)
+
+
+class _SwapCtrl:
+    def __init__(self):
+        self._body = None
+
+
+def _swap_app():
+    import asyncio
+    mgr = object()
+    return _NS(_mcp_maintenance=True, _mcp_maintenance_done=asyncio.Event(),
+               convo_id="c1", backend=object(), mcp=mgr,
+               system_message=lambda *a, **k: None,
+               rebuild_mcp_dispatch=lambda: None), mgr
+
+
+async def _wait_started(started, max_ticks=200):
+    import asyncio
+    for _ in range(max_ticks):
+        if started.is_set():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("op never entered its thread")
+
+
+@pytest.mark.asyncio
+async def test_swap_while_mutation_in_flight_reports_not_rerenders():
+    """A controller swap to a new body while a mutation is in flight: the op still
+    runs against the bound manager, the completion is REPORTED (not re-rendered
+    onto the superseded body), and the maintenance flag settles."""
+    import asyncio
+    import threading
+    started, release = threading.Event(), threading.Event()
+    ran = []
+
+    def op():
+        started.set()
+        release.wait(timeout=5)
+        ran.append(1)
+        return "done"
+
+    calls = []
+    app, mgr = _swap_app()
+    app.system_message = calls.append
+    body, ctrl = _SwapBody(), _SwapCtrl()
+    ctrl._body, body._dialog_controller = body, ctrl
+    task = asyncio.create_task(
+        MCPListBody._run_action(body, app, op, lambda r: "done: %s" % r,
+                                "c1", app.backend, mgr))
+    await _wait_started(started)              # the op is now blocked in its thread
+    ctrl._body = _SwapBody()                  # SWAP: this body is superseded
+    release.set()                             # the op completes off-loop
+    await task
+    assert ran == [1]                         # the op RAN against the bound manager
+    assert any("done" in c for c in calls)    # REPORTED to chat
+    assert body.rerendered == []              # NOT re-rendered onto the superseded body
+    assert app._mcp_maintenance is False      # settled, not stranded
+
+
+@pytest.mark.asyncio
+async def test_resolve_while_mutation_in_flight_reports_not_rerenders():
+    """A resolve (the view is torn down) while a mutation is in flight: the op
+    still runs, the completion is REPORTED (the body is no longer mounted), and
+    the maintenance flag settles."""
+    import asyncio
+    import threading
+    started, release = threading.Event(), threading.Event()
+    ran = []
+
+    def op():
+        started.set()
+        release.wait(timeout=5)
+        ran.append(1)
+        return "done"
+
+    calls = []
+    app, mgr = _swap_app()
+    app.system_message = calls.append
+    body, ctrl = _SwapBody(), _SwapCtrl()
+    ctrl._body, body._dialog_controller = body, ctrl
+    task = asyncio.create_task(
+        MCPListBody._run_action(body, app, op, lambda r: "done: %s" % r,
+                                "c1", app.backend, mgr))
+    await _wait_started(started)
+    body.is_mounted = False                   # RESOLVE: the view is torn down
+    release.set()
+    await task
+    assert ran == [1]
+    assert any("done" in c for c in calls)
+    assert body.rerendered == []
+    assert app._mcp_maintenance is False
+
+
+@pytest.mark.asyncio
+async def test_no_swap_no_resolve_rerenders_the_active_body():
+    """Control: with no swap/resolve the active body re-renders the result (the
+    normal path is unchanged) and nothing is reported to chat."""
+    ran = []
+
+    def op():
+        ran.append(1)
+        return "done"
+
+    calls = []
+    app, mgr = _swap_app()
+    app.system_message = calls.append
+    body, ctrl = _SwapBody(), _SwapCtrl()
+    ctrl._body, body._dialog_controller = body, ctrl
+    await MCPListBody._run_action(body, app, op, lambda r: "done: %s" % r,
+                                  "c1", app.backend, mgr)
+    assert ran == [1]
+    assert body.rerendered == [1]             # the active body re-rendered
+    assert calls == []                        # NOT reported to chat
+    assert app._mcp_maintenance is False

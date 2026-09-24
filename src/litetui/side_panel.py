@@ -151,6 +151,15 @@ class DialogController:
     # ── lifecycle ────────────────────────────────────────────────────────────
     async def open(self) -> Any:
         self._future = asyncio.get_running_loop().create_future()
+        # Capture the host worker ONCE, here, where open() runs INSIDE the
+        # worker awaiting the dialog. A later swap re-runs _mount_view from an
+        # app callback (get_current_worker() would be None there), so every
+        # rebuilt body must reuse THIS ref, not re-resolve its own.
+        try:
+            from textual.worker import get_current_worker
+            self._host_worker = get_current_worker()
+        except Exception:
+            self._host_worker = None
         await self._mount_view()
         if self._done:            # answered during mount; never await a done deal
             return self._result
@@ -158,6 +167,15 @@ class DialogController:
 
     async def _mount_view(self) -> None:
         body = self._body_factory()
+        # The host worker was captured ONCE in open() (inside the awaiting
+        # worker); reuse that exact ref for every rebuilt body — a swap re-runs
+        # this from an app callback where get_current_worker() is None. The
+        # controller back-ref + current-body pointer let a body tell whether it
+        # is still the ACTIVE view (an owned-dialog activity gate excludes its
+        # own host worker; a completion must not re-render a superseded body).
+        body._dialog_host_worker = getattr(self, "_host_worker", None)
+        body._dialog_controller = self
+        self._body = body
         # 🔴 ASSIGN `_view` BEFORE THE AWAIT, NOT AFTER IT.
         #
         # `mount()` suspends, and the body is LIVE AND INTERACTIVE while it is
@@ -671,6 +689,31 @@ class _ModalHost(ModalScreen, _ViewMixin):
         await await_subtree_composed(self.body)   # T704
         if self.app.screen is self:
             self.app.pop_screen()
+            return
+        # 🔴 COVERED NON-TOP MODAL (WS7). `pop_screen` only removes the TOP of the
+        # stack, so the guard above is the right refusal for a top modal — but a
+        # `_ModalHost` that another screen has pushed ON TOP of (reachable:
+        # AskUserQuestionScreen, both SettingsExitConfirm pushes) would otherwise
+        # be left LEAKED: the modal stays in the screen stack and resurfaces stale
+        # the moment the covering screen is dismissed.
+        #
+        # Popping here would remove the COVERING screen instead — dismissing a
+        # dialog of its own with a default answer — so we must NOT. Take THIS
+        # modal off the current mode's stack directly and let `_replace_screen`
+        # (the exact teardown `pop_screen` delegates to) suspend it and remove its
+        # widgets. The covering screen stays active and untouched.
+        #
+        # Internal Textual surgery, so guard it: `resolve()` has already answered
+        # the dialog (set the future), so a failed teardown degrades to the old
+        # stale-resurface leak — it must never escape into the `call_next` handler
+        # or crash the loop.
+        try:
+            stack = self.app._screen_stack
+            if self in stack:
+                stack.remove(self)
+                await self.app._replace_screen(self)
+        except Exception:  # noqa: BLE001 — best-effort teardown; never crash the loop
+            pass
 
     def action_cancel(self) -> None:
         self.controller.resolve(None)

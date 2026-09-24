@@ -197,7 +197,7 @@ def _switch_backend(app, choice: str) -> None:
     if getattr(app, "_chat_running", lambda: False)():
         app.system_message("Finish or stop the current turn before switching backends.")
         return
-    if choice == app.backend.name:
+    if choice == app.backend.name and not getattr(app, '_resume_backend_error', None):
         settings_runtime.save_selection_defaults(backend=choice, backend_chosen=True)
         app.system_message(f"Already on {choice}")
         return
@@ -257,7 +257,40 @@ def _cmd_engine(app, name: str, arg: str) -> None:
         app.system_message(backend.engine_status())
         return
     if verb == "stop":
-        app.system_message(backend.stop_engine())
+        # Off-loop: stop_engine() blocks for seconds (terminate + drain proof). Claim the
+        # stop synchronously FIRST (rejects a double stop and an in-flight start), then hand
+        # the blocking work to agent_preparation.run_guarded: a VISIBLE Textual worker (on
+        # the loop; the thread offload is await_preparation's job) whose done-callback
+        # releases the claim exactly once on success, error, or a cancel before the worker's
+        # first step. All scheduling/attach/fail-closed handling lives in run_guarded —
+        # no duplicate helper, no stranded claim.
+        import asyncio
+
+        from litetui import agent_preparation
+
+        if not backend.begin_stop():
+            app.system_message("NInfer engine is busy (a start or stop is already running) — try again shortly.")
+            return
+
+        async def _stop_work(target=backend):
+            try:
+                app.system_message(await agent_preparation.await_preparation(target.stop_engine))
+            except asyncio.CancelledError:
+                raise                       # await_preparation already joined the thread
+            except Exception as exc:        # noqa: BLE001 - don't crash the loop; type-only
+                app.system_message(f"engine stop failed: {type(exc).__name__}")
+
+        def _report(e):
+            # run_guarded fails closed when it cannot schedule the worker (e set) or when
+            # the worker's task cannot be observed/attached (e None); the claim is already
+            # released either way, so say why the stop did not proceed.
+            if e is None:
+                app.system_message("engine stop could not be tracked — released the stop claim; try again.")
+            else:
+                app.system_message(f"could not start the engine-stop worker: {type(e).__name__}")
+
+        agent_preparation.run_guarded(app, _stop_work(), group="ninfer-engine-stop",
+                                      cleanup=backend.end_stop, report=_report)
         return
     if verb in ("lanes", "concurrency"):
         app.system_message(_set_lanes(app, rest[0] if rest else ""))

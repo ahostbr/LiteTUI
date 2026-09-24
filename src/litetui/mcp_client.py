@@ -46,6 +46,22 @@ from pathlib import Path
 MCP_LOG_NAME = "mcp.log"
 INIT_TIMEOUT = 30.0
 CALL_TIMEOUT = 120.0
+#: A stdin write blocks when the child stops reading and its pipe buffer fills.
+#: The write runs on a joinable thread joined for this many seconds. The caller's
+#: TRUE worst case is THIS PLUS the teardown that follows on timeout (a child that
+#: is not reading must be terminated and reaped, which takes up to _KILL_TOTAL) --
+#: so a call is bounded by SEND_TIMEOUT + _KILL_TOTAL, NOT SEND_TIMEOUT alone.
+SEND_TIMEOUT = 10.0
+#: Teardown budgets. terminate->wait is the clean path; kill->wait is the
+#: fallback. Named so the honest caller bounds above are computable, not magic.
+_TERMINATE_WAIT = 5.0
+_KILL_WAIT = 5.0
+#: Worst-case time _kill_child can spend (clean terminate-wait OR the
+#: terminate-raise-then-kill-wait path). This is what a timed-out send ADDS on
+#: top of SEND_TIMEOUT.
+_KILL_TOTAL = _TERMINATE_WAIT + _KILL_WAIT
+#: Bounded join for the reader on stop() so a wedged reader cannot hang teardown.
+_READER_JOIN = 2.0
 MAX_RESULT_CHARS = 50_000
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -83,23 +99,105 @@ class MCPServer:
         # timeout kills the process, so they stop arriving.
         self._pending: dict[int, dict] = {}
         self._reader: threading.Thread | None = None
+        # A stdin writer that timed out and could NOT be cancelled. Retained
+        # (never joined, never its stdin closed under it) until observed
+        # terminal; while it lives, new sends/reconnects are refused so blocked
+        # daemon writers cannot pile up. See _send / _writer_in_flight.
+        self._writer: threading.Thread | None = None
+        # Guards self._writer (and the proc capture in _send). A send registers
+        # its writer and start()s it under this lock so there is no window where
+        # _writer is set-but-not-running and a racing send would misread it;
+        # start()'s restart-refusal takes the same lock, so proc is stable across
+        # a writer registration. Always acquired AFTER self._lock, never before.
+        self._writer_lock = threading.Lock()
 
     # ── wire ────────────────────────────────────────────────────────────────
     def _next_id(self) -> int:
         self._id += 1
         return self._id
 
-    def _send(self, payload: dict) -> None:
-        if not self.proc or not self.proc.stdin:
-            raise MCPError("server is not running")
-        # A poisoned server (see _poison) keeps its Popen object, with a closed
-        # stdin and an exit code. Writing to it would raise ValueError three
-        # frames down; say what actually happened instead.
-        if self.proc.poll() is not None:
-            raise MCPError(f"server is not running (exit {self.proc.returncode})")
-        line = json.dumps(payload, ensure_ascii=False) + "\n"
-        self.proc.stdin.write(line)
-        self.proc.stdin.flush()
+    def _writer_in_flight(self) -> bool:
+        """True while a timed-out writer is retained and not yet observed
+        terminal. Reaps a writer that HAS finished. While one is in flight, new
+        sends and reconnects are refused so uncancellable daemon writers cannot
+        pile up."""
+        with self._writer_lock:
+            w = self._writer
+            if w is None:
+                return False
+            if w.is_alive():
+                return True
+            self._writer = None      # observed terminal -> reap the retention
+            return False
+
+    def _send(self, payload: dict, *, timeout: float = SEND_TIMEOUT) -> None:
+        # Refuse (if a retained writer is live), capture proc/stdin ONCE, and
+        # register+start OUR writer -- all under the writer lock. Atomic: there is
+        # no window where _writer is set-but-not-running (a racing send would
+        # misread it), and self.proc is stable against a concurrent restart (see
+        # start). A reconnect can still replace self.proc AFTER we capture; the
+        # writer and the timeout teardown act on the process we wrote to, never
+        # late-bind and kill a replacement.
+        with self._writer_lock:
+            if self._writer is not None:
+                if self._writer.is_alive():
+                    raise MCPError("a previous send is still blocked; server retained")
+                self._writer = None          # reap an observed-terminal writer
+            proc = self.proc
+            if not proc or not proc.stdin:
+                raise MCPError("server is not running")
+            # A poisoned server keeps its Popen object, with a closed stdin and an
+            # exit code. Writing would raise three frames down; say what happened.
+            if proc.poll() is not None:
+                raise MCPError(f"server is not running (exit {proc.returncode})")
+            line = json.dumps(payload, ensure_ascii=False) + "\n"
+            stdin = proc.stdin
+            err: dict = {}
+
+            def _write() -> None:
+                try:
+                    stdin.write(line)
+                    stdin.flush()
+                except Exception as e:  # noqa: BLE001 — pipe closed under us / broken
+                    err["e"] = e
+
+            # 🔴 BOUNDED FOR THE CALLER, RETAINED FOR THE WRITER. write()/flush()
+            # block when the child stops reading and its stdin pipe buffer fills.
+            # A daemon thread joined for `timeout` bounds THIS call; the write has
+            # NO safe cancel here. On timeout we kill the CAPTURED child's read end
+            # to encourage a BrokenPipeError, but a descendant can hold it open, so
+            # the writer is RETAINED (never joined, its stdin never closed under it)
+            # until a later call observes it terminal.
+            t = threading.Thread(target=_write, name=f"mcp-writer-{self.name}", daemon=True)
+            self._writer = t
+            t.start()
+        t.join(timeout)
+        if t.is_alive():
+            self.error = f"send timed out after {timeout:.0f}s (server not reading stdin)"
+            self._kill_child(proc)   # the CAPTURED proc, never self.proc (a replacement)
+            raise MCPError("send timed out; server retained")
+        with self._writer_lock:
+            if self._writer is t:
+                self._writer = None       # writer terminal, retention cleared
+        if "e" in err:
+            raise MCPError(f"send failed ({type(err['e']).__name__})")
+
+    def _kill_child(self, proc) -> None:
+        """Kill the CAPTURED child WITHOUT touching stdin — a retained writer may
+        hold the stdin lock, so closing it here would deadlock. terminate ->
+        bounded wait -> kill -> bounded wait so the process is reaped, not left a
+        zombie. All failures swallowed (type-only elsewhere); no raw output."""
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=_TERMINATE_WAIT)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=_KILL_WAIT)   # reap the killed child; no zombie
+            except Exception:
+                pass
 
     def _start_reader(self) -> None:
         """Drain stdout on a thread of its own. Idempotent.
@@ -227,6 +325,12 @@ class MCPServer:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
     def start(self) -> None:
+        # Refuse a restart while a timed-out writer is still retained: restarting
+        # would replace self.proc under a writer still blocked on the OLD child's
+        # stdin, leaving an uncancellable daemon writer and a kill that could hit
+        # the wrong process. Wait until the retained writer is observed terminal.
+        if self._writer_in_flight():
+            raise MCPError("cannot restart: a previous send is still blocked (server retained)")
         command = self.cfg.get("command")
         if not command:
             raise MCPError("no `command` in config")
@@ -269,18 +373,33 @@ class MCPServer:
         return _flatten_content(result)
 
     def stop(self) -> None:
-        if not self.proc:
+        proc = self.proc
+        if proc is None:
             return
+        # Do NOT close stdin while a timed-out writer is still retained on it: the
+        # blocked write holds the BufferedWriter lock, so close() would deadlock.
+        # The kill below closes the child's READ end instead.
+        writer_live = self._writer_in_flight()
         try:
-            if self.proc.stdin:
-                self.proc.stdin.close()
-            self.proc.terminate()
-            self.proc.wait(timeout=5)
+            if proc.stdin and not writer_live:
+                proc.stdin.close()
+            proc.terminate()
+            proc.wait(timeout=_TERMINATE_WAIT)
         except Exception:
             try:
-                self.proc.kill()
+                proc.kill()
+                proc.wait(timeout=_KILL_WAIT)   # SECOND wait: reap the killed child, no zombie
             except Exception:
                 pass
+        # Join the reader: stdin/stdout are closed (or the child is dead), so
+        # readline() returns EOF and _reader_loop exits. Bounded so a wedged
+        # reader cannot hang teardown.
+        reader = self._reader
+        # Guard: if stop() is ever reached FROM the reader thread, joining self
+        # would stall for the whole budget (or raise); skip it and let the
+        # thread exit on its own.
+        if reader is not None and reader.is_alive() and reader is not threading.current_thread():
+            reader.join(timeout=_READER_JOIN)
 
 
 class HTTPMCPServer:
@@ -457,6 +576,11 @@ def read_server_configs(cfg_paths: list[Path]) -> tuple[dict[str, dict], dict[st
             )
             errors[p.name] = f"unreadable: {e}"
             continue
+        if not isinstance(data, dict):
+            # Valid JSON, wrong top-level type ([], null, 42): a config error, not
+            # an AttributeError on data.get(...). Reported so reconcile preserves.
+            errors[p.name] = "not a JSON object"
+            continue
         block = data.get("mcpServers") or data.get("servers") or {}
         if not isinstance(block, dict):
             continue
@@ -536,6 +660,12 @@ def validate_entry(cfg: dict) -> str | None:
     return None
 
 
+class MCPBusy(RuntimeError):
+    """A lifecycle op was refused because a maintenance op holds the claim.
+    Callers report this as busy and retry manually — never block or cancel the
+    holder."""
+
+
 class MCPManager:
     """Loads mcp.json / .mcp.json (see config_files), starts each server —
 stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
@@ -551,6 +681,31 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         #: cannot be listed, reconnected or removed.
         self.configs: dict[str, dict] = {}
         self._log_handle = None
+        #: SHORT lock guarding the claim flag only, so a second caller discovers
+        #: "busy" instantly instead of waiting behind a long operation.
+        self._claim_lock = threading.Lock()
+        #: Non-blocking exclusion claim: exactly one lifecycle op (connect/
+        #: disconnect/reconnect/reconcile) at a time. A second caller reports
+        #: busy rather than blocking or cancelling the first.
+        self._maint_active = False
+        #: LONG lock serializing the actual server-dict mutation, held across the
+        #: whole op off-loop INCLUDING stop()/join — deadlock-safe because reader
+        #: threads never acquire it (they use the per-transport lock). RLock so a
+        #: shutdown that must join an in-flight op composes cleanly.
+        self._op_lock = threading.RLock()
+        #: Permanent terminal state set by stop_all(): once shutting down, no new
+        #: connect is allowed, so a connect racing after stop_all cannot start a
+        #: server that would then leak (never be stopped).
+        self._closing = False
+        #: SHORT lock guarding the servers-dict itself, so read-side APIs
+        #: (tool_specs/dispatch/describe/status_line) snapshot coherently without
+        #: blocking on the long _op_lock while a connect/stop runs. Every dict
+        #: mutation and every snapshot takes it, briefly.
+        self._servers_lock = threading.Lock()
+        #: Names whose stop() failed and whose process is unresolved. A connect
+        #: to such a name is refused (never reconnect over a possibly-live
+        #: process) until it is cleared by a successful later stop.
+        self._stop_failed: set[str] = set()
 
     # ── plumbing ────────────────────────────────────────────────────────────
     def _log(self):
@@ -576,18 +731,29 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             return HTTPMCPServer(name, sc, self.root, self._log())
         return MCPServer(name, sc, self.root, self._log())
 
-    def reload_configs(self) -> dict[str, dict]:
-        """Re-read the config files into `configs`. Running servers untouched.
-
-        Deliberately does NOT reconcile: re-reading the file and acting on what
-        changed are different decisions, and a reader that also restarted
-        things would make `/mcp list` a mutating command.
-        """
+    def _reload_configs_locked(self) -> dict[str, dict]:
+        """Body of reload_configs; assumes the caller holds the claim + op_lock
+        (reconcile/add/remove reuse it without re-claiming)."""
         cfg_paths = config_files(self.root)
         servers, file_errors = read_server_configs(cfg_paths)
         self.configs = servers
         self.failures.update(file_errors)
         return servers
+
+    def reload_configs(self) -> dict[str, dict]:
+        """Re-read the config files into `configs`. Running servers untouched.
+
+        Deliberately does NOT reconcile: re-reading the file and acting on what
+        changed are different decisions, and a reader that also restarted
+        things would make `/mcp list` a mutating command. Claim-guarded so a
+        config re-read cannot race a reconcile mid-flight."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                return self._reload_configs_locked()
+        finally:
+            self._release_claim()
 
     def load(self) -> None:
         """Boot: read the configs and start everything not marked disabled."""
@@ -598,7 +764,7 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             self.connect(name)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
-    def connect(self, name: str) -> str | None:
+    def _connect_locked(self, name: str) -> str | None:
         """Start ONE server from its config. Returns None, or the error text.
 
         An error is RETURNED rather than raised because every caller — boot,
@@ -607,6 +773,14 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         not be silent either: a tool that never appears is indistinguishable
         from one the model simply chose not to call.
         """
+        if self._closing:
+            # A connect racing after stop_all would start a server nothing will
+            # ever stop. Refuse rather than leak it.
+            return "closing: the MCP manager is shutting down"
+        if name in self._stop_failed:
+            # An earlier stop() did not confirm; the old process may still be
+            # live. Never start a second one over it.
+            return f"stop unresolved for {name!r}: restart required before reconnecting"
         sc = self.configs.get(name)
         if not isinstance(sc, dict):
             return f"no server named {name!r} in {' / '.join(MCP_CONFIG_NAMES)}"
@@ -625,13 +799,22 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 error_type=type(e).__name__,
             )
             self.failures[name] = f"{type(e).__name__}: {e}"
-            srv.stop()
+            try:
+                srv.stop()
+            except Exception:
+                # Cleanup ALSO failed: the child may be live. RETAIN + quarantine
+                # the handle rather than orphaning the process, and still return
+                # the start failure (never let it escape as an exception).
+                with self._servers_lock:
+                    self.servers[name] = srv
+                self._stop_failed.add(name)
             return self.failures[name]
-        self.servers[name] = srv
+        with self._servers_lock:
+            self.servers[name] = srv
         self.failures.pop(name, None)          # a success clears the old error
         return None
 
-    def disconnect(self, name: str) -> bool:
+    def _disconnect_locked(self, name: str) -> bool:
         """Stop ONE server and forget it. It stays in `configs`.
 
         Returns whether anything was running. Runtime-only by design: the file
@@ -639,7 +822,8 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         it persist is `mcp_disabled_servers`' job, and conflating the two would
         mean a transient disconnect quietly rewrote the user's config.
         """
-        srv = self.servers.pop(name, None)
+        with self._servers_lock:
+            srv = self.servers.pop(name, None)
         if srv is None:
             return False
         try:
@@ -653,20 +837,138 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 operation="stop",
                 error_type=type(e).__name__,
             )
+            # RETAIN ownership + quarantine: a failed stop leaves a possibly-live
+            # process, so keep the handle and refuse a reconnect until a later
+            # stop confirms. Reporting "disconnected" here would be a lie.
+            with self._servers_lock:
+                self.servers[name] = srv
+            self._stop_failed.add(name)
+            self.failures[name] = f"stop failed: {type(e).__name__}: {e}"
+            return True
+        self._stop_failed.discard(name)   # a clean stop resolves any quarantine
         return True
 
-    def reconnect(self, name: str) -> str | None:
-        """Stop, then start from a FRESH object. Returns None, or the error.
+    # ── exclusion claim (short lock) + public claim-guarded wrappers ─────────
+    def _try_claim(self) -> bool:
+        """Non-blocking: claim the single maintenance slot, or return False fast
+        (a second caller must report busy, never block or cancel the holder)."""
+        with self._claim_lock:
+            if self._maint_active:
+                return False
+            self._maint_active = True
+            return True
 
-        🔴 A NEW OBJECT, NEVER srv.start() ON THE STOPPED ONE. Both transports
-        carry per-connection state that stop() does not reset — the stdio one
-        holds a dead Popen, a finished reader thread, a frame queue and the
-        `_pending` map; restarting in place would hand the new process the old
-        one's leftovers. Rebuilding also re-reads nothing, so a config edit
-        needs reload_configs() first, which /mcp does.
+    def _release_claim(self) -> None:
+        with self._claim_lock:
+            self._maint_active = False
+
+    def connect(self, name: str) -> str | None:
+        """Public: claim-guarded single connect. Raises MCPBusy if a maintenance
+        op holds the claim (report busy, retry manually)."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                return self._connect_locked(name)
+        finally:
+            self._release_claim()
+
+    def disconnect(self, name: str) -> bool:
+        """Public: claim-guarded single disconnect. Raises MCPBusy if busy."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                return self._disconnect_locked(name)
+        finally:
+            self._release_claim()
+
+    def reconnect(self, name: str) -> str | None:
+        """Public: claim-guarded stop-then-start from a FRESH object. Raises
+        MCPBusy if busy. A new object, never start() on the stopped one — both
+        transports carry per-connection state stop() does not reset. A config
+        edit needs reload_configs() first, which /mcp does."""
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                self._disconnect_locked(name)
+                return self._connect_locked(name)
+        finally:
+            self._release_claim()
+
+    def reconcile(self) -> dict[str, str]:
+        """Re-read config and reconcile OWNED connections to match, off-loop and
+        claim-serialized. Returns {name: outcome} — or {"": "busy: ..."} when a
+        lifecycle op already holds the claim, or {"": "config invalid: ..."} when
+        the config cannot be parsed (prior config/servers PRESERVED, no bulk
+        disconnect). Outcomes: connected | reconnected | disconnected | failed:...
+
+        Staging: additions and changes are applied BEFORE removals. A changed
+        server on an exclusive endpoint is stop-then-start, reported as an outage
+        on failure with NO rollback claim (a stopped subprocess is gone). Only
+        PREVIOUSLY-DECLARED, owned servers now undeclared are disconnected;
+        servers that were never declared (orphans) are left untouched.
         """
-        self.disconnect(name)
-        return self.connect(name)
+        if not self._try_claim():
+            return {"": "busy: an MCP maintenance operation is already in progress"}
+        try:
+            with self._op_lock:
+                prior_cfg = dict(self.configs)
+                merged, errors = read_server_configs(config_files(self.root))
+                if errors:
+                    # parse/unreadable: preserve everything, change nothing.
+                    self.failures.update(errors)
+                    return {"": f"config invalid ({'; '.join(errors.values())}); no changes"}
+                # A valid EMPTY config is an intentional remove-all, not an error.
+                self.configs = merged
+                new_set, prior_set = set(merged), set(prior_cfg)
+                outcomes: dict[str, str] = {}
+
+                def _drop(name: str) -> str:
+                    """Disconnect and report honestly: a failed stop is quarantined
+                    and reported failed (ownership retained), not 'disconnected'."""
+                    self._disconnect_locked(name)
+                    return (f"failed: {self.failures.get(name, 'stop failed')}"
+                            if name in self._stop_failed else "disconnected")
+
+                for name in sorted(new_set):
+                    sc = merged[name]
+                    if not isinstance(sc, dict):
+                        # A MALFORMED entry is NOT an intended removal: never take
+                        # down a healthy running server for a typo. Keep the
+                        # last-known-good config entry and the running server;
+                        # report the new entry failed. (A DISABLED valid entry,
+                        # below, IS an intended stop.)
+                        prior = prior_cfg.get(name)
+                        if isinstance(prior, dict):
+                            self.configs[name] = prior
+                        outcomes[name] = ("failed: invalid config entry (server/config retained)"
+                                          if name in self.servers
+                                          else "failed: invalid config entry (not an object)")
+                        continue
+                    if sc.get("disabled"):
+                        # A declared-but-disabled server must match load()'s policy:
+                        # not running. Disconnect it if it is.
+                        if name in self.servers:
+                            outcomes[name] = _drop(name)
+                        continue
+                    if name not in self.servers:
+                        err = self._connect_locked(name)
+                        outcomes[name] = "connected" if err is None else f"failed: {err}"
+                    elif prior_cfg.get(name) != sc:
+                        # exclusive endpoint forces stop-then-start (outage window)
+                        self._disconnect_locked(name)
+                        if name in self._stop_failed:
+                            outcomes[name] = f"failed (stop unresolved): {self.failures.get(name, '')}"
+                            continue
+                        err = self._connect_locked(name)
+                        outcomes[name] = "reconnected" if err is None else f"failed (outage): {err}"
+                for name in sorted((prior_set & set(self.servers)) - new_set):
+                    outcomes[name] = _drop(name)
+                return outcomes
+        finally:
+            self._release_claim()
 
     def describe(self) -> list[dict]:
         """One row per server the CONFIGS declare, plus any orphan running one.
@@ -675,25 +977,37 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         must remain visible, or the UI offers no way to stop the thing the user
         can see in their process list.
         """
-        names = list(self.configs) + [n for n in self.servers if n not in self.configs]
+        with self._servers_lock:
+            servers = dict(self.servers)            # coherent snapshot, short lock
+        names = list(self.configs) + [n for n in servers if n not in self.configs]
         rows = []
         for name in names:
-            sc = self.configs.get(name) or {}
-            srv = self.servers.get(name)
+            raw = self.configs.get(name)
+            sc = raw if isinstance(raw, dict) else {}
+            invalid_entry = raw is not None and not isinstance(raw, dict)
+            srv = servers.get(name)
             declared = name in self.configs
             # ORPHAN OUTRANKS CONNECTED, and that ordering is the point: a
             # running server the file no longer declares IS connected, so the
             # obvious `if srv: "connected"` is true and useless — it hides the
             # one fact the user needs, which is that a restart will not bring
             # this back. Naming the state is the only way the row can say so.
-            if srv is not None:
+            srv_error = getattr(srv, "error", None) if srv is not None else None
+            if invalid_entry:
+                state, error = "failed", "invalid config entry (not an object)"
+            elif srv is not None and srv_error:
+                # A running transport that has POISONED at runtime is not healthy;
+                # surface it rather than reporting a bare "connected".
+                state, error = "failed", srv_error
+            elif srv is not None:
                 state = "connected" if declared else "orphan"
+                error = self.failures.get(name)
             elif name in self.failures:
-                state = "failed"
+                state, error = "failed", self.failures.get(name)
             elif sc.get("disabled"):
-                state = "disabled"
+                state, error = "disabled", None
             else:
-                state = "stopped"
+                state, error = "stopped", None
             http = bool(sc.get("url") and not sc.get("command"))
             rows.append(
                 {
@@ -702,14 +1016,16 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                     "target": sc.get("url") or sc.get("command") or "",
                     "state": state,
                     "tools": len(srv.tools) if srv is not None else 0,
-                    "error": self.failures.get(name),
+                    "error": error,
                 }
             )
         return rows
 
     def tool_specs(self) -> list[dict]:
         specs: list[dict] = []
-        for sname, srv in self.servers.items():
+        with self._servers_lock:
+            servers = list(self.servers.items())    # snapshot; no size-change race
+        for sname, srv in servers:
             for t in srv.tools:
                 tname = t.get("name")
                 if not tname:
@@ -729,7 +1045,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
 
     def dispatch(self) -> dict:
         table = {}
-        for sname, srv in self.servers.items():
+        with self._servers_lock:
+            servers = list(self.servers.items())    # snapshot; closures bind these refs
+        for sname, srv in servers:
             for t in srv.tools:
                 tname = t.get("name")
                 if not tname:
@@ -756,7 +1074,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         return table
 
     def status_line(self) -> str:
-        bits = [f"{n}:{len(s.tools)}" for n, s in self.servers.items()]
+        with self._servers_lock:
+            servers = list(self.servers.items())
+        bits = [f"{n}:{len(s.tools)}" for n, s in servers]
         for n, err in self.failures.items():
             bits.append(f"{n}:FAILED")
         return " · ".join(bits)
@@ -775,32 +1095,38 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         bad = validate_entry(cfg)
         if bad:
             return bad
-        self.reload_configs()
-        # ⚠️ THE SHADOW CHECK RUNS FIRST, and the order is the whole value of
-        # the message. `configs` is the MERGE of both files, so a name living
-        # in mcp.json also satisfies "already declared" — and that generic
-        # answer ("remove it first") sends the user to a `remove` that will
-        # itself refuse, because /mcp does not write mcp.json. Two refusals and
-        # no way forward. Naming the shadowing file is the only actionable one.
-        shadow = shadowing_file(self.root, name)
-        if shadow is not None:
-            return (
-                f"{shadow.name} already declares {name!r} and wins on precedence; "
-                f"a write to {WRITE_CONFIG_NAME} would never be read"
-            )
-        if name in self.configs:
-            return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
-        path = self.root / WRITE_CONFIG_NAME
-        from litetui.shared_state import coordinated_write
-        with coordinated_write(path):
-            doc = _load_doc(path)
-            block = doc.setdefault("mcpServers", {})
-            if name in block:
-                return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
-            block[name] = cfg
-            _save_doc(path, doc)
-        self.reload_configs()
-        return self.connect(name) if connect else None
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                self._reload_configs_locked()
+                # ⚠️ THE SHADOW CHECK RUNS FIRST, and the order is the whole value
+                # of the message. `configs` is the MERGE of both files, so a name
+                # living in mcp.json also satisfies "already declared" — and that
+                # generic answer sends the user to a `remove` that will itself
+                # refuse, because /mcp does not write mcp.json. Naming the
+                # shadowing file is the only actionable one.
+                shadow = shadowing_file(self.root, name)
+                if shadow is not None:
+                    return (
+                        f"{shadow.name} already declares {name!r} and wins on precedence; "
+                        f"a write to {WRITE_CONFIG_NAME} would never be read"
+                    )
+                if name in self.configs:
+                    return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
+                path = self.root / WRITE_CONFIG_NAME
+                from litetui.shared_state import coordinated_write
+                with coordinated_write(path):
+                    doc = _load_doc(path)
+                    block = doc.setdefault("mcpServers", {})
+                    if name in block:
+                        return f"{name!r} is already declared in {WRITE_CONFIG_NAME}"
+                    block[name] = cfg
+                    _save_doc(path, doc)
+                self._reload_configs_locked()
+                return self._connect_locked(name) if connect else None
+        finally:
+            self._release_claim()
 
     def remove(self, name: str) -> str | None:
         """Stop it and delete its entry from .mcp.json. Returns None, or why not.
@@ -809,27 +1135,52 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         process with no config behind it, which describe() can only report as
         an orphan. Doing it in this order means `remove` has no such aftermath.
         """
-        path = self.root / WRITE_CONFIG_NAME
-        from litetui.shared_state import coordinated_write
-        with coordinated_write(path):
-            doc = _load_doc(path)
-            block = doc.get("mcpServers") or {}
-            if name not in block:
-                other = shadowing_file(self.root, name)
-                if other is not None:
-                    return f"{name!r} is declared in {other.name}, which /mcp does not write"
-                return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
-            self.disconnect(name)
-            del block[name]
-            doc["mcpServers"] = block
-            _save_doc(path, doc)
-        self.reload_configs()
-        self.failures.pop(name, None)
-        return None
+        if not self._try_claim():
+            raise MCPBusy("MCP maintenance in progress")
+        try:
+            with self._op_lock:
+                path = self.root / WRITE_CONFIG_NAME
+                from litetui.shared_state import coordinated_write
+                with coordinated_write(path):
+                    doc = _load_doc(path)
+                    block = doc.get("mcpServers") or {}
+                    if name not in block:
+                        other = shadowing_file(self.root, name)
+                        if other is not None:
+                            return f"{name!r} is declared in {other.name}, which /mcp does not write"
+                        return f"no server named {name!r} in {WRITE_CONFIG_NAME}"
+                    # Only stop the running server if THIS (.mcp.json) entry is
+                    # the effective one. If a higher-precedence mcp.json also
+                    # declares it, that server stays effective and running —
+                    # stopping it here would leave it declared-but-stopped.
+                    if shadowing_file(self.root, name) is None:
+                        self._disconnect_locked(name)
+                    del block[name]
+                    doc["mcpServers"] = block
+                    _save_doc(path, doc)
+                self._reload_configs_locked()
+                self.failures.pop(name, None)
+                return None
+        finally:
+            self._release_claim()
 
     def stop_all(self) -> None:
-        for s in self.servers.values():
-            s.stop()
+        """Shutdown: JOIN any in-flight lifecycle op (bounded by that op's own
+        connect/stop timeouts) via _op_lock, then stop every server. Never
+        refuses busy and never leaks a transport — shutdown is terminal."""
+        # Set BEFORE acquiring the lock so a connect racing right now is refused
+        # immediately (see _connect_locked) rather than starting a server this
+        # shutdown will not see.
+        self._closing = True
+        with self._op_lock:
+            with self._servers_lock:
+                servers = list(self.servers.values())
+                self.servers.clear()
+        for s in servers:
+            try:
+                s.stop()
+            except Exception:
+                pass
         if self._log_handle:
             try:
                 self._log_handle.close()

@@ -131,3 +131,69 @@ def test_reconcile_only_matching_durable_completions_and_keep_unknown_claims(tmp
     assert [row['child_id'] for row in registry.active('parent')] == ['unknown-child']
     assert registry.reconcile('parent', inbox=inbox) == []
     assert len(inbox.pending('parent')) == (0 if acknowledged else 1)
+
+
+def test_recovery_marker_flags_retained_claim_without_releasing_slot(tmp_path):
+    from litetui.agent_registry import AgentRegistry
+    path = tmp_path / 'registry.sqlite'
+    registry = AgentRegistry(path)
+    registry.claim('parent', 'child', limit=1)
+    registry.bind('parent', 'child', conversation_id='convo', pid=123, created='stamp')
+    assert registry.mark_recovery('parent', 'child', 'outcome persistence failed') is True
+    # Marking is observation, not permission: the slot stays held.
+    assert len(registry.active('parent')) == 1
+    marked = registry.needs_recovery('parent')
+    assert len(marked) == 1
+    assert marked[0]['child_id'] == 'child'
+    assert 'persistence' in marked[0]['recovery_marker']
+    # Durable: a reopened registry still sees the marker.
+    assert AgentRegistry(path).needs_recovery('parent')[0]['child_id'] == 'child'
+
+
+def test_settlement_clears_recovery_marker(tmp_path):
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    registry.claim('parent', 'child', limit=1)
+    registry.bind('parent', 'child', conversation_id='convo', pid=123, created='stamp')
+    registry.mark_recovery('parent', 'child', 'outcome persistence failed')
+    ident = inbox.persist('parent', {'child_id': 'child', 'conversation_id': 'convo',
+        'status': 'completed', 'summary': 'done', 'evidence': [],
+        'cleanup': {'state': 'confirmed'}})
+    registry.settle_completion('parent', 'child', inbox=inbox, completion_id=ident)
+    assert not registry.active('parent')
+    assert not registry.needs_recovery('parent')
+
+
+def test_recovery_marker_is_noop_on_settled_claim(tmp_path):
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    registry.claim('parent', 'child', limit=1)
+    registry.bind('parent', 'child', conversation_id='convo', pid=123, created='stamp')
+    ident = inbox.persist('parent', {'child_id': 'child', 'conversation_id': 'convo',
+        'status': 'completed', 'summary': 'done', 'evidence': [],
+        'cleanup': {'state': 'confirmed'}})
+    registry.settle_completion('parent', 'child', inbox=inbox, completion_id=ident)
+    assert registry.mark_recovery('parent', 'child', 'late marker') is False
+    assert not registry.needs_recovery('parent')
+
+
+def test_reconcile_settles_marked_claim_and_keeps_no_outcome_claim_flagged(tmp_path):
+    from litetui.agent_registry import AgentRegistry
+    from litetui.agent_inbox import AgentInbox
+    registry = AgentRegistry(tmp_path / 'registry.sqlite')
+    inbox = AgentInbox(tmp_path / 'inbox.sqlite')
+    for child in ('recovered', 'stranded'):
+        registry.claim('parent', child, limit=2)
+        registry.bind('parent', child, conversation_id=child + '-convo', pid=123, created='stamp')
+        registry.mark_recovery('parent', child, 'outcome persistence failed')
+    ident = inbox.persist('parent', {'child_id': 'recovered', 'conversation_id': 'recovered-convo',
+        'status': 'completed', 'summary': 'done', 'evidence': [],
+        'cleanup': {'state': 'confirmed'}})
+    assert registry.reconcile('parent', inbox=inbox) == [ident]
+    flagged = registry.needs_recovery('parent')
+    assert [row['child_id'] for row in flagged] == ['stranded']
+    assert 'persistence' in flagged[0]['recovery_marker']

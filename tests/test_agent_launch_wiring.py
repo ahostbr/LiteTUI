@@ -32,6 +32,7 @@ async def test_explicit_runtime_root_and_policy_before_prompt(tmp_path):
     assert [item[0] for item in process.calls] == ['start', 'handshake', 'prompt']
     kwargs = process.calls[0][1]
     assert kwargs['env']['LITETUI_DATA_ROOT'] == str(root.resolve())
+    assert kwargs['env']['LITETUI_AGENT_DEPTH'] == '1'
     assert kwargs['args'] == ['--rpc', '--backend', 'codex', '--model', 'requested',
                               '--tool-profile', 'interactive', '--reasoning-effort', 'low']
     assert 'private task' not in repr(kwargs)

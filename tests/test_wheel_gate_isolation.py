@@ -1,0 +1,110 @@
+"""Wheel probe command isolation; never builds, installs, or loads a backend."""
+import importlib.util
+from pathlib import Path
+from types import SimpleNamespace
+import pytest
+
+
+def gate_module():
+    path = Path(__file__).resolve().parents[1] / "tools" / "wheel_import_gate.py"
+    spec = importlib.util.spec_from_file_location("wheel_gate", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_installed_probe_uses_isolated_python_and_external_cwd(tmp_path, monkeypatch):
+    gate = gate_module()
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(gate, "_run", fake_run)
+    python = tmp_path / "venv" / "python"
+    gate.run_in_venv(python, tmp_path)
+    assert calls[0][0][1] == "-I"
+    assert calls[0][1]["cwd"] == tmp_path
+    source = (tmp_path / "in_venv_checks.py").read_text()
+    assert "importlib.metadata" in source
+    assert "sys.prefix" in source
+    assert "__file__" in source
+
+
+@pytest.mark.parametrize("suffix", ["0", ".post1", " unexpected"])
+def test_version_substring_is_not_candidate_match(tmp_path, monkeypatch, suffix):
+    gate = gate_module()
+    from litetui.version import __version__
+    monkeypatch.setattr(gate, "_run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="litetui " + __version__ + suffix, stderr=""))
+    with pytest.raises(SystemExit):
+        gate.check_version(tmp_path / "python", tmp_path)
+
+
+def test_version_exact_output_passes(tmp_path, monkeypatch):
+    gate = gate_module()
+    from litetui.version import __version__
+    monkeypatch.setattr(gate, "_run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="litetui " + __version__ + "\n", stderr=""))
+    gate.check_version(tmp_path / "python", tmp_path)
+
+
+def test_subprocess_environment_cannot_fall_back_to_checkout(monkeypatch):
+    gate = gate_module()
+    monkeypatch.setenv("PYTHONPATH", "checkout/src")
+    monkeypatch.setenv("PYTHONHOME", "developer-python")
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    gate._run(["fake-python", "--version"], timeout=1)
+    env = captured.get("env", {})
+    assert env.get("PYTHONNOUSERSITE") == "1"
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+
+
+def test_build_uses_fresh_output_without_deleting_existing_dist(tmp_path, monkeypatch):
+    gate = gate_module()
+    monkeypatch.setattr(gate, "REPO", tmp_path)
+    monkeypatch.setattr(gate.shutil, "which", lambda name: "uv")
+    (tmp_path / "pyproject.toml").write_text("[build-system]\nrequires = []\n")
+    src = tmp_path / "src" / "litetui"
+    src.mkdir(parents=True)
+    (src / "version.py").write_text('__version__ = "test"\n')
+    (src / "version.py.lock").write_text("runtime")
+    (tmp_path / "src" / "litetui.egg-info").mkdir()
+    (tmp_path / "src" / "litetui.egg-info" / "PKG-INFO").write_text("stale")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "stale.py").write_text("stale")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    old = dist / "litetui-old.whl"
+    old.write_bytes(b"preserve")
+    work = tmp_path / "gate"
+    work.mkdir()
+    def fake_run(cmd, **kwargs):
+        assert "--out-dir" in cmd
+        out = Path(cmd[cmd.index("--out-dir") + 1])
+        assert out != dist
+        build_source = kwargs["cwd"]
+        assert build_source != tmp_path
+        assert (build_source / "src" / "litetui" / "version.py").read_bytes() == (src / "version.py").read_bytes()
+        assert (build_source / "pyproject.toml").read_bytes() == (tmp_path / "pyproject.toml").read_bytes()
+        assert not (build_source / "build").exists()
+        assert not (build_source / "dist").exists()
+        assert not (build_source / "src" / "litetui.egg-info").exists()
+        assert not list(build_source.rglob("*.lock"))
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "litetui-new.whl").write_bytes(b"new")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(gate, "_run", fake_run)
+    wheel = gate.build_wheel(work)
+    assert wheel.read_bytes() == b"new"
+    assert old.read_bytes() == b"preserve"
+
+
+def test_version_nonzero_is_failure_even_with_matching_text(tmp_path, monkeypatch):
+    gate = gate_module()
+    from litetui.version import __version__
+    monkeypatch.setattr(gate, "_run", lambda *a, **k: SimpleNamespace(returncode=1, stdout=__version__, stderr="failed"))
+    with pytest.raises(SystemExit):
+        gate.check_version(tmp_path / "python", tmp_path)

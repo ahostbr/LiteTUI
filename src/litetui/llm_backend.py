@@ -160,6 +160,54 @@ BOOL_FLAGS: dict[str, str] = {
 FLAG_FOR: dict[str, str] = {**VALUE_FLAGS, **BOOL_FLAGS}
 
 
+@dataclass(frozen=True)
+class TerminalShutdown:
+    """The result of stopping an OWNED engine. Guarantees are deliberately narrow so a
+    caller cannot over-claim resource absence:
+
+    - ``owned`` False: we held no handle (an ATTACHED or absent engine) — nothing was
+      killed and nothing is claimed.
+    - ``attempted``: we issued a kill on our owned process this call (a REQUEST, not
+      evidence). A pre-dead process needs none, so attempted can be False with
+      main_exited True.
+    - ``main_exited``: poll() on the RETAINED process handle confirmed THIS process
+      exited — the ONLY positive proof here. Never inferred from a pid lookup or a
+      kill request.
+    - ``tree`` is always 'unknown'. A whole-tree kill REQUEST (taskkill /T, or a
+      KILL_ON_JOB_CLOSE job close) is not descendant-exit evidence: taskkill /T only
+      issues signals, a job close is asynchronous, and jobkill exposes no
+      active-process-count / empty-job probe (available/create/assign/close/alive
+      only). So a main exit NEVER proves the worker tree drained — a caller must NOT
+      settle broad VRAM/RAM absence. The field stays for a future descendant probe.
+    - ``retained`` True: the outcome was uncertain and self._owned was KEPT — a retry
+      re-drives the SAME handle (no rediscovery, so no pid-reuse ambiguity on the
+      proof; the taskkill-by-pid REQUEST carries a documented residual reuse window).
+    - ``error`` is an exception TYPE name only, never raw args.
+
+    Process CREATION identity (to defeat pid reuse) is not exposed by the Popen /
+    OwnedEngine handle, so it is intentionally absent; the retained handle itself,
+    not a pid, is the identity here.
+    """
+    owned: bool
+    attempted: bool = False
+    main_exited: bool = False
+    tree: str = "unknown"
+    pid: int | None = None
+    retained: bool = False
+    error: str | None = None
+
+
+def wait_for_exit(proc, timeout: float = 3.0, interval: float = 0.3) -> bool:
+    """True iff poll() on THIS handle reports the process exited within `timeout`.
+    Polls the retained child handle — never a pid lookup, so no pid-reuse ambiguity."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return True
+        time.sleep(interval)
+    return proc.poll() is not None
+
+
 class IniUnexpressible(BackendError):
     """A cfg key exists but the INSTALLED build has no flag for it. The
     caller decides (dedicated spawn, or surface as n/a) — silently dropping
@@ -679,8 +727,15 @@ class _VramGate:
             pass
 
     @asynccontextmanager
-    async def vram_guard(self, key: str):
-        """Ask once per outermost load, then run the body."""
+    async def vram_guard(self, key: str, *, reload: bool = False):
+        """Ask once per outermost load, then run the body.
+
+        `reload` is forwarded to the admission session so a reload re-admits an
+        existing lease's peak rather than being counted as a fresh load. Only the
+        OUTERMOST guard reaches admission (the reentrancy short-circuit below), so
+        a load that delegates to a reload carries the outer call's flag, and a
+        standalone `apply_load_settings` reaches admission with reload=True.
+        """
         task = asyncio.current_task()
         admission = getattr(self, 'resource_admission', None)
         if (self.vram_gate is None and admission is None) or getattr(self, '_vram_owner', None) is task:
@@ -700,7 +755,7 @@ class _VramGate:
                     "and loading a different model would put a second model in VRAM."
                 )
             if admission is not None:
-                async with admission(key):
+                async with admission(key, reload=reload):
                     yield
             else:
                 yield
@@ -1050,31 +1105,13 @@ class LlamaCppBackend(_VramGate):
             f"{paths.LLAMA_DIR / 'litetui-llama-server.log'} for why, then try again."
         )
 
-    def shutdown(self) -> None:
-        """Kill ONLY what we spawned. Router workers are child processes, so
-        terminate() alone can orphan a loaded model holding VRAM — the tree
-        kill is the fix the spike proved necessary."""
-        if self._owned is None:
-            return
-        proc = self._owned.proc
-        try:
-            proc.terminate()
-            for _ in range(10):
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.3)
-            if proc.poll() is None:
-                self._kill_tree(proc)
-        finally:
-            # Retract our claim before dropping the handle. `remove_if_mine`
-            # checks the pid AND the owner, so a record another app wrote in
-            # the meantime survives us.
-            router_record.remove_if_mine(proc.pid)
-            try:
-                self._owned.log_file.close()
-            except OSError:
-                pass
-            self._owned = None
+    def shutdown(self) -> "TerminalShutdown":
+        """Production teardown path (atexit + UI). Delegates to shutdown_owned() so it
+        uses the retained-handle exit proof instead of discarding the handle and
+        returning None (the original gap). Kills ONLY what we spawned; an attached /
+        no-owned server is left alone (owned=False). Sync and idempotent; callers may
+        ignore the return."""
+        return self.shutdown_owned()
 
     @staticmethod
     def _kill_tree(proc) -> None:
@@ -1084,6 +1121,58 @@ class LlamaCppBackend(_VramGate):
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
+
+    def shutdown_owned(self) -> TerminalShutdown:
+        """Stop our OWNED router and PROVE it exited by polling the RETAINED handle.
+
+        Keeps self._owned until exit is confirmed on the same handle, returns a typed
+        TerminalShutdown, and RETAINS the handle on any uncertain outcome so a retry
+        re-drives it. An attached/absent server is never killed (owned=False). The
+        production shutdown() delegates here.
+
+        tree is always 'unknown': a terminate-only exit proves only the router, and
+        taskkill /T is a kill REQUEST, not descendant-exit evidence — the caller must
+        not free VRAM for the worker tree on a main-only exit.
+        """
+        owned = self._owned
+        if owned is None:
+            return TerminalShutdown(owned=False)
+        proc = owned.proc
+        pid = getattr(proc, "pid", None)
+        attempted = False
+        error = None
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                attempted = True
+                if not wait_for_exit(proc):
+                    # Best-effort whole-tree kill; taskkill /T is a REQUEST, never
+                    # descendant-exit proof (and targets a PID that could be reused
+                    # if the main exits in this window — a documented residual, not
+                    # expanded on). llama-server has no job to contain the tree.
+                    self._kill_tree(proc)
+                    wait_for_exit(proc)
+            main_exited = proc.poll() is not None
+        except Exception as exc:                    # noqa: BLE001 - type-only diagnostic
+            error = type(exc).__name__
+            main_exited = False                     # never re-poll here; poll() may raise too
+        if not main_exited:
+            # Uncertain: RETAIN the handle (no cleanup, no clear) for a retry.
+            return TerminalShutdown(owned=True, attempted=attempted, main_exited=False,
+                                    tree="unknown", pid=pid, retained=True, error=error)
+        if pid is not None:
+            try:
+                router_record.remove_if_mine(pid)
+            except OSError:
+                pass
+        try:
+            owned.log_file.close()
+        except OSError:
+            pass
+        if self._owned is owned:                    # clear ONLY if still the same object
+            self._owned = None
+        return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
+                                tree="unknown", pid=pid, retained=False, error=error)
 
     # -- models -----------------------------------------------------------
 
@@ -1428,8 +1517,10 @@ class LlamaCppBackend(_VramGate):
             raise BackendError(f"could not unload {key!r} on the llama.cpp server — try again in a moment.") from e
 
     async def apply_load_settings(self, key: str, cfg: dict, *, notice=None) -> None:
-        # A reload IS a load: it puts the weights back with a new window.
-        async with self.vram_guard(key):
+        # A reload IS a load: it puts the weights back with a new window. It is
+        # a reload to admission (re-admits the existing lease's peak), not a fresh
+        # load — so nothing double-counts the same model's capacity.
+        async with self.vram_guard(key, reload=True):
             await asyncio.to_thread(self._apply_sync, key, cfg, notice)
 
     def _apply_sync(self, key: str, cfg: dict, notice=None) -> None:
@@ -1696,7 +1787,7 @@ class LMStudioBackend(_VramGate):
 
     # -- control ----------------------------------------------------------
 
-    async def load(self, key: str, *, ctx: int | None = None, notice=None) -> None:
+    async def load(self, key: str, *, ctx: int | None = None, notice=None, _reload: bool = False) -> None:
         def _load() -> None:
             lms = self._sdk()
             config = {"contextLength": ctx} if ctx else None
@@ -1714,7 +1805,7 @@ class LMStudioBackend(_VramGate):
                     "lmstudio.load_failed", detail=f"load of {key!r} at {self._host} — {e}",
                     site="llm_backend")
                 raise BackendError(f"could not load {key!r} in LM Studio — try again in a moment.") from e
-        async with self.vram_guard(key):
+        async with self.vram_guard(key, reload=_reload):
             await asyncio.to_thread(_load)
         # LM Studio takes its load config on the request itself, so THIS is the
         # point at which "what this model was loaded with" is known.
@@ -1749,7 +1840,7 @@ class LMStudioBackend(_VramGate):
         # The `rest` refusal above is already ahead of the notice `load` fires,
         # so this path was never the T873 shape; the parameter only keeps the
         # signature uniform for a caller that hands one to any backend.
-        await self.load(key, ctx=cfg.get("ctx"), notice=notice)
+        await self.load(key, ctx=cfg.get("ctx"), notice=notice, _reload=True)
 
     # -- seat guard --------------------------------------------------------
 
@@ -2040,10 +2131,12 @@ def _make_backend(settings):
         from litetui import gpu_gate
 
         if not gpu_gate.is_rtx_5090():
-            # T893: a settings.json carried over from a 5090 box. Not a 5090 ->
-            # nothing NInfer, not even a refusal line: boot the default engine.
-            settings.backend = "lmstudio"
-            return LMStudioBackend(settings)
+            # An explicit/saved provider choice must never silently become
+            # another engine, especially when restoring a conversation.
+            raise BackendError(
+                "NInfer requires supported RTX 5090 hardware. "
+                "Choose another backend explicitly; no fallback was used."
+            )
         # 🔴 T806 — RYAN: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER"*.
         # Imported here rather than at module scope so a broken NInfer install
         # cannot stop the other three backends from booting, the same reason

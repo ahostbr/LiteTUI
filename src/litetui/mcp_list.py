@@ -50,6 +50,16 @@ ACTIONS_FOR = {
 }
 
 
+def _verb_button(idx: int, verb: str, server: str) -> Button:
+    """A row-action button carrying the EXACT server name it was rendered for.
+    The Textual id stays index-based (a server name is not a legal id), but the
+    action reads `_mcp_server`, so a describe() reorder between render and press
+    can never retarget the wrong server."""
+    btn = Button(verb.capitalize(), id=f"mcp-act-{idx}-{verb}")
+    btn._mcp_server = server
+    return btn
+
+
 class MCPListBody(Widget):
     """A dialog body that works in either host. No ModalScreen assumptions."""
 
@@ -116,10 +126,8 @@ class MCPListBody(Widget):
             # IndexError deep inside Textual. Passing children to the
             # constructor is the form that works in both callers.
             yield Horizontal(
-                *(
-                    Button(verb.capitalize(), id=f"mcp-act-{i}-{verb}")
-                    for verb in ACTIONS_FOR.get(row["state"], ())
-                ),
+                *(_verb_button(i, verb, row["name"])
+                  for verb in ACTIONS_FOR.get(row["state"], ())),
                 classes="mcp-actions",
             )
 
@@ -196,35 +204,137 @@ class MCPListBody(Widget):
         await scroll.remove_children()
         await scroll.mount(*self._row_widgets())
 
+    def _own_workers(self) -> tuple:
+        """This dialog's OWN host worker OBJECT, excluded from its activity gate
+        so the dialog does not count itself as busy. Excluded by `is` identity;
+        any OTHER worker (including a different same-group one) still blocks."""
+        host = getattr(self, "_dialog_host_worker", None)
+        return (host,) if host is not None else ()
+
+    def _own_modal_screen(self):
+        """Our own modal screen, but ONLY when we are hosted in a real modal
+        ABOVE the base that STILL contains this body — never the base/sidebar
+        screen (docked), and never a foreign overlay. Returned for the activity
+        gate to exclude; None when docked, so a foreign modal keeps the app busy
+        and cannot be subtracted away by a containment mismatch."""
+        try:
+            screen = self.screen
+            stack = self.app.screen_stack
+        except Exception:
+            return None
+        if screen is None or not stack or screen is stack[0]:
+            return None                       # docked/sidebar → base screen, not ours
+        try:
+            if any(n is self for n in screen.walk_children(with_self=True)):
+                return screen                 # a modal that actually hosts THIS body
+        except Exception:
+            pass
+        return None
+
+    def _gate(self, app) -> str | None:
+        """The SAME native/maintenance/idle gate the /mcp command runs, minus
+        THIS dialog's own identity (its host worker + its own modal) so it does
+        not refuse itself — a real turn/tool/child/busy-store or a SECOND modal
+        still blocks."""
+        from litetui.plugins.mcp_manage import _mutation_blocked_reason
+        return _mutation_blocked_reason(
+            app, ignore_workers=self._own_workers(), ignore_screen=self._own_modal_screen())
+
+    def _is_active_body(self) -> bool:
+        """True only when THIS body is still the controller's current view. A
+        swap can leave the old body briefly mounted while no longer active; a
+        completion must not re-render a superseded body."""
+        if not self.is_mounted:
+            return False
+        ctrl = getattr(self, "_dialog_controller", None)
+        return ctrl is None or getattr(ctrl, "_body", None) is self
+
+    def _dispatch(self, op, describe, mcp0) -> None:
+        """Claim maintenance SYNCHRONOUSLY (a second button then defers on the
+        gate) and submit the op off-loop through the unified submit_op — the
+        shared claim / run_guarded / settle-release now lives there once; this
+        body only supplies its own worker (self._run_action, which revalidates
+        convo/backend/manager identity + delivers by re-render-or-message) and a
+        plain schedule-failure line. submit_op un-sticks maintenance if the
+        worker is cancelled before its first step or fails to schedule."""
+        from litetui.plugins.mcp_manage import submit_op
+        app = self.app
+        worker = self._run_action(app, op, describe, app.convo_id, app.backend, mcp0)
+        submit_op(app, worker, report=lambda e: app.system_message(
+            "Could not start the MCP operation."))
+
+    async def _run_action(self, app, op, describe, convo0, backend0, mcp0) -> None:
+        # `app` is captured at SCHEDULING and passed in: reading self.app HERE
+        # would raise NoActiveApp if this widget were removed before the coro's
+        # first step, stranding maintenance before the try/finally below.
+        from litetui.agent_preparation import await_preparation
+        from litetui.mcp_client import MCPBusy
+        from litetui.plugins.mcp_manage import _settle_maintenance
+        msg = ""
+        try:
+            # Revalidate identity BEFORE the mutation. This is a LOOP-ADMISSION
+            # check, not a thread-start atomic guarantee: await_preparation
+            # schedules a thread, so a switch AFTER this check but before the
+            # thread runs is not atomically prevented. The op is bound to mcp0,
+            # so it can never RETARGET a different manager; but a captured old
+            # operation may still finish AFTER an accepted context switch — that
+            # completion is reported (below), never re-rendered onto the new
+            # context, and never claimed as the current mutation's success.
+            if (app.convo_id != convo0 or app.backend is not backend0
+                    or app.mcp is not mcp0 or hasattr(app.backend, "app_server")):
+                msg = "context changed before the MCP operation started — not applied."
+            else:
+                try:
+                    msg = describe(await await_preparation(op))
+                except MCPBusy:
+                    msg = "MCP maintenance is in progress — try again in a moment."
+                except Exception as e:  # noqa: BLE001 — bounded, never raw error text
+                    msg = f"MCP operation failed ({type(e).__name__})."
+        finally:
+            note = _settle_maintenance(app)
+        # Re-render ONLY if this body is still the ACTIVE view in the SAME
+        # context — convo, backend AND manager. A manager switch means
+        # _settle_maintenance rebuilt the CURRENT (new) manager's dispatch, not
+        # the one this op targeted, so re-rendering here would paint an old-op
+        # result onto the new manager; report to chat instead.
+        if (self._is_active_body() and app.convo_id == convo0
+                and app.backend is backend0 and app.mcp is mcp0):
+            self._say(msg + note)
+            await self._rerender()
+        else:
+            app.system_message(msg + note)
+
     @on(Button.Pressed, ".mcp-actions Button")
     async def _row_action(self, event: Button.Pressed) -> None:
         event.stop()
-        bid = event.button.id or ""
-        try:
-            _, _, idx, verb = bid.split("-", 3)
-            row = self._rows[int(idx)]
-        except (ValueError, IndexError):
+        parts = (event.button.id or "").split("-", 3)
+        name = getattr(event.button, "_mcp_server", None)   # exact name bound at render
+        if len(parts) != 4 or name is None:
             return
-        name = row["name"]
+        verb = parts[3]
         app = self.app
+        blocked = self._gate(app)
+        if blocked:
+            self._say(blocked)
+            return
+        mcp0 = app.mcp                                       # bind the manager; op targets THIS one
         if verb == "connect":
-            err = app.mcp.connect(name)
-            msg = f"could not connect {name}: {err}" if err else f"connected {name}"
+            op = lambda: mcp0.connect(name)
+            describe = lambda err: f"could not connect {name}: {err}" if err else f"connected {name}"
         elif verb == "disconnect":
-            was = app.mcp.disconnect(name)
-            msg = f"disconnected {name}" if was else f"{name} was not running"
+            op = lambda: mcp0.disconnect(name)
+            describe = lambda was: f"disconnected {name}" if was else f"{name} was not running"
         elif verb == "reconnect":
-            app.mcp.reload_configs()
-            err = app.mcp.reconnect(name)
-            msg = f"could not reconnect {name}: {err}" if err else f"reconnected {name}"
+            def op():
+                mcp0.reload_configs()   # pick up config edits before reconnecting
+                return mcp0.reconnect(name)
+            describe = lambda err: f"could not reconnect {name}: {err}" if err else f"reconnected {name}"
         elif verb == "remove":
-            err = app.mcp.remove(name)
-            msg = f"could not remove {name}: {err}" if err else f"removed {name}"
+            op = lambda: mcp0.remove(name)
+            describe = lambda err: f"could not remove {name}: {err}" if err else f"removed {name}"
         else:
             return
-        app.rebuild_mcp_dispatch()
-        self._say(msg)
-        await self._rerender()
+        self._dispatch(op, describe, mcp0)
 
     @on(Button.Pressed, "#mcp-add-go")
     async def _add(self, event: Button.Pressed) -> None:
@@ -241,15 +351,21 @@ class MCPListBody(Widget):
             self._say(why or "cannot read that entry")
             return
         app = self.app
-        err = app.mcp.add(name, cfg)
-        app.rebuild_mcp_dispatch()
-        # A failed START still leaves the server declared, so the form is
-        # cleared either way — leaving the text in place would invite a second
-        # Add that refuses as a duplicate.
+        blocked = self._gate(app)
+        if blocked:
+            self._say(blocked)
+            return
+        # cfg is the parsed dict (command+args or {json}) — passed to the manager
+        # as data, never a shell string. Clear the form now the add is accepted,
+        # so an in-flight add cannot be re-submitted as a duplicate.
         self.query_one("#mcp-add-name", Input).value = ""
         self.query_one("#mcp-add-target", Input).value = ""
-        self._say(f"declared {name}, but it did not start: {err}" if err else f"added {name}")
-        await self._rerender()
+        mcp0 = app.mcp
+        self._dispatch(
+            lambda: mcp0.add(name, cfg),
+            lambda err: (f"declared {name}, but it did not start: {err}" if err
+                         else f"added {name}"),
+            mcp0)
 
     @on(Button.Pressed, "#mcp-close")
     def _close(self) -> None:

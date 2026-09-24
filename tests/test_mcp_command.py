@@ -18,7 +18,9 @@ would add a screen, an event loop and a model server to prove none of it.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace as NS
 
 import pytest
 
@@ -56,12 +58,34 @@ class FakeApp:
         self.mcp = MCPManager(root)
         self.said: list[str] = []
         self.rebuilds = 0
+        # Idle app from the /mcp activity gate's perspective (plugin_reload_activity
+        # .produce_activity, added by the WS7 MCP app-glue commit). The gate fails
+        # closed unless it can read an idle app; without these it defers every
+        # server-changing verb ("Deferred (busy)") and the core-verb assertions below
+        # never run. workers/store/screen_stack are the three REQUIRED dimensions
+        # (empty worker set, unpending store, base-only screen stack); convo_id is
+        # what the injected children_pending probe resolves. Absent
+        # _agent_operations/_monitor_threads are skipped (optional); no backend =>
+        # the native-Codex gate is correctly not taken.
+        self.workers: list = []
+        self.store = NS(pending=False, loading=False)
+        self.screen_stack: list = [object()]
+        self.convo_id = "mcp-cmd-test-convo"
 
     def system_message(self, text: str) -> None:
         self.said.append(text)
 
     def rebuild_mcp_dispatch(self) -> None:
         self.rebuilds += 1
+
+    def run_worker(self, coro, **kwargs):
+        """Drive run_guarded's off-loop /mcp worker the way Textual does: a REAL
+        asyncio.Task on the running loop, so run_guarded's
+        isinstance(asyncio.Task) check passes and it ARMS instead of failing
+        closed. Only the async verb tests below schedule a worker; read-only
+        verbs (list) never reach this. Mirrors tests/test_mcp_command_glue.py."""
+        t = asyncio.get_running_loop().create_task(coro)
+        return NS(_task=t, cancel=t.cancel)
 
     @property
     def last(self) -> str:
@@ -71,6 +95,15 @@ class FakeApp:
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     return FakeApp(tmp_path, monkeypatch)
+
+
+async def _settle(app, timeout: float = 5.0) -> None:
+    """Let the off-loop /mcp worker a server-changing verb just scheduled settle.
+    _settle_maintenance (the worker's finally) clears the maintenance flag and
+    sets app._mcp_maintenance_done; awaiting that event is race-free (no fixed
+    sleep), so the verb's write / rebuild / message are all done before any
+    assertion reads them."""
+    await asyncio.wait_for(app._mcp_maintenance_done.wait(), timeout=timeout)
 
 
 def _config(tmp_path, servers):
@@ -133,45 +166,57 @@ def test_list_does_not_rebuild_dispatch(app, tmp_path):
 
 # ── the verbs, and the rebuild ──────────────────────────────────────────────
 @pytest.mark.parametrize("verb", ["connect", "disconnect", "reconnect"])
-def test_every_lifecycle_verb_rebuilds_the_dispatch_map(app, tmp_path, verb):
+@pytest.mark.asyncio
+async def test_every_lifecycle_verb_rebuilds_the_dispatch_map(app, tmp_path, verb):
     """🔴 THE LOAD-BEARING ASSERTION OF THIS FILE. See the module docstring."""
     _config(tmp_path, {"a": {"command": "x"}})
     app.mcp.load()
     _cmd_mcp(app, "/mcp", f"{verb} a")
+    await _settle(app)
     assert app.rebuilds == 1
 
 
-def test_add_and_remove_rebuild_too(app, tmp_path):
+@pytest.mark.asyncio
+async def test_add_and_remove_rebuild_too(app, tmp_path):
     _cmd_mcp(app, "/mcp", "add a http://h/mcp")
+    await _settle(app)
     assert app.rebuilds == 1
     _cmd_mcp(app, "/mcp", "remove a")
+    await _settle(app)
     assert app.rebuilds == 2
 
 
-def test_connect_reports_the_error_rather_than_a_bare_failure(app, tmp_path):
+@pytest.mark.asyncio
+async def test_connect_reports_the_error_rather_than_a_bare_failure(app, tmp_path):
     _config(tmp_path, {"a": {"command": "x", "_fail": True}})
     app.mcp.reload_configs()
     _cmd_mcp(app, "/mcp", "connect a")
+    await _settle(app)
     assert "Could not connect" in app.last and "boom" in app.last
 
 
-def test_disconnect_says_it_stays_declared(app, tmp_path):
+@pytest.mark.asyncio
+async def test_disconnect_says_it_stays_declared(app, tmp_path):
     """The message has to answer "is it gone?" — because the answer is no, and
     the difference between disconnect and remove is the whole safety of one."""
     _config(tmp_path, {"a": {"command": "x"}})
     app.mcp.load()
     _cmd_mcp(app, "/mcp", "disconnect a")
+    await _settle(app)
     assert "stays declared" in app.last and "/mcp connect a" in app.last
 
 
-def test_disconnecting_something_not_running_says_so(app, tmp_path):
+@pytest.mark.asyncio
+async def test_disconnecting_something_not_running_says_so(app, tmp_path):
     _config(tmp_path, {"a": {"command": "x"}})
     app.mcp.reload_configs()
     _cmd_mcp(app, "/mcp", "disconnect a")
+    await _settle(app)
     assert "was not running" in app.last
 
 
-def test_reconnect_rereads_the_config_first(app, tmp_path):
+@pytest.mark.asyncio
+async def test_reconnect_rereads_the_config_first(app, tmp_path):
     """⚠️ THE REASON PEOPLE RECONNECT IS THAT THEY JUST EDITED THE FILE.
 
     Reconnecting to the entry loaded at boot would start the OLD command and
@@ -182,19 +227,23 @@ def test_reconnect_rereads_the_config_first(app, tmp_path):
     app.mcp.load()
     _config(tmp_path, {"a": {"command": "new"}})
     _cmd_mcp(app, "/mcp", "reconnect a")
+    await _settle(app)
     assert app.mcp.servers["a"].cfg["command"] == "new"
 
 
 # ── add / remove through the command ────────────────────────────────────────
-def test_add_writes_and_connects(app, tmp_path):
+@pytest.mark.asyncio
+async def test_add_writes_and_connects(app, tmp_path):
     _cmd_mcp(app, "/mcp", "add files npx -y srv")
+    await _settle(app)
     doc = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))
     assert doc["mcpServers"]["files"]["args"] == ["-y", "srv"]
     assert "files" in app.mcp.servers
     assert "Added and connected" in app.last
 
 
-def test_add_that_fails_to_start_still_reports_the_declaration(app, tmp_path):
+@pytest.mark.asyncio
+async def test_add_that_fails_to_start_still_reports_the_declaration(app, tmp_path):
     """Both halves in one sentence: the write happened, the start did not.
 
     A bare "failed" would hide the write, and the user's next act would be to
@@ -202,13 +251,17 @@ def test_add_that_fails_to_start_still_reports_the_declaration(app, tmp_path):
     never told about.
     """
     _cmd_mcp(app, "/mcp", 'add bad {"command": "x", "_fail": true}')
+    await _settle(app)
     assert "Declared" in app.last and "did not start" in app.last
     assert "bad" in app.mcp.configs
 
 
-def test_remove_reports_which_file_it_touched(app, tmp_path):
+@pytest.mark.asyncio
+async def test_remove_reports_which_file_it_touched(app, tmp_path):
     _cmd_mcp(app, "/mcp", "add gone http://h/mcp")
+    await _settle(app)
     _cmd_mcp(app, "/mcp", "remove gone")
+    await _settle(app)
     assert ".mcp.json" in app.last
     assert "gone" not in app.mcp.configs
 

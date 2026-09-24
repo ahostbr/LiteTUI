@@ -26,10 +26,21 @@ worked but something survived" reports may have been this rather than the
 timeout, and nobody would have attributed them correctly.
 
 HOW A JOB SOLVES IT. A process assigned to a Job Object with
-JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE takes its whole tree with it when the last
-handle to that job closes -- every descendant inherits the job, so there is
-nothing to enumerate and nothing to time out. The failure mode we are removing
-is not "the kill is slow", it is "the kill has a deadline it can miss".
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE takes its ASSIGNED MEMBERS with it when the
+last handle to that job closes -- a descendant a member spawns AFTER it is in the
+job inherits the job. There is nothing to enumerate.
+
+🔴 TWO SCOPE CAVEATS, both load-bearing for anyone reading this as PROOF:
+1. ASSIGNMENT IS NOT ATOMIC WITH EXEC. `assign()` runs AFTER the child's
+   CreateProcess returns, so a descendant the child forks in the window between
+   its own exec and AssignProcessToJobObject is NOT in the job and is not covered.
+   Containment is only total for children spawned once the parent is a member.
+2. CLOSE/TERMINATE IS A KILL REQUEST, NOT A COMPLETION. The kernel signals the
+   members; it does not block until they have exited. "Did the tree drain" is a
+   SEPARATE question, answered by `active_process_count` reaching zero (and a
+   wait on the main handle) -- never assumed from the close/terminate call.
+The failure mode this removes is "the kill has a deadline it can miss"; it does
+NOT, by itself, prove the tree is gone.
 
 ⚠️ NEVER ASSIGN OUR OWN PROCESS TO ONE OF THESE JOBS. A KILL_ON_JOB_CLOSE job
 containing this process kills the app the moment the handle closes -- including
@@ -69,14 +80,35 @@ if WINDOWS:
     _k32.CloseHandle.restype = wt.BOOL
     _k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
     _k32.GetExitCodeProcess.restype = wt.BOOL
+    # A c_void_p (not a struct pointer) so the buffer can be filled and re-read.
+    _k32.QueryInformationJobObject.argtypes = [
+        wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD, ctypes.POINTER(wt.DWORD)]
+    _k32.QueryInformationJobObject.restype = wt.BOOL
+    _k32.TerminateJobObject.argtypes = [wt.HANDLE, wt.UINT]
+    _k32.TerminateJobObject.restype = wt.BOOL
 else:  # pragma: no cover - the tool path is Windows-only today
     _k32 = None
 
 _JobObjectExtendedLimitInformation = 9
+_JobObjectBasicAccountingInformation = 1
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _PROCESS_ALL_ACCESS = 0x1F0FFF
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
+
+
+class _BASIC_ACCOUNTING(ctypes.Structure):
+    # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION. The four times are LARGE_INTEGER
+    # (signed 64-bit); the counts are DWORD. Sizing is load-bearing: a short/wrong
+    # struct makes QueryInformationJobObject fail or read garbage.
+    _fields_ = [("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wt.DWORD),
+                ("TotalProcesses", wt.DWORD),
+                ("ActiveProcesses", wt.DWORD),
+                ("TotalTerminatedProcesses", wt.DWORD)]
 
 
 class _IO_COUNTERS(ctypes.Structure):
@@ -155,14 +187,54 @@ def assign(job: int | None, pid: int) -> bool:
 
 
 def close(job: int | None) -> bool:
-    """Close the handle. If it was the last one, the kernel kills every member.
+    """Close the handle. If it was the last one, the kernel signals every ASSIGNED
+    member to terminate — with no walk and no deadline to miss (the reason this
+    module exists).
 
-    This IS the kill. There is no walk, no deadline and nothing to time out —
-    which is the whole reason this module exists.
+    It is a kill REQUEST, not a completion: the call does not block until members
+    exit, and it cannot reach a descendant that ran before it was assigned (see the
+    module docstring). "Did the tree drain" is answered by `active_process_count`
+    reaching zero, never assumed from this returning True.
     """
     if job is None or not available():
         return False
     return bool(_k32.CloseHandle(job))
+
+
+def active_process_count(job: int | None) -> int | None:
+    """READ-ONLY count of processes still in the job (QueryInformationJobObject,
+    JobObjectBasicAccountingInformation) — the ONLY honest tree-drain evidence.
+
+    Zero means every process assigned to THIS job (the child we assigned plus its
+    inherited descendants) has exited. Returns None on non-Windows, a None handle, a
+    query failure, or a malformed/negative count — a caller treats None as "cannot
+    prove" and retains. No kill, no process opened by pid/name.
+    """
+    if job is None or not available():
+        return None
+    info = _BASIC_ACCOUNTING()
+    ret_len = wt.DWORD(0)
+    ok = _k32.QueryInformationJobObject(
+        job, _JobObjectBasicAccountingInformation,
+        ctypes.cast(ctypes.pointer(info), ctypes.c_void_p),
+        ctypes.sizeof(info), ctypes.byref(ret_len))
+    if not ok:
+        return None
+    count = info.ActiveProcesses
+    if not isinstance(count, int) or count < 0:
+        return None
+    return count
+
+
+def terminate(job: int | None, exit_code: int = 1) -> bool:
+    """Terminate every process in the job WITHOUT closing the handle, so the job can
+    still be queried for drain proof (unlike close(), which is kill-on-close and
+    destroys the handle). Acts ONLY on a job handle this instance already owns — it
+    never opens a process by pid or name. False on non-Windows / None / call failure.
+    """
+    if job is None or not available():
+        return False
+    return bool(_k32.TerminateJobObject(job, exit_code))
 
 
 def alive(pid: int) -> bool:

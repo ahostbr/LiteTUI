@@ -15,6 +15,8 @@ from __future__ import annotations
 import importlib.util
 import re
 import subprocess
+from pathlib import Path
+from uuid import uuid4
 
 from litetui import paths
 from litetui.listen_tool import (
@@ -62,13 +64,16 @@ def record_start(device: str | None = None):
     dev = (device or "").strip() or _first_dshow_device()
     if not dev:
         return None
-    _WAV.parent.mkdir(parents=True, exist_ok=True)
+    wav = paths.data_root() / "recordings" / f"stt-{uuid4().hex}.wav"
+    wav.parent.mkdir(parents=True, exist_ok=True)
     cmd = [ff, "-y", "-f", "dshow", "-i", f"audio={dev}",
-           "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(_WAV)]
+           "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)]
     try:
         from litetui import ttyguard
-        return ttyguard.popen(cmd, stdin=subprocess.PIPE,
+        proc = ttyguard.popen(cmd, stdin=subprocess.PIPE,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc._litetui_wav = wav
+        return proc
     except Exception:
         return None
 
@@ -89,10 +94,12 @@ def record_stop(proc) -> "str | None":
     except Exception:
         try:
             proc.kill()
+            proc.wait(timeout=5)
         except Exception:
-            pass
-    if _WAV.exists() and _WAV.stat().st_size > 1000:
-        return str(_WAV)
+            return None  # still writing/unknown: never transcribe an active file
+    wav = getattr(proc, "_litetui_wav", None)
+    if wav is not None and Path(wav).is_file() and Path(wav).stat().st_size > 1000:
+        return str(wav)
     return None
 
 
