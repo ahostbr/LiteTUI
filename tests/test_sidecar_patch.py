@@ -53,3 +53,31 @@ def test_secret_and_mismatched_scope_rejected_before_write(tmp_path):
     with pytest.raises(ValueError, match="scope"):
         apply_patch(app, bad)
     assert app._settings_service.snapshot("abc").revisions["global"] == "absent"
+
+
+def test_mixed_destination_partial_conflict_retains_success(tmp_path):
+    app = host(tmp_path)
+    stale = app._settings_service.snapshot("abc").revisions
+    # External writer advances global while conversation revision stays absent.
+    assert apply_patch(app, payload(app))["saved"]
+    mixed = {"changes": [
+        {"key": "tool_iterations", "scope": "conversation", "value": 77},
+        {"key": "sidecar_enabled", "scope": "device", "value": False},
+    ], "expected_revisions": {"global": "absent", "conversation": stale["conversation"]}}
+    result = apply_patch(app, mixed)
+    assert result["conflict"] and not result["saved"]
+    assert app._settings_service.snapshot("abc").saved.tool_iterations != 77
+
+
+def test_invalid_type_and_duplicate_fields_never_write(tmp_path):
+    app = host(tmp_path)
+    before = app._settings_service.snapshot("abc").revisions
+    invalid = payload(app, value="true")
+    with pytest.raises(ValueError, match="Invalid value"):
+        apply_patch(app, invalid)
+    assert app._settings_service.snapshot("abc").revisions == before
+    duplicate = payload(app)
+    duplicate["changes"].append(dict(duplicate["changes"][0]))
+    with pytest.raises(ValueError, match="Duplicate"):
+        apply_patch(app, duplicate)
+    assert app._settings_service.snapshot("abc").revisions == before

@@ -23,3 +23,18 @@ def test_dispatch_validation_error_cannot_claim_save():
     handler = SettingsPatchDispatcher(app, owner, apply=lambda _app, _p: (_ for _ in ()).throw(ValueError("invalid")))
     handler({"id": 8, "command": "settings_patch", "payload": {}})
     owner.send_event_reply.assert_called_once_with(8, {"saved": False, "error": "invalid"})
+
+
+def test_child_disappears_after_parent_save_does_not_replay():
+    app = Mock()
+    app.call_from_thread.side_effect = lambda fn, *args: fn(*args)
+    owner = Mock()
+    owner.send_event_reply.side_effect = RuntimeError("child gone")
+    applied = Mock(return_value={"saved": True})
+    handler = SettingsPatchDispatcher(app, owner, apply=applied)
+    import pytest
+    with pytest.raises(RuntimeError, match="child gone"):
+        handler({"id": 20, "command": "settings_patch", "payload": {}})
+    handler({"id": 20, "command": "settings_patch", "payload": {}})
+    applied.assert_called_once()
+    owner.on_rejected_frame.assert_called_with("duplicate_event_id")
