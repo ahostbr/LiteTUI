@@ -37,7 +37,9 @@ def _apply_thinking_level(app, level: str) -> None:
     way it would show up is a user picking a level from a menu and being told
     less than a user who typed it.
     """
-    if getattr(getattr(app, "backend", None), "name", "") == "codex":
+    backend_name = getattr(getattr(app, "backend", None), "name", "")
+    if backend_name in ("codex", "claude"):
+        from litetui import claude_cache
         from litetui.thinking_capabilities import set_thinking
 
         try:
@@ -49,6 +51,7 @@ def _apply_thinking_level(app, level: str) -> None:
         app.system_message(
             "Thinking level: " + (app.thinking_level or "backend default")
             + (" — consumes usage limits faster" if level in ("max", "ultra") else "")
+            + (claude_cache.EFFORT_NOTE if backend_name == "claude" else "")
         )
         return
     if level == UNSET:
@@ -93,7 +96,7 @@ def _thinking_rows(app) -> list[tuple[str, str]]:
     # everything else fell through to a global list and disagreed with
     # `set_thinking`. `backend_levels` is the one answer both now read.
     reported = backend_levels(app)
-    if getattr(getattr(app, "backend", None), "name", "") == "codex":
+    if getattr(getattr(app, "backend", None), "name", "") in ("codex", "claude"):
         levels = reported or []
         return [(level, "Extra high" if level == "xhigh" else
                  level.title() + (" · consumes usage limits faster"
@@ -158,7 +161,7 @@ def _cmd_think(app, name: str, arg: str) -> None:
 def _print_thinking_levels(app) -> None:
     """The pre-T569 text listing, kept verbatim for the RPC transport."""
     current = app.thinking_level or UNSET
-    if getattr(getattr(app, "backend", None), "name", "") == "codex":
+    if getattr(getattr(app, "backend", None), "name", "") in ("codex", "claude"):
         app.system_message(f"Thinking level: {current}\n" +
                            "\n".join(label for _, label in _thinking_rows(app)))
         return

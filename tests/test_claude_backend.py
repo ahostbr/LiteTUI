@@ -295,3 +295,19 @@ async def test_catalog_keeps_cli_rows_first_and_adds_every_context_variant(monke
     assert len(keys) == len(set(keys))
     assert "claude-haiku-4-5-20251001[1m]" not in keys and "haiku[1m]" not in keys
     await backend.ensure_chat_ready("claude-sonnet-5[1m]")   # selectable, not refused
+
+
+def test_effort_levels_come_from_cli_metadata_with_a_static_fallback():
+    from litetui.claude_backend import STATIC_EFFORT
+    backend = ClaudeBackend(Settings(backend="claude"))
+    backend.models = {
+        "sonnet": {"value": "sonnet", "resolvedModel": "claude-sonnet-5", "supportedEffortLevels": ["low", "high"]},
+        "haiku": {"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001"},
+        "claude-opus-5-5": {"value": "claude-opus-5-5"},
+        "claude-haiku-4-5-20251001": {"value": "claude-haiku-4-5-20251001"},
+    }
+    assert backend.reasoning_levels("sonnet") == ["low", "high"]
+    assert backend.reasoning_levels("haiku") == []
+    assert backend.reasoning_levels("claude-opus-5-5") == list(STATIC_EFFORT)
+    assert backend.reasoning_levels("claude-haiku-4-5-20251001") == []
+    assert backend.reasoning_levels("nope") == []

@@ -607,3 +607,32 @@ async def test_a_child_that_survives_the_kill_is_reported_as_surviving(owned,
     finally:
         client.release.set()
         await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_set_effort_sends_the_cli_flag_setting_and_is_refused_during_a_turn():
+    from types import SimpleNamespace
+
+    client = Client(None)
+    sent = []
+
+    async def control(request):
+        assert asyncio.current_task() is client.owner
+        sent.append(request)
+        return {}
+    client._query = SimpleNamespace(_send_control_request=control)
+    session = ClaudeSession(SimpleNamespace(effort="high"), lambda _: client)
+    try:
+        await session.start()
+        assert session.effort == "high", "the spawn's --effort is the starting level"
+        await session.query("one", "first")
+        with pytest.raises(RuntimeError, match="during a turn"):
+            await asyncio.wait_for(session.set_effort("max"), timeout=2)
+        assert session.effort == "high"
+        await client.messages.put(ResultMessage())
+        assert len([m async for m in session.events()]) == 1
+        await asyncio.wait_for(session.set_effort("max"), timeout=2)
+        assert sent == [{"subtype": "apply_flag_settings", "settings": {"effortLevel": "max"}}]
+        assert session.effort == "max"
+    finally:
+        await session.close()

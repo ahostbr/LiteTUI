@@ -65,6 +65,34 @@ def accept_input(app, item):
     return {"id": metadata["_claude_entry"]["id"], "segment_id": metadata["_claude_segment"], "state": "prepared"}
 
 
+def effort_for(app):
+    """The effort the next turn runs at, or None for the model default.
+
+    The same precedence the other backends use (TurnEngine): the per-model
+    /modelcfg override, else the global /think level. A level this model does
+    not take (off, minimal, a Codex-only one) sends nothing."""
+    overrides = getattr(app.settings, "model_infer_overrides", {}) or {}
+    level = ((overrides.get(app.model_id) or {}).get("reasoning_effort")
+             or getattr(app, "thinking_level", None))
+    levels = getattr(app.backend, "reasoning_levels", None)
+    return level if level and callable(levels) and level in levels(app.model_id) else None
+
+
+def _restore_effort(app, effort):
+    """Put the effort back to what the live session runs at (a cancelled change)."""
+    level = None if effort in (None, "default") else effort
+    entry = (getattr(app.settings, "model_infer_overrides", {}) or {}).get(app.model_id) or {}
+    if entry.get("reasoning_effort"):
+        if level is None:
+            entry.pop("reasoning_effort")
+        else:
+            entry["reasoning_effort"] = level
+    else:
+        app.thinking_level = level
+    app.update_header()
+    app._system(f"Effort stays {effort}; nothing was sent.")
+
+
 async def _cache_ok(app, backend, segment):
     """True when the turn may go: the cache is warm, or the user chose to send anyway."""
     clock = claude_cache.clock_for(app, segment["id"])
@@ -73,9 +101,16 @@ async def _cache_ok(app, backend, segment):
         clock.model = segment.get("cache_model")
     cold = claude_cache.cold_reason(
         clock, live=live, resuming=not live and bool(segment.get("session_id")),
-        model=app.model_id, used_at=segment.get("cache_used_at"),
+        model=app.model_id, used_at=segment.get("cache_used_at"), effort=effort_for(app),
     )
-    return cold is None or await claude_cache.confirm_cold(app, cold)
+    if cold is None or await claude_cache.confirm_cold(app, cold):
+        return True
+    if cold[0] == "effort" and not getattr(app, "_rpc", None):
+        # Cancel means the change did not happen: effort AND session unchanged.
+        # Not over rpc: there "not sent" is the warning, and sending again is
+        # the go-ahead, which must still carry the new level.
+        _restore_effort(app, clock.effort)
+    return False
 
 
 async def stream_turn(app):
@@ -143,7 +178,11 @@ async def stream_turn(app):
                 raise RuntimeError("Claude input is held for its original conversation/session; nothing was sent.")
 
         require_current_segment()
-        if backend.session is not None and backend.segment_id != segment["id"]:
+        effort = effort_for(app)
+        if backend.session is not None and (backend.segment_id != segment["id"] or (
+                effort is None and getattr(backend.session, "effort", None) is not None)):
+            # Back to the model default has no live control (set_effort), so
+            # that one change reopens: close, then resume the same session id.
             await backend.close()
         if backend.session is None:
             if segment.get("session_id"):
@@ -154,17 +193,20 @@ async def stream_turn(app):
             backend._claude_events = normalizer
             # Tool permission remains enforced on every callback. Inventory is
             # fixed for this session; changed inventory requires /claude new.
-            session = await backend.open_session(segment, app.model_id, **bridge.sdk_options())
+            session = await backend.open_session(segment, app.model_id, effort=effort, **bridge.sdk_options())
         else:
             session = backend.session
             bridge.cancelled.clear()
             await session.set_model(app.model_id)
+            if effort != getattr(session, "effort", None):
+                await session.set_effort(effort)
             normalizer.reset_turn()
         require_current_segment()  # Startup/model control awaited; ownership may have changed.
         ledger.update_delivery(entry_id, "submitted")
         submitted = True
         await session.query(entry_id, item["content"])
-        claude_cache.clock_for(app, segment["id"]).model = app.model_id
+        clock = claude_cache.clock_for(app, segment["id"])
+        clock.model, clock.effort = app.model_id, effort or "default"
 
         async def watch_stop():
             while not terminal:

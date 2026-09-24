@@ -114,3 +114,13 @@ def test_the_ledger_remembers_the_last_cache_use_for_a_resume(tmp_path):
     ledger.note_cache(seg["id"], T0, "opus")
     again = ClaudeLedger(tmp_path).segment(seg["id"])
     assert again["cache_used_at"] == T0 and again["cache_model"] == "opus"
+
+
+def test_an_effort_change_on_a_live_session_warns_like_a_model_switch():
+    clock = warm()
+    clock.effort = "high"
+    kind, text = cc.cold_reason(clock, live=True, resuming=False, model="opus", effort="max", now=T0 + 60)
+    assert kind == "effort" and "high to max" in text
+    assert cc.cold_reason(clock, live=True, resuming=False, model="opus", effort="high", now=T0 + 60) is None
+    assert cc.cold_reason(clock, live=True, resuming=False, model="opus", now=T0 + 60)[0] == "effort"
+    assert cc.cold_reason(warm(), live=True, resuming=False, model="opus", effort="max", now=T0 + 60) is None
