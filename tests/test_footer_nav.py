@@ -152,10 +152,51 @@ def test_nothing_is_highlighted_when_the_footer_is_not_selected():
 def test_enter_on_authority_cycles_through_the_existing_action(monkeypatch):
     a = make_app()
     called: list[bool] = []
-    monkeypatch.setattr(type(a), "action_cycle_tool_profile", lambda self: called.append(True))
+    monkeypatch.setattr(type(a), "action_cycle_tool_profile",
+                        lambda self, source="shift+tab": called.append(source))
     a.footer_nav_enter()
     a.footer_nav_activate()
-    assert called == [True]
+    assert called == ["footer chip"]
+
+
+# ── typing leaves the footer (Ryan 2026-09-24: "it switched on its own") ────
+
+@pytest.mark.asyncio
+async def test_typing_after_down_hands_enter_back_to_the_draft(monkeypatch) -> None:
+    """Down selected the authority chip; typed text went into the draft while
+    the chip stayed selected, so Enter cycled the authority (interactive ->
+    strict, persisted) instead of sending, and the Enter after "nothing
+    happened" landed on autonomous. Typing must leave the footer."""
+    a = make_app()
+    sent: list[str] = []
+    monkeypatch.setattr(type(a), "_submit_text", lambda self, text, *args, **kw: sent.append(text))
+    async with a.run_test(size=(120, 34)) as pilot:
+        a.settings.tool_policy_profile = a._active_tool_profile = "interactive"
+        await pilot.press("down")
+        assert a._footer_nav == "authority"
+        await pilot.press("h", "i")
+        assert a._footer_nav is None, "typing kept the footer selected"
+        await pilot.press("enter")
+        assert await settle_until(pilot, lambda: sent == ["hi"]), f"Enter did not send the draft: {sent!r}"
+    assert a.settings.tool_policy_profile == "interactive"
+
+
+def test_enter_on_the_chip_still_cycles_and_says_where_it_came_from(monkeypatch):
+    from litetui import runtime_log
+
+    a = make_app()
+    said: list[str] = []
+    recorded: list[dict] = []
+    monkeypatch.setattr(type(a), "_system", lambda self, text, *args, **kw: said.append(text))
+    monkeypatch.setattr(runtime_log, "record", lambda event, **meta: recorded.append({"event": event, **meta}))
+    a.settings.tool_policy_profile = a._active_tool_profile = "interactive"
+    a.footer_nav_enter()
+    a.footer_nav_activate()
+    changed = a.settings.tool_policy_profile
+    assert changed != "interactive"
+    assert recorded == [{"event": "authority_change", "previous": "interactive", "profile": changed,
+                         "source": "footer chip"}]
+    assert any(f"interactive → {changed} (footer chip)" in line for line in said), said
 
 
 def test_enter_on_think_runs_THE_SAME_command_typing_it_runs(monkeypatch):

@@ -193,6 +193,13 @@ class PromptInput(Input):
                 # already means.
                 app.footer_nav_leave()
             else:
+                # Any other key means the hand is back in the draft: leave the
+                # footer and let the key reach the input. Staying selected here
+                # is how Ryan's authority "switched on its own": Down, type a
+                # message, Enter cycled the chip (interactive -> strict) instead
+                # of sending, and the Enter after "nothing happened" landed on
+                # autonomous, persisted.
+                app.footer_nav_leave()
                 return
             event.prevent_default()
             event.stop()

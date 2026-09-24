@@ -3848,7 +3848,7 @@ class LiteTUI(App):
         self._update_header()
         return True
 
-    def action_cycle_tool_profile(self) -> None:
+    def action_cycle_tool_profile(self, source: str = "shift+tab") -> None:
         """shift+tab: one step down the authority scale, wrapping.
 
         Ryan's order, from his own screenshots of Claude Code:
@@ -3874,9 +3874,9 @@ class LiteTUI(App):
             # keeps Tab from walking out of a pending approval -- the app
             # binding is priority, so nothing else would stop it.
             return
-        self.set_tool_profile(tool_policy.cycle(self.settings.tool_policy_profile))
+        self.set_tool_profile(tool_policy.cycle(self.settings.tool_policy_profile), source=source)
 
-    def set_tool_profile(self, profile: str, *, announce: bool = True) -> bool:
+    def set_tool_profile(self, profile: str, *, announce: bool = True, source: str = "wire") -> bool:
         """Authority to an EXPLICIT profile. False when the name is unknown.
 
         shift+tab cycles; the wire sets (T558-B). One body, so the two cannot
@@ -3893,6 +3893,10 @@ class LiteTUI(App):
         """
         if profile not in tool_policy.PROFILES:
             return False
+        previous = self.settings.tool_policy_profile
+        # Every change leaves a record and says where it came from: Ryan's
+        # "it switched on its own" had none (the footer chip had eaten an Enter).
+        runtime_log.record("authority_change", previous=previous, profile=profile, source=source)
         self.settings.tool_policy_profile = profile
         self._active_tool_profile = profile
         # 🔴 THE ONE PLACE A PROFILE IS CHOSEN (T695), so the one place it is
@@ -3908,7 +3912,8 @@ class LiteTUI(App):
         self._refresh_ctx_label()
         if announce:
             self._system(
-                f"{profile_text(profile)} — {tool_policy.PROFILES[profile].summary}"
+                f"{profile_text(profile)} — authority {previous} → {profile} ({source}). "
+                f"{tool_policy.PROFILES[profile].summary}"
             )
         return True
 
@@ -4905,7 +4910,7 @@ class LiteTUI(App):
         """
         chip = self._footer_nav
         if chip == "authority":
-            self.action_cycle_tool_profile()
+            self.action_cycle_tool_profile(source="footer chip")
         elif chip == "plan":
             # The SAME body Ctrl+P runs, for the reason the note above gives:
             # `set_plan_mode` is where entering and leaving the mode is defined
