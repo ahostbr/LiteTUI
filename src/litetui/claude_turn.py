@@ -97,8 +97,13 @@ async def stream_turn(app):
     # T911: WARN FIRST. Before a bubble, a turn_start or any byte to Claude, so a
     # cancel leaves nothing half-started and the entry stays `prepared`.
     if segment is not None and not await _cache_ok(app, backend, segment):
-        app._system("Not sent: cancelled at the cache warning. Your message is kept; "
-                    "/claude continue sends it when you are ready.")
+        if getattr(app, "_rpc", None):
+            # A headless host confirms by sending again, which prepares a new
+            # entry; closing this one keeps /claude continue from sending both.
+            ledger.update_delivery(entry_id, "terminal", stop_reason="not_sent_cache_warning")
+        else:
+            app._system("Not sent: cancelled at the cache warning. Your message is kept; "
+                        "/claude continue sends it when you are ready.")
         return
     started = time.monotonic()
     app._active_turn_started_at = started
