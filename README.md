@@ -83,7 +83,11 @@ Live probes are **opt-in**, not default tests: `e2e/claude_contract_probe.py`
 (isolated offline controls; `--with-query` uses no credentials and an unreachable
 endpoint), `e2e/claude_live_probe.py`, and `LITETUI_CLAUDE_LIVE=1` for
 `e2e/claude_tui_smoke.py`, `e2e/claude_rpc_smoke.py`,
-`e2e/claude_negative_probe.py`, and `e2e/claude_timeout_probe.py`. Evidence and remaining release gates are in
+`e2e/claude_negative_probe.py`, `e2e/claude_timeout_probe.py`, and
+`e2e/claude_restart_probe.py`. The restart probe uses two real OS processes and
+checks native identity, context continuity, foreign-history isolation, and owned
+child-process cleanup. It does not run inference on a second provider.
+Evidence and remaining release gates are in
 `artifacts/claude-implementation-progress.md`.
 
 ## What it does

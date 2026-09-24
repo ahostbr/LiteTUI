@@ -78,14 +78,20 @@ def main():
             assert not denied.exists()
             send("prompt", id="question", message="Use AskUserQuestion to ask which test color I prefer, Red or Blue. After I answer reply only with my chosen color.")
             ask = until("user_input_requested")
+            selected_label = ask["questions"][0]["options"][1]["title"]
+            answer_start = len(events)
             send("answer", id="answer", ask_id=ask["id"], action="submit", answers=[{"selected": [1]}])
             assert until("turn_end").get("stopReason") == "stop"
+            answer_text = "".join(e.get("text", "") for e in events[answer_start:] if e.get("type") == "text_delta")
+            assert selected_label.lower() in answer_text.lower(), answer_text
             send("prompt", id="stop-question", message="Use AskUserQuestion to ask which test shape I prefer, Circle or Square.")
             until("user_input_requested")
             send("abort", id="stop")
             until("turn_end")
+            after_stop = len(events)
             send("prompt", id="after-stop", message="Reply only AFTER-STOP.")
             assert until("turn_end").get("stopReason") == "stop"
+            assert "AFTER-STOP" in "".join(e.get("text", "") for e in events[after_stop:] if e.get("type") == "text_delta")
             # MCP host service through the guarded dispatcher, never native re-execution.
             before = len(events)
             send("prompt", id="host", message="Call mcp__litetui__chrome with action status exactly once, then reply HOST-DONE. Do not use any other tool.")
