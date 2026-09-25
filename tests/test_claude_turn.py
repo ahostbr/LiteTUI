@@ -113,6 +113,9 @@ class FakeBody:
     def __init__(self):
         self.content = ""
 
+    def set_markdown(self, src):
+        self.content = src
+
 
 class FakeBubble:
     def __init__(self):
@@ -121,6 +124,7 @@ class FakeBubble:
         self.settled = False
         self.thinking = None
         self.mounted = []
+        self.is_attached = True
 
     def set_answer(self, text):
         self.answer = text
@@ -211,6 +215,11 @@ class TurnApp:
 
     def _scroll_down(self, **kwargs):
         pass
+
+    def set_timer(self, delay, callback):
+        # No event loop owner here: a StreamSink render happens at once.
+        callback()
+        return SimpleNamespace(stop=lambda: None)
 
     def _read_store_file(self, name, cap):
         return ""
@@ -831,6 +840,9 @@ class _ClockedBody:
     @content.setter
     def content(self, value):
         self.writes.append((self._elapsed.body is self, str(value)))
+
+    def set_markdown(self, src):
+        self.content = src
 
 
 @pytest.mark.asyncio

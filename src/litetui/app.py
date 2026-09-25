@@ -1609,6 +1609,8 @@ class LiteTUI(App):
         self._cancel_buttons: dict = {}      # ToolMessage -> its CancelToolButton
         # Invalidates queued scrolling when the explicit lock changes.
         self._follow_generation = 0
+        # The generation whose scroll is already queued for the next refresh.
+        self._scroll_queued: int | None = None
         self._compact_card = None            # the live CompactionCard, if any
         #: Messages held while a turn runs (FIFO). Each {"content": ..., "text": ...}.
         #: Flushed one per turn end — consecutive role:"user" messages are a
@@ -6193,8 +6195,17 @@ class LiteTUI(App):
         # validating only the completion is too late because the stale action
         # may already have yanked a reader who wheeled upward meanwhile.
         generation = self._follow_generation
+        # ONE SCROLL PER FRAME. The stream and ChatLog.watch_virtual_size both
+        # ask after every render; each queued action did its own scroll_end and
+        # autocollapse pass. A scroll already queued for this generation lands
+        # after the same refresh, so a second request adds nothing.
+        if getattr(self, "_scroll_queued", None) == generation:
+            return
+        self._scroll_queued = generation
 
         def scroll_if_current() -> None:
+            if self._scroll_queued == generation:
+                self._scroll_queued = None
             if generation != self._follow_generation or not self.settings.autoscroll:
                 return
 
@@ -7599,6 +7610,9 @@ class LiteTUI(App):
             terminal_widget = widget
             self._active_turn_widget = widget
             self._elapsed.start(widget.body, started_at=turn_started_at)
+            # One render and one scroll per frame for this round's answer.
+            from litetui.stream_sink import StreamSink
+            sink = StreamSink(self, widget)
             self._eta.clear_prefill()  # NInfer prefill %, this request only
             thinking: ThinkingBlock | None = None
             text_full = ""
@@ -7833,8 +7847,7 @@ class LiteTUI(App):
                         self._elapsed.stop_body()
                         text_full += delta.content
                         self._rpc_emit({"type": "text_delta", "text": delta.content})
-                        widget.body.content = Text(text_full + " \u258c")
-                        self._scroll_down()
+                        sink.show(text_full)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
                         # chunk is already in hand, and the dialog promises that
@@ -7900,6 +7913,7 @@ class LiteTUI(App):
                 )
                 self._elapsed.stop_body()
                 self._thinking_done()
+                sink.cancel()   # a late render must not draw over the error
                 # T688 F: if the app that owned our attached llama.cpp router has
                 # left, take it over HERE, before the words are chosen — "start it
                 # or switch backends" is advice for a situation that is not the
@@ -7949,8 +7963,9 @@ class LiteTUI(App):
                 # card summary is made from. Summarising the rendered widget
                 # instead would summarise a Markdown object; summarising the
                 # reasoning would describe work the card never shows.
-                widget.set_answer(text_full)
+                sink.finish(text_full)
             else:
+                sink.cancel()
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.
                 if thinking is None:
                     widget.remove()

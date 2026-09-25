@@ -97,10 +97,13 @@ BSLASH = chr(92)
 #: `_markdown_to_text(src, width) -> Text` BUILDS a Text from rendered
 #: segments. A source-substring entry for a call that returns Text would
 #: pin the spelling of a helper rather than the property that matters.
+#:
+#: `streaming-cursor` (app.py `widget.body.content = Text(text_full + " ▌")`)
+#: is GONE, not unwrapped: since 2026-09-25 every streamed answer is drawn by
+#: stream_sink.StreamSink through that same primary `set_markdown` path. The
+#: behaviour is pinned in test_stream_sink.py
+#: (test_streamed_brackets_render_literally), not by source spelling.
 SITES = [
-    ("streaming-cursor", "app.py",
-     'widget.body.content = Text(text_full + " ' + BSLASH + 'u258c")',
-     'widget.body.content = text_full + " ' + BSLASH + 'u258c"'),
     ("set-answer-fallback", "widgets.py",
      "self.body.content = Text(text)",
      "self.body.content = text" + chr(10)),

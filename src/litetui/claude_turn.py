@@ -10,6 +10,7 @@ from rich.text import Text
 
 from litetui import claude_cache
 from litetui.claude_persistence import ClaudeLedger
+from litetui.stream_sink import StreamSink
 
 
 def launch_workspace(app):
@@ -368,6 +369,9 @@ async def stream_turn(app):
     # after a tool card was mounted opens a NEW card below that tool. One card
     # per turn put post-tool text above the tool cards (Ryan, 2026-09-25).
     cards = [(widget, [])]
+    # Each card's streamed text is drawn by its own StreamSink: one render and
+    # one scroll per frame, Markdown from the first frame (stream_sink.py).
+    sinks = {}
     tool_below = False
     tool_cards = {}
     activity_records = []
@@ -432,6 +436,11 @@ async def stream_turn(app):
             keys = next(keys for owner, keys in cards if owner is card)
             return _joined({k: message_texts[k] for k in keys if k in message_texts})
 
+        def sink_for(card):
+            if card not in sinks:
+                sinks[card] = StreamSink(app, card)
+            return sinks[card]
+
         def stop_live_clocks():
             # The elapsed clock repaints the first card's body every 250ms until
             # told to stop; left running it overwrote streamed text all turn.
@@ -453,9 +462,8 @@ async def stream_turn(app):
                     stop_live_clocks()
                     message_texts[key] = message_texts.get(key, "") + event.text
                     text = _joined(message_texts)
-                    card.body.content = Text(card_text(card) + " |")
+                    sink_for(card).show(card_text(card))
                     app._rpc_emit({"type": "text_delta", "text": event.text})
-                    app._scroll_down()
                 elif event.kind == "message":
                     key = event.message_id or "current"
                     if event.reconcile == "append":
@@ -471,7 +479,7 @@ async def stream_turn(app):
                     if message_texts[key] or any(key in keys for _, keys in cards):
                         card = card_for(key)
                         stop_live_clocks()
-                        card.set_answer(card_text(card))
+                        sink_for(card).show(card_text(card))
                 elif event.kind in {"thinking_delta", "thinking"}:
                     from litetui.widgets import ThinkingBlock
                     card_for(event.message_id or "current")
@@ -622,9 +630,13 @@ async def stream_turn(app):
                 reason = "error"
         app._elapsed.stop_body()
         app._thinking_done()
+        for sink in sinks.values():
+            sink.cancel()   # nothing drawn late over the final answer or a failure
         if text or activity_records or thinking_text:
             for card, keys in cards:
-                card.set_answer(_joined({k: message_texts[k] for k in keys if k in message_texts}))
+                # sinks.get: a turn can fail before sink_for exists.
+                (sinks.get(card) or StreamSink(app, card)).finish(
+                    _joined({k: message_texts[k] for k in keys if k in message_texts}))
             app._append({"role": "assistant", "content": text, "claude_native": {
                 "segment_id": item["_claude_segment"], "session_id": (segment or {}).get("session_id"), "delivery_id": entry_id,
                 "activities": activity_records, "message_ids": list(message_texts),
