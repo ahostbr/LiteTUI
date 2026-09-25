@@ -55,42 +55,73 @@ FRAMES = [
 ]
 
 
-@pytest.mark.asyncio
-async def test_two_tool_rounds_render_in_stream_order(tmp_path) -> None:
+def _app():
     app = app_mod.LiteTUI()
     app.available_models = ["claude-opus-5-5"]
     app.model_id = "claude-opus-5-5"
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.jobs[:] = []
+    return app
+
+
+async def _run_turn(app, tmp_path):
+    app.convo_dir = tmp_path
+    app.convo_id = "convo"
+    app._materialise_convo = lambda: None
+    item = prepare_input(app, "hello", "strict", "typed")
+    app._claude_active_input = {"content": "hello", **item}
+    backend = FakeBackend(FakeSession(FRAMES), item["_claude_segment"])
+    backend._claude_tools = SimpleNamespace(
+        cancelled=SimpleNamespace(clear=lambda: None, set=lambda: None, is_set=lambda: False),
+        stop=lambda: None, sdk_options=dict)
+    backend._claude_events = ClaudeEventStream(session_id="sess-1")
+    app.backend = backend
+    await stream_turn(app)
+
+
+@pytest.mark.asyncio
+async def test_two_tool_rounds_render_in_stream_order(tmp_path) -> None:
+    app = _app()
     async with app.run_test(size=(120, 40)) as pilot:
-        app.convo_dir = tmp_path
-        app.convo_id = "convo"
-        app._materialise_convo = lambda: None
-        item = prepare_input(app, "hello", "strict", "typed")
-        app._claude_active_input = {"content": "hello", **item}
-        backend = FakeBackend(FakeSession(FRAMES), item["_claude_segment"])
-        backend._claude_tools = SimpleNamespace(
-            cancelled=SimpleNamespace(clear=lambda: None, set=lambda: None, is_set=lambda: False),
-            stop=lambda: None, sdk_options=dict)
-        backend._claude_events = ClaudeEventStream(session_id="sess-1")
-        app.backend = backend
         log = app.query_one("#chat-log")
         before = set(log.children)
-        await stream_turn(app)
+        await _run_turn(app, tmp_path)
         for _ in range(6):
             await pilot.pause()
+        assert _order(log, before) == IN_STREAM_ORDER
 
-        shown = []
-        for w in log.children:
-            if w in before:
-                continue
-            if isinstance(w, AssistantMessage):
-                shown.append("text:" + w.answer_text)
-            elif isinstance(w, ToolMessage):
-                shown.append("tool")
-        assert shown == [
-            "text:Round one.", "tool",
-            "text:Round two.", "tool",
-            "text:Final answer.",
-        ], (shown, app.notices if hasattr(app, "notices") else None)
+
+IN_STREAM_ORDER = [
+    "text:Round one.", "tool",
+    "text:Round two.", "tool",
+    "text:Final answer.",
+]
+
+
+def _order(log, skip=()):
+    shown = []
+    for w in log.children:
+        if w in skip:
+            continue
+        if isinstance(w, AssistantMessage):
+            shown.append("text:" + w.answer_text)
+        elif isinstance(w, ToolMessage):
+            shown.append("tool")
+    return shown
+
+
+@pytest.mark.asyncio
+async def test_a_reloaded_turn_keeps_its_stream_order(tmp_path) -> None:
+    """The same bug on reopen: the saved row replayed every tool after all the text."""
+    app = _app()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _run_turn(app, tmp_path)
+        saved = [row for row in app.conversation if row.get("role") == "assistant"]
+        assert len(saved) == 1 and saved[0]["content"] == "Round one.\n\nRound two.\n\nFinal answer."
+        app.conversation = [{"role": "user", "content": "hello"}, saved[0]]
+        app._render_resumed(tmp_path / "convo.jsonl")
+        for _ in range(6):
+            await pilot.pause()
+        log = app.query_one("#chat-log")
+        assert _order(log) == IN_STREAM_ORDER

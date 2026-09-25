@@ -372,6 +372,7 @@ async def stream_turn(app):
     # Each card's streamed text is drawn by its own StreamSink: one render and
     # one scroll per frame, Markdown from the first frame (stream_sink.py).
     sinks = {}
+    tool_card_index = {}   # tool id -> the card it followed; its result keeps it
     tool_below = False
     tool_cards = {}
     activity_records = []
@@ -528,7 +529,10 @@ async def stream_turn(app):
                         activity_records.append({"kind": event.kind, "id": event.tool_id,
                             "name": event.tool_name, "input": event.tool_input,
                             "result": event.tool_result, "is_error": event.is_error,
-                            "parent_tool_use_id": event.parent_tool_use_id})
+                            "parent_tool_use_id": event.parent_tool_use_id,
+                            # The answer card this tool followed, so a reload
+                            # can put it back in stream order (replay_activity).
+                            "card": tool_card_index.setdefault(event.tool_id, len(cards) - 1)})
                     from litetui.widgets import ToolMessage
                     card = tool_cards.get(event.tool_id)
                     if card is None:
@@ -633,14 +637,20 @@ async def stream_turn(app):
         for sink in sinks.values():
             sink.cancel()   # nothing drawn late over the final answer or a failure
         if text or activity_records or thinking_text:
-            for card, keys in cards:
+            card_texts = [_joined({k: message_texts[k] for k in keys if k in message_texts})
+                          for _, keys in cards]
+            for (card, _), card_answer in zip(cards, card_texts):
                 # sinks.get: a turn can fail before sink_for exists.
-                (sinks.get(card) or StreamSink(app, card)).finish(
-                    _joined({k: message_texts[k] for k in keys if k in message_texts}))
-            app._append({"role": "assistant", "content": text, "claude_native": {
+                (sinks.get(card) or StreamSink(app, card)).finish(card_answer)
+            native = {
                 "segment_id": item["_claude_segment"], "session_id": (segment or {}).get("session_id"), "delivery_id": entry_id,
                 "activities": activity_records, "message_ids": list(message_texts),
-            }})
+            }
+            # Where each card's text sits inside `content`, so a reload can
+            # split it back around the tools. Only when the split is exact.
+            if _joined(dict(enumerate(card_texts))) == text:
+                native["card_text_lengths"] = [len(t) for t in card_texts]
+            app._append({"role": "assistant", "content": text, "claude_native": native})
         if failure:
             app._system(f"Claude: {failure}")
             if not text:
@@ -711,11 +721,56 @@ def command(app, argument):
         app._system("/claude status | resolve | continue | new - native slash commands and rollback are unsupported.")
 
 
-def replay_activity(app, metadata):
-    """Restore inert native activity cards; never dispatch a saved tool use."""
+def split_card_texts(metadata, content):
+    """The saved answer split back into its cards' texts, or None.
+
+    `content` is every card's text joined by `_joined` (blank-line separated,
+    empty cards skipped); `card_text_lengths` records each card's length. None
+    for turns saved before the lengths existed, or when they do not add up.
+    """
+    lengths = metadata.get("card_text_lengths")
+    if not isinstance(lengths, list) or not isinstance(content, str):
+        return None
+    texts, pos = [], 0
+    for n in lengths:
+        if not isinstance(n, int) or n < 0:
+            return None
+        if n and pos:
+            pos += 2   # the blank-line separator _joined puts before every text but the first
+        texts.append(content[pos:pos + n])
+        pos += n
+    return texts if pos == len(content) else None
+
+
+def replay_activity(app, metadata, content=None):
+    """Restore inert native activity cards; never dispatch a saved tool use.
+
+    With `content` and a turn saved with card positions, the answer text is
+    replayed too, card by card, each followed by the tools that came after it:
+    the order the turn streamed in. Returns the answer cards it created; []
+    means the caller still owns drawing the text (older turns).
+    """
     from litetui.widgets import ToolMessage
+    texts = split_card_texts(metadata, content)
+    activities = metadata.get("activities", [])
+    if texts is None:
+        _replay_tools(app, activities, ToolMessage)
+        return []
+    answers = []
+    for index, card_text in enumerate(texts):
+        if card_text:
+            bubble = app._assistant_bubble()
+            bubble.set_answer(card_text)
+            bubble.settled = True
+            answers.append(bubble)
+        _replay_tools(app, [a for a in activities if a.get("card") == index], ToolMessage)
+    _replay_tools(app, [a for a in activities if a.get("card") not in range(len(texts))], ToolMessage)
+    return answers
+
+
+def _replay_tools(app, activities, ToolMessage):
     cards = {}
-    for activity in metadata.get("activities", []):
+    for activity in activities:
         ident = activity.get("id")
         card = cards.get(ident)
         if card is None:

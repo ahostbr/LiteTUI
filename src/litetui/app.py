@@ -3506,8 +3506,13 @@ class LiteTUI(App):
                 users += 1
             elif role == "assistant":
                 from litetui.codex_trace import records as codex_trace_records
+                from litetui.claude_turn import split_card_texts
                 native_text = any(r.get("kind") == "agentMessage" and r.get("result")
                                   for r in codex_trace_records(m.get("provider_metadata")))
+                # A Claude turn saved with card positions replays its own text,
+                # interleaved with its tools (replay_activity below).
+                native_text = native_text or split_card_texts(
+                    m.get("claude_native") or {}, text) is not None
                 if text and not native_text:
                     w = self._assistant_bubble()
                     w.set_answer(text)
@@ -3527,7 +3532,12 @@ class LiteTUI(App):
             native_tools += replay_codex_trace(self, m.get("provider_metadata") or {}, native_seen)
             if m.get("claude_native"):
                 from litetui.claude_turn import replay_activity
-                replay_activity(self, m["claude_native"])
+                for w in replay_activity(self, m["claude_native"], text):
+                    stored = restored_summaries.get(self._card_summary_key(w.answer_text))
+                    if stored:
+                        w.set_summary(stored)
+                        w.summary_done = True
+                    assistants += 1
         # Tool traffic is summarised rather than replayed — the widgets carry
         # streamed state that cannot be faithfully reconstructed from the log.
         # It IS still in self.conversation, so the model sees all of it.

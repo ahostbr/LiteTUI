@@ -917,3 +917,23 @@ async def test_text_after_a_tool_lands_below_it_and_the_clock_never_overwrites_t
     assert app._active_turn_widget is second, "the stop line settles on the last card"
     answers = [row["content"] for row in app.appended if row.get("role") == "assistant"]
     assert answers == ["Let me look.\n\nFound it."], answers
+
+
+def test_card_texts_split_back_exactly_even_with_blank_lines_inside():
+    from litetui.claude_turn import _joined, split_card_texts
+    cards = ["", "para one\n\npara two", "tool follow-up", "", "end"]
+    content = _joined(dict(enumerate(cards)))
+    meta = {"card_text_lengths": [len(t) for t in cards]}
+    assert split_card_texts(meta, content) == cards
+
+
+def test_a_turn_saved_before_card_positions_replays_the_old_way():
+    from litetui.claude_turn import split_card_texts
+    assert split_card_texts({"activities": []}, "text") is None
+
+
+def test_lengths_that_do_not_add_up_are_refused_not_guessed():
+    from litetui.claude_turn import split_card_texts
+    assert split_card_texts({"card_text_lengths": [3, 3]}, "abc\n\nabcd") is None
+    assert split_card_texts({"card_text_lengths": [-1]}, "") is None
+    assert split_card_texts({"card_text_lengths": "3"}, "abc") is None
