@@ -7,8 +7,9 @@ from litetui import app as app_mod
 from litetui.claude_persistence import ClaudeLedger
 
 
+@pytest.mark.parametrize("maintenance", [False, True])
 @pytest.mark.parametrize("attached", [False, True])
-def test_fresh_claude_submit_and_followup(tmp_path, monkeypatch, attached):
+def test_fresh_claude_submit_and_followup(tmp_path, monkeypatch, attached, maintenance):
     submitted, bubbles, spills = [], [], []
     image_path = str(tmp_path / "image.png")
 
@@ -20,7 +21,8 @@ def test_fresh_claude_submit_and_followup(tmp_path, monkeypatch, attached):
         pending_image="AAAA" if attached else None,
         backend=SimpleNamespace(name="claude", owns_native_turns=True, session=None),
         convo_dir=tmp_path, convo_id="fresh", chosen_tool_profile="autonomous",
-        tools_enabled=True, _pending_input=[],
+        tools_enabled=True, _pending_input=[], _mcp_maintenance=maintenance,
+        notify=lambda *args, **kwargs: None,
         _materialise_convo=lambda: None, _chat_running=lambda: False,
         _split_image_path=lambda text: (None, text),
         _looks_like_image_path=lambda text: False,
@@ -35,6 +37,9 @@ def test_fresh_claude_submit_and_followup(tmp_path, monkeypatch, attached):
     app_mod.LiteTUI._submit_text(app, "hey buddy", alt_chord=False)
     app_mod.LiteTUI._submit_text(app, "followup", alt_chord=False)
 
+    if maintenance:
+        assert submitted == []
+        submitted = app._pending_input
     assert len(submitted) == 2
     assert submitted[1]["content"] == "followup"
     assert bubbles[1][2]["image_path"] is None

@@ -3725,9 +3725,10 @@ class LiteTUI(App):
         self._mic_last_toggle = now
         from litetui import stt_backend
         if self._mic_proc is None:
-            if not stt_backend.available():
-                self._system("[mic] voice-in needs faster-whisper + ffmpeg — "
-                             "install them from Settings > Voice.")
+            missing = stt_backend.missing()
+            if missing:
+                self._system(f"[mic] voice-in needs {missing} — "
+                             f"install it from Settings > Voice.")
                 return
             self._mic_proc = stt_backend.record_start(self.settings.stt_mic or None)
             if self._mic_proc is None:
@@ -3770,7 +3771,12 @@ class LiteTUI(App):
 
     def _transcribe_and_fill(self, wav: str) -> None:
         from litetui import stt_backend
-        text = stt_backend.transcribe(wav, self.settings.stt_model)
+        try:
+            text = stt_backend.transcribe(wav, self.settings.stt_model)
+        except Exception as exc:
+            self.call_from_thread(self._system,
+                                  f"[mic] transcription failed: {type(exc).__name__}: {exc}")
+            return
         self.call_from_thread(self._append_transcript, text)
 
     def _append_transcript(self, text: str) -> None:
@@ -5557,13 +5563,13 @@ class LiteTUI(App):
     # DELETING, NOT AFTER.
     _system = system_message
 
-    def _user_bubble(self, text: str, has_image: bool, queued: bool = False, *, header: str | None = None):
+    def _user_bubble(self, text: str, has_image: bool, queued: bool = False, *, header: str | None = None, image_path: str | None = None):
         log = self.query_one("#chat-log")
         parts: list[str] = []
-        # The spill path is read (not taken as an argument) so every call site is
-        # unchanged. It is set per-submit by `_submit_text` (via
-        # `_spill_image_for_reclick`) and reset to None at the top of each submit.
-        image_path = getattr(self, "_last_spilled_image", None)
+        # Only this message's explicitly supplied image may be reopened.
+        # Tool output and other non-submit bubbles must not inherit attachments.
+        if not has_image:
+            image_path = None
         if has_image:
             parts.append("[Image attached]")
         if text:
@@ -5578,12 +5584,6 @@ class LiteTUI(App):
         log.mount(w)
         self._scroll_down()
         return w
-
-    # The per-submit image path, if this message attached one and the spill
-    # succeeded (see `_spill_image_for_reclick`). Reset to None at the top of
-    # every `_submit_text`; `_user_bubble` reads it to make "[Image attached]"
-    # re-clickable. Never touches the API content or the transcript text.
-    _last_spilled_image: str | None = None
 
     def _spill_image_for_reclick(self, b64: str) -> str | None:
         """Persist a submitted image into the conversation so it can be re-opened.
@@ -6904,10 +6904,9 @@ class LiteTUI(App):
                         "detail": detail})
 
     def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
-        # A re-clickable image path is per-submit: reset it here so a message
-        # WITHOUT an image can never inherit the previous message's spill path
-        # (only `_spill_image_for_reclick` re-sets it, below).
-        self._last_spilled_image: str | None = None
+        # Keep the re-clickable path local to this submission, including queued
+        # and interrupted turns; unrelated bubbles never share attachment state.
+        image_path: str | None = None
         text = value.strip()
         if not text and not self.pending_image:
             self._refuse_submit("empty", "nothing to send")
@@ -6957,7 +6956,7 @@ class LiteTUI(App):
         # clickable affordance. A spill failure just means no re-click; the turn
         # still sends the image exactly as before.
         if has_image:
-            self._last_spilled_image = self._spill_image_for_reclick(image_b64)
+            image_path = self._spill_image_for_reclick(image_b64)
         # This is the moment a conversation earns its directory. Everything
         # before it — boot, the system prompt, a /model switch, an abandoned
         # /resume — leaves nothing on disk.
@@ -7015,7 +7014,7 @@ class LiteTUI(App):
             # Do not start a turn while MCP maintenance is reconnecting servers:
             # queue the input (never lose it) — _flush_pending_input resends it
             # once maintenance clears. Same queue path as a busy chat group.
-            bubble = self._user_bubble(text, has_image, queued=True)
+            bubble = self._user_bubble(text, has_image, queued=True, image_path=image_path)
             self._pending_input.append(
                 {"content": content, "text": text, "bubble": bubble,
                  "tool_profile": profile, "source": source, **correlation})
@@ -7024,7 +7023,7 @@ class LiteTUI(App):
         if self._chat_running():
             act = midturn_action(self.settings.enter_interrupts, alt_chord)
             if act == "queue":
-                bubble = self._user_bubble(text, has_image, queued=True)
+                bubble = self._user_bubble(text, has_image, queued=True, image_path=image_path)
                 self._pending_input.append(
                     {"content": content, "text": text, "bubble": bubble,
                      "tool_profile": profile, "source": "rpc" if source == "rpc" else "queued", **correlation}
@@ -7035,7 +7034,7 @@ class LiteTUI(App):
             # reply and discards unanswered tool calls, which is what protects
             # the tool_call_id pairing. The message goes to the FRONT so the
             # flush sends it before anything queued behind it.
-            self._user_bubble(text, has_image)
+            self._user_bubble(text, has_image, image_path=image_path)
             # Also a prompt submit: the reader pressed send, their message is
             # queued to go next, and the bubble they just made is worth showing
             # them. Same clause as the normal path below (T706).
@@ -7046,7 +7045,7 @@ class LiteTUI(App):
             self._stop_requested = True
             self.notify("Interrupting — your message sends next", timeout=3)
             return
-        self._user_bubble(text, has_image)
+        self._user_bubble(text, has_image, image_path=image_path)
         # The reader pressed send: their own action, at the bottom by their own
         # choice. The one call that bypasses the follow check, and it RE-ENGAGES
         # the lock for the turn that follows (T706).

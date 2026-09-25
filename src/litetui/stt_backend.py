@@ -7,20 +7,31 @@ Replaces the VRAM-evicting Qwen2-Audio-7B `listen` path for user dictation.
 Capture reuses listen_tool's ffmpeg dshow helpers (already proven on this box).
 Recording is a TOGGLE, not a fixed duration: record_start launches ffmpeg and
 record_stop sends 'q' to its stdin so the WAV trailer is written cleanly (a
-hard kill truncates the header). Transcription runs off the UI thread; the
-model is cached after first load.
+hard kill truncates the header). Transcription runs off the UI thread.
+
+INTERPRETER: detection, model download and transcription all go through the
+SAME global-first resolver as speech-out (optional_python — system Python
+first, the locked project venv last). The app's venv does not carry
+faster-whisper, so an in-process import would always fail; instead one
+short-lived child under the resolved interpreter does the load+transcribe.
+The model download (first WhisperModel load) happens inside that same child,
+and the HF cache is per-user, so the Settings download and first live use
+share it. Never inject another interpreter's site-packages into this process.
 """
 from __future__ import annotations
 
-import importlib.util
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from litetui import paths
+from litetui import optional_python, paths
 from litetui.listen_tool import (
-    _check_not_silent, _ffmpeg, _first_dshow_device, _run,
+    _check_not_silent,
+    _ffmpeg,
+    _first_dshow_device,
+    _run,
 )
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -32,13 +43,26 @@ _HALLUCINATIONS = frozenset({
     "bye", "bye.", "so", ".", "",
 })
 _WAV = paths.data_root() / "stt-record.wav"
-_model_cache: dict = {}
+_STT_TIMEOUT = 300  # CPU whisper is ~10-20x faster than realtime; safety cap
+
+
+def missing() -> str:
+    """What voice-in can't run with right now: '' = ready, else the missing
+    part(s) ('faster-whisper', 'ffmpeg', or 'faster-whisper + ffmpeg').
+    faster-whisper is probed through the global-first resolver — the locked
+    app venv does not carry it, the system Python does."""
+    out = []
+    if _interpreter() is None:
+        out.append("faster-whisper")
+    if _ffmpeg() is None:
+        out.append("ffmpeg")
+    return " + ".join(out)
 
 
 def available() -> bool:
-    """True when faster-whisper is importable AND ffmpeg is on PATH — both are
-    needed, so the UI can say which is missing instead of failing mid-record."""
-    return importlib.util.find_spec("faster_whisper") is not None and _ffmpeg() is not None
+    """True when faster-whisper (in a resolvable interpreter) AND ffmpeg are
+    both present."""
+    return missing() == ""
 
 
 def list_mics() -> list[str]:
@@ -78,7 +102,7 @@ def record_start(device: str | None = None):
         return None
 
 
-def record_stop(proc) -> "str | None":
+def record_stop(proc) -> str | None:
     """Stop recording gracefully ('q' -> ffmpeg writes the WAV trailer) and
     return the WAV path, or None if nothing usable was captured. A hard kill is
     the fallback; a WAV under a header's worth of bytes is treated as empty."""
@@ -103,42 +127,77 @@ def record_stop(proc) -> "str | None":
     return None
 
 
+#: The child does load+transcribe and prints the raw text. Args (not format
+#: strings) carry the paths, so nothing in the WAV path can break the code.
+_STT_CHILD = """\
+import sys
+from faster_whisper import WhisperModel
+wav, size = sys.argv[1], sys.argv[2]
+model = WhisperModel(size, device="cpu", compute_type="int8")
+segments, _info = model.transcribe(wav, language="en")
+print(" ".join(seg.text.strip() for seg in segments).strip())
+"""
+
+
+def _interpreter() -> str | None:
+    """The global-first interpreter that can import faster_whisper — the same
+    resolver speech-out uses (voice_backend.speak). None when no candidate
+    Python has it."""
+    return optional_python.resolve("faster_whisper")
+
+
+def _run_worker(exe: str, wav: str, model_size: str) -> str:
+    """Return the transcript; raise on launch, timeout or child failure.
+
+    The UI reports failures separately from a successful but empty transcript.
+    First use downloads the model inside the child (shared HF cache).
+    """
+    from litetui import ttyguard
+    script = None
+    try:
+        # A WAV path with spaces or unicode exceeds nothing, but python -c
+        # quoting does not deserve the risk either: write the child to a file
+        # (same pattern as voice_backend.speak).
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                         suffix=".py", prefix="litetui-stt-",
+                                         delete=False) as output:
+            script = output.name
+            output.write(_STT_CHILD)
+        r = ttyguard.run([exe, "-E", "-B", script, wav, model_size],
+                         timeout=_STT_TIMEOUT)
+        if r.returncode != 0:
+            detail = (r.stderr or "").strip()[-2000:]
+            raise RuntimeError(f"transcriber exited {r.returncode}: {detail or 'no error output'}")
+        return (r.stdout or "").strip()
+    finally:
+        if script is not None:
+            Path(script).unlink(missing_ok=True)
+
+
 def transcribe(wav: str, model_size: str = DEFAULT_MODEL) -> str:
-    """Transcribe a WAV with faster-whisper. Downloads the model on first use
-    (the opt-in gate is the caller choosing to run this). Blocking — call it in
-    a worker thread. Returns the text, or "" on any failure (never raises)."""
+    """Transcribe a WAV with faster-whisper. Blocking — call it in a worker
+    thread. Returns "" for no speech; raises on transcription failure."""
     # Silence gate BEFORE whisper: base whisper hallucinates "You" / "Thank you"
     # on a silent or ultra-short clip (measured 2026-09-18 — a quiet take
     # printed "You"). listen_tool's volumedetect rejects it, so silence reads
     # as "no speech" instead of phantom text (and flags a mis-picked mic).
     try:
-        from pathlib import Path
         if _check_not_silent(Path(wav)):
             return ""
     except Exception:
         pass
-    try:
-        from faster_whisper import WhisperModel
-    except Exception:
+    exe = _interpreter()
+    if exe is None:
+        raise RuntimeError("faster-whisper interpreter is unavailable")
+    text = _run_worker(exe, wav, model_size)
+    # Belt for borderline audio that passes the volume gate: whisper's
+    # stock hallucinations for "no real content" are a tiny closed set.
+    if text.lower().strip(" .!?,") in _HALLUCINATIONS:
         return ""
-    try:
-        model = _model_cache.get(model_size)
-        if model is None:
-            model = WhisperModel(model_size, device="cpu", compute_type="int8")
-            _model_cache[model_size] = model
-        segments, _info = model.transcribe(wav, language="en")
-        text = " ".join(s.text.strip() for s in segments).strip()
-        # Belt for borderline audio that passes the volume gate: whisper's
-        # stock hallucinations for "no real content" are a tiny closed set.
-        if text.lower().strip(" .!?,") in _HALLUCINATIONS:
-            return ""
-        return text
-    except Exception:
-        return ""
+    return text
 
 
 if __name__ == "__main__":  # ponytail self-check — no mic/model needed
     assert isinstance(list_mics(), list)
     assert record_stop(None) is None
-    assert transcribe("nonexistent.wav") == ""
-    print("available:", available(), "| mics:", list_mics())
+    print("missing:", missing() or "(nothing — ready)", "| mics:", list_mics())

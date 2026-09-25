@@ -235,6 +235,32 @@ async def test_reclick_affordance_reopens_viewer(tmp_path):
         assert ok, "clicking the affordance must re-open the sidebar viewer"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queued", [False, True])
+async def test_image_button_belongs_only_to_its_message(tmp_path, queued):
+    from tests._settle import settle_until
+
+    application = _make_app()
+    async with application.run_test(size=(140, 34)) as pilot:
+        path = _spill_and_assert(application, tmp_path)
+        original = application._user_bubble(
+            "Look at this", True, queued=queued, image_path=path,
+        )
+        later = [application._user_bubble("Command output", False) for _ in range(3)]
+        later.append(application._user_bubble("Unpersisted image", True))
+        later.append(application._user_bubble("No attachment", False, image_path=path))
+        assert await settle_until(pilot, lambda: all(w.is_mounted for w in [original, *later]))
+        assert original.image_path == path
+        assert len(original.query("#user-img-open")) == 1
+        for bubble in later:
+            assert bubble.image_path is None
+            assert not bubble.query("#user-img-open")
+        original.query_one("#user-img-open", Button).press()
+        assert await settle_until(
+            pilot, lambda: bool(application.screen.query(ImageViewerBody)), n=40,
+        )
+
+
 # ── backend selection (the escape-leak fix, 2026-09-19) ─────────────────
 #
 # The bugs: textual-image's auto-detect runs LIVE stdin escape probes (DA1 /

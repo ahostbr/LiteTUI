@@ -24,7 +24,6 @@ DESIGN NOTES
 
 from __future__ import annotations
 
-import importlib.util
 from copy import deepcopy
 from dataclasses import fields, replace
 from functools import partial
@@ -1871,23 +1870,49 @@ class SettingsBody(Widget):
         self.run_worker(lambda: self._do_dl_stt(size), thread=True)
 
     def _do_dl_stt(self, size: str) -> None:
+        """Install faster-whisper where the resolver will find it, then warm
+        the model cache UNDER THAT SAME INTERPRETER — the locked app venv is
+        never the target (same global-first rule as voice_install)."""
+        import shutil
         import subprocess
-        import sys
+
+        from litetui import optional_python
 
         try:
-            if importlib.util.find_spec("faster_whisper") is None:
+            optional_python.invalidate()
+            exe = optional_python.resolve("faster_whisper")
+            if exe is None:
+                target = optional_python.install_target()
+                uv = shutil.which("uv")
+                prefix = ([uv, "pip", "install", "--python", target] if uv
+                          else [target, "-m", "pip", "install"])
                 from litetui import ttyguard
-                done = ttyguard.run([sys.executable, "-m", "pip", "install", "faster-whisper"],
-                                    timeout=600)
+                done = ttyguard.run(prefix + ["faster-whisper"], timeout=600)
                 if done.returncode:
                     raise subprocess.CalledProcessError(done.returncode, done.args,
                                                         done.stdout, done.stderr)
-            from faster_whisper import WhisperModel
-            WhisperModel(size, device="cpu", compute_type="int8")
+                optional_python.invalidate()
+                exe = optional_python.resolve("faster_whisper")
+            if exe is None:
+                raise RuntimeError(
+                    "faster-whisper installed but not importable "
+                    "in any candidate Python")
+            # The download (first WhisperModel load) runs in the resolved
+            # interpreter's child: same resolver as detection and live
+            # transcription, and the HF cache is per-user, so the first real
+            # dictation reuses it.
+            from litetui import ttyguard
+            r = ttyguard.run(
+                [exe, "-E", "-B", "-c",
+                 ("from faster_whisper import WhisperModel;"
+                  f" WhisperModel({size!r}, device='cpu', compute_type='int8')")],
+                timeout=600)
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or r.stdout or "").strip()[-200:])
             msg = f"{size} ready — the mic button and record hotkey now work."
         except Exception as e:  # noqa: BLE001 - report every failure to the panel
-            msg = (f"download failed: {type(e).__name__} "
-                   "(try: uv pip install faster-whisper)")
+            msg = (f"download failed: {type(e).__name__}: "
+                   f"{str(e).strip()[-160:]}")
         self.app.call_from_thread(
             self.query_one("#voice-status", Static).update, msg)
 
