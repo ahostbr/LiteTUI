@@ -6997,9 +6997,9 @@ class LiteTUI(App):
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import inline_images, prepare_input
             try:
-                content, saved = inline_images(self, content, self._last_spilled_image)
+                content, saved = inline_images(self, content, image_path)
                 if saved:
-                    self._last_spilled_image = self._last_spilled_image or saved[0]
+                    image_path = image_path or saved[0]
                     if not self.tools_enabled:
                         self._system("Claude sees an attached image only by opening its file, and tools are off; turn them on to let it look.")
                 claude_metadata = prepare_input(self, content, profile, source,
