@@ -1545,6 +1545,7 @@ class LiteTUI(App):
         #: no engine registered the list is decided the moment connect
         #: returns, and polling past it is a fixed tax priced as a timeout.
         self._connect_settled: bool = False
+        self._resume_connection_error: str | None = None
         self.tools_enabled = self.settings.tools_enabled
         self.ctx_max: int | None = None  # effective context window (tokens), from LM Studio
         #: Is ctx_max the LOADED window, or merely the model's ceiling? Anything
@@ -3418,8 +3419,10 @@ class LiteTUI(App):
             self._claim_resumed_seat_name(self._resumed_seat_name, self.convo_id)
         from litetui.codex_steering import restore_queue
         restore_queue(self)
-        if self._pending_input and not startup:
-            self.call_after_refresh(self._flush_pending_input)
+        # Discovery belongs to the destination, even on a same-provider resume.
+        self.available_models = []
+        self.model_rows = {}
+        self._model_thinking_levels = None
         hook_host.enter_conversation(self, "conversation_resume")
         # T691: AFTER convo_dir moves and BEFORE the seat sync — this
         # conversation's own model and think level are what /resume is
@@ -3446,10 +3449,13 @@ class LiteTUI(App):
 
         self._render_resumed(path)
         self._native_history_worker = None
-        if startup:
-            self._startup_history_path = path
-        if not startup and hasattr(self.backend, "app_server"):
-            self._native_history_worker = self._refresh_native_history(path)
+        self._startup_history_path = path
+        self._resume_connection_error = "Resumed provider is connecting; retry when connected."
+        self._resume_connect_worker = None
+        if not startup and not self._resume_backend_error:
+            # Reuse the connection lifecycle for EVERY provider. Native history
+            # and queued input wait until the destination has connected.
+            self._resume_connect_worker = self.connect()
         return True
 
     @work(exclusive=True, group="native-history")
@@ -3955,6 +3961,7 @@ class LiteTUI(App):
     @model_id.setter
     def model_id(self, value: str) -> None:
         self._model_id = value
+        self._resume_connection_error = None
         self._remember_for_this_convo("model", value)
 
     @property
@@ -4216,6 +4223,11 @@ class LiteTUI(App):
             if is_codex:
                 self._thinking_level = None if effort == "default" else effort
 
+        # A replacement factory may copy settings; rebind after restoring the
+        # model's effort/load overrides, not just before switching providers.
+        adopted_backend = getattr(self, '_backend', None)
+        if adopted_backend is not None and hasattr(adopted_backend, 'set_settings'):
+            adopted_backend.set_settings(self.settings)
         # Restoring is not editing: later command saves diff only new intent.
         from dataclasses import asdict
         object.__setattr__(self.settings, '_baseline', asdict(self.settings))
@@ -4235,7 +4247,15 @@ class LiteTUI(App):
         """
         want = cs.backend
         self._resume_backend_error = None
-        if not want or want == getattr(getattr(self, "_backend", None), "name", None):
+        if not want:
+            return
+        self.settings.backend = want
+        previous = getattr(self, "_backend", None)
+        same_engine = want == getattr(previous, "name", None)
+        if want == "codex":
+            same_engine = same_engine and (
+                hasattr(previous, "app_server") == self.settings.codex_native_engine)
+        if same_engine:
             return
         probe = replace(self.settings, backend=want) if is_dataclass(self.settings) else None
         try:
@@ -4250,8 +4270,13 @@ class LiteTUI(App):
             self._system(self._resume_backend_error)
             return
         from litetui.claude_backend import close_native
-        close_native(self, getattr(self, "_backend", None))
+        if previous is not None and hasattr(previous, "app_server"):
+            previous.shutdown()
+        else:
+            close_native(self, previous)
         self._backend = new_backend
+        from litetui import resource_admission_install
+        resource_admission_install.install_on(self, new_backend)
 
     async def _vram_gate_allows(self, model: str) -> bool:
         """May this load proceed? Asks the human when it would add weights.
@@ -4371,6 +4396,12 @@ class LiteTUI(App):
     @work(exclusive=True, group="init")
     async def connect(self) -> None:
         self._gui_connection_success = False
+        self._connect_settled = False
+        if hasattr(self, '_connect_done'):
+            self._connect_done.clear()
+        resume_path = getattr(self, "_startup_history_path", None)
+        backend = self.backend
+        conversation = self.conversation
         try:
             # The llama backend may spawn its own server here (never loading
             # a model) or attach to LiteSuite's — either way, say which.
@@ -4382,6 +4413,8 @@ class LiteTUI(App):
             timeout = getattr(getattr(self, '_launch_options', None), 'timeout', 600)
             async with asyncio.timeout(timeout):
                 status = await prepare(self)
+            if self.backend is not backend or self.conversation is not conversation:
+                return
             if status != "ok":
                 self._system(f"{self.backend.label}: {status}")
             # Rebuild the chat client ONLY when the base_url moved (attaching
@@ -4404,7 +4437,9 @@ class LiteTUI(App):
             # same-endpoint reconnect keeps the client, and this revalidates it
             # against the new backend's type and endpoint.
             self._client_binding = model_transport.bind_client(self.client, self.backend)
-            rows = await self.backend.list_models()
+            rows = await backend.list_models()
+            if self.backend is not backend or self.conversation is not conversation:
+                return
             self._gui_connection_success = True
             SKIP = {"embed", "embedding"}
             rows = [
@@ -4413,13 +4448,19 @@ class LiteTUI(App):
             ]
             self.model_rows = {r.key: r for r in rows}
             self.available_models = [r.key for r in rows]
+            if resume_path is not None and self.model_id and self.model_id not in self.available_models:
+                raise llm_backend.BackendError(
+                    f"Saved model {self.model_id!r} is unavailable on {self.backend.name}. "
+                    "Sending is blocked; choose a model with /model or retry /reconnect."
+                )
             if self.available_models:
+                self._resume_connection_error = None
                 # A configured default wins when the server is serving it. `pin`
                 # re-applies it on EVERY connect; without pin it only fills an
                 # empty/invalid selection, so a mid-session /model switch sticks.
                 want = self.settings.default_model
                 if want and want in self.available_models:
-                    if self.settings.pin_default_model or not self.model_id:
+                    if not self.model_id or (self.settings.pin_default_model and resume_path is None):
                         self.model_id = want
                 if not self.model_id or self.model_id not in self.available_models:
                     # Prefer a LOADED model for the default pick. The native
@@ -4454,11 +4495,10 @@ class LiteTUI(App):
                 # already resident; it must be an explicit act, never a side
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
-                startup_history = getattr(self, "_startup_history_path", None)
-                if startup_history is not None and hasattr(self.backend, "app_server"):
-                    self._native_history_worker = self._refresh_native_history(startup_history)
-                    self._startup_history_path = None
-                if self._pending_input and hasattr(self.backend, "app_server"):
+                if resume_path is not None and hasattr(self.backend, "app_server"):
+                    self._native_history_worker = self._refresh_native_history(resume_path)
+                self._startup_history_path = None
+                if self._pending_input and (resume_path is not None or hasattr(self.backend, "app_server")):
                     self.call_after_refresh(self._flush_pending_input)
                 if self.tools_enabled:
                     from litetui.codex_settings import loop_description
@@ -4507,6 +4547,13 @@ class LiteTUI(App):
                         f"{llm_backend.backend_hint(self.backend)}"
                     )
         except Exception as e:
+            if self.backend is not backend or self.conversation is not conversation:
+                return
+            self._gui_connection_success = False
+            if resume_path is not None:
+                self._resume_connection_error = (
+                    f"Resume connection failed: {e}. Retry /reconnect or choose a provider/model."
+                )
             runtime_log.record(
                 "backend_connect_failed",
                 site="app.connect",
@@ -4554,9 +4601,10 @@ class LiteTUI(App):
             # (no engine registered), and a flag set on the success path alone
             # would leave exactly that case waiting for a list that can no
             # longer arrive.
-            self._connect_settled = True
-            if hasattr(self, '_connect_done'):
-                self._connect_done.set()
+            if self.backend is backend and self.conversation is conversation:
+                self._connect_settled = True
+                if hasattr(self, '_connect_done'):
+                    self._connect_done.set()
 
     _connect = connect          # arrival alias (PLAN §2b)
 
@@ -4788,6 +4836,11 @@ class LiteTUI(App):
             # refusal set here must survive to the caller.
             if not self._resume_cli_convo():
                 return
+            if getattr(self, '_resume_connect_worker', None) is not None:
+                await self._resume_connect_worker.wait()
+                if not self._gui_connection_success:
+                    self._cli_launch_error = 'Resumed backend connection failed; launch prompt blocked'
+                    return
             if self._cli_initial_model:
                 want = self._cli_initial_model
                 loaded = {r.key for r in self.model_rows.values() if r.loaded}
@@ -7177,6 +7230,8 @@ class LiteTUI(App):
             raise llm_backend.BackendError(self._startup_resume_error)
         if getattr(self, "_resume_backend_error", None):
             raise llm_backend.BackendError(self._resume_backend_error)
+        if getattr(self, "_resume_connection_error", None):
+            raise llm_backend.BackendError(self._resume_connection_error)
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam

@@ -299,9 +299,13 @@ only — the other one you have open does not move, and the global `settings.jso
 keeps being the **defaults** a new conversation is born from, plus the app-wide
 knobs (theme, seat name, dialog style).
 
-Opening or `/resume`-ing a conversation puts it back on what it was using. If
-that model or engine is no longer available here, it falls back to the default
-and **says so** rather than answering quietly as something else.
+Opening or `/resume`-ing a conversation restores its provider, model and thinking
+level and automatically reconnects, including when the provider is unchanged.
+A pinned global model does not replace the resumed selection. Explicit launch
+and environment overrides still take precedence. Reconnecting does not request
+a local model load. If the saved model/provider is unavailable or connection
+fails, sending is blocked with an explanation; choose an available model/provider
+or retry `/reconnect` rather than silently falling back to another model.
 
 ### The shared `settings.json`
 
