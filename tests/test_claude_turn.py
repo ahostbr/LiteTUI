@@ -815,3 +815,93 @@ async def test_a_message_with_no_text_adds_no_blank_line(tmp_path, monkeypatch):
     await stream_turn(app)
     answers = [row["content"] for row in app.appended if row.get("role") == "assistant"]
     assert answers == ["LEFT=red"], (answers, app.notices)
+
+
+class _ClockedBody:
+    """Records, for every text write, whether the elapsed clock still owned this body."""
+
+    def __init__(self, elapsed):
+        self._elapsed = elapsed
+        self.writes = []
+
+    @property
+    def content(self):
+        return self.writes[-1][1] if self.writes else ""
+
+    @content.setter
+    def content(self, value):
+        self.writes.append((self._elapsed.body is self, str(value)))
+
+
+@pytest.mark.asyncio
+async def test_text_after_a_tool_lands_below_it_and_the_clock_never_overwrites_text(tmp_path, monkeypatch):
+    """Live on Ryan's screen, 2026-09-25: text written AFTER a tool call rendered in the
+    turn's first card, ABOVE the tool cards, and the transcript flickered through the tool
+    calls. One card per turn took every message's text; the elapsed clock kept repainting
+    that card's body (every 250ms) over the streamed text until the turn ended."""
+    from litetui.claude_events import ClaudeEventStream
+
+    def stream(event):
+        return {"type": "stream_event", "uuid": "u", "session_id": "sess-1", "event": event}
+
+    def assistant(message_id, blocks):
+        return {"type": "assistant", "uuid": "u-" + message_id, "session_id": "sess-1",
+                "message": {"id": message_id, "model": "claude-opus-5-5", "content": blocks}}
+
+    def text(t):
+        return stream({"type": "content_block_delta", "delta": {"type": "text_delta", "text": t}})
+
+    frames = [
+        stream({"type": "message_start", "message": {"id": "msg_01", "model": "m"}}),
+        text("Let me look."),
+        assistant("msg_01", [{"type": "text", "text": "Let me look."},
+                             {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a"}}]),
+        stream({"type": "message_stop"}),
+        stream({"type": "message_start", "message": {"id": "msg_02", "model": "m"}}),
+        text("Found it."),
+        assistant("msg_02", [{"type": "text", "text": "Found it."}]),
+        stream({"type": "message_stop"}),
+        {"type": "result", "uuid": "u-res", "session_id": "sess-1", "is_error": False,
+         "subtype": "success", "result": "Found it."},
+    ]
+    app = turn_app(tmp_path, messages=frames)
+    app.backend._claude_events = ClaudeEventStream(session_id="sess-1")
+    app.settings.show_thinking = False
+    elapsed = SimpleNamespace(body=None)
+    elapsed.start = lambda body, **k: setattr(elapsed, "body", body)
+    elapsed.stop_body = lambda: setattr(elapsed, "body", None)
+    app._elapsed = elapsed
+    transcript = []
+
+    def bubble():
+        b = FakeBubble()
+        b.body = _ClockedBody(elapsed)
+        transcript.append(b)
+        return b
+
+    app._assistant_bubble = bubble
+
+    class Card:
+        def __init__(self, title):
+            self.title = title
+
+        def set_args(self, text):
+            pass
+
+        def set_result(self, text, ok):
+            pass
+
+    monkeypatch.setattr("litetui.widgets.ToolMessage", Card)   # the Textual boundary
+    app.query_one = lambda selector: SimpleNamespace(mount=transcript.append)
+    await stream_turn(app)
+
+    kinds = [type(w).__name__ for w in transcript]
+    assert kinds == ["FakeBubble", "Card", "FakeBubble"], kinds
+    first, second = transcript[0], transcript[2]
+    assert first.answer == "Let me look." and second.answer == "Found it.", (first.answer, second.answer)
+    for b in (first, second):
+        clocked = [t for owned, t in b.body.writes if owned]
+        assert not clocked, f"text written while the clock still repaints this body: {clocked}"
+    assert app._active_turn_widget is second, "the stop line settles on the last card"
+    answers = [row["content"] for row in app.appended if row.get("role") == "assistant"]
+    assert answers == ["Let me look.\n\nFound it."], answers

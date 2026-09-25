@@ -363,6 +363,12 @@ async def stream_turn(app):
     app._elapsed.start(widget.body, started_at=started)
     text = ""
     message_texts = {}
+    # The transcript must read in the order things happened. Each on-screen
+    # answer card owns the native message ids it shows; the first display event
+    # after a tool card was mounted opens a NEW card below that tool. One card
+    # per turn put post-tool text above the tool cards (Ryan, 2026-09-25).
+    cards = [(widget, [])]
+    tool_below = False
     tool_cards = {}
     activity_records = []
     thinking = None
@@ -406,6 +412,32 @@ async def stream_turn(app):
                     return
                 await asyncio.sleep(0.05)
 
+        def card_for(key):
+            """The card that shows message `key`, opening one below the tools if due."""
+            nonlocal widget, tool_below, thinking, thinking_text
+            for card, keys in cards:
+                if key in keys:
+                    return card
+            if tool_below:
+                widget = app._assistant_bubble()
+                app._active_turn_widget = widget
+                cards.append((widget, []))
+                # Thinking snapshots reconcile per native message, so each
+                # round's trace starts fresh in its own card.
+                thinking, thinking_text, tool_below = None, "", False
+            cards[-1][1].append(key)
+            return widget
+
+        def card_text(card):
+            keys = next(keys for owner, keys in cards if owner is card)
+            return _joined({k: message_texts[k] for k in keys if k in message_texts})
+
+        def stop_live_clocks():
+            # The elapsed clock repaints the first card's body every 250ms until
+            # told to stop; left running it overwrote streamed text all turn.
+            app._elapsed.stop_body()
+            app._thinking_done()
+
         monitor = asyncio.create_task(watch_stop(), name="claude-turn-stop")
         async for message in session.events():
             if app.backend is not backend or app.convo_id != item["_claude_conversation"]:
@@ -417,9 +449,11 @@ async def stream_turn(app):
             for event in normalizer.push(message):
                 if event.kind == "text_delta":
                     key = event.message_id or "current"
+                    card = card_for(key)
+                    stop_live_clocks()
                     message_texts[key] = message_texts.get(key, "") + event.text
                     text = _joined(message_texts)
-                    widget.body.content = Text(text + " |")
+                    card.body.content = Text(card_text(card) + " |")
                     app._rpc_emit({"type": "text_delta", "text": event.text})
                     app._scroll_down()
                 elif event.kind == "message":
@@ -432,9 +466,15 @@ async def stream_turn(app):
                         message_texts[key] = event.text
                         app._rpc_emit({"type": "native_text_snapshot", "provider": "claude", "message_id": key, "text": event.text})
                     text = _joined(message_texts)
-                    widget.set_answer(text)
+                    # A snapshot with no text (a tool-only message) opens no card;
+                    # one that corrects text re-renders the card that shows it.
+                    if message_texts[key] or any(key in keys for _, keys in cards):
+                        card = card_for(key)
+                        stop_live_clocks()
+                        card.set_answer(card_text(card))
                 elif event.kind in {"thinking_delta", "thinking"}:
                     from litetui.widgets import ThinkingBlock
+                    card_for(event.message_id or "current")
                     # A "replace" snapshot means the deltas and the snapshot
                     # disagree — a delta was lost mid-trace — so the rendered
                     # text is wrong, not merely short. Appending the snapshot
@@ -487,6 +527,8 @@ async def stream_turn(app):
                         card = ToolMessage("Claude · " + (event.tool_name or event.tool_id or "tool"))
                         tool_cards[event.tool_id] = card
                         app.query_one("#chat-log").mount(card)
+                        tool_below = True
+                        stop_live_clocks()
                     if event.kind == "tool_use" and event.tool_input is not None:
                         card.set_args(json.dumps(event.tool_input))
                     elif event.kind == "tool_result":
@@ -581,7 +623,8 @@ async def stream_turn(app):
         app._elapsed.stop_body()
         app._thinking_done()
         if text or activity_records or thinking_text:
-            widget.set_answer(text)
+            for card, keys in cards:
+                card.set_answer(_joined({k: message_texts[k] for k in keys if k in message_texts}))
             app._append({"role": "assistant", "content": text, "claude_native": {
                 "segment_id": item["_claude_segment"], "session_id": (segment or {}).get("session_id"), "delivery_id": entry_id,
                 "activities": activity_records, "message_ids": list(message_texts),
