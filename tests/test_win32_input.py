@@ -127,7 +127,7 @@ def test_installed_wrapper_filters_real_ctypes_buffers(monkeypatch) -> None:
 
     fake = FakeKernel32()
     monkeypatch.setattr(win32, "KERNEL32", fake)
-    monkeypatch.delattr(win32, "_litetui_input_filter_installed", raising=False)
+    monkeypatch.setattr(win32, "_litetui_input_filter_installed", False, raising=False)
     win32_input.install()
 
     def read(records: list[INPUT_RECORD]) -> list[str]:
@@ -161,7 +161,7 @@ def test_textual_event_monitor_still_uses_wrapped_boundary() -> None:
 
 
 def test_install_warns_if_textual_input_boundary_changed(monkeypatch, caplog) -> None:
-    monkeypatch.delattr(win32, "_litetui_input_filter_installed", raising=False)
+    monkeypatch.setattr(win32, "_litetui_input_filter_installed", False, raising=False)
     monkeypatch.delattr(win32, "KERNEL32")
     with caplog.at_level(logging.WARNING, logger="litetui.win32_input"):
         win32_input.install()
