@@ -7,10 +7,11 @@ from litetui.sidecar_patch import apply_patch
 
 
 class SettingsPatchDispatcher:
-    def __init__(self, app, owner, *, apply: Callable = apply_patch):
+    def __init__(self, app, owner, *, apply: Callable = apply_patch, snapshot: Callable | None = None):
         self.app = app
         self.owner = owner
         self.apply = apply
+        self.snapshot = snapshot
         self._seen: set[int] = set()
 
     def __call__(self, frame: dict) -> None:
@@ -21,7 +22,12 @@ class SettingsPatchDispatcher:
         self._seen.add(request_id)
         try:
             # Worker reader never writes app settings or calls service directly.
-            result = self.app.call_from_thread(self.apply, self.app, frame["payload"])
+            if frame["command"] == "settings_request":
+                if self.snapshot is None:
+                    raise RuntimeError("Settings are not available to this window")
+                result = self.app.call_from_thread(self.snapshot, self.app)
+            else:
+                result = self.app.call_from_thread(self.apply, self.app, frame["payload"])
         except (ValueError, RuntimeError, OSError) as exc:
             result = {"saved": False, "error": str(exc)}
         self.owner.send_event_reply(request_id, result)

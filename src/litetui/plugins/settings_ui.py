@@ -48,6 +48,11 @@ def mcp_server_names(app) -> list[str]:
 
 
 def _cmd_settings(app, name: str, arg: str) -> None:
+    from litetui.plugins.sidecar_plugin import open_preferred
+    open_preferred(app, "settings", lambda: _open_textual_settings(app))
+
+
+def _open_textual_settings(app) -> None:
     # Both factories from ONE set of arguments — `picker.pick`'s reason: two
     # built at two places are two chances for the sidebar and the modal to show
     # different settings.
