@@ -30,14 +30,17 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from litetui import app as app_mod
-from litetui import llm_backend
-from litetui import paths
+from litetui import llm_backend, paths, settings_runtime
+from litetui.plugins.model_switch import switch_model
 from litetui.settings import Settings
+from litetui.settings_service import SettingsService
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-banner-"))
 
@@ -49,8 +52,15 @@ class _FakeBackend:
 
     name = "lmstudio"
 
-    def __init__(self, rows: list[llm_backend.ModelRow]):
+    def __init__(self, rows: list[llm_backend.ModelRow], name: str = "lmstudio"):
         self._rows = rows
+        self.name = self.label = name
+
+    def set_settings(self, settings) -> None:
+        self.settings = settings
+
+    def shutdown(self) -> None:
+        pass
 
     def base_url(self) -> str:
         return "http://localhost:1234/v1"
@@ -75,8 +85,10 @@ def _rows(*specs: tuple[str, bool]) -> list[llm_backend.ModelRow]:
     ]
 
 
-def _app(rows, *, model_id: str = "", **settings) -> app_mod.LiteTUI:
-    a = app_mod.LiteTUI()
+def _app(
+    rows, *, model_id: str = "", initial_model: str | None = None, **settings
+) -> app_mod.LiteTUI:
+    a = app_mod.LiteTUI(initial_model=initial_model)
     a.settings = Settings(**settings)
     a.backend = _FakeBackend(rows)
     a.model_id = model_id
@@ -191,3 +203,212 @@ async def test_no_banner_when_the_default_is_being_served():
     assert not [s for s in a.said if "is not being served" in s], (
         "a served default must print no banner at all"
     )
+
+
+@pytest.mark.asyncio
+async def test_explicit_launch_model_beats_pin_on_fresh_connect_and_banner():
+    a = _app(
+        _rows(("pinned/default", True), ("explicit/model", True)),
+        initial_model="explicit/model",
+        default_model="pinned/default",
+        pin_default_model=True,
+    )
+    async with a.run_test() as pilot:
+        await _connect(a, pilot)
+
+    assert a.model_id == "explicit/model"
+    assert "Connected — model: explicit/model" in a.said
+    assert "Connected — model: pinned/default" not in a.said
+
+
+@pytest.mark.asyncio
+async def test_explicit_launch_model_survives_reconnect_with_pin():
+    a = _app(
+        _rows(("pinned/default", True), ("explicit/model", True)),
+        initial_model="explicit/model",
+        default_model="pinned/default",
+        pin_default_model=True,
+    )
+    async with a.run_test() as pilot:
+        await _connect(a, pilot)
+        a.said.clear()
+        a.connect()
+        await _connect(a, pilot)
+
+    assert a.model_id == "explicit/model"
+    assert "Connected — model: explicit/model" in a.said
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        pytest.param("backend-change", id="backend-change"),
+        pytest.param("engine-toggle", id="engine-toggle"),
+    ],
+)
+async def test_explicit_model_survives_connection_replacement(
+    replacement, tmp_path, monkeypatch
+):
+    """Drive the real backend-change and codex-engine-toggle preparation."""
+    rows = _rows(("pinned/default", True), ("explicit/model", True))
+    a = _app(
+        rows,
+        initial_model="explicit/model",
+        default_model="pinned/default",
+        pin_default_model=True,
+    )
+    service = SettingsService(tmp_path)
+    snapshot = service.create_conversation("abc")
+    a._settings_service = service
+    a.convo_dir = tmp_path / ".convos" / "abc"
+    a.settings = deepcopy(snapshot.effective)
+    a.settings.default_model = "pinned/default"
+    a.settings.pin_default_model = True
+    a.settings.backend = "lmstudio"
+    a.settings.codex_native_engine = False
+
+    target = deepcopy(a.settings)
+    if replacement == "backend-change":
+        target.backend = "codex"
+    else:
+        target.codex_native_engine = True
+    monkeypatch.setattr(
+        service,
+        "snapshot",
+        lambda _cid: SimpleNamespace(effective=deepcopy(target)),
+    )
+    monkeypatch.setattr(
+        llm_backend,
+        "make_backend",
+        lambda settings: _FakeBackend(rows, name=settings.backend),
+    )
+
+    async with a.run_test() as pilot:
+        await _connect(a, pilot)
+        a.said.clear()
+        settings_runtime.prepare_reconnect(a)
+        assert a.model_id == "", "replacement must clear the old catalog selection"
+        a.connect()
+        await _connect(a, pilot)
+
+    assert a.model_id == "explicit/model"
+    assert "Connected — model: explicit/model" in a.said
+
+
+@pytest.mark.asyncio
+async def test_connect_never_persists_pin_over_explicit_launch_model():
+    a = _app(
+        _rows(("pinned/default", True), ("explicit/model", True)),
+        initial_model="explicit/model",
+        default_model="pinned/default",
+        pin_default_model=True,
+    )
+    remembered = []
+    a._remember_for_this_convo = lambda key, value: remembered.append((key, value))
+    async with a.run_test() as pilot:
+        await _connect(a, pilot)
+
+    assert a.model_id == "explicit/model"
+    assert ("model", "pinned/default") not in remembered
+    assert ("model", "explicit/model") not in remembered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pin", [False, True])
+async def test_user_model_pick_retires_launch_choice_before_reconnect(pin):
+    rows = _rows(
+        ("pinned/default", True),
+        ("explicit/model", True),
+        ("user/pick", True),
+    )
+    a = _app(
+        rows,
+        initial_model="explicit/model",
+        default_model="pinned/default",
+        pin_default_model=pin,
+    )
+    async with a.run_test() as pilot:
+        await _connect(a, pilot)
+        assert switch_model(a, "user/pick")
+        a.said.clear()
+        a.connect()
+        await _connect(a, pilot)
+
+    assert a._cli_initial_model is None
+    assert a.model_id == "user/pick"
+    assert "Connected — model: user/pick" in a.said
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        pytest.param("backend-change", id="backend-change"),
+        pytest.param("engine-toggle", id="engine-toggle"),
+    ],
+)
+async def test_user_model_pick_survives_connection_replacement(
+    replacement, tmp_path, monkeypatch
+):
+    rows = _rows(
+        ("pinned/default", True),
+        ("explicit/model", True),
+        ("user/pick", True),
+    )
+    a = _app(
+        rows,
+        initial_model="explicit/model",
+        default_model="pinned/default",
+        pin_default_model=True,
+    )
+    service = SettingsService(tmp_path)
+    snapshot = service.create_conversation("abc")
+    a._settings_service = service
+    a.convo_dir = tmp_path / ".convos" / "abc"
+    a.settings = deepcopy(snapshot.effective)
+    a.settings.default_model = "pinned/default"
+    a.settings.pin_default_model = True
+    a.settings.backend = "lmstudio"
+    a.settings.codex_native_engine = False
+    target = deepcopy(a.settings)
+    if replacement == "backend-change":
+        target.backend = "codex"
+    else:
+        target.codex_native_engine = True
+    monkeypatch.setattr(
+        service,
+        "snapshot",
+        lambda _cid: SimpleNamespace(effective=deepcopy(target)),
+    )
+    monkeypatch.setattr(
+        llm_backend,
+        "make_backend",
+        lambda settings: _FakeBackend(rows, name=settings.backend),
+    )
+
+    async with a.run_test() as pilot:
+        await _connect(a, pilot)
+        assert switch_model(a, "user/pick")
+        settings_runtime.prepare_reconnect(a)
+        a.connect()
+        await _connect(a, pilot)
+
+    assert a.model_id == "user/pick"
+
+
+def test_send_time_residency_does_not_restore_retired_launch_model():
+    app = SimpleNamespace(
+        _cli_initial_model="explicit/model",
+        model_id="user/pick",
+        backend=SimpleNamespace(
+            loaded_models=lambda: ["explicit/model", "user/pick"],
+        ),
+        settings=Settings(),
+    )
+    app_mod.LiteTUI.retire_cli_model(app, "user/pick")
+
+    action, model, _reason = app_mod.LiteTUI._headless_model_decision(app)
+
+    assert action == "ok"
+    assert model == "user/pick"

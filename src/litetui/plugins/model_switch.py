@@ -57,6 +57,16 @@ def _row_label(app, m: str) -> str:
     return ("▸ " if m == app.model_id else "  ") + m + tag
 
 
+def _retire_cli_model(app, target: str) -> None:
+    retire = getattr(app, "retire_cli_model", None)
+    if retire is not None:
+        retire(target)
+    else:
+        # Compatibility for lightweight host/test adapters predating the seam.
+        app._cli_initial_model = None
+        app._user_model_choice = target
+
+
 def switch_model(app, target: str) -> bool:
     """Switch through the same effects as ``/model`` and the RPC host.
 
@@ -67,6 +77,8 @@ def switch_model(app, target: str) -> bool:
     if target not in app.available_models:
         return False
     settings_runtime.save_selection_defaults(backend=app.backend.name, default_model=target)
+    # This control is a newer explicit choice than the process's --model.
+    _retire_cli_model(app, target)
     if target == app.model_id:
         return True
     app.model_id = target
@@ -506,6 +518,7 @@ def _start_load(app, target: str, ctx=_USE_DEFAULT) -> None:
         # just loaded. Adopt the target and refresh: set_active_model's tail minus
         # the load we already did (no second, ctx-less load).
         from litetui import thinking_probe
+        _retire_cli_model(app, target)
         app.model_id = target
         app._model_thinking_levels = None
         thinking_probe.clear_cache(target)
