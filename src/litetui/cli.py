@@ -14,6 +14,7 @@ number itself must stay cheap.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import os
 import sys
 
@@ -45,6 +46,12 @@ def main() -> None:
     parser.add_argument("--model", type=str, default=None, help="model slug to select on start")
     parser.add_argument("--prompt", type=str, default=None, help="first turn to submit once ready")
     parser.add_argument("--system-prompt", type=str, default=None, help="prepend a system message")
+    parser.add_argument(
+        "--system-prompt-file",
+        type=str,
+        default=None,
+        help="read the system message from a UTF-8 file",
+    )
     parser.add_argument("--cwd", type=str, default=None, help="change working directory before start")
     parser.add_argument(
         "--tool-profile",
@@ -82,8 +89,6 @@ def main() -> None:
     if args.export_conversation or args.export_output:
         if not args.export_conversation or not args.export_output:
             parser.error("--export-conversation and --export-output must be supplied together")
-        from pathlib import Path
-
         from litetui.conversation_export import export
 
         try:
@@ -105,10 +110,19 @@ def main() -> None:
     if not args.rpc:
         app_kwargs["ansi_color"] = wants_ansi_fallback()
 
+    if args.system_prompt and args.system_prompt_file:
+        parser.error("--system-prompt and --system-prompt-file are mutually exclusive")
+    system_prompt = args.system_prompt
+    if args.system_prompt_file:
+        try:
+            system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            parser.error(f"cannot read --system-prompt-file: {exc}")
+
     app = LiteTUI(
         rpc=args.rpc,
         first_prompt=args.prompt,
-        system_prompt=args.system_prompt,
+        system_prompt=system_prompt,
         initial_model=args.model,
         initial_backend=args.backend,
         initial_thinking=args.reasoning_effort or args.thinking_level,

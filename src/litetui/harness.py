@@ -173,6 +173,30 @@ def new_agent_id() -> str:
     return str(uuid.uuid4())
 
 
+def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]:
+    """Resolve an explicit spawn identity, preserving standalone defaults.
+
+    LiteSuite mints the id before process creation so its spawn result, kill
+    route, and this seat's registry row all name the same agent. An invalid tier
+    cannot enter the registry; record the refusal on stderr and use worker.
+    """
+    agent_id = os.environ.get("LITEHARNESS_AGENT_ID", "").strip() or process_agent_id()
+    name = (
+        os.environ.get("LITEHARNESS_AGENT_NAME", "").strip()
+        or os.environ.get("LITETUI_SEAT_NAME", "").strip()
+        or default_name
+    )
+    tier = os.environ.get("LITEHARNESS_TIER", "").strip() or DEFAULT_TIER
+    valid = {"orchestrator", "leader", "worker", "thinker", "reviewer"}
+    if tier not in valid:
+        print(
+            f"[harness] invalid LITEHARNESS_TIER {tier!r}; using {DEFAULT_TIER}",
+            file=sys.stderr,
+        )
+        tier = DEFAULT_TIER
+    return agent_id, name, tier
+
+
 def process_agent_id() -> str:
     """One stable id per process — uuid5 from hostname + pid.
 
