@@ -633,3 +633,57 @@ async def test_client_cleanup_does_not_replace_503_reason(tmp_path, pauses, diag
     with pytest.raises(mt.ProviderError, match=r"HTTP 503.*retried 2 times"):
         await client.create(model="gpt-test", messages=[])
     assert "private cleanup failure" not in str(diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_error", [httpx.ReadError, RuntimeError])
+@pytest.mark.parametrize("failure_at", ["response", "client"])
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_completed_cleanup_failure_is_logged_not_raised(tmp_path, diagnostics, pauses, failure_at, streaming, close_error):
+    class CompletedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield sse(TEXT, DONE)
+
+        async def aclose(self):
+            if failure_at == "response":
+                raise close_error("PRIVATE CLOSE DETAIL")
+
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, stream=CompletedStream())
+
+    class ClosingTransport(httpx.MockTransport):
+        async def aclose(self):
+            if failure_at == "client":
+                raise close_error("PRIVATE CLOSE DETAIL")
+
+    client = mt.OAuthTransport("codex", credential_path=auth_file(tmp_path),
+        http_transport=ClosingTransport(handle))
+    result = await client.create(model="gpt-test", messages=[], stream=streaming)
+    if streaming:
+        result = await mt.collect(result)
+    assert result.choices[0].message.content == "hello"
+    assert len(requests) == 1 and not pauses
+    assert f"{failure_at} close failed ({close_error.__name__})" in str(diagnostics)
+    assert "PRIVATE CLOSE DETAIL" not in str(diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_generic_midstream_error_warns_about_tool_effects(tmp_path, diagnostics, pauses):
+    class TimeoutStream(ResetStream):
+        async def __aiter__(self):
+            yield sse(TEXT)
+            raise httpx.ReadTimeout("PRIVATE TIMEOUT DETAIL")
+
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, stream=TimeoutStream())
+
+    with pytest.raises(mt.ProviderError, match="check any completed tool effects before retrying"):
+        await transport(tmp_path, handle).create(model="gpt-test", messages=[])
+    assert len(requests) == 1 and not pauses
+    assert "PRIVATE TIMEOUT DETAIL" not in str(diagnostics)

@@ -48,7 +48,7 @@ def _logged_provider_error(message: str) -> ProviderError:
 
 
 
-async def _close_http(resource, provider: str, label: str):
+async def _close_http(resource, provider: str, label: str, *, completed: bool = False):
     """Attempt cleanup without replacing an in-flight error or cancellation.
 
     In particular, cleanup ReadError must never enter the pre-output retry
@@ -61,7 +61,7 @@ async def _close_http(resource, provider: str, label: str):
         failure = _logged_provider_error(
             f"{provider.title()} {label} close failed ({type(error).__name__})."
         )
-        if primary_error is None:
+        if primary_error is None and not completed:
             raise failure from None
 
 def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
@@ -397,6 +397,7 @@ class ResponseStream:
     def __init__(self, response, client, provider, model, tools, *, retry=None, secrets=()):
         self.response, self.client = response, client
         self._retry = retry
+        self._completed = False
         self._secrets = secrets
         self.provider, self.model = provider, model
         self.names = {
@@ -405,9 +406,9 @@ class ResponseStream:
 
     async def close(self):
         try:
-            await _close_http(self.response, self.provider, "response")
+            await _close_http(self.response, self.provider, "response", completed=self._completed)
         finally:
-            await _close_http(self.client, self.provider, "client")
+            await _close_http(self.client, self.provider, "client", completed=self._completed)
 
     async def __aiter__(self):
         # This is one completion request, not a turn replay. Once ANY chunk
@@ -430,13 +431,15 @@ class ResponseStream:
                     ) from None
                 except httpx.HTTPError:
                     raise _logged_provider_error(
-                        f"{self.provider.title()} connection was interrupted. The response was not replayed."
+                        f"{self.provider.title()} connection was interrupted. "
+                        "The response was not replayed; check any completed tool effects before retrying."
                     ) from None
         finally:
             await self.close()
 
     async def _iter_response(self):
-        completed, usage, blocks = False, {}, {}
+        self._completed = False
+        usage, blocks = {}, {}
         # Codex sends reasoning as SEVERAL summary parts per turn; see the
         # comment at response.reasoning_summary_part.added below.
         summary_part_seen = False
@@ -501,7 +504,7 @@ class ResponseStream:
                         elif kind == "response.function_call_arguments.delta":
                             yield _chunk(call=_call(idx, arguments=e["delta"]))
                         elif kind == "response.completed":
-                            completed = True
+                            self._completed = True
                             response = e["response"]
                             opaque = [
                                 i
@@ -550,7 +553,7 @@ class ResponseStream:
                                     "Claude reached its response limit. Increase the output budget."
                                 )
                         elif kind == "message_stop":
-                            completed = True
+                            self._completed = True
                             opaque = [
                                 b
                                 for b in blocks.values()
@@ -568,13 +571,22 @@ class ResponseStream:
                     raise ProviderError(
                         f"{self.provider.title()} returned an unreadable stream."
                     ) from None
-            if not completed:
+            if not self._completed:
                 raise ProviderError(
                     f"{self.provider.title()} stream ended before completion. Retry the turn."
                 )
+        except Exception as error:  # noqa: BLE001 - classify httpx automatic cleanup
+            # httpx closes a drained response inside aiter_raw, before our
+            # finally. Its closed flag distinguishes that cleanup failure
+            # from a read interruption, even after a terminal usage chunk.
+            if not self._completed or not self.response.is_closed:
+                raise
+            _logged_provider_error(
+                f"{self.provider.title()} response close failed ({type(error).__name__})."
+            )
         finally:
             # A retry gets a fresh response but keeps the request's client.
-            await _close_http(self.response, self.provider, "response")
+            await _close_http(self.response, self.provider, "response", completed=self._completed)
 
 
 async def collect(stream):
