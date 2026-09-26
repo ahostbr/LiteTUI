@@ -1723,6 +1723,7 @@ class LiteTUI(App):
             lambda: prompt_compiler.compile_prompt_file(
                 paths.SYSTEM_PROMPT_FILE,
                 root=paths.ROOT,
+                user_name=self.settings.user_name,
             ).strip(),
             enabled=lambda: paths.SYSTEM_PROMPT_FILE.exists(),
         )
@@ -1855,6 +1856,18 @@ class LiteTUI(App):
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
         plugins_mod.activate_plugins(self, self.plugins, self._plugin_manifests)
+        if (not self.settings.user_name_asked
+                and not os.environ.get("LITETUI_TEST_USER_NAME_ASKED")):
+            from litetui.user_name_dialog import UserNameScreen
+
+            def _save_user_name(name: str | None) -> None:
+                if name is None:
+                    return
+                self.settings.user_name = name
+                self.settings.user_name_asked = True
+                settings_runtime.persist_or_raise(self, self.settings)
+
+            self.push_screen(UserNameScreen(), _save_user_name)
         # MCP servers connect AFTER the first frame. See __init__ for why.
         if self.settings.mcp_enabled and self.mcp.configs:
             self._mcp_connect()

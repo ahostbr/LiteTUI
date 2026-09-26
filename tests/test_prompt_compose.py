@@ -49,6 +49,11 @@ def _reference(a) -> str:
         base = authored.replace("<root>", str(paths.ROOT)).replace(
             "${CLAUDE_SKILL_DIR}", str(skill_dir)
         )
+        name = a.settings.user_name.strip()
+        base = base.replace(
+            "${USER_NAME_CLAUSE}",
+            f" Your user's name is {name}." if name else "",
+        )
         unresolved = re.findall(
             r"<[A-Za-z_][A-Za-z0-9_]*>|\$\{[A-Za-z_][A-Za-z0-9_]*\}",
             base,

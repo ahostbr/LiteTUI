@@ -93,8 +93,8 @@ NOT_A_SETTINGS_CONTROL = frozenset({
     # Per-model dicts, edited through /modelcfg — a flat text box
     # for a nested dict would be a control that corrupts on save.
     "llama_load_settings", "model_infer_overrides", "llama_presets",
-    # Set by the first-boot picker, not by a visible control.
-    "backend_chosen",
+    # Set by first-boot prompts, not by visible controls.
+    "backend_chosen", "user_name_asked",
 })
 
 
@@ -1185,6 +1185,11 @@ class SettingsBody(Widget):
                     with VerticalScroll(classes="set-scroll"):
 
                         yield self._section_header("cap-identity")
+                        yield from self._text_row(
+                            "user_name", "Your name",
+                            "Included in the assistant's system prompt. Blank = no name clause.",
+                            placeholder="optional",
+                        )
                         yield from self._text_row(
                             "seat_name", "Fleet seat name",
                             "The name this seat asks the LiteHarness registry for, "

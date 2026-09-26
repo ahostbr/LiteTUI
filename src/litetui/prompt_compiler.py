@@ -46,6 +46,7 @@ def compile_prompt(
     *,
     root: Path,
     skill_dir: Path | None = None,
+    user_name: str = "",
 ) -> str:
     """Resolve known placeholders and reject every unknown one.
 
@@ -59,6 +60,9 @@ def compile_prompt(
     }
     compiled = authored.replace("<root>", values["root"])
     compiled = compiled.replace("${CLAUDE_SKILL_DIR}", values["CLAUDE_SKILL_DIR"])
+    name = user_name.strip()
+    clause = f" Your user's name is {name}." if name else ""
+    compiled = compiled.replace("${USER_NAME_CLAUSE}", clause)
     unresolved = sorted(
         {match.group(1) or match.group(2) for match in _UNRESOLVED.finditer(compiled)}
     )
@@ -73,6 +77,9 @@ def compile_prompt_file(
     *,
     root: Path,
     skill_dir: Path | None = None,
+    user_name: str = "",
 ) -> str:
     authored = Path(path).read_text(encoding="utf-8")
-    return compile_prompt(authored, root=root, skill_dir=skill_dir)
+    return compile_prompt(
+        authored, root=root, skill_dir=skill_dir, user_name=user_name
+    )
