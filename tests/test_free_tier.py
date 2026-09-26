@@ -57,7 +57,8 @@ class Fake:
                 fake.paths.append(self.path)
                 time.sleep(fake.delay)
                 status, text, headers = fake.replies.pop(0) if fake.replies else (200, _sse('ok'), ())
-                self._send(status, text, 'text/event-stream' if status == 200 else 'application/json', headers)
+                sse = status == 200 and not text.startswith('{')
+                self._send(status, text, 'text/event-stream' if sse else 'application/json', headers)
 
             def log_message(self, *args):
                 pass
@@ -359,6 +360,43 @@ async def test_a_stalled_source_is_cut_off_at_its_budget_and_fails_over(sources,
     assert time.monotonic() - started < 2, 'the SDK default (600s read) must not apply to an attempt'
     assert len(a.seen) == 1 and len(b.seen) == 1
     assert ft.cooling(('a', 'm:free', 'keyless')) == pytest.approx(90, abs=2)
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_non_streamed_attempt_times_out_benches_and_fails_over(sources, monkeypatch):
+    """Subagents send stream:False, so their attempt needs a bound too (PassLink
+    278ba836, Ryan via Sentinel 5a880a0b: "a stalled source can't hold a request 10 min")."""
+    answer = json.dumps({'id': 'c', 'object': 'chat.completion', 'created': 0, 'model': 'M',
+                         'choices': [{'index': 0, 'finish_reason': 'stop',
+                                      'message': {'role': 'assistant', 'content': 'whole'}}]})
+    a, b, _ = sources([{'id': 'm:free'}], [], [{'id': 'M'}], [(200, answer, ())])
+    monkeypatch.setattr(ft, '_WHOLE_ANSWER', 0.3)
+    monkeypatch.setattr(ft, 'SOURCES', (replace(ft.SOURCES[0], timeout=0.1),) + ft.SOURCES[1:])
+    a.delay = 3
+    backend = _backend()
+    client = AsyncOpenAI(base_url=backend.base_url(), api_key=backend.api_key(),
+                         http_client=backend.http_client(), max_retries=0)
+    started = time.monotonic()
+    reply = await client.chat.completions.create(model='m', stream=False,
+                                                 messages=[{'role': 'user', 'content': 'hi'}])
+    assert reply.choices[0].message.content == 'whole'
+    assert time.monotonic() - started < 2
+    assert len(a.seen) == 1 and len(b.seen) == 1
+    assert ft.cooling(('a', 'm:free', 'keyless')) == pytest.approx(90, abs=2)
+
+
+@pytest.mark.asyncio
+async def test_a_success_resets_the_pool_ladder_too(sources, monkeypatch):
+    _a, _b, _ = sources([{'id': 'm:free'}], [(429, '{}', ()), (200, _sse('from a'), ()), (429, '{}', ())],
+                       [{'id': 'M'}], [])
+    monkeypatch.setattr(ft, 'SOURCES', (replace(ft.SOURCES[0], pool=True),) + ft.SOURCES[1:])
+    pool = ('a', '*', 'keyless')
+    assert await _ask(_backend(), 'm') == 'ok'
+    assert ft.cooling(pool) == pytest.approx(90, abs=2)
+    ft._benches[pool].until = 0  # the bench runs out
+    assert await _ask(_backend(), 'm') == 'from a'
+    assert await _ask(_backend(), 'm') == 'ok'
+    assert ft.cooling(pool) == pytest.approx(90, abs=2), 'a recovered pool restarts at 90s, not 2m'
 
 
 @pytest.mark.asyncio

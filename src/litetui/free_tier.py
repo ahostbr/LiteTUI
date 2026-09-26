@@ -17,8 +17,8 @@ server/src/services/ratelimit.ts, lib/fallback-loop.ts), not copied:
 - The same model offered by several sources is ONE picker entry (group_of), and
   a request fails over across its sources inside the HTTP transport, so a
   subagent never sees a busy source. It errors only when every source for that
-  model is cooling, and then names the soonest retry. A streamed attempt that
-  stalls past its source's time budget fails over too.
+  model is cooling, and then names the soonest retry. An attempt that stalls
+  past its time budget fails over too.
 - Cooldowns per (source, model, key): Retry-After (or the error text) wins,
   clamped to a day; else a ladder 90s -> 2m -> 10m -> 1h -> 24h, reset by a
   success. 403 benches the model for a day; 401 marks the key rejected. A 402,
@@ -65,7 +65,8 @@ class Source:
     #: inferPoolForPlatform); False keeps the per-model bench.
     pool: bool = False
     #: Seconds a streamed attempt may wait for its next bytes (the first one
-    #: included) before the router fails over. See FreeRouter.
+    #: included) before the router fails over; a non-streamed one waits at
+    #: least _WHOLE_ANSWER. See FreeRouter.
     timeout: float = 60.0
     #: The /models row field holding the id to send (Cloudflare's `id` is a UUID).
     id_field: str = 'id'
@@ -349,6 +350,11 @@ def _log(source: Source, model: str, outcome: str, wait: float) -> None:
                        operation=outcome.replace(' ', '-'), duration_ms=round(wait * 1000))
 
 
+#: Seconds a NON-streamed attempt may wait for its answer: a subagent answer is
+#: capped at 12288 tokens (compact_max_tokens), which this allows at >= 41 tok/s.
+_WHOLE_ANSWER = 300.0
+
+
 def _outcome(error: httpx.TransportError) -> str:
     return 'timed out' if isinstance(error, httpx.TimeoutException) else 'unreachable'
 
@@ -395,13 +401,13 @@ class FreeRouter(httpx.AsyncBaseTransport):
                        if k.lower() not in ('authorization', 'host', 'content-length')}
             if bearer:
                 headers['Authorization'] = f'Bearer {bearer}'
-            extensions = request.extensions
-            if body.get('stream'):
-                # The per-attempt budget. The SDK's read timeout is 600s, so one stalled
-                # source held the request for 10 minutes; a streamed attempt now gets
-                # source.timeout for each wait on bytes, the first event included. A
-                # non-streamed answer's first byte is its last, so it keeps the caller's.
-                extensions = {**extensions, 'timeout': {**extensions.get('timeout', {}), 'read': source.timeout}}
+            # The per-attempt budget. The SDK's read timeout is 600s, so one stalled
+            # source held the request for 10 minutes. A streamed attempt gets
+            # source.timeout for each wait on bytes, the first event included; a
+            # non-streamed answer's first byte is its last, so its wait must cover
+            # a whole generation (_WHOLE_ANSWER).
+            budget = source.timeout if body.get('stream') else max(source.timeout, _WHOLE_ANSWER)
+            extensions = {**request.extensions, 'timeout': {**request.extensions.get('timeout', {}), 'read': budget}}
             outbound = httpx.Request('POST', f'{base_url}/chat/completions', headers=headers,
                                      content=json.dumps({**body, 'model': source_model}).encode(),
                                      extensions=extensions)
@@ -432,6 +438,7 @@ class FreeRouter(httpx.AsyncBaseTransport):
                                           stream=_Replay(head, rest, response.stream),
                                           extensions=response.extensions)
             clear(keys[0])
+            clear(keys[1])  # a recovered pool starts its ladder fresh too
             _log(source, source_model, 'served', 0)
             return response
         message = (f'Every free source for {group_of(model)} is busy; soonest retry in {fmt_wait(soonest)}.'
