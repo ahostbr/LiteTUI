@@ -143,3 +143,92 @@ async def test_native_history_waits_for_connection(tmp_path, monkeypatch):
         await pilot.pause()
         assert calls.index(('connect', 'codex')) < calls.index(('models', 'codex')) < calls.index(('history', path))
         assert app.thinking_level == 'high'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested', ['gpt-6-astra', 'missing-requested', None])
+async def test_cli_resume_validates_effective_model_without_saving(tmp_path, monkeypatch, requested):
+    monkeypatch.setattr(paths, 'CONVO_DIR', tmp_path)
+    monkeypatch.delenv('LITETUI_BACKEND', raising=False)
+    calls = []
+
+    class CatalogBackend(Backend):
+        async def list_models(self):
+            return [SimpleNamespace(key=m, loaded=True) for m in ('gpt-6-astra', 'saved-model')]
+
+    monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: CatalogBackend(settings, calls))
+    app = app_mod.LiteTUI()
+    app._connect = lambda: None
+    app._fetch_ctx_window = lambda: None
+    app._probe_thinking = lambda: None
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._materialise_convo()
+        app._append({'role': 'user', 'content': 'saved'})
+        path = app.convo_path
+        saved = 'claude-opus-5-5' if requested else 'saved-model'
+        convo_settings.save(path.parent, convo_settings.ConvoSettings(backend='codex', model=saved))
+        before = convo_settings.path_for(path.parent).read_bytes()
+        app._cli_initial_model = requested
+        assert app._resume(path, startup=True)
+        app.connect()
+        await pilot.pause()
+        assert app.model_id == (requested or saved)
+        assert convo_settings.path_for(path.parent).read_bytes() == before
+        error = getattr(app, '_resume_connection_error', None)
+        if requested == 'missing-requested':
+            assert error and requested in error
+            assert saved not in error
+            with pytest.raises(llm_backend.BackendError, match=requested):
+                await app._ensure_chat_ready()
+        else:
+            assert not error
+            assert app._gui_connection_success
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested,saved,catalog', [
+    ('gpt-6-astra', 'claude-opus-5-5', ('gpt-6-astra', 'saved-b')),
+    (None, 'saved-b', ('gpt-6-astra', 'saved-b')),
+])
+async def test_real_cli_convo_launch_resumes_once_and_keeps_effective_model(
+        tmp_path, monkeypatch, requested, saved, catalog):
+    monkeypatch.setattr(paths, 'CONVO_DIR', tmp_path)
+    monkeypatch.delenv('LITETUI_BACKEND', raising=False)
+
+    class CatalogBackend(Backend):
+        def __init__(self, settings):
+            super().__init__(settings, [])
+
+        async def list_models(self):
+            return [SimpleNamespace(key=model, loaded=True) for model in catalog]
+
+    monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: CatalogBackend(settings))
+    first = app_mod.LiteTUI()
+    first._connect = lambda: None
+    async with first.run_test() as pilot:
+        await pilot.pause()
+        first._materialise_convo()
+        first._append({'role': 'user', 'content': 'saved'})
+        path = first.convo_path
+        convo_settings.save(
+            path.parent, convo_settings.ConvoSettings(backend='codex', model=saved)
+        )
+        first.store.release()
+    before = convo_settings.path_for(path.parent).read_bytes()
+    cid = path.parent.name
+
+    app = app_mod.LiteTUI(convo_id=cid, initial_model=requested)
+    app._fetch_ctx_window = lambda: None
+    app._probe_thinking = lambda: None
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            done = getattr(app, '_cli_args_done', None)
+            if done is not None and done.is_set():
+                break
+        await pilot.pause(0.3)
+
+    assert app.model_id == (requested or saved)
+    assert not app._cli_launch_error
+    assert app.convo_id == cid
+    assert convo_settings.path_for(path.parent).read_bytes() == before

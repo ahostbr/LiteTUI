@@ -773,6 +773,27 @@ async def test_cli_model_selection_is_not_a_persisted_choice(tmp_path):
     assert cs_mod.load(d).model == 'remembered'
 
 
+def test_cli_model_does_not_leak_into_a_later_mid_session_resume(tmp_path):
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    first = _dir(tmp_path / "first")
+    second = _dir(tmp_path / "second")
+    cs_mod.save(first, cs_mod.ConvoSettings(model="saved-a"))
+    cs_mod.save(second, cs_mod.ConvoSettings(model="saved-b", llama_load={"ctx": 8192}))
+    a = _App(st.Settings(), first)
+    a._cli_initial_model = "gpt-6-astra"
+    a._startup_adopting = True
+    a._adopt_convo_settings(born=False)
+    assert a.model_id == "gpt-6-astra"
+
+    a.convo_dir = second
+    a._startup_adopting = False
+    a._adopt_convo_settings(born=False)
+    assert a.model_id == "saved-b"
+    assert a.settings.llama_load_settings["saved-b"] == {"ctx": 8192}
+    assert "gpt-6-astra" not in a.settings.llama_load_settings
+
+
 def test_legacy_save_preserves_unknown_additive_metadata(tmp_path):
     d = _dir(tmp_path)
     cs_mod.path_for(d).write_text('{"model":"a","future_metadata":{"keep":true}}', encoding='utf-8')
@@ -780,3 +801,19 @@ def test_legacy_save_preserves_unknown_additive_metadata(tmp_path):
     record.model = 'b'
     cs_mod.save(d, record)
     assert json.loads(cs_mod.path_for(d).read_text(encoding='utf-8'))['future_metadata'] == {'keep': True}
+
+
+@pytest.mark.parametrize('available', [[], ['saved-other-model']])
+def test_cli_model_wins_during_resume_before_connection(tmp_path, available):
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(backend='codex', model='claude-opus-5-5'))
+    a = _App(st.Settings(backend='codex'), d, backend_name='codex')
+    a._cli_initial_model = 'gpt-requested'
+    a.available_models = available
+    a._startup_adopting = True
+    before = cs_mod.path_for(d).read_bytes()
+    a._adopt_convo_settings(born=False)
+    assert a.model_id == 'gpt-requested'
+    assert a.backend.name == 'codex'
+    assert cs_mod.path_for(d).read_bytes() == before
+    assert not any('falls back' in text for text in a.said)
