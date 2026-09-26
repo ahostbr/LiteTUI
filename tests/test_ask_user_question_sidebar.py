@@ -163,6 +163,7 @@ async def test_the_answer_still_arrives_through_done_and_result_box_in_the_sideb
         await _settle(pilot, a)
 
         st[0].selected.add(1)
+        st[1].note = "Use the default"
         a.screen.query_one(aq.AskUserQuestionBody)._finish("submit")
         for _ in range(4):
             await pilot.pause()

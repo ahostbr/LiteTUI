@@ -258,12 +258,11 @@ class TurnEngine:
         reasons at ITS OWN default anyway. See the host's
         `_warn_reasoning_ignored`, which detects that in band.
         """
-        # The per-model Thinking Level wins over the compact global; blank
-        # there means inherit it — same rule as a chat turn.
-        level = (request_overrides or {}).get("reasoning_effort") or thinking_level
+        # Compaction owns its thinking budget. Chat/model overrides must not
+        # replace the dedicated compact_thinking_level setting.
         extra_body: dict = {}
         wire = _resolve_reasoning_effort(
-            level, backend_name, model_id, graded_thinking_models
+            thinking_level, backend_name, model_id, graded_thinking_models
         )
         if wire:
             extra_body["reasoning_effort"] = wire
