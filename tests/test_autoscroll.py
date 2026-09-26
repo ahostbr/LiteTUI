@@ -1,33 +1,17 @@
-"""Autoscroll: follow the tail, but never yank a reader who scrolled up.
+"""Autoscroll follows an explicit user-owned lock.
 
-The bug Ryan reported was two bugs. The conversation did not scroll during a
-stream -- and the reason it LOOKED like "only when the message comes through" is
-that the sole scroll in the whole loop was the final render. And the thinking
-block never scrolled the VerticalScroll it owns, so the trace grew below the
-fold with the viewport pinned at the top.
+The app no longer infers follow ownership from viewport geometry. When the
+scroll lock is on, new output follows the tail; when it is off, no app event
+may move the reader. Every deferred scroll captures ``_follow_generation`` so
+a newer lock decision invalidates work accepted in an earlier frame.
 
-The fix has an obvious wrong version: scroll_end unconditionally. That reads as
-fixed and is worse, because Ryan reads long traces and would be yanked to the
-bottom mid-sentence on every token. So the tests that matter here are the
-NOT-following ones -- an unconditional implementation passes everything else.
-
-🔴 THIS FILE'S FAKE ONCE STOPPED IMPLEMENTING THE HOST SEAM, AND THAT IS WHY IT
-WAS RED. `_scroll_down` moved from asking `_at_bottom(log)` (geometry only) to
-asking `self._still_following(log)`, which reads `self._follow_anchor` -- the
-position the app itself last scrolled to. FakeApp carried no such attribute, so
-the call raised AttributeError before any assertion ran. A fake that lags the
-seam does not report a weaker result; it reports no result at all.
-
-The anchor model matters to what these tests mean. Growing content raises
-max_scroll_y and leaves scroll_y alone, so only a HUMAN moves scroll_y away
-from the anchor. `_follow_anchor = 100.0` below therefore reads as "we last
-scrolled to the tail", which is the state every one of these assertions is
-actually about.
+ThinkingBlock has a separate, local geometry rule because it owns its nested
+VerticalScroll: it follows only while that inner viewport is already at its
+tail.
 """
 
 from pathlib import Path
 import ast
-import re
 import sys
 
 import pytest
@@ -39,7 +23,7 @@ from litetui import settings as settings_mod  # noqa: E402
 
 
 class FakeScroll:
-    """Minimal stand-in exposing only the geometry the predicates read."""
+    """Minimal stand-in for the viewport and deferred-refresh seams."""
 
     def __init__(self, scroll_y, max_scroll_y):
         self.scroll_y = scroll_y
@@ -61,13 +45,7 @@ class FakeScroll:
 
 
 class DeferredScroll(FakeScroll):
-    """Textual's two async seams, with release controlled by the test.
-
-    ``scroll_end(immediate=False)`` queues the layout-aware action. The action
-    changes the viewport and then queues its completion separately, matching
-    Textual's call_after_refresh + call_next ordering closely enough that
-    reader input can be inserted on either side.
-    """
+    """Textual's refresh seam, with release controlled by the test."""
 
     def __init__(self, scroll_y, max_scroll_y):
         super().__init__(scroll_y, max_scroll_y)
@@ -98,59 +76,27 @@ class DeferredScroll(FakeScroll):
 
 
 class FakeApp:
-    """Minimal host for _scroll_down.
+    """Minimal host that delegates the shipping scroll-lock methods."""
 
-    Carries `settings` because _scroll_down gates the STREAM path on the
-    autoscroll preference; defaulting it ON keeps every assertion testing the
-    follow/discrete distinction rather than passing because the feature is off.
-
-    Carries `_follow_anchor` because _still_following reads it and _scroll_down
-    writes it back. Defaulting to the tail (100.0) expresses "the app last
-    scrolled to the bottom", which is the precondition every following/not-
-    following assertion here depends on. Leaving it None would make
-    _still_following return True unconditionally -- trivially following -- and
-    the not-following tests, the only ones that can catch an unconditional
-    implementation, would silently invert.
-    """
-
-    # Bind the REAL predicate rather than reimplementing it. A hand-written
-    # stand-in would be a second copy of the follow rule, free to agree with a
-    # stale idea of it -- which is the exact failure this file is recovering
-    # from. Borrowing the method means _follow_anchor below is fed to the
-    # shipping logic, so these assertions test the product, not a model of it.
-    _still_following = app_mod.LiteTUI._still_following
-
-    # Same rule for the auto-collapse pass that now rides this frame: bind the
-    # REAL method, so these tests exercise the shipping fold logic instead of a
-    # stub that is free to drift from it. On the fake log it returns early --
-    # the log double has no `query` -- which is exactly the behaviour wanted
-    # here: these assertions are about the follow lock, not about folding.
     _autocollapse_offscreen = app_mod.LiteTUI._autocollapse_offscreen
+    _next_follow_generation = app_mod.LiteTUI._next_follow_generation
+    _scroll_down = app_mod.LiteTUI._scroll_down
+    action_toggle_scroll_lock = app_mod.LiteTUI.action_toggle_scroll_lock
 
-    def _next_follow_generation(self):
-        self._follow_generation += 1
-        return self._follow_generation
-
-    # 🔴 BOUND, NOT REIMPLEMENTED — for the reason stated above, and because a
-    # hand-written copy of this one hid a defect. It used to bump the
-    # generation and nothing else; the real method also PLANTS AN ANCHOR when
-    # none is set, which is what stops a rebuild-cleared anchor from reading as
-    # "following" and yanking a reader who has wheeled up (Ryan, 2026-09-18).
-    # A stub that only bumps the generation passes every arm below while the
-    # product drags the reader.
-    _reader_left_follow_tail = app_mod.LiteTUI._reader_left_follow_tail
-
-    def __init__(self, log, autoscroll=True, follow_anchor=100.0):
+    def __init__(self, log, autoscroll=True):
         self._log = log
         self.settings = settings_mod.Settings(autoscroll=autoscroll)
-        self._follow_anchor = follow_anchor
         self._follow_generation = 0
+        self._scroll_queued = None
 
     def query_one(self, sel):
         return self._log
 
+    def _refresh_prompt_controls(self):
+        pass
 
-# ── _at_bottom: the predicate the whole fix rests on ─────────────────────────
+
+# ── nested ThinkingBlock geometry helper ─────────────────────────────────────
 
 @pytest.mark.parametrize(
     "scroll_y, max_scroll_y, expected, label",
@@ -167,7 +113,7 @@ def test_at_bottom_geometry(scroll_y, max_scroll_y, expected, label):
 
 
 def test_at_bottom_fails_open_without_geometry():
-    """An over-eager scroll is a nit; a dead autoscroll is the bug being fixed."""
+    """A nested view without measurable geometry should keep following."""
 
     class NoGeometry:
         pass
@@ -175,145 +121,95 @@ def test_at_bottom_fails_open_without_geometry():
     assert app_mod._at_bottom(NoGeometry())
 
 
-# ── _scroll_down honours the flag ────────────────────────────────────────────
+# ── _scroll_down honours the explicit lock ──────────────────────────────────
 
-def test_streaming_does_not_scroll_a_reader_who_scrolled_up():
-    log = FakeScroll(40.0, 100.0)  # reader moved away from the 100.0 anchor
-    app_mod.LiteTUI._scroll_down(FakeApp(log))
-    assert log.scrolled is False, "🔴 streaming + reader scrolled up -> DOES NOT scroll"
-
-
-def test_a_discrete_event_does_NOT_scroll_a_reader_who_scrolled_up():
-    """🔴 THIS ARM ASSERTED THE DEFECT UNTIL T706, WHICH IS WHY A GREEN SUITE
-    NEVER CAUGHT IT.
-
-    Ryan, 2026-09-12, watching a turn with tool calls streaming: *"autoscroll
-    is always on... it should only turn on when the user scrolls to the bottom
-    and then lock. if i start scrolling up on my own right now it drags me back
-    down NO MATTER WHAT."*
-
-    "No matter what" is the whole clause: there is no discrete-event exception.
-    The old docstring argued a new bubble or tool card "is the user's own
-    action" — true when a human presses send, false for every tool card, tool
-    result and system line a turn mounts on its own, and those are what drag.
-    """
+def test_lock_on_follows_even_when_the_viewport_is_not_at_the_tail():
     log = FakeScroll(40.0, 100.0)
-    app_mod.LiteTUI._scroll_down(FakeApp(log))
-    assert log.scrolled is False, (
-        "a tool card / result / system line yanked a reader who had scrolled up"
-    )
-
-
-def test_streaming_follows_a_reader_at_the_tail():
-    log = FakeScroll(100.0, 100.0)
-    app_mod.LiteTUI._scroll_down(FakeApp(log))
-    assert log.scrolled is True
-
-
-def test_unset_anchor_is_trivially_following():
-    """Nothing has been scrolled yet, so there is no reader movement to respect.
-
-    ⚠️ AND IT MUST STAY THAT WAY. The fix for Ryan's 2026-09-18 yank does NOT
-    live here: a first cut made this case ask `_at_bottom` instead, which
-    cannot tell "scrolled up" from "outran by a filling thinking block" and
-    turned `test_log_follows_a_filling_thinking_block` red (measured: scroll_y
-    0.0, max_scroll_y 88). The discriminator is the WHEEL — see
-    `_reader_left_follow_tail` and the arms at the end of this file.
-    """
-    log = FakeScroll(40.0, 100.0)
-    app_mod.LiteTUI._scroll_down(FakeApp(log, follow_anchor=None))
-    assert log.scrolled is True
-
-
-# ── the autoscroll SETTING gates the stream, not discrete events ─────────────
-
-def test_setting_off_stops_the_stream_from_scrolling():
-    log = FakeScroll(100.0, 100.0)  # reader AT the tail, so following
-    app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False))
-    assert log.scrolled is False
-
-
-def test_setting_on_scrolls_when_following():
-    """The discriminating half of the pair above."""
-    log = FakeScroll(100.0, 100.0)
     app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=True))
     assert log.scrolled is True
 
 
-def test_setting_off_disables_following_ENTIRELY():
-    """Ryan item 4: the setting is the master switch for following. It used to
-    gate the stream only, so with autoscroll OFF a tool card still jumped —
-    which is the same "no matter what" complaint arriving through the setting
-    instead of through the scroll position."""
-    log = FakeScroll(100.0, 100.0)          # at the tail: following would fire
+def test_lock_off_never_scrolls_even_when_the_viewport_is_at_the_tail():
+    log = FakeScroll(100.0, 100.0)
     app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False))
-    assert log.scrolled is False, "autoscroll is off and something still followed"
+    assert log.scrolled is False
+
+
+def test_reader_acted_does_not_override_an_unlocked_view():
+    """Submitting text is not a hidden escape hatch around the visible lock."""
+    log = FakeScroll(40.0, 100.0)
+    app_mod.LiteTUI._scroll_down(FakeApp(log, autoscroll=False), reader_acted=True)
+    assert log.scrolled is False
 
 
 # ── the stream loop actually CALLS it -- the original defect ─────────────────
 
-def test_stream_branches_scroll():
+def test_stream_updates_reach_the_single_scroll_door():
+    """Trace deltas ask directly; answer growth is observed by ChatLog."""
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
-    m = re.search(r"if token:.*?thinking\.append\(token\)(.{0,400})", src, re.S)
-    assert m and "self._scroll_down()" in m.group(1), "reasoning-delta branch scrolls"
-    # ⚠️ THE WINDOW IS A PROXIMITY PROXY, NOT A SPECIFICATION. It asserts the
-    # branch scrolls; the character count is only how far it looks. Widened
-    # 400 -> 600 at T070 O4-c, when publishing the tps rate added two lines to
-    # this branch and pushed a scroll call that was still there out of range.
-    # Verified before widening: there is exactly ONE scroll call in the
-    # following 1,200 chars, so a wider window cannot pass by matching the next
-    # branch's call instead of this one.
-    # ⬜ T706: the spelling moved (the follow check became the default and the
-    # kwarg is gone) and the CLAIM did not — this branch must still scroll.
-    # ⬜ T753: widened 600 -> 800 for the same reason as the 400 -> 600 above,
-    # and it MISSED BY THREE CHARACTERS. Landing card-summary on 0.23.1 put
-    # `set_answer` in this branch; the scroll call now STARTS at 584 and is 19
-    # chars long, so it ended at 603 and fell outside a 600-char window while
-    # plainly still being there. Re-verified before widening, the same way the
-    # last widening was: exactly ONE `self._scroll_down()` in the following
-    # 1,200 chars (the next `if delta.content:` is ~720 lines away), so a wider
-    # window still cannot pass by matching a different branch's call.
-    m = re.search(r"if delta\.content:(.{0,800})", src, re.S)
-    assert m and "self._scroll_down()" in m.group(1), "answer-content branch scrolls"
+    tree = ast.parse(src)
+
+    token_blocks = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "token"
+    ]
+    assert any(
+        "self._scroll_down()" in (ast.get_source_segment(src, node) or "")
+        for node in token_blocks
+    ), "reasoning-delta branch no longer requests a locked scroll"
+
+    content_blocks = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Attribute)
+        and node.test.attr == "content"
+    ]
+    assert any(
+        "sink.show(text_full)" in (ast.get_source_segment(src, node) or "")
+        for node in content_blocks
+    ), "answer deltas no longer update the measured chat content"
+
+    chat_log = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ChatLog"
+    )
+    size_watcher = next(
+        node for node in chat_log.body
+        if isinstance(node, ast.FunctionDef) and node.name == "watch_virtual_size"
+    )
+    watcher_src = ast.get_source_segment(src, size_watcher) or ""
+    assert "self.app._scroll_down()" in watcher_src, (
+        "answer growth no longer reaches the explicit scroll-lock door"
+    )
 
 
-def test_chat_log_wheel_handler_invalidates_before_textual_default_scroll() -> None:
-    """The product seam is the widget handler, not only a directly called helper."""
+def test_chat_log_does_not_turn_wheel_motion_into_lock_ownership() -> None:
+    """Scrolling history is independent of the explicit lock control."""
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
     chat_log = next(
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "ChatLog"
     )
-    handler = next(
-        node for node in chat_log.body
-        if isinstance(node, ast.FunctionDef) and node.name == "on_mouse_scroll_up"
-    )
-    calls = [
-        node for node in ast.walk(handler)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_reader_left_follow_tail"
-    ]
-    assert len(calls) == 1, "chat-log wheel-up does not invalidate queued follow work"
+    handlers = {
+        node.name for node in chat_log.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "on_mouse_scroll_up" not in handlers
+    assert "on_mouse_scroll_down" not in handlers
 
 
 def test_follow_mode_is_used_never_a_bare_scroll_end():
-    """⬜ T706 MADE THIS ARM ALMOST FREE, AND IT IS KEPT FOR THE OTHER HALF.
-
-    It counted calls that opted INTO the follow check. Every call is gated now,
-    so that floor is met by construction — what is still worth asserting is the
-    second half of its own name: the app must never reach past the door and
-    call `scroll_end` itself. `test_every_scroll_call_goes_through_the_ONE_door`
-    carries the stronger claim.
-    """
+    """The app must not bypass its explicit-lock door with a direct scroll."""
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
     assert src.count("self._scroll_down()") >= 2
     body = src.split("def _scroll_down(", 1)[1]
     others = src.replace(body, "", 1)
     assert "scroll_end(" not in others, (
         "something calls scroll_end outside `_scroll_down` — that is a bare "
-        "scroll that no follow check can see"
+        "scroll the explicit lock cannot gate"
     )
 
 
@@ -465,11 +361,8 @@ def test_a_new_thinking_block_defers_its_scroll_to_after_the_mount():
     # It required the accompanying scroll to be UNCONDITIONAL, reasoning that
     # the conditional form "never fired for a freshly mounted block, because
     # the reader is not yet at the new tail". That was true of the OLD
-    # `_at_bottom` check and stopped being true when `_still_following` moved to
-    # the anchor: mounting a block raises max_scroll_y and leaves scroll_y
-    # alone, so the reader is still following and the gated call fires. The
-    # unconditional escape hatch was load-bearing for a predicate that no longer
-    # exists — and under Ryan's rule ("no matter what") it is exactly the drag.
+    # `_at_bottom` check. The app now uses only the explicit lock, so mounting a
+    # block cannot silently infer or revoke follow ownership from geometry.
     #
     # ⬜ WHAT SURVIVES IS THE DEFERRAL, which is the half that was always about
     # measurement rather than about policy: `mount()` is not measured in this
@@ -481,255 +374,87 @@ def test_a_new_thinking_block_defers_its_scroll_to_after_the_mount():
     )
 
 
-# ── T706: follow is a LOCK, not a default ────────────────────────────────────
-#
-# Ryan: "it should only turn on when the user scrolls to the bottom and then
-# lock. if i start scrolling up on my own right now it drags me back down no
-# matter what."
-#
-# ⬜ NO NEW GEOMETRY CHECK. The follow ANCHOR already answers "did the reader
-# move, or did the content move" — `_still_following` compares scroll_y against
-# where WE last scrolled, and content growth raises max_scroll_y without
-# touching scroll_y. Re-locking therefore needs no scroll watcher: returning to
-# the bottom puts scroll_y back at or past the anchor and following resumes on
-# its own. Reintroducing an at-bottom check is what the thinking-block fix
-# removed, and it is what made those three arms flaky.
+# ── explicit lock generation and deferred work ────────────────────────────
 
 
-def test_returning_to_the_bottom_RE_LOCKS_following():
-    """Ryan item 3: "turn on when the user scrolls to the bottom and then lock".
+def test_turning_lock_off_invalidates_an_accepted_deferred_scroll() -> None:
+    """A newer reader decision must beat work accepted in an earlier frame."""
+    log = DeferredScroll(100.0, 140.0)
+    app = FakeApp(log, autoscroll=True)
 
-    The reader scrolled up (40 against a 100 anchor), then came back. No event
-    told the app so — the anchor comparison simply becomes true again.
-    """
-    log = FakeScroll(100.0, 100.0)
-    app_mod.LiteTUI._scroll_down(FakeApp(log, follow_anchor=100.0))
-    assert log.scrolled is True, "the reader came back to the tail and nothing followed"
+    app_mod.LiteTUI._scroll_down(app)
+    assert len(log.actions) == 1
+
+    app.action_toggle_scroll_lock()
+    assert app.settings.autoscroll is False
+    assert app._follow_generation == 1
+
+    log.scroll_y = 70.0
+    log.release_action()
+    assert log.scroll_y == 70.0, "stale deferred action overruled the unlocked reader"
+    assert log.scrolled is False
 
 
-def test_the_reader_returning_after_the_content_grew_also_re_locks():
-    """The same, with the bottom having moved while they were away — which is
-    the normal case during a turn. scroll_y ends up far PAST the old anchor."""
-    log = FakeScroll(400.0, 400.0)
-    app_mod.LiteTUI._scroll_down(FakeApp(log, follow_anchor=100.0))
+def test_lock_change_invalidates_old_work_before_new_lock_work_runs() -> None:
+    log = DeferredScroll(100.0, 140.0)
+    app = FakeApp(log, autoscroll=True)
+
+    app_mod.LiteTUI._scroll_down(app)       # generation 0
+    app.action_toggle_scroll_lock()         # generation 1, off
+    app.action_toggle_scroll_lock()         # generation 2, on; queues fresh work
+    assert len(log.actions) == 2
+
+    log.scroll_y = 70.0
+    log.release_action()
+    assert log.scroll_y == 70.0, "generation-0 action was not refused"
+    log.release_action()
+    assert log.scroll_y == 140.0, "current lock generation did not follow"
+
+
+def test_repeated_requests_in_one_generation_queue_one_scroll() -> None:
+    log = DeferredScroll(100.0, 140.0)
+    app = FakeApp(log)
+
+    app_mod.LiteTUI._scroll_down(app)
+    app_mod.LiteTUI._scroll_down(app)
+
+    assert len(log.actions) == 1
+    log.release_action()
+    assert app._scroll_queued is None
     assert log.scrolled is True
 
 
-def test_the_readers_OWN_action_scrolls_even_when_scrolled_up():
-    """Ryan item 1: sending a prompt is the reader's own action, so it follows
-    and RE-ENGAGES the lock. This is the one exception, and it exists because
-    the reader did it — not because the app decided the event was important.
-
-    ⚠️ IT IS NOT `_user_bubble`. That helper mounts the bubble for cron fires,
-    inbox mail and goal-loop turns as well as for a human pressing send
-    (`grep -rn "_user_bubble(" src/` — 15 callers, 4 of them unattended), and
-    those are exactly the yanks being removed. The flag belongs at
-    `_submit_text`, which only a person reaches.
-    """
-    log = FakeScroll(40.0, 100.0)
-    app = FakeApp(log)
-    app_mod.LiteTUI._scroll_down(app, reader_acted=True)
-    assert log.scrolled is True, "the reader pressed send and the view did not move"
-    assert app._follow_anchor == log.scroll_y, "the lock was not re-engaged"
-
-
-def test_wheel_up_invalidates_an_accepted_but_deferred_scroll() -> None:
-    """A stale accepted operation must not overrule newer reader intent.
-
-    This is Textual's real ordering under control: ``scroll_end`` defers the
-    viewport move until after refresh, and its completion is deferred again.
-    The reader wheels upward between acceptance and execution. Releasing both
-    old callbacks must then be a no-op -- checking only the completion would
-    still let the action visibly yank the reader to the tail.
-    """
+def test_lock_off_does_not_claim_the_generation_queue_slot() -> None:
     log = DeferredScroll(100.0, 140.0)
-    app = FakeApp(log, follow_anchor=100.0)
+    app = FakeApp(log, autoscroll=False)
 
     app_mod.LiteTUI._scroll_down(app)
-    assert len(log.actions) == 1, "the accepted operation was not deferred"
 
-    log.scroll_y = 70.0
-    app_mod.LiteTUI._reader_left_follow_tail(app)
-    app_mod.LiteTUI._scroll_down(app)
-    assert len(log.actions) == 1, "the newer request should refuse while reader is up"
-
-    log.release_action()
-    assert log.scroll_y == 70.0, "stale deferred action yanked the reader to the tail"
-    assert log.completions == [], "an invalidated action still armed a completion"
-    assert app._follow_anchor == 100.0, "stale action changed follow ownership"
+    assert log.actions == []
+    assert app._scroll_queued is None
 
 
-def test_wheel_up_invalidates_a_deferred_completion_too() -> None:
-    """Reader intent may arrive after the action but before its completion."""
-    log = DeferredScroll(100.0, 140.0)
-    app = FakeApp(log, follow_anchor=100.0)
-
-    app_mod.LiteTUI._scroll_down(app)
-    log.release_action()
-    assert log.scroll_y == 140.0
-    assert len(log.completions) == 1
-
-    log.scroll_y = 70.0
-    app_mod.LiteTUI._reader_left_follow_tail(app)
-    log.release_completion()
-    assert log.scroll_y == 70.0
-    assert app._follow_anchor == 100.0, "stale completion re-armed follow ownership"
-
-
-def test_a_refused_scroll_does_NOT_move_the_anchor():
-    """🔴 THE ARM THAT SEPARATES A GATE FROM A FIX, and the reason one bare call
-    used to poison the whole turn.
-
-    `_scroll_down` writes `_follow_anchor` after it scrolls. The old bare path
-    scrolled unconditionally AND re-anchored, so a single tool card both dragged
-    the reader down and told every later follow check that the reader was at the
-    tail. A gate that still moved the anchor would leave that second half intact.
-    """
-    log = FakeScroll(40.0, 100.0)
-    app = FakeApp(log)
-    app_mod.LiteTUI._scroll_down(app)
-    assert log.scrolled is False
-    assert app._follow_anchor == 100.0, "a refused scroll moved the anchor anyway"
-
-
-def test_every_scroll_call_goes_through_the_ONE_door():
-    """Ryan item 2 as a structural claim: no caller may opt out.
-
-    Twelve of the seventeen call sites used to pass nothing and scroll
-    unconditionally. The parameter that let them is gone, so the only way to
-    bypass the follow check is `reader_acted`, and that is spelled at the call
-    site where a reviewer can see it.
-    """
-    import re
-    from pathlib import Path
-
+def test_every_app_scroll_call_goes_through_the_one_door():
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
-    # ⚠️ THE SIGNATURE, NOT THE WORD. The first cut of this arm asserted the
-    # string `only_if_following` was absent from app.py — and the docstring
-    # explaining the change quotes it, so the arm failed on its own prose. A
-    # text gate counts the writing ABOUT a thing as the thing.
-    assert "def _scroll_down(self, *, reader_acted: bool = False)" in src, (
-        "the one door changed shape; `reader_acted` is the only sanctioned "
-        "way past the follow check"
+    assert "def _scroll_down(self, *, reader_acted: bool = False)" in src
+    body = src.split("def _scroll_down(", 1)[1]
+    others = src.replace(body, "", 1)
+    assert "scroll_end(" not in others, (
+        "something calls scroll_end outside `_scroll_down`, bypassing the lock"
     )
-    assert "only_if_following: bool" not in src, (
-        "a caller can still opt out of the follow check, so 'no matter what' "
-        "is not enforced anywhere"
-    )
-    acted = re.findall(r"_scroll_down\(reader_acted=True\)", src)
-    assert len(acted) >= 1, "nothing re-engages the lock; a prompt submit must"
-    # The validity gate: if every call became reader_acted the rule would be
-    # green and the drag unchanged.
-    bare = re.findall(r"_scroll_down\(\)", src)
-    assert len(bare) > len(acted), (
-        f"{len(acted)} reader_acted vs {len(bare)} gated calls — the exception "
-        f"has become the rule"
-    )
+    assert src.count("self._scroll_down()") >= 2
 
 
-def test_emptying_the_log_clears_the_anchor():
-    """🔴 FOUND BY READING THE CALL SITES, NOT BY AN ARM — and it would have
-    shipped as "resume opens at the top".
-
-    Gating every scroll means the anchor is suddenly load-bearing for paths
-    that never consulted it. `_resume` empties the log, rebuilds it from the
-    transcript and scrolls to the end; the anchor at that moment belongs to the
-    conversation being REPLACED. A stale 500 against a rebuilt log at 0 reads
-    as "the reader scrolled up", the scroll is refused, and the conversation
-    opens at the top with no error anywhere.
-
-    Asserted on the SOURCE because both sites are inside long UI methods that a
-    unit host cannot reach, and the claim is structural: every place that
-    empties the log resets the anchor in the same breath.
-    """
-    from pathlib import Path
-
+def test_every_log_rebuild_invalidates_queued_scroll_work():
+    """A callback authorized for discarded content cannot act on the new log."""
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
     empties = [i for i in range(len(src)) if src.startswith("remove_children()", i)]
-    assert empties, "no log-emptying site found — this arm has lost its subject"
-    # ⚠️ ORDERING, NOT A WINDOW — and the first cut of this arm used a 400-char
-    # window and failed on its own subject, because the comment explaining the
-    # reset is longer than the window and pushed the assignment out of range.
-    # This file already carries that lesson at test_stream_branches_scroll
-    # ("the window is a proximity PROXY, not a specification"); a rule with a
-    # tunable number in it invites exactly this.
+    assert empties
     for i in empties:
-        nxt = src.find("_follow_anchor", i)
-        assert nxt != -1 and src[nxt:nxt + 30].startswith("_follow_anchor = None"), (
-            f"the first thing a log-emptying site does with the anchor is not "
-            f"clearing it (near offset {i}) — the next scroll would be judged "
-            f"against a position from the conversation just thrown away"
+        line_end = src.find("\n", i)
+        nxt = src.find("_next_follow_generation()", line_end)
+        assert nxt != -1, f"log rebuild near offset {i} never invalidates scroll work"
+        intervening_scroll = src.find("_scroll_down(", line_end, nxt)
+        assert intervening_scroll == -1, (
+            f"log rebuild near offset {i} scrolls before invalidating stale work"
         )
-        reset_end = src.find("\n", nxt)
-        assert "_next_follow_generation()" in src[reset_end:reset_end + 80], (
-            f"emptying the log did not invalidate already queued scroll work "
-            f"(near offset {i})"
-        )
-
-
-# ── a cleared anchor plus a wheel is a reader who left (Ryan, 2026-09-18) ────
-#
-# The source arm above pins that every log-emptying site CLEARS the anchor.
-# That is right — a position from a conversation just thrown away is
-# meaningless. What was wrong is what a cleared anchor then MEANT: it read as
-# "following", so the next thing the turn mounted scrolled the reader to the
-# end. A compaction clears it on every attempt, and a FAILING compaction
-# retries, so Ryan's seat cleared it in a loop at 98% of the window:
-#
-#     "i srolled to bottom to lock it but its flying up SMH WTF!"
-#
-# Measured on a 100x20 pilot before the fix: reader parked at row 10, anchor
-# cleared, next mount yanked them to 87.
-#
-# THE PREDICATE CANNOT DECIDE THIS. `scroll_y` below `max_scroll_y` is both
-# "scrolled up" and "outran by a filling thinking block", and telling those
-# apart is the entire reason the anchor exists — a first cut that asked
-# `_at_bottom` for the unset case turned
-# `test_log_follows_a_filling_thinking_block` red. The wheel is the one event
-# only a human produces, so that is where the fix lives.
-
-
-def test_a_wheel_with_no_anchor_plants_one_at_the_tail():
-    log = FakeScroll(100.0, 100.0)
-    app = FakeApp(log, follow_anchor=None)
-
-    app._reader_left_follow_tail()
-
-    assert app._follow_anchor == 100.0, (
-        "a reader wheeling up with no anchor left the tail — record it, or the "
-        "next mount reads 'no anchor' as 'following'")
-
-
-def test_after_that_wheel_a_parked_reader_is_not_dragged():
-    """The whole sequence, in the order Ryan hit it."""
-    log = FakeScroll(100.0, 100.0)
-    app = FakeApp(log, follow_anchor=None)   # a rebuild has just cleared it
-
-    app._reader_left_follow_tail()           # he wheels up…
-    log.scroll_y = 40.0                      # …and lands mid-history
-
-    app_mod.LiteTUI._scroll_down(app)        # the turn mounts the next card
-    assert log.scrolled is False, "the reader was dragged back to the tail"
-
-
-def test_a_wheel_does_not_overwrite_an_anchor_we_already_have():
-    """Only the UNSET case is a guess. An anchor we recorded ourselves is the
-    position we last scrolled to, and moving it to the current tail would
-    silently re-lock a reader who is still reading."""
-    log = FakeScroll(60.0, 100.0)
-    app = FakeApp(log, follow_anchor=55.0)
-
-    app._reader_left_follow_tail()
-
-    assert app._follow_anchor == 55.0
-
-
-def test_a_wheel_still_invalidates_queued_scroll_work():
-    """The behaviour this method already had, kept."""
-    log = FakeScroll(100.0, 100.0)
-    app = FakeApp(log, follow_anchor=None)
-    before = app._follow_generation
-
-    app._reader_left_follow_tail()
-
-    assert app._follow_generation > before

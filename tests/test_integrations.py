@@ -146,9 +146,13 @@ try:
 
     log = mroot / mcp_client.MCP_LOG_NAME
     chk("stderr/noise went to a log file, not the terminal", log.exists())
+    fake_server = mgr.servers["fake"]
+    fake_proc = fake_server.proc
 finally:
     mgr.stop_all()
-chk("stop_all terminated the child", mgr.servers["fake"].proc.poll() is not None)
+chk("stop_all terminated the child", fake_proc.poll() is not None)
+chk("stop_all cleared the stopped server handle", fake_server.proc is None)
+chk("stop_all released manager ownership", "fake" not in mgr.servers)
 
 # ─────────────────────── MCP over HTTP ──────────────────────────────────
 print("\n=== MCP: a real HTTP endpoint, real JSON-RPC over POST ===")
