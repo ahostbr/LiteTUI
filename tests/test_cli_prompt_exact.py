@@ -6,6 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from litetui.app import LiteTUI
+from litetui.llm_backend import ModelRow
+
 
 @pytest.mark.parametrize(
     "prompt",
@@ -47,3 +50,34 @@ def test_prompt_reaches_first_submit_byte_exactly(tmp_path, monkeypatch, prompt)
     cli.main()
 
     assert seen["submitted"] == prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        r"C:\a\t1\n2",
+        r"Read C:\Projects\.scratch\t1010\BRIEF.md exactly.",
+    ],
+)
+async def test_real_app_dispatches_first_prompt_byte_exactly(prompt):
+    """Exercise the real app.py first-prompt dispatch, not a CLI class double."""
+    app = LiteTUI(rpc=True, first_prompt=prompt)
+    app._connect_settled = True
+    app.available_models = ["model"]
+    app.model_rows = {
+        "model": ModelRow(key="model", path=None, source="test", loaded=True)
+    }
+    app._model_id = "model"
+    app._cli_initial_model = None
+    submitted = []
+
+    async def ready(**_kwargs):
+        return True
+
+    app._ensure_chat_ready = ready
+    app._submit_text = lambda text, **_kwargs: submitted.append(text)
+
+    await LiteTUI._apply_cli_args.__wrapped__(app)
+
+    assert submitted == [prompt]

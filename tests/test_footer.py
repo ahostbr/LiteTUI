@@ -100,6 +100,36 @@ chk("75 columns keeps all five protected facts",
 chk("context counts are the last optional field dropped", "ctx " not in tighter_line)
 chk("75-column text fits its 62-cell label", tighter.ctx_label_text.cell_len <= 62)
 
+for seat_name, width in (
+    ("Marquee-Dijkstra5", 76),
+    ("Marquee-Dijkstra5", 75),
+    ("マーキー探偵五号", 76),
+):
+    long_seat = FakeApp(FakeSeat(True, seat_name), "high", CONVO,
+                        27000, 100000, tps=42.3, width=width)
+    long_seat._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
+    long_line = long_seat.ctx_label_text.plain
+    limit = width - 13
+    chk(f"{seat_name!r} at {width} keeps all five protected facts",
+        all(field in long_line for field in (
+            ">> autonomous on", "plan:off", "think:high", "27%", "…",
+        )))
+    chk(f"{seat_name!r} at {width} keeps an ellipsized seat prefix",
+        long_line.split(" · ")[2].endswith("…")
+        and long_line.split(" · ")[2] != "…")
+    chk(f"{seat_name!r} at {width} fits", long_seat.ctx_label_text.cell_len <= limit)
+
+# At this intermediate width compact separators alone are enough. No optional
+# field may be discarded merely because the roomy separators did not fit.
+compact_only = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO,
+                       27000, 100000, tps=42.3, width=121)
+compact_only._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
+compact_line = compact_only.ctx_label_text.plain
+chk("separator compaction happens before optional fields are dropped",
+    all(field in compact_line for field in (
+        "42.3 tok/s", "4f3a1c9d", "ctx 27,000", "OpenBolt", "think:high",
+    )) and "  ·  " not in compact_line)
+
 wide = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO, 27000, 100000,
                tps=42.3, width=200)
 wide._active_tool_profile = app_mod.tool_policy.AUTONOMOUS

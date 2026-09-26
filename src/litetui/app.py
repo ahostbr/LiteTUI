@@ -5265,22 +5265,35 @@ class LiteTUI(App):
         # clipping.
         render_sep = sep
         if available is not None:
+            def width() -> int:
+                return (
+                    sum(chunk.cell_len for _, chunk in chunks)
+                    + Text(render_sep).cell_len * max(0, len(chunks) - 1)
+                )
+
+            # Compact spacing before sacrificing information. At intermediate
+            # widths this alone is enough, so cache/context remain visible.
+            if width() > available:
+                render_sep = " · "
+
             for drop_key in ("tps", "convo", "bg", "agents", "cache", "ctx"):
-                total = sum(chunk.cell_len for _, chunk in chunks)
-                total += Text(render_sep).cell_len * max(0, len(chunks) - 1)
-                if total <= available:
+                if width() <= available:
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
 
-            # In the realistic OpenBolt/high case the five protected values are
-            # 45 cells. Four roomy five-cell separators make 65, two wider than
-            # a 76-column pane's 63-cell label. Compact separators make 57;
-            # no value is abbreviated or sacrificed. Wide footers keep the
-            # established spacing.
-            total = sum(chunk.cell_len for _, chunk in chunks)
-            total += Text(render_sep).cell_len * max(0, len(chunks) - 1)
-            if total > available:
-                render_sep = " · "
+            # A real harness name can still exceed the remaining room. Keep a
+            # recognisable prefix (at least six cells plus the ellipsis), and let
+            # Rich truncate by CELL width so a wide CJK glyph is never split.
+            if width() > available:
+                seat = next((chunk for key, chunk in chunks if key == "seat"), None)
+                if seat is not None:
+                    excess = width() - available
+                    seat.truncate(max(7, seat.cell_len - excess), overflow="ellipsis")
+
+            # If even the minimum useful seat prefix cannot coexist with every
+            # protected fact, thinking is the first protected field conceded.
+            if width() > available:
+                chunks = [(key, chunk) for key, chunk in chunks if key != "think"]
 
         # Rich's explicit spans override CSS foreground, so a stylesheet-only
         # editor control would save successfully and leave the readout unchanged.
