@@ -25,6 +25,7 @@ from functools import partial
 from litetui.fmt import fmt_dur
 from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
     TOOL_NAME_DEFAULT,
+    _compact_tokens,
     _markdown_to_text,
     is_reliable_rate_sample,
     load_prompt,
@@ -716,6 +717,10 @@ class CompactionCard(Vertical):
         # than having the worker reach in -- same rule ThinkingBlock follows.
         self._t0 = time.monotonic()
         self._took: float | None = None
+        # Measured prefill readout ((frac, processed, total)) the app feeds on
+        # each tick, or None. The suffix renders only while live and non-None,
+        # so a backend that never streams progress (Codex) shows the plain clock.
+        self._prefill: tuple[float, int, int] | None = None
         self._title = Static(self._title_text(), classes="compaction-title")
         self._plan = Static(plan, classes="compaction-plan")
         self.prompt_fold = FoldBlock("Compaction prompt", prompt_text)
@@ -725,17 +730,32 @@ class CompactionCard(Vertical):
 
     def _title_text(self) -> Text:
         """Title with the elapsed clock. Frozen once _took is set, so the card
-        keeps reporting how long it actually took instead of resetting to zero."""
+        keeps reporting how long it actually took instead of resetting to zero.
+
+        While live it also carries the measured prefill readout — the same
+        "prefill XX% · n/m" suffix a normal turn's bubble shows — so a
+        compaction reads the same grammar rather than a bare wall clock."""
         elapsed = self._took if self._took is not None else (time.monotonic() - self._t0)
-        stamp = fmt_dur(elapsed) if self._took is not None else f"{fmt_dur(elapsed)} \u2026"
+        stamp = fmt_dur(elapsed)
+        if self._took is None:
+            stamp += " \u2026"
+            if self._prefill is not None:
+                frac, processed, total = self._prefill
+                stamp += (f" \u00b7 prefill {frac * 100:.0f}% \u00b7 "
+                          f"{_compact_tokens(processed)}/{_compact_tokens(total)}")
         return Text.assemble(
             ("\U0001F5DC Compaction", "bold"),
             (f" \u00b7 {stamp}", "dim"),
             (" \u00b7 automatic", "dim") if self.auto else ("", ""),
         )
 
-    def tick(self) -> None:
-        """One repaint from the app's shared elapsed loop; no-op once settled."""
+    def tick(self, prefill: tuple[float, int, int] | None = None) -> None:
+        """One repaint from the app's shared elapsed loop; no-op once settled.
+
+        `prefill` is the measured prompt-progress readout the app feeds — the
+        same `EtaState.prefill_readout()` a normal turn renders — or None when
+        no progress was reported (plain elapsed clock)."""
+        self._prefill = prefill
         self._title.content = self._title_text()
 
     def compose(self) -> ComposeResult:

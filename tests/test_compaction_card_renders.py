@@ -133,3 +133,34 @@ async def test_compaction_card_shows_an_elapsed_clock() -> None:
         settled = str(card._title.content)
         assert card._took is not None
         assert "…" not in settled, f"still counting after finish(): {settled!r}"
+
+@pytest.mark.asyncio
+async def test_compaction_card_shows_prefill_like_a_normal_turn() -> None:
+    """Ryan: "compact isn't showing the prefill time ... like everything else does".
+
+    A normal turn's in-flight bubble shows the NInfer-measured prefill
+    ("prefill 43% : 56k/130k") via render_progress; the compaction card was the
+    one long-running op that only ever showed a bare wall clock. The app feeds
+    the card the same EtaState.prefill_readout() it feeds that bubble, so the
+    title carries the same suffix while live -- and nothing once settled."""
+    a = make_app()
+    async with a.run_test(size=(120, 40)) as pilot:
+        card = m.CompactionCard(plan=PLAN, prompt_text="p", auto=False)
+        await a.query_one("#chat-log").mount(card)
+        await pilot.pause()
+
+        # No progress yet: just the clock.
+        plain = str(card._title.content)
+        assert "prefill" not in plain and "…" in plain
+
+        # Fed the measured readout: the same suffix a normal turn shows.
+        card.tick(prefill=(0.43, 56000, 130000))
+        await pilot.pause()
+        live = str(card._title.content)
+        assert "prefill 43%" in live and "56k/130k" in live and "…" in live
+
+        # Settled: frozen total, no ellipsis, no stale prefill.
+        card.finish("12 -> 1 (-92%)")
+        await pilot.pause()
+        settled = str(card._title.content)
+        assert "…" not in settled and "prefill" not in settled
