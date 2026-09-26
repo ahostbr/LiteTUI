@@ -69,6 +69,10 @@ _FIND_FILTERS = frozenset({
 #: A change of directory; the words after it name the new base.
 _CD = re.compile(
     r"(?i)(?<![\w.$-])(?:cd|chdir|pushd|set-location|sl|push-location)(?![\w.:\\-])")
+#: `git` STARTING a command, right before the verb, on the same line. `\s+`
+#: here crossed a newline, so a line ending in "git" excused the delete on the
+#: next line (review 2be2a62c N1: "ls .git\nrm -rf ~" was allowed).
+_GIT_VERB = re.compile(r"(?i)(?:^|[;&|\n(])[ \t]*git[ \t]+\Z")  # \Z: `$` matches before a final \n
 _GLOB = re.compile(r"[*?]")
 _MSYS = re.compile(r"^/([a-z])(/.*)?$", re.IGNORECASE)
 
@@ -87,7 +91,7 @@ def refusal(command, workspace, home=None) -> str | None:
         if match.re is _CD:
             base = _cd_target(command[match.end():], base, home)
             continue
-        if re.search(r"(?i)\bgit\s+$", command[:match.start()]):
+        if _GIT_VERB.search(command[:match.start()]):
             continue  # `git rm` works on the index and tracked files, not a tree
         verb = match.group(1).lower()
         recursive, targets, deletes = _arguments(verb, command[match.end():])
@@ -191,8 +195,13 @@ def _pipeline_source(before: str) -> list[str]:
     else:
         return []
     head = re.split(r"[;\n{(]|&&|\|\|", tail)[-1].split("|")[0]
-    words = _TOKEN.findall(head)[1:]
-    return [w for w in words if not _unquote(w).startswith("-")]
+    words = [_unquote(w) for w in _TOKEN.findall(head)]
+    if words[:1] == ["find"] and any(w.lower() in _FIND_FILTERS for w in words):
+        return []  # a filtered listing names only what matched, not its root
+    paths = [w for w in words[1:] if not w.startswith("-")]
+    # A listing with no path lists the current folder (review 2be2a62c N2:
+    # `cd ~; ls | xargs rm -rf`); "." resolves against the tracked base.
+    return paths or ["."]
 
 
 def _normal(raw: str) -> str:
@@ -214,6 +223,8 @@ def _cd_target(rest: str, base: Path | None, home: Path) -> Path | None:
         cut = _separator(token)
         word = _unquote(token[:cut] if cut >= 0 else token)
         low = word.lower()
+        if low.startswith("-") and ":" in word:
+            word = low = word.partition(":")[2]   # -Path:C:\x names the folder (N3)
         if word and not (low.startswith("-") or re.fullmatch(r"/[a-z]", low)):
             return _resolve(word, base, home)
         if word == "-":
