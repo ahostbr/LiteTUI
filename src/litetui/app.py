@@ -5257,18 +5257,30 @@ class LiteTUI(App):
         available = getattr(self, "_footer_available_width", None)
 
         # Drop low-value fields until the protected visual-cron facts fit.
-        # Display order never changes; only membership does. Thinking effort is
-        # protected ahead of seat identity: a narrow spawned-agent pane must
-        # still confirm that its requested effort actually took effect.
-        # Calculate against Rich cell widths (not len()) so wide glyphs cannot
-        # reintroduce clipping.
+        # Display order never changes; only membership does. Authority, plan,
+        # seat identity, thinking effort and context percent are protected: a
+        # narrow spawned-agent pane needs all five to identify the seat and
+        # confirm that its requested effort actually took effect. Calculate
+        # against Rich cell widths (not len()) so wide glyphs cannot reintroduce
+        # clipping.
+        render_sep = sep
         if available is not None:
-            for drop_key in ("tps", "convo", "bg", "agents", "cache", "ctx", "seat"):
+            for drop_key in ("tps", "convo", "bg", "agents", "cache", "ctx"):
                 total = sum(chunk.cell_len for _, chunk in chunks)
-                total += Text(sep).cell_len * max(0, len(chunks) - 1)
+                total += Text(render_sep).cell_len * max(0, len(chunks) - 1)
                 if total <= available:
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
+
+            # In the realistic OpenBolt/high case the five protected values are
+            # 45 cells. Four roomy five-cell separators make 65, two wider than
+            # a 76-column pane's 63-cell label. Compact separators make 57;
+            # no value is abbreviated or sacrificed. Wide footers keep the
+            # established spacing.
+            total = sum(chunk.cell_len for _, chunk in chunks)
+            total += Text(render_sep).cell_len * max(0, len(chunks) - 1)
+            if total > available:
+                render_sep = " · "
 
         # Rich's explicit spans override CSS foreground, so a stylesheet-only
         # editor control would save successfully and leave the readout unchanged.
@@ -5291,7 +5303,7 @@ class LiteTUI(App):
                     for span in chunk.spans
                 ]
             if t.plain:
-                t.append(sep, foreground or "#5c6370")
+                t.append(render_sep, foreground or "#5c6370")
             t.append(chunk)
         return t
 
