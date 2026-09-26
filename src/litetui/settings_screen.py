@@ -1263,7 +1263,7 @@ class SettingsBody(Widget):
                             "theme_name", "Theme", _theme_choices(self._start.custom_themes),
                             "Dark built-ins, the LiteSuite ports (matrix, lite-suite, "
                             "amber-ledger...), the ten-gray SHADES, and your customs. "
-                            "the footer's \u2630 commands button still has a quick-select; either way the pick "
+                            "the footer's \u2261 commands button still has a quick-select; either way the pick "
                             "survives a restart.",
                         )
                         yield self._section_header("theme-custom")

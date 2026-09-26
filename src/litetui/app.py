@@ -5349,7 +5349,10 @@ class LiteTUI(App):
             return  # footer not composed yet; it reads the value when it composes
         text = self.ctx_label_text
         for label in labels:
-            label.content = text
+            # T1003: the setter repaints even when nothing changed, and idle
+            # timers (cache ticker, Codex events, on_resize) call this constantly.
+            if label.content != text:
+                label.content = text
 
     @work(exclusive=True, group="ctxload")
     async def apply_context_length(self, force: bool = False) -> None:
