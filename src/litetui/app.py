@@ -5151,9 +5151,16 @@ class LiteTUI(App):
             add("pct", f"{pct * 100:.0f}%", ctx_style)
 
         # T911: Claude's prompt cache, warm/cold plus the time left on it.
+        # T992: Codex's hit rate for the last request, in the same field.
         cache = getattr(self, "_claude_cache", None)
-        if getattr(s, "footer_show_cache", True) and cache is not None and getattr(self.backend, "name", "") == "claude":
-            shown = cache.label()
+        backend_name = getattr(getattr(self, "backend", None), "name", "")
+        if getattr(s, "footer_show_cache", True):
+            shown = None
+            if backend_name == "claude" and cache is not None:
+                shown = cache.label()
+            elif backend_name == "codex":
+                from litetui.claude_cache import codex_label
+                shown = codex_label(getattr(self, "last_usage", None))
             if shown:
                 add("cache", *shown)
 
