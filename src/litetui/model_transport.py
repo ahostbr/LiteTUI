@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import inspect
 import json
 import os
 import random
@@ -43,6 +44,7 @@ class RetryableProviderError(ProviderError):
 
 _CODEX_RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 32.0)
 _CODEX_TRANSIENT_STATUSES = {429, 500, 501, 502, 503, 504, 505}
+_CODEX_USAGE_LIMIT_MARKERS = ("usage_limit", "quota", "insufficient_quota")
 _CONNECTION_FAILURES = (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
                         httpx.RemoteProtocolError)
 
@@ -69,6 +71,29 @@ async def _close_http(resource, provider: str, label: str, *, completed: bool = 
         if primary_error is None and not completed:
             raise failure from None
 
+def _provider_error(event: dict) -> dict:
+    response = event.get("response")
+    response = response if isinstance(response, dict) else {}
+    error = response.get("error") or event.get("error")
+    return error if isinstance(error, dict) else event
+
+
+def _provider_error_code(event: dict) -> str:
+    code = _provider_error(event).get("code")
+    return str(code).strip().lower() if isinstance(code, (str, int)) else ""
+
+
+def _is_usage_limit_code(code: str) -> bool:
+    return any(marker in code for marker in _CODEX_USAGE_LIMIT_MARKERS)
+
+
+def _is_retryable_stream_failure(provider: str, event: dict) -> bool:
+    if provider != "codex":
+        return False
+    code = _provider_error_code(event)
+    return code == "server_is_overloaded"
+
+
 def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
     """Only known error fields cross the boundary, not input/output or headers.
 
@@ -89,8 +114,7 @@ def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
 
     response = event.get("response")
     response = response if isinstance(response, dict) else {}
-    error = response.get("error") or event.get("error")
-    error = error if isinstance(error, dict) else event
+    error = _provider_error(event)
     incomplete = response.get("incomplete_details") or event.get("incomplete_details")
     incomplete = incomplete if isinstance(incomplete, dict) else {}
     fields = [("code", error.get("code")), ("message", error.get("message")),
@@ -103,7 +127,7 @@ def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
 
 
 class ModelTransport(Protocol):
-    async def create(self, *, purpose: str = "turn", **kwargs): ...
+    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs): ...
 
 
 @dataclass(frozen=True)
@@ -399,9 +423,13 @@ def _usage(raw, provider):
 
 
 class ResponseStream:
-    def __init__(self, response, client, provider, model, tools, *, retry=None, secrets=()):
+    def __init__(
+        self, response, client, provider, model, tools, *, retry=None,
+        secrets=(), buffer_attempts=False,
+    ):
         self.response, self.client = response, client
         self._retry = retry
+        self._buffer_attempts = buffer_attempts
         self._completed = False
         self._secrets = secrets
         self.provider, self.model = provider, model
@@ -416,16 +444,35 @@ class ResponseStream:
             await _close_http(self.client, self.provider, "client", completed=self._completed)
 
     async def __aiter__(self):
-        # This is one completion request, not a turn replay. Once ANY chunk
-        # escapes (including reasoning/tool deltas), retries are forbidden.
+        # OAuth Codex attempts are buffered until response.completed. That makes
+        # a retry an attempt replay, not a user-turn replay: partial text,
+        # reasoning, and tool-call fragments never escape to the app, and the
+        # app executes tools only after this iterator completes.
         emitted = False
         try:
             while True:
+                attempt = []
                 try:
                     async for chunk in self._iter_response():
+                        if self._buffer_attempts:
+                            attempt.append(chunk)
+                        else:
+                            emitted = True
+                            yield chunk
+                    for chunk in attempt:
                         emitted = True
                         yield chunk
                     return
+                except RetryableProviderError as error:
+                    if self._retry is None:
+                        raise
+                    try:
+                        self.response = await self._retry()
+                    except ProviderError as exhausted:
+                        raise ProviderError(
+                            f"{exhausted} Last provider failure: {error}"
+                        ) from None
+                    continue
                 except _CONNECTION_FAILURES:
                     if not emitted and self._retry is not None:
                         self.response = await self._retry()
@@ -461,7 +508,10 @@ class ResponseStream:
                         raise TypeError("event must be an object")
                     kind = e.get("type", "")
                     if kind in ("error", "response.failed", "response.incomplete"):
-                        raise _stream_failure(self.provider, e, self._secrets)
+                        failure = _stream_failure(self.provider, e, self._secrets)
+                        if _is_retryable_stream_failure(self.provider, e):
+                            raise RetryableProviderError(str(failure)) from None
+                        raise failure
                     if self.provider == "codex":
                         idx = e.get("output_index", 0)
                         if kind == "response.output_text.delta":
@@ -700,8 +750,8 @@ class OAuthTransport:
             )
         return headers
 
-    async def create(self, *, purpose: str = "turn", **kwargs):
-        """`purpose` NAMES WHAT THIS CALL IS FOR, and it never reaches the wire.
+    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
+        """`purpose` and `retry_notice` name local behavior; neither reaches the wire.
 
         🔴 T821. A test counted `create` calls to assert how many COMPLETIONS
         one turn costs. It was right on 2026-09-12 (4e873f7) and red by
@@ -749,12 +799,20 @@ class OAuthTransport:
                 if status is not None:
                     message = f"{self.provider.title()} server error (HTTP {status}), retried {retries} times. Try again later."
                 else:
-                    message = (f"{self.provider.title()} connection was interrupted before output, "
-                               f"retried {retries} times. Check the connection and retry.")
+                    message = (f"{self.provider.title()} overload or connection failure, "
+                               f"retried {retries} times. Try again later.")
                 raise _logged_provider_error(message) from None
-            delay = _CODEX_RETRY_DELAYS[retries]
+            ceiling = _CODEX_RETRY_DELAYS[retries]
+            # Full jitter keeps clients from synchronising while retaining the
+            # official 2/4/8/16/32-second exponential ceilings.
+            delay = random.uniform(ceiling / 2, ceiling)
             retries += 1
+            if retry_notice is not None:
+                result = retry_notice(delay)
+                if inspect.isawaitable(result):
+                    await result
             await asyncio.sleep(delay)
+            return delay
 
         # Only the agent loop's own requests belong to the turn. A side call
         # (fold, card summary, goal verdict, compaction) is its own request.
@@ -790,7 +848,19 @@ class OAuthTransport:
                     continue
                 if not response.is_success:
                     status = response.status_code
+                    error_code = ""
+                    if self.provider == "codex" and status == 429:
+                        try:
+                            error_body = json.loads((await response.aread()).decode("utf-8"))
+                            if isinstance(error_body, dict):
+                                error_code = _provider_error_code(error_body)
+                        except (UnicodeDecodeError, ValueError, TypeError):
+                            pass
                     await _close_http(response, self.provider, "response")
+                    if status == 429 and _is_usage_limit_code(error_code):
+                        raise ProviderError(
+                            f"{self.provider.title()} usage limit reached. Wait and retry; no fallback was used."
+                        )
                     if self.provider == "codex" and status in _CODEX_TRANSIENT_STATUSES:
                         await pause_for_retry(status=status)
                         continue
@@ -824,6 +894,7 @@ class OAuthTransport:
                 response, client, self.provider, kwargs["model"], kwargs.get("tools") or [],
                 retry=retry_response if self.provider == "codex" else None,
                 secrets=secrets,
+                buffer_attempts=self.provider == "codex",
             )
             return result if kwargs.get("stream", False) else await collect(result)
         except BaseException as error:
