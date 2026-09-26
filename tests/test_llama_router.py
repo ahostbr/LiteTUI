@@ -245,7 +245,7 @@ def test_apply_on_a_loaded_model_survives_the_router_restart(stub, tmp_path, mon
     stub.add("m1", state="loaded", ctx=4096)
     b = _backend(stub, tmp_path)
 
-    def _restart_evicts_everything():
+    def _restart_evicts_everything(*, prepared=None):
         for m in stub.models.values():
             m["state"] = "unloaded"
     monkeypatch.setattr(b, "_regen_ini", _restart_evicts_everything)

@@ -71,3 +71,41 @@ def test_installed_flags_handles_missing_exe(monkeypatch):
         assert llm_backend.installed_flags() == frozenset()
     finally:
         llm_backend.installed_flags.cache_clear()
+
+
+
+def test_mode_census_comes_from_option_not_incidental_mentions():
+    assert llm_backend.parse_spec_types("Try draft-mtp with another build") == frozenset()
+    assert llm_backend.parse_spec_types("--spec-type none,draft-simple,draft-mtp (default: none)") == {
+        "none", "draft-simple", "draft-mtp"}
+    assert llm_backend.parse_spec_types("--spec-type X  has been removed") == frozenset()
+    assert "draft-mtp" in llm_backend.parse_spec_types(FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_flags_and_modes_share_probe_and_refresh_on_binary_replacement(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    binary = tmp_path / "llama-server.exe"
+    binary.write_bytes(b"first")
+    settings = SimpleNamespace(llama_executable=str(binary))
+    help_text = "--spec-type none,draft-simple\n--spec-draft-model PATH"
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(stdout=help_text)
+
+    monkeypatch.setattr(llm_backend.ttyguard, "run", run)
+    llm_backend.installed_flags.cache_clear()
+    try:
+        assert "spec-draft-model" in llm_backend.configured_flags(settings)
+        assert llm_backend.configured_spec_types(settings) == {"none", "draft-simple"}
+        assert len(calls) == 1
+        binary.write_bytes(b"replacement-new-size")
+        help_text = "--spec-type none,draft-mtp\n--spec-draft-n-max N"
+        assert "spec-draft-model" not in llm_backend.configured_flags(settings)
+        assert "spec-draft-n-max" in llm_backend.configured_flags(settings)
+        assert llm_backend.configured_spec_types(settings) == {"none", "draft-mtp"}
+        assert len(calls) == 2
+    finally:
+        llm_backend.installed_flags.cache_clear()

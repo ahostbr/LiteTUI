@@ -21,6 +21,7 @@ import json
 import shutil
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from textual.binding import Binding
 from textual.app import ComposeResult
@@ -39,6 +40,10 @@ from litetui import settings as settings_mod
 from litetui.picker import pick
 from litetui.plugins import PluginManifest
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
+
+
+if TYPE_CHECKING:
+    from litetui.app import LiteTUI
 
 
 # ── /model /models /reconnect (bodies verbatim, rows now source-tagged) ──────
@@ -688,10 +693,11 @@ _LOAD_FIELDS: list[tuple] = [
     ("seed", "Seed", "int", "random"),
     ("rope_base", "RoPE Frequency Base", "float", "auto"),
     ("rope_scale", "RoPE Frequency Scale", "float", "auto"),
-    ("draft_model", "Speculative draft model (path)", "text", "off"),
-    ("draft_max", "Max draft tokens", "int", "16"),
+    ("spec_type", "Speculative decoding", "spec-select", None),
+    ("draft_model", "External draft model (path)", "text", "external draft only"),
+    ("draft_max", "Max draft tokens", "int", "MTP: 3; otherwise server default"),
     ("draft_min", "Min draft tokens", "int", "0"),
-    ("draft_p_min", "Draft probability", "float", "0.75"),
+    ("draft_p_min", "Draft probability", "float", "MTP: 0; otherwise server default"),
     ("mmproj", "Vision projector (mmproj path, or \"none\")", "text", "off"),
     ("chat_template_file", "Chat template file", "text", "model's own"),
 ]
@@ -721,7 +727,6 @@ _INFER_FIELDS: list[tuple] = [
 _NA_ON_LLAMA = (
     ("Context Checkpoints", "n/a on llama.cpp — an LM Studio caching concept"),
     ("Reasoning Budget Message", "n/a in v1"),
-    ("MTP speculative decoding", "n/a — llama.cpp speculates via a draft model (set one above)"),
     ("Context Overflow", "LiteTUI autocompacts instead — /settings → Compaction"),
     ("Preserve Thinking", "LiteTUI keeps reasoning out of resent history by design (context economy)"),
 )
@@ -833,7 +838,7 @@ class ModelConfigBody(Widget):
         return llm_backend.sibling_mmproj(getattr(row, "path", None))
 
     def compose(self) -> ComposeResult:
-        app = self.app
+        app = cast("LiteTUI", self.app)
         on_llama = app.backend.name == "llamacpp"
         # 🔴 T806 — THE LABEL WAS A TWO-WAY CHOICE IN A FOUR-BACKEND APP, so
         # every backend that was not llama.cpp was captioned "LM Studio". On
@@ -861,8 +866,8 @@ class ModelConfigBody(Widget):
                             yield Static(f"Source: {row.source}", classes="set-help")
                             if row.path:
                                 yield Static(f"Path: {row.path}", classes="set-help")
-                            for extra in row.extra_paths:
-                                yield Static(f"Also at: {extra}", classes="set-help")
+                            for extra_path in row.extra_paths:
+                                yield Static(f"Also at: {extra_path}", classes="set-help")
                             if row.modalities:
                                 mods = ", ".join(row.modalities)
                                 # 🔴 DECLARED vs EFFECTIVE. `row.modalities` is
@@ -903,6 +908,26 @@ class ModelConfigBody(Widget):
                                 if missing else
                                 ("" if editable else "LM Studio manages this")
                             )
+                            if key == "spec_type":
+                                # No scan on a keypress: discovery carries GGUF
+                                # eligibility. Apply reads it again before save.
+                                modes = llm_backend.configured_spec_types(app.settings) if on_llama else frozenset()
+                                extra = []
+                                if not flags or ("spec-type" in flags and "none" in modes):
+                                    extra.append(("Off", "none"))
+                                if "spec-type" in flags and "draft-simple" in modes and "spec-draft-model" in flags:
+                                    extra.append(("External draft", "draft-simple"))
+                                mtp_flags = {"spec-type", "spec-draft-n-max", "spec-draft-n-min", "spec-draft-p-min"}
+                                eligible = getattr(row, "nextn_predict_layers", None)
+                                if "draft-mtp" in modes and mtp_flags <= flags and type(eligible) is int and eligible > 0:
+                                    extra.append(("Embedded MTP", "draft-mtp"))
+                                current = load_cfg.get(key)
+                                if current and current not in {value for _, value in extra}:
+                                    extra.append((f"{current} (unavailable; change or clear)", current))
+                                missing = False  # keep recovery to unset/Off available
+                                if on_llama:
+                                    note = ("Unset preserves legacy draft settings. Off suppresses all draft flags. "
+                                            "MTP ignores the external path; needs binary support and GGUF nextn heads.")
                             if (key == "mmproj" and not missing and editable
                                     and llm_backend.is_no_projector(
                                         load_cfg.get("mmproj"))):
@@ -951,9 +976,9 @@ class ModelConfigBody(Widget):
                             "request, no reload needed.",
                             classes="set-help",
                         )
-                        for row in _INFER_FIELDS:
-                            key, label, kind = row[0], row[1], row[2]
-                            choices = row[3] if len(row) > 3 else None
+                        for field in _INFER_FIELDS:
+                            key, label, kind = field[0], field[1], field[2]
+                            choices = field[3] if len(field) > 3 else None
                             inherited = getattr(app.settings, key, None)
                             blank_label = "server default"
                             note = ""
@@ -1037,6 +1062,10 @@ class ModelConfigBody(Widget):
                 choices = [(blank_label, ""), ("on", "true"), ("off", "false")]
                 value = "" if current is None else ("true" if current else "false")
                 yield Select(choices, value=value, id=wid,
+                             allow_blank=False, disabled=disabled)
+            elif kind == "spec-select":
+                choices = [("unset (legacy / server default)", ""), *extra]
+                yield Select(choices, value=current or "", id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "select":
                 choices = [(blank_label, "")] + [(c, c) for c in extra]
@@ -1123,10 +1152,25 @@ class ModelConfigBody(Widget):
         return out
 
     def action_apply(self) -> None:
-        app = self.app
+        app = cast("LiteTUI", self.app)
         s = app.settings
         try:
-            load_cfg = self._collect_group("ld", _LOAD_FIELDS, self._load_cfg())
+            applied = self.query_one("#mc-preset-apply", Select).value or ""
+            preset = s.llama_presets.get(applied, {}) if applied else {}
+            mode = preset.get("load", {}).get(
+                "spec_type", self.query_one("#ld-spec_type", Select).value)
+            if isinstance(mode, str):
+                mode = mode.strip()
+            # Off must be a recovery path even from malformed stale tuning.
+            # Do not parse controls whose values this mode never emits.
+            ignored = set()
+            if app.backend.name == "llamacpp":
+                if mode == "none":
+                    ignored = {"draft_model", "draft_max", "draft_min", "draft_p_min"}
+                elif mode == "draft-mtp":
+                    ignored = {"draft_model"}
+            fields = [field for field in _LOAD_FIELDS if field[0] not in ignored]
+            load_cfg = self._collect_group("ld", fields, self._load_cfg())
             infer_fields = _INFER_FIELDS + [("enable_thinking", "", "tri")]
             infer_cfg = self._collect_group("inf", infer_fields, self._infer_cfg())
             schema_text = str(self.query_one("#mc-json-schema", Input).value).strip()
@@ -1135,16 +1179,22 @@ class ModelConfigBody(Widget):
                 infer_cfg["json_schema"] = schema_text
             else:
                 infer_cfg.pop("json_schema", None)
+            if applied:
+                load_cfg = {**load_cfg, **preset.get("load", {})}
+                infer_cfg = {**infer_cfg, **preset.get("inference", {})}
             validate_load_cfg(load_cfg)
-        except ValueError as e:
+            if app.backend.name == "llamacpp":
+                row = app.model_rows.get(self._key)
+                llm_backend.resolve_speculation(self._key, getattr(row, "path", None), load_cfg, s)
+        except (ValueError, llm_backend.BackendError) as e:
             # 🔴 THE PANEL STAYS OPEN AND SAYS WHY, RATHER THAN CLOSING AND
             # WHISPERING INTO THE CHAT. A refused save that dismissed the dialog
             # would cost the user every other field they had edited, and the
             # reason would be one line up in a transcript they are not looking
             # at. `system_message` is kept as well: the chat is where a user
             # scrolls back to ask "what did I do".
-            self._say_error(f"Cannot apply — {e}")
-            app.system_message(f"Not applied — {e}")
+            self._say_error(f"Cannot apply {self._key}: {e}")
+            app.system_message(f"Not applied {self._key}: {e}")
             return
 
         # Preset save (the theme-creator idiom: a non-empty name mints one).
@@ -1152,12 +1202,6 @@ class ModelConfigBody(Widget):
         if preset_name:
             s.llama_presets = dict(s.llama_presets)
             s.llama_presets[preset_name] = {"load": dict(load_cfg), "inference": dict(infer_cfg)}
-        applied = self.query_one("#mc-preset-apply", Select).value or ""
-        if applied:
-            preset = s.llama_presets.get(applied, {})
-            load_cfg = {**load_cfg, **preset.get("load", {})}
-            infer_cfg = {**infer_cfg, **preset.get("inference", {})}
-
         prior_load = s.llama_load_settings.get(self._key, {})
         s.llama_load_settings = dict(s.llama_load_settings)
         if load_cfg:
