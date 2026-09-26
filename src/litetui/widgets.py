@@ -41,6 +41,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.widget import Widget
 # Imported for the BODY's exits. side_panel imports nothing from widgets, so
@@ -151,6 +152,20 @@ class PromptInput(Input):
         self._history: list[str] = []
         self._hist_idx: int = -1
         self._draft: str = ""
+
+    def _toggle_cursor(self) -> None:
+        """Blink by repainting the cursor CELL, not the whole box (T1013).
+
+        Input's own toggle sets a repaint reactive, which rewrote every row of
+        the bordered prompt twice a second: ~25 KB / 10 s of idle output, enough
+        to fill LiteSuite's 32 KB /pty/read ring in ~13 s. Only this idle path
+        is narrowed; keystrokes, focus and blur still repaint the whole widget.
+        """
+        visible = not self._cursor_visible if self.screen.is_active else True
+        if visible == self._cursor_visible:
+            return
+        self.set_reactive(Input._cursor_visible, visible)
+        self.refresh(Region(self._cursor_offset - self.scroll_offset.x, 0, 1, 1))
 
     def push_history(self, text: str) -> None:
         if text and (not self._history or self._history[-1] != text):

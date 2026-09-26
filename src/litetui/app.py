@@ -1823,6 +1823,14 @@ class LiteTUI(App):
 
         self.query_one("#chat-log", VerticalScroll).mount(Splash(LITETUI_SPLASH))
 
+    @staticmethod
+    def _hosted_seat() -> bool:
+        """A LiteSuite canvas or LiteHarness seat, not a plain human terminal."""
+        return any(os.environ.get(name) for name in (
+            "LITESUITE_CANVAS_AGENT", "LITEHARNESS_TIER",
+            "LITEHARNESS_AGENT_NAME", "LITEHARNESS_SPAWNED_BY",
+        ))
+
     def _should_ask_user_name(self) -> bool:
         """Only a plain human terminal may receive the one-time name dialog."""
         if self.settings.user_name_asked or os.environ.get("LITETUI_TEST_USER_NAME_ASKED"):
@@ -1830,10 +1838,7 @@ class LiteTUI(App):
         if (self._rpc or self._first_prompt or self._cli_convo_id
                 or self._cli_system_prompt or self._cli_initial_model):
             return False
-        if any(os.environ.get(name) for name in (
-            "LITESUITE_CANVAS_AGENT", "LITEHARNESS_TIER",
-            "LITEHARNESS_AGENT_NAME", "LITEHARNESS_SPAWNED_BY",
-        )):
+        if self._hosted_seat():
             return False
         options = self._launch_options
         if options is not None and any((
@@ -1855,7 +1860,11 @@ class LiteTUI(App):
         elif state.error:
             self._system(f"[hooks configuration error] {state.error}")
         hook_host.queue_lifecycle(self, "app_start")
-        self.query_one("#message-input", Input).focus()
+        prompt = self.query_one("#message-input", Input)
+        # T1013: a host polls this PTY; even a one-cell blink is ~1.5 KB / 10 s
+        # of pure noise there. A steady cursor is still a visible cursor.
+        prompt.cursor_blink = not self._hosted_seat()
+        prompt.focus()
         self._refresh_prompt_controls()
         self._splash()
         # An authored prompt file that has gone missing is invisible everywhere
