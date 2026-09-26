@@ -4810,6 +4810,12 @@ class LiteTUI(App):
         wanted = (getattr(self, "_cli_convo_id", None) or "").strip()
         if not wanted:
             return True
+        current = self.convo_id or ""
+        if current == wanted or current.startswith(wanted):
+            # on_mount already resumed this launch target with startup=True.
+            # Re-dispatching /resume would adopt it as a mid-session switch and
+            # discard the explicit --model selected for this launch.
+            return True
         # `/resume` takes a prefix and picks the FIRST row that matches. That
         # is fine for a human reading the list, who can see the choice and try
         # again; a launch flag would silently pick between conversations. An
