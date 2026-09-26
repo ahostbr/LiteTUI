@@ -78,3 +78,7 @@ bin/
 
 # T982: per-install Codex routing id (never commit: public repo)
 .codex_installation_id
+
+# Docs are local-only (Ryan, liteask a-8c7fb080: "ignore the docs folder. It doesn't need to be pushed anymore.")
+Docs/
+docs/
