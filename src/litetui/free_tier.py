@@ -8,17 +8,22 @@ passlink on the multi-source free tier".
 Pure Python, recreated from the freellmapi design (E:/SAS/REPO_CLONES/freellmapi,
 server/src/services/ratelimit.ts, lib/fallback-loop.ts), not copied:
 
-- SOURCES: a static table. Keyless sources are live with no setup; keyed ones
-  stay inactive until they have a key: the one saved in /settings or the sidecar
-  (Ryan 2026-09-24, liteask a-29b8bd60), else their environment variable. Read at
-  call time; never printed, logged or sent to the sidecar.
+- SOURCES: a static table. Keyless sources (Cline's login, Kilo, OVH, LLM7) are
+  live with no setup; keyed ones (Groq ... Gemini, and from T938 Ollama Cloud,
+  Z.ai, Cloudflare Workers AI, LongCat, SEA-LION) stay inactive until they have
+  a key: the one saved in /settings or the sidecar (Ryan 2026-09-24, liteask
+  a-29b8bd60), else their environment variable. Read at call time; never
+  printed, logged or sent to the sidecar.
 - The same model offered by several sources is ONE picker entry (group_of), and
   a request fails over across its sources inside the HTTP transport, so a
   subagent never sees a busy source. It errors only when every source for that
-  model is cooling, and then names the soonest retry.
-- Cooldowns per (source, model, key): Retry-After (or the error text) wins; else
-  a ladder 90s -> 2m -> 10m -> 1h -> 24h, reset by a success. 402/403 bench for a
-  day; 401 marks the key rejected.
+  model is cooling, and then names the soonest retry. A streamed attempt that
+  stalls past its source's time budget fails over too.
+- Cooldowns per (source, model, key): Retry-After (or the error text) wins,
+  clamped to a day; else a ladder 90s -> 2m -> 10m -> 1h -> 24h, reset by a
+  success. 403 benches the model for a day; 401 marks the key rejected. A 402,
+  and a 429 on a source whose free allowance is one pool, bench the whole
+  (source, key).
 - The no-paid-model guard is structural: the router only ever sends a model a
   source's own catalog marks free, so an id that is not in the table is refused
   before a byte leaves the process.
@@ -55,6 +60,15 @@ class Source:
     #: Which of the source's listed models are free (priced 0 by the source).
     is_free: Callable[[dict], bool]
     limits: str
+    #: True when the free allowance is ONE pool for the whole (source, key), so a
+    #: 429 on one model means every model there is out (freellmapi's
+    #: inferPoolForPlatform); False keeps the per-model bench.
+    pool: bool = False
+    #: Seconds a streamed attempt may wait for its next bytes (the first one
+    #: included) before the router fails over. See FreeRouter.
+    timeout: float = 60.0
+    #: The /models row field holding the id to send (Cloudflare's `id` is a UUID).
+    id_field: str = 'id'
 
 
 def _openrouter_free(model: dict) -> bool:
@@ -63,34 +77,62 @@ def _openrouter_free(model: dict) -> bool:
 
 _NOT_CHAT = re.compile(r'embed|bge|guard|whisper|tts|rerank', re.IGNORECASE)
 
+#: Z.ai's /models also lists paid GLM models, which a funded account is charged
+#: for; only these flash ids are free (freellmapi legacy_baseline.ts seed).
+_ZAI_FREE = frozenset({'glm-4.7-flash', 'glm-4.5-flash', 'glm-4.6v-flash'})
+
 SOURCES: tuple[Source, ...] = (
     # ── keyless (live with no setup) ────────────────────────────────────────
     Source('cline', 'Cline', f'{cline_backend.CLINE_API}/api/v1', CLINE_LOGIN,
            f'{cline_backend.CLINE_API}/api/v1/models', _openrouter_free,
-           "OpenRouter's shared free pool (upstream 429s); needs `cline auth`"),
+           "OpenRouter's shared free pool (upstream 429s); needs `cline auth`", pool=True),
     Source('kilo', 'Kilo Gateway', 'https://api.kilo.ai/api/gateway/v1', None,
            'https://api.kilo.ai/api/gateway/models', lambda m: bool(m.get('isFree')),
-           '200 requests/hour per IP'),
+           '200 requests/hour per IP', pool=True),
     Source('ovh', 'OVH AI Endpoints', 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1', None,
            'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/models',
            lambda m: (m.get('context_length') or 0) > 0 and not _NOT_CHAT.search(str(m.get('id', ''))),
            '2 requests/minute per IP per model (sends Retry-After)'),
+    # Anonymous access serves only the rate-limited models: every row carries a
+    # price, and `usage_based_only: false` marks the ones that need no balance
+    # (measured: GET /v1/models 2026-09-26, 4 of 48 chat rows).
+    Source('llm7', 'LLM7.io', 'https://api.llm7.io/v1', None, 'https://api.llm7.io/v1/models',
+           lambda m: m.get('model_type') == 'chat' and m.get('usage_based_only') is False,
+           '100 requests/hour', pool=True),
     # ── keyed (inactive until the variable is set; free-tier accounts) ──────
     Source('groq', 'Groq', 'https://api.groq.com/openai/v1', 'GROQ_API_KEY',
            'https://api.groq.com/openai/v1/models', lambda m: True, 'free-tier key limits'),
     Source('cerebras', 'Cerebras', 'https://api.cerebras.ai/v1', 'CEREBRAS_API_KEY',
            'https://api.cerebras.ai/v1/models', lambda m: True, 'free-tier key limits'),
     Source('nvidia', 'NVIDIA NIM', 'https://integrate.api.nvidia.com/v1', 'NVIDIA_API_KEY',
-           'https://integrate.api.nvidia.com/v1/models', lambda m: True, 'free developer credits/limits'),
+           'https://integrate.api.nvidia.com/v1/models', lambda m: True, 'free developer credits/limits',
+           timeout=180),
     Source('mistral', 'Mistral', 'https://api.mistral.ai/v1', 'MISTRAL_API_KEY',
            'https://api.mistral.ai/v1/models', lambda m: True, 'free "Experiment" plan limits'),
     Source('github', 'GitHub Models', 'https://models.github.ai/inference', 'GITHUB_MODELS_TOKEN',
            'https://models.github.ai/catalog/models', lambda m: True, 'free per-account limits'),
     Source('openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 'OPENROUTER_API_KEY',
-           'https://openrouter.ai/api/v1/models', _openrouter_free, ':free models only'),
+           'https://openrouter.ai/api/v1/models', _openrouter_free, ':free models only', pool=True),
     Source('gemini', 'Google Gemini', 'https://generativelanguage.googleapis.com/v1beta/openai', 'GEMINI_API_KEY',
            'https://generativelanguage.googleapis.com/v1beta/openai/models', lambda m: True,
            'free-tier key limits'),
+    # Every model is listed; subscription-only ones answer 403, which benches them for a day.
+    Source('ollama', 'Ollama Cloud', 'https://ollama.com/v1', 'OLLAMA_API_KEY',
+           'https://ollama.com/v1/models', lambda m: True, 'free plan GPU-time quota, 1 concurrent model',
+           timeout=120),
+    Source('zai', 'Z.ai (GLM flash)', 'https://api.z.ai/api/paas/v4', 'ZAI_API_KEY',
+           'https://api.z.ai/api/paas/v4/models', lambda m: m.get('id') in _ZAI_FREE,
+           'GLM flash models only (the paid GLM models are never sent)'),
+    # The key is 'account_id:token' (_endpoints). Model search filtered to chat models;
+    # its rows carry the '@cf/...' id in `name`.
+    Source('cloudflare', 'Cloudflare Workers AI', 'https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1',
+           'CLOUDFLARE_API_KEY',
+           'https://api.cloudflare.com/client/v4/accounts/{account}/ai/models/search?task=Text%20Generation&per_page=100',
+           lambda m: True, 'free daily allocation per account; key is account_id:token', id_field='name'),
+    Source('longcat', 'LongCat', 'https://api.longcat.chat/openai/v1', 'LONGCAT_API_KEY',
+           'https://api.longcat.chat/openai/v1/models', lambda m: True, 'daily free quota'),
+    Source('sealion', 'SEA-LION', 'https://api.sea-lion.ai/v1', 'SEALION_API_KEY',
+           'https://api.sea-lion.ai/v1/models', lambda m: True, '10 requests/minute'),
 )
 
 
@@ -106,7 +148,19 @@ def source_key(source: Source) -> str | None:
             return cline_backend.ClineBackend(None).api_key()
         except BackendError:
             return None
-    return saved_key(source.key_env) or os.environ.get(source.key_env, '').strip() or None
+    key = saved_key(source.key_env) or os.environ.get(source.key_env, '').strip() or None
+    if key and '{account}' in source.base_url and not re.fullmatch(r'[^:\s]+:\S+', key):
+        return None  # not 'account_id:token': not configured
+    return key
+
+
+def _endpoints(source: Source, key: str) -> tuple[str, str, str]:
+    """(base_url, models_url, bearer) for this key. Only Cloudflare differs: its
+    key is 'account_id:token', the id goes in the URL and the token is the bearer."""
+    if '{account}' not in source.base_url:
+        return source.base_url, source.models_url, key
+    account, _, token = key.partition(':')
+    return source.base_url.format(account=account), source.models_url.format(account=account), token
 
 
 def saved_key(key_env: str) -> str:
@@ -128,16 +182,17 @@ _catalogs: dict[str, list[tuple[str, int | None]]] = {}  # ponytail: once per pr
 
 
 def _fetch_models(source: Source, key: str) -> list[tuple[str, int | None]]:
-    headers = {'Authorization': f'Bearer {key}'} if key and source.key_env != CLINE_LOGIN else {}
-    response = httpx.get(source.models_url, headers=headers, timeout=8)
+    _base, models_url, bearer = _endpoints(source, key)
+    headers = {'Authorization': f'Bearer {bearer}'} if bearer and source.key_env != CLINE_LOGIN else {}
+    response = httpx.get(models_url, headers=headers, timeout=8)
     response.raise_for_status()
     body = response.json()
-    rows = body.get('data', body) if isinstance(body, dict) else body
+    rows = body.get('data', body.get('result')) if isinstance(body, dict) else body
     out = []
     for m in rows if isinstance(rows, list) else []:
-        if isinstance(m, dict) and isinstance(m.get('id'), str) and source.is_free(m):
+        if isinstance(m, dict) and isinstance(m.get(source.id_field), str) and source.is_free(m):
             ctx = m.get('context_length') or (m.get('top_provider') or {}).get('context_length')
-            out.append((m['id'].removeprefix('models/'), ctx if isinstance(ctx, int) and ctx > 0 else None))
+            out.append((m[source.id_field].removeprefix('models/'), ctx if isinstance(ctx, int) and ctx > 0 else None))
     return out
 
 
@@ -220,7 +275,8 @@ def bench(key: tuple[str, str, str], status: int, response: httpx.Response | Non
         prev = _benches.get(key)
         level = prev.level + 1 if prev and now - prev.set_at < _DAY else 0
         hint = _retry_hint(response, text)
-        seconds = hint if hint is not None else _LADDER[min(level, len(_LADDER) - 1)]
+        # A hint is clamped to a day, so a hostile Retry-After cannot bench a source for a year.
+        seconds = min(hint, _DAY) if hint is not None else _LADDER[min(level, len(_LADDER) - 1)]
         reason = 'busy'
     _benches[key] = _Bench(now + seconds, level, now, reason)
     return seconds
@@ -293,6 +349,22 @@ def _log(source: Source, model: str, outcome: str, wait: float) -> None:
                        operation=outcome.replace(' ', '-'), duration_ms=round(wait * 1000))
 
 
+def _outcome(error: httpx.TransportError) -> str:
+    return 'timed out' if isinstance(error, httpx.TimeoutException) else 'unreachable'
+
+
+def _failed(source: Source, model: str, keys: tuple[tuple[str, str, str], tuple[str, str, str]],
+            status: int, soonest: float | None, outcome: str,
+            response: httpx.Response | None = None, text: str = '') -> float:
+    """Bench after a failure; return the soonest retry so far. keys = (this model's,
+    the whole source's) for this key. A 402 is the account's balance, and a 429 on a
+    pooled allowance is every model's, so both bench the whole source."""
+    target = keys[1] if status == 402 or (status == 429 and source.pool) else keys[0]
+    wait = bench(target, status, response, text)
+    _log(source, model, outcome, wait)
+    return wait if soonest is None else min(soonest, wait)
+
+
 class FreeRouter(httpx.AsyncBaseTransport):
     """Every chat request picks a source for its model, and fails over."""
 
@@ -313,45 +385,53 @@ class FreeRouter(httpx.AsyncBaseTransport):
             key = await asyncio.to_thread(source_key, source)
             if key is None:
                 continue
-            bench_key = (source.id, source_model, _keyprint(key))
-            left = cooling(bench_key)
+            keys = (source.id, source_model, _keyprint(key)), (source.id, '*', _keyprint(key))
+            left = max(cooling(keys[0]), cooling(keys[1]))
             if left:
                 soonest = left if soonest is None else min(soonest, left)
                 continue
+            base_url, _models_url, bearer = _endpoints(source, key)
             headers = {k: v for k, v in request.headers.items()
                        if k.lower() not in ('authorization', 'host', 'content-length')}
-            if key:
-                headers['Authorization'] = f'Bearer {key}'
-            outbound = httpx.Request('POST', f'{source.base_url}/chat/completions', headers=headers,
+            if bearer:
+                headers['Authorization'] = f'Bearer {bearer}'
+            extensions = request.extensions
+            if body.get('stream'):
+                # The per-attempt budget. The SDK's read timeout is 600s, so one stalled
+                # source held the request for 10 minutes; a streamed attempt now gets
+                # source.timeout for each wait on bytes, the first event included. A
+                # non-streamed answer's first byte is its last, so it keeps the caller's.
+                extensions = {**extensions, 'timeout': {**extensions.get('timeout', {}), 'read': source.timeout}}
+            outbound = httpx.Request('POST', f'{base_url}/chat/completions', headers=headers,
                                      content=json.dumps({**body, 'model': source_model}).encode(),
-                                     extensions=request.extensions)
+                                     extensions=extensions)
             try:
                 response = await self._inner.handle_async_request(outbound)
-            except httpx.TransportError:
-                wait = bench(bench_key, 503)
-                _log(source, source_model, 'unreachable', wait)
-                soonest = wait if soonest is None else min(soonest, wait)
+            except httpx.TransportError as error:
+                soonest = _failed(source, source_model, keys, 503, soonest, _outcome(error))
                 continue
             if response.status_code == 429 or response.status_code in (401, 402, 403) or response.status_code >= 500:
                 text = (await response.aread()).decode('utf-8', 'replace')
                 await response.aclose()
-                wait = bench(bench_key, response.status_code, response, text)
-                _log(source, source_model, f'http {response.status_code}', wait)
-                soonest = wait if soonest is None else min(soonest, wait)
+                soonest = _failed(source, source_model, keys, response.status_code, soonest,
+                                  f'http {response.status_code}', response, text)
                 continue
             if response.status_code == 200 and body.get('stream'):
-                head, rest = await _first_event(response)
+                try:
+                    head, rest = await _first_event(response)
+                except httpx.TransportError as error:
+                    await response.aclose()
+                    soonest = _failed(source, source_model, keys, 503, soonest, _outcome(error))
+                    continue
                 error = _in_stream_error(head)
                 if error and re.search(r'429|rate.?limit|busy|capacity|overloaded', error, re.IGNORECASE):
                     await response.aclose()
-                    wait = bench(bench_key, 429, None, error)
-                    _log(source, source_model, 'in-stream 429', wait)
-                    soonest = wait if soonest is None else min(soonest, wait)
+                    soonest = _failed(source, source_model, keys, 429, soonest, 'in-stream 429', None, error)
                     continue
                 response = httpx.Response(response.status_code, headers=response.headers,
                                           stream=_Replay(head, rest, response.stream),
                                           extensions=response.extensions)
-            clear(bench_key)
+            clear(keys[0])
             _log(source, source_model, 'served', 0)
             return response
         message = (f'Every free source for {group_of(model)} is busy; soonest retry in {fmt_wait(soonest)}.'
@@ -426,5 +506,6 @@ class FreeBackend(CustomBackend):
         raise BackendError('Free-tier models are remote; nothing to unload.')
 
     def empty_state_hint(self):
-        return ('No free source answered. Kilo and OVH need no setup; Cline needs `cline auth`; '
-                'keyed sources need their variable (GROQ_API_KEY, ...). Then /reconnect.')
+        return ('No free source answered. Kilo, OVH and LLM7 need no setup; Cline needs `cline auth`; '
+                'keyed sources need a key in /settings or their variable (GROQ_API_KEY, ...; '
+                'CLOUDFLARE_API_KEY is account_id:token). Then /reconnect.')

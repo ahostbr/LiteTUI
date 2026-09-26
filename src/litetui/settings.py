@@ -167,6 +167,12 @@ class Settings:
     github_models_token: str = ""
     openrouter_api_key: str = ""
     gemini_api_key: str = ""
+    ollama_api_key: str = ""
+    zai_api_key: str = ""
+    #: "account_id:token" (the account id goes in the URL, the token is the bearer).
+    cloudflare_api_key: str = ""
+    longcat_api_key: str = ""
+    sealion_api_key: str = ""
     llama_host: str = "http://localhost:7470"
     #: Explicit installed executable. Empty selects the ecosystem default.
     llama_executable: str = ""

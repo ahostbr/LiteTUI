@@ -14,7 +14,8 @@ _SENSITIVE_NAME = re.compile(r"key|token|secret|password|auth", re.IGNORECASE)
 #: only ever told whether each is set, never the value (Ryan 2026-09-24,
 #: liteask a-29b8bd60: "a key field per source in /settings + sidecar").
 SECRET_FIELDS = frozenset({"groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
-                           "github_models_token", "openrouter_api_key", "gemini_api_key"})
+                           "github_models_token", "openrouter_api_key", "gemini_api_key", "ollama_api_key",
+                           "zai_api_key", "cloudflare_api_key", "longcat_api_key", "sealion_api_key"})
 
 
 def is_sensitive(name: str) -> bool:
