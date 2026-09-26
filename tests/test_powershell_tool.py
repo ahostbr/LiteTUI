@@ -1,6 +1,6 @@
 """A first-class PowerShell tool, preferred on Windows. bash stays as backup.
 
-Ryan: "add a new PS tool and point the agent to it if OS = windows first. keep
+the user: "add a new PS tool and point the agent to it if OS = windows first. keep
 bash for unix systems or as backup."
 
 The cost of not having one was visible in a real turn: the model tried

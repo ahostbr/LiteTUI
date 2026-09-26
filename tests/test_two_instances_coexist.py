@@ -1,7 +1,7 @@
 """T688 — two LiteTUI instances share one settings.json and must not erase
 each other.
 
-Ryan, 2026-09-12: *"one thing i wanna check is how two litetui processes coexist
+the user, 2026-09-12: *"one thing i wanna check is how two litetui processes coexist
 with their settings, backend, model selection, think level etc ... make sure two
 litetui instances coexist gracefully."* Two were live when this was written
 (litetui.exe 39320 and 128748), both with cwd C:\\Projects\\LiteTUI, so both
@@ -17,7 +17,7 @@ with no threads — a timing test would have implied the bug needs bad luck.
 
 ⚠️ EVERY ARM USES A TEMP ROOT. Two instances were running against the real
 C:\\Projects\\LiteTUI\\settings.json while this was written; a test that touched
-the default root would have rewritten Ryan's live seat's settings.
+the default root would have rewritten the user's live seat's settings.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def test_a_second_instance_does_not_erase_the_first(tmp_path: Path) -> None:
 def test_the_field_a_second_instance_never_touched_is_left_alone(tmp_path: Path) -> None:
     """The general form, stated separately because it is the bigger blast radius.
 
-    The arm above names two fields Ryan can see. This one says the rule: a save
+    The arm above names two fields the user can see. This one says the rule: a save
     may only move what THIS instance changed. Seventy keys travel in that file,
     and a stale write moves all of them at once.
     """
@@ -133,7 +133,7 @@ def test_a_seat_does_not_persist_a_name_it_was_refused(tmp_path: Path) -> None:
     """The second instance registers as a GENERATED name and must not write the
     name it asked for back into the shared file.
 
-    Ryan runs two seats from one repo; the second asked for `OpenBolt`, the
+    the user runs two seats from one repo; the second asked for `OpenBolt`, the
     registry refused the takeover because a live seat held it, and issued
     `OddFlag`. `Seat.name` is corrected from the register output
     (`harness._resolved_name`) but `settings.seat_name` is not — so the instance
@@ -166,7 +166,7 @@ def test_a_seat_does_not_persist_a_name_it_was_refused(tmp_path: Path) -> None:
 
 
 def test_a_model_switch_and_a_think_level_change_both_persist(tmp_path: Path) -> None:
-    """The two knobs Ryan named, changed in different instances (T688 amendment).
+    """The two knobs the user named, changed in different instances (T688 amendment).
 
     RUNTIME is already per instance — `settings_mod.load()` runs once per app
     (app.py:1140) and each holds its own `backend` and current model. What

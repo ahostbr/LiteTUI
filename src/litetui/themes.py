@@ -1,6 +1,6 @@
 """LiteTUI's own themes — the LiteSuite palette, ported ONCE and now frozen.
 
-🔴 THIS PALETTE IS INDEPENDENT OF LITESUITE'S. RYAN'S RULING, 2026-08-28:
+🔴 THIS PALETTE IS INDEPENDENT OF LITESUITE'S. THE USER'S RULING, 2026-08-28:
 *let them diverge.* Every preset here began as a port of
 `LiteSuite/apps/web/src/litesuite/lib/themes.ts` (12 presets, including Matrix
 and Lite Suite), mapped token-for-token onto Textual's Theme fields — but that
@@ -17,7 +17,7 @@ file keeps two. The concrete difference is `matrix.panel` — **#0D0208 here vs
 "do not invent colors here" was enforceable: `test_themes.py` re-extracted
 themes.ts whenever the LiteSuite checkout was present and failed on the first
 mismatched hex. That gate was DELETED with the ruling, because its whole
-premise — one palette, two selectors — is the thing Ryan reversed. A deleted
+premise — one palette, two selectors — is the thing the user reversed. A deleted
 gate otherwise leaves a claim with nothing behind it, so the claim changed
 too: the rule is no longer "match upstream", it is "change nothing without a
 reason of your own".
@@ -134,7 +134,7 @@ _port("forest", accent="#22c55e", accent_bright="#4ade80",
       void="#060a06", panel="#0e1610", shelf="#162018", bone="#e6f0e6",
       ok="#34d399", danger="#ef4444", warning="#fbbf24", info="#38bdf8")
 
-# The one Ryan asked for by name. Phosphor on black; even info is full
+# The one the user asked for by name. Phosphor on black; even info is full
 # green, because in the Matrix there is no other color.
 _port("matrix", accent="#00FF41", accent_bright="#55ff55",
       void="#0D0208", panel="#0D0208", shelf="#003B00", bone="#00FF41",
@@ -161,7 +161,7 @@ _port("amber-ledger", accent="#e8b33f", accent_bright="#f2c356",
       ok="#8b8065", danger="#c5453b", warning="#d9713c", info="#a99c84")
 
 
-# ── stripped from the picker (Ryan, 2026-08-21: "strip all the light mode
+# ── stripped from the picker (the user, 2026-08-21: "strip all the light mode
 # ones out") — unregistered at app init and excluded from settings choices.
 # textual-ansi rides along: terminal-relative colors, neither dark nor ours.
 LIGHT_BUILTINS = (

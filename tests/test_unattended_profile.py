@@ -1,6 +1,6 @@
 """The tool-authority setting governs UNATTENDED turns too. T084.
 
-Ryan, with two screenshots: a seat was denied writing
+the user, with two screenshots: a seat was denied writing
 `artifacts/ninfer-report.md` with "[policy denied] write: scheduled profile
 does not grant workspace_write" while his Settings showed Conversation tool
 authority = "autonomous - every capability, unattended, never asks".
@@ -18,13 +18,13 @@ SCHEDULED)` looks like it falls back to the read-only floor. It does not:
 ALWAYS exists and the getattr default NEVER fires. Measured as mutation arm B
 before it was believed.
 
-📌 RYAN THEN RULED THE DEFAULT ITSELF: `autonomous`, plus cron and loops on the
+📌 THE USER THEN RULED THE DEFAULT ITSELF: `autonomous`, plus cron and loops on the
 same set level, plus a footer that always names it and shift+tab to cycle it.
 So Control 5 is no longer "degrade to read-only" -- it is ALLOWED **and no
 confirm modal is ever constructed**. Both halves are asserted below, and the
 second one is the one that keeps an unattended turn from hanging.
 
-📌 2026-09-24: THE READ-ONLY FLOOR IS GONE. Ryan: "remove scheduled completely
+📌 2026-09-24: THE READ-ONLY FLOOR IS GONE. the user: "remove scheduled completely
 it makes no sense to me ... make interactive ask only for dangerous cmds any
 deletions or zip expansions weird procc runs that arent its tools and dangerous
 cmds threw PS and bash". `tool_policy.unattended()` no longer exists: an
@@ -80,7 +80,7 @@ def _woken_by_mail(profile_name: str) -> str:
 
 
 def _write_outside_the_store(profile_name: str):
-    """The exact call Ryan was denied: a workspace file that is not `.convos`."""
+    """The exact call the user was denied: a workspace file that is not `.convos`."""
     return evaluate(
         profile_name,
         WRITE_POLICY,
@@ -92,7 +92,7 @@ def _write_outside_the_store(profile_name: str):
 # -- CONTROL 1: the setting reaches the unattended path ----------------------
 
 def test_autonomous_reaches_an_INBOX_WOKEN_turn():
-    """Ryan's exact case, end to end through the real delivery method."""
+    """the user's exact case, end to end through the real delivery method."""
     stamped = _woken_by_mail(AUTONOMOUS)
     assert stamped == AUTONOMOUS, "the setting never reached the unattended turn"
     assert _write_outside_the_store(stamped).action == ALLOW
@@ -104,7 +104,7 @@ def test_strict_still_ASKS_for_the_same_write():
     """Without this, the fix is indistinguishable from removing the guard.
 
     Was `test_scheduled_still_DENIES_the_same_write`; `scheduled` is gone
-    (Ryan 2026-09-24), and strict is the narrowest level left. It reaches the
+    (the user 2026-09-24), and strict is the narrowest level left. It reaches the
     inbox turn intact and still asks for the write -- which, unattended, the
     door below turns into a refusal.
     """
@@ -118,12 +118,12 @@ def test_strict_still_ASKS_for_the_same_write():
 # -- CONTROL 5: no saved setting -> ALLOWED, and NO MODAL. BOTH halves. ----
 
 def test_a_user_who_never_chose_gets_AUTONOMOUS_unattended():
-    """Ryan's ruling, asked as an explicit either/or and answered "b default
+    """the user's ruling, asked as an explicit either/or and answered "b default
     to auto" -- modelled on Claude Code, whose own default mode is `auto`.
 
     ⚠️ THIS TEST ASSERTED THE OPPOSITE AN HOUR AGO. The first version of
     Control 5 read "no saved setting -> read-only, never a modal", and it was
-    written before Ryan ruled. He was shown the permissiveness in the option
+    written before the user ruled. He was shown the permissiveness in the option
     text he chose from -- an unset user gets workspace_write on an unattended
     turn -- and chose it anyway. The `premise moved` assertion below is what
     made the change loud instead of silent when the default flipped.
@@ -146,7 +146,7 @@ def test_the_default_can_never_CONSTRUCT_a_modal():
     The case that pins it is `confirm_always`, which forces a prompt
     REGARDLESS of capabilities: an unknown MCP tool. Drop `profile.confirm and`
     and this is the test that goes red rather than the app hanging in front of
-    Ryan with no way to answer.
+    the user with no way to answer.
 
     (The loop over every profile via `unattended()` is gone with that
     function; the profiles that CAN confirm are covered by the door test
@@ -166,7 +166,7 @@ def test_the_default_can_never_CONSTRUCT_a_modal():
 @pytest.mark.parametrize("name", tool_policy.PROFILE_NAMES)
 async def test_an_unattended_CONFIRM_is_refused_in_words_never_a_modal(
         monkeypatch, name, source):
-    """The replacement for the read-only floor (Ryan 2026-09-24).
+    """The replacement for the read-only floor (the user 2026-09-24).
 
     Every profile, every unattended source, the one tool that forces a
     prompt (an undeclared MCP tool). The outcome is ALLOW (autonomous) or a
@@ -194,7 +194,7 @@ async def test_an_unattended_CONFIRM_is_refused_in_words_never_a_modal(
 
 
 def test_an_explicitly_chosen_interactive_KEEPS_interactive_unattended():
-    """Was `..._still_degrades_unattended` (to `scheduled`). Ryan 2026-09-24
+    """Was `..._still_degrades_unattended` (to `scheduled`). the user 2026-09-24
     removed that floor: the mail turn keeps the profile he chose, and the
     model is told the one rule up front (INBOX_TURN_RULE) -- appended to what
     the MODEL reads, never to the bubble the human sees.
@@ -255,7 +255,7 @@ def test_a_path_escaping_the_store_is_not_self_store():
 # -- T085: EVERY SCHEDULED TURN RUNS AUTO ----------------------------------
 #
 # ⚠️ THIS SECTION HAS BEEN REWRITTEN TWICE IN ONE EVENING and the churn is the
-# point of the comment. Ryan ruled, in order:
+# point of the comment. the user ruled, in order:
 #   1. "cron and loops run at same set profile level"      -> read the setting
 #   2. "select either auto mode or interactive" per job    -> read the job
 #   3. "just change it so schedule only runs auto mode"    -> autonomous, always
@@ -294,7 +294,7 @@ def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
 
 
 def test_a_scheduled_turn_runs_AUTO_and_may_write_the_workspace(monkeypatch):
-    """Ryan: "just change it so schedule only runs auto mode"."""
+    """the user: "just change it so schedule only runs auto mode"."""
     stamped = _fired_by_a_job(monkeypatch)
     assert stamped == AUTONOMOUS
     assert _write_outside_the_store(stamped).action == ALLOW

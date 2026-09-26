@@ -266,7 +266,7 @@ class TpsState:
         # VERIFY STEP carrying every accepted draft token - measured 2026-09-18:
         # 62 deltas/s for 245 tok/s on predictable text, 150 on unpredictable.
         # Counting deltas read ~55 "tok/s" live while the settled figure read
-        # 152; Ryan: "burst at 150ish at the start ... then slow down ... and
+        # 152; the user: "burst at 150ish at the start ... then slow down ... and
         # then that wall at 152 at the end". chars/4 is the app's own token
         # estimate (the ctx meter uses it), and it is only ever used when it
         # exceeds the delta count - an engine streaming one token per delta
@@ -354,7 +354,7 @@ class TpsState:
         own decode loop — llama.cpp and NInfer both publish `timings.
         predicted_per_second` — already knows the answer.
 
-            RYAN: *"66toks is less than lmstudio etc"* / *"whole point is a toks
+            THE USER: *"66toks is less than lmstudio etc"* / *"whole point is a toks
             improvement"*. A comparison between engines is only worth making if
             the number is of the same thing, and the engine's own figure is the
             one that is.

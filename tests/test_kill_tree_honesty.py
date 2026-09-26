@@ -223,7 +223,7 @@ def test_kill_tree_returns_a_value_at_all():
     assert returns, "kill_tree still returns nothing"
 
 
-# ── the job-object fast path (Ryan's ruling: option (c) + fallback) ──────
+# ── the job-object fast path (the user's ruling: option (c) + fallback) ──────
 
 def test_the_DEFAULT_spawn_gets_NO_job_which_protects_the_long_lived_callers():
     """🔴 THE REGRESSION GUARD, and it matters more than the fast path.

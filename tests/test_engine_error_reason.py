@@ -1,7 +1,7 @@
 """The engine's own reason must reach the user, and a permanent media refusal
 must not poison the conversation (T824).
 
-🔴 RYAN RAN `view_image` ON A 35B ARTIFACT STARTED WITHOUT `--vision`.
+🔴 THE USER RAN `view_image` ON A 35B ARTIFACT STARTED WITHOUT `--vision`.
 The engine answered HTTP 400 `vision_disabled`. LiteTUI showed
 "Something went wrong talking to the model server." — and then every later
 turn failed the same way, because the image part stayed in history and was
@@ -56,7 +56,7 @@ def _api_error(code: str, status: int = 400, message: str = "refused"):
 
 
 def test_vision_disabled_says_what_is_wrong_and_what_to_do():
-    """🔴 THE SENTENCE RYAN SHOULD HAVE SEEN."""
+    """🔴 THE SENTENCE THE USER SHOULD HAVE SEEN."""
     said = _plain_backend_error(_api_error("vision_disabled"), "ninfer")
     assert "without vision" in said
     assert "cannot be switched on for one request" in said
@@ -327,7 +327,7 @@ def test_a_bare_name_still_works_and_gets_the_generic_sentence():
         "The model server seems closed — start it, or check /backend.")
 
 
-# ── the refusal that printed a web page (Ryan, 2026-09-18) ────────────────
+# ── the refusal that printed a web page (the user, 2026-09-18) ────────────────
 #
 # His compaction failed at 98% of a 100,096 window and the chat showed the
 # status followed by a whole HTML error document. His report: *"that error

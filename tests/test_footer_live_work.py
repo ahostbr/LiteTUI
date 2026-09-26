@@ -1,6 +1,6 @@
 """T570 piece 1 — what is running without me shows in the footer.
 
-Ryan (19:5x): "also sub agents and background process should show in the footer".
+the user (19:5x): "also sub agents and background process should show in the footer".
 
 🔴 THE SPLIT IS ONE PREDICATE, NOT TWO. A task is a subagent or it is a
 background process, and `split_live` is the only place that decides. Deriving it

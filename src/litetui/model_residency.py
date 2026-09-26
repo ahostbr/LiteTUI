@@ -23,7 +23,7 @@ def _loop_running() -> bool:
 
     🔴 `asyncio.run` RAISES IF A LOOP IS ALREADY RUNNING, so the
     `list_models` branch below was not a slow path -- it was a CRASH on every
-    caller that lives in the UI. Ryan hit it by typing `/settings` on the NInfer
+    caller that lives in the UI. the user hit it by typing `/settings` on the NInfer
     backend: `settings_ui.py:60` -> here -> `RuntimeError: asyncio.run() cannot
     be called from a running event loop`, and the dialog never opened.
 
@@ -33,7 +33,7 @@ def _loop_running() -> bool:
 
     ⬜ THE FALLBACK WAS ALREADY CORRECT AND ALREADY HAD THE ANSWER.
     `app.model_rows` is built by `connect()` from this same `list_models` call
-    and carries `loaded` per row -- Ryan's own traceback shows
+    and carries `loaded` per row -- the user's own traceback shows
     `{'qwen3_6_35b_a3b': ModelRow(..., loaded=True)}` sitting in the locals
     while the line above it raised. So on-loop callers lose nothing but the
     freshness of a re-query, and off-loop callers (the side-call resolver, which
@@ -129,7 +129,7 @@ def substitute_main_model(
 ) -> str | None:
     """Which resident model a MAIN seat should answer with, or None to refuse.
 
-    🔴 RYAN'S RULE: "when a model is already loaded, USE THAT ONE." T594 refused
+    🔴 THE USER'S RULE: "when a model is already loaded, USE THAT ONE." T594 refused
     whenever several were resident and none was the one asked for, on the
     reasoning that substituting is "picking one on the user's behalf". The
     hazard is real and the remedy was wrong: a tester's fresh thread refused its

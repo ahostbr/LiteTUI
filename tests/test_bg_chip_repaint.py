@@ -1,6 +1,6 @@
 """T581 — the footer chip and the Background panel must agree.
 
-Ryan's screenshot, 2026-09-10 20:5x on a live Codex-OAuth seat: the footer read
+the user's screenshot, 2026-09-10 20:5x on a live Codex-OAuth seat: the footer read
 `bg:1` while the Background panel read "(0) Nothing running in the background",
 right after task `t-cc94ad` (a 300s timeout) finished and its inbox line was
 delivered.
@@ -120,7 +120,7 @@ async def test_the_chip_appears_when_a_task_starts() -> None:
 
 @pytest.mark.asyncio
 async def test_the_chip_DROPS_when_the_task_finishes() -> None:
-    """Ryan's exact case: the task ends on its own and the chip must go with it.
+    """the user's exact case: the task ends on its own and the chip must go with it.
 
     Nothing is clicked and no turn runs, which is the whole difficulty — a
     background task finishing is the one state change with no user action
@@ -147,7 +147,7 @@ async def test_the_chip_DROPS_when_the_task_finishes() -> None:
 @pytest.mark.asyncio
 async def test_the_chip_and_the_panel_read_the_same_answer() -> None:
     """The card's actual requirement, asserted as an EQUALITY between the two
-    surfaces rather than as two separate expectations — the failure Ryan saw was
+    surfaces rather than as two separate expectations — the failure the user saw was
     a DISAGREEMENT, and two arms that each check one side can both pass while
     the pair still disagrees."""
     a = make_app()

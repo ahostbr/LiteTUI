@@ -21,7 +21,7 @@ import _script_guard  # tests/ is sys.path[0] when a file is run as a script
 # 🔴 THE HIGHEST-RISK FILE IN THE SCRIPT-STYLE SET, AND IT WAS THE LEAST GUARDED.
 # "live" in this file's name means a real running APP, not the live settings
 # FILE — but it drives `/settings` through that app, which is the exact route
-# `conftest.py`'s docstring records as having reset Ryan's `tool_iterations`
+# `conftest.py`'s docstring records as having reset the user's `tool_iterations`
 # 100 -> 48 (`_on_settings_saved` -> `app.py:3452` -> `settings_mod.save(new)`
 # with no root=). conftest's autouse fixture closed that for the pytest half and
 # cannot reach a script-style file. See tests/_script_guard.py.
@@ -172,7 +172,7 @@ async def test_the_live_settings_wiring_holds() -> None:
 async def test_saving_a_backend_setting_keeps_the_backend_on_the_new_object() -> None:
     """🔴 THE STALE-SETTINGS-REFERENCE DEFECT, PINNED.
 
-    Ryan set `ninfer_max_context` in /settings, saved it, and the engine still
+    the user set `ninfer_max_context` in /settings, saved it, and the engine still
     spawned with the old value — "I can't set the context level." Root cause:
     `_collect` builds a NEW Settings object (`replace()`) and `_on_settings_saved`
     rebinds `app.settings` to it, but the backend had captured the OLD object in
@@ -227,7 +227,7 @@ def _no_settings_write(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_saving_a_changed_backend_actually_switches_the_engine(_no_settings_write) -> None:
-    """🔴 THE SAME DEFECT, ONE LAYER OUT — and the one Ryan hit hardest.
+    """🔴 THE SAME DEFECT, ONE LAYER OUT — and the one the user hit hardest.
 
     2026-09-18: *"i set the fucking backend to ninfer and loaded in vram and
     its still talking to fucking lmstudio"*. Saving wrote `backend` to

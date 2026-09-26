@@ -84,7 +84,7 @@ async def test_hook_process_cannot_escape_effective_policy(app, tmp_path):
     calls = []
     tool(app, lambda args: calls.append(1))
     # Was the `scheduled` floor, which DENIED the hook's process outright; that
-    # profile is gone (Ryan 2026-09-24, "remove scheduled completely it makes
+    # profile is gone (the user 2026-09-24, "remove scheduled completely it makes
     # no sense to me"). Strict ASKS for process execution, and on a turn nobody
     # is watching that question becomes a refusal -- the hook still cannot run
     # with more authority than the turn holds.
@@ -322,7 +322,7 @@ async def test_real_stream_rejected_completion_never_finalizes(app, tmp_path, mo
         # 🔴 COUNT COMPLETIONS, NOT CALLS (T821). This arm asserted
         # `len(requests)` and was CORRECT when it was written — 4e873f7,
         # 2026-09-12. It went red on 2026-09-16 when `_kick_card_summary`
-        # (f2571bf, Ryan's collapsed-card title) started using the same
+        # (f2571bf, the user's collapsed-card title) started using the same
         # transport for a one-message side call: "Summarise the assistant reply
         # below in ONE short line, at most ten words."
         #

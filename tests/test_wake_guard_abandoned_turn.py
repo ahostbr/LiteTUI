@@ -1,7 +1,7 @@
 """The post-compaction wake ping must not chase a turn the user ABANDONED.
 
 ⚠️ HONEST SCOPE, PRESERVED DELIBERATELY. This is NOT a fix for the compaction
-bug Ryan originally reported, and it would NOT have fixed that symptom. It is a
+bug the user originally reported, and it would NOT have fixed that symptom. It is a
 separate, real edge case that was found while reading the same code. Do not cite
 this file as evidence that the reported bug is closed.
 

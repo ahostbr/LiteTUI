@@ -189,7 +189,7 @@ def _cmd_quit(app, name: str, arg: str) -> None:
 def _cmd_tools(app, name: str, arg: str) -> None:
     """/tools SHOWS THE TOOL LIST. It used to toggle.
 
-    Ryan, 2026-08-24: "remove the func of /tools switching on and off and make
+    the user, 2026-08-24: "remove the func of /tools switching on and off and make
     it show this list please."
 
     🔴 Ctrl+T KEEPS THE TOGGLE, deliberately. Every tools-off refusal names it
@@ -213,7 +213,7 @@ def _cmd_tools(app, name: str, arg: str) -> None:
 def _cmd_pause(app, name: str, arg: str) -> None:
     """/pause — hold the agent loop before its next model round; again to resume.
 
-    Ryan, 2026-09-18: "i want the entire agent loop wrapped in a if not paused
+    the user, 2026-09-18: "i want the entire agent loop wrapped in a if not paused
     statement ... that i can toggle with /pause". Bare /pause TOGGLES and
     `set_paused` announces which way it landed - same shape as /plan, and for
     the same reason: the palette row invokes this with no argument.
@@ -224,7 +224,7 @@ def _cmd_pause(app, name: str, arg: str) -> None:
 def _cmd_plan(app, name: str, arg: str) -> None:
     """/plan — plan mode, from the keyboard or the palette (T573 piece 3).
 
-    Ryan asked for this door alongside Ctrl+P and the footer chip (liteask
+    the user asked for this door alongside Ctrl+P and the footer chip (liteask
     a-5d6c1ca0). All three run `set_plan_mode`, which is where entering and
     leaving the mode is actually defined — the prompt section is rebuilt there
     and a second copy of that is the one that forgets it.
@@ -257,7 +257,7 @@ def _cmd_keys(app, name: str, arg: str) -> None:
     Textual 8.1.0 ships `action_show_help_panel` and `action_hide_help_panel`
     and NO toggle, and the show verb is idempotent by design -- it queries for a
     HelpPanel and mounts one only on NoMatches. So calling it twice opened the
-    panel once and then did nothing, which is what Ryan saw. The toggle has to
+    panel once and then did nothing, which is what the user saw. The toggle has to
     be ours; there is nothing upstream to delegate to.
     """
     from textual.widgets import HelpPanel

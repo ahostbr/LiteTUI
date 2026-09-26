@@ -1,6 +1,6 @@
 """Per-tool disable: the boxes unticked in `/tools`.
 
-Ryan: "there should be a full list of tools available to the model with
+the user: "there should be a full list of tools available to the model with
 individual toggle checkmarks."
 
 TWO MECHANISMS, AND NEITHER IS SUFFICIENT ALONE — which is why there are two
@@ -141,7 +141,7 @@ async def test_a_disabled_tool_is_REFUSED_AT_DISPATCH_when_called_by_name():
 async def test_a_tool_disabled_MID_CONVERSATION_cannot_run_again():
     """🔴 THE HIGH-RISK CASE, AND IT IS THE MOST ORDINARY ONE.
 
-    Ryan unticks something he just watched work. The call and its result are
+    the user unticks something he just watched work. The call and its result are
     already in the transcript — a worked example the model can imitate — and
     withholding the schema does nothing about that. Only the door does.
     """

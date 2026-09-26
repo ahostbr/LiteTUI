@@ -1,11 +1,11 @@
 """Owning `ninfer-serve` from LiteTUI — the launcher the backend calls.
 
-🔴 RYAN, 2026-09-17 (liteask a-35456da0): *"LiteTUI may start it"* — for 5090 end
+🔴 THE USER, 2026-09-17 (liteask a-35456da0): *"LiteTUI may start it"* — for 5090 end
 users running LiteTUI WITHOUT LiteSuite. Until this module the backend could
 only ATTACH (`ninfer_backend.py` docstring), which made LiteTUI-alone dead
 without LiteSuite. Attaching is still the default; starting is `/engine start`.
 
-REUSE, DO NOT REBUILD (Ryan, same day: *"agents ... rebuild every system for
+REUSE, DO NOT REBUILD (the user, same day: *"agents ... rebuild every system for
 every backend over and again instead of making modular resuable pieces"*):
   * the argv is LiteSuite's own (`apps/desktop/.../services/llm/ninfer-args.ts`
     buildNInferArgs) reproduced flag for flag, so an engine started here is the
@@ -133,7 +133,7 @@ def ninfer_artifact(settings) -> Path | None:
     Two candidates and no choice is None, not a guess — the wrong 22 GB file is
     a long wait that ends in the wrong model.
 
-    ⚠️ AND THAT GUARD TOOK RYAN'S START PATH AWAY, SILENTLY, ON 2026-09-17.
+    ⚠️ AND THAT GUARD TOOK THE USER'S START PATH AWAY, SILENTLY, ON 2026-09-17.
     Two artifacts existed that morning; a conversion run wrote a third at 20:1x
     (qwen3_5_0_8b.ninfer). `len(found) == 1` stopped being true, so
     `/engine start` began refusing — hours before he tried it, for a reason
@@ -233,7 +233,7 @@ def build_ninfer_args(
         args += ["--host-kv-mib", str(host_kv_mib)]
     if preserve_thinking:
         args.append("--preserve-thinking")
-    # 15:0x 2026-09-17, Ryan's screenshot: the 35B-A3B carries a `vision` component, the
+    # 15:0x 2026-09-17, the user's screenshot: the 35B-A3B carries a `vision` component, the
     # engine was started without --vision, and the first view_image put a media part in the
     # history -> every request after it was `HTTP 400 vision disabled` (serving.md:43-45).
     # Gated on the artifact like --spec: the flag on a text-only artifact fails at load.
@@ -316,7 +316,7 @@ def registered_entry() -> dict | None:
     LiteTUI had written itself, saying `owner: "litetui"`, with the pid beside
     it.
 
-    RYAN, 2026-09-18: *"it spawned that ninfer server then refused to close it
+    THE USER, 2026-09-18: *"it spawned that ninfer server then refused to close it
     with /engine stop saying it didnt spawn it ... killing litetui didnt close
     the server"*. Measured: ninfer-serve.exe pid 269276, 10.7 GB resident,
     parent already gone, entry still naming litetui as owner.
@@ -424,7 +424,7 @@ class OwnedEngine:
     #: A KILL_ON_JOB_CLOSE job holding the engine. THE POINT IS WHAT HAPPENS
     #: WHEN NOBODY RUNS ANY CODE: Windows closes a dead process's handles, so
     #: the engine dies with LiteTUI even when LiteTUI is FORCE-KILLED and no
-    #: `atexit` ever runs. That is the case Ryan hit on 2026-09-18 —
+    #: `atexit` ever runs. That is the case the user hit on 2026-09-18 —
     #: *"killing litetui didnt close the server"* — leaving ninfer-serve.exe
     #: pid 269276 resident with 10.7 GB. None on non-Windows or if the job
     #: could not be made; `stop` then falls back to the taskkill walk.
@@ -460,7 +460,7 @@ def _log_event(text: str) -> None:
     🔴 T877. A REFUSED `/engine start` USED TO LEAVE NO TRACE ANYWHERE. Every
     refusal raises above the `open(lp, "a")` in `start()`, so the log — the one
     artefact anybody looks at afterwards — was written ONLY on the paths that got
-    as far as launching a process. Measured 2026-09-18 00:2x: Ryan ran `/model`
+    as far as launching a process. Measured 2026-09-18 00:2x: the user ran `/model`
     then `/engine start`, nothing happened, and the investigation had NOTHING to
     read: no log line, no process, no registry entry, no VRAM movement. Three
     agents guessed at four different causes for twenty minutes because the only
@@ -484,7 +484,7 @@ def _log_event(text: str) -> None:
 
 def refuse_reason(settings, *, healthy) -> str | None:
     """Why a start must NOT happen, or None. Every path that puts a model in VRAM
-    answers here first (Ryan 2026-09-10: check, ask, then load)."""
+    answers here first (the user 2026-09-10: check, ask, then load)."""
     explicit = str(getattr(settings, "ninfer_host", "") or "").strip().rstrip("/")
     if explicit and healthy(explicit):
         return f"an NInfer engine is already answering at {explicit} (ninfer_host) — attach to it; nothing was started."
@@ -575,7 +575,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     # covered too, not only one that came up.
     #
     # `atexit` was the only cleanup here, and atexit does not run when the app
-    # is force-killed. Ryan, 2026-09-18: *"killing litetui didnt close the
+    # is force-killed. the user, 2026-09-18: *"killing litetui didnt close the
     # server"* — ninfer-serve.exe pid 269276, 10.7 GB, parent gone. A job needs
     # nobody to run anything: the kernel kills every member when the last
     # handle closes, and Windows closes our handles for us when we die however

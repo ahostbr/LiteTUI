@@ -1,6 +1,6 @@
 """A projector sitting beside a model is paired with it. T231.
 
-Ryan, shown a vision card that could not be captured: "might b a bug with our
+the user, shown a vision card that could not be captured: "might b a bug with our
 lamma setup ... not loading the vision gguf i think ... like lmstudio does for
 us."
 
@@ -171,7 +171,7 @@ def _app_with(monkeypatch, rows, load_cfg=None):
 
 
 def test_a_paired_projector_is_NAMED_when_the_model_loads(tmp_path, monkeypatch):
-    """🔴 ANNOUNCED, NOT SILENT — Ryan's ruling.
+    """🔴 ANNOUNCED, NOT SILENT — the user's ruling.
 
     A guess that changes a model's modalities must not be invisible: with a
     projector the model reads the image, without one it answers as though the

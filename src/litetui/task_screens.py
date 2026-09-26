@@ -1,6 +1,6 @@
 """The two footer panels: what is running without me. T570 piece 3.
 
-Ryan (19:5x): "both backgroudn proccess and subagents will need a new modal for
+the user (19:5x): "both backgroudn proccess and subagents will need a new modal for
 them. backgroudn proccess just need to show them running with time display etc
 ... sub agents should show prompt sent > thinking > response ... clearing when
 the agent is done."
@@ -168,7 +168,7 @@ class _LiveTaskBody(Widget):
                     classes="lt-row",
                     markup=False,
                 )
-                # RYAN, 2026-09-18 12:4x, seven runaway polls on the 35B seat:
+                # THE USER, 2026-09-18 12:4x, seven runaway polls on the 35B seat:
                 # "thats shows a bug in the bg tasks modal ... i have no way to
                 # stop them myself if needed". The kill existed (/tasks kill
                 # <id>, app._kill_background) and this panel never offered it -
@@ -196,7 +196,7 @@ class _LiveTaskBody(Widget):
         🔴 THE MEMBERSHIP CHECK IS WHAT MAKES THIS CLEAR ITSELF. A task that
         finished leaves `split_live` on its own, with no key pressed — so the
         id list changing IS the completion signal, and rebuilding on it is what
-        Ryan's "clearing when the agent is done" asks for. Updating only the
+        the user's "clearing when the agent is done" asks for. Updating only the
         text would leave a finished agent on screen with a frozen clock, which
         looks like a hang rather than a finish.
         """

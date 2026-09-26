@@ -116,7 +116,7 @@ def store_block(app, live: bool=False) -> str:
         return ''
     if live:
         return '\n\n## Your store, as it stands right now\n\nRe-read from disk just now.\n\n' + '\n\n'.join(parts) + '\n'
-    # RULING (Ryan, 2026-08-19): injected ONCE, not per turn. Re-sending
+    # RULING (the user, 2026-08-19): injected ONCE, not per turn. Re-sending
     # three files every turn is affordable at 1M context and is NOT on a
     # local 27B, where it crowds out the conversation itself. The text
     # below must not promise a per-turn refresh -- an instruction that
@@ -131,7 +131,7 @@ def append_tps_into(app, t: Text, sep: str) -> None:
     no behavioural gain — but the docstring has to say so, or the next reader
     trusts the name.
 
-    Ryan asked for the count "next to toks", so it shares `footer_show_tps`
+    the user asked for the count "next to toks", so it shares `footer_show_tps`
     rather than growing its own toggle: LM Studio prints them as one cluster
     ("17 GEN 2,775 tok") and that is what he is comparing against.
 

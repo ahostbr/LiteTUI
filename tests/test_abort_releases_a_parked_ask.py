@@ -122,7 +122,7 @@ def test_abort_releases_a_thread_parked_in_an_ask():
 
 
 def test_the_returned_text_names_the_abort_and_not_an_Esc_nobody_pressed():
-    """⚠️ The `cancel` text says "Ryan pressed Esc without answering".
+    """⚠️ The `cancel` text says "the user pressed Esc without answering".
 
     A turn the HOST stopped is a different event with a different actor, and the
     reader is a model that will reason from whichever one it is told. Reusing
@@ -157,8 +157,8 @@ def test_a_second_abort_releases_nothing():
 def test_CONTROL_an_ANSWERED_ask_is_not_overwritten_by_a_later_abort():
     """🔴 Without this, `cancel_pending_asks` could resolve everything blindly.
 
-    An abort arriving just after a real answer must not turn Ryan's submitted
-    selection into "ABORTED — never put to Ryan". This is what the `is_set`
+    An abort arriving just after a real answer must not turn the user's submitted
+    selection into "ABORTED — never put to the user". This is what the `is_set`
     check buys, and the only arm that can tell a guarded cancel from a
     scorched-earth one.
     """
@@ -208,7 +208,7 @@ def test_the_abort_reply_reports_what_actually_happened(monkeypatch):
     """🔴 `stopped` is MEASURED now. It used to be the literal True, always.
 
     The host had no way to tell a stop that worked from one that did nothing,
-    which is exactly the state Ryan was in: three interrupts sent, three
+    which is exactly the state the user was in: three interrupts sent, three
     successes reported, the turn still running.
     """
     replies: list[dict] = []

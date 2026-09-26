@@ -1,6 +1,6 @@
 """A `--rpc` child never causes a model load. An interactive session still does.
 
-T594. Ryan, 2026-09-10 22:0x, after six probe children of mine put a second 27B
+T594. the user, 2026-09-10 22:0x, after six probe children of mine put a second 27B
 into VRAM beside the one he was using: no model is loaded without checking first
 and asking.
 
@@ -66,7 +66,7 @@ def test_several_are_resident_and_none_is_the_one_asked_for_so_it_SUBSTITUTES():
     resident models there is no obvious answer, and guessing is how a consult
     panel silently reports the wrong model's opinion." The hazard is real. But a
     tester's fresh Frontier Chat thread then REFUSED its first prompt with TWO
-    models resident, which inverts Ryan's standing rule — "when a model is
+    models resident, which inverts the user's standing rule — "when a model is
     already loaded, USE THAT ONE" — and a pane that answers nothing is worse
     than one that answers and says who answered.
 
@@ -130,7 +130,7 @@ async def test_CONTROL_an_INTERACTIVE_session_still_reaches_the_backend_cold():
 
     An interactive LiteTUI on a cold model must still reach the backend, which
     is what lets LM Studio JIT-load it — the convenience `_chat_ready_sync`
-    documents under D2/D11. Ryan's own seat is that person. The headless gate
+    documents under D2/D11. the user's own seat is that person. The headless gate
     is scoped to `--rpc` precisely so this stays true.
     """
     reached: list[str | None] = []

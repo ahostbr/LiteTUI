@@ -1,6 +1,6 @@
 """Pilot: a multi-round Claude turn reads top to bottom in stream order.
 
-Ryan, 2026-09-25: the answer text rendered ABOVE the tool calls it came after.
+the user, 2026-09-25: the answer text rendered ABOVE the tool calls it came after.
 Real LiteTUI app, real ChatLog, real AssistantMessage/ToolMessage widgets; only
 the Claude SDK session is a fake that replays recorded frame shapes.
 """

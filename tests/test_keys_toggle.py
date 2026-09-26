@@ -1,6 +1,6 @@
 """`/keys` TOGGLES the help panel. A second `/keys` used to do nothing at all.
 
-Ryan: "the /keys popup doesnt close after a second /keys is sent."
+the user: "the /keys popup doesnt close after a second /keys is sent."
 
 THE ROOT CAUSE IS IN TEXTUAL, NOT IN OUR LOGIC, and it is worth writing down
 because the plugin looked correct. `App.action_show_help_panel` is IDEMPOTENT

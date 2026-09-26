@@ -7,7 +7,7 @@ commands that name something they RESOLVE — the same key was also read as the
 target. A host that built its envelope with the correlation id last
 (`LiteTuiAdapter.sendCommand`, before LiteSuite a7b904826) therefore retargeted
 every Answer and every Allow at its own `cmd_N`, and this child refused them
-CORRECTLY while nothing anywhere said the two ids were the same field. Ryan's
+CORRECTLY while nothing anywhere said the two ids were the same field. the user's
 walks at 14:07 and 14:17 on 2026-09-xx: the card never cleared, the turn never
 continued, and the child's log said "no ask is waiting on id 'cmd_3'".
 

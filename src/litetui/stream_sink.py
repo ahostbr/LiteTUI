@@ -4,7 +4,7 @@ Every backend used to write the whole growing answer into the card's body and
 ask for a scroll on EVERY token, then swap that plain text for rendered
 Markdown when the turn ended. Measured in a pilot (500 deltas, 2026-09-25):
 580 scroll_end calls and 575 body repaints, plus a reflow at the end. That was
-the streaming flicker Ryan reported.
+the streaming flicker the user reported.
 
 `StreamSink` is the one place a streamed answer is drawn:
 

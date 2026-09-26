@@ -1,9 +1,9 @@
 """NInfer as a LiteTUI backend — the 5090 engine, attached, never spawned.
 
-🔴 RYAN, 2026-09-17: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER and agents got
+🔴 THE USER, 2026-09-17: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER and agents got
 hung up on litesuites integration"*.
 
-The design step is NOT this card. Ryan commissioned it on 2026-09-14 and it is
+The design step is NOT this card. the user commissioned it on 2026-09-14 and it is
 `Docs/CaseStudies/NInfer_CaseStudy_LiteTUI_5090Backend.md` — 128 lines, every
 claim cited to `E:\\SAS\\REPO_CLONES\\ninfer`. Section 9 is adaptation guidance
 and this module is built from it rather than re-derived. Three of its takeaways
@@ -19,7 +19,7 @@ are load-bearing here and none of them is guessable:
     cannot widen them later (`ninfer/docs/serving.md:49-50`).
 
 🔴 WE ATTACH. WE DO NOT SPAWN, EVER — AND THAT IS A RULING, NOT A SIMPLIFICATION.
-Starting `ninfer-serve` puts ~20 GiB on the card, and Ryan's standing rule
+Starting `ninfer-serve` puts ~20 GiB on the card, and the user's standing rule
 (`a-5fd08920`) is that no seat starts it outside LiteSuite. LiteSuite's Model Hub
 owns the process, the approval and the VRAM gate; LiteTUI's job is to USE the
 engine that is already up.
@@ -116,7 +116,7 @@ NINFER_ERROR_ACTION = {
     # THE MEDIA CODES (T824). Read from ninfer/docs/serving.md, not guessed:
     # :44 'media requests and token-count requests fail with HTTP 400
     # vision_disabled', :331 media_budget_exceeded, and HTTP 413
-    # request_too_large. Ryan hit the first with view_image on an artifact
+    # request_too_large. the user hit the first with view_image on an artifact
     # started without --vision, and LiteTUI said only 'Something went wrong
     # talking to the model server.'
     #
@@ -216,7 +216,7 @@ def decode_rate_from_timings(timings: object) -> float | None:
 def format_timings(timings: object) -> str | None:
     """The llama.cpp-compatible `timings` object as one status line.
 
-    🔴 THIS IS THE NUMBER RYAN HAS BEEN ASKING FOR ALL DAY — *"66toks is less
+    🔴 THIS IS THE NUMBER THE USER HAS BEEN ASKING FOR ALL DAY — *"66toks is less
     than lmstudio etc"* / *"whole point is a toks improvement"*. The engine
     reports prompt and decode rates PER REQUEST (`ninfer/docs/serving.md:238`),
     so a TUI can show what the turn actually ran at instead of a number someone
@@ -245,7 +245,7 @@ def format_timings(timings: object) -> str | None:
 #: artifact rejects `minimal`, `high`, and `max` at
 #: `artifact:chat_template.jinja:55`, before tokenization.
 #:
-#: Ryan's 2026-09-21 contract is the template-safe set below. `none` is the
+#: the user's 2026-09-21 contract is the template-safe set below. `none` is the
 #: wire spelling; the shared thinking UI renders it as `off`.
 NINFER_REASONING_LEVELS = ("none", "low", "medium", "xhigh")
 
@@ -274,7 +274,7 @@ class NInferBackend(_VramGate):
         self._settings = settings
         self._host: str | None = None
         self._model_id: str | None = None
-        #: The engine WE started via /engine start (Ryan a-35456da0: "LiteTUI may
+        #: The engine WE started via /engine start (the user a-35456da0: "LiteTUI may
         #: start it"), else None = attached to one somebody else runs.
         self._owned: ninfer_engine.OwnedEngine | None = None
         #: Mutually-exclusive lifecycle claims, both set SYNCHRONOUSLY (no await between
@@ -423,7 +423,7 @@ class NInferBackend(_VramGate):
     def shutdown(self) -> "object":
         """Stop the engine ONLY if /engine start made it ours; otherwise nothing.
 
-        🔴 A shutdown that killed an engine LiteSuite (or Ryan, by hand) started
+        🔴 A shutdown that killed an engine LiteSuite (or the user, by hand) started
         would take down a process approved separately, that another client may be
         using — from a TUI closing a tab. Attached = leave it. Owned = ours to stop.
         """
@@ -456,7 +456,7 @@ class NInferBackend(_VramGate):
                     self._host = None
         return result
 
-    # -- owning the engine (Ryan a-35456da0: "LiteTUI may start it") ----------
+    # -- owning the engine (the user a-35456da0: "LiteTUI may start it") ----------
 
     async def start_engine(self, *, notice=None) -> str:
         """Spawn ninfer-serve under LiteTUI's VRAM gate; refuse if any engine is up.
@@ -525,7 +525,7 @@ class NInferBackend(_VramGate):
             # 🔴 NO HANDLE IS NOT THE SAME AS NOT OURS. `self._owned` answers
             # "did THIS PROCESS start it" and is lost on every restart; the
             # registry entry LiteTUI wrote answers "did LITETUI start it" and
-            # carries the pid. Reading only the URL here is what told Ryan
+            # carries the pid. Reading only the URL here is what told the user
             # (2026-09-18) his own engine "was not started by LiteTUI" while
             # the record beside it said `owner: "litetui"` — and left 10.7 GB
             # resident with no way to stop it from the app that spawned it.
@@ -727,7 +727,7 @@ class NInferBackend(_VramGate):
     def reasoning_levels(self, model: str | None = None) -> list[str]:
         """The template-safe thinking levels LiteTUI offers for NInfer.
 
-        🔴 RYAN, 12:1x: *"agents have seem to try to rebuild every system for
+        🔴 THE USER, 12:1x: *"agents have seem to try to rebuild every system for
         every backend over and again ... were writing the same code to do the
         same thing in a slightly different way over and over for each backend."*
 
@@ -795,7 +795,7 @@ class NInferBackend(_VramGate):
         `llm_backend.py:1480` and `:1732` are both `return
         _merged_overrides(self._settings, key)`; this engine speaks the same
         OpenAI-compatible request, so a third spelling of one rule would be the
-        duplication Ryan named: *"were writing the same code to do the same
+        duplication the user named: *"were writing the same code to do the same
         thing in a slightly different way over and over for each backend."*
         """
         from litetui.llm_backend import _merged_overrides

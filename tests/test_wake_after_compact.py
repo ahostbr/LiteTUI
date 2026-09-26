@@ -1,6 +1,6 @@
 """Wake after compaction — loop mode.
 
-Ryan: "after compaction it always pings the model like the user would to wake
+the user: "after compaction it always pings the model like the user would to wake
 it up, essentially loop mode."
 
 The gap this closes: a long agentic run hits the auto-compact threshold, the

@@ -1,6 +1,6 @@
 """Tool schemas are FILES in tools/, and the set of files must equal the set of tools.
 
-Ryan, 2026-08-22: "extract all the tool schemas out of the app and get them into
+the user, 2026-08-22: "extract all the tool schemas out of the app and get them into
 separated schema files per tool ... the tools folder is where it should live."
 
 A tool schema is the contract the model reads on every single request. It was

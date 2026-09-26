@@ -1,7 +1,7 @@
 """T690 — a second LiteTUI may SHARE a model, but loading a different one is
 a VRAM decision the human makes.
 
-Ryan's ruling (a-62edbbe0, 2026-09-12): *"no both should be able to use the
+the user's ruling (a-62edbbe0, 2026-09-12): *"no both should be able to use the
 model at the same time ... llama.cpp supports parallel and lmstudio does for
 exactly this ... THE HUMAN MUST BE WARNED THAT LOADING different models in
 different instances WILL CAUSE MULTIPLE MODELS IN VRAM! ... they go through a
@@ -14,7 +14,7 @@ anything: same-model use raises no modal at all, and the gate fires only when a
 load would put a SECOND set of weights on the card.
 
 ⚠️ THE REGISTRY IS PATCHED IN EVERY ARM. `harness.AGENTS_DIR` is
-`~/.liteharness/agents`, live, with Ryan's own seats in it — an arm that read it
+`~/.liteharness/agents`, live, with the user's own seats in it — an arm that read it
 would pass or fail depending on which windows happened to be open.
 """
 
@@ -111,7 +111,7 @@ class TestTheRule:
             sibling=None, already_loaded=True) is False
 
     def test_the_SAME_model_never_prompts_and_that_is_the_design(self) -> None:
-        """Ryan: *"both should be able to use the model at the same time"*.
+        """the user: *"both should be able to use the model at the same time"*.
         Two instances on one loaded model cost one set of weights. Prompting
         would be asking permission for the thing he asked for."""
         assert second_instance.needs_vram_confirmation(

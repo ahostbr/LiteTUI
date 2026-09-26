@@ -477,7 +477,7 @@ class ResponseStream:
                             with NOTHING between them, so heading N's closing
                             ** abuts heading N+1's opening ** and the block
                             renders "**A****B****C**" on one line -- which is
-                            exactly what Ryan photographed.
+                            exactly what the user photographed.
 
                             The flag, rather than `summary_index > 0`: a turn
                             can contain several reasoning ITEMS (one per tool
@@ -700,7 +700,7 @@ class OAuthTransport:
 
         🔴 T821. A test counted `create` calls to assert how many COMPLETIONS
         one turn costs. It was right on 2026-09-12 (4e873f7) and red by
-        2026-09-16, when `_kick_card_summary` (f2571bf, Ryan's collapsed-card
+        2026-09-16, when `_kick_card_summary` (f2571bf, the user's collapsed-card
         title) started borrowing this same transport. Nothing on either side
         was edited.
 

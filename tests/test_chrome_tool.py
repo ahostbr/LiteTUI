@@ -40,7 +40,7 @@ def test_shot_writes_beside_the_bridge_not_at_the_old_root():
 def test_the_relay_lifecycle_is_part_of_the_tool():
     """Before this, an agent that hit the idle relay could only report it.
 
-    Ryan: "that should be apart of the agents chrome tool, starting and stoping
+    the user: "that should be apart of the agents chrome tool, starting and stoping
     it."
     """
     for a in ("start", "stop", "status"):

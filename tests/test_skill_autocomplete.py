@@ -1,6 +1,6 @@
 """The skill picker rises from the message area and completes on Tab.
 
-Ryan's spec: "the skills picker pops up from the message area vertically and
+the user's spec: "the skills picker pops up from the message area vertically and
 lists skills so that the user either keeping typing with a press tab to
 autocomplete skill name feature and a clickable / scrollable menu for them to
 either arrow key up and down to nav or scroll wheel or click."
@@ -178,7 +178,7 @@ async def test_a_completed_name_actually_runs_the_skill(tmp_path: Path) -> None:
     joined = "\n".join(said)
     assert "Unknown" not in joined, f"a completed skill name is still a dead command: {joined!r}"
     # Amended 2026-08-22: this asserted the body was SHOWN, which is the defect
-    # Ryan reported — the command painted the skill and sent nothing. The real
+    # the user reported — the command painted the skill and sent nothing. The real
     # contract is that it reaches the MODEL, so that is what is asserted now.
     convo = "\n".join(str(m.get("content") or "") for m in a.conversation)
     assert "body of ls-mark" in convo, (
@@ -202,7 +202,7 @@ async def test_a_genuine_typo_still_reports_itself(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_a_completed_skill_carries_the_argument_typed_after_it(tmp_path: Path) -> None:
-    """The end-to-end path Ryan actually used: type /name, Tab, then a url.
+    """The end-to-end path the user actually used: type /name, Tab, then a url.
 
     The autocomplete completes to "/name " WITH A TRAILING SPACE, and the
     command->skill fallback rebuilt the command as "/skills <name>" without the

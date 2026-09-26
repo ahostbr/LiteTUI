@@ -1,6 +1,6 @@
 """One-line card summary: the side call, the binding, and persistence.
 
-RYAN, 2026-09-16: when a response finishes, ask the SAME model for a one-line
+THE USER, 2026-09-16: when a response finishes, ask the SAME model for a one-line
 summary with reasoning off, and title the card "<summary> - <model>".
 
 The property this file exists to protect is the BINDING. The call completes
@@ -281,7 +281,7 @@ class TestCardinality:
             assert card.summary == "already known"
 
 
-# ── every round, not only the last (Ryan, 2026-09-18) ──────────────────────
+# ── every round, not only the last (the user, 2026-09-18) ──────────────────────
 #
 # "not all responses are getting a summary ... even ones that produce both
 # thinking and a response ... also we need to figure out the just thinking

@@ -1,6 +1,6 @@
 """The compaction card has room to paint its children.
 
-Ryan: "the compact display is still not live streamed to the app ... compact just
+the user: "the compact display is still not live streamed to the app ... compact just
 shows this purple C and Compaction in yellow."
 
 It was never a streaming fault. CompactionCard is a Vertical, a Vertical defaults
@@ -100,7 +100,7 @@ async def test_streamed_children_have_room() -> None:
 
 @pytest.mark.asyncio
 async def test_compaction_card_shows_an_elapsed_clock() -> None:
-    """Ryan: "it just needs to display timer elapsed ... during compaction".
+    """the user: "it just needs to display timer elapsed ... during compaction".
 
     Compaction is the longest single operation the app performs and it was the
     only long one with no clock on it. The card stamps t0 at construction --
@@ -136,7 +136,7 @@ async def test_compaction_card_shows_an_elapsed_clock() -> None:
 
 @pytest.mark.asyncio
 async def test_compaction_card_shows_prefill_like_a_normal_turn() -> None:
-    """Ryan: "compact isn't showing the prefill time ... like everything else does".
+    """the user: "compact isn't showing the prefill time ... like everything else does".
 
     A normal turn's in-flight bubble shows the NInfer-measured prefill
     ("prefill 43% : 56k/130k") via render_progress; the compaction card was the

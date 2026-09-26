@@ -1,6 +1,6 @@
 """/pause: the whole agent loop wrapped in `if not paused`.
 
-RYAN, 2026-09-18 13:3x: "i want the entire agent loop wrapped in a if not
+THE USER, 2026-09-18 13:3x: "i want the entire agent loop wrapped in a if not
 paused statement ... that i can toggle with /pause" and "add a onscreen button
 also kinda like the tool cancel one".
 

@@ -1,6 +1,6 @@
 """A terminal color picker for the theme creator — because hex isn't enough.
 
-The shape follows the classic web picker (Ryan's reference: nhn/tui.color-picker):
+The shape follows the classic web picker (the user's reference: nhn/tui.color-picker):
 a saturation/value field for the current hue, a hue bar, a preset row, a live
 preview, and the hex as an editable escape hatch rather than the only door.
 

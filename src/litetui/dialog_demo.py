@@ -1,6 +1,6 @@
 """THROWAWAY demo dialog for the T075 sidebar spike. Safe to delete with /test-sidebar.
 
-This exists so Ryan judges the REAL thing rather than a placeholder. It carries
+This exists so the user judges the REAL thing rather than a placeholder. It carries
 the shapes that decide whether a 60-column strip is usable:
 
   - a long UNWRAPPED MONOSPACE payload, because the tool approval preview is a

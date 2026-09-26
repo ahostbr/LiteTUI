@@ -48,7 +48,7 @@ def _register(ctx) -> None:
         group="automation",
         order=30,
     )
-    # Ryan's call: the rows that had no command get one. This was the last
+    # the user's call: the rows that had no command get one. This was the last
     # palette_row left standing without a way to reach it from the keyboard.
     ctx.command(
         ("/job",), lambda a, name, arg: _palette_new_job(a),

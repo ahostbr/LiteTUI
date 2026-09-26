@@ -2,7 +2,7 @@
 
 Two separate things, and conflating them is the bug this file guards.
 
-  agent_id   DERIVED FROM THE CONVERSATION as of 2026-08-21, by Ryan's
+  agent_id   DERIVED FROM THE CONVERSATION as of 2026-08-21, by the user's
              ruling. This block used to say a per-process id "is CORRECT and
              must stay", and that is now SUPERSEDED -- kept here in full,
              because its reasoning is still the map of what can go wrong.
@@ -156,7 +156,7 @@ finally:
 
 print("\n=== ONE seat id per process (T507-T5, f64442b) ===")
 # \U0001f534 THIS SECTION USED TO ASSERT THE OPPOSITE, and the reversal is a
-# commit, not a drift. It read "the seat id follows the conversation (Ryan,
+# commit, not a drift. It read "the seat id follows the conversation (the user,
 # 2026-08-21)" and grepped app.py for `_sync_seat_identity` and
 # `agent_id_for_convo`. f64442b (T507-T5, 2026-09-08) made the id
 # PROCESS-stable instead -- `process_agent_id()` = uuid5(hostname:pid), and
@@ -164,7 +164,7 @@ print("\n=== ONE seat id per process (T507-T5, f64442b) ===")
 # conversation change left ghosts on the roster. Its measurement:
 # "LiteTUI/BurntPath/BrightDuct = 3 ghosts of pid 133252".
 #
-# \u26a0\ufe0f SO A RESUME NO LONGER KEEPS THE CONVERSATION'S ID, which is what Ryan
+# \u26a0\ufe0f SO A RESUME NO LONGER KEEPS THE CONVERSATION'S ID, which is what the user
 # asked for on 2026-08-21. It was superseded on measured grounds by a leader,
 # not by him; flagged to the orchestrator rather than quietly rewritten here,
 # because an arm that cites a person is the last place that still remembers

@@ -198,7 +198,7 @@ def test_an_unreadable_store_still_writes_our_own_rows(tmp_path):
 
 
 def test_a_running_row_whose_owner_is_ALIVE_is_not_marked_lost(tmp_path):
-    """RYAN'S TWO WINDOWS, and the defect this half of the card is for: B
+    """THE USER'S TWO WINDOWS, and the defect this half of the card is for: B
     booting must not report A's in-flight task as killed. Before the owner pid
     every boot stamped every running row, whoever owned it."""
     a = _Instance(tmp_path).boot()
@@ -215,7 +215,7 @@ def test_a_running_row_whose_owner_QUIT_is_marked_lost(tmp_path):
     owner's kill-on-close Job Object, so when that process went, the work went.
 
     ⬜ DRIVEN THROUGH `quit()` RATHER THAN A STUBBED `pid_is_live`. The stub
-    proves the branch; this proves the SEQUENCE Ryan would actually perform —
+    proves the branch; this proves the SEQUENCE the user would actually perform —
     start a task in one window, close that window, open another.
     """
     a = _Instance(tmp_path).boot()

@@ -3,7 +3,7 @@
 🔴 THE MEASURED INCIDENT, 2026-09-03 (card T219): an env listing / `cat .env` /
 `grep` through the `bash` tool printed `LITESUITE_JWT_SECRET` and
 `OPENAI_API_KEY` VERBATIM into the transcript, into the model's context, and into
-a screenshot. Ryan rotated the keys. `sanitize.strip_escapes` was applied at
+a screenshot. the user rotated the keys. `sanitize.strip_escapes` was applied at
 `app.py` — the single hygiene point for every tool result — and it strips escape
 bytes only, so nothing between a subprocess's stdout and the model ever looked at
 the payload.

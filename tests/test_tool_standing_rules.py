@@ -1,7 +1,7 @@
 """Standing allow/deny rules: the human stops being asked, without gaining authority.
 
 WHY THIS EXISTS, and it is a field measurement rather than a design preference.
-Ryan killed his own LiteTUI agent rather than keep answering the modal --
+the user killed his own LiteTUI agent rather than keep answering the modal --
 "i killed that qwen agent ... tool prompts were annoying me lol". A guard that
 gets ROUTED AROUND protects nothing, so the modal had to become answerable once.
 
@@ -19,7 +19,7 @@ THE TWO ORDERINGS BELOW ARE THE WHOLE SAFETY OF THE FEATURE:
   answered; it does not move the authority boundary.
 
 📌 2026-09-24: `scheduled`, the profile that used to be the refusing one, is
-gone (Ryan: "remove scheduled completely it makes no sense to me ... make
+gone (the user: "remove scheduled completely it makes no sense to me ... make
 interactive ask only for dangerous cmds any deletions or zip expansions weird
 procc runs that arent its tools and dangerous cmds threw PS and bash"). The
 prompting arms now run on strict, and the never-widen arm on a probe profile.
@@ -92,7 +92,7 @@ def test_an_allow_rule_never_turns_a_profile_denial_into_allow(tmp_path, monkeyp
     """A rule made in a modal must not widen a profile that REFUSES.
 
     This was pinned on `scheduled`, the read-only floor; that profile is gone
-    (Ryan 2026-09-24) and no shipped profile refuses a capability any more
+    (the user 2026-09-24) and no shipped profile refuses a capability any more
     (strict asks, interactive asks only for dangers, autonomous never asks).
     The ORDERING in `evaluate` is still the safety, so it is held here with a
     read-only probe profile rather than dropped.

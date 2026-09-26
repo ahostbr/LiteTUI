@@ -89,7 +89,7 @@ def test_an_unreadable_model_list_is_silence_not_a_crash(_no_network) -> None:
 def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Nothing here may touch a real server; `_server_models` is stubbed per
     backend, and this makes any OTHER outbound call fail loudly rather than
-    quietly reaching Ryan's live router on 7470."""
+    quietly reaching the user's live router on 7470."""
 
     def _forbidden(*_a: object, **_k: object) -> None:
         raise AssertionError("an arm tried to reach the network")

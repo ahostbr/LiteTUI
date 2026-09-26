@@ -4,7 +4,7 @@ Covers both halves of the feature:
   * the BRIDGE: run() called from a worker thread against a live app must
     block, push the widget, return the serialized string, and leave the app
     clean — exactly what app.py's `asyncio.to_thread(fn, args)` dispatch does;
-  * the WIDGET, per Ryan's locked spec (2026-08-20):
+  * the WIDGET, per the user's locked spec (2026-08-20):
     - multi-select checkboxes (NOT radio),
     - jumpable step bar (Tab/Arrows, not strictly sequential),
     - toggleable answered-checkbox per step (untick clears the question),
@@ -28,7 +28,7 @@ import _script_guard  # tests/ is sys.path[0] when a file is run as a script
 # file's screen assertions are only meaningful against a KNOWN value. Booting a
 # real app reads the repo root's gitignored settings.json, and `conftest.py`'s
 # autouse guard does not reach a script-style file. Unguarded, the wait_for at
-# :130 timed out on Ryan's box (sidebar) while passing 48/48 at modal — the same
+# :130 timed out on the user's box (sidebar) while passing 48/48 at modal — the same
 # tree, the same commit. The env pin keeps the sandboxed boot off the first-boot
 # engine picker. See tests/_script_guard.py.
 _script_guard.pin_first_boot_env()

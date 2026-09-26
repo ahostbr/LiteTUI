@@ -1,6 +1,6 @@
 """Behaviour test for the same-frame auto-collapse, against a live app.
 
-RYAN, 2026-09-16: *"it should auto colapse in the same frame that the autoscroll
+THE USER, 2026-09-16: *"it should auto colapse in the same frame that the autoscroll
 would have naturally occured anyways to make it seemless."*
 
 The unit tests next door cover the header strings and the latch on a bare widget.
@@ -45,7 +45,7 @@ async def test_header_shows_the_model_not_the_word_AI() -> None:
 async def test_the_real_bubble_stamps_the_model_name() -> None:
     """The arm above injects `model=` through the fixture and could not see
     that no production path ever called set_model_name: every real card read
-    "AI" (Ryan's screen, 2026-09-18). This one drives the real constructor."""
+    "AI" (the user's screen, 2026-09-18). This one drives the real constructor."""
     app = _app()
     app.model_id = "qwen3-30b"
     async with app.run_test(size=(100, 20)) as pilot:
@@ -165,7 +165,7 @@ async def test_fold_does_not_cascade_or_oscillate() -> None:
 # none of them can see whether the APP ever sets it. It did not, for any card
 # but a turn's last: `_settle_turn_stop_line` is guarded by
 # `_turn_stop_line_settled`, reset once per TURN, while an agentic turn mounts
-# one card per ROUND. Measured on Ryan's screen 2026-09-18 — an 11m 17s
+# one card per ROUND. Measured on the user's screen 2026-09-18 — an 11m 17s
 # autonomous turn, a dozen expanded cards — with the whole suite green.
 #
 # ⚠️ SETTLING ONLY. `_assistant_bubble` deliberately does NOT ask for a card

@@ -1,6 +1,6 @@
 """The swap control is WIRED, in every body and on both hosts. T222.
 
-Ryan: "find and fix all possible buttons that should be doing this swap on all
+the user: "find and fix all possible buttons that should be doing this swap on all
 GUIs". This file is the gate on the answer to that, and it exists because the
 existing gate could not see the defect.
 
@@ -208,7 +208,7 @@ async def test_the_shared_control_does_not_squash_the_panel_button_row(name, bod
 @pytest.mark.parametrize("name,body,modal", PAIRS, ids=IDS)
 @pytest.mark.asyncio
 async def test_pressing_dock_to_side_on_a_routed_modal_docks_it(name, body, modal):
-    """The branch Ryan is on: `dialog_style` defaults to "modal".
+    """The branch the user is on: `dialog_style` defaults to "modal".
 
     The modal keeps its identity — same class, same CSS selector, same
     `isinstance` — and gains only a third EXIT. So the assertions are that the

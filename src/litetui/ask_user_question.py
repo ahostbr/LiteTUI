@@ -1,9 +1,9 @@
-"""AskUserQuestion — the agent asks, Ryan answers in a Textual widget.
+"""AskUserQuestion — the agent asks, the user answers in a Textual widget.
 
 The model calls this tool with a list of questions. Each question carries
 multiple-choice options, and the widget adds a free-text "Type something"
 field to every question. It is MULTI-SELECT: any combination of options can
-be correct — checkboxes, not radio. (Ryan's locked spec, 2026-08-20: the
+be correct — checkboxes, not radio. (the user's locked spec, 2026-08-20: the
 example text in the reference screenshot reads single-answer, but the widget
 semantics win — the owner's spec, not the example, defines behavior.)
 
@@ -42,7 +42,7 @@ running on the main thread. `run()` therefore:
          NoActiveAppError.
      The dismiss future is unawaited, so `set_result` on Submit/Chat/Esc
      is a no-op, not a hazard.
-  2. blocks on a `threading.Event` that the widget sets the moment Ryan
+  2. blocks on a `threading.Event` that the widget sets the moment the user
      presses Submit, "Chat about this", or Esc.
 
 No UI is built or driven from the worker thread; it only wakes and returns
@@ -90,7 +90,7 @@ class QuestionState:
     options: list[dict]  # {"title": str, "description": str}
     selected: set[int] = field(default_factory=set)
     note: str = ""
-    #: May Ryan tick more than one option? (T644)
+    #: May the user tick more than one option? (T644)
     #:
     #: 🔴 DEFAULTS TO TRUE BECAUSE THAT IS WHAT THIS TOOL HAS ALWAYS DONE. The
     #: schema has said "Options are MULTI-SELECT: any number of them can be
@@ -220,7 +220,7 @@ def _serialize(payload: dict) -> str:
             "plain chat. You may ask again later with a refined question list."
         )
     elif action == "aborted":
-        # T632. NOT the `cancel` text: that one names Ryan pressing Esc, and a
+        # T632. NOT the `cancel` text: that one names the user pressing Esc, and a
         # turn the HOST stopped is a different event with a different actor. A
         # model told the wrong cause reasons from it — the same defect class
         # T558's "stale request" message was.
@@ -816,7 +816,7 @@ def run(args: dict, app: App | None) -> str:
 
     Runs on a worker thread (app.py dispatches with `asyncio.to_thread`), so
     blocking here is expected, and the Textual loop keeps painting on the
-    main thread while Ryan answers. See the module docstring for the bridge.
+    main thread while the user answers. See the module docstring for the bridge.
     """
     try:
         states = _parse_questions(args)

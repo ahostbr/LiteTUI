@@ -133,7 +133,7 @@ def test_a_backend_with_no_name_reports_None_rather_than_a_string():
     ⚠️ A TEST DOUBLE IS A REAL CASE HERE. `make_backend` is stubbed in a dozen
     suites and plugins predate the seam, so `backend` can be an object with no
     `name` — or absent entirely. Reporting the string "None" would put the word
-    None in Ryan's pill; null lets the host render nothing.
+    None in the user's pill; null lets the host render nothing.
     """
     a = _app()
     a.backend = SimpleNamespace(loaded_models=lambda: ["qwen/a"])

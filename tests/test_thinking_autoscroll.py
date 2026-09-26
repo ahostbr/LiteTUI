@@ -1,6 +1,6 @@
 """The log keeps following while a thinking block fills.
 
-Ryan, twice: "AS soon as a thinking block starts the main screen autoscroll needs
+the user, twice: "AS soon as a thinking block starts the main screen autoscroll needs
 to tick" -- and, after the first attempt, "still not scrolling".
 
 The first fix deferred the mount-time scroll so it measured before scrolling.

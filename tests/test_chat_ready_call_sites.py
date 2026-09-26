@@ -256,7 +256,7 @@ async def test_a_turn_against_an_unloaded_model_says_plain_words_not_a_raw_400()
         await _settle(a, pilot)
         shown = _bubbles(a)
 
-    # The user-visible defect first — this is the line Ryan reported.
+    # The user-visible defect first — this is the line the user reported.
     assert "invalid_request_error" not in shown, (
         f"the raw router body reached the user: {shown!r}"
     )

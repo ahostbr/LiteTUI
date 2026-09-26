@@ -114,7 +114,7 @@ def test_start_text_names_the_promotion(tmp_path):
 
 
 def test_only_a_schema_that_declares_background_is_backgroundable():
-    # Ryan: "not everything should be backgroundable ... only what makes sense".
+    # the user: "not everything should be backgroundable ... only what makes sense".
     assert tasks_mod.backgroundable("bash") and tasks_mod.backgroundable("powershell")
     for tool in ("read", "edit", "grep", "write", "ask_user_question", "chrome",
                  "pccontrol", "studio", "web_fetch", "skill", "view_image", "listen", "harness"):

@@ -2,7 +2,7 @@
 
 No tools, no parent history — the child sees only its own prompt (and an
 optional system message). The token ceiling is the app's own thinking-safe budget, settings.compact_max_tokens
-(Ryan 2026-09-08 21:0x: "litetui already has a think token budget set reuse
+(the user 2026-09-08 21:0x: "litetui already has a think token budget set reuse
 that for subagents its the same model running") — the knob the tool-result
 summariser side call reuses too, never a third literal.
 

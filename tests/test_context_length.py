@@ -1,6 +1,6 @@
 """The context the app believes must be the context the model has.
 
-Ryan: "when it loads a model the context set in settings isnt being respected
+the user: "when it loads a model the context set in settings isnt being respected
 keeps default to 8k".
 
 Three faults, stacked, and the middle one is why fixing the obvious one alone

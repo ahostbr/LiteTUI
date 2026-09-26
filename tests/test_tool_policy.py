@@ -32,7 +32,7 @@ def decide(profile, policy, args=None, root=None):
 
 def test_reads_and_network_reads_are_silent_on_every_profile(tmp_path):
     """Was `..._but_scheduled_network_is_narrower`: `scheduled` (the read-only
-    floor that DENIED network reads) is gone -- Ryan 2026-09-24, "remove
+    floor that DENIED network reads) is gone -- the user 2026-09-24, "remove
     scheduled completely it makes no sense to me". The narrowest level left,
     strict, allows reads and network reads without asking."""
     for profile in (STRICT, INTERACTIVE, AUTONOMOUS):
@@ -42,7 +42,7 @@ def test_reads_and_network_reads_are_silent_on_every_profile(tmp_path):
 
 def test_write_policy_distinguishes_workspace_from_external_paths(tmp_path):
     """The CLASSIFICATION still tells the two apart; interactive no longer
-    asks about either (Ryan 2026-09-24: "make interactive ask only for
+    asks about either (the user 2026-09-24: "make interactive ask only for
     dangerous cmds any deletions or zip expansions weird procc runs that arent
     its tools and dangerous cmds threw PS and bash"). Strict still confirms."""
     inside = decide(INTERACTIVE, WRITE_POLICY, {"path": "notes/x.md"}, tmp_path)
@@ -82,7 +82,7 @@ def test_shell_is_confirmed_and_destructive_commands_are_named(tmp_path):
 
 def test_argument_sensitive_desktop_and_harness_actions(tmp_path):
     """Interactive runs its own desktop/harness/studio tools without asking
-    (Ryan 2026-09-24); only a pccontrol LAUNCH -- "weird procc runs that
+    (the user 2026-09-24); only a pccontrol LAUNCH -- "weird procc runs that
     arent its tools" -- still confirms. Strict confirms all of them."""
     screenshot = decide(
         INTERACTIVE, PCCONTROL_POLICY, {"action": "screenshot"}, tmp_path
@@ -130,7 +130,7 @@ def test_every_first_party_registered_tool_has_explicit_policy():
 
 
 def test_every_turn_defaults_to_autonomous_and_the_job_knob_is_dead(tmp_path):
-    """RENAMED, because the old name asserted a design Ryan overruled.
+    """RENAMED, because the old name asserted a design the user overruled.
 
     It was `..._conversations_are_interactive_and_jobs_are_narrow_by_default`,
     and both halves are now wrong: the conversation default is `autonomous`
@@ -142,7 +142,7 @@ def test_every_turn_defaults_to_autonomous_and_the_job_knob_is_dead(tmp_path):
     field is a schema change and did not belong in the authority fix.
 
     Its default is now AUTONOMOUS, the level a job actually fires at, since
-    `scheduled` was removed (Ryan 2026-09-24).
+    `scheduled` was removed (the user 2026-09-24).
     """
     assert Settings().tool_policy_profile == AUTONOMOUS
     job = scheduler.Job(prompt="inspect status", schedule="@daily")

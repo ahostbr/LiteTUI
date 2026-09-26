@@ -120,7 +120,7 @@ def test_repaint_header_degrades_without_tps():
 
 # --- freeze_header: the readout survives the end of thinking ------------------
 def test_freeze_header_keeps_time_tokens_and_avg():
-    """The bug fix (Ryan): a finished block keeps total time + thinking tokens
+    """The bug fix (the user): a finished block keeps total time + thinking tokens
     + avg tok/s instead of resetting to a bare label. Same string as live,
     just frozen - and the rate is that phase's own math: tokens / time."""
     b = _bare_block()

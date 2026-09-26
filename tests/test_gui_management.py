@@ -172,7 +172,7 @@ async def test_host_tool_registration_goes_through_authority_and_disposes(tmp_pa
     spec = {"type": "function", "function": {"name": "fixture_host", "description": "fixture", "parameters": {"type": "object", "properties": {}}}}
     await async_dispatch(app, {"type": "gui.host_tools.register", "plugin_id": "fixture", "tools": [spec]})
     assert app.plugins.policy_for("fixture_host") == tool_policy.MCP_UNKNOWN_POLICY
-    # Was the `scheduled` floor (removed 2026-09-24, Ryan: "remove scheduled
+    # Was the `scheduled` floor (removed 2026-09-24, the user: "remove scheduled
     # completely it makes no sense to me"). An undeclared host tool always
     # asks; on a turn nobody is watching that becomes a refusal.
     app._active_tool_profile = tool_policy.STRICT

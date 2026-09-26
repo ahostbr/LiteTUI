@@ -1,6 +1,6 @@
 """On NInfer the model IS the artifact, and until T860 nothing could pick one.
 
-🔴 WHAT RYAN HIT. Engine down, and every model command answered with a remedy
+🔴 WHAT THE USER HIT. Engine down, and every model command answered with a remedy
 that state had removed:
 
     /model    -> "No models discovered — try /reconnect"   (reconnects to nothing)
@@ -24,7 +24,7 @@ missing thing. One root: the message was written for the state where the
 backend works.
 
 🔴 NO ENGINE IS EVER STARTED BY THIS FILE. Listing artifacts is file I/O;
-starting one is a VRAM load and needs Ryan's per-load approval. Every arm below
+starting one is a VRAM load and needs the user's per-load approval. Every arm below
 builds fake `.ninfer` files in `tmp_path` and never touches the real models
 directory.
 """
@@ -116,7 +116,7 @@ def test_exactly_one_artifact_still_auto_selects(artifacts):
 
 
 def test_three_artifacts_offer_a_choice_and_picking_sets_the_setting(artifacts):
-    """🔴 RYAN'S EXACT STATE. Three files, so `ninfer_artifact()` refuses to
+    """🔴 THE USER'S EXACT STATE. Three files, so `ninfer_artifact()` refuses to
     guess — and now `/model` asks."""
     made = artifacts("a.ninfer", "b.ninfer", "c.ninfer")
     assert ninfer_engine.ninfer_artifact(Settings(ninfer_artifact="")) is None

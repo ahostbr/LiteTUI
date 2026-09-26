@@ -15,7 +15,7 @@ from litetui.stream_sink import StreamSink
 
 def launch_workspace(app):
     """The folder LiteTUI was launched from: a Claude session's cwd and the root its
-    writes are judged against. Plan claude-backend-litetui-identity, phase 3 (Ryan: "it
+    writes are judged against. Plan claude-backend-litetui-identity, phase 3 (the user: "it
     should use whatever its cwd is i just ran it from there"). The same source as the
     Codex backend (codex_workspace), captured once at launch, not paths.ROOT."""
     from litetui.codex_workspace import workspace
@@ -41,7 +41,7 @@ CLAUDE_TOOLS_OFF = "\nTools are off in LiteTUI, so you have none this session. O
 def system_prompt_for(app, segment):
     """The system prompt a Claude session of `segment` runs under: LiteTUI's, not Claude Code's.
 
-    Ryan, 2026-09-24 (plan claude-backend-litetui-identity): "Replace with LiteTUI's
+    the user, 2026-09-24 (plan claude-backend-litetui-identity): "Replace with LiteTUI's
     prompt". The host's own composition (systemprompt.md, plan mode, the store
     folder, skills) with the tool section swapped for Claude's built-ins, then the
     soul/memory/handoff snapshot, the harness identity when the seat is registered,
@@ -123,7 +123,7 @@ async def prompt_for_new_session(app, segment):
 
 
 def inline_images(app, content, saved=None):
-    """An image message as TEXT naming the image's file (Ryan, 2026-09-24: *"claude didnt
+    """An image message as TEXT naming the image's file (the user, 2026-09-24: *"claude didnt
     want to take the image, we should convert it to a path on disk for claude and paste
     it to him"*). Returns (text, paths).
 
@@ -222,7 +222,7 @@ def effort_change_warning(app, level):
     """(kind, text) the send-time cache gate WILL raise if the saved thinking
     level becomes `level`, else None. The sidecar asks this before saving an
     effort change, so its confirm/cancel shows the same warning the TUI shows
-    (Ryan 2026-09-24: "it has to go through the warning system").
+    (the user 2026-09-24: "it has to go through the warning system").
 
     Read-only: no ledger is created and nothing is sent. Only a live session
     has a cache to lose, as in _cache_ok."""
@@ -367,7 +367,7 @@ async def stream_turn(app):
     # The transcript must read in the order things happened. Each on-screen
     # answer card owns the native message ids it shows; the first display event
     # after a tool card was mounted opens a NEW card below that tool. One card
-    # per turn put post-tool text above the tool cards (Ryan, 2026-09-25).
+    # per turn put post-tool text above the tool cards (the user, 2026-09-25).
     cards = [(widget, [])]
     # Each card's streamed text is drawn by its own StreamSink: one render and
     # one scroll per frame, Markdown from the first frame (stream_sink.py).

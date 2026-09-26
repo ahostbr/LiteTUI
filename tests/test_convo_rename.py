@@ -1,6 +1,6 @@
 """/rename gives a conversation a name, and every listing shows it.
 
-Ryan: "for convos we need a naming feature aka /rename ... it should show the
+the user: "for convos we need a naming feature aka /rename ... it should show the
 convo name in the convo picker afterwards. this is good when i want to tag a
 certain convo as X."
 

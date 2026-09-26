@@ -477,7 +477,7 @@ def _plain_backend_error(e: BaseException, backend: object | None = None) -> str
     # An error the ENGINE raises mid-stream arrives as an `openai`
     # exception, NOT a BackendError: `_get_json`'s table only covers the
     # control-plane calls LiteTUI makes itself. So every engine 400 fell
-    # through to the sentence below, and Ryan's `view_image` on a
+    # through to the sentence below, and the user's `view_image` on a
     # no-vision artifact read as 'Something went wrong talking to the
     # model server.'
     #
@@ -523,7 +523,7 @@ def _first_sentence(raw: object) -> str:
 def _detail_sentence(raw: object, *, limit: int = 200) -> str:
     """The server's detail as one line of PROSE, never as markup.
 
-    RYAN, 2026-09-18, on the compaction failure that printed a whole error
+    THE USER, 2026-09-18, on the compaction failure that printed a whole error
     page into the chat: *"that error doesnt tell you that in any meaninful
     way ... i know because i wrote the app ... endusers wont"*.
 
@@ -601,7 +601,7 @@ def _decode_rate(timings: object) -> float | None:
     """The engine's own decode rate, when the chunk carries one (T806).
 
     🔴 BACKEND-AGNOSTIC BY CONSTRUCTION, WHICH IS THE WHOLE INSTRUCTION.
-    RYAN, 12:1x: *"agents have seem to try to rebuild every system for every
+    THE USER, 12:1x: *"agents have seem to try to rebuild every system for every
     backend over and again ... were writing the same code to do the same thing
     in a slightly different way over and over for each backend."*
 
@@ -752,7 +752,7 @@ class LiteTUI(App):
            carried this line; `.user-msg` never did, which is why only the user
            side showed it, and why a QUEUED bubble (mounted while the log still
            has free rows to give away) looked completely empty.
-           Ryan, 2026-09-18: "queue message broken". */
+           the user, 2026-09-18: "queue message broken". */
         height: auto;
         background: $primary-darken-3;
         color: $text;
@@ -1123,7 +1123,7 @@ class LiteTUI(App):
        which is also 1. The bold label was the ONLY member at column 0, so every
        heading in Settings hung one cell to the left of the control and the
        sentence describing it — visible as a ragged left edge down the whole
-       panel once you see it. Ryan, 2026-09-03, from a screenshot: "thats a bug,
+       panel once you see it. the user, 2026-09-03, from a screenshot: "thats a bug,
        how the settings are offset". */
     .set-label {
         color: $text;
@@ -1441,7 +1441,7 @@ class LiteTUI(App):
         Binding("ctrl+l", "clear_chat", "Clear Chat"),
         Binding("ctrl+t", "toggle_tools", "Tools on/off"),
         # shift+tab cycles the authority level, the way Claude Code's own
-        # shift+tab cycles its permission modes -- Ryan gave that as the spec
+        # shift+tab cycles its permission modes -- the user gave that as the spec
         # with screenshots ("see same way claude works").
         #
         # 🔴 priority=True IS REQUIRED HERE AND I TRIED IT WITHOUT FIRST.
@@ -2307,11 +2307,11 @@ class LiteTUI(App):
         text = harness_mod.format_message(msg)
         # 🔴 READS THE SETTING. It used to be a hardcoded SCHEDULED, so the
         # option labelled "every capability, UNATTENDED, never asks" did not
-        # govern the unattended path that woke this turn -- Ryan hit it as a
+        # govern the unattended path that woke this turn -- the user hit it as a
         # workspace_write denial while Settings showed autonomous. A control
         # that names a case it does not govern is worse than no control.
         #
-        # The turn keeps the CHOSEN profile, whole. Ryan 2026-09-24: "remove
+        # The turn keeps the CHOSEN profile, whole. the user 2026-09-24: "remove
         # scheduled completely" -- mail no longer degrades to a read-only
         # floor. Nobody is here to answer a modal, so only a CONFIRM becomes a
         # refusal (`_authorize_action`, tool_policy.UNATTENDED_SOURCES), and
@@ -2399,7 +2399,7 @@ class LiteTUI(App):
         label = job.label or job.id
         text = job.prompt
         # 🔴 A SCHEDULED TURN IS ALWAYS AUTONOMOUS. HARDCODED ON PURPOSE.
-        # T085, Ryan: "just change it so schedule only runs auto mode ... light
+        # T085, the user: "just change it so schedule only runs auto mode ... light
         # warning when setting that it must run auto for this reason".
         #
         # THE REASON IS HERE because a hardcoded profile, on a path that used
@@ -2410,7 +2410,7 @@ class LiteTUI(App):
         # and "hangs", which is not a choice worth offering.
         #
         # ⚠️ THIS LINE HAS HELD THREE VALUES IN ONE EVENING: the job's own
-        # field, then `settings.tool_policy_profile` (Ryan's first ruling),
+        # field, then `settings.tool_policy_profile` (the user's first ruling),
         # now this. None was wrong when written. The conversation setting
         # deliberately does NOT reach here any more -- changing how autonomous
         # the CHAT is must not silently change what every saved automation may
@@ -2583,7 +2583,7 @@ class LiteTUI(App):
             # inside `show_dialog`: that door is generic and three other
             # callers use it with no approval semantics at all, so an rpc
             # branch in there would make every dialog rpc-aware to serve one.
-            # Ryan, 2026-09-10: "i want the approvals to route threw frontier
+            # the user, 2026-09-10: "i want the approvals to route threw frontier
             # chat GUI".
             if self._rpc:
                 answer = await tool_approval.approve_over_rpc(
@@ -2611,7 +2611,7 @@ class LiteTUI(App):
             if not answer:
                 if not stop_on_denial:
                     return tool_denied("no-host" if unanswered else "by-user", name=name), False
-                # DENY STOPS THE TURN (Ryan, 2026-08-24 — asked whether this
+                # DENY STOPS THE TURN (the user, 2026-08-24 — asked whether this
                 # should replace or supplement the existing verb, answered
                 # REPLACE). The refusal is still returned and still recorded,
                 # so the transcript says what happened; the loop just does not
@@ -2804,7 +2804,7 @@ class LiteTUI(App):
         # awaitable is built once and either awaited now or handed to a
         # worker that awaits it. `tools/tool_door_gate.py` counts that call.
         # Only a tool whose schema declares `background` may leave the turn (T517,
-        # Ryan: "not everything should be backgroundable"): the flag on any other
+        # the user: "not everything should be backgroundable"): the flag on any other
         # tool is dropped, and the auto-promotion below never applies to it.
         may_bg = tasks_mod.backgroundable(name)
         background = may_bg and isinstance(args, dict) and bool(args.pop("background", False))
@@ -2818,7 +2818,7 @@ class LiteTUI(App):
         process_slot = tasks_mod.ProcessSlot() if may_bg else None
         if process_slot is not None:
             aw = tasks_mod.run_in_process_slot(aw, process_slot)
-        # AUTO-PROMOTION (T517, Ryan: "the calls are still blocked is it off by
+        # AUTO-PROMOTION (T517, the user: "the calls are still blocked is it off by
         # default or something ?"): the model almost never asks for background,
         # so a call still running after the settings threshold becomes a
         # background task on its own — the same future, handed over, never a
@@ -2925,7 +2925,7 @@ class LiteTUI(App):
         wrong, it was never ASKED. `_start_background` and `_run_background`
         both move `bg_tasks` and neither had any reason to touch the footer, so
         the label kept whatever it was painted with the last time something
-        unrelated refreshed it — which is why Ryan's screenshot (2026-09-10
+        unrelated refreshed it — which is why the user's screenshot (2026-09-10
         20:5x) showed `bg:1` beside a Background panel reading 0 after a 300s
         timeout finished. The panel was right: its `sync()` rebuilds on the
         membership change. The chip had simply not been repainted since.
@@ -3575,7 +3575,7 @@ class LiteTUI(App):
                     # A restored turn is finished by definition, so it can fold
                     # like any other. Its summary comes from the store, and
                     # summary_done stops the reopen from re-asking the model for
-                    # a line it already has - Ryan asked for exactly that.
+                    # a line it already has - the user asked for exactly that.
                     w.settled = True
                     stored = restored_summaries.get(self._card_summary_key(text))
                     if stored:
@@ -3648,7 +3648,7 @@ class LiteTUI(App):
         # 🔴 THE HEADER USED TO NAME THE WRONG BACKEND (T861). It was
         #   {"llamacpp": ..., "codex": ...}.get(self.backend.name, "LM Studio")
         # — a hand-listed map whose DEFAULT was the literal string "LM Studio".
-        # `ninfer` was not a key, so Ryan's NInfer session was announced as LM
+        # `ninfer` was not a key, so the user's NInfer session was announced as LM
         # Studio in the title bar, and so would every backend added after that
         # line was written.
         #
@@ -3678,7 +3678,7 @@ class LiteTUI(App):
         list's global toggle, and the settings screen all end up here or do
         exactly what it does.
 
-        🔴 IT PERSISTS (Ryan, 2026-08-24, asked and ruled). It used to write
+        🔴 IT PERSISTS (the user, 2026-08-24, asked and ruled). It used to write
         only the RUNTIME flag, never `settings.tools_enabled` — so Ctrl+T was
         silently session-scoped while the settings switch was not, and the two
         disagreed the moment you used either:
@@ -3689,7 +3689,7 @@ class LiteTUI(App):
             by a screen you opened to change something else entirely.
 
         Nothing documented that split, and boot reads the persisted field, so
-        it read as an oversight rather than a design. Ryan was offered keeping
+        it read as an oversight rather than a design. the user was offered keeping
         Ctrl+T as a deliberate temporary override and chose one behaviour
         everywhere: "make all three persist".
         """
@@ -3790,7 +3790,7 @@ class LiteTUI(App):
 
     def action_toggle_mic(self) -> None:
         """The footer mic button and the record hotkey: start recording, or
-        stop-and-transcribe. The transcript APPENDS to the input box (Ryan
+        stop-and-transcribe. The transcript APPENDS to the input box (the user
         2026-09-18). TTS speak on/off is settings-only and is not touched here."""
         import time
         now = time.monotonic()
@@ -3936,12 +3936,12 @@ class LiteTUI(App):
     def action_cycle_tool_profile(self, source: str = "shift+tab") -> None:
         """shift+tab: one step down the authority scale, wrapping.
 
-        Ryan's order, from his own screenshots of Claude Code:
+        the user's order, from his own screenshots of Claude Code:
         autonomous -> interactive -> scheduled -> autonomous. The step itself
         lives in `tool_policy.cycle`, derived from the PROFILES order, so the
         direction is written once rather than here as a second list.
 
-        PERSISTS, for the same reason Ctrl+T does (Ryan, this session, "make
+        PERSISTS, for the same reason Ctrl+T does (the user, this session, "make
         all three persist"): a key that changes a setting the settings screen
         also shows must not leave the two disagreeing. Written through the
         SAME field the screen binds to -- one value, several surfaces.
@@ -3979,7 +3979,7 @@ class LiteTUI(App):
         if profile not in tool_policy.PROFILES:
             return False
         previous = self.settings.tool_policy_profile
-        # Every change leaves a record and says where it came from: Ryan's
+        # Every change leaves a record and says where it came from: the user's
         # "it switched on its own" had none (the footer chip had eaten an Enter).
         # runtime_log accepts only its allow-listed keys and single-token values.
         runtime_log.record("authority_change", name=profile, status=previous,
@@ -4056,7 +4056,7 @@ class LiteTUI(App):
         🔴 A PROPERTY FOR THE SAME REASON THE OTHER TWO ARE. `app.backend =
         make_backend(...)` is assigned from four places — app.py once and
         `plugins/model_switch.py` three times (the `/backend` picker and two
-        first-boot recovery paths). Ryan named backend FIRST in the ruling, and
+        first-boot recovery paths). the user named backend FIRST in the ruling, and
         the first cut of this card declared the field and wired none of them.
         """
         # Stop the OUTGOING backend's session taking new loads BEFORE the swap, so a
@@ -4094,7 +4094,7 @@ class LiteTUI(App):
         self._cli_effective_thinking = None
         self._thinking_level = value
         self._remember_for_this_convo("thinking_level", value)
-        # Ryan wrote "think level WHEN ON CODEX" as its own item, and it is a
+        # the user wrote "think level WHEN ON CODEX" as its own item, and it is a
         # different vocabulary from LM Studio's levels — `model_switch.py:906`
         # stores it under `model_infer_overrides[model]["reasoning_effort"]`.
         # Kept in its own field so a conversation carried between engines does
@@ -4373,12 +4373,12 @@ class LiteTUI(App):
         most common swap in the app went past it: `plugins/model_switch.py`
         calls `backend.load()` directly for `/model <name>`, the picker and the
         rpc `set_model`, and `apply_load_settings` is a reload that nobody had
-        counted as a load. Ryan asked for the modal *"in any way ... EVERY TIME
+        counted as a load. the user asked for the modal *"in any way ... EVERY TIME
         a model would be swapped or loaded"*, and a gate at one call site covers
         exactly the callers that existed when it was written. It is
         `backend.vram_gate` now — see `_VramGate` in llm_backend.py.
 
-        🔴 SHARING A LOADED MODEL IS THE DESIGN AND NEVER PROMPTS. Ryan's ruling
+        🔴 SHARING A LOADED MODEL IS THE DESIGN AND NEVER PROMPTS. the user's ruling
         (a-62edbbe0): two instances run against one server in parallel. The
         hazard he named is the other one — *"LOADING different models in
         different instances WILL CAUSE MULTIPLE MODELS IN VRAM"* — so the gate
@@ -4623,7 +4623,7 @@ class LiteTUI(App):
                 # ever matters (no models means none on that server).
                 # 🔴 FOUND BY THE T861 SWEEP, and it is the same defect as the
                 # header: the `else` named llama.cpp, so on NInfer this told
-                # Ryan to add a folder of GGUF files — for an engine that does
+                # the user to add a folder of GGUF files — for an engine that does
                 # not read GGUF at all. Two branches that between them claimed
                 # to cover four backends.
                 if self.backend.name == "lmstudio":
@@ -4669,7 +4669,7 @@ class LiteTUI(App):
             # the sink; chat gets plain words. The old line named the host so a
             # reader could blame it — T137 keeps that fact for debugging, out of
             # chat, where a URL tells nobody what to do.
-            # 🔴 `host()` RAISES, AND THIS IS THE ERROR PATH (T858). Ryan opened
+            # 🔴 `host()` RAISES, AND THIS IS THE ERROR PATH (T858). the user opened
             # LiteTUI with the engine down and got a Textual WorkerFailed dump
             # instead of the sentence three lines below, which the code had
             # already written for exactly this case: `ensure_running` raised
@@ -5148,7 +5148,7 @@ class LiteTUI(App):
                 chunk, "reverse bold" if (chip and chip == nav) else style
             )
 
-        # THE AUTHORITY LEVEL, FIRST AND WITHOUT A TOGGLE. Ryan asked for it
+        # THE AUTHORITY LEVEL, FIRST AND WITHOUT A TOGGLE. the user asked for it
         # ("ALSO show this in the footer") after being denied a write while
         # Settings showed autonomous -- the whole bug was that the authority
         # actually in force was invisible. Every other field here is hideable
@@ -5171,7 +5171,7 @@ class LiteTUI(App):
         #
         # 🔴 IT USED TO BE ABSENT WHEN OFF, and this note used to say an "off"
         # chip "would occupy the footer permanently to say nothing". That is
-        # reversed deliberately — Ryan, liteask a-5d6c1ca0: "make sure plan mode
+        # reversed deliberately — the user, liteask a-5d6c1ca0: "make sure plan mode
         # is toggelable via the footer ... once the user navs to the footer with
         # the arrow keys pressing enter should toggle plan mode". A chip you can
         # only reach while the mode is already ON is a switch with no OFF
@@ -5196,7 +5196,7 @@ class LiteTUI(App):
         if s.footer_show_thinking:
             add("think", f"think:{self.thinking_level or 'default'}", "#5c6370", chip="think")
 
-        # T570 — WHAT IS RUNNING WITHOUT ME. Ryan: "sub agents and background
+        # T570 — WHAT IS RUNNING WITHOUT ME. the user: "sub agents and background
         # process should show in the footer".
         #
         # ABSENT AT ZERO, never "bg:0". An idle session is the common case and a
@@ -5876,7 +5876,7 @@ class LiteTUI(App):
         # features that gate on it were dead for the whole turn:
         # `_autocollapse_offscreen` skips `not card.settled`, `autocollapse()`
         # bails on it, and `_kick_card_summary` is only reached from the settle
-        # path. Measured on Ryan's screen 2026-09-18: an 11m 17s autonomous
+        # path. Measured on the user's screen 2026-09-18: an 11m 17s autonomous
         # turn, a dozen expanded cards, no summary on any of them. It works in
         # single-round chat, which is the shape it was tested in on 09-16.
         #
@@ -5901,7 +5901,7 @@ class LiteTUI(App):
         w = AssistantMessage()
         # THE MODEL NAME HAD NO WRITER. `set_model_name` existed, the header
         # test drove it through a fixture, and no production path ever
-        # called it - so every real card read "AI", and Ryan's
+        # called it - so every real card read "AI", and the user's
         # "<summary> - <model>" title (2026-09-16) never showed the model.
         # Seen on his screen 2026-09-18 12:0x. Empty model_id keeps "AI".
         w.set_model_name(self.model_id)
@@ -5963,7 +5963,7 @@ class LiteTUI(App):
         self._scroll_down()
 
     # -- elapsed time while a turn is in flight -----------------------
-    # Ryan's "..." read as nothing happening while LM Studio chewed the prompt.
+    # the user's "..." read as nothing happening while LM Studio chewed the prompt.
     # While no answer token has arrived (and while tool calls run), the bubble
     # shows live ELAPSED TIME. The display string is a pure function
     # (render_progress); this is only the repaint glue. The repaint task runs
@@ -6170,7 +6170,7 @@ class LiteTUI(App):
 
     # ── one-line card summary ────────────────────────────────────────────
     #
-    # RYAN, 2026-09-16: when a response finishes, ask the SAME model for a
+    # THE USER, 2026-09-16: when a response finishes, ask the SAME model for a
     # one-line summary with reasoning off and title the collapsed card
     # "<summary> - <model>".
     #
@@ -6190,7 +6190,7 @@ class LiteTUI(App):
             return
         answer = (getattr(card, "answer_text", "") or "").strip()
         if not answer:
-            # A THINKING-ONLY CARD TITLES ITSELF FROM ITS TRACE. Ryan,
+            # A THINKING-ONLY CARD TITLES ITSELF FROM ITS TRACE. the user,
             # 2026-09-18: "we need to figure out the just thinking ones how
             # to display something for those also". There is no answer to
             # summarise, and a side call over hidden reasoning would describe
@@ -6283,7 +6283,7 @@ class LiteTUI(App):
     def _autocollapse_offscreen(self, log) -> None:
         """Fold settled cards that have scrolled above the viewport.
 
-        RYAN, 2026-09-16: *"it should auto colapse in the same frame that the
+        THE USER, 2026-09-16: *"it should auto colapse in the same frame that the
         autoscroll would have naturally occured anyways to make it seemless."*
         That is why this is called from inside `_scroll_down`'s deferred action
         and not from a timer, a resize handler or a scroll event. The frame is
@@ -6306,7 +6306,7 @@ class LiteTUI(App):
         still 0, nothing measures as off screen, and the fold silently slipped
         to the NEXT autoscroll. Measured: four cards, one scroll, nothing
         collapsed; three more scrolls and three collapsed. One frame late is
-        exactly the seam Ryan asked to remove.
+        exactly the seam the user asked to remove.
 
         `max_scroll_y` is a layout property, already correct before the move,
         and it IS the y this scroll will settle at. Comparing against it folds
@@ -6672,7 +6672,7 @@ class LiteTUI(App):
         declined in SILENCE. `/model <name>` says "Model not found: <name>".
         A control that accepts input and appears to do nothing is the shape
         `test_no_dead_controls` exists to forbid; this is the same shape at
-        a different door. UNVERIFIED BY RYAN -- he will see a line where he
+        a different door. UNVERIFIED BY THE USER -- he will see a line where he
         saw nothing.
         """
         if not model_id:
@@ -6873,7 +6873,7 @@ class LiteTUI(App):
     def _maybe_stage_shot(self, name: str, args: dict, result: str) -> str:
         """`chrome action=shot` writes a PNG and returns its path. When the model
         can see images, attach that PNG to the next message automatically so the
-        model sees it without a second `view_image` call (Ryan: the shot should
+        model sees it without a second `view_image` call (the user: the shot should
         return the picture). A text-only ('llm') model cannot receive an image at
         all, so it keeps the path text unchanged."""
         if name != "chrome" or str(args.get("action") or "").lower() != "shot":
@@ -7289,7 +7289,7 @@ class LiteTUI(App):
         says so and names D2/D11. Headless is the opposite case: a consult
         panel spawns these children, nobody is present, and a cold model id
         silently takes ~18 GB of a GPU someone else is using. Measured
-        2026-09-10: six probe children put a second 27B beside the one Ryan
+        2026-09-10: six probe children put a second 27B beside the one the user
         was running, and nothing in the RPC output said a load had happened —
         `ready` looks identical either way.
 
@@ -7302,7 +7302,7 @@ class LiteTUI(App):
         REVERSES WHAT THIS RETURNED. It used to refuse unless EXACTLY ONE other
         model was resident, reasoning that choosing among several is "picking one
         on the user's behalf". A tester's fresh thread then refused its first
-        prompt with TWO models sitting in VRAM, which inverts Ryan's standing
+        prompt with TWO models sitting in VRAM, which inverts the user's standing
         rule: "when a model is already loaded, USE THAT ONE." The hazard that
         reasoning named is real, so the choice is a STATED tie-break in
         `model_residency.substitute_main_model` plus a note saying what was used
@@ -7460,7 +7460,7 @@ class LiteTUI(App):
     def _stub_refused_media(self) -> int:
         """Replace image parts in history with a text stub. Returns the count.
 
-        THE SECOND HALF OF RYAN'S view_image REPORT (T824). The engine 400s,
+        THE SECOND HALF OF THE USER'S view_image REPORT (T824). The engine 400s,
         and the part STAYS in `self.conversation`, so `_request_messages`
         re-sends it on the next turn, and the next, and every one after.
         ONE refusal became a conversation that could never answer again.
@@ -7516,7 +7516,7 @@ class LiteTUI(App):
 
         THE COMPACTION WAS INVISIBLE TO EVERY HOST. `_compact` said what it
         did with `_system` lines and nothing else, so LiteSuite's Frontier
-        Chat could not show Ryan a compaction, a decline, or a failure --
+        Chat could not show the user a compaction, a decline, or a failure --
         which is his own question, 'why is it not compacting'.
 
         I MET THAT BLINDNESS AS A MEASURER BEFORE IT WAS A CARD: four runs
@@ -7562,7 +7562,7 @@ class LiteTUI(App):
         engine's rate through LiteTUI; without this there is no wire to read
         it off.
 
-            RYAN: *"66toks is less than lmstudio etc"* / *"whole point is a
+            THE USER: *"66toks is less than lmstudio etc"* / *"whole point is a
             toks improvement"*. A figure only a human eye can reach cannot
             answer that question.
 
@@ -7699,7 +7699,7 @@ class LiteTUI(App):
         #
         #     A MEASUREMENT WHOSE INSTRUMENT IS UNKNOWN CANNOT BE COMPARED
         #     ACROSS ENGINES, and comparing across engines is the whole point
-        #     of the number (Ryan: *"66toks is less than lmstudio etc"*).
+        #     of the number (the user: *"66toks is less than lmstudio etc"*).
         #
         # ⬜ "engine" | "client" | None. None means no figure at all, so there
         # was no clock to name.
@@ -7712,7 +7712,7 @@ class LiteTUI(App):
         if native_loop:
             self.tps = None
         for _iteration in range(self.settings.tool_iterations):
-            # /pause: THE WHOLE LOOP HOLDS HERE. Ryan, 2026-09-18: "the entire
+            # /pause: THE WHOLE LOOP HOLDS HERE. the user, 2026-09-18: "the entire
             # agent loop wrapped in a if not paused statement ... that i can
             # toggle with /pause". One gate covers every model round AND a
             # turn's first round, so a turn started while paused - typed,
@@ -8149,7 +8149,7 @@ class LiteTUI(App):
 
             if tool_acc and terminal_widget is not None and not self._stop_requested:
                 # A TOOL ROUND ENDS THIS CARD - SETTLE AND SUMMARISE IT HERE.
-                # Ryan, 2026-09-18: "not all responses are getting a summary
+                # the user, 2026-09-18: "not all responses are getting a summary
                 # ... even ones that produce both thinking and a response".
                 # The settle path ran once per TURN, so every card that ended
                 # in a tool call kept its model-name header for good. This
@@ -8402,7 +8402,7 @@ class LiteTUI(App):
     def _deliver_queued_input(self) -> bool:
         """Hand queued messages to the model at a ROUND boundary, mid-turn.
 
-        Ryan: "if i queue a message the agent has to fully stop to get it ... it
+        the user: "if i queue a message the agent has to fully stop to get it ... it
         wont deliver between tool calls or agent thinking / output."
 
         Exactly so, and the reason was structural: the ONLY flush point was
@@ -8656,7 +8656,7 @@ class LiteTUI(App):
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
         if getattr(self.backend, "owns_native_turns", False):
-            # LiteTUI's own compaction, adapted in the Claude layer (Ryan
+            # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.
             from litetui.claude_compact import compact
             auto = getattr(self, "_compact_is_auto", False)
@@ -9009,7 +9009,7 @@ class LiteTUI(App):
         # EVENT PUBLISHED. Nothing here used to touch `ctx_used`, so the
         # footer chip (app.py `_footer_chunks`) kept the pre-compaction
         # figure -- and its red/amber threshold with it -- until the NEXT
-        # turn's native usage arrived. Ryan's own words on this feature were
+        # turn's native usage arrived. the user's own words on this feature were
         # "why is it not compacting", and a chip still reading 86% straight
         # after a compaction is exactly that picture.
         #
@@ -9175,7 +9175,7 @@ class LiteTUI(App):
             self._reasoning_ignored_warned = False  # re-arm: it is per-config
         # 🔴 THE BACKEND CONTROL IN SETTINGS WAS SILENTLY INERT.
         #
-        # RYAN, 2026-09-18: *"i set the fucking backend to ninfer and loaded in
+        # THE USER, 2026-09-18: *"i set the fucking backend to ninfer and loaded in
         # vram and its still talking to fucking lmstudio"*. He was right. Saving
         # wrote `backend` to settings.json and stopped there: `self.backend` is
         # built by `make_backend` at boot and rebuilt ONLY by `/backend` — the
@@ -9315,7 +9315,7 @@ class LiteTUI(App):
             entry.handler(self, name, arg)
             return
 
-        # A slash name that is not a command may be a SKILL. Ryan typed
+        # A slash name that is not a command may be a SKILL. the user typed
         # /ls-mark expecting exactly that and got "Unknown" printed beside a
         # list containing ls-mark -- and an autocomplete that completes to a
         # dead command would be a control that does nothing, which is this
@@ -9327,7 +9327,7 @@ class LiteTUI(App):
         if any(s.name.lower() == bare for s in self.skills):
             # ARG RIDES ALONG. This rebuilt the command WITHOUT it, so
             # `/ls-youtube-transcript <url>` loaded the skill and threw the url
-            # away — Ryan: "i couldnt send him the link and invoke it at once".
+            # away — the user: "i couldnt send him the link and invoke it at once".
             # The autocomplete completes to "/name " with a trailing space,
             # which invites exactly the argument this line was discarding.
             self._handle_command(f"/skills {bare} {arg}".rstrip())
@@ -9348,7 +9348,7 @@ def wants_ansi_fallback() -> bool:
     succeeds return False, so nothing changes on a modern terminal. Measured
     2026-09-01: a directly spawned conhost on Win11 26200 reports vt=False
     truecolor=False (rich get_windows_console_features), and litetui 0.22.1
-    rendered the broken scheme there (sandbox 0057 guest cmd, Ryan's sighting).
+    rendered the broken scheme there (sandbox 0057 guest cmd, the user's sighting).
     """
     if sys.platform != "win32" or os.environ.get("WT_SESSION"):
         return False

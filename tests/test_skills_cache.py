@@ -1,6 +1,6 @@
 """The prompt lives on disk, and the skill index is a refreshable cache.
 
-Ryan, 2026-08-22: "there should never be anything hardcoded ... move to
+the user, 2026-08-22: "there should never be anything hardcoded ... move to
 prompts/, but make the skills index write to skills/ as a cache, add a
 '/skills refresh' cmd".
 
@@ -96,7 +96,7 @@ def test_write_then_read_round_trips(tmp_path: Path) -> None:
 
 
 def test_the_cache_lands_in_the_skills_directory(tmp_path: Path) -> None:
-    """Ryan named the location: the index caches beside the skills it describes."""
+    """the user named the location: the index caches beside the skills it describes."""
     p = skills_mod.cache_path(tmp_path)
     assert p.parent.name == skills_mod.SKILLS_DIR_NAME
     assert p.name == skills_mod.INDEX_CACHE_NAME

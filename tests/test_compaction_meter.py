@@ -13,7 +13,7 @@ context chip kept the pre-compaction figure, and its red/amber threshold with
 it, until the NEXT turn's native usage happened to arrive.
 
     THE EVENT AND THE METER ARE TWO REPORTS OF ONE FACT, AND THEY DISAGREED BY
-    3.5x. Ryan's own words on this feature were "why is it not compacting" — a
+    3.5x. the user's own words on this feature were "why is it not compacting" — a
     chip still reading 86% straight after a compaction is that picture exactly.
 
 ONE ASSIGNMENT, NOT THREE FIXES. `ctx_used` is a Textual reactive, and

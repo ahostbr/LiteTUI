@@ -93,7 +93,7 @@ class _Backend:
 
 
 def test_engine_lanes_sets_the_next_starts_concurrency(monkeypatch):
-    """T892 — Ryan (liteask a-f30ad840): "during the slash engine cmd in litetui ...
+    """T892 — the user (liteask a-f30ad840): "during the slash engine cmd in litetui ...
     we need to be able to set this". `/engine lanes N` saves the field the NInfer
     tab edits; `/engine start N` sets it and starts; out of range refuses with the range."""
     from litetui import settings as settings_mod

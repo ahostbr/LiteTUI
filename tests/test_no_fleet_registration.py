@@ -3,7 +3,7 @@
 WHAT HAPPENED (2026-08-20). Constructing LiteTUI registers a harness seat, and
 `Seat.register()` passes `--takeover`. Takeover is DOCUMENTED to refuse a live
 holder; measurably it does not. So every `python tests/run_all.py` took the name
-"LiteTUI" from Ryan's running instance and moved its registry row into
+"LiteTUI" from the user's running instance and moved its registry row into
 `~/.liteharness/.ghost_evicted_<date>/`.
 
 Measured: the live app was pid 474900 and its record was in the graveyard, while

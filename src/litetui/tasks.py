@@ -241,7 +241,7 @@ def log_path(task: Task, root: Path | str) -> Path:
 def backgroundable(tool: str) -> bool:
     """May this tool run in the background at all?
 
-    Ryan (2026-09-08 13:3x): "not everything should be backgroundable ... only
+    the user (2026-09-08 13:3x): "not everything should be backgroundable ... only
     what makes sense" — the rule is the SCHEMA: a tool qualifies only if its own
     JSON declares a `background` property (bash, powershell). read/edit/grep are
     instant, ask_user_question waits on the human by design, chrome and pccontrol
@@ -263,7 +263,7 @@ async def wait_or_promote(aw, seconds: float):
     """Await `aw` for up to `seconds`.
 
     (True, future) when it finished in time; (False, future) when it is still
-    running — the caller hands the future to a background task (T517: Ryan,
+    running — the caller hands the future to a background task (T517: the user,
     "the calls are still blocked is it off by default or something ?"). The
     future is the SAME awaitable either way: nothing is started twice.
     """

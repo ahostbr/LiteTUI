@@ -1,6 +1,6 @@
 """T569 — /think and /load open the picker instead of printing a list.
 
-RYAN, 2026-09-10 19:4x, verbatim:
+THE USER, 2026-09-10 19:4x, verbatim:
 
     "make litetui's "/think" cmd display a think modal dialog ... its all
     printed to the screen run ... also "/load" should show the model selector so
@@ -249,7 +249,7 @@ def test_a_known_typed_name_still_loads_directly(picks):
 
 
 def test_an_unknown_name_opens_the_picker_with_near_matches_on_top(picks):
-    """🔴 RYAN'S ACTUAL COMPLAINT — "not rely on them to type it perfectly".
+    """🔴 THE USER'S ACTUAL COMPLAINT — "not rely on them to type it perfectly".
 
     A typo used to reach `backend.load()` and come back as an error line that
     restated the name without helping. The near match goes FIRST because the

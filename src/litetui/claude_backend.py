@@ -12,7 +12,7 @@ from litetui.llm_backend import BackendError, ModelRow
 SDK_VERSION = "0.2.159"
 CLI_VERSION = "2.1.281"
 
-#: The prompt-cache lifetime LiteTUI pins for the main conversation (T911, Ryan
+#: The prompt-cache lifetime LiteTUI pins for the main conversation (T911, the user
 #: 2026-09-24). CLI 2.1.281 reads CLAUDE_CODE_PROMPT_CACHE_TTL (code.claude.com
 #: /docs/en/prompt-caching; string present in the bundled claude.exe). With
 #: setting_sources=[] the user's promptCacheTtl setting is never read, so the env
@@ -20,13 +20,13 @@ CLI_VERSION = "2.1.281"
 CACHE_TTL = "1h"
 CACHE_TTL_SECONDS = 3600
 
-#: LiteTUI compacts Claude conversations itself (claude_compact; Ryan
+#: LiteTUI compacts Claude conversations itself (claude_compact; the user
 #: 2026-09-24: "I would rather keep it if it's possible"), so Claude's own
 #: autocompact is off. Measured on CLI 2.1.281 via get_context_usage():
 #: isAutoCompactEnabled True (threshold 967000) by default, False with this.
 #: DISABLE_COMPACT turns off the rest, the hard-limit compaction included (read out
 #: of the CLI: it is checked beside DISABLE_AUTO_COMPACT wherever compaction is
-#: decided). Ryan, 2026-09-24 (plan claude-backend-litetui-identity, phase 4): hard
+#: decided). the user, 2026-09-24 (plan claude-backend-litetui-identity, phase 4): hard
 #: limit = "LiteTUI only". So LiteTUI's threshold is the one compaction system, checked
 #: mid-turn too (claude_turn), and an overflow is a stated failure LiteTUI compacts from.
 AUTOCOMPACT_ENV = {"DISABLE_AUTO_COMPACT": "1", "DISABLE_COMPACT": "1"}

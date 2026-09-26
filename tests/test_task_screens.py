@@ -1,6 +1,6 @@
 """T570 piece 3 — the two panels behind the `bg` and `agents` chips.
 
-Ryan (19:5x): "both backgroudn proccess and subagents will need a new modal for
+the user (19:5x): "both backgroudn proccess and subagents will need a new modal for
 them. backgroudn proccess just need to show them running with time display etc
 ... sub agents should show prompt sent > thinking > response ... clearing when
 the agent is done."
@@ -261,7 +261,7 @@ async def test_the_clock_moves_without_rebuilding_the_panel() -> None:
         assert "1m" in str(row.visual), "the clock did not move"
 
 
-# ── ✕ stop on every background row (Ryan, 2026-09-18) ──────────────────────
+# ── ✕ stop on every background row (the user, 2026-09-18) ──────────────────────
 #
 # "thats shows a bug in the bg tasks modal ... i have no way to stop them
 # myself if needed" — seven runaway sleep/cat polls on the 35B seat, and the

@@ -496,7 +496,7 @@ def test_sixel_widget_keeps_native_size_halfcell_fits_width(monkeypatch):
 def test_da1_has_sixel_detects_attribute_4():
     """DA1 sixel detection: attribute 4 present -> sixel, absent -> not.
 
-    The exact leak Ryan saw (`\x1b[?61;4;6;7;...c`) advertises sixel; a reply
+    The exact leak the user saw (`\x1b[?61;4;6;7;...c`) advertises sixel; a reply
     without a standalone 4 does not (and 40/14 must not false-positive)."""
     from litetui.image_viewer import _da1_has_sixel
 

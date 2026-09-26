@@ -1,6 +1,6 @@
 """T577 — tool approval reaches the HOST over --rpc instead of a keyboard.
 
-Ryan, 2026-09-10: "i want the approvals to route threw frontier chat GUI". A
+the user, 2026-09-10: "i want the approvals to route threw frontier chat GUI". A
 LiteTUI child spawned headless by LiteSuite at the `interactive` profile has no
 keyboard, so a `CONFIRM` decision had nowhere to go.
 

@@ -3,7 +3,7 @@
 ⚠️ THIS FILE USED TO HOLD A CROSS-REPO DRIFT GATE and no longer does.
 `test_the_port_matches_the_source_token_for_token` re-extracted LiteSuite's
 themes.ts and failed on the first mismatched hex. It was DELETED 2026-08-28 by
-Ryan's ruling *let them diverge* — the palettes are independent now, LiteSuite
+the user's ruling *let them diverge* — the palettes are independent now, LiteSuite
 `cb071ea4` moved matrix upstream, and this port deliberately does not follow.
 See themes.py's own header for the contract that replaced it.
 
@@ -38,7 +38,7 @@ def test_the_two_ryan_asked_for_by_name():
 
 
 def test_every_port_is_dark():
-    """Ryan's ask was dark-based themes; a light one here is a port error."""
+    """the user's ask was dark-based themes; a light one here is a port error."""
     assert all(t.dark for t in themes_mod.LITETUI_THEMES.values())
 
 
@@ -109,7 +109,7 @@ def test_every_shade_is_actually_gray():
 
 
 def test_shade_semantics_are_muted_not_neon():
-    """Ryan's complaint was orange and green everywhere. warning stays a
+    """the user's complaint was orange and green everywhere. warning stays a
     sand-gray (spread <= 48); error keeps just enough brick to be findable
     (spread <= 96) — desaturated, never neon. A neon #FF0000 spreads 255."""
     for name, t in themes_mod.SHADE_THEMES.items():

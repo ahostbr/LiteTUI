@@ -1,6 +1,6 @@
 """T530: the bash tool runs a REAL bash on Windows when the box has one.
 
-Ryan 2026-09-08, after the async test: the model chose the bash tool for
+the user 2026-09-08, after the async test: the model chose the bash tool for
 `sleep 45 && echo PROMOTED > file` and cmd.exe answered "'sleep' is not
 recognized". Git for Windows ships bash with coreutils; the tool now spawns
 it in argv form and its description says so, or says cmd.exe when there is

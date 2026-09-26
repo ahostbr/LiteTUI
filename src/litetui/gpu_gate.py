@@ -1,6 +1,6 @@
 """Is this box an RTX 5090? The one question every NInfer surface asks first (T893).
 
-RYAN, 2026-09-18 13:2x: *"make sure the user never sees anything about ninfer in both
+THE USER, 2026-09-18 13:2x: *"make sure the user never sees anything about ninfer in both
 litesuite and litetui if there not running a rtx 5090 gpu ... we must use nvidia-smi,
 detect if it exists on the system clean exit if not stating no way its a 5090 without
 nvidia-smi on the machine ... then and only then IF gpu=5090 everything is shown about

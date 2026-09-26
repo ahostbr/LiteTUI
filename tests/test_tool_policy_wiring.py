@@ -84,7 +84,7 @@ async def test_read_executes_without_a_modal():
 
 @pytest.mark.asyncio
 async def test_sensitive_strict_call_requires_one_host_decision():
-    """STRICT is the approval level (Ryan's ruling 2026-09-19: "strict mode ...
+    """STRICT is the approval level (the user's ruling 2026-09-19: "strict mode ...
     auto ... none at all"): ordinary process execution is in its confirm set,
     so the SAME call that runs freely under INTERACTIVE stops here for exactly
     one host decision.
@@ -159,7 +159,7 @@ async def test_interactive_destructive_shell_call_still_requires_one_host_decisi
 @pytest.mark.asyncio
 async def test_denied_modal_and_unattended_confirm_never_execute(tmp_path):
     """Was `..._and_scheduled_profile_never_execute`. The `scheduled` read-only
-    floor is gone (Ryan 2026-09-24: "remove scheduled completely it makes no
+    floor is gone (the user 2026-09-24: "remove scheduled completely it makes no
     sense to me ... make interactive ask only for dangerous cmds any deletions
     or zip expansions weird procc runs that arent its tools and dangerous cmds
     threw PS and bash"). Its replacement is asserted here: an unattended turn
@@ -205,8 +205,8 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
 
     ⚠️ RENAMED TWICE NOW, AND THE SECOND RENAME IS THE INTERESTING ONE.
     It was `test_cron_profile_rides_...` when `job.tool_profile` decided; then
-    `test_the_SET_level_rides_with_queued_and_idle_cron_turns` when Ryan ruled
-    the conversation setting decided. Ryan's ruling of 2026-09-11 removed the
+    `test_the_SET_level_rides_with_queued_and_idle_cron_turns` when the user ruled
+    the conversation setting decided. the user's ruling of 2026-09-11 removed the
     choice entirely -- "for a cron it has to run auto because nobody will be
     there to hitl it" -- so `_fire_job` hardcodes AUTONOMOUS and the SET level
     no longer rides with anything. The old NAME asserted the old ruling, which
@@ -273,7 +273,7 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
 
     🔴 THE ARM ABOVE PINS A STRING; THIS ONE PINS THE CONSEQUENCE. A profile
     constant travelling correctly is only interesting because of what it stops
-    happening -- Ryan: "for a cron it has to run auto because nobody will be
+    happening -- the user: "for a cron it has to run auto because nobody will be
     there to hitl it". The failure this guards against is not a wrong label, it
     is a scheduled job at 3am sitting on a modal nobody will ever answer, which
     presents as "the automation silently stopped running" and NEVER as an error.

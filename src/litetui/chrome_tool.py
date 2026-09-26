@@ -1,4 +1,4 @@
-"""Ryan's real Chrome as tool verbs, with its two confusing states explained.
+"""the user's real Chrome as tool verbs, with its two confusing states explained.
 
 chrome-bridge/bridge.py already has the verbs (ping, tabs, nav, text, click,
 scroll, shot). Wrapping them is trivial; what earns its keep here is

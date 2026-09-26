@@ -1,6 +1,6 @@
 """Collapsible assistant card: header text, manual fold, and the auto-collapse latch.
 
-Ryan, 2026-09-16: the whole card folds like a thinking block, the header shows the
+the user, 2026-09-16: the whole card folds like a thinking block, the header shows the
 model while generating and "<one-line summary> - <model>" once summarised, and a
 finished card folds itself on the way off screen.
 

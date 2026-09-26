@@ -1,4 +1,4 @@
-"""The store is injected ONCE, not per turn (Ryan's ruling, 2026-08-19).
+"""The store is injected ONCE, not per turn (the user's ruling, 2026-08-19).
 
 Every-turn injection is affordable at 1M context and is not on a local 27B.
 The regression this guards is silent and expensive: the app still works, the

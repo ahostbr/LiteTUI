@@ -234,7 +234,7 @@ class Job:
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     label: str = ""
     #: 🔴 VESTIGIAL SINCE T085 -- NOT CONSULTED WHEN THE JOB FIRES.
-    #: Ryan: "just change it so schedule only runs auto mode". `app._fire_job`
+    #: the user: "just change it so schedule only runs auto mode". `app._fire_job`
     #: resolves to `autonomous` outright, because a scheduled task fires when
     #: nobody is at the keyboard and a level that stops to ask would hang
     #: instead of running.

@@ -218,7 +218,7 @@ class PromptInput(Input):
             else:
                 # Any other key means the hand is back in the draft: leave the
                 # footer and let the key reach the input. Staying selected here
-                # is how Ryan's authority "switched on its own": Down, type a
+                # is how the user's authority "switched on its own": Down, type a
                 # message, Enter cycled the chip (interactive -> strict) instead
                 # of sending, and the Enter after "nothing happened" landed on
                 # autonomous, persisted.
@@ -382,7 +382,7 @@ class ThinkingHeader(Static):
         # STOP THE BUBBLE. Click bubbles, and this header now sits inside an
         # AssistantMessage that folds on its own click. Without stop(), one
         # click on "Thinking" would fold the trace AND the whole card - the
-        # opposite of the independent inner collapse Ryan asked to preserve.
+        # opposite of the independent inner collapse the user asked to preserve.
         event.stop()
         block = self.parent
         if isinstance(block, ThinkingBlock):
@@ -449,7 +449,7 @@ class ThinkingBlock(Vertical):
             self.remove_class("expanded")
         marker = "\u25be" if value else "\u25b8"
         self._marker = marker
-        # A finished block keeps its readout across toggles (Ryan): the frozen
+        # A finished block keeps its readout across toggles (the user): the frozen
         # stats re-render with the new marker instead of being wiped to a label.
         text = self._frozen_text(marker) or f"{marker} Thinking"
         self._set_header(text)
@@ -581,7 +581,7 @@ class ThinkingBlock(Vertical):
         """The trace stopped streaming: keep the readout instead of throwing it away.
         One final repaint with `now` pinned to this moment — elapsed is exactly
         the thinking duration, and the rate is that phase's own tokens / time
-        (Ryan: total time, thinking tokens, avg tok/s). Same string as live, just
+        (the user: total time, thinking tokens, avg tok/s). Same string as live, just
         frozen; stops the timer like reset_header. The app calls it once inside
         _thinking_done; a pre-compose freeze keeps its numbers for set_expanded."""
         if self._t0 is None:
@@ -837,7 +837,7 @@ class CompactionCard(Vertical):
 class AssistantMessage(Vertical):
     """Assistant bubble - optional thinking, answer, then terminal stop line.
 
-    The WHOLE card folds, like a thinking block (Ryan, 2026-09-16). Two things
+    The WHOLE card folds, like a thinking block (the user, 2026-09-16). Two things
     make that unlike the ThinkingBlock next door:
 
     * The header is the widget's own ``border_title``, not a child row, so it
@@ -1150,7 +1150,7 @@ class ConfirmStop(ModalScreen[bool]):
 
     pi binds escape straight to `app.interrupt` and aborts with no confirmation
     (keybindings.ts:78, "Cancel or abort"), showing only an `esc to interrupt`
-    hint in the spinner. Ryan asked for a confirmation here instead: a local 27B
+    hint in the spinner. the user asked for a confirmation here instead: a local 27B
     turn is slow and expensive enough that losing one to a stray escape costs
     more than the extra keypress. Escape inside the dialog answers No, so the
     accidental-escape case is a no-op rather than a lost turn.
@@ -1179,7 +1179,7 @@ class ConfirmStop(ModalScreen[bool]):
 class PaletteButton(Static):
     """The command palette's ONLY route, and the reason it is a mouse target.
 
-    Ryan, liteask a-5d6c1ca0 (2026-09-10 21:3x): "Keep plan on Ctrl+P, move the
+    the user, liteask a-5d6c1ca0 (2026-09-10 21:3x): "Keep plan on Ctrl+P, move the
     palette -- palette via click only".
 
     🔴 BEFORE THIS THE PALETTE HAD NO ROUTE AT ALL (T573). Textual opens it
@@ -1198,7 +1198,7 @@ class PaletteButton(Static):
 
 
 class PauseButton(Static):
-    """/pause as a mouse target, next to the palette button (Ryan, 2026-09-18:
+    """/pause as a mouse target, next to the palette button (the user, 2026-09-18:
     "add a onscreen button also kinda like the tool cancel one"). Same body as
     the command and the footer chip: `action_toggle_pause`, one definition."""
 
@@ -1222,7 +1222,7 @@ class PauseButton(Static):
 
 
 class MicButton(Static):
-    """Voice-in record toggle, beside pause (Ryan 2026-09-18: "replace that
+    """Voice-in record toggle, beside pause (the user 2026-09-18: "replace that
     speak button ... the keybinding ... a start stop toggle"). Click and the
     record hotkey both route to `action_toggle_mic`. TTS speak on/off is NOT
     here — it moved to the Voice settings tab, per the same ruling."""
@@ -1294,7 +1294,7 @@ class LiteTUICommands(Provider):
     The stock palette knows five Textual commands and nothing about this
     app — 90% of what LiteTUI does was undiscoverable from the palette before
     these rows existed. (It USED to open on ctrl+p; that key is plan mode since
-    T558, and the palette opens from the footer's "commands" button — Ryan,
+    T558, and the palette opens from the footer's "commands" button — the user,
     liteask a-5d6c1ca0.) Each row
     here carries the SAME command string the dispatcher handles, invoked
     through the same `_handle_command` the keyboard uses, so the palette can
