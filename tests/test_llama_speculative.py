@@ -162,7 +162,7 @@ def test_whole_ini_failure_does_not_replace_previous_file(tmp_path):
     assert dest.read_text(encoding="utf-8") == "previous ini"
 
 
-@pytest.mark.parametrize("entry", ["apply", "context", "load", "regen"])
+@pytest.mark.parametrize("entry", ["apply", "context", "load-new", "regen"])
 def test_other_models_invalid_profile_cannot_evict_resident(tmp_path, monkeypatch, entry):
     settings = Settings()
     settings.llama_load_settings = {"bad-other": {"spec_type": "draft-mtp"}}
@@ -188,7 +188,7 @@ def test_other_models_invalid_profile_cannot_evict_resident(tmp_path, monkeypatc
         elif entry == "regen":
             backend._regen_ini()
         else:
-            asyncio.run(backend.load("resident"))
+            asyncio.run(backend.load("new-model"))
     assert effects == []
     assert settings.llama_load_settings == previous
     assert dest.read_text(encoding="utf-8") == "resident preset"
@@ -292,3 +292,69 @@ def test_restart_does_not_grant_permission_to_replacement_foreign_server(tmp_pat
     monkeypatch.setattr(b, "_http_json", lambda *a, **kw: pytest.fail("load sent to foreign server"))
     with pytest.raises(b.BackendError, match="serving one model"):
         asyncio.run(backend.apply_load_settings("resident", {"spec_type": "none"}))
+
+
+
+def test_second_scan_performs_zero_metadata_reads(tmp_path, monkeypatch):
+    import builtins
+
+    gguf(tmp_path / "mtp.gguf")
+    gguf(tmp_path / "plain.gguf", layers=None)
+    monkeypatch.setattr(b, "_MIN_BYTES", 0)
+    settings = Settings(llama_scan_litesuite=False, llama_scan_lmstudio=False,
+                        llama_scan_hf_cache=False, llama_models_dirs=[str(tmp_path)])
+    first = b.scan_models(settings)
+    real_open = builtins.open
+
+    def no_metadata_reads(file, *args, **kwargs):
+        if Path(file).suffix == ".gguf":
+            pytest.fail("unchanged GGUF metadata reopened on repeat scan")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", no_metadata_reads)
+    assert b.scan_models(settings) == first
+
+
+@pytest.mark.parametrize("change", ["mtime", "size"])
+def test_metadata_cache_invalidates_on_file_identity_change(tmp_path, change):
+    import os
+
+    path = gguf(tmp_path / "changed.gguf")
+    assert b.gguf_metadata(path) == ("qwen35", 1)
+    stat = path.stat()
+    gguf(path, layers=0)
+    if change == "mtime":
+        assert path.stat().st_size == stat.st_size
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    else:
+        with path.open("ab") as file:
+            file.write(b"padding")
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert b.gguf_metadata(path) == ("qwen35", None)
+    path.unlink()
+    assert b.gguf_metadata(path) == (None, None)
+
+
+def test_served_target_ignores_unrelated_stale_profile_without_regeneration(tmp_path, monkeypatch):
+    settings = Settings(llama_load_settings={"bad-other": {"spec_type": "draft-mtp"}})
+    rows = [b.ModelRow("target", str(gguf(tmp_path / "target.gguf")), "custom"),
+            b.ModelRow("bad-other", str(gguf(tmp_path / "bad.gguf", layers=0)), "custom")]
+    backend = b.LlamaCppBackend(settings)
+    monkeypatch.setattr(b, "scan_models", lambda s: rows)
+    monkeypatch.setattr(backend, "_server_models", lambda: {"target": {"status": {"value": "loaded"}}})
+    effects = []
+    monkeypatch.setattr(backend, "_regen_ini", lambda **kw: pytest.fail("unneeded regeneration"))
+    monkeypatch.setattr(b, "_http_json", lambda *a, **kw: effects.append("load") or {})
+    asyncio.run(backend.load("target"))
+    assert effects == ["load"]
+
+
+def test_served_target_still_revalidates_its_own_profile(tmp_path, monkeypatch):
+    settings = Settings(llama_load_settings={"target": {"spec_type": "draft-mtp"}})
+    rows = [b.ModelRow("target", str(gguf(tmp_path / "target.gguf", layers=0)), "custom")]
+    backend = b.LlamaCppBackend(settings)
+    monkeypatch.setattr(b, "scan_models", lambda s: rows)
+    monkeypatch.setattr(backend, "_server_models", lambda: {"target": {"status": {"value": "loaded"}}})
+    monkeypatch.setattr(b, "_http_json", lambda *a, **kw: pytest.fail("invalid target loaded"))
+    with pytest.raises(b.BackendError, match="target.*nextn_predict_layers"):
+        asyncio.run(backend.load("target"))

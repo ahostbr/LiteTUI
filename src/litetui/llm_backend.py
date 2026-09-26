@@ -351,36 +351,57 @@ _NON_CHAT_ARCHS = frozenset({
 
 
 def gguf_metadata(p: str | Path, *, architecture_only: bool = False) -> tuple[str | None, int | None]:
-    """Read bounded v2/v3 metadata, never tensors. Unknown/malformed is ineligible.
+    """Identity-cached header evidence; replacement/deletion invalidates it.
 
-    nextn may precede architecture or follow large tokenizer arrays. Numeric
-    arrays are sought over, strings skipped without allocating their contents.
-    Counts, offsets and allocations are bounded even for malicious headers.
+    GGUFs are immutable between scans. Cache both discovery's arch-only probe
+    and the MTP census: /model must not walk every tokenizer on every refresh.
     """
+    path = Path(p)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None, None
+    return _gguf_metadata(str(path), stat.st_mtime_ns, stat.st_size, architecture_only)
+
+
+@lru_cache(maxsize=512)
+def _gguf_metadata(path: str, mtime_ns: int, size: int,
+                   architecture_only: bool) -> tuple[str | None, int | None]:
+    """Walk bounded v2/v3 metadata, never tensors. Malformed is ineligible.
+
+    A read-only mapping permits integer-offset array skips without per-token
+    tell/seek system calls. Only metadata offsets are dereferenced. It is
+    closed before returning; cache entries retain scalars, never file handles.
+    Scanning the full metadata (not stopping at nextn) detects duplicate keys.
+    """
+    import mmap
     import struct
 
     formats = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i",
                6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
     integers = {0, 1, 2, 3, 4, 5, 10, 11}
+    limit = min(size, 256 * 1024 * 1024)
+    if limit < 24:
+        return None, None
     try:
-        with open(p, "rb") as f:
-            limit = min(Path(p).stat().st_size, 256 * 1024 * 1024)
-
-            def read(n):
-                if n < 0 or f.tell() + n > limit:
-                    raise ValueError("metadata bounds")
-                raw = f.read(n)
-                if len(raw) != n:
-                    raise ValueError("truncated metadata")
-                return raw
-
-            def number(fmt):
-                return struct.unpack("<" + fmt, read(struct.calcsize("<" + fmt)))[0]
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), limit, access=mmap.ACCESS_READ) as data:
+            position = 0
 
             def skip(n):
-                if n < 0 or f.tell() + n > limit:
+                nonlocal position
+                if n < 0 or position + n > limit:
                     raise ValueError("metadata bounds")
-                f.seek(n, 1)
+                start = position
+                position += n
+                return start
+
+            def read(n):
+                start = skip(n)
+                return data[start:position]
+
+            def number(fmt):
+                start = skip(struct.calcsize("<" + fmt))
+                return struct.unpack_from("<" + fmt, data, start)[0]
 
             def string(*, keep=False):
                 n = number("Q")
@@ -415,8 +436,18 @@ def gguf_metadata(p: str | Path, *, architecture_only: bool = False) -> tuple[st
                 elif kind == 9:
                     element, length = number("I"), number("Q")
                     if element == 8 and length <= 1_000_000:
+                        # Hot path: tokenizer arrays contain hundreds of
+                        # thousands of strings. Skip in mapped memory, with
+                        # no allocation or Python helper stack per token.
+                        offset = position
+                        unpack_length = struct.Struct("<Q").unpack_from
                         for _ in range(length):
-                            string()
+                            if offset + 8 > limit:
+                                raise ValueError("metadata bounds")
+                            offset += 8 + unpack_length(data, offset)[0]
+                            if offset > limit:
+                                raise ValueError("metadata bounds")
+                        position = offset
                     elif element in formats:
                         skip(struct.calcsize("<" + formats[element]) * length)
                     else:
@@ -1598,18 +1629,17 @@ class LlamaCppBackend(_VramGate):
     def _load_sync(self, key: str, notice=None) -> None:
         self._refuse_if_attached("load a model")
         served = self._server_models()
-        if not self.attached:
-            # Revalidate stored profiles against current metadata and binary,
-            # even when the router already knows this model. No eviction yet.
-            rows = scan_models(self._settings)
-            render_preset_ini(rows, self._settings)
-            cfg = self._settings.llama_load_settings.get(key, {})
-            if cfg.get("spec_type"):
-                path = next((r.path for r in rows if r.key == key), None)
-                resolve_speculation(key, path, cfg, self._settings)
         if key not in served:
-            # New on disk since the ini was generated: rebuild the world.
+            # Regeneration consumes the whole preset, so it preflights ALL
+            # profiles before restarting. An adopted preset remains off limits.
             self._regen_ini()
+        elif not self.attached:
+            # No INI rebuild here: another model's unused stale settings must
+            # not block this load. Revalidate the target against its own file.
+            rows = scan_models(self._settings)
+            path = next((r.path for r in rows if r.key == key), None)
+            cfg = self._settings.llama_load_settings.get(key, {})
+            resolve_speculation(key, path, cfg, self._settings)
         self._request_load_sync(key, notice)
 
     def _request_load_sync(self, key: str, notice=None) -> None:

@@ -43,8 +43,10 @@ In `/modelcfg` → **Load** → **Speculative decoding**, choose:
 
 MTP uses max/min/probability defaults **3 / 0 / 0** when tuning is blank; explicit
 values are preserved. Stored settings live in `llama_load_settings[model]`.
-Eligibility is rechecked at apply/load time, and the complete proposed model INI
-is validated before evicting resident models. Applying load settings still
+Eligibility is rechecked at apply/load time using file-identity-cached metadata.
+INI regeneration validates the complete proposed preset before evicting resident
+models; an already-served target load validates only that target's profile.
+Applying load settings still
 restarts an owned router and reloads the selected model; it does not restore
 other residents. An adopted router's preset belongs to its owner and cannot be
 rewritten here. If another model's stale profile prevents the restart, the
