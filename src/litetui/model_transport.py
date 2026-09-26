@@ -479,6 +479,7 @@ class ResponseStream:
                         if self._completed:
                             for call in held:
                                 yield call
+                            held.clear()
                         emitted = True
                         yield chunk
                     return
@@ -1087,7 +1088,8 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
                 finally:
                     await server.close()
             else:
-                result = await OAuthTransport(backend.name).create(**request)
+                # A subagent is not the parent turn: side-call budget, no turn state.
+                result = await OAuthTransport(backend.name).create(purpose="subagent", **request)
             msg = result.choices[0].message
             return {
                 "choices": [

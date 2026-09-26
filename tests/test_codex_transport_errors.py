@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -1001,3 +1002,32 @@ async def test_unterminated_final_event_error_is_not_cleanup(tmp_path, diagnosti
         await transport(tmp_path, lambda r: httpx.Response(200, stream=FinalLine())).create(
             model="gpt-test", messages=[])
     assert 'close failed' not in str(diagnostics)
+
+
+def test_subagent_sidecall_gets_side_call_budget(tmp_path, pauses, monkeypatch):
+    # T1019 N1: a subagent is not its own turn; it may not sit silent ~62 s.
+    count = 0
+
+    def handle(request):
+        nonlocal count
+        count += 1
+        return httpx.Response(503)
+
+    real = mt.OAuthTransport
+    monkeypatch.setattr(mt, "OAuthTransport", lambda name: real(
+        name, credential_path=auth_file(tmp_path), http_transport=httpx.MockTransport(handle)))
+    backend = SimpleNamespace(remote=True, name="codex", reasoning_levels=lambda model: ["medium"])
+    with pytest.raises(mt.ProviderError, match=r"retried 2 times"):
+        mt.complete_sidecall(SimpleNamespace(backend=backend),
+                             {"model": "gpt-test", "messages": []})
+    assert count == 3 and sum(pauses) <= 6
+
+
+@pytest.mark.asyncio
+async def test_held_tool_call_is_yielded_once_after_completion(tmp_path):
+    # T1019 N2: a chunk after response.completed must not re-flush held calls.
+    stream = await transport(
+        tmp_path, lambda request: httpx.Response(200, content=sse(CALL, DONE, TEXT))
+    ).create(model="gpt-test", messages=[], stream=True)
+    calls = [call async for chunk in stream for call in chunk.choices[0].delta.tool_calls or []]
+    assert [call.id for call in calls] == ["call1"]
