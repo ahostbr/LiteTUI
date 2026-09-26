@@ -1,6 +1,6 @@
 """T1003 - an idle footer stays still, and never tears.
 
-Ryan (with two screenshots): "some thing is wrong with the litetui command
+The user (with two screenshots): "some thing is wrong with the litetui command
 template thing it keeps flickering like that" - the palette button alternated
 between "☰ commands" and "☰ coommands" on an idle seat.
 
