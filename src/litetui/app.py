@@ -5261,15 +5261,43 @@ class LiteTUI(App):
         available = getattr(self, "_footer_available_width", None)
 
         # Drop low-value fields until the protected visual-cron facts fit.
-        # Display order never changes; only membership does. Calculate against
-        # Rich cell widths (not len()) so wide glyphs cannot reintroduce clipping.
+        # Display order never changes; only membership does. Authority, plan,
+        # seat identity, thinking effort and context percent are protected: a
+        # narrow spawned-agent pane needs all five to identify the seat and
+        # confirm that its requested effort actually took effect. Calculate
+        # against Rich cell widths (not len()) so wide glyphs cannot reintroduce
+        # clipping.
+        render_sep = sep
         if available is not None:
-            for drop_key in ("tps", "convo", "bg", "agents", "think", "cache", "ctx"):
-                total = sum(chunk.cell_len for _, chunk in chunks)
-                total += Text(sep).cell_len * max(0, len(chunks) - 1)
-                if total <= available:
+            def width() -> int:
+                return (
+                    sum(chunk.cell_len for _, chunk in chunks)
+                    + Text(render_sep).cell_len * max(0, len(chunks) - 1)
+                )
+
+            # Compact spacing before sacrificing information. At intermediate
+            # widths this alone is enough, so cache/context remain visible.
+            if width() > available:
+                render_sep = " · "
+
+            for drop_key in ("tps", "convo", "bg", "agents", "cache", "ctx"):
+                if width() <= available:
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
+
+            # A real harness name can still exceed the remaining room. Keep a
+            # recognisable prefix (at least six cells plus the ellipsis), and let
+            # Rich truncate by CELL width so a wide CJK glyph is never split.
+            if width() > available:
+                seat = next((chunk for key, chunk in chunks if key == "seat"), None)
+                if seat is not None:
+                    excess = width() - available
+                    seat.truncate(max(7, seat.cell_len - excess), overflow="ellipsis")
+
+            # If even the minimum useful seat prefix cannot coexist with every
+            # protected fact, thinking is the first protected field conceded.
+            if width() > available:
+                chunks = [(key, chunk) for key, chunk in chunks if key != "think"]
 
         # Rich's explicit spans override CSS foreground, so a stylesheet-only
         # editor control would save successfully and leave the readout unchanged.
@@ -5292,7 +5320,7 @@ class LiteTUI(App):
                     for span in chunk.spans
                 ]
             if t.plain:
-                t.append(sep, foreground or "#5c6370")
+                t.append(render_sep, foreground or "#5c6370")
             t.append(chunk)
         return t
 
