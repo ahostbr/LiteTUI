@@ -80,6 +80,10 @@ class SidecarWindow:
                             self.on_event(frame)
                         else:
                             self.on_rejected_frame("settings_write_disabled")
+                    elif frame["command"] == "settings_request" and self.on_event is not None:
+                        # Read-only: the page switched to Settings in a window
+                        # opened on another view, which was never sent them.
+                        self.on_event(frame)
                     else:
                         self.on_rejected_frame("unknown_command")
             except (OSError, RuntimeError, ValueError) as exc:
