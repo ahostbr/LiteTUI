@@ -871,9 +871,29 @@ class AssistantMessage(Vertical):
 
     def compose(self) -> ComposeResult:
         from litetui.response_speech import ResponseSpeakButton
+        if self.thinking is not None:
+            yield self.thinking   # set before this card composed; see set_thinking
         yield self.body
         yield self.stop_line
         yield ResponseSpeakButton(self)
+
+    def set_thinking(self, block: "ThinkingBlock") -> None:
+        """Put `block` above the answer, replacing any trace already shown.
+
+        🔴 THE ONE DOOR, because the card may not have composed yet (T1031). A
+        card is mounted without an await (app._assistant_bubble), and a Claude
+        turn opens a new one after every tool card; the next thinking delta
+        arrived in the same tick and `mount(block, before=self.body)` died
+        with "Unable to find relative location of AnswerBody(id='answer-body')
+        because it has no parent" -- killing every think:high turn that used a
+        tool. Until compose runs, the block is kept here and compose yields it.
+        """
+        old, self.thinking = self.thinking, block
+        if self.body.parent is None:
+            return  # not composed yet: compose() yields self.thinking
+        self.mount(block, before=self.body)
+        if old is not None and old is not block and old.parent is not None:
+            old.remove()   # after the new one is up, so the trace never blinks out
 
     # -- header ------------------------------------------------------------
     #
