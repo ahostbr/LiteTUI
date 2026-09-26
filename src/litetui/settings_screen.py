@@ -1332,9 +1332,9 @@ class SettingsBody(Widget):
                         )
                         yield from self._switch_row(
                             "sidecar_enabled", "Prefer optional native sidecar",
-                            "When on, /settings and /calendar open the native sidecar "
-                            "window; if it cannot launch, Textual opens instead and "
-                            "the reason is shown.",
+                            "When on, /settings opens the native sidecar window; if "
+                            "it cannot launch, Textual opens instead and the reason "
+                            "is shown.",
                         )
                         yield self._section_header("interface-footer")
                         yield Static("FOOTER", classes="set-subhead")

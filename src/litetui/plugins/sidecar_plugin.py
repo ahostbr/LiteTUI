@@ -61,7 +61,7 @@ def _requested_snapshot(app) -> dict:
 
 def _open_background(app, owner: SidecarWindow, view: str, fallback=None) -> None:
     """Launch or switch the native window off the UI thread. With `fallback`
-    (/settings, /calendar), a window that cannot open hands over to Textual."""
+    (/settings), a window that cannot open hands over to Textual."""
     try:
         if view == "settings" and getattr(app, "convo_dir", None) is not None:
             snapshot = settings_snapshot(app)
@@ -115,7 +115,7 @@ def _launch(app, view: str, fallback=None) -> None:
 
 
 def open_preferred(app, view: str, textual) -> None:
-    """/settings and /calendar: the native window when Settings -> Interface
+    """/settings: the native window when Settings -> Interface
     "Prefer optional native sidecar" is on, else `textual()`. A window that
     cannot launch falls back to `textual()` after saying why."""
     if not app.settings.sidecar_enabled:

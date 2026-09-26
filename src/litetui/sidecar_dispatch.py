@@ -12,14 +12,17 @@ class SettingsPatchDispatcher:
         self.owner = owner
         self.apply = apply
         self.snapshot = snapshot
-        self._seen: set[int] = set()
+        # One owner outlives many windows, and every child numbers its events
+        # from the same first id; the per-spawn token tells their events apart.
+        self._seen: set[tuple[str, int]] = set()
 
     def __call__(self, frame: dict) -> None:
         request_id = frame["id"]
-        if request_id in self._seen:
+        key = (self.owner.token, request_id)
+        if key in self._seen:
             self.owner.on_rejected_frame("duplicate_event_id")
             return
-        self._seen.add(request_id)
+        self._seen.add(key)
         try:
             # Worker reader never writes app settings or calls service directly.
             if frame["command"] == "settings_request":

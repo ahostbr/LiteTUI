@@ -20,9 +20,8 @@ def _cmd_cron(app, name: str, arg: str) -> None:
 
 
 def _cmd_calendar(app, name: str, arg: str) -> None:
-    from litetui.plugins.sidecar_plugin import open_preferred
-    open_preferred(app, "calendar", lambda: present_dialog(
-        app, partial(CalendarBody, app.jobs), partial(CalendarScreen, app.jobs)))
+    present_dialog(app, partial(CalendarBody, app.jobs),
+                   partial(CalendarScreen, app.jobs))
 
 
 NEW_JOB_PREFILL = "0 9 * * *"

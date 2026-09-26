@@ -1,4 +1,4 @@
-"""T1028: the "Prefer optional native sidecar" toggle routes /settings and /calendar,
+"""T1028: the "Prefer optional native sidecar" toggle routes /settings (never /calendar),
 a window that cannot launch hands over to Textual and says why, and a window
 switched to its Settings tab can ask the parent for the settings it was never sent."""
 import json
@@ -7,8 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from test_sidecar_reader import PipeProcess
 
+from litetui import sidecar_protocol
 from litetui.plugins import scheduler_plugin, settings_ui, sidecar_plugin
 from litetui.sidecar_dispatch import SettingsPatchDispatcher
 from litetui.sidecar_launch import SidecarWindow
@@ -68,8 +71,7 @@ def test_toggle_on_opens_native_instead_of_textual(monkeypatch):
     a = app(monkeypatch, window)
     textual = Mock()
     sidecar_plugin.open_preferred(a, "settings", textual)
-    sidecar_plugin.open_preferred(a, "calendar", textual)
-    assert window.opened == ["settings", "calendar"]
+    assert window.opened == ["settings"]
     textual.assert_not_called()
 
 
@@ -85,7 +87,7 @@ def test_launch_failure_falls_back_to_textual_and_shows_why(monkeypatch):
 def test_launch_exception_falls_back_to_textual(monkeypatch):
     a = app(monkeypatch, Window(raises=OSError("pipe")))
     textual = Mock()
-    sidecar_plugin.open_preferred(a, "calendar", textual)
+    sidecar_plugin.open_preferred(a, "settings", textual)
     textual.assert_called_once_with()
     assert "OSError" in a.messages[-1]
 
@@ -97,21 +99,28 @@ def test_explicit_sidecar_command_reports_the_reason_too(monkeypatch):
                           "[sidecar] Preview unavailable; use Textual /settings, /calendar or /job."]
 
 
-def test_settings_and_calendar_commands_route_through_the_toggle(monkeypatch):
+def test_settings_command_routes_through_the_toggle(monkeypatch):
     routed = []
     monkeypatch.setattr(sidecar_plugin, "open_preferred", lambda a, view, textual: routed.append((view, textual)))
     textual_settings = Mock()
     monkeypatch.setattr(settings_ui, "_open_textual_settings", textual_settings)
+    a = SimpleNamespace()
+    settings_ui._cmd_settings(a, "/settings", "")
+    assert [view for view, _ in routed] == ["settings"]
+    routed[0][1]()  # the fallback is /settings' own Textual screen
+    textual_settings.assert_called_once_with(a)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_calendar_always_opens_textual_whatever_the_toggle_says(monkeypatch, enabled):
+    # The native calendar is read-only; the Textual one creates and edits jobs.
+    window = Window()
+    a = app(monkeypatch, window, enabled=enabled)
     present = Mock()
     monkeypatch.setattr(scheduler_plugin, "present_dialog", present)
-    a = SimpleNamespace(jobs=[])
-    settings_ui._cmd_settings(a, "/settings", "")
     scheduler_plugin._cmd_calendar(a, "/calendar", "")
-    assert [view for view, _ in routed] == ["settings", "calendar"]
-    for _, textual in routed:  # each fallback is that command's own Textual screen
-        textual()
-    textual_settings.assert_called_once_with(a)
     present.assert_called_once()
+    assert window.opened == [] and not hasattr(a, "_sidecar_preview")
 
 
 # ── The window's Settings tab asks the parent (the /sidecar -> Settings-tab path) ──
@@ -158,3 +167,50 @@ def test_request_reads_settings_when_asked(monkeypatch):
     assert sidecar_plugin._requested_snapshot(a) == {"snapshot": {"fields": {}}}
     assert len(calls) == 2  # fresh on every switch, never cached from launch
     assert "error" in sidecar_plugin._requested_snapshot(SimpleNamespace(convo_dir=None))
+
+
+# ── A relaunched window's event ids start again at 1<<32; the parent must answer them ──
+
+FIRST_EVENT_ID = 1 << 32  # the child's first event id, in every process (sidecar main.rs)
+
+
+def _child(written):
+    """A child that answers the parent's requests and records what it was sent."""
+    process = PipeProcess()
+
+    def write(raw):
+        frame = json.loads(raw)
+        written.append(frame)
+        if frame["command"] == "hello":
+            process.respond(sidecar_protocol.encode(frame["id"], frame["token"], "reply",
+                                                    {"version": sidecar_protocol.VERSION, "ready": True}) + b"\n")
+
+    process.stdin.write.side_effect = write
+    return process
+
+
+@pytest.mark.parametrize("command", ["settings_request", "settings_patch"])
+def test_a_second_window_gets_answers_to_its_first_events(monkeypatch, tmp_path, command):
+    exe = tmp_path / "litetui-sidecar.exe"
+    exe.write_bytes(b"")
+    written = []
+    monkeypatch.setattr(sidecar_plugin, "_new_window",
+                        lambda _app: SidecarWindow(exe, spawn=lambda *a, **k: _child(written), timeout=1))
+    monkeypatch.setattr(sidecar_plugin, "settings_snapshot", lambda _app: {"fields": {}})
+    monkeypatch.setattr(sidecar_plugin, "apply_patch", lambda _app, _payload: {"saved": True})
+    a = SimpleNamespace(convo_dir=Path("c1"), system_message=lambda _m: None,
+                        call_from_thread=lambda fn, *args: fn(*args))
+    owner = sidecar_plugin._owner(a)
+    rejected = []
+    owner.on_rejected_frame = rejected.append
+    for window in range(2):  # /sidecar, close the window, /sidecar again: one owner, two processes
+        assert owner.open("timeline")
+        owner.process.respond(sidecar_protocol.encode(FIRST_EVENT_ID, owner.token, command, {}) + b"\n")
+        for _ in range(200):
+            if sum(f["command"] == "event_reply" for f in written) > window:
+                break
+            threading.Event().wait(0.01)
+        owner.close()
+    replies = [f for f in written if f["command"] == "event_reply"]
+    assert [f["id"] for f in replies] == [FIRST_EVENT_ID, FIRST_EVENT_ID]
+    assert rejected == []
