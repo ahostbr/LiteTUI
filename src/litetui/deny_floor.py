@@ -28,7 +28,13 @@ Two rules, both about what the command TARGETS, never about how it is spelled:
                           `.git` file is not one), or a folder containing the
                           workspace (the workspace itself only when it is a repo).
 
-Ceiling (deliberate): a target held in an arbitrary variable (`$x`, `$tmp`) is
+Relative targets resolve against the folder the command is IN at that point:
+`cd ~; Remove-Item * -Recurse` is judged as a delete of the profile, because a
+cd / chdir / pushd / Set-Location / sl / Push-Location earlier in the same
+command moves the base the later targets resolve against.
+
+Ceiling (deliberate): a target, or a cd, held in an arbitrary variable or
+expression (`$x`, `$tmp`, `([Environment]::GetFolderPath('UserProfile'))`) is
 not resolvable here and is not refused; a delete run from inside a script file
 is out of reach. This is a floor under the danger table, not a sandbox.
 """
@@ -60,6 +66,9 @@ _FIND_FILTERS = frozenset({
     "-iregex", "-newer", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin",
     "-size", "-empty", "-user", "-group", "-perm", "-links", "-inum", "-samefile",
 })
+#: A change of directory; the words after it name the new base.
+_CD = re.compile(
+    r"(?i)(?<![\w.$-])(?:cd|chdir|pushd|set-location|sl|push-location)(?![\w.:\\-])")
 _GLOB = re.compile(r"[*?]")
 _MSYS = re.compile(r"^/([a-z])(/.*)?$", re.IGNORECASE)
 
@@ -70,7 +79,16 @@ def refusal(command, workspace, home=None) -> str | None:
         command = " ".join(map(str, command or ()))
     workspace = Path(workspace)
     home = Path(home) if home is not None else Path.home()
-    for match in _VERB.finditer(command):
+    base: Path | None = workspace   # where relative targets resolve; None = unknown
+    steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
+                    *((m.start(), m) for m in _VERB.finditer(command))],
+                   key=lambda step: step[0])
+    for _, match in steps:
+        if match.re is _CD:
+            base = _cd_target(command[match.end():], base, home)
+            continue
+        if re.search(r"(?i)\bgit\s+$", command[:match.start()]):
+            continue  # `git rm` works on the index and tracked files, not a tree
         verb = match.group(1).lower()
         recursive, targets, deletes = _arguments(verb, command[match.end():])
         if not deletes:
@@ -84,7 +102,7 @@ def refusal(command, workspace, home=None) -> str | None:
                             "the host cannot see")
             if not recursive:
                 continue
-            resolved = _resolve(raw, workspace, home)
+            resolved = _resolve(raw, base, home)
             why = resolved and _protected(resolved, workspace, home)
             if why:
                 return _say("protected-root-delete",
@@ -189,15 +207,32 @@ def _normal(raw: str) -> str:
         return text
 
 
-def _resolve(raw: str, workspace: Path, home: Path) -> Path | None:
-    """The folder a target names, or None when a variable hides it."""
+def _cd_target(rest: str, base: Path | None, home: Path) -> Path | None:
+    """The base after `cd <rest>`: the first word that is not a flag. A bare
+    `cd` goes home (bash); `-` or a variable leaves the base unknown."""
+    for token in _TOKEN.findall(rest.split("\n", 1)[0]):
+        cut = _separator(token)
+        word = _unquote(token[:cut] if cut >= 0 else token)
+        low = word.lower()
+        if word and not (low.startswith("-") or re.fullmatch(r"/[a-z]", low)):
+            return _resolve(word, base, home)
+        if word == "-":
+            return None
+        if cut >= 0:
+            break
+    return home.resolve()
+
+
+def _resolve(raw: str, base: Path | None, home: Path) -> Path | None:
+    """The folder a target names, or None when a variable (or an unknown base
+    under a relative target) hides it."""
     parts = re.split(r"[\\/]", _unquote(raw))
     while len(parts) > 1 and parts[-1] == "":
         parts.pop()  # trailing separators
     while parts and _GLOB.search(parts[-1]):
         parts.pop()  # `dir/*` empties dir: judge it as dir
     if not parts:
-        return workspace.resolve()
+        return base.resolve() if base is not None else None
     text = "/".join(parts) if parts != [""] else "/"
     low = text.lower()
     for name in sorted(HOME_VARIABLES, key=len, reverse=True):
@@ -213,7 +248,9 @@ def _resolve(raw: str, workspace: Path, home: Path) -> Path | None:
         text += "/"
     path = Path(text)
     if not path.is_absolute():
-        path = workspace / path
+        if base is None:
+            return None
+        path = base / path
     try:
         return path.resolve()
     except OSError:

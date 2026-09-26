@@ -361,16 +361,12 @@ def evaluate(
         capabilities = frozenset(policy.capabilities) | frozenset(classify_write(args or {}, Path(workspace).resolve(), active_conversation=active_conversation))
     names = ", ".join(sorted(capabilities))
     # 🔴 THE DENY FLOOR RUNS FIRST: before the profile, before any standing
-    # rule, for every turn source. Every shell a seat can reach -- the bash and
-    # powershell tools, Claude's native Bash, Codex's shell, a hook process --
-    # is judged with classify_shell, and every turn (typed, inbox, cron, goal
-    # loop, RPC) reaches its tools through this function. So the floor holds
+    # rule, for every turn source. Every turn (typed, inbox, cron, goal loop,
+    # RPC) reaches its tools through this function, so the floor holds
     # whichever profile string the turn carries (T1027: an inbox turn and a
     # typed turn can disagree on it) and adds no prompt: it only refuses.
-    if policy.classify_args is classify_shell:
-        floor = deny_floor.refusal(_command_text(args), Path(workspace).resolve())
-        if floor:
-            return PolicyDecision(DENY, profile_name, capabilities, floor, danger=DELETION)
+    if floor := _floor(args, workspace):
+        return PolicyDecision(DENY, profile_name, capabilities, floor, danger=DELETION)
     if profile is None:
         return PolicyDecision(
             DENY,
@@ -656,6 +652,33 @@ def _command_text(args: Mapping[str, object] | None) -> str:
     """The command a shell call runs, as text (Codex may pass an argv list)."""
     command = (args or {}).get("command") or ""
     return command if isinstance(command, str) else " ".join(map(str, command))
+
+
+def _floor(args: Mapping[str, object] | None, workspace: Path) -> str | None:
+    """deny_floor's refusal for any call that carries a `command`, or None.
+
+    ANY POLICY, NOT ONLY SHELL_POLICY (review 2198d4ab F2): an MCP shell such
+    as litesuite-tools `shell` arrives under MCP_UNKNOWN_POLICY with the same
+    {command, cwd} arguments.
+
+    EVERY FOLDER THE COMMAND MAY RUN IN (F1): `workspace` is what the caller
+    judged against (paths.ROOT for LiteTUI's own tools), but the bash and
+    powershell tools run in Path.cwd(), the seat's --cwd, and an MCP shell may
+    name its own `cwd`. The command is refused if it is refused against any of
+    them. Reading the cwd is the one process-state read in this module.
+    """
+    command = (args or {}).get("command")
+    if not command or not isinstance(command, (str, list, tuple)):
+        return None
+    text = _command_text(args)
+    bases = [Path(workspace), Path.cwd()]
+    tool_cwd = (args or {}).get("cwd")
+    if isinstance(tool_cwd, str) and tool_cwd:
+        bases.append(Path(workspace) / tool_cwd)   # an absolute cwd replaces workspace
+    for base in dict.fromkeys(b.resolve() for b in bases):
+        if reason := deny_floor.refusal(text, base):
+            return reason
+    return None
 
 
 def classify_shell(args: Mapping[str, object], workspace: Path) -> Iterable[str]:

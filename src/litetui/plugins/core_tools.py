@@ -191,7 +191,10 @@ def bash_exe() -> str | None:
 #:     script went on, and the delete ran against the real profile. So
 #:     $ErrorActionPreference='Stop' is set INSIDE the block (not before
 #:     `$PSStyle`, which is $null on Windows PowerShell 5.1 and would itself
-#:     throw): the first error ends the command with exit 1.
+#:     throw): the first error ends the command with exit 1. Ceiling: under
+#:     Windows PowerShell 5.1 a native command's stderr redirected with 2>&1
+#:     now also aborts; 5.1 runs only when no pwsh is found (powershell_exe
+#:     tries pwsh first), and pwsh 7.2+ does not raise on native stderr.
 #:
 #: `$?` is deliberately NOT used: it is reset by the very `if` that reads it,
 #: and it does not go False for a non-terminating error anyway. Both were

@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -65,11 +66,71 @@ def test_both_shells_meet_the_floor_under_autonomous(tmp_path, command):
         assert decision.action == tp.DENY and "DENY FLOOR" in decision.reason, argv
 
 
-def test_the_floor_judges_only_shell_calls(tmp_path):
-    """A write whose PATH mentions ~ is not a delete; the floor stays out."""
-    decision = tp.evaluate(tp.AUTONOMOUS, tp.WRITE_POLICY, {"path": str(tmp_path / "x"),
-                           "command": INCIDENT}, tmp_path, tool_name="write")
+def test_any_tool_carrying_a_command_meets_the_floor(tmp_path):
+    """Review 2198d4ab F2: an MCP shell (litesuite-tools `shell`) arrives under
+    MCP_UNKNOWN_POLICY, not SHELL_POLICY, with the same {command, cwd}."""
+    decision = tp.evaluate(tp.AUTONOMOUS, tp.MCP_UNKNOWN_POLICY, {"command": INCIDENT},
+                           tmp_path, tool_name="mcp__litesuite-tools__shell")
+    assert decision.action == tp.DENY and "DENY FLOOR" in decision.reason
+    # A call with no command is not judged: the floor stays out of a write.
+    decision = tp.evaluate(tp.AUTONOMOUS, tp.WRITE_POLICY, {"path": str(tmp_path / "x")},
+                           tmp_path, tool_name="write")
     assert decision.action == tp.ALLOW
+
+
+def _profile_shaped(root, monkeypatch):
+    """A fake profile the process believes is home: USERPROFILE/HOME point at it."""
+    home = root / "Users" / "someone"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def test_a_relative_delete_is_judged_in_the_folder_the_tool_runs_in(tmp_path, monkeypatch):
+    """Review F1: the caller judged against paths.ROOT while the shell tools run
+    in Path.cwd(). `rm -rf .claude` from inside the profile must be refused."""
+    home = _profile_shaped(tmp_path, monkeypatch)
+    monkeypatch.chdir(home)
+    elsewhere = tmp_path / "install-dir"
+    elsewhere.mkdir()
+    decision = tp.evaluate(tp.AUTONOMOUS, tp.SHELL_POLICY, {"command": "rm -rf .claude"},
+                           elsewhere, tool_name="bash")
+    assert decision.action == tp.DENY and "~/.claude" in decision.reason
+    # ...and an MCP shell naming the profile as its own cwd, from anywhere.
+    monkeypatch.chdir(elsewhere)
+    decision = tp.evaluate(tp.AUTONOMOUS, tp.MCP_UNKNOWN_POLICY,
+                           {"command": "rm -rf .claude", "cwd": str(home)},
+                           elsewhere, tool_name="mcp__litesuite-tools__shell")
+    assert decision.action == tp.DENY and "~/.claude" in decision.reason
+
+
+@pytest.mark.parametrize("command", [
+    "cd ~; Remove-Item * -Recurse -Force",
+    r"Set-Location $HOME; Remove-Item .\* -Recurse",
+])
+def test_a_cd_home_then_a_relative_delete_is_refused(tmp_path, monkeypatch, command):
+    """Review F3, both strings verbatim: the natural rewrite of a refused $home.
+    The workspace is a SIBLING of the fake profile: were it the profile's
+    parent, `*` would be refused as a folder containing the profile even with
+    the cd ignored, and the arm could not tell (measured: it stayed green)."""
+    _profile_shaped(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)   # Path.cwd() is judged too (F1); keep it a sibling
+    decision = tp.evaluate(tp.AUTONOMOUS, tp.SHELL_POLICY, {"command": command}, workspace,
+                           tool_name="powershell")
+    assert decision.action == tp.DENY and "[protected-root-delete]" in decision.reason
+
+
+def test_git_rm_cached_in_a_repo_root_is_not_refused(tmp_path, monkeypatch):
+    """Review F4: `git rm -r --cached .` touches the index, not the tree."""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "repo")
+    decision = tp.evaluate(tp.AUTONOMOUS, tp.SHELL_POLICY,
+                           {"command": "git rm -r --cached ."}, tmp_path / "repo",
+                           tool_name="bash")
+    assert decision.action == tp.ALLOW, decision.reason
 
 
 # ── through the seat: the turn sources the incident took ────────────────────
@@ -167,9 +228,18 @@ def test_the_control_prints_ok(monkeypatch, tmp_path):
 # ── one rule set: the copy matches liteharness and needs nothing from it ────
 
 def test_the_copy_is_byte_identical_to_liteharness():
-    source = sync_deny_floor.canonical(os.environ.get("LITEHARNESS_SRC"))
+    """Never a silent skip on the drift guard (review F5). It compares against
+    $LITEHARNESS_SRC first, else the `liteharness-oss` checkout beside this one,
+    and names the file it compared in a warning. A checkout WITHOUT the file
+    FAILS: before the oss branch merges, point LITEHARNESS_SRC at its worktree.
+    Only a machine with no liteharness-oss checkout at all skips."""
+    source = sync_deny_floor.canonical()
     if source is None:
-        pytest.skip("no liteharness-oss checkout beside this one")
+        pytest.skip("no liteharness-oss checkout found and LITEHARNESS_SRC unset")
+    assert source.is_file(), (
+        f"{source} does not exist: merge the liteharness-oss deny-floor branch, or "
+        "set LITEHARNESS_SRC to a checkout that has it")
+    warnings.warn(f"deny_floor.py compared against {source}", stacklevel=1)
     assert source.read_bytes() == Path(deny_floor.__file__).read_bytes(), (
         f"{source} and src/litetui/deny_floor.py differ: edit the canonical file "
         "and run scripts/sync_deny_floor.py")
