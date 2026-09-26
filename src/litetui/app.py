@@ -4532,12 +4532,25 @@ class LiteTUI(App):
                 )
             if self.available_models:
                 self._resume_connection_error = None
+                # An explicit invocation model is the active selection for this
+                # process, including reconnects and backend/engine rebuilds. Use
+                # the backing field: invocation-only state must not overwrite the
+                # conversation's remembered model.
+                explicit = getattr(self, "_cli_initial_model", None)
+                if explicit and explicit in self.available_models:
+                    self._model_id = explicit
+
                 # A configured default wins when the server is serving it. `pin`
-                # re-applies it on EVERY connect; without pin it only fills an
-                # empty/invalid selection, so a mid-session /model switch sticks.
+                # re-applies it on EVERY connect, except over an explicit launch
+                # choice; without pin it only fills an empty/invalid selection,
+                # so a mid-session /model switch sticks.
                 want = self.settings.default_model
                 if want and want in self.available_models:
-                    if not self.model_id or (self.settings.pin_default_model and resume_path is None):
+                    if not self.model_id or (
+                        self.settings.pin_default_model
+                        and resume_path is None
+                        and not explicit
+                    ):
                         self.model_id = want
                 if not self.model_id or self.model_id not in self.available_models:
                     # Prefer a LOADED model for the default pick. The native
