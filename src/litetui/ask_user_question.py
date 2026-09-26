@@ -209,14 +209,14 @@ def _serialize(payload: dict) -> str:
 
     if action == "submit":
         head = f"[ask_user_question] SUBMITTED — {answered} of {len(qs)} answered"
-        tail = ("These selections and notes are Ryan's answers — proceed on that basis.")
+        tail = ("These selections and notes are the user's answers — proceed on that basis.")
     elif action == "chat":
         head = (
             f"[ask_user_question] CHAT ABOUT THIS — {answered} of {len(qs)} "
             f"answered so far (PARTIAL — he is not done; do not treat it as final)"
         )
         tail = (
-            "Ryan pressed 'Chat about this': discuss the question(s) with him in "
+            "The user pressed 'Chat about this': discuss the question(s) with them in "
             "plain chat. You may ask again later with a refined question list."
         )
     elif action == "aborted":
@@ -226,13 +226,13 @@ def _serialize(payload: dict) -> str:
         # T558's "stale request" message was.
         return (
             "[ask_user_question] ABORTED — the turn was stopped while this "
-            "question was still open, so it was never put to Ryan. No answers "
+            "question was still open, so it was never put to the user. No answers "
             "were given; do not assume any option and do not re-ask unless you "
             "are asked to continue."
         )
     else:
         return (
-            "[ask_user_question] CANCELLED — Ryan pressed Esc without answering. "
+            "[ask_user_question] CANCELLED — the user pressed Esc without answering. "
             "No answers were given; do not assume any option. Ask in plain chat "
             "or re-issue the tool."
         )

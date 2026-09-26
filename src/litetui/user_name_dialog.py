@@ -29,7 +29,11 @@ class UserNameScreen(ModalScreen[str | None]):
 
     @on(Button.Pressed, "#user-name-save")
     def save_name(self) -> None:
-        self.dismiss(self.query_one("#user-name-input", Input).value.strip())
+        value = self.query_one("#user-name-input", Input).value.strip()
+        if value.startswith("/"):
+            self.query_one("#user-name-input", Input).value = ""
+            return
+        self.dismiss(value)
 
     @on(Input.Submitted, "#user-name-input")
     def submit_name(self) -> None:

@@ -60,16 +60,18 @@ def compile_prompt(
     }
     compiled = authored.replace("<root>", values["root"])
     compiled = compiled.replace("${CLAUDE_SKILL_DIR}", values["CLAUDE_SKILL_DIR"])
-    name = user_name.strip()
-    clause = f" Your user's name is {name}." if name else ""
-    compiled = compiled.replace("${USER_NAME_CLAUSE}", clause)
+    # The name is data, not prompt syntax. Check authored placeholders before
+    # substituting it so names such as "<Ada>" or "${HOME}" stay literal.
+    without_name_slot = compiled.replace("${USER_NAME_CLAUSE}", "")
     unresolved = sorted(
-        {match.group(1) or match.group(2) for match in _UNRESOLVED.finditer(compiled)}
+        {match.group(1) or match.group(2) for match in _UNRESOLVED.finditer(without_name_slot)}
     )
     if unresolved:
         names = ", ".join(unresolved)
         raise PromptPlaceholderError(f"unresolved system-prompt placeholder(s): {names}")
-    return compiled
+    name = user_name.strip()
+    clause = f" Your user's name is {name}." if name else ""
+    return compiled.replace("${USER_NAME_CLAUSE}", clause)
 
 
 def compile_prompt_file(

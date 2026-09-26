@@ -399,7 +399,7 @@ class NInferBackend(_VramGate):
                 "no NInfer engine is registered — start it from LiteSuite's "
                 "Model Hub (Settings → NInfer), or set ninfer_host "
                 "(LITETUI_NINFER_HOST) to a ninfer-serve you started by hand, "
-                "or /engine start to have LiteTUI start one (Ryan a-35456da0)."
+                "or /engine start to have LiteTUI start one."
             )
         if not self._health(host):
             raise BackendError(

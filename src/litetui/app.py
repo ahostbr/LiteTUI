@@ -1823,6 +1823,18 @@ class LiteTUI(App):
 
         self.query_one("#chat-log", VerticalScroll).mount(Splash(LITETUI_SPLASH))
 
+    def _should_ask_user_name(self) -> bool:
+        """Only a plain human terminal may receive the one-time name dialog."""
+        if self.settings.user_name_asked or os.environ.get("LITETUI_TEST_USER_NAME_ASKED"):
+            return False
+        if (self._rpc or self._first_prompt or self._cli_convo_id
+                or self._launch_options is not None):
+            return False
+        try:
+            return bool(sys.stdin.isatty())
+        except (AttributeError, OSError):
+            return False
+
     def on_mount(self) -> None:
         state = hook_host.snapshot(self)
         if state.disabled:
@@ -1856,8 +1868,7 @@ class LiteTUI(App):
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
         plugins_mod.activate_plugins(self, self.plugins, self._plugin_manifests)
-        if (not self.settings.user_name_asked
-                and not os.environ.get("LITETUI_TEST_USER_NAME_ASKED")):
+        if self._should_ask_user_name():
             from litetui.user_name_dialog import UserNameScreen
 
             def _save_user_name(name: str | None) -> None:
