@@ -106,6 +106,31 @@ class CacheClock:
         return f"cache {'warm' if self.read else 'new'}{hit} {clock}", style
 
 
+def codex_label(last_usage):
+    """(text, style) for a Codex seat's footer cache field (T992), or None.
+
+    Read from app.last_usage, which both Codex paths already fill. App-server:
+    latest_request_usage is a dict holding the last request's inputTokens /
+    cachedInputTokens; its top-level prompt_tokens / cached_tokens are the TURN
+    AGGREGATE, so they are never used here. A snapshot without a per-request
+    inputTokens is unmeasured. Responses path: latest_request_usage is None
+    (_record_usage stores every key) and the top-level prompt_tokens /
+    cached_tokens describe the one request. Codex gives no cache lifetime, so
+    there is no countdown and no "expires" claim: warm/cold says only whether
+    the last request read from the cache. Unmeasured = absent."""
+    usage = last_usage or {}
+    last = usage.get("latest_request_usage")
+    if isinstance(last, dict):
+        inp, cached = last.get("inputTokens"), last.get("cachedInputTokens")
+    else:
+        inp, cached = usage.get("prompt_tokens"), usage.get("cached_tokens")
+    if not inp or cached is None:
+        return None
+    if not cached:
+        return "cache cold 0%", "#7d8799"
+    return f"cache warm {cached / inp * 100:.0f}%", "#98c379"
+
+
 def _ago(seconds):
     mins = int(seconds // 60)
     return f"{mins} min" if mins < 120 else f"{mins // 60} h"

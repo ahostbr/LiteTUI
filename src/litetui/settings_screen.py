@@ -1372,9 +1372,9 @@ class SettingsBody(Widget):
                             "Generation speed of the last turn.",
                         )
                         yield from self._switch_row(
-                            "footer_show_cache", "Claude cache",
-                            "Whether Claude's prompt cache is warm, its hit rate, and the time "
-                            "left before it expires. Only shown on the Claude backend.",
+                            "footer_show_cache", "Prompt cache",
+                            "Whether the prompt cache is warm and its hit rate. On Claude, also "
+                            "the time left before it expires. Shown on the Claude and Codex backends.",
                         )
                         yield from self._text_row(
                             "footer_order", "Footer order (left to right)",
