@@ -21,7 +21,7 @@ from typing import Callable, Iterable, Mapping
 # import time, and the store is REDIRECTED by many tests (and could be by any
 # future caller) — a snapshot would silently classify against a directory that
 # is no longer the store. Same late-binding trap as the profile choices.
-from litetui import paths
+from litetui import deny_floor, paths
 
 
 # The required vocabulary.  A tool may carry more than one capability: shell
@@ -170,7 +170,8 @@ STRICT_PROFILE = ToolProfile(
 #: meaning what it says.
 #:
 #: ⚠️ THIS PROFILE HAS NO CONFIRM STEP OF ITS OWN. A standing `deny` rule
-#: still wins — the deny gate runs before the profile is consulted at all.
+#: still wins — the deny gate runs before the profile is consulted at all —
+#: and so does the deny floor (deny_floor.py, T1026), which no rule can lift.
 #:
 #: Autonomous is intentionally the unattended, no-approval profile. The
 #: interactive profile owns confirmation of sensitive capabilities; autonomous
@@ -359,6 +360,17 @@ def evaluate(
     if policy.classify_args is classify_write:
         capabilities = frozenset(policy.capabilities) | frozenset(classify_write(args or {}, Path(workspace).resolve(), active_conversation=active_conversation))
     names = ", ".join(sorted(capabilities))
+    # 🔴 THE DENY FLOOR RUNS FIRST: before the profile, before any standing
+    # rule, for every turn source. Every shell a seat can reach -- the bash and
+    # powershell tools, Claude's native Bash, Codex's shell, a hook process --
+    # is judged with classify_shell, and every turn (typed, inbox, cron, goal
+    # loop, RPC) reaches its tools through this function. So the floor holds
+    # whichever profile string the turn carries (T1027: an inbox turn and a
+    # typed turn can disagree on it) and adds no prompt: it only refuses.
+    if policy.classify_args is classify_shell:
+        floor = deny_floor.refusal(_command_text(args), Path(workspace).resolve())
+        if floor:
+            return PolicyDecision(DENY, profile_name, capabilities, floor, danger=DELETION)
     if profile is None:
         return PolicyDecision(
             DENY,
@@ -638,6 +650,12 @@ def danger(command: str, workspace: Path) -> str | None:
             if _outside_workspace(match.group("path"), workspace):
                 return FOREIGN_PROCESS
     return None
+
+
+def _command_text(args: Mapping[str, object] | None) -> str:
+    """The command a shell call runs, as text (Codex may pass an argv list)."""
+    command = (args or {}).get("command") or ""
+    return command if isinstance(command, str) else " ".join(map(str, command))
 
 
 def classify_shell(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
