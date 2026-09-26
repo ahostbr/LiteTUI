@@ -4032,6 +4032,17 @@ class LiteTUI(App):
         self._resume_connection_error = None
         self._remember_for_this_convo("model", value)
 
+    def retire_cli_model(self, selected: str | None = None) -> None:
+        """A deliberate model choice supersedes this process's launch choice.
+
+        Keep that newer choice across replacement reconnects, which clear
+        ``_model_id`` before the new catalog arrives. Programmatic connect
+        assignments intentionally bypass this user-choice seam.
+        """
+        self._cli_initial_model = None
+        if selected:
+            self._user_model_choice = selected
+
     @property
     def backend(self):
         # `getattr` because `__init__` reads other properties before this one is
@@ -4537,8 +4548,10 @@ class LiteTUI(App):
                 # the backing field: invocation-only state must not overwrite the
                 # conversation's remembered model.
                 explicit = getattr(self, "_cli_initial_model", None)
-                if explicit and explicit in self.available_models:
-                    self._model_id = explicit
+                user_choice = getattr(self, "_user_model_choice", None)
+                selected = user_choice or explicit
+                if selected and selected in self.available_models:
+                    self._model_id = selected
 
                 # A configured default wins when the server is serving it. `pin`
                 # re-applies it on EVERY connect, except over an explicit launch
@@ -4549,7 +4562,7 @@ class LiteTUI(App):
                     if not self.model_id or (
                         self.settings.pin_default_model
                         and resume_path is None
-                        and not explicit
+                        and not selected
                     ):
                         self.model_id = want
                 if not self.model_id or self.model_id not in self.available_models:
