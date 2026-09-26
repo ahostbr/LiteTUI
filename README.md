@@ -403,6 +403,26 @@ custom servers receive the selected value and their template defines support.
 `--max-tokens` sets the output limit for local/custom servers. Use
 `--server-timeout SECONDS` for slow model loads (default 600).
 
+### Codex HTTP failure handling
+
+The OAuth/Responses transport retries HTTP **500/502/503/504** and selected
+connection failures up to **two times**, with 0.5s then 1s backoff, only before
+that completion request emits any text, reasoning, tool delta or usage chunk.
+The same retry budget covers connection loss while waiting for the first chunk.
+A retry resends that request, not the agent turn; previously completed host tools
+are not rerun. The server may still have processed a failed request before the
+connection broke, so this is not an exactly-once generation guarantee.
+
+After any output, failure is surfaced without automatic replay. SSE
+`error`/`response.failed`/`response.incomplete` events report their supplied
+code/message/reason (including `max_output_tokens` or `content_filter` when
+present), rather than guessing that context is the cause. These events are not
+automatically retried. Bounded, secret-redacted diagnostics also go to
+`.logs/runtime-errors.log`; raw response bodies and authorization headers do not.
+HTTP server failures name the status and retry count rather than blaming login.
+Existing 401 login refresh, 403 access refusal and 429 usage-limit behavior is
+unchanged. Native Codex app-server retry behavior is separate and unchanged.
+
 Examples (PowerShell):
 
 ```powershell
