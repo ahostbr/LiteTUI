@@ -195,9 +195,24 @@ def test_compaction_falls_back_when_configured_effort_is_unsupported():
     k = _compact(
         backend_name="codex",
         thinking_level="off",
-        supported_reasoning_levels=["low", "medium", "high", "xhigh"],
+        supported_reasoning_levels=["xhigh", "medium", "low", "high"],
     )
     assert k["extra_body"]["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("compact_level,model_level", [
+    ("low", "xhigh"),
+    ("medium", "high"),
+])
+def test_supported_compaction_level_wins_over_model_fallback(
+        compact_level, model_level):
+    k = _compact(
+        backend_name="codex",
+        thinking_level=compact_level,
+        model_reasoning_effort=model_level,
+        supported_reasoning_levels=["xhigh", "low", "high", "medium"],
+    )
+    assert k["extra_body"]["reasoning_effort"] == compact_level
 
 
 def test_unset_compaction_effort_does_not_invent_a_fallback():

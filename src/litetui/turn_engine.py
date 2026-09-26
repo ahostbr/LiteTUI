@@ -267,7 +267,16 @@ class TurnEngine:
         )
         levels = list(supported_reasoning_levels)
         if wire and levels and wire not in levels:
-            wire = model_reasoning_effort if model_reasoning_effort in levels else levels[0]
+            if model_reasoning_effort in levels:
+                wire = model_reasoning_effort
+            else:
+                effort_order = {
+                    name: rank for rank, name in enumerate(
+                        ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+                    )
+                }
+                known = [level for level in levels if level in effort_order]
+                wire = min(known, key=effort_order.__getitem__) if known else levels[0]
         if wire:
             extra_body["reasoning_effort"] = wire
         # NInfer streams real prompt-processing progress when asked (the same
