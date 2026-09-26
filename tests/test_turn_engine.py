@@ -332,3 +332,11 @@ def test_ninfer_asks_for_prompt_progress_others_do_not():
     assert _chat(backend_name="ninfer")["extra_body"]["return_progress"] is True
     assert "extra_body" not in _chat(backend_name="lmstudio")
     assert "extra_body" not in _chat(backend_name="")
+
+
+def test_compaction_asks_ninfer_for_prompt_progress_only():
+    """Compaction needs the same measured prefill feed as a normal turn,
+    without sending NInfer's private option to other OpenAI-compatible APIs."""
+    assert _compact(backend_name="ninfer")["extra_body"]["return_progress"] is True
+    assert "return_progress" not in _compact(backend_name="lmstudio").get("extra_body", {})
+    assert "return_progress" not in _compact(backend_name="").get("extra_body", {})

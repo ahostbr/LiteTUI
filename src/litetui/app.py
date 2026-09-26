@@ -8678,7 +8678,6 @@ class LiteTUI(App):
                             pp = _extra.get("prompt_progress")
                     if pp is not None:
                         self._eta.note_prefill(pp)
-                        continue
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -8808,6 +8807,7 @@ class LiteTUI(App):
                                   kept_recent=len(tail))
             return
         finally:
+            self._eta.clear_prefill()
             if hasattr(stream, "close"):
                 await stream.close()
 

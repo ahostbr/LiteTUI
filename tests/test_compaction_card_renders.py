@@ -167,8 +167,10 @@ async def test_compaction_card_shows_prefill_like_a_normal_turn() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('progress_location', ['attribute', 'model_extra'])
 @pytest.mark.parametrize('outcome', ['mixed', 'error', 'cancel'])
-async def test_compaction_progress_preserves_output_and_clears_on_exit(monkeypatch, outcome):
+async def test_compaction_progress_preserves_output_and_clears_on_exit(
+        monkeypatch, outcome, progress_location):
     import asyncio
     from types import SimpleNamespace as NS
     from litetui import model_transport
@@ -181,19 +183,24 @@ async def test_compaction_progress_preserves_output_and_clears_on_exit(monkeypat
         return True
     a._ensure_chat_ready = ready
     a._all_tools = lambda: []
-    a._backend = NS(name='ninfer')
+    a._backend = NS(name='ninfer', request_overrides=lambda model_id: {})
     observed = []
 
     class Stream:
         async def __aiter__(self):
             progress = {'processed': 50, 'total': 100, 'cache': 0}
-            yield NS(prompt_progress=progress, choices=[])
+            progress_fields = (
+                {'prompt_progress': progress}
+                if progress_location == 'attribute'
+                else {'model_extra': {'prompt_progress': progress}}
+            )
+            yield NS(**progress_fields, choices=[])
             observed.append(a._eta.prefill_readout())
             if outcome == 'error':
                 raise RuntimeError('fixture stream failure')
             if outcome == 'cancel':
                 raise asyncio.CancelledError()
-            yield NS(prompt_progress=progress, choices=[NS(delta=NS(content='retained summary', reasoning_content=None, tool_calls=[]))])
+            yield NS(**progress_fields, choices=[NS(delta=NS(content='retained summary', reasoning_content=None, tool_calls=[]))])
         async def close(self):
             pass
 
