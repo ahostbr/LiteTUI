@@ -75,3 +75,6 @@ monitor-baselines.json
 
 # locally built sidecar binary (litetui-sidecar release)
 bin/
+
+# T982: per-install Codex routing id (never commit: public repo)
+.codex_installation_id
