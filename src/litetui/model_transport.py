@@ -797,10 +797,14 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
             }
 
         return asyncio.run(run())
-    if hasattr(backend, "http_client"):
+    from litetui.free_tier import FreeBackend
+
+    if isinstance(backend, FreeBackend):
         # The Free tier: its base URL is a placeholder, and its own transport
         # (FreeRouter) picks a real source, with failover, a time budget and the
-        # paid-model guard. A free source is sent no local-only field.
+        # paid-model guard. A free source is sent no local-only field. Selected by
+        # type, never by duck typing: every other backend keeps the local branch
+        # and its LM Studio JIT guard below.
         request = {k: v for k, v in payload.items() if k not in ("chat_template_kwargs", "reasoning_effort")}
         effort = payload.get("reasoning_effort")
         if effort not in (None, *backend.reasoning_levels(request["model"])):

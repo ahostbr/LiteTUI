@@ -543,3 +543,28 @@ def test_a_paid_model_in_a_free_sidecall_is_the_free_tiers_refusal(sources):
     with pytest.raises(ProviderError, match='no reasoning effort'):
         _sidecall('m', reasoning_effort='high')
     assert a.seen == [] and b.seen == []
+
+
+def test_every_source_busy_is_the_free_tiers_sentence_on_the_sidecall_path(sources):
+    from litetui.model_transport import ProviderError
+
+    _a, b, _ = sources([], [], [{'id': 'M'}], [])
+    ft.bench(('b', 'M', 'keyless'), 429)
+    with pytest.raises(ProviderError, match='Every free source for m is busy; soonest retry in'):
+        _sidecall('m')
+    assert b.seen == []
+
+
+@pytest.mark.asyncio
+async def test_closing_the_client_closes_the_routers_pool():
+    """Each sidecall builds a fresh FreeRouter; closing its client must release
+    the pooled sockets (httpx's base aclose is a no-op)."""
+    closed = []
+
+    class Inner(httpx.AsyncBaseTransport):
+        async def aclose(self):
+            closed.append(True)
+
+    async with httpx.AsyncClient(transport=ft.FreeRouter(Inner())):
+        pass
+    assert closed == [True]

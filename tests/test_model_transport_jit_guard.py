@@ -172,3 +172,20 @@ async def test_rebound_pair_works_then_lm_still_jit_blocked():
     with pytest.raises(AdmissionBlocked):              # ...but LM is still JIT-blocked
         await transport.create(model="m", messages=[])
     assert spy.calls == []
+
+
+def test_a_non_free_backend_with_an_http_client_keeps_the_local_branch_and_its_guard():
+    """T938-B: only the Free tier sends a sidecall through its own client. A
+    local backend that ever gains http_client() must not skip the JIT guard."""
+    called = []
+
+    def opener(req, timeout=None):
+        called.append(req)
+        raise AssertionError("urllib must not be reached on a blocked local LM Studio sidecall")
+
+    backend = _lmstudio("http://127.0.0.1:1234")
+    backend.http_client = lambda: pytest.fail("only the Free tier sends through its own client")
+    app = SimpleNamespace(backend=backend, settings=SimpleNamespace(lm_host="http://127.0.0.1:1234"))
+    with pytest.raises(AdmissionBlocked):
+        complete_sidecall(app, {"model": "m", "messages": []}, opener=opener)
+    assert called == []
