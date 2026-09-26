@@ -7798,7 +7798,11 @@ class LiteTUI(App):
                 # No timeout here — the user is watching and asked for this
                 # turn, so a model that is loading is worth waiting out.
                 await self._ensure_chat_ready()
-                stream = await model_transport.for_app(self).create(**kwargs)
+                # A closure, not the bound method: test fakes deepcopy their
+                # kwargs, and deepcopying a bound method copies the whole app.
+                stream = await model_transport.for_app(self).create(
+                    retry_notice=lambda text: self._system(text), **kwargs
+                )
             except Exception as e:
                 runtime_log.record(
                     "turn_stream_failed",
