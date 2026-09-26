@@ -86,11 +86,13 @@ async def test_footer_glyphs_are_measured_the_way_a_terminal_draws_them() -> Non
 
 def test_no_text_still_names_the_trigram_button():
     # The Themes help pointed at "the footer's ☰ commands button" after the
-    # button itself changed. Both spellings: the glyph and its escape.
+    # button itself changed. Every spelling: the glyph and its three escapes.
     src = Path(__file__).resolve().parent.parent / "src" / "litetui"
     for path in src.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        assert "☰" not in text and "\\u2630" not in text, path.name
+        for spelling in ("☰", "\\u2630", "\\U00002630",
+                         "\\N{TRIGRAM FOR HEAVEN}"):
+            assert spelling not in text, (path.name, spelling)
 
 
 @pytest.mark.asyncio
