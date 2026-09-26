@@ -797,6 +797,34 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
             }
 
         return asyncio.run(run())
+    from litetui.free_tier import FreeBackend
+
+    if isinstance(backend, FreeBackend):
+        # The Free tier: its base URL is a placeholder, and its own transport
+        # (FreeRouter) picks a real source, with failover, a time budget and the
+        # paid-model guard. A free source is sent no local-only field. Selected by
+        # type, never by duck typing: every other backend keeps the local branch
+        # and its LM Studio JIT guard below.
+        request = {k: v for k, v in payload.items() if k not in ("chat_template_kwargs", "reasoning_effort")}
+        effort = payload.get("reasoning_effort")
+        if effort not in (None, *backend.reasoning_levels(request["model"])):
+            raise ProviderError(f"Free-tier models take no reasoning effort; {effort!r} was not sent.")
+
+        async def routed():
+            from openai import AsyncOpenAI
+
+            async with AsyncOpenAI(base_url=backend.base_url(), api_key=backend.api_key(),
+                                   http_client=backend.http_client(), max_retries=0) as client:
+                try:
+                    result = await client.chat.completions.create(**request)
+                except Exception as error:
+                    sentence = backend.error_sentence(error)
+                    if sentence:
+                        raise ProviderError(sentence) from error
+                    raise
+            return result.model_dump()
+
+        return asyncio.run(routed())
     # Local sync sidecall: refuse LM Studio JIT-on-inference BEFORE the urllib
     # request (synchronous raise, no event loop needed).
     _refuse_unsupported_local_lm(backend)

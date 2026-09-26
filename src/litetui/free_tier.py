@@ -385,6 +385,11 @@ class FreeRouter(httpx.AsyncBaseTransport):
     def __init__(self, inner: httpx.AsyncBaseTransport | None = None):
         self._inner = inner or httpx.AsyncHTTPTransport()
 
+    async def aclose(self) -> None:
+        # The base class's aclose is a no-op: without this, closing the client
+        # leaves the inner pool's sockets open until garbage collection.
+        await self._inner.aclose()
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if not request.url.path.endswith('/chat/completions'):
             raise BackendError('The Free tier only sends chat requests.')

@@ -32,7 +32,7 @@ class Fake:
 
     def __init__(self, models, replies):
         self.models, self.replies, self.seen = models, list(replies), []
-        self.delay, self.body_delay, self.envelope, self.paths = 0.0, 0.0, 'data', []
+        self.delay, self.body_delay, self.envelope, self.paths, self.bodies = 0.0, 0.0, 'data', [], []
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -55,6 +55,7 @@ class Fake:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 fake.seen.append({'model': body['model'], 'auth': self.headers.get('Authorization')})
+                fake.bodies.append(body)
                 fake.paths.append(self.path)
                 time.sleep(fake.delay)
                 status, text, headers = fake.replies.pop(0) if fake.replies else (200, _sse('ok'), ())
@@ -497,3 +498,73 @@ def test_every_retry_hint_is_clamped_to_a_day():
     assert ft.bench(('s', 'd', 'keyless'), 429, date) == 86400
     assert ft.bench(('s', 't', 'keyless'), 429, text='Please try again in 9999h.', now=0) == 86400
     assert ft.bench(('s', 'ok', 'keyless'), 429, text='try again in 12m', now=0) == 720
+
+
+# ── T938-B: the legacy subagent sidecall on the Free tier ─────────────────
+
+def _sidecall(model, **extra):
+    from types import SimpleNamespace
+
+    from litetui.model_transport import complete_sidecall
+
+    app = SimpleNamespace(backend=_backend(), settings=Settings(backend='free'))
+    payload = {'model': model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 50,
+               'stream': False, 'reasoning_effort': 'none', 'chat_template_kwargs': {'enable_thinking': False},
+               **extra}
+    return complete_sidecall(app, payload, opener=lambda *a, **k: pytest.fail('the urllib path was taken'))
+
+
+def test_a_subagent_sidecall_on_free_goes_through_the_router(sources):
+    """Ryan 2026-09-24: "we got FREE subagents now". subagent_plugin sends
+    stream:False through complete_sidecall, whose local branch POSTed to the
+    Free tier's placeholder host (free-tier.litetui.invalid) and failed."""
+    answer = json.dumps({'id': 'c', 'object': 'chat.completion', 'created': 0, 'model': 'M',
+                         'choices': [{'index': 0, 'finish_reason': 'stop',
+                                      'message': {'role': 'assistant', 'content': 'sub answer',
+                                                  'reasoning_content': 'thought'}}],
+                         'usage': {'prompt_tokens': 3, 'completion_tokens': 7, 'total_tokens': 10}})
+    a, b, _ = sources([{'id': 'm:free'}], [(429, '{}', ())], [{'id': 'M'}], [(200, answer, ())])
+    data = _sidecall('m')
+    message = data['choices'][0]['message']
+    assert (message['content'], message['reasoning_content']) == ('sub answer', 'thought')
+    assert data['usage']['completion_tokens'] == 7
+    assert [s['model'] for s in a.seen] == ['m:free'] and [s['model'] for s in b.seen] == ['M'], \
+        'each source gets its own id, and a busy one fails over'
+    assert not {'reasoning_effort', 'chat_template_kwargs'} & set(b.bodies[-1]), 'local-only fields stay local'
+    assert b.bodies[-1]['stream'] is False
+
+
+def test_a_paid_model_in_a_free_sidecall_is_the_free_tiers_refusal(sources):
+    from litetui.model_transport import ProviderError
+
+    a, b, _ = sources([{'id': 'm:free'}, {'id': 'anthropic/claude-opus-5'}], [], [{'id': 'M'}], [])
+    with pytest.raises(ProviderError, match='not a free model'):
+        _sidecall('anthropic/claude-opus-5')
+    with pytest.raises(ProviderError, match='no reasoning effort'):
+        _sidecall('m', reasoning_effort='high')
+    assert a.seen == [] and b.seen == []
+
+
+def test_every_source_busy_is_the_free_tiers_sentence_on_the_sidecall_path(sources):
+    from litetui.model_transport import ProviderError
+
+    _a, b, _ = sources([], [], [{'id': 'M'}], [])
+    ft.bench(('b', 'M', 'keyless'), 429)
+    with pytest.raises(ProviderError, match='Every free source for m is busy; soonest retry in'):
+        _sidecall('m')
+    assert b.seen == []
+
+
+@pytest.mark.asyncio
+async def test_closing_the_client_closes_the_routers_pool():
+    """Each sidecall builds a fresh FreeRouter; closing its client must release
+    the pooled sockets (httpx's base aclose is a no-op)."""
+    closed = []
+
+    class Inner(httpx.AsyncBaseTransport):
+        async def aclose(self):
+            closed.append(True)
+
+    async with httpx.AsyncClient(transport=ft.FreeRouter(Inner())):
+        pass
+    assert closed == [True]
