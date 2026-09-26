@@ -9,10 +9,12 @@ a real Ctrl+Space record has VK_SPACE and survives.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Any, TypeVar, cast
 
 _Record = TypeVar("_Record")
+_LOG = logging.getLogger(__name__)
 
 # Shift, Control, Alt, Caps Lock, left/right Windows, and the sided
 # Shift/Control/Alt virtual keys.
@@ -47,8 +49,15 @@ def install() -> None:
     if getattr(win32, "_litetui_input_filter_installed", False):
         return
 
-    kernel32 = cast(Any, win32.KERNEL32)
-    original = kernel32.ReadConsoleInputW
+    try:
+        kernel32 = cast(Any, win32.KERNEL32)
+        original = kernel32.ReadConsoleInputW
+    except AttributeError:
+        _LOG.warning(
+            "Textual's Windows input boundary changed; "
+            "LiteTUI's ConPTY modifier filter was not installed"
+        )
+        return
 
     def read_console_input(handle, records, length, read_count):
         result = original(handle, records, length, read_count)

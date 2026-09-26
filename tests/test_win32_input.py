@@ -1,9 +1,15 @@
 """ConPTY modifier records must not become phantom ctrl+@ key events."""
 from __future__ import annotations
 
+import inspect
+import logging
+from ctypes import byref, wintypes
+
 from textual._xterm_parser import XTermParser
+from textual.drivers import win32
 from textual.drivers.win32 import INPUT_RECORD
 
+from litetui import win32_input
 from litetui.win32_input import filter_input_records
 
 KEY_EVENT = 0x0001
@@ -23,16 +29,20 @@ def _record(vk: int, char: str, *, down: bool, state: int) -> INPUT_RECORD:
     return record
 
 
-def _events(records: list[INPUT_RECORD]) -> list[str]:
+def _parse_records(records: list[INPUT_RECORD]) -> list[str]:
     keys = [
         record.Event.KeyEvent.uChar.UnicodeChar
-        for record in filter_input_records(records)
+        for record in records
         if record.EventType == KEY_EVENT and record.Event.KeyEvent.bKeyDown
     ]
     parser = XTermParser()
     events = list(parser.feed("".join(keys)))
     events.extend(parser.tick())
     return [event.key for event in events if hasattr(event, "key")]
+
+
+def _events(records: list[INPUT_RECORD]) -> list[str]:
+    return _parse_records(filter_input_records(records))
 
 
 def _conpty_char(char: str) -> list[INPUT_RECORD]:
@@ -79,20 +89,80 @@ def test_real_ctrl_space_is_preserved_exactly_once() -> None:
     assert _events(records) == ["ctrl+@"]
 
 
-def test_all_reported_bridge_payloads_are_safe_across_50_writes() -> None:
-    payloads = {
+def _reported_payloads() -> dict[str, str]:
+    prompt = (
+        "Please Review T1005: Ctrl+U, F7, DEL; mixed CASE! "
+        "Does punctuation survive? Yes -- exactly. "
+    )
+    return {
         "ctrl+u": "\x15",
-        "559-char prompt without Enter": "p" * 559,
+        "559-char prompt without Enter": (prompt * 7)[:559],
         "F7": "\x1b[18~",
         "DEL": "\x1b[3~",
         "x": "x",
         "empty": "",
     }
-    for label, payload in payloads.items():
+
+
+def test_all_reported_bridge_payloads_are_safe_across_50_writes() -> None:
+    for label, payload in _reported_payloads().items():
         starts = 0
         for _ in range(50):
-            records = [
-                record for char in payload for record in _conpty_char(char)
-            ]
+            records = [record for char in payload for record in _conpty_char(char)]
             starts += _events(records).count("ctrl+@")
         assert starts == 0, f"{label}: {starts}/50 writes reached the mic binding"
+
+
+def test_installed_wrapper_filters_real_ctypes_buffers(monkeypatch) -> None:
+    class FakeKernel32:
+        def __init__(self) -> None:
+            self.pending: list[INPUT_RECORD] = []
+
+        def ReadConsoleInputW(self, _handle, records, length, read_count):
+            assert len(self.pending) <= length
+            for index, record in enumerate(self.pending):
+                records._obj[index] = record
+            read_count._obj.value = len(self.pending)
+            return 1
+
+    fake = FakeKernel32()
+    monkeypatch.setattr(win32, "KERNEL32", fake)
+    monkeypatch.delattr(win32, "_litetui_input_filter_installed", raising=False)
+    win32_input.install()
+
+    def read(records: list[INPUT_RECORD]) -> list[str]:
+        fake.pending = records
+        capacity = max(1, len(records))
+        output = (INPUT_RECORD * capacity)()
+        count = wintypes.DWORD(0)
+        assert fake.ReadConsoleInputW(None, byref(output), capacity, byref(count))
+        return _parse_records(list(output[: count.value]))
+
+    for label, payload in {
+        **_reported_payloads(),
+        "Hello World": "Hello World",
+    }.items():
+        starts = 0
+        for _ in range(50):
+            records = [record for char in payload for record in _conpty_char(char)]
+            starts += read(records).count("ctrl+@")
+        assert starts == 0, f"{label}: {starts}/50 writes reached the installed filter"
+
+    ctrl_space = [
+        _record(0x20, "\x00", down=True, state=LEFT_CTRL_PRESSED),
+        _record(0x20, "\x00", down=False, state=LEFT_CTRL_PRESSED),
+    ]
+    assert read(ctrl_space) == ["ctrl+@"]
+
+
+def test_textual_event_monitor_still_uses_wrapped_boundary() -> None:
+    source = inspect.getsource(win32.EventMonitor.run)
+    assert "KERNEL32.ReadConsoleInputW" in source
+
+
+def test_install_warns_if_textual_input_boundary_changed(monkeypatch, caplog) -> None:
+    monkeypatch.delattr(win32, "_litetui_input_filter_installed", raising=False)
+    monkeypatch.delattr(win32, "KERNEL32")
+    with caplog.at_level(logging.WARNING, logger="litetui.win32_input"):
+        win32_input.install()
+    assert "input boundary changed" in caplog.text
