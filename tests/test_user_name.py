@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from litetui import app as app_mod
 from litetui import ask_user_question as auq
+from litetui.launch_options import LaunchOptions
 from litetui.user_name_dialog import UserNameScreen
 
 
@@ -48,13 +48,57 @@ async def test_name_question_does_not_return_after_it_was_answered(monkeypatch):
         {"rpc": True},
         {"first_prompt": "continue"},
         {"convo_id": "resume-me"},
-        {"launch_options": SimpleNamespace(overrides=lambda *args: {})},
+        {"launch_options": LaunchOptions(base_url="http://localhost:1234")},
+        {"initial_model": "agent-model"},
+        {"system_prompt": "agent preamble"},
     ],
 )
 async def test_automated_entry_points_never_receive_name_modal(monkeypatch, kwargs):
     monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     a = app_mod.LiteTUI(**kwargs)
+    a.settings.user_name_asked = False
+    assert not a._should_ask_user_name()
+    assert a.settings.user_name_asked is False
+
+
+def test_plain_cli_main_builds_an_interactive_name_prompt(monkeypatch):
+    from litetui import cli
+
+    monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.argv", ["litetui"])
+    monkeypatch.setattr("litetui.image_viewer.init_image_backend", lambda: None)
+    original = app_mod.LiteTUI
+    observed = []
+
+    class Launch:
+        def __init__(self, **kwargs):
+            app = original(**kwargs)
+            app.settings.user_name_asked = False
+            observed.append(app._should_ask_user_name())
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(app_mod, "LiteTUI", Launch)
+    cli.main()
+    assert observed == [True]
+
+
+def test_plain_cli_launch_options_still_asks_on_a_tty(monkeypatch):
+    monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    a = app_mod.LiteTUI(launch_options=LaunchOptions())
+    a.settings.user_name_asked = False
+    assert a._should_ask_user_name()
+
+
+def test_canvas_seat_environment_never_receives_name_modal(monkeypatch):
+    monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
+    monkeypatch.setenv("LITESUITE_CANVAS_AGENT", "true")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    a = app_mod.LiteTUI(launch_options=LaunchOptions())
     a.settings.user_name_asked = False
     assert not a._should_ask_user_name()
     assert a.settings.user_name_asked is False
@@ -90,5 +134,7 @@ def test_ask_user_question_results_use_neutral_language():
                        "selected": [], "note": "", "answered": False}],
     })
     cancelled = auq._serialize({"action": "cancelled", "questions": []})
-    assert "Ryan" not in submitted + chat + cancelled
-    assert "the user" in submitted + chat + cancelled
+    combined = submitted + chat + cancelled
+    assert "Ryan" not in combined
+    assert "the user" in combined
+    assert not any(word in combined.lower().split() for word in ("he", "him", "his"))

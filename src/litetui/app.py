@@ -1828,7 +1828,20 @@ class LiteTUI(App):
         if self.settings.user_name_asked or os.environ.get("LITETUI_TEST_USER_NAME_ASKED"):
             return False
         if (self._rpc or self._first_prompt or self._cli_convo_id
-                or self._launch_options is not None):
+                or self._cli_system_prompt or self._cli_initial_model):
+            return False
+        if any(os.environ.get(name) for name in (
+            "LITESUITE_CANVAS_AGENT", "LITEHARNESS_TIER",
+            "LITEHARNESS_AGENT_NAME", "LITEHARNESS_SPAWNED_BY",
+        )):
+            return False
+        options = self._launch_options
+        if options is not None and any((
+            options.base_url, options.load_model, options.context_length,
+            options.max_tokens, options.server_executable, options.model_path,
+            options.server_command, options.api_key_env,
+            options.server_mode != "auto",
+        )):
             return False
         try:
             return bool(sys.stdin.isatty())

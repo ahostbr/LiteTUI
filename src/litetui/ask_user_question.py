@@ -213,7 +213,7 @@ def _serialize(payload: dict) -> str:
     elif action == "chat":
         head = (
             f"[ask_user_question] CHAT ABOUT THIS — {answered} of {len(qs)} "
-            f"answered so far (PARTIAL — he is not done; do not treat it as final)"
+            f"answered so far (PARTIAL — they are not done; do not treat it as final)"
         )
         tail = (
             "The user pressed 'Chat about this': discuss the question(s) with them in "
