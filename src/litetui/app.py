@@ -4811,7 +4811,7 @@ class LiteTUI(App):
         if not wanted:
             return True
         current = self.convo_id or ""
-        if current == wanted or current.startswith(wanted):
+        if current == wanted:
             # on_mount already resumed this launch target with startup=True.
             # Re-dispatching /resume would adopt it as a mid-session switch and
             # discard the explicit --model selected for this launch.
