@@ -39,7 +39,8 @@ def app_server(cached, inp=1000):
 
 def responses(cached, inp=1000):
     # model_transport._usage: one request, input_tokens_details.cached_tokens.
-    return {"prompt_tokens": inp, "cached_tokens": cached}
+    # _record_usage stores every key, so latest_request_usage is present as None.
+    return {"prompt_tokens": inp, "cached_tokens": cached, "latest_request_usage": None}
 
 
 def footer(app):
@@ -56,6 +57,12 @@ def test_codex_responses_path_shows_hit_rate():
 
 def test_codex_zero_cached_is_a_cold_readout_not_a_hidden_field():
     assert "cache cold 0%" in footer(FakeApp("codex", app_server(0)))
+
+
+def test_app_server_without_per_request_input_is_absent_not_the_turn_aggregate():
+    usage = {"prompt_tokens": 3000, "cached_tokens": 1000,
+             "latest_request_usage": {"cachedInputTokens": 500}}
+    assert "cache" not in footer(FakeApp("codex", usage))
 
 
 def test_codex_unmeasured_is_absent_not_zero():
