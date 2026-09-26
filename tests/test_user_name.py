@@ -133,6 +133,9 @@ def test_shipped_prompts_and_schemas_do_not_name_ryan():
     offenders = []
     for directory in (package / "prompts", package / "schemas"):
         for path in directory.rglob("*"):
+            # A local *.bak* copy is gitignored (.gitignore:57) and never shipped.
+            if ".bak" in path.name:
+                continue
             if path.suffix in {".md", ".json"} and "Ryan" in path.read_text(encoding="utf-8"):
                 offenders.append(str(path.relative_to(package)))
     assert offenders == []
