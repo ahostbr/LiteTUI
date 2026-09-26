@@ -120,7 +120,7 @@ async def test_exhausted_503_is_honest_bounded_and_logged(tmp_path, pauses, diag
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [403, 400])
+@pytest.mark.parametrize("status", [403, 429, 400, 501, 505])
 async def test_nontransient_status_never_retries(tmp_path, pauses, status):
     count = 0
 
@@ -135,27 +135,97 @@ async def test_nontransient_status_never_retries(tmp_path, pauses, status):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [429, 501])
-async def test_new_transient_statuses_retry(tmp_path, pauses, status):
+@pytest.mark.parametrize("body", [
+    # Knuth's P1 bodies (T1019 F1): usage limits in either field, and no body.
+    {"error": {"type": "usage_limit_reached", "message": "You've hit your usage limit."}},
+    {"error": {"code": None, "type": "usage_limit_reached"}},
+    {"error": {"code": "workspace_owner_credits_depleted"}},
+    {"error": {"code": "insufficient_quota", "message": "limit"}},
+    {"error": {"message": "names neither a code nor a type"}},
+    None,
+])
+async def test_usage_limit_or_unnamed_429_fails_at_once(tmp_path, pauses, body):
     count = 0
 
     def handle(request):
         nonlocal count
         count += 1
-        return httpx.Response(status if count == 1 else 200, content=sse(DONE))
+        return httpx.Response(429, json=body) if body is not None else httpx.Response(429)
 
-    await transport(tmp_path, handle).create(model="gpt-test", messages=[])
+    with pytest.raises(mt.ProviderError) as exc:
+        await transport(tmp_path, handle).create(model="gpt-test", messages=[])
+    assert str(exc.value) == "Codex usage limit reached. Wait and retry; no fallback was used."
+    assert count == 1 and pauses == []
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_429_retries_then_says_rate_limited(tmp_path, pauses):
+    # Knuth's fifth P1 body: a rate limit, not a quota, so it is transient.
+    count = 0
+
+    def handle(request):
+        nonlocal count
+        count += 1
+        return httpx.Response(429, json={"error": {"code": "rate_limit_reached"}})
+
+    with pytest.raises(mt.ProviderError) as exc:
+        await transport(tmp_path, handle).create(model="gpt-test", messages=[])
+    assert str(exc.value) == "Codex rate limited (HTTP 429), retried 5 times. Try again later."
+    assert count == 6 and pauses == [2.0, 4.0, 8.0, 16.0, 32.0]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_429_recovers(tmp_path, pauses):
+    count = 0
+
+    def handle(request):
+        nonlocal count
+        count += 1
+        if count == 1:
+            return httpx.Response(429, json={"error": {"type": "rate_limit_exceeded"}})
+        return httpx.Response(200, content=sse(TEXT, DONE))
+
+    result = await transport(tmp_path, handle).create(model="gpt-test", messages=[])
+    assert result.choices[0].message.content == "hello"
     assert count == 2 and pauses == [2.0]
 
 
 @pytest.mark.asyncio
-async def test_quota_429_does_not_retry(tmp_path, pauses):
-    body = {"error": {"code": "insufficient_quota", "message": "limit"}}
-    with pytest.raises(mt.ProviderError, match="usage limit"):
-        await transport(tmp_path, lambda request: httpx.Response(429, json=body)).create(
-            model="gpt-test", messages=[]
+async def test_429_body_cut_off_midstream_retries_not_raw(tmp_path, pauses):
+    # T1019 F9: reading the 429 body during a MID-STREAM retry raised a raw
+    # httpx.ReadError that skipped both the retry and the "interrupted" wording.
+    count = 0
+
+    def handle(request):
+        nonlocal count
+        count += 1
+        if count == 1:
+            return httpx.Response(200, stream=ResetStream())
+        if count == 2:
+            return httpx.Response(429, stream=ResetStream())
+        return httpx.Response(200, content=sse(TEXT, DONE))
+
+    stream = await transport(tmp_path, handle).create(model="gpt-test", messages=[], stream=True)
+    result = await mt.collect(stream)
+    assert result.choices[0].message.content == "hello"
+    assert count == 3 and pauses == [2.0, 4.0]
+
+
+@pytest.mark.asyncio
+async def test_side_call_budget_is_small_and_silent(tmp_path, pauses):
+    # T1019 F6: side calls show no notice, so they may not sit silent for a minute.
+    count = 0
+
+    def handle(request):
+        nonlocal count
+        count += 1
+        return httpx.Response(503)
+
+    with pytest.raises(mt.ProviderError, match=r"HTTP 503\), retried 2 times"):
+        await transport(tmp_path, handle).create(
+            purpose="compaction", model="gpt-test", messages=[]
         )
-    assert pauses == []
+    assert count == 3 and pauses == [2.0, 4.0]
 
 
 @pytest.mark.asyncio
@@ -206,29 +276,61 @@ async def test_connection_reset_after_headers_but_before_output_retries(tmp_path
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event", [TEXT,
     {"type": "response.reasoning_summary_text.delta", "delta": "thinking"},
-    {"type": "response.output_item.added", "output_index": 0,
-     "item": {"type": "function_call", "call_id": "call1", "name": "write", "arguments": "{}"}},
 ])
-async def test_partial_connection_attempt_is_discarded_and_retried(
-    tmp_path, pauses, diagnostics, event
-):
+async def test_never_replays_after_any_output(tmp_path, pauses, diagnostics, event):
     failed = ResetStream((event,))
     requests = []
 
     def handle(request):
         requests.append(request)
-        if len(requests) == 1:
-            return httpx.Response(200, stream=failed)
-        return httpx.Response(200, content=sse(TEXT, DONE))
+        return httpx.Response(200, stream=failed)
 
-    stream = await transport(tmp_path, handle).create(
-        model="gpt-test", messages=[], stream=True
-    )
-    chunks = [chunk async for chunk in stream]
-    assert [c.choices[0].delta.content for c in chunks if c.choices[0].delta.content] == ["hello"]
-    assert len(requests) == 2 and pauses == [2.0]
-    assert failed.closed and stream.client.is_closed
+    stream = await transport(tmp_path, handle).create(model="gpt-test", messages=[], stream=True)
+    chunks = []
+    with pytest.raises(mt.ProviderError, match="interrupted"):
+        async for chunk in stream:
+            chunks.append(chunk)
+    assert len(chunks) == 1 and len(requests) == 1
+    assert pauses == [] and failed.closed and stream.client.is_closed
     assert "PRIVATE RESET DETAILS" not in str(diagnostics)
+
+
+CALL = {"type": "response.output_item.added", "output_index": 0,
+        "item": {"type": "function_call", "call_id": "call1", "name": "write", "arguments": "{}"}}
+OVERLOAD = {"type": "response.failed",
+            "response": {"error": {"code": "server_is_overloaded", "message": "busy"}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["reset", "overload"])
+async def test_tool_call_from_a_retried_attempt_is_never_delivered(tmp_path, pauses, failure):
+    # T1019 F2 arm (b): a call is held until response.completed, so an attempt
+    # that fails after it is replayed without the app ever seeing that call.
+    failed = ResetStream((CALL,))
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            if failure == "reset":
+                return httpx.Response(200, stream=failed)
+            return httpx.Response(200, content=sse(CALL, OVERLOAD))
+        return httpx.Response(200, content=sse(CALL, DONE))
+
+    stream = await transport(tmp_path, handle).create(model="gpt-test", messages=[], stream=True)
+    calls = [call async for chunk in stream for call in chunk.choices[0].delta.tool_calls]
+    assert [call.id for call in calls] == ["call1"]
+    assert len(requests) == 2 and pauses == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_held_tool_call_precedes_terminal_chunk(tmp_path):
+    stream = await transport(
+        tmp_path, lambda request: httpx.Response(200, content=sse(CALL, TEXT, DONE))
+    ).create(model="gpt-test", messages=[], stream=True)
+    chunks = [chunk async for chunk in stream]
+    assert [bool(c.choices[0].delta.tool_calls) for c in chunks] == [False, True, False]
+    assert chunks[0].choices[0].delta.content == "hello" and chunks[-1].usage is not None
 
 
 @pytest.mark.asyncio
@@ -380,19 +482,23 @@ async def test_partial_sse_before_first_chunk_is_discarded_on_retry(tmp_path, pa
 
 
 @pytest.mark.asyncio
-async def test_incomplete_attempt_after_usage_is_discarded(tmp_path, pauses):
-    count = 0
+async def test_reset_after_completion_is_a_close_failure(tmp_path, pauses, diagnostics):
+    # T1019 F3: the answer is whole, so it is kept: no re-request, no notice.
+    count, notices = 0, []
 
     def handle(request):
         nonlocal count
         count += 1
-        if count == 1:
-            return httpx.Response(200, stream=ResetStream((DONE,)))
-        return httpx.Response(200, content=sse(TEXT, DONE))
+        return httpx.Response(200, stream=ResetStream((TEXT, CALL, DONE)))
 
-    result = await transport(tmp_path, handle).create(model="gpt-test", messages=[])
+    stream = await transport(tmp_path, handle).create(
+        model="gpt-test", messages=[], stream=True, retry_notice=notices.append
+    )
+    result = await mt.collect(stream)
     assert result.choices[0].message.content == "hello"
-    assert count == 2 and pauses == [2.0]
+    assert [call.id for call in result.choices[0].message.tool_calls] == ["call1"]
+    assert count == 1 and pauses == [] and notices == []
+    assert "response close failed (ReadError)" in str(diagnostics)
 
 
 @pytest.mark.asyncio
@@ -441,31 +547,130 @@ async def test_retry_notice_precedes_backoff(tmp_path, pauses):
         return httpx.Response(503 if count == 1 else 200, content=sse(DONE))
 
     await transport(tmp_path, handle).create(
-        model="gpt-test", messages=[], retry_notice=notices.append
+        model="gpt-test", messages=[], retry_notice=lambda text: notices.append((text, list(pauses)))
     )
-    assert notices == [2.0] and pauses == [2.0]
+    assert notices == [("Codex server error (HTTP 503); retrying in 2s…", [])]
+    assert pauses == [2.0]
+
+
+def _refuse_connect(request):
+    raise httpx.ConnectError("refused", request=request)
 
 
 @pytest.mark.asyncio
-async def test_partial_overload_attempt_is_discarded(tmp_path, pauses):
+@pytest.mark.parametrize("first,notice", [
+    (lambda request: httpx.Response(200, content=sse(OVERLOAD)), "Codex overloaded; retrying in 2s…"),
+    (lambda request: httpx.Response(429, json={"error": {"code": "rate_limit_reached"}}),
+     "Codex rate limited (HTTP 429); retrying in 2s…"),
+    (lambda request: httpx.Response(502), "Codex server error (HTTP 502); retrying in 2s…"),
+    (_refuse_connect, "Codex connection failed; retrying in 2s…"),
+    (lambda request: httpx.Response(200, stream=ResetStream()), "Codex connection reset; retrying in 2s…"),
+])
+async def test_retry_notice_names_its_cause(tmp_path, pauses, first, notice):
+    # T1019 F4: not always "Codex overloaded".
+    notices, count = [], 0
+
+    def handle(request):
+        nonlocal count
+        count += 1
+        return first(request) if count == 1 else httpx.Response(200, content=sse(DONE))
+
+    await transport(tmp_path, handle).create(
+        model="gpt-test", messages=[], retry_notice=notices.append
+    )
+    assert notices == [notice]
+
+
+@pytest.mark.asyncio
+async def test_every_transport_accepts_and_ignores_retry_notice():
+    # T1019 F5: the app passes retry_notice without asking which transport it has.
+    import inspect
+
+    from litetui.codex_app_server import AppServerTransport
+
+    seen = []
+
+    class Completions:
+        async def create(self, **kwargs):
+            seen.append(kwargs)
+            return "response"
+
+    client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
+    result = await mt.OpenAITransport(client).create(
+        model="m", messages=[], retry_notice=seen.append
+    )
+    assert result == "response" and "retry_notice" not in seen[0]
+    assert "retry_notice" in inspect.signature(AppServerTransport.create).parameters
+
+
+@pytest.mark.asyncio
+async def test_overload_after_visible_text_is_not_replayed(tmp_path, pauses):
+    # T1019 F2 arm (c): the user has read the text, so a replay would repeat it.
     count = 0
 
     def handle(request):
         nonlocal count
         count += 1
-        if count == 1:
-            return httpx.Response(200, content=sse(TEXT, {
-                "type": "response.failed",
-                "response": {"error": {"code": "server_is_overloaded", "message": "busy"}},
-            }))
-        return httpx.Response(200, content=sse(TEXT, DONE))
+        return httpx.Response(200, content=sse(TEXT, OVERLOAD))
 
     stream = await transport(tmp_path, handle).create(
         model="gpt-test", messages=[], stream=True
     )
-    chunks = [chunk async for chunk in stream]
-    assert [c.choices[0].delta.content for c in chunks if c.choices[0].delta.content] == ["hello"]
-    assert count == 2 and pauses == [2.0]
+    chunks = []
+    with pytest.raises(mt.ProviderError) as exc:
+        async for chunk in stream:
+            chunks.append(chunk)
+    assert "server_is_overloaded" in str(exc.value) and "not replayed" in str(exc.value)
+    assert [c.choices[0].delta.content for c in chunks] == ["hello"]
+    assert count == 1 and pauses == []
+
+
+class SlowStream(httpx.AsyncByteStream):
+    """20 text deltas 50 ms apart, then completion: about 1 s of generation."""
+
+    async def __aiter__(self):
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            yield sse(TEXT)
+        yield sse({"type": "response.completed", "response": {
+            "usage": {"input_tokens": 10, "output_tokens": 200}, "output": []}})
+
+    async def aclose(self):
+        pass
+
+
+async def _arrivals(tmp_path, on_text=lambda chunk: None):
+    loop = asyncio.get_running_loop()
+    stream = await transport(
+        tmp_path, lambda request: httpx.Response(200, stream=SlowStream())
+    ).create(model="gpt-test", messages=[], stream=True)
+    times = []
+    async for chunk in stream:
+        if chunk.choices[0].delta.content:
+            times.append(loop.time())
+            on_text(chunk)
+    return times
+
+
+@pytest.mark.asyncio
+async def test_text_streams_live_not_in_one_burst(tmp_path):
+    # T1019 F2 arm (a), Knuth's P3 inverted: buffered, all 20 arrived within 0 s.
+    times = await _arrivals(tmp_path)
+    assert len(times) == 20
+    assert times[-1] - times[0] >= 0.5
+
+
+@pytest.mark.asyncio
+async def test_tps_yields_a_rate_for_a_normal_turn(tmp_path):
+    # T1019 F2 arm (d): a burst left TpsState no elapsed time to divide by.
+    from litetui.turnstats import TpsState
+
+    tps, live = TpsState(), []
+    tps.start()
+    await _arrivals(tmp_path, lambda chunk: live.append(
+        tps.tick(chars=len(chunk.choices[0].delta.content))))
+    assert any(rate is not None for rate in live)
+    assert tps.final(200) is not None
 
 
 @pytest.mark.asyncio
@@ -668,6 +873,7 @@ async def test_second_401_does_not_refresh_again(tmp_path, pauses):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,expected", [
     (403, "Codex refused the request (HTTP 403). Check account access and the selected model."),
+    (429, "Codex usage limit reached. Wait and retry; no fallback was used."),
 ])
 async def test_access_and_limit_messages_unchanged(tmp_path, pauses, status, expected):
     response = httpx.Response(status, text="PRIVATE BODY")

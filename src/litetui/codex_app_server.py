@@ -270,9 +270,9 @@ class AppServerTransport:
         self.process = None
         self.initialized = False
 
-    async def create(self, *, purpose: str = "turn", **kwargs):
-        """`purpose` names what the call is for and never reaches the
-        wire — see model_transport.ModelTransport.create (T821)."""
+    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
+        """`purpose` and `retry_notice` never reach the wire — see
+        model_transport.ModelTransport.create (T821, T1019)."""
         if (
             self.app is not None
             and not kwargs.get("stream")

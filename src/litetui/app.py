@@ -7798,18 +7798,11 @@ class LiteTUI(App):
                 # No timeout here — the user is watching and asked for this
                 # turn, so a model that is loading is worth waiting out.
                 await self._ensure_chat_ready()
-
-                def retry_notice(delay):
-                    seconds = max(1, round(delay))
-                    self._system(f"Codex overloaded; retrying in {seconds}s…")
-
-                transport = model_transport.for_app(self)
-                if isinstance(transport, model_transport.OAuthTransport):
-                    stream = await transport.create(
-                        retry_notice=retry_notice, **kwargs
-                    )
-                else:
-                    stream = await transport.create(**kwargs)
+                # A closure, not the bound method: test fakes deepcopy their
+                # kwargs, and deepcopying a bound method copies the whole app.
+                stream = await model_transport.for_app(self).create(
+                    retry_notice=lambda text: self._system(text), **kwargs
+                )
             except Exception as e:
                 runtime_log.record(
                     "turn_stream_failed",
