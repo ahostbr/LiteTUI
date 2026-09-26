@@ -256,7 +256,7 @@ def test_cli_startup_cancellation_sets_blocked_and_preserves_cancellation():
             await asyncio.Event().wait()
         app._ensure_chat_ready = wait
         task = asyncio.create_task(_apply(app))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
