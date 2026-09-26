@@ -780,3 +780,18 @@ def test_legacy_save_preserves_unknown_additive_metadata(tmp_path):
     record.model = 'b'
     cs_mod.save(d, record)
     assert json.loads(cs_mod.path_for(d).read_text(encoding='utf-8'))['future_metadata'] == {'keep': True}
+
+
+@pytest.mark.parametrize('available', [[], ['saved-other-model']])
+def test_cli_model_wins_during_resume_before_connection(tmp_path, available):
+    d = _dir(tmp_path)
+    cs_mod.save(d, cs_mod.ConvoSettings(backend='codex', model='claude-opus-5-5'))
+    a = _App(st.Settings(backend='codex'), d, backend_name='codex')
+    a._cli_initial_model = 'gpt-requested'
+    a.available_models = available
+    before = cs_mod.path_for(d).read_bytes()
+    a._adopt_convo_settings(born=False)
+    assert a.model_id == 'gpt-requested'
+    assert a.backend.name == 'codex'
+    assert cs_mod.path_for(d).read_bytes() == before
+    assert not any('falls back' in text for text in a.said)

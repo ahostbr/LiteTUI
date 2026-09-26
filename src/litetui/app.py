@@ -4184,8 +4184,12 @@ class LiteTUI(App):
         if getattr(getattr(self, '_backend', None), 'name', None) != previous_backend:
             # The previous engine's catalog says nothing about this engine.
             self.available_models = []
-        model = convo_settings_mod.resolved(effective_cs, self.settings, "model")
-        if model and self.available_models and model not in self.available_models:
+        # Explicit invocation wins before connect validates the backend catalog.
+        # Keep the remembered choice untouched, and never fall back from a CLI
+        # candidate: connect / _apply_cli_args must refuse that exact request.
+        cli_model = getattr(self, '_cli_initial_model', None)
+        model = cli_model or convo_settings_mod.resolved(effective_cs, self.settings, "model")
+        if not cli_model and model and self.available_models and model not in self.available_models:
             # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
             # the server no longer has — it was uninstalled, or this is another
             # machine. Falling back silently would answer in a different model's
@@ -4462,8 +4466,9 @@ class LiteTUI(App):
             self.model_rows = {r.key: r for r in rows}
             self.available_models = [r.key for r in rows]
             if resume_path is not None and self.model_id and self.model_id not in self.available_models:
+                selection = "Requested" if getattr(self, '_cli_initial_model', None) == self.model_id else "Saved"
                 raise llm_backend.BackendError(
-                    f"Saved model {self.model_id!r} is unavailable on {self.backend.name}. "
+                    f"{selection} model {self.model_id!r} is unavailable on {self.backend.name}. "
                     "Sending is blocked; choose a model with /model or retry /reconnect."
                 )
             if self.available_models:
