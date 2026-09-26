@@ -28,6 +28,32 @@ generated: LiteSuite's install dir, LM Studio's dirs, the HuggingFace cache and
 any custom roots, deduplicated, with voice and embedding GGUFs filtered out by
 the file's own `general.architecture` header rather than by guessing from names.
 
+## llama.cpp speculative decoding (opt-in)
+
+In `/modelcfg` → **Load** → **Speculative decoding**, choose:
+
+- **Unset**: preserve existing draft-model settings and server defaults.
+- **Off** (`spec_type: "none"`): suppress all draft inputs, including a previously
+  saved external draft path. Clearing the selector is not the same as Off.
+- **External draft** (`draft-simple`): use an existing draft-model file.
+- **Embedded MTP** (`draft-mtp`): use the target GGUF's prediction heads, ignoring
+  any saved external draft path. Offered only when the installed binary supports
+  the mode/flags and discovery finds a positive integer
+  `<architecture>.nextn_predict_layers` in the model metadata—not its filename.
+
+MTP uses max/min/probability defaults **3 / 0 / 0** when tuning is blank; explicit
+values are preserved. Stored settings live in `llama_load_settings[model]`.
+Eligibility is rechecked at apply/load time, and the complete proposed model INI
+is validated before evicting resident models. Applying load settings still
+restarts an owned router and reloads the selected model; it does not restore
+other residents. An adopted router's preset belongs to its owner and cannot be
+rewritten here. If another model's stale profile prevents the restart, the
+resident stays serving; the UI may already have saved the valid target profile.
+
+Speculation is never enabled automatically. Performance depends on the model,
+quantization and workload; enabling MTP is not a guaranteed speedup. No binary
+upgrade or model benchmark is performed by this setting.
+
 ## Claude Agent (experimental native backend)
 
 Install the optional, pinned runtime while LiteTUI is closed:

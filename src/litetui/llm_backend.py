@@ -139,6 +139,7 @@ VALUE_FLAGS: dict[str, str] = {
     # ("the argument has been removed") while keeping them LISTED in --help —
     # the census now skips tombstone lines, and we write only canonical names
     # so an alias's future removal cannot break a stored config.
+    "spec_type": "spec-type",             # unset preserves legacy draft behavior
     "draft_model": "spec-draft-model",
     "draft_min": "spec-draft-n-min",
     "draft_max": "spec-draft-n-max",
@@ -213,8 +214,9 @@ class IniUnexpressible(BackendError):
     caller decides (dedicated spawn, or surface as n/a) — silently dropping
     a setting the user typed is the one forbidden outcome."""
 
-    def __init__(self, key: str) -> None:
-        super().__init__(f"load setting {key!r} has no flag in the installed llama-server")
+    def __init__(self, key: str, *, model: str | None = None) -> None:
+        prefix = f"{model}: " if model else ""
+        super().__init__(f"{prefix}load setting {key!r} has no flag in the installed llama-server")
         self.key = key
 
 
@@ -252,17 +254,48 @@ def llama_executable(settings=None) -> Path:
     return LLAMA_EXE
 
 
-@lru_cache(maxsize=1)
-def installed_flags(executable: str | None = None) -> frozenset[str]:
-    """Census of the ACTUAL installed binary, cached per process."""
-    binary = Path(executable) if executable else LLAMA_EXE
-    if not binary.exists():
+def parse_spec_types(help_text: str) -> frozenset[str]:
+    """Modes advertised by the spec-type option, never by unrelated prose."""
+    import re
+
+    match = re.search(r"^[ \t]*--spec-type[ \t]+([^\r\n]*)", help_text, re.MULTILINE)
+    if not match or "has been removed" in match.group(0):
         return frozenset()
+    tokens = match.group(1).split()
+    return frozenset(re.findall(r"[a-z][a-z0-9-]*", tokens[0])) if tokens else frozenset()
+
+
+@lru_cache(maxsize=4)
+def _installed_help(binary: str, mtime_ns: int, size: int) -> str:
+    """One probe supplies both flags and modes; file identity invalidates it."""
     try:
-        proc = ttyguard.run([str(binary), "--help"], timeout=30)
+        proc = ttyguard.run([binary, "--help"], timeout=30)
     except (OSError, subprocess.TimeoutExpired):
-        return frozenset()
-    return parse_supported_flags(proc.stdout or "")
+        return ""
+    return proc.stdout or ""
+
+
+def _binary_help(executable: str | None = None) -> str:
+    binary = Path(executable) if executable else LLAMA_EXE
+    try:
+        stat = binary.stat()
+    except OSError:
+        return ""
+    return _installed_help(str(binary), stat.st_mtime_ns, stat.st_size)
+
+
+def installed_flags(executable: str | None = None) -> frozenset[str]:
+    """Census from the shared, file-identity-keyed help cache."""
+    return parse_supported_flags(_binary_help(executable))
+
+
+# Preserve the existing cache-reset seam, without a second cache that masks
+# a binary replacement at the same path from the file-identity check.
+installed_flags.cache_clear = _installed_help.cache_clear  # type: ignore[attr-defined]
+
+
+def configured_spec_types(settings) -> frozenset[str]:
+    return parse_spec_types(_binary_help(str(llama_executable(settings))))
 
 
 def installed_build(executable: str | None = None) -> str:
@@ -294,6 +327,7 @@ class ModelRow:
     loaded: bool = False
     extra_paths: tuple[str, ...] = ()   # same file found in other roots (Info tab)
     modalities: tuple[str, ...] = ()    # router architecture.input_modalities
+    nextn_predict_layers: int | None = None  # architecture-keyed GGUF metadata
 
 
 #: Source precedence for dedupe — LiteSuite's copy is the shipped stack's.
@@ -316,54 +350,90 @@ _NON_CHAT_ARCHS = frozenset({
 })
 
 
-def _gguf_architecture(p: Path) -> str | None:
-    """general.architecture from the GGUF header, or None when unreadable.
+def gguf_metadata(p: str | Path, *, architecture_only: bool = False) -> tuple[str | None, int | None]:
+    """Read bounded v2/v3 metadata, never tensors. Unknown/malformed is ineligible.
 
-    Minimal parse of the real format (magic 'GGUF', v2/v3): walk the metadata
-    KVs until the key appears — it is conventionally first, so this reads a
-    few hundred bytes. Any surprise returns None: an unreadable file is
-    LISTED (benefit of the doubt), and the load error then names it.
+    nextn may precede architecture or follow large tokenizer arrays. Numeric
+    arrays are sought over, strings skipped without allocating their contents.
+    Counts, offsets and allocations are bounded even for malicious headers.
     """
     import struct
 
+    formats = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i",
+               6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
+    integers = {0, 1, 2, 3, 4, 5, 10, 11}
     try:
         with open(p, "rb") as f:
-            if f.read(4) != b"GGUF":
-                return None
-            version = struct.unpack("<I", f.read(4))[0]
-            if version < 2:
-                return None
-            _tensors, n_kv = struct.unpack("<QQ", f.read(16))
+            limit = min(Path(p).stat().st_size, 256 * 1024 * 1024)
 
-            def _string() -> str:
-                (n,) = struct.unpack("<Q", f.read(8))
-                return f.read(n).decode("utf-8", "replace")
+            def read(n):
+                if n < 0 or f.tell() + n > limit:
+                    raise ValueError("metadata bounds")
+                raw = f.read(n)
+                if len(raw) != n:
+                    raise ValueError("truncated metadata")
+                return raw
 
-            _SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-            for _ in range(min(n_kv, 64)):
-                key = _string()
-                (vtype,) = struct.unpack("<I", f.read(4))
-                if vtype == 8:                       # string
-                    val = _string()
+            def number(fmt):
+                return struct.unpack("<" + fmt, read(struct.calcsize("<" + fmt)))[0]
+
+            def skip(n):
+                if n < 0 or f.tell() + n > limit:
+                    raise ValueError("metadata bounds")
+                f.seek(n, 1)
+
+            def string(*, keep=False):
+                n = number("Q")
+                if keep:
+                    if n > 1024 * 1024:
+                        raise ValueError("oversized metadata string")
+                    return read(n).decode("utf-8")
+                skip(n)
+                return None
+
+            if read(4) != b"GGUF" or number("I") not in (2, 3):
+                return None, None
+            number("Q")  # tensor count
+            count = number("Q")
+            if count > 100_000:
+                return None, None
+            arch = None
+            nextn = {}
+            seen = set()
+            for _ in range(count):
+                key = string(keep=True)
+                if key in seen:
+                    raise ValueError("duplicate metadata key")
+                seen.add(key)
+                kind = number("I")
+                if kind == 8:
+                    value = string(keep=key == "general.architecture")
                     if key == "general.architecture":
-                        return val
-                elif vtype == 9:                     # array — skip element-wise
-                    (etype,) = struct.unpack("<I", f.read(4))
-                    (count,) = struct.unpack("<Q", f.read(8))
-                    if etype == 8:
-                        for _i in range(count):
-                            _string()
-                    elif etype in _SIZES:
-                        f.seek(_SIZES[etype] * count, 1)
+                        arch = value
+                        if architecture_only:
+                            return arch, None
+                elif kind == 9:
+                    element, length = number("I"), number("Q")
+                    if element == 8 and length <= 1_000_000:
+                        for _ in range(length):
+                            string()
+                    elif element in formats:
+                        skip(struct.calcsize("<" + formats[element]) * length)
                     else:
-                        return None
-                elif vtype in _SIZES:
-                    f.seek(_SIZES[vtype], 1)
+                        raise ValueError("unsupported array")
+                elif kind in formats:
+                    value = number(formats[kind])
+                    if key.endswith(".nextn_predict_layers"):
+                        nextn[key] = value if kind in integers and value > 0 else None
                 else:
-                    return None
-    except (OSError, struct.error):
-        return None
-    return None
+                    raise ValueError("unsupported metadata type")
+            return arch, nextn.get(f"{arch}.nextn_predict_layers") if arch else None
+    except (OSError, ValueError, struct.error):
+        return None, None
+
+
+def _gguf_architecture(p: Path) -> str | None:
+    return gguf_metadata(p, architecture_only=True)[0]
 
 
 def _port_of(host: str) -> int | None:
@@ -462,7 +532,8 @@ def scan_models(settings) -> list[ModelRow]:
         else:
             seen[key] = 1
         rows.append(ModelRow(key=key, path=str(p), source=source,
-                             extra_paths=tuple(extras)))
+                             extra_paths=tuple(extras),
+                             nextn_predict_layers=gguf_metadata(p)[1]))
     return rows
 
 
@@ -557,7 +628,74 @@ def mmproj_candidates(settings) -> list[str]:
 
 # ── Preset ini generation ────────────────────────────────────────────────────
 
-def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -> Path:
+_DRAFT_KEYS = ("draft_model", "draft_max", "draft_min", "draft_p_min")
+
+
+def resolve_speculation(key: str, path: str | None, cfg: dict, settings) -> dict:
+    """Validate explicit speculation and return effective (not stored) settings.
+
+    Unset keeps old draft-only profiles. Off MUST erase stale draft flags:
+    b9360 auto-enables draft-simple from a path even beside spec-type=none.
+    MTP uses embedded heads and conservative defaults, not an external path.
+    """
+    import math
+
+    out = dict(cfg)
+    for k in ("spec_type", *_DRAFT_KEYS):
+        value = out.get(k)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            out.pop(k, None)
+        elif isinstance(value, str):
+            out[k] = value.strip()
+    mode = out.get("spec_type")
+    if mode is None:
+        return out
+
+    def refuse(reason):
+        raise BackendError(f"{key}: speculative decoding — {reason}")
+
+    if mode not in ("none", "draft-simple", "draft-mtp"):
+        refuse(f"unknown spec_type {mode!r}")
+    flags = configured_flags(settings)
+    if mode == "none":
+        for k in _DRAFT_KEYS:
+            out.pop(k, None)
+        if not flags:
+            out.pop("spec_type", None)
+            return out
+    if "spec-type" not in flags or mode not in configured_spec_types(settings):
+        refuse(f"installed llama-server does not advertise --spec-type {mode}")
+    if mode == "draft-mtp":
+        out.pop("draft_model", None)
+        if not path or gguf_metadata(path)[1] is None:
+            refuse("embedded MTP requires a positive integer <architecture>.nextn_predict_layers in the GGUF")
+        for k, default in (("draft_max", 3), ("draft_min", 0), ("draft_p_min", 0)):
+            out.setdefault(k, default)
+    elif mode == "draft-simple":
+        draft = out.get("draft_model")
+        try:
+            exists = isinstance(draft, str) and Path(draft).is_file()
+        except OSError:
+            exists = False
+        if not exists:
+            refuse("draft-simple requires draft_model to name an existing file")
+    for k in ("draft_max", "draft_min"):
+        value = out.get(k)
+        if value is not None and (type(value) is not int or value < (1 if k == "draft_max" else 0)):
+            refuse(f"{k} must be an integer {'>= 1' if k == 'draft_max' else '>= 0'}")
+    if "draft_min" in out and "draft_max" in out and out["draft_min"] > out["draft_max"]:
+        refuse("draft_min must not exceed draft_max")
+    probability = out.get("draft_p_min")
+    if probability is not None and (type(probability) not in (int, float) or
+                                   not math.isfinite(probability) or not 0 <= probability <= 1):
+        refuse("draft_p_min must be a finite number from 0 to 1")
+    for k in ("spec_type", *_DRAFT_KEYS):
+        if k in out and FLAG_FOR[k] not in flags:
+            refuse(f"installed llama-server lacks --{FLAG_FOR[k]}")
+    return out
+
+
+def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | None = None) -> str:
     """The router's whole model world, generated fresh from discovery + the
     per-model Load settings. Deterministic (sorted sections, sorted keys) so
     tests can diff it and two writes never disagree about anything real.
@@ -567,8 +705,7 @@ def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -
     writing an ini line the server will die on at load time would surface as
     a mystery load failure instead of a named setting.
     """
-    dest = dest or (paths.LLAMA_DIR / "litetui-models.ini")
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    profiles = settings.llama_load_settings if load_settings is None else load_settings
     flags = configured_flags(settings)
     lines: list[str] = [
         "; generated by LiteTUI llm_backend — edit /modelcfg, not this file",
@@ -580,7 +717,7 @@ def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -
             continue
         lines.append(f"[{row.key}]")
         lines.append(f"model = {Path(row.path).as_posix()}")
-        cfg = settings.llama_load_settings.get(row.key, {})
+        cfg = resolve_speculation(row.key, row.path, profiles.get(row.key, {}), settings)
         # 🔴 AUTO-PAIR A SIBLING PROJECTOR, ONLY WHEN THE KEY IS ABSENT.
         #
         # Absent is the honest test for "the user has not chosen", because
@@ -611,13 +748,24 @@ def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -
                 continue
             ini_key = FLAG_FOR.get(k)
             if ini_key is None or (flags and ini_key not in flags):
-                raise IniUnexpressible(k)
+                raise IniUnexpressible(k, model=row.key)
             if k in BOOL_FLAGS:
                 lines.append(f"{ini_key} = {'true' if v else 'false'}")
             else:
                 lines.append(f"{ini_key} = {v}")
         lines.append("")
-    dest.write_text("\n".join(lines), encoding="utf-8")
+    return "\n".join(lines)
+
+
+def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -> Path:
+    body = render_preset_ini(rows, settings)
+    return _write_preset(body, dest)
+
+
+def _write_preset(body: str, dest: Path | None = None) -> Path:
+    dest = dest or (paths.LLAMA_DIR / "litetui-models.ini")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(body, encoding="utf-8")
     return dest
 
 
@@ -935,7 +1083,7 @@ class LlamaCppBackend(_VramGate):
     async def ensure_running(self) -> str:
         return await asyncio.to_thread(self._ensure_running_sync)
 
-    def _ensure_running_sync(self) -> str:
+    def _ensure_running_sync(self, *, preset: Path | None = None) -> str:
         llama_executable(self._settings)  # an explicit invalid choice is never ignored
         # A server can be replaced between connects, and a stale attach must
         # never decide which host the shape probe reads. Both are cleared
@@ -1003,9 +1151,9 @@ class LlamaCppBackend(_VramGate):
                 self._attached_host = cand
                 self._shape = None           # re-probe against the ATTACHED host
                 return f"attached {cand}"
-        return self._spawn()
+        return self._spawn(preset=preset) if preset is not None else self._spawn()
 
-    def _spawn(self) -> str:
+    def _spawn(self, *, preset: Path | None = None) -> str:
         binary = llama_executable(self._settings)
         if not binary.exists():
             raise BackendError(
@@ -1018,7 +1166,7 @@ class LlamaCppBackend(_VramGate):
                 "no GGUF models found in any scan root — download one in "
                 "LiteSuite's Model Hub (or LM Studio), or add a folder in /settings."
             )
-        ini = write_preset_ini(self._rows, self._settings)
+        ini = preset if preset is not None else write_preset_ini(self._rows, self._settings)
         port = self._host.rsplit(":", 1)[-1]
         paths.LLAMA_DIR.mkdir(parents=True, exist_ok=True)
         log_path = paths.LLAMA_DIR / "litetui-llama-server.log"
@@ -1193,6 +1341,7 @@ class LlamaCppBackend(_VramGate):
                 source=disk.source if disk else "server",
                 loaded=info.get("status", {}).get("value") == "loaded",
                 extra_paths=disk.extra_paths if disk else (),
+                nextn_predict_layers=disk.nextn_predict_layers if disk else None,
                 modalities=tuple(info.get("architecture", {}).get("input_modalities", ())),
             ))
         # Disk knows models the server does not (added since the ini was
@@ -1357,8 +1506,6 @@ class LlamaCppBackend(_VramGate):
             if ctx is not None:
                 cfg = dict(self._settings.llama_load_settings.get(key, {}))
                 cfg["ctx"] = ctx
-                self._settings.llama_load_settings[key] = cfg
-                self._record_load_settings(key, cfg)
                 await self.apply_load_settings(key, cfg, notice=notice)
                 return
             await asyncio.to_thread(self._load_sync, key, notice)
@@ -1450,9 +1597,26 @@ class LlamaCppBackend(_VramGate):
 
     def _load_sync(self, key: str, notice=None) -> None:
         self._refuse_if_attached("load a model")
-        if key not in self._server_models():
+        served = self._server_models()
+        if not self.attached:
+            # Revalidate stored profiles against current metadata and binary,
+            # even when the router already knows this model. No eviction yet.
+            rows = scan_models(self._settings)
+            render_preset_ini(rows, self._settings)
+            cfg = self._settings.llama_load_settings.get(key, {})
+            if cfg.get("spec_type"):
+                path = next((r.path for r in rows if r.key == key), None)
+                resolve_speculation(key, path, cfg, self._settings)
+        if key not in served:
             # New on disk since the ini was generated: rebuild the world.
             self._regen_ini()
+        self._request_load_sync(key, notice)
+
+    def _request_load_sync(self, key: str, notice=None) -> None:
+        """Send a load after its caller has validated the complete preset."""
+        # Restart may discover a replacement server; never inherit management
+        # permission from the process that was serving before the restart.
+        self._refuse_if_attached("load a model")
         # 🔴 T873. The caller used to print "Loading <key>…" BEFORE awaiting this,
         # so on an adopted or single-model server the user read a promise and
         # then `_refuse_if_attached`'s contradiction. Two guards can still refuse
@@ -1524,7 +1688,8 @@ class LlamaCppBackend(_VramGate):
             await asyncio.to_thread(self._apply_sync, key, cfg, notice)
 
     def _apply_sync(self, key: str, cfg: dict, notice=None) -> None:
-        """Persist cfg for KEY, rewrite the ini, and bounce only that model.
+        """Preflight the whole preset, persist cfg, restart, then load KEY.
+        All resident models are evicted by a router restart, not only KEY.
         The settings dict is the durable truth; the ini is derived output.
 
         🔴 UNLOAD BEFORE THE REGEN, NEVER AFTER. _regen_ini restarts the
@@ -1534,23 +1699,26 @@ class LlamaCppBackend(_VramGate):
         Ryan's manual pass on the first apply-to-a-LOADED-model; the E2E's
         apply had only ever run against a not-yet-loaded one."""
         self._refuse_if_attached("change load settings")
+        self._refuse_preset_if_attached()
+        proposed = {**self._settings.llama_load_settings, key: dict(cfg)}
+        rows = scan_models(self._settings)
+        path = next((r.path for r in rows if r.key == key), None)
+        resolve_speculation(key, path, cfg, self._settings)
+        prepared = render_preset_ini(rows, self._settings, load_settings=proposed)
+        # Full-world validation precedes persistence, unload and restart.
         self._settings.llama_load_settings[key] = dict(cfg)
         self._record_load_settings(key, dict(cfg))
         info = self._server_models().get(key)
-        if info is not None and info.get("status", {}).get("value") == "loaded":
-            self._unload_sync(key)   # evict while THIS router still knows it
-        self._regen_ini()
-        # 🔴 T873, and AFTER `_regen_ini` on purpose. `_refuse_if_attached`
-        # RETURNS for an adopted router somebody signed for, and `_regen_ini`
-        # then refuses it anyway ("the preset belongs to it") — so a notice
-        # placed after the first guard alone would still be contradicted by the
-        # second. `_load_sync` is passed no notice: the reload below is this
-        # call's work, and it must not announce itself a second time.
         if notice is not None:
             notice()
-        self._load_sync(key)
+        if info is not None and info.get("status", {}).get("value") == "loaded":
+            self._unload_sync(key)   # evict while THIS router still knows it
+        self._regen_ini(prepared=prepared)
+        # Reuse the validated preset, rather than re-rendering after eviction.
+        # The notice already fired after preflight, before destructive work.
+        self._request_load_sync(key)
 
-    def _regen_ini(self) -> None:
+    def _refuse_preset_if_attached(self) -> None:
         # 🔴 THE INI BELONGS TO WHOEVER SPAWNED THE ROUTER. Regenerating it
         # while attached would rewrite another app's preset and then restart
         # its process — the precise accident `router.json` exists to prevent.
@@ -1561,14 +1729,17 @@ class LlamaCppBackend(_VramGate):
                 "that server and its preset belongs to it. Add the model "
                 "there, or stop that server and I'll run my own."
             )
-        rows = scan_models(self._settings)
-        write_preset_ini(rows, self._settings)
+
+    def _regen_ini(self, *, prepared: str | None = None) -> None:
+        self._refuse_preset_if_attached()
+        body = prepared if prepared is not None else render_preset_ini(scan_models(self._settings), self._settings)
+        ini = _write_preset(body)
         # The router reads the preset at startup; a changed world needs a
         # restart. Resident models are by definition ours (attached servers
         # are refused above), and the caller reloads the one it cares about.
         if self._owned is not None:
             self.shutdown()
-        self._ensure_running_sync()
+        self._ensure_running_sync(preset=ini)
 
     # -- seat guard (studio tool suspend/resume) ---------------------------
 
