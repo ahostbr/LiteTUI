@@ -36,10 +36,12 @@ command moves the base the later targets resolve against.
 Ceiling (deliberate): a target, or a cd, held in an arbitrary variable or
 expression (`$x`, `$tmp`, `([Environment]::GetFolderPath('UserProfile'))`) is
 not resolvable here and is not refused; a delete run from inside a script file
-is out of reach. This is a floor under the danger table, not a sandbox.
+is out of reach; a `find` narrowed by an -o chain or a regex alternation is
+taken at its word. This is a floor under the danger table, not a sandbox.
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 from pathlib import Path
@@ -72,14 +74,28 @@ _PATTERN_TESTS = frozenset({"-name", "-iname", "-path", "-ipath", "-wholename",
                             "-iwholename", "-regex", "-iregex"})
 
 
+#: Folders a name pattern must not be aimed at (review 1daaa224 S2).
+_PROTECTED_NAMES = (*HARNESS_DIRS, ".git")
+
+
 def _find_filtered(words: list[str]) -> bool:
-    """Does this find expression (lower-case, unquoted words) narrow its matches?"""
+    """Does this find expression (lower-case, unquoted words) narrow its matches?
+
+    Not narrowing: a negated test (`! -name x` keeps everything else, S1); a
+    pattern of wildcards only (R2); a -name/-iname pattern that matches a
+    protected folder's name (`-name .claude`, `-name '.c*'`, S2)."""
     for i, word in enumerate(words):
+        if i and words[i - 1] in ("!", "-not"):
+            continue
         if word in _PATTERN_TESTS:
             pattern = words[i + 1] if i + 1 < len(words) else ""
-            if not re.fullmatch(r"[*?.+]*", pattern):
-                return True
-        elif word in _FIND_FILTERS:
+            if re.fullmatch(r"[*?.+]*", pattern):
+                continue
+            if word in ("-name", "-iname") and any(
+                    fnmatch.fnmatchcase(name, pattern) for name in _PROTECTED_NAMES):
+                continue
+            return True
+        if word in _FIND_FILTERS:
             return True
     return False
 #: A change of directory; the words after it name the new base.
@@ -256,6 +272,8 @@ def _cd_target(rest: str, base: Path | None, home: Path) -> Path | None:
 def _resolve(raw: str, base: Path | None, home: Path) -> Path | None:
     """The folder a target names, or None when a variable (or an unknown base
     under a relative target) hides it."""
+    if not _unquote(raw):
+        return None  # a lone quote is no path; "" used to become "/", a drive root
     parts = re.split(r"[\\/]", _unquote(raw))
     while len(parts) > 1 and parts[-1] == "":
         parts.pop()  # trailing separators
