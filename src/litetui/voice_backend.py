@@ -1,6 +1,6 @@
 """Speak the agent's replies aloud — local-first, two engines.
 
-Ryan 2026-09-18: "ship the lightest possible local stt/tts backend ... do both
+the user 2026-09-18: "ship the lightest possible local stt/tts backend ... do both
 pytts and edge support". This is the TTS-out half.
 
     pyttsx3  -> Windows SAPI5 DIRECTLY. No MCI, no playsound, no network, no

@@ -1,6 +1,6 @@
 """The agent may always write ITS OWN STORE. T083, P1.
 
-Ryan, watching a LiteTUI seat compact: "the agent just got denied writing to
+the user, watching a LiteTUI seat compact: "the agent just got denied writing to
 the workspace during compaction this must never happen".
 
 WHAT HE SAW:
@@ -30,7 +30,7 @@ inside-workspace vs outside.
 be refused under `scheduled`. Without it this fix is indistinguishable from
 just granting `workspace_write`, which is the failure mode rather than the fix.
 
-📌 2026-09-24: `scheduled` is gone (Ryan: "remove scheduled completely it makes
+📌 2026-09-24: `scheduled` is gone (the user: "remove scheduled completely it makes
 no sense to me ... make interactive ask only for dangerous cmds any deletions
 or zip expansions weird procc runs that arent its tools and dangerous cmds
 threw PS and bash"). The controls now run on strict, the narrowest level left:
@@ -108,14 +108,14 @@ def test_the_transcript_is_not_part_of_the_store_any_more():
     memory index, soul, handoff and memories/ ("Configuration and transcript
     remain ordinary writes"), so the agent editing its own transcript is a
     workspace write again: confirmed under strict (the narrowest level since
-    `scheduled` was removed, Ryan 2026-09-24)."""
+    `scheduled` was removed, the user 2026-09-24)."""
     assert SELF_STORE not in _caps(_own() / "convo.jsonl")
     assert _act(STRICT, _own() / "convo.jsonl") == CONFIRM
 
 
 def test_the_denial_ryan_saw_is_gone_on_the_narrowest_level():
     """The exact two paths from his screenshot. They were refused under
-    `scheduled`; that profile is gone (Ryan 2026-09-24, "remove scheduled
+    `scheduled`; that profile is gone (the user 2026-09-24, "remove scheduled
     completely it makes no sense to me"), so the same writes are pinned on
     strict, the narrowest level that remains."""
     assert _act(STRICT, _store() / "abc123" / "handoff.md") == ALLOW
@@ -134,14 +134,14 @@ def test_an_interactive_compaction_does_not_open_a_modal():
 def test_the_workspace_STILL_asks_under_strict():
     """Without this, the fix is indistinguishable from granting workspace_write
     outright — which is the failure mode, not the fix. Was "refused under
-    scheduled"; with `scheduled` removed (Ryan 2026-09-24) the narrowest level
+    scheduled"; with `scheduled` removed (the user 2026-09-24) the narrowest level
     is strict, which asks rather than refuses."""
     for rel in ("src/litetui/app.py", "settings.json", "prompts/systemprompt.md"):
         assert _act(STRICT, ROOT / rel) == CONFIRM, rel
 
 
 def test_the_workspace_is_allowed_under_interactive():
-    """Ryan 2026-09-24: "make interactive ask only for dangerous cmds any
+    """the user 2026-09-24: "make interactive ask only for dangerous cmds any
     deletions or zip expansions weird procc runs that arent its tools and
     dangerous cmds threw PS and bash" -- a file write is none of those."""
     assert _act(INTERACTIVE, ROOT / "src" / "litetui" / "app.py") == ALLOW

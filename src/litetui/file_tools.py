@@ -1,4 +1,4 @@
-"""grep + edit — the surgical file tools (Sentinel/Ryan design, 2026-08-31).
+"""grep + edit — the surgical file tools (Sentinel/the user design, 2026-08-31).
 
 Two token sinks measured on a real port run drove this pair: whole-file
 rewrites where an exact-string edit would do, and shell-quoting failures when

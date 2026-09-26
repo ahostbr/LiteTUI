@@ -1,6 +1,6 @@
 """The error path must not need the thing whose absence caused the error (T858).
 
-🔴 WHAT RYAN SAW. He opened LiteTUI with the NInfer engine down and got a
+🔴 WHAT THE USER SAW. He opened LiteTUI with the NInfer engine down and got a
 Textual `WorkerFailed` traceback dumped over his terminal — instead of the
 sentence the code had already written for exactly this case:
 
@@ -45,7 +45,7 @@ from litetui.settings import Settings
 
 @pytest.fixture
 def unregistered(monkeypatch):
-    """A REAL NInferBackend in the state Ryan's machine was in: nothing
+    """A REAL NInferBackend in the state the user's machine was in: nothing
     registered, no explicit host, so discovery answers None.
 
     Not a double. The whole defect is an interaction between two real methods

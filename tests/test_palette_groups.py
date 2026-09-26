@@ -1,6 +1,6 @@
 """The command palette is grouped, ordered, and readable by someone new.
 
-Ryan, 2026-08-22: reorganise it, with "newb friendly descriptions and names for
+the user, 2026-08-22: reorganise it, with "newb friendly descriptions and names for
 users", into six groups he named himself — Convo, Backend, Tools, Automation,
 Screen, App — keeping every /slashcmd name exactly as is.
 
@@ -81,7 +81,7 @@ async def test_the_palette_is_grouped_and_ordered() -> None:
             if not seen or seen[-1] != label:
                 seen.append(label)
 
-        # Groups appear as contiguous blocks, in Ryan's order. A label showing
+        # Groups appear as contiguous blocks, in the user's order. A label showing
         # up twice means the sort is not actually grouping.
         assert len(seen) == len(set(seen)), f"a group is split across the list: {seen}"
         wanted = [plugins_mod.PALETTE_GROUP_LABELS[g] for g in EXPECTED_GROUPS]
@@ -117,7 +117,7 @@ async def test_the_slash_command_is_derived_from_the_dispatcher() -> None:
 
 @pytest.mark.asyncio
 async def test_reclaimed_rows_have_real_commands() -> None:
-    """Ryan's call: the rows that had no slash command get one."""
+    """the user's call: the rows that had no slash command get one."""
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
         await pilot.pause()

@@ -10,7 +10,7 @@ population, two independent holes.
 WHAT IT COST, MEASURED 2026-08-28 on main 607e635: `tests/test_input.py` and
 `tests/test_ask_user_question.py` construct a real `LiteTUI()`, which loads the
 REPO ROOT's `settings.json` — a gitignored file holding the developer's own
-config. Ryan runs `dialog_style: "sidebar"`; both files assert the *modal* path.
+config. the user runs `dialog_style: "sidebar"`; both files assert the *modal* path.
 Three arms on a clean `git archive` export settled it:
 
     export, no settings.json (the CI condition)  -> the modal assertions PASS
@@ -20,7 +20,7 @@ Three arms on a clean `git archive` export settled it:
 So the red build was never a product defect; it was the suite reading live user
 state. `conftest.py`'s own docstring already records THREE stores damaged this
 way — the fleet registry (a1e8686), `.convos` (55001fa), and the settings write
-that reset Ryan's `tool_iterations` 100 -> 48. This is the fourth, and the first
+that reset the user's `tool_iterations` 100 -> 48. This is the fourth, and the first
 one the guard was structurally unable to prevent.
 
 ⭐ THE ASSERT IS THE LOAD-BEARING HALF, NOT THE REDIRECT. `test_integrations.py`

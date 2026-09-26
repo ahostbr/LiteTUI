@@ -242,7 +242,7 @@ def test_settings_controls_mark_what_applies_to_clinepass():
 
 
 def test_clinepass_backend_saved_on_one_conversation_stays_there(tmp_path):
-    """Ryan: separate LiteTUI instances must stay separate. Choosing ClinePass
+    """the user: separate LiteTUI instances must stay separate. Choosing ClinePass
     in one conversation's settings leaves another conversation's backend alone."""
     from litetui.settings_scope import SETTING_SPECS
     from litetui.settings_service import SettingChange, SettingsService

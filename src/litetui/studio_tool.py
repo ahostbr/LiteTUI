@@ -134,7 +134,7 @@ def _image(action: str, args: dict) -> str:
             # The API's own guidance default (7.5) does NOT match LiteImage's
             # UI default (3.5), and for flux1-dev the overdriven CFG produced
             # blurry/overprocessed results while the UI was fine with 3.5
-            # (Ryan, 2026-08-29: "the issue is the settings you're using").
+            # (the user, 2026-08-29: "the issue is the settings you're using").
             # Pin the tool default to the UI value; an explicit `guidance` arg
             # overrides it for other model families.
             if "guidance_scale" not in body:

@@ -1,7 +1,7 @@
-"""ninfer_engine — the launcher LiteTUI may own (Ryan a-35456da0 "LiteTUI may start it").
+"""ninfer_engine — the launcher LiteTUI may own (the user a-35456da0 "LiteTUI may start it").
 
 Every arm is pure or injected: no card, no process, no real config file. The
-env is redirected so nothing reads Ryan's machine (the trap test_ninfer_backend
+env is redirected so nothing reads the user's machine (the trap test_ninfer_backend
 already recorded once).
 """
 from __future__ import annotations
@@ -70,7 +70,7 @@ def test_argv_is_litesuites_with_the_ruled_defaults():
 
 
 def test_vision_is_enabled_only_for_an_artifact_that_carries_it():
-    """Ryan 15:0x 2026-09-17: view_image on the 35B -> HTTP 400 vision disabled on every
+    """the user 15:0x 2026-09-17: view_image on the 35B -> HTTP 400 vision disabled on every
     request after it, because the engine was started without --vision."""
     with_v = eng.build_ninfer_args(Path("a.ninfer"), 1, "m", components=("text", "vision", "mtp"))
     without = eng.build_ninfer_args(Path("a.ninfer"), 1, "m", components=("text", "mtp"))
@@ -315,7 +315,7 @@ def test_an_earlier_runs_ready_line_does_not_count(tmp_path, monkeypatch):
 
 def test_a_header_without_a_model_id_names_the_engine_after_the_file(tmp_path, monkeypatch):
     """The 35B-A3B artifact's header has no model_id; the pinned fallback advertised the MoE
-    as qwen3.8-27b in LiteSuite's picker (Ryan's screenshot, 14:2x 2026-09-17)."""
+    as qwen3.8-27b in LiteSuite's picker (the user's screenshot, 14:2x 2026-09-17)."""
     s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
     monkeypatch.setattr(eng, "read_artifact_directory", lambda p: {"components": {"text": {}}})
     monkeypatch.setattr(eng.atexit, "register", lambda *a, **k: None)
@@ -348,7 +348,7 @@ def test_start_refuses_before_touching_the_exe(tmp_path, monkeypatch):
 
 # ── T877: a refusal leaves a record ─────────────────────────────────────────
 #
-# Ryan, 2026-09-18 00:2x: `/model` then `/engine start`, and nothing happened.
+# the user, 2026-09-18 00:2x: `/model` then `/engine start`, and nothing happened.
 # There was nothing to read afterwards — no log line, no process, no registry
 # entry, no VRAM movement — because every refusal raises ABOVE the `open(lp)`
 # in `start()`. Three agents guessed at four causes for twenty minutes.
@@ -420,7 +420,7 @@ def _never_spawns(*a, **kw):
     return _DeadProc()
 
 
-# ── ownership survives the handle (Ryan, 2026-09-18) ────────────────────────
+# ── ownership survives the handle (the user, 2026-09-18) ────────────────────────
 #
 # "it spawned that ninfer server then refused to close it with /engine stop
 # saying it didnt spawn it ... killing litetui didnt close the server"

@@ -101,7 +101,7 @@ async def test_dirty_cancel_offers_three_way_choice_and_restore_is_confirmed():
 
 @pytest.mark.asyncio
 async def test_every_free_tier_key_row_is_masked_and_under_its_own_header():
-    """Ryan 2026-09-24 (liteask a-29b8bd60): "a key field per source in
+    """the user 2026-09-24 (liteask a-29b8bd60): "a key field per source in
     /settings". A key on screen is a key in the screenshot, so each is masked."""
     from textual.widgets import Input
 

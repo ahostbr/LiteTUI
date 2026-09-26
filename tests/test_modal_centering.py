@@ -5,7 +5,7 @@ centering rule is one CSS selector list (`ConfirmStop, PickerScreen, ... {
 align: center middle; }`), and the three new screens were never added to it.
 CalendarScreen HID the defect by being 96% x 92% -- near-fullscreen makes
 docked and centred look identical -- and the render pass printed every
-widget's CONTENT without once asking where the widget SAT. Ryan's screenshot
+widget's CONTENT without once asking where the widget SAT. the user's screenshot
 was the instrument, again.
 
 This asserts POSITION, not content: the box's gap to the left edge equals its
@@ -88,7 +88,7 @@ def _assert_centred(app, box_id: str, what: str) -> None:
 
 
 def test_the_day_popup_is_centred():
-    """The one Ryan's screenshot caught docked in the top-left corner."""
+    """The one the user's screenshot caught docked in the top-left corner."""
     async def body():
         a = make_app()
         async with a.run_test(size=SIZE) as pilot:

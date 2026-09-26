@@ -1,6 +1,6 @@
 """Skills: a slash-tolerant name, an honest skip reason, and a picker.
 
-Three faults, all found from one screenshot (Ryan, 2026-08-22):
+Three faults, all found from one screenshot (the user, 2026-08-22):
 
   1. "/ls-mark" failed against a list that visibly CONTAINED ls-mark. The
      lookup lowercased and stripped whitespace but not the leading slash --

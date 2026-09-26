@@ -14,7 +14,7 @@ break.
 
     A MEASUREMENT WHOSE INSTRUMENT IS UNKNOWN CANNOT BE COMPARED ACROSS
     ENGINES — and comparing across engines is the whole purpose of the number
-    (Ryan: *"66toks is less than lmstudio etc"* / *"whole point is a toks
+    (the user: *"66toks is less than lmstudio etc"* / *"whole point is a toks
     improvement"*).
 
 These arms pin the discrimination itself: a REPORTED rate and a COMPUTED rate

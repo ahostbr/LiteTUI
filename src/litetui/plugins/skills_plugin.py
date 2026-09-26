@@ -68,7 +68,7 @@ def _cmd_refresh(app) -> None:
 def _invoke(app, want: str, extra: str = "") -> None:
     """Load a skill and GIVE IT TO THE MODEL. The whole point of the command.
 
-    Ryan, 2026-08-22: "invoking a skill just prints it to the screen... its not
+    the user, 2026-08-22: "invoking a skill just prints it to the screen... its not
     getting sent to the agent correctly." There was no send to break — this
     command was written as a viewer (its comment said "Show what the MODEL would
     receive") and `app.system_message` only mounts a widget into the chat
@@ -93,7 +93,7 @@ def _invoke(app, want: str, extra: str = "") -> None:
         app.system_message(body)
         return
     # THE BUBBLE AND THE MESSAGE CARRY DIFFERENT TEXT, DELIBERATELY. The screen
-    # gets one line (Ryan: "remove any printing to the screen effect"); the
+    # gets one line (the user: "remove any printing to the screen effect"); the
     # model gets the whole skill. They are separate arguments, so showing less
     # than we send costs nothing.
     # PROCEDURE FIRST, THEN THE TASK IT APPLIES TO. Reversed, the model reads

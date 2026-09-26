@@ -471,7 +471,7 @@ def test_the_uncertain_refusal_names_the_way_out(tmp_path):
     assert "/claude new" in str(caught.value)
 
 
-# -- effort changes go through the T911 cache gate (Ryan 2026-09-24) ---------
+# -- effort changes go through the T911 cache gate (the user 2026-09-24) ---------
 
 def effort_app(tmp_path, monkeypatch, answer):
     """A live, warm session built at effort 'high'; the user now wants 'max'."""
@@ -617,7 +617,7 @@ def image_app(tmp_path):
 
 
 def test_an_image_becomes_the_path_of_its_conversation_copy(tmp_path):
-    """Ryan 2026-09-24: "convert it to a path on disk for claude and paste it to him"."""
+    """the user 2026-09-24: "convert it to a path on disk for claude and paste it to him"."""
     from pathlib import Path
 
     from litetui.claude_turn import inline_images
@@ -659,7 +659,7 @@ def test_text_passes_through_untouched(tmp_path):
 
 
 def test_a_new_claude_session_works_in_the_folder_litetui_was_launched_from(tmp_path):
-    """Plan claude-backend-litetui-identity, phase 3. Ryan: "it should use whatever its cwd
+    """Plan claude-backend-litetui-identity, phase 3. the user: "it should use whatever its cwd
     is i just ran it from there". The same source the Codex backend uses
     (codex_workspace.workspace: the folder captured at launch), not the install folder."""
     project = tmp_path / "LiteBench"
@@ -847,7 +847,7 @@ class _ClockedBody:
 
 @pytest.mark.asyncio
 async def test_text_after_a_tool_lands_below_it_and_the_clock_never_overwrites_text(tmp_path, monkeypatch):
-    """Live on Ryan's screen, 2026-09-25: text written AFTER a tool call rendered in the
+    """Live on the user's screen, 2026-09-25: text written AFTER a tool call rendered in the
     turn's first card, ABOVE the tool cards, and the transcript flickered through the tool
     calls. One card per turn took every message's text; the elapsed clock kept repainting
     that card's body (every 250ms) over the streamed text until the turn ended."""

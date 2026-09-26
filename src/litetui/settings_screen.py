@@ -851,7 +851,7 @@ class SettingsBody(Widget):
                         )
 
                         # ── Generation ───────────────────────────────────────────────
-                # T893 — RYAN: "ninfer settings should have their own new tab ... next to
+                # T893 — THE USER: "ninfer settings should have their own new tab ... next to
                 # [the model tab]", and NOTHING NInfer on a box that is not an RTX 5090.
                 # `_collect` skips the ninfer_* fields when the tab is absent.
                 if gpu_gate.is_rtx_5090():
@@ -1029,7 +1029,7 @@ class SettingsBody(Widget):
                         # T640 — THE TWO SIDE CALLS THE LOOP MAKES, TOGETHER.
                         # Both send work to a model that is not the one you are
                         # talking to, and until now one was free text on another
-                        # tab and the other did not exist. Ryan 2026-09-11 15:1x
+                        # tab and the other did not exist. the user 2026-09-11 15:1x
                         # runs MiniCPM5-2B resident beside the big model; these
                         # are the two knobs that point work at it.
                         yield self._section_header("agent-routing")
@@ -1079,7 +1079,7 @@ class SettingsBody(Widget):
                             tool_profile_choices(),
                             # RENAMED from "Conversation tool authority": it governs
                             # EVERY turn now -- typed, inbox-woken, cron and loop alike
-                            # (Ryan: "cron and loops run at same set profile level").
+                            # (the user: "cron and loops run at same set profile level").
                             # A control naming a narrower scope than it governs is the
                             # same defect as T084, pointing the other way.
                             "Host-enforced, on every turn: what you type, mail from other "
@@ -1450,7 +1450,7 @@ class SettingsBody(Widget):
         """A click on any creator hex field opens the picker for that token.
 
         The field stays an Input so the value is still selectable/typable,
-        but the CLICK is the picker's door — Ryan: "it should activate when
+        but the CLICK is the picker's door — the user: "it should activate when
         i click any of those hex's". The picker's own hex box remains the
         typing escape hatch.
         """

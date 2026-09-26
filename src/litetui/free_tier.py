@@ -1,6 +1,6 @@
 """LiteTUI's free tier: several $0 sources behind one backend, with failover.
 
-Ryan 2026-09-17 (liteask a-ae48d020), on freellmapi: "card a new free provider
+the user 2026-09-17 (liteask a-ae48d020), on freellmapi: "card a new free provider
 backend we recreate based on that repo"; 2026-09-24: "now thats sick ! we got
 FREE subagents now lol :) on top of frontier and local !" and "yes send
 passlink on the multi-source free tier".
@@ -11,7 +11,7 @@ server/src/services/ratelimit.ts, lib/fallback-loop.ts), not copied:
 - SOURCES: a static table. Keyless sources (Cline's login, Kilo, OVH, LLM7) are
   live with no setup; keyed ones (Groq ... Gemini, and from T938 Ollama Cloud,
   Z.ai, Cloudflare Workers AI, LongCat, SEA-LION) stay inactive until they have
-  a key: the one saved in /settings or the sidecar (Ryan 2026-09-24, liteask
+  a key: the one saved in /settings or the sidecar (the user 2026-09-24, liteask
   a-29b8bd60), else their environment variable. Read at call time; never
   printed, logged or sent to the sidecar.
 - The same model offered by several sources is ONE picker entry (group_of), and

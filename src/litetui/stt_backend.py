@@ -1,6 +1,6 @@
 """Voice-in (dictation): record the mic, transcribe locally, no cloud.
 
-Ryan 2026-09-18: "the lightest possible local stt ... whisper small" -> settled
+the user 2026-09-18: "the lightest possible local stt ... whisper small" -> settled
 on faster-whisper base.en (CTranslate2, CPU, ~140 MB, downloaded on opt-in).
 Replaces the VRAM-evicting Qwen2-Audio-7B `listen` path for user dictation.
 

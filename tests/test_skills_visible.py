@@ -103,7 +103,7 @@ async def test_slash_skills_actually_gives_the_body_to_the_model(monkeypatch):
     `test_slash_skills_shows_what_the_MODEL_would_get`, and it asserted the body
     appeared in the CHAT LOG while calling that "what the model would get".
     Those are two different places and the command only ever did the first.
-    Ryan: "invoking a skill just prints it to the screen... its not getting sent
+    the user: "invoking a skill just prints it to the screen... its not getting sent
     to the agent correctly."
 
     The test passed for as long as the bug existed BECAUSE its expectation was
@@ -137,7 +137,7 @@ async def test_slash_skills_actually_gives_the_body_to_the_model(monkeypatch):
         "the body is still being dumped onto the screen"
     )
     # The user is told on the BUBBLE now, not by a system line — a system line
-    # beside the bubble would be the printing Ryan asked to remove, by another
+    # beside the bubble would be the printing the user asked to remove, by another
     # name.
     assert any("probe" in b for b in bubbles), (
         f"nothing on screen names the loaded skill; bubbles={bubbles!r}"

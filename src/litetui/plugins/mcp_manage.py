@@ -5,7 +5,7 @@ way to manage it: `mcp.json` was read ONCE at boot, and the only controls were
 `mcp_enabled` and the `mcp_disabled_servers` denylist in Settings → Capabilities,
 both boot-time filters that say so in their own confirmation ("Applies on next
 /reconnect"). Adding a server meant quitting, hand-editing JSON and restarting.
-Ryan, 2026-09-03: "there needs to be a full cmd and UI for adding connecting
+the user, 2026-09-03: "there needs to be a full cmd and UI for adding connecting
 disconnecting reconnecting and removing mcps etc."
 
 🔴 EVERY VERB THAT CHANGES WHAT IS RUNNING CALLS `app.rebuild_mcp_dispatch()`.

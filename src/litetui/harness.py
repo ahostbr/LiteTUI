@@ -419,7 +419,7 @@ class Seat:
                  # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
                  #
                  # 🔴 The agent id is DERIVED from the conversation (agent_id_for_convo,
-                 # uuid5), never minted per process. Ryan rejected per-process ids on
+                 # uuid5), never minted per process. the user rejected per-process ids on
                  # 2026-08-21 after they put a dispatched task in a DEAD MAILBOX while
                  # `send` exited 0. Do NOT reintroduce them -- and do not re-derive them
                  # from first principles either, which is what happens when this note is
@@ -595,7 +595,7 @@ AGENTS_DIR = Path.home() / ".liteharness" / "agents"
 def other_live_litetui(self_id: str | None = None) -> str | None:
     """The NAME of another live LiteTUI, or None when this is the only one.
 
-    🔴 THE REGISTRY, NOT A PROCESS SCAN. Ryan's ruling (a-62edbbe0): two
+    🔴 THE REGISTRY, NOT A PROCESS SCAN. the user's ruling (a-62edbbe0): two
     instances SHARE a model server and run in parallel, and the only thing he
     wants guarded is a load that puts a SECOND set of weights in VRAM. So the
     question is not "is another litetui.exe running" — LiteSuite's headless

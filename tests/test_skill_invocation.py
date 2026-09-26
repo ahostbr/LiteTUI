@@ -1,6 +1,6 @@
 """Invoking a skill must SEND it to the model, not paint it on the screen.
 
-Ryan, 2026-08-22: "invoking a skill just prints it to the screen... its not
+the user, 2026-08-22: "invoking a skill just prints it to the screen... its not
 getting sent to the agent correctly."
 
 There was no send to break. `_cmd_skills` called `app._system(body)`, and
@@ -20,7 +20,7 @@ both, which is the whole reason these tests can fail.
 🔴 AND THE FIRST FIX WAS ALSO ONLY HALF. Delivery into the CONTEXT is not the
 same as the model READING it: a model reads its context only when a request is
 made. The first version put the body in the system turn, printed "sent to the
-model", and then sat there — Ryan: "no gpu use no response ... nothing". The
+model", and then sat there — the user: "no gpu use no response ... nothing". The
 banner had stopped lying about the destination and started lying about the
 event.
 
@@ -63,7 +63,7 @@ class _StubApp:
     A stub with only `_system` could not fail on a skill that was displayed and
     never delivered. A stub with only `conversation` could not fail on a skill
     that was delivered and never asked about — which is the second half of the
-    same bug and the one Ryan saw on screen.
+    same bug and the one the user saw on screen.
     """
 
     def __init__(self, skills):
@@ -124,7 +124,7 @@ def test_invoking_by_name_sends_the_body_to_the_model(tmp_path: Path) -> None:
 
 
 def test_invoking_from_the_picker_sends_it_too(tmp_path: Path) -> None:
-    """Two entry points, one delivery. The picker is the one Ryan actually
+    """Two entry points, one delivery. The picker is the one the user actually
     uses, and it had its own copy of the same _system call."""
     app = _StubApp([_skill(tmp_path, "ls-mark")])
 
@@ -134,7 +134,7 @@ def test_invoking_from_the_picker_sends_it_too(tmp_path: Path) -> None:
 
 
 def test_invoking_a_skill_STARTS_A_TURN(tmp_path: Path) -> None:
-    """THE half that was missing, and the one Ryan saw on screen: the body
+    """THE half that was missing, and the one the user saw on screen: the body
     reached the context and nothing happened — no GPU, no response, nothing.
 
     A model reads its context only when a request is made. Delivery without a
@@ -172,7 +172,7 @@ def test_the_body_goes_in_the_message_and_the_bubble_stays_short(tmp_path: Path)
 
 # ── what the SCREEN does, which is the other half of the complaint ───────────
 def test_the_screen_gets_a_confirmation_not_the_whole_body(tmp_path: Path) -> None:
-    """Ryan's words were "just prints it to the screen". Dumping 8KB into the
+    """the user's words were "just prints it to the screen". Dumping 8KB into the
     log was the visible symptom; the log should say what happened instead."""
     app = _StubApp([_skill(tmp_path, "ls-mark")])
 
@@ -183,7 +183,7 @@ def test_the_screen_gets_a_confirmation_not_the_whole_body(tmp_path: Path) -> No
     )
     assert BODY not in "\n".join(app.bubbles), "the body is in the bubble instead"
     # The user IS told — on the bubble, which is the surface a loaded skill now
-    # occupies. Ryan asked for the GUI and no printing; a system line beside
+    # occupies. the user asked for the GUI and no printing; a system line beside
     # the bubble would be the printing coming back by another name.
     assert any("ls-mark" in b for b in app.bubbles), (
         "nothing on screen names the skill that was loaded"
@@ -251,7 +251,7 @@ def test_refresh_injects_nothing(tmp_path: Path) -> None:
 
 # ── invoking WITH a request in the same line ────────────────────────────────
 #
-# Ryan: "it worked sent him the skill now but it lost the text i typed after it
+# the user: "it worked sent him the skill now but it lost the text i typed after it
 # ... meaning i couldnt send him the link and invoke it at once".
 #
 # The autocomplete completes to `/name ` WITH A TRAILING SPACE, which is an

@@ -237,7 +237,7 @@ def test_list_merges_server_and_disk(stub, tmp_path):
 
 
 def test_apply_on_a_loaded_model_survives_the_router_restart(stub, tmp_path, monkeypatch):
-    """Ryan's manual pass, first apply to a LOADED model: _regen_ini restarts
+    """the user's manual pass, first apply to a LOADED model: _regen_ini restarts
     the router, the fresh process lists everything unloaded, and the old
     unload-AFTER-regen order sent a 400 that aborted the apply before the
     reload. The unload must happen while the OLD router still knows the

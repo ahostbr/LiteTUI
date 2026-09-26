@@ -1,6 +1,6 @@
 """A delta is not a token: the tok/s readouts under speculative decoding.
 
-RYAN, 2026-09-18 12:4x, watching the ninfer seat: "idk why toks r so low ...
+THE USER, 2026-09-18 12:4x, watching the ninfer seat: "idk why toks r so low ...
 it was getting 150toks last night ... it seems to get like a burst at 150ish at
 the start of a response then slow down ... and then that wall at 152 at the
 end ... weird af".

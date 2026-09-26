@@ -5,7 +5,7 @@ goes on a `missing` list and the save raises "no control found for: ...". That
 guard is right, and it means ADDING A FIELD TO settings.py WITHOUT A CONTROL
 BREAKS SAVING FOR EVERY SETTING, not just the new one.
 
-That is exactly what happened. Ryan's screenshot, 2026-09-08 23:3x:
+That is exactly what happened. the user's screenshot, 2026-09-08 23:3x:
 
     Cannot save — no control found for: lmstudio_graded_thinking_models,
     tool_auto_background_s, subagent_model — refusing to save a partial

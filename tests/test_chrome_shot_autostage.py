@@ -1,7 +1,7 @@
 """`chrome action=shot` attaches its PNG to the next message automatically, so a
 vision model sees the screenshot without a second view_image call.
 
-Ryan, live: "action shot to return the image automatically instead of a separate
+the user, live: "action shot to return the image automatically instead of a separate
 view image call."
 
 Routes through LiteTUI._maybe_stage_shot with a fake self — it only touches

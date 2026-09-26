@@ -71,7 +71,7 @@ def _hsv(body: ColorPickerBody):
 @pytest.mark.parametrize("key,axis,name", KEYS, ids=[k for k, _, _ in KEYS])
 @pytest.mark.asyncio
 async def test_every_key_moves_its_axis_in_a_modal(key, axis, name):
-    """The path Ryan is on: `dialog_style` defaults to "modal"."""
+    """The path the user is on: `dialog_style` defaults to "modal"."""
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
         a.push_screen(ColorPickerScreen(START, [], "primary"))

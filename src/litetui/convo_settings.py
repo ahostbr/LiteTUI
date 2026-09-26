@@ -1,6 +1,6 @@
 """Per-conversation model configuration (T691).
 
-Ryan, 2026-09-12 (a-62edbbe0): *"we fix this with per convo settings files json
+the user, 2026-09-12 (a-62edbbe0): *"we fix this with per convo settings files json
 that save backend model liteharness-info think level when on codex and
 everything llama and lmstudio support / need for their specifics"*.
 

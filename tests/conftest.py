@@ -40,7 +40,7 @@ if str(SRC) not in sys.path:
 # Constructing LiteTUI registers a harness seat, and registration passes
 # --takeover, which evicts the running instance's row to
 # ~/.liteharness/.ghost_evicted_*. Running the tests therefore stole the
-# name "LiteTUI" from Ryan's live app and left the roster naming a test
+# name "LiteTUI" from the user's live app and left the roster naming a test
 # process that had already exited.
 #
 # Set BEFORE any test imports app/harness, and never overwritten if the
@@ -105,7 +105,7 @@ os.environ.setdefault("LITETUI_TEST_USER_NAME_ASKED", "1")
 
 # 🔴 THE SUITE MUST NOT WRITE THE LIVE settings.json EITHER.
 #
-# Measured 2026-08-20, with a backup and a restore: ONE test run reset Ryan's
+# Measured 2026-08-20, with a backup and a restore: ONE test run reset the user's
 # tool_iterations from 100 back to 48.
 #
 #   tests/test_no_implicit_model_load.py:124,144   a._on_settings_saved(Settings(...))
@@ -119,7 +119,7 @@ os.environ.setdefault("LITETUI_TEST_USER_NAME_ASKED", "1")
 # ⚠️ IT LOOKS INTERMITTENT, WHICH IS WHY IT SURVIVED. The running app holds the
 # real values in memory and writes them back on its next save, healing the file
 # — so the damage is only visible when the app RESTARTS between a test run and
-# that next save. Exactly the sequence Ryan hit: set 100, test run wrote 48,
+# that next save. Exactly the sequence the user hit: set 100, test run wrote 48,
 # restart loaded 48.
 #
 # 🔴 THE CALL IS INVISIBLE AT THE TEST SITE. Those tests never mention save();
@@ -152,7 +152,7 @@ def _no_vram_gate_leaks_between_apps(monkeypatch):
 def _never_read_the_live_agent_registry(tmp_path, monkeypatch):
     """Point `harness.AGENTS_DIR` at an EMPTY per-test directory.
 
-    🔴 WITHOUT THIS, T690 MADE THE SUITE DEPEND ON RYAN'S OPEN WINDOWS. The
+    🔴 WITHOUT THIS, T690 MADE THE SUITE DEPEND ON THE USER'S OPEN WINDOWS. The
     second-instance VRAM gate asks `harness.other_live_litetui()` before every
     model load, and that reads `~/.liteharness/agents/*.json` — the LIVE roster.
     With a LiteTUI window open, two context-length tests went red because the

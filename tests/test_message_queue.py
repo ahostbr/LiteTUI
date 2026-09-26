@@ -9,7 +9,7 @@ The two bugs this replaces, both watched live 2026-08-21:
      tool truthfully said "(no new messages)" because the monitor had already
      claimed the mail — so the model trusted the tool over its own context.
 
-Ryan's spec, verbatim clause included: queue by default; ctrl+shift+enter
+the user's spec, verbatim clause included: queue by default; ctrl+shift+enter
 interrupts; and "swapping the default behavior between those two in the
 settings page" — the two ENDS trade places, not a hardcoded chord.
 """

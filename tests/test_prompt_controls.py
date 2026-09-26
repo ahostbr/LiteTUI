@@ -194,7 +194,7 @@ def test_mic_and_pause_tooltips_track_state():
 
 @pytest.mark.asyncio
 async def test_tts_enabled_shows_and_hides_the_response_speak_button():
-    """Ryan 2026-09-24: tts_enabled toggles the Speak button on responses."""
+    """the user 2026-09-24: tts_enabled toggles the Speak button on responses."""
     from types import SimpleNamespace
     from litetui.response_speech import ResponseSpeakButton
 

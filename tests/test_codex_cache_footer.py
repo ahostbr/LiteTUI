@@ -1,6 +1,6 @@
 """T992: the footer cache field on a Codex seat, the same field Claude's uses.
 
-Ryan, 2026-09-26: "For the clawed back end, we display the caching and the
+the user, 2026-09-26: "For the clawed back end, we display the caching and the
 footer. Add that to light TUI as well. The same type of system."
 """
 import time

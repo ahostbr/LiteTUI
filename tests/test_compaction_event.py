@@ -1,7 +1,7 @@
 """The compaction must SAY what it did, on the wire (T825).
 
 🔴 IT WAS INVISIBLE TO EVERY HOST. `_compact` reported itself with `_system`
-lines and nothing else, so LiteSuite's Frontier Chat could show Ryan neither a
+lines and nothing else, so LiteSuite's Frontier Chat could show the user neither a
 compaction, nor a decline, nor a failure — while his own question was
 "why is it not compacting".
 

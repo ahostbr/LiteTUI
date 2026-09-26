@@ -1,6 +1,6 @@
 """view_image: the tool that must NOT return what it was asked for.
 
-Ryan: "if i send him a path to a image to view he gets confused ... but when i
+the user: "if i send him a path to a image to view he gets confused ... but when i
 paste it he sees it right away." Both halves are true and the reason is
 structural: a tool result is a role:"tool" message whose content is a STRING.
 Images reach the model ONLY as an image_url block on a role:"user" message.

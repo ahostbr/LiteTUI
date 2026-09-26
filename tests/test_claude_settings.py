@@ -39,8 +39,8 @@ async def test_claude_settings_preserve_unsupported_values_and_disable_controls(
                      "default_context_length",
                      "mcp_enabled", "skills_enabled"):
             assert body.query_one(f"#f-{name}").disabled, name
-        # Effort is Claude's own control now (Ryan 2026-09-24: "Yes, add effort levels too").
-        # LiteTUI compacts Claude itself now (Ryan 2026-09-24: "I would rather keep it").
+        # Effort is Claude's own control now (the user 2026-09-24: "Yes, add effort levels too").
+        # LiteTUI compacts Claude itself now (the user 2026-09-24: "I would rather keep it").
         for name in ("tools_enabled", "tools_disabled", "tool_policy_profile", "thinking_level",
                      "autocompact_enabled"):
             assert not body.query_one(f"#f-{name}").disabled, name

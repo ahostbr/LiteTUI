@@ -1,6 +1,6 @@
 """The AUTONOMOUS profile — everything, unattended, no questions.
 
-T073 item 4. The point of the row: Ryan killed his own agent seat rather than
+T073 item 4. The point of the row: the user killed his own agent seat rather than
 keep answering the approval modal, and a guard that gets ROUTED AROUND protects
 nothing. This is the supported way to say "do not ask me".
 
@@ -93,7 +93,7 @@ def test_CONTROL_interactive_still_confirms_the_same_confirm_always_tool(ws):
 
 
 def test_CONTROL_strict_is_unchanged_by_the_confirm_guard(ws):
-    """Was the `scheduled` control; that profile is gone (Ryan 2026-09-24,
+    """Was the `scheduled` control; that profile is gone (the user 2026-09-24,
     "remove scheduled completely it makes no sense to me"). The guard must
     still leave the narrowest level asking: strict confirms the undeclared
     MCP tool and an ordinary command, and reads stay silent."""

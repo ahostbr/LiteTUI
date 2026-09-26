@@ -1,6 +1,6 @@
 """T691 — each conversation carries its own model configuration.
 
-Ryan (a-62edbbe0): *"per convo settings files json that save backend model
+the user (a-62edbbe0): *"per convo settings files json that save backend model
 liteharness-info think level ... and everything llama and lmstudio support"*.
 
 ⚠️ EVERY ARM USES A TEMP DIRECTORY. `.convos/` is live on this box with hundreds
@@ -106,7 +106,7 @@ def test_writing_a_conversation_never_touches_the_GLOBAL_settings(tmp_path: Path
 
 
 def test_the_file_carries_the_backend_specific_load_settings(tmp_path: Path) -> None:
-    """Ryan named these: *"everything llama and lmstudio support / need for
+    """the user named these: *"everything llama and lmstudio support / need for
     their specifics"*. They are separate fields because the two runtimes take
     different keys, and one merged dict would make a llama ctx look like an
     LM Studio one."""
@@ -352,7 +352,7 @@ def test_an_EMPTY_model_list_is_unknown_and_never_triggers_the_fallback(tmp_path
 
 
 def test_a_backend_switch_is_remembered_by_the_conversation(tmp_path: Path) -> None:
-    """Ryan named backend FIRST, and the first cut recorded it nowhere."""
+    """the user named backend FIRST, and the first cut recorded it nowhere."""
     d = _dir(tmp_path)
     a = _App(st.Settings(), d)
     a._adopt_convo_settings(born=True)
@@ -416,7 +416,7 @@ def test_an_engine_the_box_no_longer_has_falls_back_AND_SAYS_SO(tmp_path: Path, 
 
 
 def test_the_codex_effort_is_kept_in_its_OWN_field(tmp_path: Path) -> None:
-    """Ryan: *"think level when on codex"*. It is a different vocabulary from
+    """the user: *"think level when on codex"*. It is a different vocabulary from
     LM Studio's thinking levels, so a conversation carried between engines must
     not hand a codex effort to a llama.cpp level."""
     d = _dir(tmp_path)
@@ -634,7 +634,7 @@ def test_the_chosen_profile_falls_through_when_the_conversation_never_chose(tmp_
 
 
 def test_a_LOOP_is_stamped_from_the_GLOBAL_setting_not_the_conversation(tmp_path: Path) -> None:
-    """🔴 RYAN RULING, ALREADY IN THE CODE AT app.py:1672, AND BINDING:
+    """🔴 THE USER RULING, ALREADY IN THE CODE AT app.py:1672, AND BINDING:
     changing how autonomous the CHAT is must not silently change what every
     saved automation may do. So `goal_loop.py:372` reads
     `settings.tool_policy_profile` and deliberately NOT this conversation.

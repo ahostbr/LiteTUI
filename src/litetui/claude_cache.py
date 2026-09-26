@@ -1,6 +1,6 @@
 """Claude prompt-cache health, countdown and cold-restart warning (T911).
 
-Ryan, 2026-09-24 (liteask a-3d843d20): "any time a cache would "restart" cold it
+the user, 2026-09-24 (liteask a-3d843d20): "any time a cache would "restart" cold it
 there should be a warning for the user displayed first WARNING them of the cache
 hit and this will HURT there usage" ... "display a countdown in the footer for
 time left on cache."
@@ -10,7 +10,7 @@ module does about each (the cases are enumerated in the T911 report too):
 
   WARNED — LiteTUI can see it coming, before anything is sent:
     * model switch on a live session — the cache is per model;
-    * effort change on a live session (/think, /modelcfg, /settings) — Ryan
+    * effort change on a live session (/think, /modelcfg, /settings) — the user
       2026-09-24: "anytime you change effort levels, it affects the cache";
     * idle past the cache lifetime on a live session;
     * resuming a saved session whose cache has expired, or whose last use is
@@ -151,7 +151,7 @@ def cold_reason(clock, *, live, resuming, model, used_at=None, now=None, effort=
                     "so Claude re-reads this whole conversation at full input price.")
         effort = effort or "default"
         if clock.effort and clock.effort != effort:
-            # Ryan 2026-09-24: "anytime you change effort levels, it affects the cache."
+            # the user 2026-09-24: "anytime you change effort levels, it affects the cache."
             return "effort", (f"Changing effort from {clock.effort} to {effort}. The cache is built at one effort "
                     "level, so Claude re-reads this whole conversation at full input price.")
         left = clock.remaining(now)

@@ -1,6 +1,6 @@
 """A window read while the model was unloaded must not stick for the session.
 
-WHAT RYAN SAW. The footer read `ctx 56,373 / 262,144 max` while LM Studio was
+WHAT THE USER SAW. The footer read `ctx 56,373 / 262,144 max` while LM Studio was
 serving that model at 120,064. 262,144 is the model's CEILING, and the "max"
 marker is the app correctly saying so — but the reading was STALE: the API
 reported the model loaded at 120,064 the whole time.
@@ -74,7 +74,7 @@ async def test_a_stale_ceiling_is_replaced_once_the_model_is_loaded(monkeypatch)
         return (LOADED, "llm", True)
     a.backend.model_info = _info
     async with a.run_test() as pilot:
-        a.ctx_max, a.ctx_loaded = CEILING, False  # the state on Ryan's screen
+        a.ctx_max, a.ctx_loaded = CEILING, False  # the state on the user's screen
         a._resync_ctx_if_stale()
         ok = await _settle(pilot, lambda: a.ctx_loaded)
         assert ok, f"never re-read: ctx_max={a.ctx_max} ctx_loaded={a.ctx_loaded}"

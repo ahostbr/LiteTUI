@@ -41,7 +41,7 @@ def test_the_original_labels_are_still_word_for_word():
     refactor is allowed to add an option, not to silently reword the others.
 
     📌 2026-09-24: interactive's wording changed DELIBERATELY with its
-    meaning (Ryan: "make interactive ask only for dangerous cmds any deletions
+    meaning (the user: "make interactive ask only for dangerous cmds any deletions
     or zip expansions weird procc runs that arent its tools and dangerous cmds
     threw PS and bash"), and `scheduled` was removed outright ("remove
     scheduled completely it makes no sense to me").
@@ -61,7 +61,7 @@ def test_the_dropdown_is_ordered_by_ascending_authority():
     trust and the widest option sits visibly at the end.
 
     ⚠️ `scheduled` USED TO LEAD THIS LIST. T085 removed it from the dropdown
-    ("scheduled should not be its own mode") and on 2026-09-24 Ryan removed it
+    ("scheduled should not be its own mode") and on 2026-09-24 the user removed it
     entirely ("remove scheduled completely it makes no sense to me"); the
     ordering principle is unchanged and the scale is simply shorter.
     """

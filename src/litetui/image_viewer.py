@@ -1,6 +1,6 @@
 """An in-sidebar image viewer: render a pasted (or staged) image as real pixels.
 
-The ask (Ryan): pasting an image should paint it in the sidebar, not just attach
+The ask (the user): pasting an image should paint it in the sidebar, not just attach
 it. A terminal cannot paint pixels on its own — only a library that speaks a
 graphics protocol can — so ``textual-image`` is the one new dependency. Pillow
 (already a dependency) does the decode; this module only hosts the result in
@@ -83,7 +83,7 @@ def _to_pil(source: Any):
 
 _IMAGE_WIDGET_CLS: Any = None
 #: What ``init_image_backend`` saw and chose — the viewer header's
-#: ``[backend: …]`` tag is built from this, so what Ryan sees IS what was bound.
+#: ``[backend: …]`` tag is built from this, so what the user sees IS what was bound.
 _BACKEND_INFO: dict[str, str] = {}
 
 
@@ -111,7 +111,7 @@ def _da1_has_sixel(sequence: str) -> bool:
 
     A Primary Device Attributes reply is ``ESC [ ? n ; n ; ... c``; sixel
     capability is attribute ``4`` in that list. Windows Terminal reports it
-    (the very leak Ryan saw was ``\\x1b[?61;4;6;7;...c`` — the ``4`` is there).
+    (the very leak the user saw was ``\\x1b[?61;4;6;7;...c`` — the ``4`` is there).
     """
     body = sequence
     if body.startswith("\x1b[?"):

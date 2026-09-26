@@ -1,4 +1,4 @@
-"""Explicit lock supersedes automatic position/anchor relocking (Ryan's ruling)."""
+"""Explicit lock supersedes automatic position/anchor relocking (the user's ruling)."""
 from types import SimpleNamespace
 from litetui.app import LiteTUI
 

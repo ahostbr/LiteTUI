@@ -1,7 +1,7 @@
 """The seat suspends for generation and ALWAYS comes back.
 
 Every lms interaction here is faked. A test that touched the real LM Studio
-would unload Ryan's live model — the exact class of live-state damage this
+would unload the user's live model — the exact class of live-state damage this
 repo wrote its A-TEST-MUST-NEVER-WRITE-A-PATH-THE-APP-OWNS rule about, and
 this time the path is VRAM.
 

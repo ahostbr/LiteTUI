@@ -68,7 +68,7 @@ def _resolve_reasoning_effort(
     So the collapse is right for LM Studio in general and WRONG for the official
     build, where it would destroy graded control that demonstrably works. The set
     is a SETTING (`lmstudio_graded_thinking_models`) rather than a constant
-    because which models are official is Ryan's knowledge, not a field the API
+    because which models are official is the user's knowledge, not a field the API
     exposes: /api/v0/models was enumerated over all 16 local models and the
     `capabilities` array only ever contains "tool_use" — nothing anywhere
     advertises a reasoning capability, so this cannot be derived at runtime

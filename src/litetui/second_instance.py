@@ -1,6 +1,6 @@
 """Should this model load ask the human first? (T690)
 
-Ryan's ruling (a-62edbbe0, 2026-09-12): two LiteTUI instances SHARE a model
+the user's ruling (a-62edbbe0, 2026-09-12): two LiteTUI instances SHARE a model
 server and run in parallel — *"both should be able to use the model at the same
 time ... llama.cpp supports parallel and lmstudio does for exactly this"*. What
 he wants guarded is the other thing: *"THE HUMAN MUST BE WARNED THAT LOADING

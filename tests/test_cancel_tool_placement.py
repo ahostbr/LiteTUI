@@ -1,6 +1,6 @@
 """The cancel control is attached to the tool it kills, and it actually appears.
 
-Ryan: "the cancel tool button is docked to the top left ... needs to be in next
+the user: "the cancel tool button is docked to the top left ... needs to be in next
 to the tool timer." Then, after the first attempt: "still not seeing the cancel
 button besides timer."
 

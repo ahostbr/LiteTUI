@@ -1,13 +1,13 @@
 """The `/tools` dialog — the surface over T076's mechanism.
 
-Ryan asked for three things and each has a test that fails if it regresses:
+the user asked for three things and each has a test that fails if it regresses:
 a full list of the tools, a checkbox each, and ONE global toggle that is the
 same switch as the settings page.
 
 🔴 THE POINT OF THE FILE IS THAT THE CHECKBOXES ARE WIRED TO THE ENGINE, not to
 themselves. Every UI assertion here is followed through to `tool_specs()` or to
 `settings.tools_disabled` — a dialog whose boxes tick beautifully and change
-nothing is the exact defect Ryan asked us to remove, and it would pass any test
+nothing is the exact defect the user asked us to remove, and it would pass any test
 that only looked at the widgets.
 """
 from __future__ import annotations
@@ -185,7 +185,7 @@ async def test_opening_the_dialog_does_not_itself_toggle_anything(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_the_command_shows_the_list_and_no_longer_toggles(monkeypatch):
-    """Ryan: 'remove the func of /tools switching on and off and make it show
+    """the user: 'remove the func of /tools switching on and off and make it show
     this list please.' The old behaviour flipping back on is the regression."""
     from litetui.plugins.misc import _cmd_tools
 

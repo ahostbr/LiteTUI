@@ -1,6 +1,6 @@
 """NInfer as a LiteTUI backend.
 
-🔴 RYAN, 2026-09-17: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER and agents got
+🔴 THE USER, 2026-09-17: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER and agents got
 hung up on litesuites integration"*.
 
 Every arm here states what it would catch. The three that matter most are the
@@ -213,7 +213,7 @@ def test_unload_refuses_rather_than_taking_the_engine_down():
 
 
 def test_shutdown_does_not_stop_an_engine_we_do_not_own():
-    """🔴 THE ARM FOR RYAN'S STANDING RULE (a-5fd08920).
+    """🔴 THE ARM FOR THE USER'S STANDING RULE (a-5fd08920).
 
     LiteSuite owns the process, the approval and the VRAM. A `shutdown` that
     killed it would take down ~20 GiB that someone else authorised, from a TUI
@@ -230,7 +230,7 @@ def test_no_registered_engine_says_where_to_start_one(tmp_path, monkeypatch):
     user has to be told the engine lives in LiteSuite and that LiteTUI will not
     start one.
 
-    🔴 AND THE ENV IS REDIRECTED, BECAUSE THE FIRST VERSION READ RYAN'S REAL
+    🔴 AND THE ENV IS REDIRECTED, BECAUSE THE FIRST VERSION READ THE USER'S REAL
     MACHINE. Without this the arm asks the box whether an engine happens to be
     running: it FAILED on the first run for the best possible reason — one was,
     registered at a live allocated port. A suite whose green is a property of
@@ -242,7 +242,7 @@ def test_no_registered_engine_says_where_to_start_one(tmp_path, monkeypatch):
         run(backend.ensure_running())
     message = str(excinfo.value)
     assert "Model Hub" in message
-    assert "/engine start" in message          # Ryan a-35456da0: LiteTUI may start it
+    assert "/engine start" in message          # the user a-35456da0: LiteTUI may start it
 
 
 def test_an_explicit_ninfer_host_wins_over_discovery(tmp_path, monkeypatch):
@@ -261,7 +261,7 @@ def test_an_explicit_ninfer_host_wins_over_discovery(tmp_path, monkeypatch):
 
 
 def test_the_backend_is_attached_unless_it_started_the_engine():
-    """Attached by default; owned only after /engine start (Ryan a-35456da0:
+    """Attached by default; owned only after /engine start (the user a-35456da0:
     "LiteTUI may start it"). The rule that survives: shutdown() stops ONLY an
     engine this backend started — an attached one is left alone.
     """
@@ -427,7 +427,7 @@ def test_a_reported_rate_does_not_skip_the_existing_guards():
     assert started.final(0, reported_rate=151.2) is None
 
 
-# ── thinking (the feature Ryan named) ────────────────────────────────────────
+# ── thinking (the feature the user named) ────────────────────────────────────────
 
 
 def test_the_thinking_levels_are_the_template_safe_contract():
@@ -443,7 +443,7 @@ def test_the_thinking_levels_are_the_template_safe_contract():
 def test_thinking_capabilities_asks_the_backend_and_adds_no_ninfer_arm():
     """🔴 THE WHOLE INTEGRATION, AND IT IS A METHOD RATHER THAN A BRANCH.
 
-    RYAN, 12:1x: *"were writing the same code to do the same thing in a slightly
+    THE USER, 12:1x: *"were writing the same code to do the same thing in a slightly
     different way over and over for each backend."* `thinking_capabilities`
     checks `backend.reasoning_levels` FIRST and only falls through to name
     branches when a backend does not answer. This asserts the source string —
@@ -574,7 +574,7 @@ def test_applying_load_settings_is_no_longer_a_silent_no_op():
     """🔴 TWO NAME BRANCHES MEANT EVERY OTHER BACKEND FELL OFF THE END.
 
     The settings were SAVED to disk and never sent anywhere, with no message
-    either way — Ryan's *"all 3 buttons are unclickable"* complaint one app
+    either way — the user's *"all 3 buttons are unclickable"* complaint one app
     along, in its quieter form. The new arm asks the backend and shows what it
     says; NInfer's refusal is already a sentence naming where the control lives.
 
@@ -746,7 +746,7 @@ def test_every_unguarded_backend_call_is_implemented():
       2. 🔴 `getattr`. `model_residency.py:63` is
          `getattr(backend, "loaded_models", None)`, so the missing
          `loaded_models` did NOT show up here — this arm stayed green while
-         Ryan's `/settings` raised. Verified by deleting the method: 61 passed.
+         the user's `/settings` raised. Verified by deleting the method: 61 passed.
 
     Blind spot 2 cannot simply be pattern-matched away, because `getattr` with
     a default is ALSO how a genuinely optional capability is read (`app_server`,
@@ -766,7 +766,7 @@ def test_every_unguarded_backend_call_is_implemented():
     called: dict[str, str] = {}
     # 🔴 THIS LIST IS THE ARM'S SCOPE, AND IT IS WHERE ONE GOT THROUGH.
     # `loaded_models` was missing and this arm passed, because
-    # `model_residency.py` and `plugins/settings_ui.py` were not read -- Ryan
+    # `model_residency.py` and `plugins/settings_ui.py` were not read -- the user
     # found it by typing `/settings`. Widened; a file added to the turn or
     # dialog path must be added here too, or the arm silently narrows.
     for rel in ("app.py", "turn_engine.py", "gui_rpc.py", "seat_guard.py",
@@ -845,7 +845,7 @@ def test_loaded_models_exists_because_the_residency_read_is_a_getattr():
     `model_residency.resident_models` reads this with
     `getattr(backend, "loaded_models", None)` (`model_residency.py:63`) and
     falls back to `asyncio.run(list_models())` — which raises inside Textual's
-    loop. Ryan typed `/settings` on this backend and got that traceback instead
+    loop. the user typed `/settings` on this backend and got that traceback instead
     of the dialog.
 
     ⬜ SYNC ON PURPOSE. The caller is a command handler; an async answer is the

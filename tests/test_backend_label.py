@@ -1,6 +1,6 @@
 """The header must name the backend that is actually answering (T861).
 
-🔴 WHAT RYAN SAW. Title bar: `LiteTUI — LM Studio · tools:13 · think:medium`,
+🔴 WHAT THE USER SAW. Title bar: `LiteTUI — LM Studio · tools:13 · think:medium`,
 while the chat said "Already on ninfer" and every failure was NInfer's. The
 line responsible was one expression:
 
@@ -102,7 +102,7 @@ def test_an_unlabelled_backend_reads_its_own_name():
 
 
 def test_the_shipped_header_names_ninfer():
-    """⬜ Ryan's case, through the same real expression."""
+    """⬜ the user's case, through the same real expression."""
     class _Ninferish:
         name = "ninfer"
         label = "NInfer"

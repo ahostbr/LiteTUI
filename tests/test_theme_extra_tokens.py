@@ -1,6 +1,6 @@
 """Thinking text, thinking box and tool text are theme tokens.
 
-Ryan, of the /settings theme creator: "thinking text and tool text and thinking
+the user, of the /settings theme creator: "thinking text and tool text and thinking
 box color arent there".
 
 They were not missing from the FORM -- the form loops THEME_TOKENS and always
@@ -204,7 +204,7 @@ async def test_the_creator_SAVES_the_extra_rows() -> None:
 
 @pytest.mark.asyncio
 async def test_footer_colours_round_trip_and_preserve_warnings(tmp_path) -> None:
-    """Editor -> save -> CSS AND Rich, at the narrow width Ryan actually uses."""
+    """Editor -> save -> CSS AND Rich, at the narrow width the user actually uses."""
     legacy = themes_mod.theme_from_tokens("legacy", CORE_ONLY)
     assert not set(themes_mod.THEME_FOOTER_TOKENS) & legacy.variables.keys()
     invalid = themes_mod.theme_from_tokens(

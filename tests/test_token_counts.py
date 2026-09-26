@@ -1,6 +1,6 @@
 """Token counts beside tok/s. T079.
 
-Ryan: "one more thing we need next to toks is total tokens thinking that turn
+the user: "one more thing we need next to toks is total tokens thinking that turn
 or output in the case of the response please, even if we calc it ourself" —
 he is looking at LM Studio's own "17 GEN 2,775 tok" readout and wants the
 equivalent on our two surfaces:
@@ -21,7 +21,7 @@ a footer that disagree about a turn nobody could then reconcile.
 
 📌 It is OUR delta count, not `usage.completion_tokens`. The server reports one
 figure covering reasoning AND output together, so it cannot answer either
-question on its own. Ryan sanctioned the approximation: "even if we calc it
+question on its own. the user sanctioned the approximation: "even if we calc it
 ourself".
 """
 from __future__ import annotations

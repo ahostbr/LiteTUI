@@ -1,6 +1,6 @@
 """The `/tools` list: every tool the model can reach, with a checkbox each.
 
-Ryan, 2026-08-24: "/tools is only a toggle for agent tools on and off. the only
+the user, 2026-08-24: "/tools is only a toggle for agent tools on and off. the only
 way to list all the tools is to ask the model itself. there should be a full
 list of tools available to the model with individual toggle checkmarks ...
 there should also be one global toggle in the list that syncs with the agent

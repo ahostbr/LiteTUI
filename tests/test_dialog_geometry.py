@@ -1,6 +1,6 @@
 """🔴 THE GATE THAT WAS MISSING ALL DAY: DOES THE DIALOG ACTUALLY FIT AND SIT RIGHT?
 
-Four dialogs were converted to the sidebar host and 1337 tests passed. Ryan then
+Four dialogs were converted to the sidebar host and 1337 tests passed. the user then
 opened /model and saw three things no assertion in this repo could see:
 
   1. the modal rendered JAMMED TO THE LEFT instead of centred
@@ -115,7 +115,7 @@ async def test_sidebar_body_fills_the_panel_height(name, factory, selector) -> N
 
     A body carrying `height: auto` from its modal origin is only as tall as its
     content. In a `height: 100%` panel that reads as a box floating at the top,
-    which is what Ryan photographed.
+    which is what the user photographed.
     """
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
@@ -307,7 +307,7 @@ async def test_THE_PATH_RYAN_ACTUALLY_SAW_is_centred(name, screen_factory, selec
     The other modal test drives `_ModalHost`, which is the SWAP destination —
     not what /model opens. `present_dialog`'s modal branch deliberately pushes
     the ORIGINAL `PickerScreen` / `ConfirmStop`, so a fix verified only through
-    `_ModalHost` would leave the path Ryan photographed untested and I would
+    `_ModalHost` would leave the path the user photographed untested and I would
     have "fixed" the screenshot without covering it.
 
     Same defect, different host: `align: center middle` on the screen centres

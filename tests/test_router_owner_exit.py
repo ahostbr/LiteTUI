@@ -46,7 +46,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """🔴 `record_path()` IS NOT UNDER THE DATA ROOT — it is
     `~/.litesuite/llm/router.json`, SHARED WITH LiteSuite. A first draft of this
     file redirected LITETUI_DATA_ROOT and believed that was isolation; it would
-    have written and unlinked the record Ryan's two live instances are using.
+    have written and unlinked the record the user's two live instances are using.
     The only thing that isolates it is patching the function itself, which is
     what `test_router_coexistence.py` already does."""
     path = tmp_path / "router.json"

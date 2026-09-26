@@ -145,7 +145,7 @@ def test_cross_destination_race_reports_conversation_saved_global_stale(tmp_path
     assert fresh.saved.sidecar_enabled is False
 
 
-# -- editable parity (Ryan 2026-09-24: "Yes, make it editable (full parity)") --
+# -- editable parity (the user 2026-09-24: "Yes, make it editable (full parity)") --
 
 def test_a_field_settings_gives_no_control_is_not_editable_from_the_sidecar(tmp_path):
     """backend_chosen and the per-model dicts have no /settings control; the
@@ -205,7 +205,7 @@ def _host_for(tmp_path, convo):
 
 
 def test_a_launch_set_field_edited_in_the_sidecar_survives_reconnect(tmp_path, no_backend_env):
-    """Ryan: full parity. The TUI's save retires the launch value
+    """the user: full parity. The TUI's save retires the launch value
     (settings_runtime.retire_invocation), so the edit is what the next
     reconnect adopts; the other instance's conversation is untouched."""
     from litetui.settings_runtime import prepare_reconnect

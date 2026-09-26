@@ -138,7 +138,7 @@ def powershell_exe() -> str | None:
 
 #: A REAL bash on Windows, resolved once like PowerShell above.
 #:
-#: T530 (Ryan 2026-09-08, after the async test: the 4B kept choosing the bash
+#: T530 (the user 2026-09-08, after the async test: the 4B kept choosing the bash
 #: tool for `sleep 45 && echo ... > file` and cmd.exe answered "'sleep' is not
 #: recognized"). Git for Windows is on every box this runs on and ships a full
 #: bash with the coreutils the model expects. Two look-alikes must NOT win:

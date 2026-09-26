@@ -1,6 +1,6 @@
 """`destructive_irreversible` always confirms — a floor no profile removes (T844).
 
-🔴 RYAN, 2026-09-17 (liteask a-584e69c0), verbatim:
+🔴 THE USER, 2026-09-17 (liteask a-584e69c0), verbatim:
 
     "Keep autonomous, but destructive_irreversible ALWAYS confirms
      (a floor no profile removes)"
@@ -22,11 +22,11 @@ DEFAULT in `settings.py`. Every guard was correct and none of them ran.
 ⚠️ AND THE FLOOR CHANGES WHAT A FALSE POSITIVE COSTS, which is why half this
 file is the classifier. Before it, an over-matching pattern cost one extra
 confirm on a profile that was already confirming. After it, NO profile can
-silence one — and `autonomous` exists because Ryan killed his own agent seat
+silence one — and `autonomous` exists because the user killed his own agent seat
 rather than keep answering the modal. A floor that asked about `npm run format`
 would earn the same fate, so both polarities are pinned below.
 
-🔴 WHY EVERY PATH IN THIS FILE IS SACRIFICIAL — RYAN, 2026-09-17 (a-d8c7d600):
+🔴 WHY EVERY PATH IN THIS FILE IS SACRIFICIAL — THE USER, 2026-09-17 (a-d8c7d600):
 
     "Go — carefully setup something for them to del directly in the test etc
      ... so it doesnt just wipe a good worktree again"
@@ -86,7 +86,7 @@ def _decide(profile, command, workspace, **kw):
 
 
 def test_this_module_cannot_execute_anything():
-    """🔴 THE ARM RYAN'S QUESTION EARNED. He saw `rm -rf` and `format C:` on
+    """🔴 THE ARM THE USER'S QUESTION EARNED. He saw `rm -rf` and `format C:` on
     screen and asked why destructive commands were being run. They are not —
     they are the INPUT to a `re.search`, the way testing a spam filter means
     writing a spam email, not sending one.
@@ -131,7 +131,7 @@ def test_autonomous_allows_a_destructive_command(workspace):
 
 def test_autonomous_still_never_asks_about_anything_else(workspace):
     """🔴 THE OTHER HALF, AND IT IS NOT A FORMALITY. `autonomous` exists because
-    a modal on every tool call is worse than useless — Ryan killed a seat over
+    a modal on every tool call is worse than useless — the user killed a seat over
     exactly that. A floor that also asked about `ls` would be the same defect
     wearing a safety label."""
     for harmless in (f"ls -la {workspace}", "git status",
@@ -171,7 +171,7 @@ def test_a_profile_that_grants_destructive_outright_still_confirms(workspace):
 
 def test_strict_asks_and_an_unattended_turn_is_refused_in_words(workspace):
     """⬜ Was `test_scheduled_still_refuses_rather_than_prompting`. `scheduled`
-    (the refusing floor) is gone — Ryan 2026-09-24: "remove scheduled
+    (the refusing floor) is gone — the user 2026-09-24: "remove scheduled
     completely it makes no sense to me ... make interactive ask only for
     dangerous cmds any deletions or zip expansions weird procc runs that arent
     its tools and dangerous cmds threw PS and bash". Strict ASKS; a turn nobody
@@ -226,7 +226,7 @@ def test_an_always_allow_rule_still_works_for_everything_else(workspace):
 
 # ── the classifier, both polarities ──────────────────────────────────────────
 
-#: Every command Ryan and Sentinel named, plus the spellings of the same intent
+#: Every command the user and Sentinel named, plus the spellings of the same intent
 #: that the pattern used to miss. A path here is the literal `{}`, filled in
 #: with the sacrificial directory by the test — never a real one.
 DESTRUCTIVE = [
@@ -242,7 +242,7 @@ DESTRUCTIVE = [
     "rd /s {}", "diskpart", "shutdown /r", "Stop-Computer", "format.com C:",
     # a destructive command is still destructive mid-line
     "ls && rm -rf {}", "echo x; format D:",
-    # 🔴 THE SIX ADDED ON RYAN'S "Go" (a-d8c7d600) — every one of these
+    # 🔴 THE SIX ADDED ON THE USER'S "Go" (a-d8c7d600) — every one of these
     # classified as HARMLESS until T844.
     "shred -u {}/keep.txt", "find {} | xargs shred",
     "truncate -s 0 {}/keep.txt", "sudo truncate -s 0 {}/keep.txt",

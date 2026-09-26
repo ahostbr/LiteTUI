@@ -1,6 +1,6 @@
 """The `/mcp` dialog — the surface over the lifecycle verbs.
 
-Ryan, 2026-09-03: "theres no /mcp managment system yet ... there needs to be a
+the user, 2026-09-03: "theres no /mcp managment system yet ... there needs to be a
 full cmd and UI for adding connecting disconnecting reconnecting and removing
 mcps etc. full managment options suite."
 

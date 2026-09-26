@@ -1,4 +1,4 @@
-"""Ryan's caching release gates: TPS denominator, reconnect rebase, post-compaction.
+"""the user's caching release gates: TPS denominator, reconnect rebase, post-compaction.
 
 Each test names the gate it closes. The three gates are his words — "Those are
 our release gates" (liteask a-4695d280) — and cover exactly the C10 items left
@@ -183,7 +183,7 @@ def test_a_partial_reset_snapshot_does_not_fake_a_reset_on_the_next_one():
 
 
 def test_unknown_stays_unknown_and_no_cache_hit_rate_is_ever_claimed():
-    """Ryan's standing honesty constraint, kept through the rebase change."""
+    """the user's standing honesty constraint, kept through the rebase change."""
     meter = NativeUsage(fresh=True)
     meter.update(snapshot(1000, 10))
     partial = meter.update({"total": {"inputTokens": 1500}, "last": {"totalTokens": 1510}})

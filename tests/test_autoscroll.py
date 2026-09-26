@@ -264,7 +264,7 @@ def test_thinking_block_leaves_a_reader_who_scrolled_up_inside_the_trace():
     assert tb._buffer == "hello", "following is about the VIEW, not the data"
 
 
-# ── reasoning_effort was SKIPPED, not honoured (Ryan caught it in LM Studio) ──
+# ── reasoning_effort was SKIPPED, not honoured (the user caught it in LM Studio) ──
 # LM Studio drops a reasoning level the loaded virtual model does not accept and
 # returns 200, so `/think off` reports success while the model reasons at the
 # server default. The only in-band evidence is a trace arriving when none was

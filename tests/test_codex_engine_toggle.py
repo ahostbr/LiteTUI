@@ -1,6 +1,6 @@
 """T751 (0.23.1): the official Codex app-server is opt-in; LiteTUI's loop is the default.
 
-RYAN 2026-09-16: "WHAT I WANT IS ALL THE GOOD PARTS OF THE CACHEING WITHOUT LOSING
+THE USER 2026-09-16: "WHAT I WANT IS ALL THE GOOD PARTS OF THE CACHEING WITHOUT LOSING
 R HARNESS". Every other module discriminates on ``hasattr(backend, "app_server")``,
 so these arms pin the one place that attribute is born.
 """

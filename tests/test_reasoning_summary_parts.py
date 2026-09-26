@@ -4,7 +4,7 @@ Measured against one real gpt-5.6-sol stream (probe, 2026-09-11): each summary
 part is `part.added -> summary_text.delta* -> summary_text.done -> part.done`
 and its text is a bold markdown heading with no trailing newline. Forwarding
 only the deltas glues the headings together — `**A****B****C**` on one line,
-which is what Ryan photographed.
+which is what the user photographed.
 
 The fixture below is that capture's shape, trimmed to the events the transport
 reads.

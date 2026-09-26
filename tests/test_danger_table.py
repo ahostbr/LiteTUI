@@ -1,6 +1,6 @@
 """Interactive asks only for the danger table; unattended turns keep their powers.
 
-Ryan, 2026-09-24 (via Sentinel 068bf9c7), verbatim:
+the user, 2026-09-24 (via Sentinel 068bf9c7), verbatim:
 
     "remove scheduled completely it makes no sense to me ... and then make
      interactive ask only for dangerous cmds any deletions or zip expansions
@@ -111,7 +111,7 @@ def test_interactive_asks_only_for_the_danger_table():
 
 def test_strict_and_autonomous_are_unchanged():
     assert _shell("git status", tp.STRICT).action == tp.CONFIRM
-    assert _shell("rm -rf build", tp.AUTONOMOUS).action == tp.ALLOW  # Ryan 2026-09-24: "Autonomous never asks"
+    assert _shell("rm -rf build", tp.AUTONOMOUS).action == tp.ALLOW  # the user 2026-09-24: "Autonomous never asks"
 
 
 def test_scheduled_is_gone_and_migrates_to_interactive():

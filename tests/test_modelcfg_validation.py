@@ -11,7 +11,7 @@ RELOADED THE MODEL ON THEM:
 
 The panel reported "Saved model config … load settings applied". Nothing
 validated either field. A 819-million context is an OOM request that the router
-happened to clamp; Ryan had already had one near-OOM that night from a 100k
+happened to clamp; the user had already had one near-OOM that night from a 100k
 context on a 27B. A projector path that does not exist is neither "none" nor a
 file, so `write_preset_ini` emitted it verbatim.
 

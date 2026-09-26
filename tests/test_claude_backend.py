@@ -248,7 +248,7 @@ async def test_app_exit_survives_a_cleanup_failure(tmp_path, monkeypatch):
 # -- /backend lists Claude; /model offers every spelling the CLI accepts ------
 
 def test_backend_picker_lists_every_registered_backend_including_claude(monkeypatch):
-    """Ryan 2026-09-24: "slash backend list doesnt list claude you have to
+    """the user 2026-09-24: "slash backend list doesnt list claude you have to
     manually type it". The picker had its own row list; it now reads BACKENDS."""
     from litetui import gpu_gate
     from litetui.plugins import model_switch
@@ -341,7 +341,7 @@ def _identity_app(monkeypatch):
 
 
 def test_claude_is_told_it_is_litetui_not_claude_code(monkeypatch):
-    """Ryan 2026-09-24 (plan claude-backend-litetui-identity, phase 1): "Replace with
+    """the user 2026-09-24 (plan claude-backend-litetui-identity, phase 1): "Replace with
     LiteTUI's prompt" = systemprompt.md (tool section for Claude's built-ins) + the
     soul/memory/handoff snapshot + harness identity."""
     from litetui import paths

@@ -24,7 +24,7 @@ class ResponseSpeakButton(Static):
         # playback completion, but render only when the visible label changes.
         if self.content != label:
             self.update(label)
-        # tts_enabled is the show/hide switch for these buttons (Ryan 2026-09-24).
+        # tts_enabled is the show/hide switch for these buttons (the user 2026-09-24).
         shown = getattr(getattr(self.app, 'settings', None), 'tts_enabled', True)
         self.display = bool(shown and self.response.answer_text.strip())
 

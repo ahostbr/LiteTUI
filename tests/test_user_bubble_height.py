@@ -1,6 +1,6 @@
 """A user bubble is as tall as its text, not as tall as the screen.
 
-RYAN, 2026-09-18: *"queue message broken ............"* — a `You · queued`
+THE USER, 2026-09-18: *"queue message broken ............"* — a `You · queued`
 bubble rendered as a full-screen slab of background with the text stranded at
 the top, or, once scrolled, as an empty coloured box.
 

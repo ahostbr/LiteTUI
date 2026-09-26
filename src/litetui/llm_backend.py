@@ -574,7 +574,7 @@ def scan_models(settings) -> list[ModelRow]:
 #: only had the first. `_collect_group` POPS a cleared text field, so ABSENT
 #: means "the user has not chosen" and the auto-pair guess correctly applies.
 #: There was no way to say "I HAVE chosen, and the answer is nothing" — clearing
-#: the field was exactly what re-enabled the guess. Ryan ruled this in on
+#: the field was exactly what re-enabled the guess. the user ruled this in on
 #: 2026-09-03; the note in `write_preset_ini` that predicted it is replaced by
 #: the thing itself.
 #:
@@ -759,7 +759,7 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
         # `grep -c '"mmproj": null'` returns 0. So an explicit path always wins
         # and this only fills a gap nobody has filled.
         #
-        # THREE ANSWERS, NOT TWO (T245, ruled in by Ryan 2026-09-03 — the
+        # THREE ANSWERS, NOT TWO (T245, ruled in by the user 2026-09-03 — the
         # follow-up the previous version of this comment predicted):
         #   absent          -> the user has not chosen; auto-pair the sibling
         #   NO_PROJECTOR    -> they HAVE chosen, and the answer is nothing
@@ -853,7 +853,7 @@ class _VramGate:
     `plugins/model_switch.py` calls `backend.load()` directly for `/model
     <name>`, for the picker, AND for the T684 rpc `set_model`, and
     `apply_load_settings` is a reload nobody had counted as a load at all.
-    Ryan asked for the modal *"when a 2nd instance tries to load a model IN ANY
+    the user asked for the modal *"when a 2nd instance tries to load a model IN ANY
     WAY ... EVERY TIME a model would be swapped or loaded"*, and a gate at a
     call site can only ever cover the callers that exist today.
         A RULE ENFORCED AT THE CALLERS IS A RULE WITH A LIST; A RULE ENFORCED AT
@@ -1726,7 +1726,7 @@ class LlamaCppBackend(_VramGate):
         router, and a fresh router (no autoload) lists every model unloaded —
         an unload sent after the restart is a 400 for a model the new process
         never loaded, and it aborted the apply BEFORE the reload. Found by
-        Ryan's manual pass on the first apply-to-a-LOADED-model; the E2E's
+        the user's manual pass on the first apply-to-a-LOADED-model; the E2E's
         apply had only ever run against a not-yet-loaded one."""
         self._refuse_if_attached("change load settings")
         self._refuse_preset_if_attached()
@@ -2252,7 +2252,7 @@ def set_vram_gate(gate) -> None:
 
 #: THE backend list — the one door. /backend, the Settings "Engine" select,
 #: gui_rpc validation and make_backend all read this; none carries its own copy
-#: (Ryan 2026-09-17: "modular reusable pieces that connect", not a fourth
+#: (the user 2026-09-17: "modular reusable pieces that connect", not a fourth
 #: if-chain per backend). Order is display order.
 BACKENDS: tuple[tuple[str, str], ...] = (
     ("custom", "Custom (OpenAI-compatible server)"),
@@ -2272,7 +2272,7 @@ def backend_label(name: str) -> str:
 
 
 def visible_backends() -> tuple[tuple[str, str], ...]:
-    """BACKENDS minus NInfer on a box that is not an RTX 5090 (T893 — Ryan:
+    """BACKENDS minus NInfer on a box that is not an RTX 5090 (T893 — the user:
     "the user never sees anything about ninfer"). Every picker lists THIS."""
     from litetui import gpu_gate
 
@@ -2346,7 +2346,7 @@ def _make_backend(settings):
                 "NInfer requires supported RTX 5090 hardware. "
                 "Choose another backend explicitly; no fallback was used."
             )
-        # 🔴 T806 — RYAN: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER"*.
+        # 🔴 T806 — THE USER: *"LITETUI WAS ALWAYS THE END GOAL FOR NINFER"*.
         # Imported here rather than at module scope so a broken NInfer install
         # cannot stop the other three backends from booting, the same reason
         # the codex import is lazy one branch up.

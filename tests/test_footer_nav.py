@@ -1,6 +1,6 @@
 """T570 piece 2 — the footer takes the keyboard.
 
-Ryan (19:5x): "allow down arrow to 'select' the footer then left right arrown to
+the user (19:5x): "allow down arrow to 'select' the footer then left right arrown to
 nav the footer to switch between tool modes, think modes, background proccess
 display and subagents dispaly".
 
@@ -159,7 +159,7 @@ def test_enter_on_authority_cycles_through_the_existing_action(monkeypatch):
     assert called == ["footer chip"]
 
 
-# ── typing leaves the footer (Ryan 2026-09-24: "it switched on its own") ────
+# ── typing leaves the footer (the user 2026-09-24: "it switched on its own") ────
 
 @pytest.mark.asyncio
 async def test_typing_after_down_hands_enter_back_to_the_draft(monkeypatch) -> None:
@@ -260,7 +260,7 @@ async def test_enter_on_think_really_reaches_the_picker() -> None:
 def test_plan_is_navigable_whether_the_mode_is_on_or_off():
     """A chip reachable only while the mode is ON is a switch with no OFF
     position — you could leave plan mode from the footer and never enter it
-    there. Ryan asked for a toggle, so it is drawn in both states."""
+    there. the user asked for a toggle, so it is drawn in both states."""
     a = make_app()
     assert "plan" in a.footer_nav_items()
     a._plan_mode = True

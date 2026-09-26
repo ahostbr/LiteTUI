@@ -1,6 +1,6 @@
 """A queued message reaches the model mid-turn, at a round boundary.
 
-Ryan: "if i queue a message the agent has to fully stop to get it ... it wont
+the user: "if i queue a message the agent has to fully stop to get it ... it wont
 deliver between tool calls or agent thinking / output."
 
 That was structural, not a race. The only flush point was

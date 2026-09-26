@@ -1,4 +1,4 @@
-"""LiteTUI's own compaction on the Claude backend (Ryan 2026-09-24).
+"""LiteTUI's own compaction on the Claude backend (the user 2026-09-24).
 
 "I would rather keep [LiteTUI]-wise compaction" / "I want to only change
 Claude". Fakes stand at the SDK boundary and at the Textual card, so these
@@ -224,7 +224,7 @@ def test_the_seed_rides_in_the_system_prompt_of_every_open_of_its_segment(monkey
 
 
 def test_the_request_is_marked_and_keeps_litetuis_store_step_then_the_summary():
-    """Plan claude-backend-litetui-identity, phase 2 (Ryan: "Claude told its folder +
+    """Plan claude-backend-litetui-identity, phase 2 (the user: "Claude told its folder +
     compaction STEP 1"): the store files are named in Claude's own prompt now, so the
     request carries COMPACT_PROMPT whole: STEP 1 persist, then STEP 2 summary."""
     from litetui.claude_backend import APPEND, COMPACT_MARKER
@@ -281,7 +281,7 @@ def test_claudes_own_autocompact_is_off_and_the_append_says_litetui_compacts(mon
     backend.settings = SimpleNamespace(claude_executable="")
     asyncio.run(backend._options(cwd="."))
     assert seen["env"]["DISABLE_AUTO_COMPACT"] == "1"
-    # Plan claude-backend-litetui-identity, phase 4 (Ryan: hard limit = "LiteTUI only"):
+    # Plan claude-backend-litetui-identity, phase 4 (the user: hard limit = "LiteTUI only"):
     # Claude never compacts itself, not even at its hard limit.
     assert seen["env"]["DISABLE_COMPACT"] == "1"
     assert seen["env"]["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "1h"

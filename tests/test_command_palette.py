@@ -204,7 +204,7 @@ def test_running_new_scheduled_job_opens_the_builder_on_daily(tmp_path):
 
 
 def test_running_the_tools_row_opens_the_list_and_does_NOT_toggle():
-    """This row used to toggle. Ryan asked for it to show the list instead:
+    """This row used to toggle. the user asked for it to show the list instead:
     "remove the func of /tools switching on and off and make it show this
     list please." (T076)
 
@@ -233,7 +233,7 @@ def test_the_real_palette_reaches_our_rows():
 
     🔴 THIS DROVE ctrl+p UNTIL T573, AND THE EXPECTATION IS STALE BY RULING,
     NOT BY ACCIDENT. T558 (9660da1) took ctrl+p for plan mode and the palette
-    lost its only route; Ryan chose which one keeps the key — liteask
+    lost its only route; the user chose which one keeps the key — liteask
     a-5d6c1ca0, 2026-09-10 21:3x: "Keep plan on Ctrl+P, move the palette —
     palette via click only". So the door this arm drives moved on purpose.
     """

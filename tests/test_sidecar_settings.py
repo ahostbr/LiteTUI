@@ -25,7 +25,7 @@ def test_key_token_secret_password_auth_names_are_excluded_even_without_flags(tm
 
 
 def test_a_saved_free_tier_key_is_sent_as_set_never_as_its_value(tmp_path):
-    """Ryan 2026-09-24 (liteask a-29b8bd60): "a key field per source in
+    """the user 2026-09-24 (liteask a-29b8bd60): "a key field per source in
     /settings + sidecar". The sidecar learns whether each key is set, and
     nothing else: not the value, not a prefix, not its length."""
     import json
@@ -45,7 +45,7 @@ def test_a_saved_free_tier_key_is_sent_as_set_never_as_its_value(tmp_path):
     assert key not in wire and "gsk_" not in wire
 
 
-# -- the sidecar mirrors the TUI's per-backend meaning (Ryan 2026-09-24:
+# -- the sidecar mirrors the TUI's per-backend meaning (the user 2026-09-24:
 #    "the sidecar is a gui representation of the settings menu") ------------
 
 def _claude():

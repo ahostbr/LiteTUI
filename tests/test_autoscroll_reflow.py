@@ -114,7 +114,7 @@ async def test_collapsing_a_tool_does_not_break_follow_for_the_next_output() -> 
 
 @pytest.mark.asyncio
 async def test_wheel_back_to_bottom_rearms_follow_after_layout_shrink() -> None:
-    """Ryan: wheel up unlocks; wheel back to bottom locks and keeps following."""
+    """the user: wheel up unlocks; wheel back to bottom locks and keeps following."""
     app = _app()
     async with app.run_test(size=(100, 24)) as pilot:
         log = await _fill_and_park_at_tail(app, pilot)

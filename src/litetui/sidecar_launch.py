@@ -31,7 +31,7 @@ class SidecarWindow:
         self._exchange_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self.on_event: Callable[[dict], None] | None = None
-        # Off unless the owner grants it (sidecar_plugin does, per Ryan's gate
+        # Off unless the owner grants it (sidecar_plugin does, per the user's gate
         # answer 2026-09-24: "Yes, make it editable (full parity)"). The child
         # learns it in hello and only then renders editors.
         self.settings_write = False

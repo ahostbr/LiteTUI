@@ -1,4 +1,4 @@
-"""The authority level is VISIBLE and CYCLABLE. T084, Ryan's second ruling.
+"""The authority level is VISIBLE and CYCLABLE. T084, the user's second ruling.
 
 He gave the spec by example -- five screenshots of Claude Code's own footer,
 one per shift+tab press ("see same way claude works ... shift+tab cycles how
@@ -66,7 +66,7 @@ def make_app(profile=AUTONOMOUS):
 # ── the format: one source, derived glyph, absence as absence ──────────────
 
 def test_the_phrase_reads_level_on_not_mode_level():
-    """Ryan's screenshots read "auto mode on", never "mode: auto"."""
+    """the user's screenshots read "auto mode on", never "mode: auto"."""
     assert profile_text(AUTONOMOUS).endswith(" on")
     assert AUTONOMOUS in profile_text(AUTONOMOUS)
     assert ":" not in profile_text(AUTONOMOUS)
@@ -77,7 +77,7 @@ def test_the_glyph_separates_WILL_INTERRUPT_from_WILL_NOT():
 
     autonomous runs everything; interactive and strict stop to ask. (The
     refusing `scheduled` level that took the stop glyph with an EMPTY confirm
-    set is gone -- Ryan 2026-09-24: "remove scheduled completely it makes no sense to me ... make
+    set is gone -- the user 2026-09-24: "remove scheduled completely it makes no sense to me ... make
     interactive ask only for dangerous cmds any deletions or zip expansions weird
     procc runs that arent its tools and dangerous cmds threw PS and bash"; the derivation test below
     still pins a refusing profile, because the glyph answers "will this
@@ -112,7 +112,7 @@ def test_absence_renders_as_ABSENCE(missing):
     assert profile_text(missing) == ""
 
 
-# ── the cycle: Ryan's order, wrapping ──────────────────────────────────────
+# ── the cycle: the user's order, wrapping ──────────────────────────────────────
 
 def test_the_cycle_is_ryans_order_and_wraps():
     """T085 took `scheduled` off the cycle ("scheduled should not be its own
@@ -124,7 +124,7 @@ def test_the_cycle_is_ryans_order_and_wraps():
 
 def test_scheduled_is_GONE_and_UNREACHABLE_from_the_keyboard():
     """It was the floor `unattended()` degraded to; both are removed --
-    Ryan 2026-09-24: "remove scheduled completely it makes no sense to me ... make
+    the user 2026-09-24: "remove scheduled completely it makes no sense to me ... make
     interactive ask only for dangerous cmds any deletions or zip expansions weird
     procc runs that arent its tools and dangerous cmds threw PS and bash".
     Pressing shift+tab must never land on it."""
@@ -202,7 +202,7 @@ async def test_the_footer_shows_the_RESOLVED_level_not_the_stored_one(monkeypatc
     footer".
 
     📌 This drove an INBOX turn, which resolved to the `scheduled` floor. That
-    floor is gone (Ryan 2026-09-24: "remove scheduled completely it makes no sense to me ... make
+    floor is gone (the user 2026-09-24: "remove scheduled completely it makes no sense to me ... make
     interactive ask only for dangerous cmds any deletions or zip expansions weird
     procc runs that arent its tools and dangerous cmds threw PS and bash") -- mail now KEEPS
     the stored level -- so the case where stored and resolved still differ is
@@ -341,7 +341,7 @@ def test_the_binding_is_declared_WITH_priority():
 # -- T085: the light warning, and the migration that stops a crash --------
 
 def test_the_creation_note_states_the_REASON_not_just_the_rule():
-    """Ryan asked for a "light warning when setting that it must run auto for
+    """the user asked for a "light warning when setting that it must run auto for
     this reason". The reason IS the request.
 
     A note that only says "scheduled tasks run in auto mode" is a fact the
@@ -439,7 +439,7 @@ def test_the_migration_never_lands_on_AUTONOMOUS(tmp_path):
 
 @pytest.mark.asyncio
 async def test_cycling_PERSISTS_like_ctrl_t_does(monkeypatch):
-    """Ryan on Ctrl+T this session: "make all three persist". A key that
+    """the user on Ctrl+T this session: "make all three persist". A key that
     changes a setting the settings screen also shows must not leave the two
     disagreeing."""
     saved = []

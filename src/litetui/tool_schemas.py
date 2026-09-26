@@ -1,6 +1,6 @@
 """Tool schemas live in ``litetui/schemas/``, one JSON file per tool.
 
-Ryan, 2026-08-22: "extract all the tool schemas out of the app and get them into
+the user, 2026-08-22: "extract all the tool schemas out of the app and get them into
 separated schema files per tool ... the tools folder is where it should live."
 
 WHY THIS IS NOT JUST TIDYING. A tool schema is the contract the model reads

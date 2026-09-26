@@ -204,7 +204,7 @@ def _markdown_to_text(src: str, width: int) -> Text:
 def midturn_action(enter_interrupts: bool, alt_chord: bool) -> str:
     """Pure: what a mid-turn submission does — "queue" or "interrupt".
 
-    ONE mapping with two ends and a boolean that swaps them (Ryan, 2026-08-21:
+    ONE mapping with two ends and a boolean that swaps them (the user, 2026-08-21:
     "swapping the default behavior between those two in the settings page").
     NOT a queue path plus a hardcoded interrupt chord — that shape, under the
     swapped setting, leaves the user with no way to queue at all.
@@ -260,7 +260,7 @@ def is_reliable_rate_sample(prompt_tokens, first_token_s, floor: float = 0.25) -
             and first_token_s is not None and first_token_s >= floor)
 
 
-#: Shown once when a cron job or loop is CREATED. T085, Ryan asked for a
+#: Shown once when a cron job or loop is CREATED. T085, the user asked for a
 #: "light warning when setting that it must run auto for this reason".
 #:
 #: 🔴 IT STATES THE MECHANISM, NOT THE RULE. "Scheduled tasks run in auto mode"
@@ -282,12 +282,12 @@ def profile_text(profile_name: str | None) -> str:
     same arrangement `tps_text` has, and for the same reason.
 
     Reads "<glyph> <level> on", copying the shape of Claude Code's footer that
-    Ryan pointed at ("`>> auto mode on`"), because that is the thing he asked
+    the user pointed at ("`>> auto mode on`"), because that is the thing he asked
     for by example. The glyph is derived from `tool_policy.stops_you`, never
     from a table here: this module must not become the second place that has
     to know what a profile does.
 
-    🔴 THIS FIELD IS NOT HIDEABLE AND HAS NO TOGGLE, DELIBERATELY. Ryan hit
+    🔴 THIS FIELD IS NOT HIDEABLE AND HAS NO TOGGLE, DELIBERATELY. the user hit
     T084 precisely because the authority actually in force was invisible while
     Settings showed something else. A footer that only speaks up in the
     restrictive cases reproduces that exact failure, so the permissive level
@@ -318,7 +318,7 @@ def token_count_text(tokens: int) -> str:
     the thinking header) — the same arrangement `tps_text` has, and for the
     same reason.
 
-    Comma-grouped to match the readout Ryan is comparing against: LM Studio
+    Comma-grouped to match the readout the user is comparing against: LM Studio
     prints "2,775 tok" and a bare 2775 beside it reads as a different quantity.
 
     THE CALLER DECIDES WHETHER TO SHOW IT AT ALL. Zero is a real answer — a
@@ -341,7 +341,7 @@ def thinking_header_text(marker: str, t0: float, now: float,
     `marker` is the expand glyph, so a collapsed block keeps its own
     state in the same string.
 
-    `tokens` is the REASONING token count this turn (T079, Ryan: "total
+    `tokens` is the REASONING token count this turn (T079, the user: "total
     tokens thinking that turn") - live an estimate (deltas or chars/4,
     TpsState.reasoning_estimate), settled from usage once the round ends. It sits between the elapsed time and the rate
     so the line reads as quantity-then-speed. Zero or None renders as absence,
@@ -351,7 +351,7 @@ def thinking_header_text(marker: str, t0: float, now: float,
 
     ⚠️ It is OUR delta count, not `usage.completion_tokens`. The server reports
     ONE figure covering reasoning AND output together, so it cannot answer the
-    question this field asks. Ryan sanctioned the approximation explicitly:
+    question this field asks. the user sanctioned the approximation explicitly:
     "even if we calc it ourself"."""
     text = f"{marker} Thinking · {render_progress(t0, now)}"
     if tokens:

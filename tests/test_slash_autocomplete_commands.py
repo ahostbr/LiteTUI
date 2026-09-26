@@ -1,6 +1,6 @@
 """The slash picker must list the app's OWN commands, not only skills.
 
-Ryan: "note the new autocomplete feature u added last session... it doesnt list
+the user: "note the new autocomplete feature u added last session... it doesnt list
 are standard app slash commands only skills both need to be present in the list"
 
 Half the feature shipped. The widget is called SkillAutocomplete and it did
@@ -217,7 +217,7 @@ async def test_aliases_collapse_to_the_primary_token(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_commands_use_the_palette_order_rather_than_a_second_ordering(tmp_path):
-    """PALETTE_GROUPS is Ryan's ordering (convo, backend, tools, automation,
+    """PALETTE_GROUPS is the user's ordering (convo, backend, tools, automation,
     screen, app) and it already exists. A second copy of an order is how two
     lists drift apart, so this asserts the shared one is the one in use."""
     a = make_app(tmp_path)

@@ -134,7 +134,7 @@ def _pick_ninfer_artifact(app) -> None:
 
     ⬜ THE MODEL IS THE ARTIFACT HERE, and that is not a wording difference. One
     artifact per process, chosen before the engine starts, so there is no server
-    list to show and no load to perform. Ryan had three `.ninfer` files on disk,
+    list to show and no load to perform. the user had three `.ninfer` files on disk,
     `ninfer_artifact()` refuses to guess between them (rightly), and no command
     in the TUI could make the choice — the only door was typing a path into
     /settings. This is that door, on the surface he already reaches for.
@@ -210,7 +210,7 @@ def _switch_backend(app, choice: str) -> None:
         return
     # The SEQUENCE moved to `App.apply_backend_change` so /settings could reach
     # it too — saving a changed `backend` used to write settings.json and stop
-    # there, leaving the app on the old engine (Ryan, 2026-09-18). It could not
+    # there, leaving the app on the old engine (the user, 2026-09-18). It could not
     # live here and be called from app.py: app.py may not import a plugin
     # module, which `test_app_never_imports_a_plugin_module` enforces.
     # The guards above stay here, where the user typed the command.
@@ -241,7 +241,7 @@ def _claude_mark() -> str:
 def _set_lanes(app, raw: str) -> str:
     """`/engine lanes N` — the --max-concurrency of the NEXT start (T892).
 
-    RYAN, 2026-09-18 13:4x (liteask a-f30ad840): *"during the slash engine cmd in
+    THE USER, 2026-09-18 13:4x (liteask a-f30ad840): *"during the slash engine cmd in
     litetui ... we need to be able to set this"*. Saved to settings, the same field
     the NInfer tab edits; a running engine keeps its lanes until restarted, and the
     reply says which it has. Out of range is refused with the range, not clamped:
@@ -367,7 +367,7 @@ def backend_rows(app) -> list[tuple[str, str]]:
     # Rows come from THE backend list (llm_backend.BACKENDS via visible_backends,
     # which also drops NInfer off a 5090 — T893). This picker used to carry its
     # own five-row copy, and "claude" was added to BACKENDS without it, so the
-    # Claude Agent backend worked when typed and never appeared here (Ryan
+    # Claude Agent backend worked when typed and never appeared here (the user
     # 2026-09-24). Only the status marks live here; a backend without one still
     # gets its row.
     marks = {
@@ -420,7 +420,7 @@ def _row_for(app, key: str):
 def _say_projector(app, key: str) -> None:
     """Name the projector a load resolved — or say why it resolved none.
 
-    🔴 ANNOUNCED, NOT SILENT (Ryan's ruling, 2026-09-03, relayed by Sentinel).
+    🔴 ANNOUNCED, NOT SILENT (the user's ruling, 2026-09-03, relayed by Sentinel).
     A guess that changes a model's MODALITIES must not be invisible: with a
     projector the model can read images, and without one it answers as if the
     image were not there. Both outcomes look identical at the prompt, which is
@@ -596,7 +596,7 @@ def _cmd_load(app, name: str, arg: str) -> None:
     interactive = not getattr(app, "_rpc", False) and bool(app.available_models)
 
     if not typed:
-        # 🔴 RYAN, 2026-09-10 19:4x: "/load should show the model selector so the
+        # 🔴 THE USER, 2026-09-10 19:4x: "/load should show the model selector so the
         # user can select the modal to load not rely on them to type it
         # perfectly." No-arg used to silently load whatever `/model` had
         # selected, which is the one outcome a user asking for a menu does not
@@ -1258,7 +1258,7 @@ class ModelConfigBody(Widget):
             # backend falls off the end: the settings were SAVED to disk above
             # and never sent anywhere, with no message either way.
             #
-            #     RYAN, on the Model Hub: *"its saying install ninfer and
+            #     THE USER, on the Model Hub: *"its saying install ninfer and
             #     download the model still ... but all 3 buttons are unclickable
             #     showing a general prohibition sign"*. This is the same defect
             #     one app along — a control that looks like it worked.

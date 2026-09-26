@@ -1,6 +1,6 @@
 """The swap control is in all four real dialogs, and it tells the truth. T086.
 
-Ryan asked for it explicitly — "there should be a button to swap back in forth
+the user asked for it explicitly — "there should be a button to swap back in forth
 DURING the dialog". T075 built it in `dialog_demo.py`, the four conversion
 briefs did not carry it, and `grep -rn demo-swap` returned the demo and nothing
 else. This is the gate on that not happening again.
@@ -8,7 +8,7 @@ else. This is the gate on that not happening again.
 🔴 THE TABLE IS THE POINT. Every case below is derived from `REAL_BODIES`, so a
 fifth dialog joins these assertions by being added to one list — it cannot be
 "the one nobody swept", which is precisely how the swap button and the
-DEFAULT_CSS scoping bug both reached Ryan.
+DEFAULT_CSS scoping bug both reached the user.
 
 ⚠️ THE PARAGRAPH THAT USED TO BE HERE WAS WRONG, AND IT WAS WRONG CONFIDENTLY.
 It said `present_dialog`'s modal branch has no DialogController "so on that path
@@ -78,7 +78,7 @@ def make_app():
 @pytest.mark.parametrize("name,factory", REAL_BODIES, ids=IDS)
 @pytest.mark.asyncio
 async def test_every_real_dialog_offers_the_swap_control(name, factory):
-    """The regression that reached Ryan: three of four dialogs had no button."""
+    """The regression that reached the user: three of four dialogs had no button."""
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
         ctrl = DialogController(a, factory, "sidebar", "right")
@@ -138,7 +138,7 @@ async def test_a_swap_does_NOT_answer_the_dialog(name, factory):
 
 #: The ORIGINAL modal screens `present_dialog` actually pushes — NOT `_ModalHost`.
 #: That branch is deliberate (its docstring defends the identity two tests bind
-#: to), and it is the branch Ryan is on: `dialog_style` defaults to "modal".
+#: to), and it is the branch the user is on: `dialog_style` defaults to "modal".
 REAL_MODALS = [
     ("confirm_stop", ConfirmStopBody, ConfirmStop),
     ("picker",
@@ -155,7 +155,7 @@ async def test_the_modal_path_can_swap_ONLY_when_a_router_pushed_it(name, body, 
 
     It was `test_on_the_modal_path_the_control_says_it_CANNOT_swap`. It pushed
     the screen ITSELF, asserted `swappable() is False`, and called that "the
-    branch Ryan is on". Ryan's branch goes through `present_dialog`, which is not
+    branch the user is on". the user's branch goes through `present_dialog`, which is not
     what it tested — and `swappable()` had no callers, so "the control says so"
     was a method returning False to nobody. Precise, passing, and about a
     situation the app does not produce.

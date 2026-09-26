@@ -1,6 +1,6 @@
 """`resident_models` must answer from inside the event loop (T816-adjacent).
 
-🔴 RYAN TYPED `/settings` AND GOT A TRACEBACK INSTEAD OF A DIALOG.
+🔴 THE USER TYPED `/settings` AND GOT A TRACEBACK INSTEAD OF A DIALOG.
 `settings_ui.py:60` calls `model_residency.resident_models(app)` from a command
 handler, i.e. INSIDE Textual's running loop, and the `list_models` branch was
 `asyncio.run(...)` — which raises `RuntimeError: asyncio.run() cannot be called
@@ -11,7 +11,7 @@ from a running event loop`. The dialog never opened.
     backends that have one never met it, and no arm called this from inside a
     loop.
 
-The fallback was correct the whole time and already held the answer: Ryan's own
+The fallback was correct the whole time and already held the answer: the user's own
 traceback shows `rows = {'qwen3_6_35b_a3b': ModelRow(..., loaded=True)}` in the
 locals of the frame that raised.
 """
@@ -41,7 +41,7 @@ def _app_without_loaded_models():
 
 
 def test_it_answers_from_inside_a_running_loop_instead_of_raising():
-    """🔴 THE ARM FOR RYAN'S CRASH. The call site is a command handler, so the
+    """🔴 THE ARM FOR THE USER'S CRASH. The call site is a command handler, so the
     only honest reproduction is from inside a loop — which is exactly the
     condition no previous arm created."""
     async def inside_the_loop():

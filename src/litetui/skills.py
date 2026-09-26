@@ -320,7 +320,7 @@ def read_cache(root: Path) -> tuple[list[Skill], float] | None:
 def index_block(skills: list[Skill]) -> str:
     """The NAMES-ONLY index that rides in the system prompt. Empty when none.
 
-    Names only (Ryan 2026-09-10 12:5x: "send index only of the skills for sure if
+    Names only (the user 2026-09-10 12:5x: "send index only of the skills for sure if
     its that much thats nutz"): with the plugin libraries mounted, the old
     name-plus-description form was ~19,400 chars ≈ 4,800 tokens on EVERY turn.
     Descriptions come back on demand through `skill` with `find`.

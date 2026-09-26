@@ -1,6 +1,6 @@
 """The multi-source free tier: grouping, failover, cooldowns, and the paid guard.
 
-Ryan 2026-09-24: "now thats sick ! we got FREE subagents now lol :) on top of
+the user 2026-09-24: "now thats sick ! we got FREE subagents now lol :) on top of
 frontier and local !" / "yes send passlink on the multi-source free tier".
 Every source here is a local fake server; nothing leaves the machine.
 """
@@ -211,7 +211,7 @@ async def test_a_keyed_source_is_inactive_until_its_variable_is_set_and_keyless_
 
 @pytest.mark.asyncio
 async def test_a_key_saved_in_settings_wins_and_the_env_var_is_the_fallback(sources, monkeypatch, tmp_path):
-    """Ryan 2026-09-24 (liteask a-29b8bd60): "Add a key field per source in
+    """the user 2026-09-24 (liteask a-29b8bd60): "Add a key field per source in
     /settings + sidecar". The saved key is read at call time, so saving it
     activates the source on the next request with no reconnect."""
     from dataclasses import replace
@@ -377,7 +377,7 @@ async def test_a_stalled_source_is_cut_off_at_its_budget_and_fails_over(sources,
 @pytest.mark.asyncio
 async def test_a_stalled_non_streamed_attempt_times_out_benches_and_fails_over(sources, monkeypatch):
     """Subagents send stream:False, so their attempt needs a bound too (PassLink
-    278ba836, Ryan via Sentinel 5a880a0b: "a stalled source can't hold a request 10 min")."""
+    278ba836, the user via Sentinel 5a880a0b: "a stalled source can't hold a request 10 min")."""
     answer = json.dumps({'id': 'c', 'object': 'chat.completion', 'created': 0, 'model': 'M',
                          'choices': [{'index': 0, 'finish_reason': 'stop',
                                       'message': {'role': 'assistant', 'content': 'whole'}}]})
@@ -515,7 +515,7 @@ def _sidecall(model, **extra):
 
 
 def test_a_subagent_sidecall_on_free_goes_through_the_router(sources):
-    """Ryan 2026-09-24: "we got FREE subagents now". subagent_plugin sends
+    """the user 2026-09-24: "we got FREE subagents now". subagent_plugin sends
     stream:False through complete_sidecall, whose local branch POSTed to the
     Free tier's placeholder host (free-tier.litetui.invalid) and failed."""
     answer = json.dumps({'id': 'c', 'object': 'chat.completion', 'created': 0, 'model': 'M',

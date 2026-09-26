@@ -1,6 +1,6 @@
 """LiteTUI's own compaction, run on the Claude backend.
 
-RYAN, 2026-09-24: "I just don't think it's possible to keep [LiteTUI]-wise
+THE USER, 2026-09-24: "I just don't think it's possible to keep [LiteTUI]-wise
 compaction, right? Like I would rather keep it if it's possible" — and — "I
 don't want to change any of the other backend compaction display to fit
 Claude. I want to only change Claude."
@@ -49,7 +49,7 @@ def request(extra: str = "") -> str:
     """LiteTUI's compaction instructions, whole, as the marked request Claude's system
     prompt declares genuine (claude_backend.APPEND).
 
-    Plan claude-backend-litetui-identity, phase 2 (Ryan: "Claude told its folder +
+    Plan claude-backend-litetui-identity, phase 2 (the user: "Claude told its folder +
     compaction STEP 1"): STEP 1 persists memories/, memory.md, soul.md and handoff.md
     with Claude's own Write/Edit, then STEP 2 is the summary. STEP 1 used to be cut:
     Claude could not see the store and the whole request read as an injection. Its

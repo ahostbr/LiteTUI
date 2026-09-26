@@ -1,6 +1,6 @@
 """The footer carries the seat's fleet identity, and refuses to claim one it lacks.
 
-Ryan: "his footer needs to show his liteharness name, thinking level and first
+the user: "his footer needs to show his liteharness name, thinking level and first
 chunk of his convo uuid."
 
 The interesting case is the UNREGISTERED one. A seat can fail to register --

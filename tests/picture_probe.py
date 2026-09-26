@@ -2,7 +2,7 @@
 
     python -m pytest -q -s tests/picture_probe.py
 
-🔴 WHY IT EXISTS. On 2026-08-24 Ryan hit a P1 — modals off-centre and unstyled,
+🔴 WHY IT EXISTS. On 2026-08-24 the user hit a P1 — modals off-centre and unstyled,
 the sidebar a floating box in the top-right, rows clipped mid-word — with **1362
 tests green**. Every one of them asserted BEHAVIOUR (focus, resolution,
 teardown, state carry). None asserted that anything RENDERS. A geometry gate was

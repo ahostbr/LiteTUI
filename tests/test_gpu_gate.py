@@ -1,4 +1,4 @@
-"""T893 — NInfer is 5090-only. Ryan 2026-09-18 13:2x: "make sure the user never sees
+"""T893 — NInfer is 5090-only. the user 2026-09-18 13:2x: "make sure the user never sees
 anything about ninfer in both litesuite and litetui if there not running a rtx 5090 gpu ...
 we must use nvidia-smi, detect if it exists on the system clean exit if not".
 

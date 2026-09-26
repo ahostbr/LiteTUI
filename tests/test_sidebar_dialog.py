@@ -265,7 +265,7 @@ async def test_the_settings_control_exists_for_the_new_field() -> None:
     """settings_screen.py:607 REFUSES to save when a field has no control.
 
     A field added without its control does not fail there — it fails at SAVE
-    time, in Ryan's hands, with a partial settings object. This is the cheap
+    time, in the user's hands, with a partial settings object. This is the cheap
     place to catch it.
     """
     from litetui.settings_screen import SettingsScreen

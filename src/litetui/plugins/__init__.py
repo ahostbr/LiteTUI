@@ -141,7 +141,7 @@ class TurnFinalizer:
     handler: Callable[[], Any]
 
 
-#: Palette groups, in display order (Ryan, 2026-08-22).
+#: Palette groups, in display order (the user, 2026-08-22).
 #: Named for what the user is doing, not for the subsystem that owns it.
 #: `app` is last so Quit sits at the very bottom, away from anything frequent.
 PALETTE_GROUPS: tuple[str, ...] = (
@@ -264,7 +264,7 @@ class PluginRegistry:
         #: switched off. Defaults to "nothing disabled", so every bare registry
         #: — which is what the tests build — behaves exactly as before.
         self.tools_disabled: Callable[[], frozenset[str]] = frozenset
-        #: DEFERRED TOOLS — Claude Code's shape (Ryan 2026-09-10 12:5x: "lazy load
+        #: DEFERRED TOOLS — Claude Code's shape (the user 2026-09-10 12:5x: "lazy load
         #: ... same way claude does it"). A deferred tool stays DISPATCHABLE, but
         #: its schema is withheld from `tool_specs()` until `search_tools()` loads
         #: it (or it is dispatched by name, which counts as the model knowing it).

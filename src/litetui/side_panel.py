@@ -452,7 +452,7 @@ class SidePanel(Widget, _ViewMixin):
      * Every dialog body was written for a ModalScreen, where `height: auto` and
      * a `max-height: 85%` are right: the box is as tall as its content and the
      * screen centres it. Mount that same body in a full-height panel and it
-     * renders as a FLOATING BOX in the top corner — which is what Ryan saw.
+     * renders as a FLOATING BOX in the top corner — which is what the user saw.
      *
      * Fixing this on each body would need one edit per body plus a promise to
      * remember for the next one. It belongs HERE, on the host, because "fill the

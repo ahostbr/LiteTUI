@@ -129,7 +129,7 @@ class PolicyDecision:
         return self.action == CONFIRM
 
 
-# Interactive asks ONLY for the danger table (Ryan, 2026-09-24: "make
+# Interactive asks ONLY for the danger table (the user, 2026-09-24: "make
 # interactive ask only for dangerous cmds any deletions or zip expansions weird
 # procc runs that arent its tools and dangerous cmds threw PS and bash").
 # Its own tools, file writes anywhere, desktop control and ordinary commands run
@@ -158,7 +158,7 @@ STRICT_PROFILE = ToolProfile(
     summary="confirm every command and sensitive action",
 )
 
-#: Everything, unattended, no questions. The point of the row: Ryan killed his
+#: Everything, unattended, no questions. The point of the row: the user killed his
 #: own agent seat rather than keep answering the modal, and a guard that gets
 #: ROUTED AROUND protects nothing. This is the supported way to say "do not ask
 #: me", instead of the unsupported one (kill the agent, or leave tools off).
@@ -200,7 +200,7 @@ AUTONOMOUS_PROFILE = ToolProfile(
 #: order would have put `autonomous` next to `interactive`, which hides that it
 #: is the extreme.
 #:
-#: `scheduled` (the read-only floor) is GONE, Ryan 2026-09-24: "remove
+#: `scheduled` (the read-only floor) is GONE, the user 2026-09-24: "remove
 #: scheduled completely it makes no sense to me". A stored "scheduled" migrates
 #: to interactive (settings._selectable_profile); a turn nobody is watching keeps
 #: its profile and only its CONFIRMs are refused (UNATTENDED_SOURCES).
@@ -232,7 +232,7 @@ def selectable_profile_names() -> tuple[str, ...]:
 
 #: Turn sources with nobody at the keyboard (hook_host stamps `_hook_source`):
 #: inbox mail, cron/loop fires, a child's result waking its parent. Such a turn
-#: keeps its FULL profile (Ryan 2026-09-24: interactive powers, not a read-only
+#: keeps its FULL profile (the user 2026-09-24: interactive powers, not a read-only
 #: floor); only a CONFIRM, which nobody can answer, becomes a refusal.
 UNATTENDED_SOURCES = frozenset({"harness", "scheduled", "child-result"})
 
@@ -260,7 +260,7 @@ def stops_you(profile_name: str) -> bool:
     The footer glyph is derived from this rather than from a table of names,
     for the reason `PROFILE_NAMES` is derived: a fourth profile must be
     classified by WHAT IT DOES, not by having been remembered in a second
-    list. Ryan's model is Claude Code's footer, where the leading glyph tells
+    list. the user's model is Claude Code's footer, where the leading glyph tells
     you at a glance whether this level will interrupt you, without reading the
     words.
 
@@ -278,7 +278,7 @@ def cycle(profile_name: str) -> str:
     """shift+tab: one step DOWN the authority scale, wrapping.
 
     Today: interactive -> strict -> autonomous -> interactive. `scheduled` is
-    gone (Ryan 2026-09-24), so every profile is on the cycle.
+    gone (the user 2026-09-24), so every profile is on the cycle.
 
     `PROFILES` is ordered by authority ASCENDING, so descending is that same
     order stepped backwards -- the direction is expressed ONCE here rather
@@ -492,7 +492,7 @@ _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
 #: 🔴 EVERY MATCH IS NOW AN UNSKIPPABLE PROMPT, so this pattern is held to
 #: BOTH polarities. Before the floor a false positive cost an extra confirm
 #: on a profile that was already confirming; after it, no profile can
-#: silence one -- which is the modal Ryan killed a seat over. Measured,
+#: silence one -- which is the modal the user killed a seat over. Measured,
 #: both directions, in tests/test_destructive_floor.py.
 #:
 #: TWO CHANGES, EACH FROM A MEASUREMENT (2026-09-17):
@@ -506,7 +506,7 @@ _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
 #:   argument mandatory) and the long flags `rm --recursive --force`. Both
 #:   are the same command by another spelling.
 #:
-#: SIX MORE ADDED 2026-09-17 ON RYAN'S WORD (liteask a-d8c7d600, "Go"): every
+#: SIX MORE ADDED 2026-09-17 ON THE USER'S WORD (liteask a-d8c7d600, "Go"): every
 #: one classified as HARMLESS before this, and each is a way to destroy work
 #: that no `rm` pattern can see. `git checkout -- .` is the one that has
 #: already cost something here -- it silently discarded an uncommitted fix on
@@ -526,7 +526,7 @@ _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
 #:
 #: 🔴 `git restore` IS THE ONE PATTERN WITH A MODE, added 2026-09-17 on
 #: Sentinel's ruling: it discards working-tree edits exactly as
-#: `git checkout -- <pathspec>` does, so the class Ryan named covers it -- but
+#: `git checkout -- <pathspec>` does, so the class the user named covers it -- but
 #: ONLY in some of its modes, and a flat `\bgit\s+restore\b` would put an
 #: unskippable prompt on the harmless one:
 #:
@@ -544,7 +544,7 @@ _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
 _C = _CMD_POSITION
 
 #: 🔴 THE DANGER TABLE: the ONLY things `interactive` asks about.
-#: Ryan, 2026-09-24 (via Sentinel 068bf9c7): "make interactive ask only for
+#: the user, 2026-09-24 (via Sentinel 068bf9c7): "make interactive ask only for
 #: dangerous cmds any deletions or zip expansions weird procc runs that arent
 #: its tools and dangerous cmds threw PS and bash". One row per pattern; the
 #: first element is the CLASS the unattended refusal names. Both shells: the

@@ -2,7 +2,7 @@
 context for THIS load, pre-filled from the saved default.
 
 Guards the wiring that shipped broken once already: the picker load path must
-carry the chosen context into `_start_load`. Ryan, live: "add a checkbox and
+carry the chosen context into `_start_load`. the user, live: "add a checkbox and
 number picker on the load modal screen that lets users directly set the context
 right then."
 

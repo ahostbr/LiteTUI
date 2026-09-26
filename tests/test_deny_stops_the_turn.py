@@ -1,6 +1,6 @@
 """Denying a tool in the approval modal ENDS THE TURN.
 
-Ryan's ruling, 2026-08-24. He was asked whether Deny should REPLACE the
+the user's ruling, 2026-08-24. He was asked whether Deny should REPLACE the
 existing behaviour (the loop carries on with an honest refusal the model can
 react to) or SUPPLEMENT it, with the cost of replacing stated: there is then no
 way to refuse one call and let the model try a different approach in the same

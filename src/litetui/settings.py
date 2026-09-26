@@ -98,7 +98,7 @@ class Settings:
     #: ninfer-serve was started by hand and no LiteSuite is running: LiteTUI
     #: still only ATTACHES — this names an engine, it never starts one.
     ninfer_host: str = ""
-    #: /engine start (Ryan a-35456da0 "LiteTUI may start it"): blank = LiteSuite's
+    #: /engine start (the user a-35456da0 "LiteTUI may start it"): blank = LiteSuite's
     #: install (~/.litesuite/llm/ninfer/ninfer-serve.exe) and the ONE .ninfer it
     #: pulled. Set these for a standalone install. Context is the engine's
     #: --max-context (LiteSuite's ruling: 32k, fp8 KV).
@@ -106,7 +106,7 @@ class Settings:
     ninfer_artifact: str = ""
     ninfer_max_context: int = 32768
     #: The engine's --max-concurrency (1..8, serving.md:760): requests decoded in
-    #: ONE batch — LM Studio's "Parallel" (Ryan 2026-09-18: "does are ninfer backend
+    #: ONE batch — LM Studio's "Parallel" (the user 2026-09-18: "does are ninfer backend
     #: support parallel calls yet ? like lmstudio"). Lanes SHARE the --max-context KV
     #: pool and a request is admitted only when its whole reservation fits
     #: (serving.md:929-933, :949-955): no extra VRAM, less context each under load.
@@ -154,11 +154,11 @@ class Settings:
     #: Claude uses its pinned SDK-bundled CLI unless explicitly overridden.
     claude_executable: str = ""
     #: OUR router instance. 7470 sits in the ecosystem's 74xx block — the
-    #: 8xxx range is crowded on dev machines (Ryan, 2026-08-21).
+    #: 8xxx range is crowded on dev machines (the user, 2026-08-21).
     custom_base_url: str = ""
     custom_api_key_env: str = ""
     custom_context_length: int = 0
-    #: Free-tier source keys (Ryan 2026-09-24, liteask a-29b8bd60: "a key field
+    #: Free-tier source keys (the user 2026-09-24, liteask a-29b8bd60: "a key field
     #: per source in /settings + sidecar"). Each field is its env var's name
     #: lowercased; a saved key wins and the env var is the fallback
     #: (free_tier.source_key). The names end in API_KEY/TOKEN on purpose:
@@ -268,7 +268,7 @@ class Settings:
     #: to a background task on its own (the result arrives later as a message). 0 = never.
     tool_auto_background_s: int = 30
     #: T538 — the model the subagent tool sends its child to when the call names
-    #: none. None = the parent's own model. Ryan 2026-09-08 21:4x: "run it with
+    #: none. None = the parent's own model. the user 2026-09-08 21:4x: "run it with
     #: the 27b using the 2B Q4 as its subagents" — a small model loaded beside
     #: the big one has its own LM Studio slots, so summaries and extractions run
     #: there without touching the parent's pool.
@@ -279,7 +279,7 @@ class Settings:
     #: 🔴 IT HAD NO SETTING AND THE DEFAULT WAS INVISIBLE. The fold sent
     #: `model=self.model_id or "local-model"` — the MAIN model — so on Codex
     #: every folded tool result was a Codex call nobody chose, and on a local
-    #: backend it competed for the big model's own slots. Ryan 2026-09-11 15:1x:
+    #: backend it competed for the big model's own slots. the user 2026-09-11 15:1x:
     #: MiniCPM5-2B is resident and already the subagent default; the fold is the
     #: other side call and should be pointable at the same small model.
     #:
@@ -288,12 +288,12 @@ class Settings:
     tool_summary_model: str | None = None
     tools_enabled: bool = True
     #: Authority profile for EVERY turn -- typed, inbox-woken, cron and loop
-    #: alike (Ryan: "cron and loops run at same set profile level my ruling").
+    #: alike (the user: "cron and loops run at same set profile level my ruling").
     #: The host, never the model, applies this at each tool call. Cycled live
     #: with shift+tab; the footer always names the level in force.
     #:
     #: 🔴 THE DEFAULT IS `autonomous`, AND THAT IS A RULING, NOT AN OVERSIGHT.
-    #: Ryan was asked as an explicit either/or -- degrade unattended turns to
+    #: the user was asked as an explicit either/or -- degrade unattended turns to
     #: read-only, or default to auto -- and answered "b default to auto",
     #: modelled on Claude Code, whose own default mode is called `auto`. The
     #: permissiveness was stated in the option he chose from: a user who never
@@ -345,7 +345,7 @@ class Settings:
 
     # ── Mid-turn input (message queue) ───────────────────────────────────────
     #: The Enter <-> ctrl+shift+enter mapping for a message sent WHILE the
-    #: agent is mid-turn. The two BEHAVIOURS trade places (Ryan, 2026-08-21 —
+    #: agent is mid-turn. The two BEHAVIOURS trade places (the user, 2026-08-21 —
     #: "swapping the default behavior between those two in the settings page"):
     #:   False (default): Enter QUEUES the message · ctrl+shift+enter INTERRUPTS
     #:   True  (swapped): Enter INTERRUPTS          · ctrl+shift+enter QUEUES
@@ -455,7 +455,7 @@ class Settings:
     #: default. "sidebar" mounts them in a `split: right` panel so the chat
     #: reflows narrower instead of being covered — see side_panel.py. This is a
     #: T075 SPIKE knob: only /test-sidebar honours it so far, and the existing
-    #: dialogs are deliberately untouched until Ryan has looked at it.
+    #: dialogs are deliberately untouched until the user has looked at it.
     dialog_style: str = "modal"
     #: Which edge a sidebar dialog docks to: "right" (default, unchanged) or
     #: "left". Independent of dialog_style — this only matters when that is
@@ -475,7 +475,7 @@ class Settings:
     footer_show_seat: bool = True
     footer_show_thinking: bool = True
     #: Live background tasks and live subagents, as counts (T570). Hideable like
-    #: every other footer field; ON by default because Ryan asked for them to be
+    #: every other footer field; ON by default because the user asked for them to be
     #: visible, and a count of zero renders as ABSENCE rather than "bg:0" so an
     #: idle session pays no width for them.
     footer_show_bg: bool = True
@@ -493,7 +493,7 @@ class Settings:
     )
 
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
-    #: Show the "♫ Speak" button on each response (Ryan 2026-09-24: "tts_enabled
+    #: Show the "♫ Speak" button on each response (the user 2026-09-24: "tts_enabled
     #: should toggle displaying the speach button on responses"). Replies are never
     #: spoken automatically; off hides the buttons and stops any playback.
     tts_enabled: bool = True
@@ -643,7 +643,7 @@ def _selectable_profile(name: str) -> str:
     if name in selectable:
         return name
     if name == "scheduled":
-        # Removed 2026-09-24 (Ryan: "remove scheduled completely"); its users
+        # Removed 2026-09-24 (the user: "remove scheduled completely"); its users
         # land on interactive, which now asks only before dangerous actions.
         return tool_policy.INTERACTIVE
     return selectable[0]
@@ -658,7 +658,7 @@ def save(s: Settings, root: Path | None = None) -> Path:
     """Write settings.json: only THIS instance's changes, and atomically.
 
     🔴 IT USED TO WRITE THE WHOLE DATACLASS, AND THAT ERASED THE OTHER INSTANCE.
-    Ryan runs two LiteTUI processes from one repo (2026-09-12), both resolving
+    the user runs two LiteTUI processes from one repo (2026-09-12), both resolving
     `data_root()` to the same directory and therefore to ONE settings.json with
     seventy keys in it. Writing every field meant the second instance to save
     wrote back the snapshot it had loaded minutes earlier, undoing every change

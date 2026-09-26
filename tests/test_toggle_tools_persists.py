@@ -1,6 +1,6 @@
 """Ctrl+T persists, so the three surfaces onto the tools switch cannot disagree.
 
-Ryan's ruling, 2026-08-24. He was shown the disagreement and offered keeping
+the user's ruling, 2026-08-24. He was shown the disagreement and offered keeping
 Ctrl+T as a deliberate temporary override; he chose "make all three persist".
 
 THE BUG. `action_toggle_tools` wrote only the RUNTIME flag `app.tools_enabled`,

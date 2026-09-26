@@ -1,6 +1,6 @@
 """Desktop control as ONE tool verb, with the two traps built into the wrapper.
 
-pccontrol/pccontrol.py is a capable CLI and Ryan was pointing the agent at the
+pccontrol/pccontrol.py is a capable CLI and the user was pointing the agent at the
 directory by hand. Wrapping it is easy; wrapping it SAFELY is the point, because
 two of its failure modes are silent and both have already cost a real misfire:
 

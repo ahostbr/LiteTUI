@@ -1,4 +1,4 @@
-"""Plan mode — T558 part 1. Ryan, 2026-09-10 03:2x:
+"""Plan mode — T558 part 1. the user, 2026-09-10 03:2x:
 
     "we need to add a plan mode to litetui ... basically tells the model when
     running in litetui to use its plan w quizmaster skill and askuser tool"
@@ -63,7 +63,7 @@ def test_the_instruction_is_the_file_on_disk():
     text = a._system_prompt_text()
     authored = paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip()
     assert authored in text
-    # The three things Ryan named, so a rewrite of the prompt file cannot
+    # The three things the user named, so a rewrite of the prompt file cannot
     # quietly drop one of them.
     assert "ls-plan-w-quizmaster" in authored
     assert "ask_user_question" in authored
@@ -117,7 +117,7 @@ def test_the_key_is_bound_at_app_level():
 
 def test_the_footer_names_WHICH_WAY_the_mode_is_set():
     """🔴 THIS ARM USED TO ASSERT THE CHIP IS ABSENT WHEN OFF, and the
-    reversal is Ryan's, not a loosening: liteask a-5d6c1ca0, "make sure plan
+    reversal is the user's, not a loosening: liteask a-5d6c1ca0, "make sure plan
     mode is toggelable via the footer ... once the user navs to the footer with
     the arrow keys pressing enter should toggle plan mode". A chip that only
     exists while the mode is ON cannot be navigated to in order to turn it on —

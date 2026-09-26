@@ -3,7 +3,7 @@
 🔴 THE INCIDENT. A fresh Frontier Chat thread on LiteTUI (Auto) refused its first
 prompt: the persisted `default_model` qwen/qwen3.8-27b is cold, while
 qwen3.5-4b-claude-4.6-opus-reasoning-distilled AND minicpm5-2b were resident
-(artifacts/acceptance-2026-09-11/T631-auto-blocked.png). Ryan's standing rule is
+(artifacts/acceptance-2026-09-11/T631-auto-blocked.png). the user's standing rule is
 "when a model is already loaded, USE THAT ONE" — refusing with two models in VRAM
 gets the rule exactly backwards.
 
