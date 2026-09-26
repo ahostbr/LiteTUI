@@ -164,3 +164,53 @@ async def test_compaction_card_shows_prefill_like_a_normal_turn() -> None:
         await pilot.pause()
         settled = str(card._title.content)
         assert "…" not in settled and "prefill" not in settled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['mixed', 'error', 'cancel'])
+async def test_compaction_progress_preserves_output_and_clears_on_exit(monkeypatch, outcome):
+    import asyncio
+    from types import SimpleNamespace as NS
+    from litetui import model_transport
+
+    a = make_app()
+    a.settings.wake_after_compact = False
+    a.settings.clear_screen_after_compact = False
+    a.settings.compact_keep_recent = 2
+    async def ready(**kw):
+        return True
+    a._ensure_chat_ready = ready
+    a._all_tools = lambda: []
+    a._backend = NS(name='ninfer')
+    observed = []
+
+    class Stream:
+        async def __aiter__(self):
+            progress = {'processed': 50, 'total': 100, 'cache': 0}
+            yield NS(prompt_progress=progress, choices=[])
+            observed.append(a._eta.prefill_readout())
+            if outcome == 'error':
+                raise RuntimeError('fixture stream failure')
+            if outcome == 'cancel':
+                raise asyncio.CancelledError()
+            yield NS(prompt_progress=progress, choices=[NS(delta=NS(content='retained summary', reasoning_content=None, tool_calls=[]))])
+        async def close(self):
+            pass
+
+    async def create(**kw):
+        assert a._eta.prefill_readout() is None
+        assert kw['extra_body']['return_progress'] is True
+        return Stream()
+    monkeypatch.setattr(model_transport, 'for_app', lambda app: NS(create=create))
+    async with a.run_test() as pilot:
+        a.conversation = [{'role': role, 'content': str(i)} for i, role in enumerate(['user','assistant','user','assistant','user','assistant'])]
+        a._eta.note_prefill({'processed':100,'total':100,'cache':0})
+        if outcome == 'cancel':
+            with pytest.raises(asyncio.CancelledError):
+                await m.LiteTUI._compact.__wrapped__(a)
+        else:
+            await m.LiteTUI._compact.__wrapped__(a)
+        assert observed == [(0.5, 50, 100)]
+        assert a._eta.prefill_readout() is None
+        if outcome == 'mixed':
+            assert any('retained summary' in str(msg.get('content')) for msg in a.conversation)
