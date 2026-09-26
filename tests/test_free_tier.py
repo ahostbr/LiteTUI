@@ -7,11 +7,14 @@ Every source here is a local fake server; nothing leaves the machine.
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
+import httpx
 import pytest
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 
 from litetui import free_tier as ft
 from litetui.llm_backend import BackendError, make_backend
@@ -29,6 +32,7 @@ class Fake:
 
     def __init__(self, models, replies):
         self.models, self.replies, self.seen = models, list(replies), []
+        self.delay, self.body_delay, self.envelope, self.paths = 0.0, 0.0, 'data', []
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -40,16 +44,22 @@ class Fake:
                 for k, v in headers:
                     self.send_header(k, v)
                 self.end_headers()
+                self.wfile.flush()
+                time.sleep(fake.body_delay if self.command == 'POST' and status == 200 else 0)
                 self.wfile.write(data)
 
             def do_GET(self):
-                self._send(200, json.dumps({'data': fake.models}))
+                fake.paths.append(self.path)
+                self._send(200, json.dumps({fake.envelope: fake.models}))
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 fake.seen.append({'model': body['model'], 'auth': self.headers.get('Authorization')})
+                fake.paths.append(self.path)
+                time.sleep(fake.delay)
                 status, text, headers = fake.replies.pop(0) if fake.replies else (200, _sse('ok'), ())
-                self._send(status, text, 'text/event-stream' if status == 200 else 'application/json', headers)
+                sse = status == 200 and not text.startswith('{')
+                self._send(status, text, 'text/event-stream' if sse else 'application/json', headers)
 
             def log_message(self, *args):
                 pass
@@ -256,10 +266,10 @@ def test_the_status_mark_counts_live_cooling_and_keyless(sources):
     assert mark.startswith('2 sources live') and 'cooling (soonest' in mark and '1 need a key' in mark
 
 
-def test_the_real_table_has_the_three_keyless_sources_first():
-    assert [s.id for s in ft.SOURCES[:3]] == ['cline', 'kilo', 'ovh']
-    assert ft.SOURCES[1].key_env is None and ft.SOURCES[2].key_env is None
-    assert all(s.key_env for s in ft.SOURCES[3:]), 'keyed sources name the variable that activates them'
+def test_the_real_table_has_the_four_keyless_sources_first():
+    assert [s.id for s in ft.SOURCES[:4]] == ['cline', 'kilo', 'ovh', 'llm7']
+    assert all(s.key_env is None for s in ft.SOURCES[1:4])
+    assert all(s.key_env for s in ft.SOURCES[4:]), 'keyed sources name the variable that activates them'
 
 
 @pytest.mark.asyncio
@@ -275,3 +285,215 @@ async def test_every_route_is_recorded_in_a_form_the_runtime_log_accepts(sources
     assert await _ask(_backend(), 'm') == 'ok'
     assert [(e['component'], e['operation']) for e in seen] == [('a', 'http-429'), ('b', 'served')]
     assert seen[0]['duration_ms'] == 30000
+
+
+# ── T938: new sources ──────────────────────────────────────────────────────
+
+def _real(source_id):
+    return next(s for s in ft.SOURCES if s.id == source_id)
+
+
+def test_llm7_is_keyless_and_lists_only_the_models_that_need_no_balance(monkeypatch):
+    """Row shape measured from one anonymous GET of api.llm7.io/v1/models (2026-09-26):
+    every row has a price; `usage_based_only: false` marks the rate-limited free ones."""
+    llm7 = _real('llm7')
+    assert llm7.key_env is None and ft.source_key(llm7) == '' and llm7.pool
+    rows = [{'id': 'codestral-latest', 'model_type': 'chat', 'usage_based_only': False},
+            {'id': 'claude-opus-5', 'model_type': 'chat', 'usage_based_only': True},
+            {'id': 'no-flag', 'model_type': 'chat'},
+            {'id': 'flux', 'model_type': 'image', 'usage_based_only': False}]
+    assert [m['id'] for m in rows if llm7.is_free(m)] == ['codestral-latest']
+
+
+def test_zai_lists_only_its_allowlisted_flash_models(sources):
+    """Z.ai's /models also lists paid GLM, and a funded account is charged for it."""
+    fake = Fake([{'id': 'glm-4.7-flash'}, {'id': 'glm-4.7'}, {'id': 'glm-5'}, {'id': 'glm-4.6v-flash'},
+                 {'id': 'glm-4.5-air'}], [])
+    try:
+        zai = replace(_real('zai'), models_url=fake.url + '/models')
+        assert [m for m, _ in ft._fetch_models(zai, 'zk')] == ['glm-4.7-flash', 'glm-4.6v-flash']
+    finally:
+        fake.close()
+
+
+def test_zai_lists_its_allowlist_without_asking_models(sources, monkeypatch):
+    """A /models that is missing or incomplete cannot hide Z.ai's free models."""
+    zai = _real('zai')
+    monkeypatch.setenv('ZAI_API_KEY', 'zk')
+    monkeypatch.setattr(ft.httpx, 'get', lambda *a, **k: pytest.fail('Z.ai must not fetch /models'))
+    assert ft.source_models(zai) == [('glm-4.7-flash', None), ('glm-4.5-flash', None), ('glm-4.6v-flash', None)]
+    monkeypatch.delenv('ZAI_API_KEY')
+    assert ft.source_models(zai) == [], 'without a key it still lists nothing'
+
+
+@pytest.mark.asyncio
+async def test_a_cloudflare_key_splits_into_account_url_and_token_bearer(sources, monkeypatch):
+    real = _real('cloudflare')
+    sources([], [], [], [])
+    fake = Fake([{'id': '6f1e-uuid', 'name': '@cf/meta/llama-4-scout'}], [])
+    fake.envelope = 'result'  # Cloudflare's API envelope
+    try:
+        cf = replace(real, base_url=fake.url + '/accounts/{account}/ai/v1',
+                     models_url=fake.url + '/accounts/{account}/ai/models/search')
+        monkeypatch.setattr(ft, 'SOURCES', (cf,))
+        monkeypatch.delenv('CLOUDFLARE_API_KEY', raising=False)
+        for not_configured in ('', 'just-a-token', ':tok', 'acct:'):
+            monkeypatch.setenv('CLOUDFLARE_API_KEY', not_configured)
+            assert ft.source_key(cf) is None, not_configured
+        assert ft.catalog() == {} and '1 need a key' in ft.status_mark()
+        monkeypatch.setenv('CLOUDFLARE_API_KEY', 'acct123:cf-token')
+        assert await _ask(_backend(), 'llama-4-scout') == 'ok'
+        assert fake.seen == [{'model': '@cf/meta/llama-4-scout', 'auth': 'Bearer cf-token'}]
+        assert fake.paths == ['/accounts/acct123/ai/models/search', '/accounts/acct123/ai/v1/chat/completions']
+    finally:
+        fake.close()
+
+
+def test_every_new_keyed_source_has_its_settings_field():
+    from litetui.settings import Settings as S
+    from litetui.sidecar_settings import SECRET_FIELDS
+
+    for sid in ('ollama', 'zai', 'cloudflare', 'longcat', 'sealion'):
+        field = _real(sid).key_env.lower()
+        assert field in SECRET_FIELDS and hasattr(S(), field), field
+
+
+# ── T938: router fixes ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stall', ['delay', 'body_delay'])  # before its headers / before its first event
+async def test_a_stalled_source_is_cut_off_at_its_budget_and_fails_over(sources, monkeypatch, stall):
+    a, b, _ = sources([{'id': 'm:free'}], [], [{'id': 'M'}], [])
+    monkeypatch.setattr(ft, 'SOURCES', (replace(ft.SOURCES[0], timeout=0.3),) + ft.SOURCES[1:])
+    setattr(a, stall, 3)
+    started = time.monotonic()
+    assert await _ask(_backend(), 'm') == 'ok'
+    assert time.monotonic() - started < 2, 'the SDK default (600s read) must not apply to an attempt'
+    assert len(a.seen) == 1 and len(b.seen) == 1
+    assert ft.cooling(('a', 'm:free', 'keyless')) == pytest.approx(90, abs=2)
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_non_streamed_attempt_times_out_benches_and_fails_over(sources, monkeypatch):
+    """Subagents send stream:False, so their attempt needs a bound too (PassLink
+    278ba836, Ryan via Sentinel 5a880a0b: "a stalled source can't hold a request 10 min")."""
+    answer = json.dumps({'id': 'c', 'object': 'chat.completion', 'created': 0, 'model': 'M',
+                         'choices': [{'index': 0, 'finish_reason': 'stop',
+                                      'message': {'role': 'assistant', 'content': 'whole'}}]})
+    a, b, _ = sources([{'id': 'm:free'}], [], [{'id': 'M'}], [(200, answer, ())])
+    monkeypatch.setattr(ft, '_WHOLE_ANSWER', 0.3)
+    monkeypatch.setattr(ft, 'SOURCES', (replace(ft.SOURCES[0], timeout=0.1),) + ft.SOURCES[1:])
+    a.delay = 3
+    backend = _backend()
+    client = AsyncOpenAI(base_url=backend.base_url(), api_key=backend.api_key(),
+                         http_client=backend.http_client(), max_retries=0)
+    started = time.monotonic()
+    reply = await client.chat.completions.create(model='m', stream=False,
+                                                 messages=[{'role': 'user', 'content': 'hi'}])
+    assert reply.choices[0].message.content == 'whole'
+    assert time.monotonic() - started < 2
+    assert len(a.seen) == 1 and len(b.seen) == 1
+    assert ft.cooling(('a', 'm:free', 'keyless')) == pytest.approx(90, abs=2)
+
+
+@pytest.mark.asyncio
+async def test_a_success_resets_the_pool_ladder_too(sources, monkeypatch):
+    _a, _b, _ = sources([{'id': 'm:free'}], [(429, '{}', ()), (200, _sse('from a'), ()), (429, '{}', ())],
+                       [{'id': 'M'}], [])
+    monkeypatch.setattr(ft, 'SOURCES', (replace(ft.SOURCES[0], pool=True),) + ft.SOURCES[1:])
+    pool = ('a', '*', 'keyless')
+    assert await _ask(_backend(), 'm') == 'ok'
+    assert ft.cooling(pool) == pytest.approx(90, abs=2)
+    ft._benches[pool].until = 0  # the bench runs out
+    assert await _ask(_backend(), 'm') == 'from a'
+    assert await _ask(_backend(), 'm') == 'ok'
+    assert ft.cooling(pool) == pytest.approx(90, abs=2), 'a recovered pool restarts at 90s, not 2m'
+
+
+@pytest.mark.asyncio
+async def test_a_429_on_a_pooled_source_benches_every_model_there(sources, monkeypatch):
+    """OpenRouter's :free pool, Kilo's and LLM7's per-IP hour: one 429 means the
+    next model there is out too, so it must not cost another hop."""
+    a, _b, _ = sources([{'id': 'm:free'}, {'id': 'n:free'}], [(429, '{}', ())], [{'id': 'M'}], [])
+    monkeypatch.setattr(ft, 'SOURCES', (replace(ft.SOURCES[0], pool=True),) + ft.SOURCES[1:])
+    assert await _ask(_backend(), 'm') == 'ok'
+    assert ft.cooling(('a', '*', 'keyless')) == pytest.approx(90, abs=2)
+    with pytest.raises(RateLimitError):
+        await _ask(_backend(), 'n')
+    assert [s['model'] for s in a.seen] == ['m:free'], 'a pooled 429 benches the other models too'
+
+
+@pytest.mark.asyncio
+async def test_a_per_model_source_keeps_its_per_model_bench(sources):
+    a, _b, _ = sources([{'id': 'm:free'}, {'id': 'n:free'}], [(429, '{}', ())], [{'id': 'M'}], [])
+    assert await _ask(_backend(), 'm') == 'ok'
+    assert await _ask(_backend(), 'n') == 'ok'
+    assert [s['model'] for s in a.seen] == ['m:free', 'n:free']
+
+
+@pytest.mark.asyncio
+async def test_a_402_benches_the_whole_source_for_this_key_for_a_day(sources):
+    _a, b, _ = sources([], [], [{'id': 'M'}, {'id': 'N'}], [(402, '{"error":"no credits"}', ())])
+    with pytest.raises(RateLimitError):
+        await _ask(_backend(), 'm')
+    assert ft.cooling(('b', '*', 'keyless')) == pytest.approx(86400, abs=5)
+    with pytest.raises(RateLimitError):
+        await _ask(_backend(), 'n')
+    assert len(b.seen) == 1, 'an out-of-credit account is not asked for another model'
+
+
+@pytest.mark.asyncio
+async def test_a_401_benches_the_whole_source_for_this_key(sources):
+    """A rejected key is rejected for every model."""
+    _a, b, _ = sources([], [], [{'id': 'M'}, {'id': 'N'}], [(401, '{"error":"invalid key"}', ())])
+    with pytest.raises(RateLimitError):
+        await _ask(_backend(), 'm')
+    with pytest.raises(RateLimitError):
+        await _ask(_backend(), 'n')
+    assert len(b.seen) == 1, 'a rejected key is not tried for another model'
+    assert ft._benches[('b', '*', 'keyless')].reason == 'key rejected'
+
+
+class _Recorder(httpx.AsyncBaseTransport):
+    """Records each outbound request's timeouts and answers 200."""
+
+    def __init__(self):
+        self.timeouts = []
+
+    async def handle_async_request(self, request):
+        self.timeouts.append(request.extensions['timeout'])
+        return httpx.Response(200, content=_sse('ok').encode(), request=request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_id, own, stream, caller_read, sent_read', [
+    ('nvidia', None, False, 600, 300),   # non-streamed: max(source.timeout 180, _WHOLE_ANSWER 300)
+    ('groq', 400, False, 600, 400),      # ... and a source slower than 300 keeps its own
+    ('nvidia', None, True, 600, 180),    # streamed: the source's own budget
+    ('groq', None, True, 600, 60),       # the default budget
+    ('ollama', None, False, 30, 30),     # a caller that asked for less keeps it
+    ('ollama', None, False, None, 300),  # no caller limit: the budget
+])
+async def test_the_read_timeout_each_attempt_is_sent(monkeypatch, source_id, own, stream, caller_read, sent_read):
+    source = _real(source_id) if own is None else replace(_real(source_id), timeout=own)
+    monkeypatch.setattr(ft, 'catalog', lambda: {'m': [(source, 'm', None)]})
+    monkeypatch.setattr(ft, 'source_key', lambda s: 'k')
+    monkeypatch.setattr(ft, '_benches', {})
+    inner = _Recorder()
+    request = httpx.Request('POST', 'https://free-tier.litetui.invalid/v1/chat/completions',
+                            json={'model': 'm', 'stream': stream, 'messages': []},
+                            extensions={'timeout': {'connect': 5.0, 'read': caller_read, 'write': 600.0, 'pool': 600.0}})
+    response = await ft.FreeRouter(inner).handle_async_request(request)
+    await response.aclose()
+    assert inner.timeouts[0]['read'] == sent_read
+    assert inner.timeouts[0]['connect'] == 5.0, 'only the read timeout is changed'
+
+
+def test_every_retry_hint_is_clamped_to_a_day():
+    ft._benches.clear()
+    year = httpx.Response(429, headers={'retry-after': '31536000'})
+    assert ft.bench(('s', 'h', 'keyless'), 429, year, now=0) == 86400
+    date = httpx.Response(429, headers={'retry-after': 'Fri, 01 Jan 2100 00:00:00 GMT'})
+    assert ft.bench(('s', 'd', 'keyless'), 429, date) == 86400
+    assert ft.bench(('s', 't', 'keyless'), 429, text='Please try again in 9999h.', now=0) == 86400
+    assert ft.bench(('s', 'ok', 'keyless'), 429, text='try again in 12m', now=0) == 720

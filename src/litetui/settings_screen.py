@@ -813,6 +813,11 @@ class SettingsBody(Widget):
                         yield from self._key_row("github_models_token")
                         yield from self._key_row("openrouter_api_key")
                         yield from self._key_row("gemini_api_key")
+                        yield from self._key_row("ollama_api_key")
+                        yield from self._key_row("zai_api_key")
+                        yield from self._key_row("cloudflare_api_key")
+                        yield from self._key_row("longcat_api_key")
+                        yield from self._key_row("sealion_api_key")
                         yield self._section_header("model-discovery")
                         yield from self._switch_row(
                             "llama_scan_litesuite", "Scan LiteSuite models",

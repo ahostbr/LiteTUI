@@ -114,8 +114,10 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "model", "Model", "model-free-keys", "Free-tier keys",
         "One key per keyed free source; a saved key wins over its environment variable.",
         ("groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
-         "github_models_token", "openrouter_api_key", "gemini_api_key"),
-        scope="device", keywords=("free", "key", "Groq", "Cerebras", "NVIDIA", "Mistral", "GitHub", "OpenRouter", "Gemini"),
+         "github_models_token", "openrouter_api_key", "gemini_api_key", "ollama_api_key", "zai_api_key",
+         "cloudflare_api_key", "longcat_api_key", "sealion_api_key"),
+        scope="device", keywords=("free", "key", "Groq", "Cerebras", "NVIDIA", "Mistral", "GitHub", "OpenRouter", "Gemini",
+                                  "Ollama", "Z.ai", "GLM", "Cloudflare", "LongCat", "SEA-LION"),
     ),
     _section(
         "model", "Model", "model-router", "llama.cpp router",

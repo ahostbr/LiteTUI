@@ -5,7 +5,7 @@ sidecar (stored like other secrets)".
 
 One real LiteTUI instance on the free backend opens its own real litetui-sidecar
 window. On its "Free tier" page:
-  - the seven keyed sources each have a masked (password) field, all "unset";
+  - the twelve keyed sources each have a masked (password) field, all "unset";
   - a key typed there and saved lands in settings.json and makes the source live
     (free_tier.status_mark, read from the same data root);
   - the page is then told only "set": the value is in neither the snapshot nor
@@ -26,7 +26,8 @@ from sidecar_cline_live import ClineAwareInstance
 from sidecar_two_instance_live import ART, check
 
 KEYS = ("groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
-        "github_models_token", "openrouter_api_key", "gemini_api_key")
+        "github_models_token", "openrouter_api_key", "gemini_api_key", "ollama_api_key",
+        "zai_api_key", "cloudflare_api_key", "longcat_api_key", "sealion_api_key")
 FAKE = "gsk_e2e_fake_" + "x" * 40
 
 
@@ -49,7 +50,7 @@ async def main(exe: Path):
         await a.page.goto("Free tier")
         types = await a.page.js("Object.fromEntries([...document.querySelectorAll('[data-edit]')]"
                                 ".map(e => [e.dataset.edit, e.type]))")
-        check("the Free tier page has the seven key fields, all masked",
+        check("the Free tier page has the twelve key fields, all masked",
               types == {k: "password" for k in KEYS}, json.dumps(types))
         check("each is unset", await a.page.js(f"{json.dumps(KEYS)}.every(k => {snap}.fields[k].set === false)"))
         before = free_tier.status_mark()
@@ -61,7 +62,7 @@ async def main(exe: Path):
         disk = json.loads((root / "settings.json").read_text(encoding="utf-8"))
         check("the key is saved to settings.json", disk.get("groq_api_key") == FAKE)
         after = free_tier.status_mark()
-        check("the saved key makes the Groq source live", before != after and "6 need a key" in after,
+        check("the saved key makes the Groq source live", before != after and "11 need a key" in after,
               f"{before} -> {after}")
         wire = await a.page.js(f"JSON.stringify({snap})")
         dom = await a.page.js("document.documentElement.outerHTML")
