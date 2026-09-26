@@ -1227,6 +1227,10 @@ class MicButton(Static):
 class ContextFooter(Footer):
     """Textual's Footer plus a live context-window readout on the right."""
 
+    # NOT U+2630 (T1003). Rich sizes the trigram at 2 cells, a terminal draws it
+    # in 1, so every repaint that started mid-button tore it into "coommands".
+    PALETTE_LABEL = "≡ commands"
+
     def on_resize(self, _event) -> None:
         """Re-fit after this footer has received its new layout width."""
         palette_width = 12
@@ -1259,7 +1263,7 @@ class ContextFooter(Footer):
         # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
         # Inside a Horizontal each button owns its own cells.
         with Horizontal(classes="footer-buttons"):
-            yield PaletteButton("☰ commands", classes="palette-button")
+            yield PaletteButton(self.PALETTE_LABEL, classes="palette-button")
 
 
 class LiteTUICommands(Provider):
