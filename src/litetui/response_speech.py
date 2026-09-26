@@ -1,5 +1,6 @@
 """Explicit, response-owned speech; never automatic turn playback."""
 from textual.widgets import Static
+
 from litetui import voice_backend
 
 
@@ -18,7 +19,11 @@ class ResponseSpeakButton(Static):
         self.set_interval(0.25, self.refresh_playback)
 
     def refresh_playback(self):
-        self.update('■ Stop' if voice_backend.is_playing(self) else '♫ Speak')
+        label = '■ Stop' if voice_backend.is_playing(self) else '♫ Speak'
+        # Static.update repaints even identical content. Keep polling for external
+        # playback completion, but render only when the visible label changes.
+        if self.content != label:
+            self.update(label)
         # tts_enabled is the show/hide switch for these buttons (Ryan 2026-09-24).
         shown = getattr(getattr(self.app, 'settings', None), 'tts_enabled', True)
         self.display = bool(shown and self.response.answer_text.strip())
