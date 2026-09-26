@@ -239,6 +239,7 @@ class GoalRuntime:
                 levels = backend.reasoning_levels(self.app.model_id)
                 extra = {"reasoning_effort": levels[0]} if levels else {}
             response = await model_transport.for_app(self.app).create(
+                purpose="goal-eval",
                 model=self.app.model_id or "local-model",
                 messages=evaluator_messages(state, transcript),
                 stream=False,

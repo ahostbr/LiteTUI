@@ -607,26 +607,71 @@ async def collect(stream):
     )
 
 
+TURN_STATE_HEADER = "x-codex-turn-state"
+
+
+def codex_installation_id() -> str:
+    """One UUID per install, generated once and reused forever (T982).
+
+    Read from disk on every call rather than cached, so a restart is exactly what a
+    test sees. An unwritable data dir degrades to an unpersisted id, never an error.
+    """
+    import uuid
+
+    from litetui import paths
+
+    path = paths.data_root() / ".codex_installation_id"
+    try:
+        return str(uuid.UUID(path.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        pass
+    value = str(uuid.uuid4())
+    try:
+        path.write_text(value, encoding="utf-8")
+    except OSError:
+        pass
+    return value
+
+
 class OAuthTransport:
     def __init__(
         self, provider, *, credential_path=None, http_transport=None, models=None,
-        prompt_cache_key=None
+        prompt_cache_key=None, turn_store=None, turn_key=None
     ):
         self.provider = provider
         self.credential_path = credential_path
         self.http_transport = http_transport
         self.models = models
         self.prompt_cache_key = prompt_cache_key
+        # 🔴 T982. x-codex-turn-state is the server's sticky-routing token: captured
+        # from the FIRST response of a turn, replayed unchanged on every later request
+        # of that turn, never sent into another turn (codex 0.154 ModelClientSession,
+        # reference :273-292). A transport is rebuilt per request (for_app), so the
+        # value lives in `turn_store`, one dict per app, tagged with `turn_key` - the
+        # app's turn stamp. A new turn has a new stamp, so the old value simply stops
+        # matching: the turn end is the next turn's start, with no hook in the loop.
+        self.turn_store = turn_store
+        self.turn_key = turn_key
 
-    def headers(self, credentials):
+    def headers(self, credentials, *, model=None, turn_state=None):
         headers = {
             "Authorization": "Bearer " + credentials.access,
             "Content-Type": "application/json",
         }
         if self.provider == "codex":
             headers.update(
-                {"chatgpt-account-id": credentials.account_id, "originator": "litetui"}
+                {"chatgpt-account-id": credentials.account_id, "originator": "litetui",
+                 "x-codex-installation-id": codex_installation_id()}
             )
+            # The reference's HTTP path (build_responses_options :1300-1330 plus
+            # stream_responses_api :1627) - NOT build_websocket_headers, whose
+            # OpenAI-Beta and x-client-request-id belong to the websocket handshake.
+            if self.prompt_cache_key:
+                headers["session_id"] = headers["thread_id"] = self.prompt_cache_key
+            if model:
+                headers["x-codex-routing-hint"] = f"model={model}"
+            if turn_state:
+                headers[TURN_STATE_HEADER] = turn_state
         else:
             headers.update(
                 {
@@ -692,11 +737,21 @@ class OAuthTransport:
             retries += 1
             await asyncio.sleep(delay)
 
+        # Only the agent loop's own requests belong to the turn. A side call
+        # (fold, card summary, goal verdict, compaction) is its own request.
+        turn = self.turn_store if purpose == "turn" and self.provider == "codex" else None
+
+        def turn_state():
+            if turn is not None and turn.get("key") == self.turn_key:
+                return turn.get("value")
+            return None
+
         async def send():
             nonlocal credentials, auth_refreshed
             while True:
                 req = client.build_request(
-                    "POST", URLS[self.provider], headers=self.headers(credentials), json=body,
+                    "POST", URLS[self.provider], json=body,
+                    headers=self.headers(credentials, model=kwargs["model"], turn_state=turn_state()),
                 )
                 try:
                     response = await client.send(req, stream=True)
@@ -731,6 +786,11 @@ class OAuthTransport:
                     raise ProviderError(
                         f"{self.provider.title()} refused the request (HTTP {status}). Check account access and the selected model."
                     )
+                # Set once per turn (the reference's OnceLock): later values are ignored.
+                captured = response.headers.get(TURN_STATE_HEADER)
+                if turn is not None and captured and turn_state() is None:
+                    turn.clear()
+                    turn.update(key=self.turn_key, value=captured)
                 return response
 
         async def retry_response():
@@ -843,9 +903,13 @@ def for_app(app) -> ModelTransport:
                 transport = AppServerTransport(app.backend.app_server, app)
                 app.backend._transport = transport
             return transport
+        store = getattr(app, "_codex_turn_state", None)
+        if store is None:
+            store = app._codex_turn_state = {}
         return OAuthTransport(
             app.backend.name, models=app.backend.models,
             prompt_cache_key=getattr(app, "convo_id", None),
+            turn_store=store, turn_key=getattr(app, "_active_turn_started_at", None),
         )
     # Refuse a stale client<->backend pair rather than misroute a request. The
     # binding is recorded at client creation (app.py factory sites). Production

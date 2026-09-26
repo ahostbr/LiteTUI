@@ -2442,6 +2442,7 @@ class LiteTUI(App):
             self._system(f"[llm-tool-summ] {fold_note}")
         try:
             resp = await model_transport.for_app(self).create(
+                purpose="tool-summary",
                 model=fold_model,
                 messages=[{
                     "role": "user",
@@ -8632,7 +8633,7 @@ class LiteTUI(App):
                 )
 
                 kwargs["stream_options"] = {"include_usage": True}
-                stream = await model_transport.for_app(self).create(**kwargs)
+                stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 provider_metadata = None
                 text_full = ""
                 tool_acc: dict = {}
