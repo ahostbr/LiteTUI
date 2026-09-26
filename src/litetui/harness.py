@@ -173,6 +173,48 @@ def new_agent_id() -> str:
     return str(uuid.uuid4())
 
 
+SPAWN_IDENTITY_MARKER = "LITETUI_SPAWN_IDENTITY"
+_SPAWN_IDENTITY_ENV = (
+    "LITEHARNESS_AGENT_ID",
+    "LITEHARNESS_AGENT_NAME",
+    "LITEHARNESS_TIER",
+    "LITETUI_SEAT_NAME",
+)
+
+
+def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]:
+    """Consume an explicit spawn identity, preserving standalone defaults.
+
+    Harness variables are commonly present in an interactive seat's shell. A
+    nested ``litetui`` must not impersonate that parent, so they are authoritative
+    only when LiteSuite adds the dedicated marker. Once adopted, consume the
+    whole envelope so managed children cannot inherit and re-adopt it.
+    """
+    if os.environ.get(SPAWN_IDENTITY_MARKER) == "1":
+        values = {key: os.environ.get(key, "").strip() for key in _SPAWN_IDENTITY_ENV}
+        os.environ.pop(SPAWN_IDENTITY_MARKER, None)
+        for key in _SPAWN_IDENTITY_ENV:
+            os.environ.pop(key, None)
+    else:
+        values = {}
+
+    agent_id = values.get("LITEHARNESS_AGENT_ID", "") or process_agent_id()
+    name = (
+        values.get("LITEHARNESS_AGENT_NAME", "")
+        or values.get("LITETUI_SEAT_NAME", "")
+        or default_name
+    )
+    tier = values.get("LITEHARNESS_TIER", "") or DEFAULT_TIER
+    valid = {"orchestrator", "leader", "worker", "thinker", "reviewer"}
+    if tier not in valid:
+        print(
+            f"[harness] invalid LITEHARNESS_TIER {tier!r}; using {DEFAULT_TIER}",
+            file=sys.stderr,
+        )
+        tier = DEFAULT_TIER
+    return agent_id, name, tier
+
+
 def process_agent_id() -> str:
     """One stable id per process — uuid5 from hostname + pid.
 

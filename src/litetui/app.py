@@ -1704,10 +1704,14 @@ class LiteTUI(App):
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
+        seat_id, seat_name, seat_tier = harness_mod.spawned_seat_identity(
+            (self.settings.seat_name or "").strip() or "LiteTUI"
+        )
         self.seat = harness_mod.Seat(
-            agent_id=harness_mod.process_agent_id(),
-            name=(self.settings.seat_name or "").strip() or "LiteTUI",
+            agent_id=seat_id,
+            name=seat_name,
             model="",
+            tier=seat_tier,
         )
         self._seat_started = False
         self._resumed_seat_name: str | None = None
