@@ -1723,6 +1723,7 @@ class LiteTUI(App):
             lambda: prompt_compiler.compile_prompt_file(
                 paths.SYSTEM_PROMPT_FILE,
                 root=paths.ROOT,
+                user_name=self.settings.user_name,
             ).strip(),
             enabled=lambda: paths.SYSTEM_PROMPT_FILE.exists(),
         )
@@ -1822,6 +1823,31 @@ class LiteTUI(App):
 
         self.query_one("#chat-log", VerticalScroll).mount(Splash(LITETUI_SPLASH))
 
+    def _should_ask_user_name(self) -> bool:
+        """Only a plain human terminal may receive the one-time name dialog."""
+        if self.settings.user_name_asked or os.environ.get("LITETUI_TEST_USER_NAME_ASKED"):
+            return False
+        if (self._rpc or self._first_prompt or self._cli_convo_id
+                or self._cli_system_prompt or self._cli_initial_model):
+            return False
+        if any(os.environ.get(name) for name in (
+            "LITESUITE_CANVAS_AGENT", "LITEHARNESS_TIER",
+            "LITEHARNESS_AGENT_NAME", "LITEHARNESS_SPAWNED_BY",
+        )):
+            return False
+        options = self._launch_options
+        if options is not None and any((
+            options.base_url, options.load_model, options.context_length,
+            options.max_tokens, options.server_executable, options.model_path,
+            options.server_command, options.api_key_env,
+            options.server_mode != "auto",
+        )):
+            return False
+        try:
+            return bool(sys.stdin.isatty())
+        except (AttributeError, OSError):
+            return False
+
     def on_mount(self) -> None:
         state = hook_host.snapshot(self)
         if state.disabled:
@@ -1855,6 +1881,17 @@ class LiteTUI(App):
         # Plugin activate() hooks — the side-effecting half of the lifecycle,
         # run where the monitors it will absorb have always started.
         plugins_mod.activate_plugins(self, self.plugins, self._plugin_manifests)
+        if self._should_ask_user_name():
+            from litetui.user_name_dialog import UserNameScreen
+
+            def _save_user_name(name: str | None) -> None:
+                if name is None:
+                    return
+                self.settings.user_name = name
+                self.settings.user_name_asked = True
+                settings_runtime.persist_or_raise(self, self.settings)
+
+            self.push_screen(UserNameScreen(), _save_user_name)
         # MCP servers connect AFTER the first frame. See __init__ for why.
         if self.settings.mcp_enabled and self.mcp.configs:
             self._mcp_connect()

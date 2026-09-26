@@ -46,6 +46,7 @@ def compile_prompt(
     *,
     root: Path,
     skill_dir: Path | None = None,
+    user_name: str = "",
 ) -> str:
     """Resolve known placeholders and reject every unknown one.
 
@@ -59,13 +60,18 @@ def compile_prompt(
     }
     compiled = authored.replace("<root>", values["root"])
     compiled = compiled.replace("${CLAUDE_SKILL_DIR}", values["CLAUDE_SKILL_DIR"])
+    # The name is data, not prompt syntax. Check authored placeholders before
+    # substituting it so names such as "<Ada>" or "${HOME}" stay literal.
+    without_name_slot = compiled.replace("${USER_NAME_CLAUSE}", "")
     unresolved = sorted(
-        {match.group(1) or match.group(2) for match in _UNRESOLVED.finditer(compiled)}
+        {match.group(1) or match.group(2) for match in _UNRESOLVED.finditer(without_name_slot)}
     )
     if unresolved:
         names = ", ".join(unresolved)
         raise PromptPlaceholderError(f"unresolved system-prompt placeholder(s): {names}")
-    return compiled
+    name = user_name.strip()
+    clause = f" Your user's name is {name}." if name else ""
+    return compiled.replace("${USER_NAME_CLAUSE}", clause)
 
 
 def compile_prompt_file(
@@ -73,6 +79,9 @@ def compile_prompt_file(
     *,
     root: Path,
     skill_dir: Path | None = None,
+    user_name: str = "",
 ) -> str:
     authored = Path(path).read_text(encoding="utf-8")
-    return compile_prompt(authored, root=root, skill_dir=skill_dir)
+    return compile_prompt(
+        authored, root=root, skill_dir=skill_dir, user_name=user_name
+    )

@@ -217,7 +217,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "capabilities", "Capabilities", "cap-identity", "Fleet identity",
         "The name the harness registry sees.",
-        ("seat_name",), scope="conversation", keywords=("fleet", "seat", "identity", "registry"),
+        ("user_name", "seat_name"), scope="defaults", keywords=("user", "name", "fleet", "seat", "identity", "registry"),
     ),
     _section(
         "capabilities", "Capabilities", "cap-skills", "Skills",

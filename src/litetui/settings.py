@@ -138,6 +138,10 @@ class Settings:
     #: LiteTUI never does) or "codex". The default preserves existing behavior
     #: exactly.
     backend: str = "lmstudio"
+    #: Name included in the assistant's system prompt. Blank omits the clause.
+    user_name: str = ""
+    #: The one-time name question was answered, including deliberately blank.
+    user_name_asked: bool = False
     #: The first-boot picker ran (it shows once, and only when BOTH engines
     #: are detected). Esc leaves this False so the question returns.
     backend_chosen: bool = False

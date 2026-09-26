@@ -101,6 +101,7 @@ def _never_read_live_hooks(tmp_path, monkeypatch):
 # default every existing test was written against. Tests OF the picker
 # monkeypatch.delenv this.
 os.environ.setdefault("LITETUI_BACKEND", "lmstudio")
+os.environ.setdefault("LITETUI_TEST_USER_NAME_ASKED", "1")
 
 # 🔴 THE SUITE MUST NOT WRITE THE LIVE settings.json EITHER.
 #
