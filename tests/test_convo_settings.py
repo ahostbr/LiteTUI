@@ -191,6 +191,10 @@ class _App:
     _adopt_convo_backend = _Real._adopt_convo_backend
     remember_load_settings = _Real.remember_load_settings
 
+    def _resume_cli_convo(self):
+        """These unit hosts do not supply a --convo startup target."""
+        return True
+
     def __init__(self, settings, convo_dir, backend_name="llamacpp"):
         self.settings = settings
         self.convo_dir = convo_dir
