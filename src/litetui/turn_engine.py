@@ -266,6 +266,12 @@ class TurnEngine:
         )
         if wire:
             extra_body["reasoning_effort"] = wire
+        # NInfer streams real prompt-processing progress when asked (the same
+        # gate as a chat turn). Without it no `prompt_progress` chunk reaches
+        # the compaction loop, so the card shows a wall clock but never the
+        # "prefill XX%" every other turn shows.
+        if backend_name == "ninfer":
+            extra_body["return_progress"] = True
         kwargs: dict = {
             "model": model_id or "local-model",
             "messages": messages,

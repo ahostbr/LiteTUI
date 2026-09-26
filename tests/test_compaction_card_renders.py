@@ -133,3 +133,91 @@ async def test_compaction_card_shows_an_elapsed_clock() -> None:
         settled = str(card._title.content)
         assert card._took is not None
         assert "…" not in settled, f"still counting after finish(): {settled!r}"
+
+@pytest.mark.asyncio
+async def test_compaction_card_shows_prefill_like_a_normal_turn() -> None:
+    """Ryan: "compact isn't showing the prefill time ... like everything else does".
+
+    A normal turn's in-flight bubble shows the NInfer-measured prefill
+    ("prefill 43% : 56k/130k") via render_progress; the compaction card was the
+    one long-running op that only ever showed a bare wall clock. The app feeds
+    the card the same EtaState.prefill_readout() it feeds that bubble, so the
+    title carries the same suffix while live -- and nothing once settled."""
+    a = make_app()
+    async with a.run_test(size=(120, 40)) as pilot:
+        card = m.CompactionCard(plan=PLAN, prompt_text="p", auto=False)
+        await a.query_one("#chat-log").mount(card)
+        await pilot.pause()
+
+        # No progress yet: just the clock.
+        plain = str(card._title.content)
+        assert "prefill" not in plain and "…" in plain
+
+        # Fed the measured readout: the same suffix a normal turn shows.
+        card.tick(prefill=(0.43, 56000, 130000))
+        await pilot.pause()
+        live = str(card._title.content)
+        assert "prefill 43%" in live and "56k/130k" in live and "…" in live
+
+        # Settled: frozen total, no ellipsis, no stale prefill.
+        card.finish("12 -> 1 (-92%)")
+        await pilot.pause()
+        settled = str(card._title.content)
+        assert "…" not in settled and "prefill" not in settled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('progress_location', ['attribute', 'model_extra'])
+@pytest.mark.parametrize('outcome', ['mixed', 'error', 'cancel'])
+async def test_compaction_progress_preserves_output_and_clears_on_exit(
+        monkeypatch, outcome, progress_location):
+    import asyncio
+    from types import SimpleNamespace as NS
+    from litetui import model_transport
+
+    a = make_app()
+    a.settings.wake_after_compact = False
+    a.settings.clear_screen_after_compact = False
+    a.settings.compact_keep_recent = 2
+    async def ready(**kw):
+        return True
+    a._ensure_chat_ready = ready
+    a._all_tools = lambda: []
+    a._backend = NS(name='ninfer', request_overrides=lambda model_id: {})
+    observed = []
+
+    class Stream:
+        async def __aiter__(self):
+            progress = {'processed': 50, 'total': 100, 'cache': 0}
+            progress_fields = (
+                {'prompt_progress': progress}
+                if progress_location == 'attribute'
+                else {'model_extra': {'prompt_progress': progress}}
+            )
+            yield NS(**progress_fields, choices=[])
+            observed.append(a._eta.prefill_readout())
+            if outcome == 'error':
+                raise RuntimeError('fixture stream failure')
+            if outcome == 'cancel':
+                raise asyncio.CancelledError()
+            yield NS(**progress_fields, choices=[NS(delta=NS(content='retained summary', reasoning_content=None, tool_calls=[]))])
+        async def close(self):
+            pass
+
+    async def create(**kw):
+        assert a._eta.prefill_readout() is None
+        assert kw['extra_body']['return_progress'] is True
+        return Stream()
+    monkeypatch.setattr(model_transport, 'for_app', lambda app: NS(create=create))
+    async with a.run_test() as pilot:
+        a.conversation = [{'role': role, 'content': str(i)} for i, role in enumerate(['user','assistant','user','assistant','user','assistant'])]
+        a._eta.note_prefill({'processed':100,'total':100,'cache':0})
+        if outcome == 'cancel':
+            with pytest.raises(asyncio.CancelledError):
+                await m.LiteTUI._compact.__wrapped__(a)
+        else:
+            await m.LiteTUI._compact.__wrapped__(a)
+        assert observed == [(0.5, 50, 100)]
+        assert a._eta.prefill_readout() is None
+        if outcome == 'mixed':
+            assert any('retained summary' in str(msg.get('content')) for msg in a.conversation)

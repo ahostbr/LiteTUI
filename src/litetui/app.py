@@ -5961,7 +5961,11 @@ class LiteTUI(App):
                 for tool in self._inflight_tools:
                     tool._tick()
                 if card_live:
-                    card.tick()
+                    # Feed the card the SAME measured prefill readout a normal
+                    # turn renders, so compaction reports "prefill XX%" too.
+                    # None for backends that never stream progress (Codex) —
+                    # the title then shows just the elapsed clock.
+                    card.tick(prefill=self._eta.prefill_readout())
                 idle = 0.0
             else:
                 idle += 0.25
@@ -8640,6 +8644,10 @@ class LiteTUI(App):
                 )
 
                 kwargs["stream_options"] = {"include_usage": True}
+                # Fresh request: drop the previous round's prefill so a stale
+                # 100% never shows while this prompt is still being sent
+                # (same rule as _stream's clear at request start).
+                self._eta.clear_prefill()
                 stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 provider_metadata = None
                 text_full = ""
@@ -8658,6 +8666,18 @@ class LiteTUI(App):
                             key: model_transport.numeric_usage(getattr(usage, key, None))
                             for key in ("prompt_tokens", "completion_tokens", "total_tokens")
                         }
+                    # NInfer publishes prompt-processing progress as its own
+                    # chunks BEFORE the first output delta. Read them into the
+                    # shared ETA state so the card shows the SAME measured
+                    # "prefill XX%" a normal turn does — the twin of _stream's
+                    # read, and why compaction previously had no prefill time.
+                    pp = getattr(chunk, "prompt_progress", None)
+                    if pp is None:
+                        _extra = getattr(chunk, "model_extra", None)
+                        if _extra:
+                            pp = _extra.get("prompt_progress")
+                    if pp is not None:
+                        self._eta.note_prefill(pp)
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -8691,6 +8711,10 @@ class LiteTUI(App):
                         if argued_now and idx in tool_msgs:
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
 
+                # The model phase is over: stop showing prefill while tools run
+                # (nothing is being prefilled then) and start the next round's
+                # readout fresh.
+                self._eta.clear_prefill()
                 model_s = time.perf_counter() - round_started
                 timing = {"round": round_no, "model_s": model_s,
                           "first_chunk_s": first_chunk_s, "tools_s": 0.0,
@@ -8783,6 +8807,7 @@ class LiteTUI(App):
                                   kept_recent=len(tail))
             return
         finally:
+            self._eta.clear_prefill()
             if hasattr(stream, "close"):
                 await stream.close()
 
