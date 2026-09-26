@@ -80,9 +80,9 @@ narrow = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO, 27000, 100000,
 narrow._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
 line = narrow.ctx_label_text.plain
 print("   ", line)
-chk("76 columns keeps the seat", "OpenBolt" in line)
+chk("76 columns drops seat identity before reasoning effort", "OpenBolt" not in line)
 chk("76 columns keeps the context percent", "27%" in line)
-chk("narrow text drops thinking before protected fields", "think:high" not in line)
+chk("76 columns keeps the reasoning effort", "think:high" in line)
 chk("narrow text drops the conversation before protected fields", "4f3a1c9d" not in line)
 chk("narrow text fits beside the 12-cell palette and one-cell gap",
     narrow.ctx_label_text.cell_len <= 63)

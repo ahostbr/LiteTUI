@@ -5257,10 +5257,13 @@ class LiteTUI(App):
         available = getattr(self, "_footer_available_width", None)
 
         # Drop low-value fields until the protected visual-cron facts fit.
-        # Display order never changes; only membership does. Calculate against
-        # Rich cell widths (not len()) so wide glyphs cannot reintroduce clipping.
+        # Display order never changes; only membership does. Thinking effort is
+        # protected ahead of seat identity: a narrow spawned-agent pane must
+        # still confirm that its requested effort actually took effect.
+        # Calculate against Rich cell widths (not len()) so wide glyphs cannot
+        # reintroduce clipping.
         if available is not None:
-            for drop_key in ("tps", "convo", "bg", "agents", "think", "cache", "ctx"):
+            for drop_key in ("tps", "convo", "bg", "agents", "cache", "ctx", "seat"):
                 total = sum(chunk.cell_len for _, chunk in chunks)
                 total += Text(sep).cell_len * max(0, len(chunks) - 1)
                 if total <= available:
