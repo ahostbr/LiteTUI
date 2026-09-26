@@ -21,9 +21,9 @@ server/src/services/ratelimit.ts, lib/fallback-loop.ts), not copied:
   past its time budget fails over too.
 - Cooldowns per (source, model, key): Retry-After (or the error text) wins,
   clamped to a day; else a ladder 90s -> 2m -> 10m -> 1h -> 24h, reset by a
-  success. 403 benches the model for a day; 401 marks the key rejected. A 402,
-  and a 429 on a source whose free allowance is one pool, bench the whole
-  (source, key).
+  success. 403 benches the model for a day. A 401 (key rejected), a 402 (out
+  of credit), and a 429 on a source whose free allowance is one pool, bench the
+  whole (source, key).
 - The no-paid-model guard is structural: the router only ever sends a model a
   source's own catalog marks free, so an id that is not in the table is refused
   before a byte leaves the process.
@@ -70,6 +70,9 @@ class Source:
     timeout: float = 60.0
     #: The /models row field holding the id to send (Cloudflare's `id` is a UUID).
     id_field: str = 'id'
+    #: A source whose free models are a fixed allowlist lists these without asking
+    #: /models, so a /models that is missing or incomplete cannot hide them.
+    static_models: tuple[str, ...] = ()
 
 
 def _openrouter_free(model: dict) -> bool:
@@ -80,7 +83,7 @@ _NOT_CHAT = re.compile(r'embed|bge|guard|whisper|tts|rerank', re.IGNORECASE)
 
 #: Z.ai's /models also lists paid GLM models, which a funded account is charged
 #: for; only these flash ids are free (freellmapi legacy_baseline.ts seed).
-_ZAI_FREE = frozenset({'glm-4.7-flash', 'glm-4.5-flash', 'glm-4.6v-flash'})
+_ZAI_FREE = ('glm-4.7-flash', 'glm-4.5-flash', 'glm-4.6v-flash')
 
 SOURCES: tuple[Source, ...] = (
     # ── keyless (live with no setup) ────────────────────────────────────────
@@ -123,13 +126,15 @@ SOURCES: tuple[Source, ...] = (
            timeout=120),
     Source('zai', 'Z.ai (GLM flash)', 'https://api.z.ai/api/paas/v4', 'ZAI_API_KEY',
            'https://api.z.ai/api/paas/v4/models', lambda m: m.get('id') in _ZAI_FREE,
-           'GLM flash models only (the paid GLM models are never sent)'),
+           'GLM flash models only (the paid GLM models are never sent)',
+           static_models=_ZAI_FREE),
     # The key is 'account_id:token' (_endpoints). Model search filtered to chat models;
     # its rows carry the '@cf/...' id in `name`.
     Source('cloudflare', 'Cloudflare Workers AI', 'https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1',
            'CLOUDFLARE_API_KEY',
            'https://api.cloudflare.com/client/v4/accounts/{account}/ai/models/search?task=Text%20Generation&per_page=100',
-           lambda m: True, 'free daily allocation per account; key is account_id:token', id_field='name'),
+           lambda m: True, 'free daily allocation on the Workers Free plan only (a Workers Paid account is '
+           'billed per neuron past it); key is account_id:token', id_field='name'),
     Source('longcat', 'LongCat', 'https://api.longcat.chat/openai/v1', 'LONGCAT_API_KEY',
            'https://api.longcat.chat/openai/v1/models', lambda m: True, 'daily free quota'),
     Source('sealion', 'SEA-LION', 'https://api.sea-lion.ai/v1', 'SEALION_API_KEY',
@@ -201,6 +206,8 @@ def source_models(source: Source) -> list[tuple[str, int | None]]:
     key = source_key(source)
     if key is None:
         return []
+    if source.static_models:
+        return [(model_id, None) for model_id in source.static_models]
     cache_key = f'{source.id}:{_keyprint(key)}'
     if cache_key not in _catalogs:
         try:
@@ -364,8 +371,9 @@ def _failed(source: Source, model: str, keys: tuple[tuple[str, str, str], tuple[
             response: httpx.Response | None = None, text: str = '') -> float:
     """Bench after a failure; return the soonest retry so far. keys = (this model's,
     the whole source's) for this key. A 402 is the account's balance, and a 429 on a
-    pooled allowance is every model's, so both bench the whole source."""
-    target = keys[1] if status == 402 or (status == 429 and source.pool) else keys[0]
+    pooled allowance is every model's, so they bench the whole source; so does a
+    401, since a rejected key is rejected for every model."""
+    target = keys[1] if status in (401, 402) or (status == 429 and source.pool) else keys[0]
     wait = bench(target, status, response, text)
     _log(source, model, outcome, wait)
     return wait if soonest is None else min(soonest, wait)
@@ -407,7 +415,10 @@ class FreeRouter(httpx.AsyncBaseTransport):
             # non-streamed answer's first byte is its last, so its wait must cover
             # a whole generation (_WHOLE_ANSWER).
             budget = source.timeout if body.get('stream') else max(source.timeout, _WHOLE_ANSWER)
-            extensions = {**request.extensions, 'timeout': {**request.extensions.get('timeout', {}), 'read': budget}}
+            timeout = request.extensions.get('timeout', {})
+            if timeout.get('read') is not None:
+                budget = min(budget, timeout['read'])  # a caller that asked for less keeps it
+            extensions = {**request.extensions, 'timeout': {**timeout, 'read': budget}}
             outbound = httpx.Request('POST', f'{base_url}/chat/completions', headers=headers,
                                      content=json.dumps({**body, 'model': source_model}).encode(),
                                      extensions=extensions)

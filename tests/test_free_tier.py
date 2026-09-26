@@ -12,6 +12,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
+import httpx
 import pytest
 from openai import AsyncOpenAI, RateLimitError
 
@@ -315,6 +316,16 @@ def test_zai_lists_only_its_allowlisted_flash_models(sources):
         fake.close()
 
 
+def test_zai_lists_its_allowlist_without_asking_models(sources, monkeypatch):
+    """A /models that is missing or incomplete cannot hide Z.ai's free models."""
+    zai = _real('zai')
+    monkeypatch.setenv('ZAI_API_KEY', 'zk')
+    monkeypatch.setattr(ft.httpx, 'get', lambda *a, **k: pytest.fail('Z.ai must not fetch /models'))
+    assert ft.source_models(zai) == [('glm-4.7-flash', None), ('glm-4.5-flash', None), ('glm-4.6v-flash', None)]
+    monkeypatch.delenv('ZAI_API_KEY')
+    assert ft.source_models(zai) == [], 'without a key it still lists nothing'
+
+
 @pytest.mark.asyncio
 async def test_a_cloudflare_key_splits_into_account_url_and_token_bearer(sources, monkeypatch):
     real = _real('cloudflare')
@@ -431,9 +442,54 @@ async def test_a_402_benches_the_whole_source_for_this_key_for_a_day(sources):
     assert len(b.seen) == 1, 'an out-of-credit account is not asked for another model'
 
 
-def test_every_retry_hint_is_clamped_to_a_day():
-    import httpx
+@pytest.mark.asyncio
+async def test_a_401_benches_the_whole_source_for_this_key(sources):
+    """A rejected key is rejected for every model."""
+    _a, b, _ = sources([], [], [{'id': 'M'}, {'id': 'N'}], [(401, '{"error":"invalid key"}', ())])
+    with pytest.raises(RateLimitError):
+        await _ask(_backend(), 'm')
+    with pytest.raises(RateLimitError):
+        await _ask(_backend(), 'n')
+    assert len(b.seen) == 1, 'a rejected key is not tried for another model'
+    assert ft._benches[('b', '*', 'keyless')].reason == 'key rejected'
 
+
+class _Recorder(httpx.AsyncBaseTransport):
+    """Records each outbound request's timeouts and answers 200."""
+
+    def __init__(self):
+        self.timeouts = []
+
+    async def handle_async_request(self, request):
+        self.timeouts.append(request.extensions['timeout'])
+        return httpx.Response(200, content=_sse('ok').encode(), request=request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_id, own, stream, caller_read, sent_read', [
+    ('nvidia', None, False, 600, 300),   # non-streamed: max(source.timeout 180, _WHOLE_ANSWER 300)
+    ('groq', 400, False, 600, 400),      # ... and a source slower than 300 keeps its own
+    ('nvidia', None, True, 600, 180),    # streamed: the source's own budget
+    ('groq', None, True, 600, 60),       # the default budget
+    ('ollama', None, False, 30, 30),     # a caller that asked for less keeps it
+    ('ollama', None, False, None, 300),  # no caller limit: the budget
+])
+async def test_the_read_timeout_each_attempt_is_sent(monkeypatch, source_id, own, stream, caller_read, sent_read):
+    source = _real(source_id) if own is None else replace(_real(source_id), timeout=own)
+    monkeypatch.setattr(ft, 'catalog', lambda: {'m': [(source, 'm', None)]})
+    monkeypatch.setattr(ft, 'source_key', lambda s: 'k')
+    monkeypatch.setattr(ft, '_benches', {})
+    inner = _Recorder()
+    request = httpx.Request('POST', 'https://free-tier.litetui.invalid/v1/chat/completions',
+                            json={'model': 'm', 'stream': stream, 'messages': []},
+                            extensions={'timeout': {'connect': 5.0, 'read': caller_read, 'write': 600.0, 'pool': 600.0}})
+    response = await ft.FreeRouter(inner).handle_async_request(request)
+    await response.aclose()
+    assert inner.timeouts[0]['read'] == sent_read
+    assert inner.timeouts[0]['connect'] == 5.0, 'only the read timeout is changed'
+
+
+def test_every_retry_hint_is_clamped_to_a_day():
     ft._benches.clear()
     year = httpx.Response(429, headers={'retry-after': '31536000'})
     assert ft.bench(('s', 'h', 'keyless'), 429, year, now=0) == 86400
