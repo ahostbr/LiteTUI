@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 import pytest
@@ -31,6 +32,40 @@ else:
     # Use the actual interpreter, not Windows venv redirector (which has a
     # different PID). Production launcher must resolve that distinction too.
     return [getattr(sys, '_base_executable', sys.executable), str(path)], {'CHILD_MODEL': model, 'CHILD_TOKEN': 'secret', 'SILENT': '1' if silent else '0'}
+
+
+@pytest.mark.asyncio
+async def test_managed_child_does_not_inherit_parent_seat_identity(tmp_path, monkeypatch):
+    from litetui.agent_supervisor import AgentProcess
+
+    inherited = (
+        "LITETUI_SPAWN_IDENTITY",
+        "LITEHARNESS_AGENT_ID",
+        "LITEHARNESS_AGENT_NAME",
+        "LITEHARNESS_TIER",
+        "LITETUI_SEAT_NAME",
+    )
+    for key in inherited:
+        monkeypatch.setenv(key, f"parent-{key.lower()}")
+    captured = {}
+
+    class FakeProcess:
+        pid = 42
+        returncode = None
+        stdin = stdout = stderr = None
+
+    async def fake_spawn(*argv, **options):
+        captured.update(options["env"])
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    if os.name == "nt":
+        from litetui import jobkill
+        monkeypatch.setattr(jobkill, "create", lambda: object())
+        monkeypatch.setattr(jobkill, "assign", lambda job, pid: True)
+    process = AgentProcess()
+    await process.start([sys.executable, "-c", "pass"], cwd=tmp_path)
+    assert all(key not in captured for key in inherited)
 
 
 @pytest.mark.asyncio

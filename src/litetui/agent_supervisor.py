@@ -11,6 +11,23 @@ import os
 from litetui.agent_launcher import LaunchBlocked, validate_handshake, validate_process_identity
 
 
+_PARENT_SEAT_IDENTITY = {
+    "LITETUI_SPAWN_IDENTITY",
+    "LITEHARNESS_AGENT_ID",
+    "LITEHARNESS_AGENT_NAME",
+    "LITEHARNESS_TIER",
+    "LITETUI_SEAT_NAME",
+}
+
+
+def child_process_env(overrides=None):
+    """Build a managed-child environment without the parent's fleet identity."""
+    child = {**os.environ, **(overrides or {})}
+    for key in _PARENT_SEAT_IDENTITY:
+        child.pop(key, None)
+    return child
+
+
 class AgentProcess:
     def __init__(self):
         self.process = None
@@ -33,7 +50,7 @@ class AgentProcess:
         if self.process is not None:
             raise LaunchBlocked('Child process already started')
         self.process = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(cwd), env={**os.environ, **(env or {})},
+            *argv, cwd=str(cwd), env=child_process_env(env),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=1024 * 1024)
         if os.name == 'nt':
