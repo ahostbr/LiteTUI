@@ -443,7 +443,11 @@ async def test_cycling_PERSISTS_like_ctrl_t_does(monkeypatch):
     changes a setting the settings screen also shows must not leave the two
     disagreeing."""
     saved = []
-    monkeypatch.setattr(m.settings_mod, "save", lambda s: saved.append(s.tool_policy_profile))
+    monkeypatch.setattr(
+        m.settings_runtime,
+        "persist_or_raise",
+        lambda app, settings: saved.append(settings.tool_policy_profile),
+    )
     a = make_app(AUTONOMOUS)
     async with a.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
