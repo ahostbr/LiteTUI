@@ -13,6 +13,7 @@ that is a behaviour change and it needs saying out loud.
 """
 from __future__ import annotations
 
+import inspect
 import types
 
 import pytest
@@ -149,6 +150,14 @@ def test_sampling_overrides_are_split_between_native_and_extra_body():
 
 # ── the compaction request ──────────────────────────────────────────────
 
+def test_compaction_request_has_no_chat_override_parameter():
+    """Compaction owns its budget; accepting a dead chat-overrides argument
+    invites callers to compute it, which can raise before compaction starts."""
+    assert "request_overrides" not in inspect.signature(
+        TurnEngine.compact_request
+    ).parameters
+
+
 def _compact(**over):
     args = dict(model_id="m", messages=[{"role": "user", "content": "sum"}],
                 max_tokens=333, thinking_level="low", tools_enabled=False,
@@ -170,15 +179,59 @@ def test_a_compaction_sends_NO_stream_options_unlike_a_chat_turn():
 
 
 def test_a_compaction_sends_no_sampling_overrides():
-    """A compaction is not a creative turn; it takes the server's defaults
-    for SAMPLING. Chat/model overrides must not change compaction settings."""
-    k = _compact(request_overrides={"temperature": 0.9, "top_p": 0.5})
+    """A compaction is not a creative turn; it takes server sampling defaults."""
+    k = _compact()
     assert "temperature" not in k and "top_p" not in k
 
 
 def test_the_compaction_thinking_level_is_its_own_setting():
     assert _compact(thinking_level="off")["extra_body"]["reasoning_effort"] == "none"
     assert _compact(thinking_level="xhigh")["extra_body"]["reasoning_effort"] == "xhigh"
+
+
+def test_compaction_falls_back_when_configured_effort_is_unsupported():
+    """gpt-5.6-sol has no no-reasoning mode: compact 'off' must use its
+    lowest supported effort instead of reaching the transport as 'none'."""
+    k = _compact(
+        backend_name="codex",
+        thinking_level="off",
+        supported_reasoning_levels=["xhigh", "medium", "low", "high"],
+    )
+    assert k["extra_body"]["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("compact_level,model_level", [
+    ("low", "xhigh"),
+    ("medium", "high"),
+])
+def test_supported_compaction_level_wins_over_model_fallback(
+        compact_level, model_level):
+    k = _compact(
+        backend_name="codex",
+        thinking_level=compact_level,
+        model_reasoning_effort=model_level,
+        supported_reasoning_levels=["xhigh", "low", "high", "medium"],
+    )
+    assert k["extra_body"]["reasoning_effort"] == compact_level
+
+
+def test_unset_compaction_effort_does_not_invent_a_fallback():
+    k = _compact(
+        backend_name="codex",
+        thinking_level=None,
+        supported_reasoning_levels=["low", "medium", "high"],
+    )
+    assert "reasoning_effort" not in k.get("extra_body", {})
+
+
+def test_compaction_prefers_a_supported_per_model_effort_as_fallback():
+    k = _compact(
+        backend_name="codex",
+        thinking_level="off",
+        model_reasoning_effort="high",
+        supported_reasoning_levels=["low", "medium", "high", "xhigh"],
+    )
+    assert k["extra_body"]["reasoning_effort"] == "high"
 
 
 # ── per-model thinking level (/modelcfg Inference tab) ───────────────
@@ -205,28 +258,21 @@ def test_a_blank_per_model_inherits_the_global_level():
     assert k["extra_body"]["reasoning_effort"] == "xhigh"
 
 
-@pytest.mark.parametrize("backend", ["ninfer", "llamacpp", "codex"])
-@pytest.mark.parametrize("compact_level,model_level,expected", [
-    ("low", "xhigh", "low"),
-    ("off", "xhigh", "none"),
-    ("xhigh", "off", "xhigh"),
-    (None, "xhigh", None),
+@pytest.mark.parametrize("backend,compact_level,expected", [
+    ("ninfer", "low", "low"),
+    ("llamacpp", "off", "none"),
+    ("codex", "xhigh", "xhigh"),
+    ("codex", None, None),
 ])
-def test_compaction_setting_wins_over_model_thinking(backend, compact_level, model_level, expected):
-    """Compaction owns its reasoning budget independently of normal chat."""
-    overrides = {"reasoning_effort": model_level}
-    k = _compact(thinking_level=compact_level, backend_name=backend,
-                 request_overrides=overrides)
+def test_compaction_setting_is_independent_of_normal_chat(backend, compact_level, expected):
+    k = _compact(thinking_level=compact_level, backend_name=backend)
     assert k.get("extra_body", {}).get("reasoning_effort") == expected
-    assert overrides == {"reasoning_effort": model_level}
 
 
 def test_compaction_uses_its_setting_before_lmstudio_capability_mapping():
-    overrides = {"reasoning_effort": "off"}
-    k = _compact(backend_name="lmstudio", request_overrides=overrides)
+    k = _compact(backend_name="lmstudio")
     assert "reasoning_effort" not in k.get("extra_body", {})
-    k = _compact(backend_name="lmstudio", request_overrides=overrides,
-                 graded_thinking_models=["m"])
+    k = _compact(backend_name="lmstudio", graded_thinking_models=["m"])
     assert k["extra_body"]["reasoning_effort"] == "low"
 
 
