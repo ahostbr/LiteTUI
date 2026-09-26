@@ -66,6 +66,22 @@ _FIND_FILTERS = frozenset({
     "-iregex", "-newer", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin",
     "-size", "-empty", "-user", "-group", "-perm", "-links", "-inum", "-samefile",
 })
+#: ...except a name/path/regex test whose pattern is only wildcards: `-name '*'`
+#: matches everything, so it narrows nothing (review a93de8a9 R2).
+_PATTERN_TESTS = frozenset({"-name", "-iname", "-path", "-ipath", "-wholename",
+                            "-iwholename", "-regex", "-iregex"})
+
+
+def _find_filtered(words: list[str]) -> bool:
+    """Does this find expression (lower-case, unquoted words) narrow its matches?"""
+    for i, word in enumerate(words):
+        if word in _PATTERN_TESTS:
+            pattern = words[i + 1] if i + 1 < len(words) else ""
+            if not re.fullmatch(r"[*?.+]*", pattern):
+                return True
+        elif word in _FIND_FILTERS:
+            return True
+    return False
 #: A change of directory; the words after it name the new base.
 _CD = re.compile(
     r"(?i)(?<![\w.$-])(?:cd|chdir|pushd|set-location|sl|push-location)(?![\w.:\\-])")
@@ -141,7 +157,7 @@ def _arguments(verb: str, rest: str):
     """(recursive, targets, deletes) for the words after one delete verb."""
     recursive = verb == "rimraf"
     deletes = verb != "find"
-    filtered, in_paths = False, True
+    find_words, in_paths = [], True
     targets: list[str] = []
     for token in _TOKEN.findall(rest.split("\n", 1)[0]):
         if token.startswith("\\;"):
@@ -162,10 +178,10 @@ def _arguments(verb: str, rest: str):
             in_paths = in_paths and not (low.startswith("-") or low in ("(", "!"))
             if in_paths:
                 targets.append(token)
-            elif low in ("-delete", "rm", "rmdir", "remove-item", "rimraf"):
-                deletes = True
-            elif low in _FIND_FILTERS:
-                filtered = True
+            else:
+                find_words.append(low)
+                if low in ("-delete", "rm", "rmdir", "remove-item", "rimraf"):
+                    deletes = True
         elif low.startswith("-"):
             name, _, value = low.partition(":")
             if (name == "--recursive" or ("recurse".startswith(name[1:]) and len(name) > 1)
@@ -180,7 +196,7 @@ def _arguments(verb: str, rest: str):
         if stop:
             break
     if verb == "find":
-        recursive = not filtered
+        recursive = not _find_filtered(find_words)
     return recursive, targets, deletes
 
 
@@ -196,8 +212,11 @@ def _pipeline_source(before: str) -> list[str]:
         return []
     head = re.split(r"[;\n{(]|&&|\|\|", tail)[-1].split("|")[0]
     words = [_unquote(w) for w in _TOKEN.findall(head)]
-    if words[:1] == ["find"] and any(w.lower() in _FIND_FILTERS for w in words):
-        return []  # a filtered listing names only what matched, not its root
+    if words[:1] == ["find"] and _find_filtered([w.lower() for w in words]):
+        # A filtered listing names only what matched, not its root -- except a
+        # home-variable root, refused whatever narrows it (review a93de8a9 R1:
+        # `find $HOME -type d -name .claude | xargs rm -rf` deletes ~/.claude).
+        return [w for w in words[1:] if not w.startswith("-") and _normal(w) in HOME_VARIABLES]
     paths = [w for w in words[1:] if not w.startswith("-")]
     # A listing with no path lists the current folder (review 2be2a62c N2:
     # `cd ~; ls | xargs rm -rf`); "." resolves against the tracked base.
