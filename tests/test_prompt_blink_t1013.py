@@ -10,6 +10,7 @@ it would to a terminal).
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -73,19 +74,33 @@ async def test_an_idle_blink_repaints_only_the_cursor_cell(plain_terminal) -> No
 
 
 @pytest.mark.asyncio
-async def test_the_cursor_is_drawn_after_typing_and_blinks_on(plain_terminal) -> None:
+@pytest.mark.parametrize("value,pos", [
+    ("hello", 5),     # at the end: the cursor is the blank cell after the text
+    ("hello", 1),     # mid-text: the cursor sits on "e"
+    ("漢字abc", 0),  # a WIDE glyph under the cursor must be redrawn whole
+    ("ab漢字", 2),
+])
+async def test_each_blink_redraws_the_glyph_under_the_cursor(plain_terminal, value, pos) -> None:
+    # A blink write starts at the row's left border and ends at the cursor
+    # cell, so its visible text must be exactly the value up to and including
+    # the glyph under the cursor: right column, right content, never a blank
+    # where a wide glyph was (a 1-cell region wrote " " over the first half).
     a = make_app()
     async with a.run_test(size=(120, 34), headless=False) as pilot:
         box = a.query_one("#message-input")
         await pilot.pause(1.0)
-        box.value = "hello"
-        box.cursor_position = 5
+        box.value = value
+        box.cursor_position = pos
         await pilot.pause(0.3)
-        assert "hello" in "".join(a.writes)
         a.writes.clear()
-        await pilot.pause(1.2)  # two or more blinks at the NEW cursor cell
-        cells = [w for w in a.writes if "\x1b[29;" in w]
-        assert len(cells) >= 2, a.writes
+        await pilot.pause(1.2)  # two or more blinks
+        blinks = [w for w in a.writes if "\x1b[29;" in w]
+        assert len(blinks) >= 2, a.writes
+        want = value[:pos + 1] if pos < len(value) else value + " "
+        for w in blinks:
+            plain = re.sub(r"\x1b\[[0-9;]*m", "", w)
+            m = re.fullmatch(r"\x1b\[29;2H\u258a(.*)\x1b\[29;\d+H", plain, re.S)
+            assert m and m.group(1) == want, repr(plain)
 
 
 @pytest.mark.asyncio

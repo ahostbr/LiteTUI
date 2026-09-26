@@ -51,6 +51,7 @@ from textual.widgets import (
     Button, Footer, Header, Input, OptionList, Static, )
 from textual.widgets.option_list import Option
 from textual import work, on
+from rich.cells import cell_len
 from rich.text import Text
 
 
@@ -165,7 +166,13 @@ class PromptInput(Input):
         if visible == self._cursor_visible:
             return
         self.set_reactive(Input._cursor_visible, visible)
-        self.refresh(Region(self._cursor_offset - self.scroll_offset.x, 0, 1, 1))
+        # The cell the cursor is DRAWN on (_cursor_offset adds +1 at the end,
+        # a scroll convention), and as wide as the glyph under it: a 1-cell
+        # region blanked half of a wide glyph until the next keystroke.
+        pos = self.cursor_position
+        width = max(1, cell_len(self.value[pos:pos + 1]))
+        x = self._position_to_cell(pos) - self.scroll_offset.x
+        self.refresh(Region(x, 0, width, 1))
 
     def push_history(self, text: str) -> None:
         if text and (not self._history or self._history[-1] != text):
