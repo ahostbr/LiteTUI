@@ -241,11 +241,12 @@ class TurnEngine:
         messages: list[dict],
         max_tokens: int,
         thinking_level: str | None,
-        request_overrides: dict | None = None,
         tools_enabled: bool,
         tools: list[dict] | None = None,
         backend_name: str = "",
         graded_thinking_models: tuple[str, ...] | list[str] = (),
+        supported_reasoning_levels: tuple[str, ...] | list[str] = (),
+        model_reasoning_effort: str | None = None,
     ) -> dict:
         """The request a compaction turn sends.
 
@@ -264,6 +265,9 @@ class TurnEngine:
         wire = _resolve_reasoning_effort(
             thinking_level, backend_name, model_id, graded_thinking_models
         )
+        levels = list(supported_reasoning_levels)
+        if wire and levels and wire not in levels:
+            wire = model_reasoning_effort if model_reasoning_effort in levels else levels[0]
         if wire:
             extra_body["reasoning_effort"] = wire
         # NInfer streams real prompt-processing progress when asked (the same

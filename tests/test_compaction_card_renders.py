@@ -183,7 +183,8 @@ async def test_compaction_progress_preserves_output_and_clears_on_exit(
         return True
     a._ensure_chat_ready = ready
     a._all_tools = lambda: []
-    a._backend = NS(name='ninfer', request_overrides=lambda model_id: {})
+    a._backend = NS(name='ninfer', request_overrides=lambda model_id: {},
+                    reasoning_levels=lambda model_id: [])
     observed = []
 
     class Stream:
@@ -221,3 +222,55 @@ async def test_compaction_progress_preserves_output_and_clears_on_exit(
         assert a._eta.prefill_readout() is None
         if outcome == 'mixed':
             assert any('retained summary' in str(msg.get('content')) for msg in a.conversation)
+
+@pytest.mark.asyncio
+async def test_compaction_does_not_compute_effective_chat_overrides(monkeypatch):
+    """An unsupported CLI chat effort must not block or latch compaction."""
+    from types import SimpleNamespace as NS
+    from litetui import model_transport
+
+    a = make_app()
+    a.settings.wake_after_compact = False
+    a.settings.clear_screen_after_compact = False
+    a.settings.compact_keep_recent = 2
+    a.settings.compact_max_tool_iters = 1
+    a.settings.compact_thinking_level = 'off'
+
+    async def ready(**kw):
+        return True
+
+    a._ensure_chat_ready = ready
+    a._all_tools = lambda: []
+    a._backend = NS(
+        name='codex', reasoning_levels=lambda model_id: ['low', 'medium', 'high'],
+        request_overrides=lambda model_id: {'reasoning_effort': 'medium'},
+        shutdown=lambda: None,
+    )
+    a._cli_effective_thinking = 'unsupported-chat-level'
+    seen = []
+
+    class Stream:
+        async def __aiter__(self):
+            yield NS(choices=[NS(delta=NS(
+                content='summary survives', reasoning_content=None, tool_calls=[]
+            ))])
+        async def close(self):
+            pass
+
+    async def create(**kw):
+        seen.append(kw)
+        return Stream()
+
+    monkeypatch.setattr(model_transport, 'for_app', lambda app: NS(create=create))
+    async with a.run_test() as pilot:
+        a.conversation = [
+            {'role': role, 'content': str(i)}
+            for i, role in enumerate(['user', 'assistant', 'user', 'assistant', 'user'])
+        ]
+        a._autocompact_failed_at = None
+        await m.LiteTUI._compact.__wrapped__(a)
+
+    assert seen, 'dead chat override computation blocked compaction transport'
+    assert seen[0]['extra_body']['reasoning_effort'] == 'medium'
+    assert a._autocompact_failed_at is None
+    assert any('summary survives' in str(msg.get('content')) for msg in a.conversation)

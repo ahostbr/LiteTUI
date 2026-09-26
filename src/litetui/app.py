@@ -8688,11 +8688,18 @@ class LiteTUI(App):
                     messages=ask,
                     max_tokens=self.settings.compact_max_tokens,
                     thinking_level=self.settings.compact_thinking_level,
-                    request_overrides=self._effective_request_overrides(),
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
                     graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
+                    supported_reasoning_levels=(
+                        self.backend.reasoning_levels(self.model_id)
+                        if hasattr(self.backend, "reasoning_levels") else ()
+                    ),
+                    model_reasoning_effort=(
+                        self.backend.request_overrides(self.model_id).get("reasoning_effort")
+                        if hasattr(self.backend, "request_overrides") else None
+                    ),
                 )
 
                 kwargs["stream_options"] = {"include_usage": True}
