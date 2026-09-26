@@ -36,6 +36,10 @@ class _FakeApp(SimpleNamespace):
     def _system(self, msg):
         self._said.append(msg)
 
+    def _resume_cli_convo(self):
+        """This unit double has no --convo; the production preflight succeeds."""
+        return True
+
 
 _apply = LiteTUI._apply_cli_args.__wrapped__
 
