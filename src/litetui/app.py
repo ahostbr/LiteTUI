@@ -15,7 +15,12 @@ from datetime import datetime
 from pathlib import Path
 
 from litetui import settings_runtime
+from litetui import win32_input
 from litetui import convo_settings as convo_settings_mod
+
+# Textual reads Windows INPUT_RECORDs on its own thread. Install our narrow
+# ConPTY structural-modifier filter before any app/driver instance is built.
+win32_input.install()
 from litetui import harness as harness_mod
 from litetui import second_instance
 from litetui import vram_dialog
