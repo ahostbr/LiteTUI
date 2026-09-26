@@ -4187,7 +4187,11 @@ class LiteTUI(App):
         # Explicit invocation wins before connect validates the backend catalog.
         # Keep the remembered choice untouched, and never fall back from a CLI
         # candidate: connect / _apply_cli_args must refuse that exact request.
-        cli_model = getattr(self, '_cli_initial_model', None)
+        cli_model = (
+            getattr(self, '_cli_initial_model', None)
+            if getattr(self, '_startup_adopting', False)
+            else None
+        )
         model = cli_model or convo_settings_mod.resolved(effective_cs, self.settings, "model")
         if not cli_model and model and self.available_models and model not in self.available_models:
             # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
