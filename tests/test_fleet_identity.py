@@ -24,6 +24,7 @@ see it, and "absent" is the answer that stops you looking.
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 from pathlib import Path
@@ -116,17 +117,34 @@ def test_no_system_message_is_not_a_crash():
     assert a._sync_fleet_identity() is False
 
 
-def test_the_resume_path_actually_CALLS_the_sync():
-    """The seven tests above prove the FUNCTION is right. They say nothing about
-    whether anything invokes it — and an unwired repair is the defect, not the
-    fix. `_resume` is the path that replays a system message written by another
-    process, so it is the one that must call this.
+def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkeypatch):
+    """Exercise the resume contract rather than parsing its source.
+
+    `_resume_cli_conversation` now precedes `_resume`; splitting on the text
+    ``def _resume`` therefore inspected the helper instead of the resume method
+    and reported this already-wired behavior as missing.
     """
-    src = Path(app_mod.__file__).read_text(encoding="utf-8")
-    resume = src.split("def _resume", 1)[1].split("\n    def ", 1)[0]
-    assert "_sync_fleet_identity()" in resume, (
-        "resume replays the previous process's fleet id and never corrects it"
+    monkeypatch.setenv("LITEHARNESS_HOME", str(tmp_path / "harness-home"))
+    folder = tmp_path / "saved"
+    folder.mkdir()
+    path = folder / "convo.jsonl"
+    path.write_text(
+        '{"type":"meta","v":3,"id":"saved"}\n'
+        + json.dumps({
+            "type": "snapshot",
+            "messages": [{"role": "system", "content": PROMPT}],
+        })
+        + "\n",
+        encoding="utf-8",
     )
+    app = app_mod.LiteTUI()
+    app.seat = _Seat()
+    app._render_resumed = lambda path: None
+
+    assert app._resume(path, startup=True)
+    body = app.conversation[0]["content"]
+    assert NEW in body
+    assert OLD not in body
 
 
 def test_registration_replaces_rather_than_appending_a_second_line():
