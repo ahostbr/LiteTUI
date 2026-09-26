@@ -12,7 +12,7 @@ What the human can do:
   * tick / untick options on the active question,
   * click a step's checkbox to CLEAR that question's answer (toggleable),
   * type a note on any question (the "Type something" field),
-  * Submit          — commit everything; the full answer state comes back,
+  * Next / Submit   — advance, then submit once every question is answered,
   * Chat about this — early exit: the full state of whatever has been
                       entered so far comes back WITHOUT every question
                       needing an answer, so the agent can discuss first,
@@ -310,6 +310,17 @@ class AskUserQuestionBody(Vertical):
         margin: 0 1 0 0;
     }
 
+    #auq-steps, #auq-bodies, .auq-qbody {
+        height: auto;
+    }
+
+    #auq-progress {
+        height: auto;
+        text-align: center;
+        color: $warning;
+        padding: 1 0;
+    }
+
     .auq-checkbox, .auq-step-label {
         width: auto;
         padding: 0 1;
@@ -451,9 +462,11 @@ class AskUserQuestionBody(Vertical):
                     )
         yield Input(placeholder="Type something…", id="auq-note-input", password=self._states[0].secret)
         yield SwapButton()
+        yield Static("", markup=False, id="auq-progress")
         with Horizontal(id="auq-actions"):
             yield Button("Chat about this", id="auq-chat")
-            yield Button("Submit", variant="primary", id="auq-submit")
+            yield Button("Next" if len(self._states) > 1 else "Submit",
+                         variant="primary", id="auq-submit")
         yield Static(FOOTER_HINT, markup=False, id="auq-hint")
 
     async def on_mount(self) -> None:
@@ -493,6 +506,14 @@ class AskUserQuestionBody(Vertical):
             box.content = "☑" if q.answered else "☐"
             box.set_class(q.answered, "answered")
             lab.set_class(i == self._active, "active")
+        answered = sum(q.answered for q in self._states)
+        total = len(self._states)
+        self.query_one("#auq-progress", Static).update(
+            f"Question {self._active + 1} of {total} · {answered} of {total} answered"
+        )
+        self.query_one("#auq-submit", Button).label = (
+            "Next" if self._active < total - 1 else "Submit"
+        )
 
     def _refresh_row(self, i: int) -> None:
         q = self._states[self._active]
@@ -610,6 +631,15 @@ class AskUserQuestionBody(Vertical):
         """Close the widget and wake run() with the full state. Runs once."""
         if self._finished:
             return
+        if action == "submit":
+            missing = next((i for i, q in enumerate(self._states) if not q.answered), None)
+            if missing is not None:
+                self._jump(missing)
+                self.query_one("#auq-progress", Static).update(
+                    f"Question {missing + 1} of {len(self._states)} needs an answer. "
+                    "Choose an option or add a note; use Chat about this to discuss."
+                )
+                return
         self._finished = True
         self._result_box.append({
             "action": action,
@@ -623,6 +653,9 @@ class AskUserQuestionBody(Vertical):
 
     @on(Button.Pressed, "#auq-submit")
     def _submit(self) -> None:
+        if self._active < len(self._states) - 1:
+            self._jump(self._active + 1)
+            return
         self._finish("submit")
 
     @on(Button.Pressed, "#auq-chat")

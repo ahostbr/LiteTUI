@@ -171,9 +171,8 @@ def test_a_compaction_sends_NO_stream_options_unlike_a_chat_turn():
 
 def test_a_compaction_sends_no_sampling_overrides():
     """A compaction is not a creative turn; it takes the server's defaults
-    for SAMPLING. The per-model dict rides in only to carry the thinking
-    level — sampling knobs are not read from it here."""
-    k = _compact()
+    for SAMPLING. Chat/model overrides must not change compaction settings."""
+    k = _compact(request_overrides={"temperature": 0.9, "top_p": 0.5})
     assert "temperature" not in k and "top_p" not in k
 
 
@@ -206,11 +205,29 @@ def test_a_blank_per_model_inherits_the_global_level():
     assert k["extra_body"]["reasoning_effort"] == "xhigh"
 
 
-def test_compaction_honours_the_per_model_thinking_level_too():
-    """The semantic loss Ryan actually hit: compact 'low' silently becoming a
-    model's xhigh default. A per-model off must reach the compaction request."""
-    k = _compact(request_overrides={"reasoning_effort": "off"})
-    assert k["extra_body"]["reasoning_effort"] == "none"
+@pytest.mark.parametrize("backend", ["ninfer", "llamacpp", "codex"])
+@pytest.mark.parametrize("compact_level,model_level,expected", [
+    ("low", "xhigh", "low"),
+    ("off", "xhigh", "none"),
+    ("xhigh", "off", "xhigh"),
+    (None, "xhigh", None),
+])
+def test_compaction_setting_wins_over_model_thinking(backend, compact_level, model_level, expected):
+    """Compaction owns its reasoning budget independently of normal chat."""
+    overrides = {"reasoning_effort": model_level}
+    k = _compact(thinking_level=compact_level, backend_name=backend,
+                 request_overrides=overrides)
+    assert k.get("extra_body", {}).get("reasoning_effort") == expected
+    assert overrides == {"reasoning_effort": model_level}
+
+
+def test_compaction_uses_its_setting_before_lmstudio_capability_mapping():
+    overrides = {"reasoning_effort": "off"}
+    k = _compact(backend_name="lmstudio", request_overrides=overrides)
+    assert "reasoning_effort" not in k.get("extra_body", {})
+    k = _compact(backend_name="lmstudio", request_overrides=overrides,
+                 graded_thinking_models=["m"])
+    assert k["extra_body"]["reasoning_effort"] == "low"
 
 
 def test_compaction_with_no_level_sends_no_extra_body_either():

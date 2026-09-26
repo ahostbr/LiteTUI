@@ -234,11 +234,26 @@ async def main():
         scr = b.screen.query_one(aq.AskUserQuestionBody)
         chk("q1 answered before submit", scr._states[0].answered)
         await pilot.click(scr.query_one("#auq-submit"))
+        await pilot.pause(0.3)
+        chk("Next advances without submitting", scr._active == 1 and t.is_alive() and not box)
+        await pilot.click(scr.query_one("#auq-submit"))
+        await pilot.pause(0.3)
+        chk("Next reaches last question", scr._active == 2)
+        await pilot.click(scr.query_one("#auq-submit"))
+        await pilot.pause(0.3)
+        chk("incomplete Submit returns to first unanswered question",
+            scr._active == 1 and t.is_alive() and not box)
+        await pilot.press("enter")
+        await pilot.click(scr.query_one("#auq-submit"))
+        await pilot.pause(0.3)
+        scr.query_one("#auq-note-input").value = "Use the default"
+        await pilot.pause()
+        await pilot.click(scr.query_one("#auq-submit"))
         t.join(timeout=5)
         res = box[0]
-        chk("submit result", res.startswith("[ask_user_question] SUBMITTED — 1 of 3 answered"))
+        chk("submit result", res.startswith("[ask_user_question] SUBMITTED — 3 of 3 answered"))
         chk("selection + note both returned", "[x] Poll loop heartbeat" in res and "note: ano" in res)
-        chk("unanswered question present, marked", "Spot the bug — not answered" in res)
+        chk("note-only answer returned", "note: Use the default" in res)
 
     print("\n=== ESC cancels with no answers ===")
     c = make_app()
