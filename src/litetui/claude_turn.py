@@ -496,19 +496,18 @@ async def stream_turn(app):
                         # ThinkingBlock only appends (widgets.py:454) and owns
                         # no setter, so the authoritative trace is rebuilt into
                         # a fresh block rather than concatenated onto a wrong
-                        # prefix. Mounted before the old one is removed so the
-                        # trace never blinks out of the transcript.
-                        stale_block, thinking = thinking, ThinkingBlock()
-                        widget.thinking = thinking
+                        # prefix. set_thinking mounts it before removing the old
+                        # one, so the trace never blinks out of the transcript.
+                        thinking = ThinkingBlock()
                         app._thinking_live = thinking
-                        widget.mount(thinking, before=widget.body)
-                        stale_block.remove()
+                        widget.set_thinking(thinking)
                         thinking.append(thinking_text)
                     elif thinking is None and app.settings.show_thinking:
                         thinking = ThinkingBlock()
-                        widget.thinking = thinking
                         app._thinking_live = thinking
-                        widget.mount(thinking, before=widget.body)
+                        # `widget` may be a card card_for opened THIS tick, not yet
+                        # composed (T1031): set_thinking handles both.
+                        widget.set_thinking(thinking)
                         # The whole trace, not this one event: a block created
                         # late (show_thinking turned on mid-turn, or a snapshot
                         # arriving with no deltas before it) still owns

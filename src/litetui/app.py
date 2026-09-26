@@ -7962,8 +7962,9 @@ class LiteTUI(App):
                             self._thinking_live = thinking
                             # The card declares `thinking` and nothing set it,
                             # so a thinking-only card could not title itself.
-                            widget.thinking = thinking
-                            widget.mount(thinking, before=widget.body)
+                            # set_thinking also survives a card that has not
+                            # composed yet (T1031).
+                            widget.set_thinking(thinking)
                             # Discrete event -> unconditional. See _scroll_down.
                             # AFTER the refresh, not during it: mount() has not
                             # been measured yet, so scrolling in this frame targets

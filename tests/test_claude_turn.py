@@ -132,6 +132,14 @@ class FakeBubble:
     def mount(self, child, before=None):
         self.mounted.append(child)
 
+    def set_thinking(self, block):
+        """AssistantMessage.set_thinking's contract (T1031): replace, then
+        remove the block it replaced."""
+        old, self.thinking = self.thinking, block
+        self.mounted.append(block)
+        if old is not None and old is not block:
+            old.remove()
+
 
 class FakeSession:
     def __init__(self, messages=(), block=False):
