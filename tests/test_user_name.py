@@ -9,6 +9,22 @@ from litetui import ask_user_question as auq
 from litetui.launch_options import LaunchOptions
 from litetui.user_name_dialog import UserNameScreen
 
+# The modal gate reads these from the live environment, and every seat LiteSuite
+# spawns inherits them, so a test that expects the modal must start without them.
+# The canvas-seat arm sets them back explicitly.
+_HARNESS_SEAT_ENV = (
+    "LITESUITE_CANVAS_AGENT",
+    "LITEHARNESS_TIER",
+    "LITEHARNESS_AGENT_NAME",
+    "LITEHARNESS_SPAWNED_BY",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_harness_seat_env(monkeypatch):
+    for name in _HARNESS_SEAT_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["Ada", ""])
