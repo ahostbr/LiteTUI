@@ -36,6 +36,10 @@ class _FakeApp(SimpleNamespace):
     def _system(self, msg):
         self._said.append(msg)
 
+    def _resume_cli_convo(self):
+        """This unit double has no --convo; the production preflight succeeds."""
+        return True
+
 
 _apply = LiteTUI._apply_cli_args.__wrapped__
 
@@ -252,7 +256,7 @@ def test_cli_startup_cancellation_sets_blocked_and_preserves_cancellation():
             await asyncio.Event().wait()
         app._ensure_chat_ready = wait
         task = asyncio.create_task(_apply(app))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

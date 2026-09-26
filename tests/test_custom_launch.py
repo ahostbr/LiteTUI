@@ -117,6 +117,7 @@ async def test_cli_waits_for_actual_connection():
         _connect_settled=True, _gui_connection_success=True, available_models=['fixture'],
         model_rows={'fixture': ModelRow('fixture', None, 'server', True)},
         _cli_initial_model='fixture', _cli_system_prompt=None, _first_prompt=None,
+        _resume_cli_convo=lambda: True,
         _update_header=lambda: None, _fetch_ctx_window=lambda: None)
     task = asyncio.create_task(LiteTUI._apply_cli_args.__wrapped__(app))
     await asyncio.sleep(0)
@@ -170,6 +171,7 @@ async def test_lmstudio_thinking_is_probed_for_selected_model(monkeypatch):
         _cli_thinking_level='medium', _cli_initial_model='fixture',
         _cli_system_prompt=None, _first_prompt=None, available_models=['fixture'],
         model_rows={'fixture': ModelRow('fixture', None, 'server', True)},
+        _resume_cli_convo=lambda: True,
         _update_header=lambda: None, _fetch_ctx_window=lambda: None)
     await LiteTUI._apply_cli_args.__wrapped__(app)
     assert seen == ['fixture']
@@ -192,7 +194,10 @@ def test_custom_reconnect_keeps_invocation_until_explicit_edit(tmp_path):
     active = replace(saved, custom_base_url='http://localhost:1235/v1')
     app = SimpleNamespace(settings=active, backend=CustomBackend(active), convo_dir=tmp_path,
         _invocation_saved_values={'custom_base_url': saved.custom_base_url},
-        _settings_service=SimpleNamespace(snapshot=lambda name: SimpleNamespace(effective=saved)))
+        _settings_service=SimpleNamespace(
+            conversation_root=tmp_path.parent,
+            snapshot=lambda name: SimpleNamespace(effective=saved),
+        ))
     prepare_reconnect(app)
     assert app.backend.base_url() == 'http://localhost:1235/v1'
     app._invocation_saved_values.clear()
