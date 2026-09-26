@@ -12,6 +12,7 @@ import base64
 import copy
 import json
 import os
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from typing import Protocol
 
 import httpx
 
+from litetui import runtime_log, sanitize
 from litetui.llm_backend import BackendError
 
 OAUTH_PROVIDERS = ("codex",)  # Claude is enabled only after live acceptance.
@@ -31,7 +33,68 @@ URLS = {
 
 
 class ProviderError(BackendError):
-    """Safe to render and log: no upstream body, headers, or credentials."""
+    """Safe to render/log: bounded sanitized diagnostics, never raw bodies/auth."""
+
+
+_CODEX_RETRY_DELAYS = (0.5, 1.0)
+_CODEX_TRANSIENT_STATUSES = {500, 502, 503, 504}
+_CONNECTION_FAILURES = (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
+                        httpx.RemoteProtocolError)
+
+
+def _logged_provider_error(message: str) -> ProviderError:
+    runtime_log.record_error("oauth.request_failed", detail=message)
+    return ProviderError(message)
+
+
+
+async def _close_http(resource, provider: str, label: str):
+    """Attempt cleanup without replacing an in-flight error or cancellation.
+
+    In particular, cleanup ReadError must never enter the pre-output retry
+    classifier as though the request itself failed transiently.
+    """
+    primary_error = sys.exc_info()[1]
+    try:
+        await resource.aclose()
+    except Exception as error:  # noqa: BLE001 - preserve primary error across cleanup
+        failure = _logged_provider_error(
+            f"{provider.title()} {label} close failed ({type(error).__name__})."
+        )
+        if primary_error is None:
+            raise failure from None
+
+def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
+    """Only known error fields cross the boundary, not input/output or headers.
+
+    Upstream messages are untrusted: remove our exact credentials, terminal
+    escapes and named secrets, and bound each field before rendering/logging.
+    This preserves a useful reason without dumping a response (or auth body).
+    """
+    def safe(value):
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return ""
+        text = str(value)
+        for secret in secrets:
+            if secret:
+                text = text.replace(secret, "[redacted]")
+        text = sanitize.redact_secrets(sanitize.strip_escapes(text))
+        text = " ".join(text.split())
+        return text[:500] + ("…" if len(text) > 500 else "")
+
+    response = event.get("response")
+    response = response if isinstance(response, dict) else {}
+    error = response.get("error") or event.get("error")
+    error = error if isinstance(error, dict) else event
+    incomplete = response.get("incomplete_details") or event.get("incomplete_details")
+    incomplete = incomplete if isinstance(incomplete, dict) else {}
+    fields = [("code", error.get("code")), ("message", error.get("message")),
+              ("reason", incomplete.get("reason"))]
+    details = [f"{key}={clean}" for key, value in fields if (clean := safe(value))]
+    reason = "; ".join(details) or "no reason supplied by the server"
+    return _logged_provider_error(
+        f"{provider.title()} {event['type']}: {reason}. The response was not replayed."
+    )
 
 
 class ModelTransport(Protocol):
@@ -331,18 +394,48 @@ def _usage(raw, provider):
 
 
 class ResponseStream:
-    def __init__(self, response, client, provider, model, tools):
+    def __init__(self, response, client, provider, model, tools, *, retry=None, secrets=()):
         self.response, self.client = response, client
+        self._retry = retry
+        self._secrets = secrets
         self.provider, self.model = provider, model
         self.names = {
             t["function"]["name"].lower(): t["function"]["name"] for t in tools
         }
 
     async def close(self):
-        await self.response.aclose()
-        await self.client.aclose()
+        try:
+            await _close_http(self.response, self.provider, "response")
+        finally:
+            await _close_http(self.client, self.provider, "client")
 
     async def __aiter__(self):
+        # This is one completion request, not a turn replay. Once ANY chunk
+        # escapes (including reasoning/tool deltas), retries are forbidden.
+        emitted = False
+        try:
+            while True:
+                try:
+                    async for chunk in self._iter_response():
+                        emitted = True
+                        yield chunk
+                    return
+                except _CONNECTION_FAILURES:
+                    if not emitted and self._retry is not None:
+                        self.response = await self._retry()
+                        continue
+                    raise _logged_provider_error(
+                        f"{self.provider.title()} connection was interrupted. "
+                        "The response was not replayed; check any completed tool effects before retrying."
+                    ) from None
+                except httpx.HTTPError:
+                    raise _logged_provider_error(
+                        f"{self.provider.title()} connection was interrupted. The response was not replayed."
+                    ) from None
+        finally:
+            await self.close()
+
+    async def _iter_response(self):
         completed, usage, blocks = False, {}, {}
         # Codex sends reasoning as SEVERAL summary parts per turn; see the
         # comment at response.reasoning_summary_part.added below.
@@ -356,11 +449,11 @@ class ResponseStream:
                     continue
                 try:
                     e = json.loads(data)
+                    if not isinstance(e, dict):
+                        raise TypeError("event must be an object")
                     kind = e.get("type", "")
                     if kind in ("error", "response.failed", "response.incomplete"):
-                        raise ProviderError(
-                            f"{self.provider.title()} did not complete the response. Retry or reduce context."
-                        )
+                        raise _stream_failure(self.provider, e, self._secrets)
                     if self.provider == "codex":
                         idx = e.get("output_index", 0)
                         if kind == "response.output_text.delta":
@@ -479,12 +572,9 @@ class ResponseStream:
                 raise ProviderError(
                     f"{self.provider.title()} stream ended before completion. Retry the turn."
                 )
-        except httpx.HTTPError:
-            raise ProviderError(
-                f"{self.provider.title()} connection was interrupted. Retry the turn."
-            ) from None
         finally:
-            await self.close()
+            # A retry gets a fresh response but keeps the request's client.
+            await _close_http(self.response, self.provider, "response")
 
 
 async def collect(stream):
@@ -584,43 +674,81 @@ class OAuthTransport:
         client = httpx.AsyncClient(
             transport=self.http_transport, timeout=httpx.Timeout(120, connect=20)
         )
-        try:
-            for attempt in range(2):
+        retries = 0
+        auth_refreshed = False
+        # Mutable so a refreshed token is also scrubbed from later SSE errors.
+        secrets = [credentials.access, credentials.account_id]
+
+        async def pause_for_retry(*, status=None):
+            nonlocal retries
+            if self.provider != "codex" or retries >= len(_CODEX_RETRY_DELAYS):
+                if status is not None:
+                    message = f"{self.provider.title()} server error (HTTP {status}), retried {retries} times. Try again later."
+                else:
+                    message = (f"{self.provider.title()} connection was interrupted before output, "
+                               f"retried {retries} times. Check the connection and retry.")
+                raise _logged_provider_error(message) from None
+            delay = _CODEX_RETRY_DELAYS[retries]
+            retries += 1
+            await asyncio.sleep(delay)
+
+        async def send():
+            nonlocal credentials, auth_refreshed
+            while True:
                 req = client.build_request(
-                    "POST",
-                    URLS[self.provider],
-                    headers=self.headers(credentials),
-                    json=body,
+                    "POST", URLS[self.provider], headers=self.headers(credentials), json=body,
                 )
-                response = await client.send(req, stream=True)
+                try:
+                    response = await client.send(req, stream=True)
+                except _CONNECTION_FAILURES:
+                    if self.provider != "codex":
+                        raise
+                    await pause_for_retry()
+                    continue
                 if response.status_code == 401:
-                    await response.aclose()
+                    await _close_http(response, self.provider, "response")
                     fresh = read_credentials(self.provider, self.credential_path)
-                    if attempt or fresh == credentials:
+                    if auth_refreshed or fresh == credentials:
                         raise login_error(self.provider)
                     credentials = fresh
+                    secrets.extend((credentials.access, credentials.account_id))
+                    auth_refreshed = True
                     continue
                 if not response.is_success:
                     status = response.status_code
-                    await response.aclose()
+                    await _close_http(response, self.provider, "response")
+                    if self.provider == "codex" and status in _CODEX_TRANSIENT_STATUSES:
+                        await pause_for_retry(status=status)
+                        continue
                     if status == 429:
                         raise ProviderError(
                             f"{self.provider.title()} usage limit reached. Wait and retry; no fallback was used."
                         )
+                    if status >= 500:
+                        raise _logged_provider_error(
+                            f"{self.provider.title()} server error (HTTP {status}), retried {retries} times. Try again later."
+                        )
                     raise ProviderError(
                         f"{self.provider.title()} refused the request (HTTP {status}). Check account access and the selected model."
                     )
-                result = ResponseStream(
-                    response,
-                    client,
-                    self.provider,
-                    kwargs["model"],
-                    kwargs.get("tools") or [],
-                )
-                return result if kwargs.get("stream", False) else await collect(result)
-            raise login_error(self.provider)
+                return response
+
+        async def retry_response():
+            # The parser has closed the failed response before invoking us.
+            # Shares the budget with pre-header retries: no nested amplification.
+            await pause_for_retry()
+            return await send()
+
+        try:
+            response = await send()
+            result = ResponseStream(
+                response, client, self.provider, kwargs["model"], kwargs.get("tools") or [],
+                retry=retry_response if self.provider == "codex" else None,
+                secrets=secrets,
+            )
+            return result if kwargs.get("stream", False) else await collect(result)
         except BaseException as error:
-            await client.aclose()
+            await _close_http(client, self.provider, "client")
             if isinstance(error, httpx.HTTPError):
                 raise ProviderError(
                     f"Could not connect to {self.provider.title()}. Check the connection and retry."
