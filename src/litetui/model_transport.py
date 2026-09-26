@@ -12,6 +12,7 @@ import base64
 import copy
 import json
 import os
+import random
 import sys
 import time
 import urllib.request
@@ -36,8 +37,12 @@ class ProviderError(BackendError):
     """Safe to render/log: bounded sanitized diagnostics, never raw bodies/auth."""
 
 
-_CODEX_RETRY_DELAYS = (0.5, 1.0)
-_CODEX_TRANSIENT_STATUSES = {500, 502, 503, 504}
+class RetryableProviderError(ProviderError):
+    """A transient provider failure that may safely replay this model request."""
+
+
+_CODEX_RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 32.0)
+_CODEX_TRANSIENT_STATUSES = {429, 500, 501, 502, 503, 504, 505}
 _CONNECTION_FAILURES = (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
                         httpx.RemoteProtocolError)
 
