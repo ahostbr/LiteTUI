@@ -504,14 +504,13 @@ class ResponseStream:
                         elif kind == "response.function_call_arguments.delta":
                             yield _chunk(call=_call(idx, arguments=e["delta"]))
                         elif kind == "response.completed":
-                            self._completed = True
                             response = e["response"]
                             opaque = [
                                 i
                                 for i in response.get("output", [])
                                 if i["type"] == "reasoning"
                             ]
-                            yield _chunk(
+                            terminal_chunk = _chunk(
                                 usage=_usage(response.get("usage") or {}, "codex"),
                                 metadata={
                                     "provider": "codex",
@@ -519,6 +518,8 @@ class ResponseStream:
                                     "items": opaque,
                                 },
                             )
+                            self._completed = True
+                            yield terminal_chunk
                     else:
                         idx = e.get("index", 0)
                         if kind == "message_start":
@@ -553,13 +554,12 @@ class ResponseStream:
                                     "Claude reached its response limit. Increase the output budget."
                                 )
                         elif kind == "message_stop":
-                            self._completed = True
                             opaque = [
                                 b
                                 for b in blocks.values()
                                 if b["type"] in ("thinking", "redacted_thinking")
                             ]
-                            yield _chunk(
+                            terminal_chunk = _chunk(
                                 usage=_usage(usage, "claude"),
                                 metadata={
                                     "provider": "claude",
@@ -567,6 +567,8 @@ class ResponseStream:
                                     "items": opaque,
                                 },
                             )
+                            self._completed = True
+                            yield terminal_chunk
                 except (ValueError, KeyError, TypeError):
                     raise ProviderError(
                         f"{self.provider.title()} returned an unreadable stream."
@@ -579,7 +581,7 @@ class ResponseStream:
             # httpx closes a drained response inside aiter_raw, before our
             # finally. Its closed flag distinguishes that cleanup failure
             # from a read interruption, even after a terminal usage chunk.
-            if not self._completed or not self.response.is_closed:
+            if isinstance(error, ProviderError) or not self._completed or not self.response.is_closed:
                 raise
             _logged_provider_error(
                 f"{self.provider.title()} response close failed ({type(error).__name__})."

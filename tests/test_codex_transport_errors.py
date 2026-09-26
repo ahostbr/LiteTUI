@@ -687,3 +687,21 @@ async def test_generic_midstream_error_warns_about_tool_effects(tmp_path, diagno
         await transport(tmp_path, handle).create(model="gpt-test", messages=[])
     assert len(requests) == 1 and not pauses
     assert "PRIVATE TIMEOUT DETAIL" not in str(diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_completion", [False, True])
+@pytest.mark.parametrize("tail", [
+    b'data: {"type":"response.completed"}',
+    b'data: {"type":"error","message":"trailing failure"}',
+    b'data: malformed-json',
+])
+async def test_unterminated_final_event_error_is_not_cleanup(tmp_path, diagnostics, tail, prior_completion):
+    class FinalLine(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield sse(TEXT, *([DONE] if prior_completion else [])) + tail
+
+    with pytest.raises(mt.ProviderError):
+        await transport(tmp_path, lambda r: httpx.Response(200, stream=FinalLine())).create(
+            model="gpt-test", messages=[])
+    assert 'close failed' not in str(diagnostics)
