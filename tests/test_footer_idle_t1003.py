@@ -65,14 +65,32 @@ def footer_writes(a) -> str:
     return "".join(w for w in a.writes if FOOTER_ROW in w)
 
 
-def test_footer_glyphs_are_measured_the_way_a_terminal_draws_them():
+def terminal_width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+@pytest.mark.asyncio
+async def test_footer_glyphs_are_measured_the_way_a_terminal_draws_them() -> None:
     # A glyph Rich and the terminal disagree on shifts everything after it by
-    # one cell on screen but not in Textual's model of the screen.
-    for label in (widgets.ContextFooter.PALETTE_LABEL,
-                  widgets.PauseButton.LABEL_RUN, widgets.PauseButton.LABEL_PAUSED,
-                  widgets.MicButton.LABEL_IDLE, widgets.MicButton.LABEL_REC):
-        terminal = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in label)
-        assert cell_len(label) == terminal, repr(label)
+    # one cell on screen but not in Textual's model of the screen. Read from
+    # the MOUNTED button, so the arm tests what is drawn, not a constant.
+    a = make_app()
+    async with a.run_test(size=(120, ROWS), headless=False) as pilot:
+        await pilot.pause(0.5)
+        labels = [str(a.query_one(".palette-button").content)]
+    labels += [widgets.PauseButton.LABEL_RUN, widgets.PauseButton.LABEL_PAUSED,
+               widgets.MicButton.LABEL_IDLE, widgets.MicButton.LABEL_REC]
+    for label in labels:
+        assert cell_len(label) == terminal_width(label), repr(label)
+
+
+def test_no_text_still_names_the_trigram_button():
+    # The Themes help pointed at "the footer's ☰ commands button" after the
+    # button itself changed. Both spellings: the glyph and its escape.
+    src = Path(__file__).resolve().parent.parent / "src" / "litetui"
+    for path in src.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "☰" not in text and "\\u2630" not in text, path.name
 
 
 @pytest.mark.asyncio
@@ -100,7 +118,8 @@ async def test_an_idle_footer_neither_recomposes_nor_repaints(monkeypatch) -> No
         out = footer_writes(a)
         assert len(recomposes) == 0, f"{len(recomposes)} recomposes in 10 s idle"
         assert out == "", f"{len(out)} footer bytes in 10 s idle"
-        assert "coommands" not in "".join(a.writes)
+        # No "coommands" assertion: the tear happens terminal-side, so Textual
+        # never writes that string. The glyph arm above is what guards it.
 
 
 @pytest.mark.asyncio
