@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal, get_args, get_origin, get_type_hints
 
 from litetui import settings_runtime
-from litetui import llm_backend, paths, tasks
+from litetui import llm_backend, paths, seat_authority, tasks
 from litetui import settings as settings_mod
 from litetui.shared_state import DATA_VERSION, Lease, OwnershipError, check_data_version
 
@@ -681,7 +681,7 @@ async def _async_dispatch(app, cmd):
         if app.plugins.dispatch_for(name) is None:
             raise ValueError("Unknown tool name")
         prior = app._active_tool_profile
-        app._active_tool_profile = app.chosen_tool_profile
+        app._active_tool_profile = seat_authority.seat_profile(app)
         try:
             text, ok = await app._execute_tool(name, dict(args))
             return {"name": name, "ok": ok, "result": text}

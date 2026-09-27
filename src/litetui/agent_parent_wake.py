@@ -1,6 +1,6 @@
 """Wake already-committed parent history without appending another user turn."""
 from uuid import uuid4
-from litetui import hook_host
+from litetui import hook_host, seat_authority
 from litetui.turn_deferral import STREAM_DEFERRED
 
 
@@ -29,7 +29,7 @@ async def wake_parent(app, *, parent, receipts):
         return []
     # The chosen profile, whole; nobody is here, so a CONFIRM is refused
     # (`_hook_source` below is one of tool_policy.UNATTENDED_SOURCES).
-    app._active_tool_profile = app.settings.tool_policy_profile
+    app._active_tool_profile = seat_authority.turn_profile(app, 'child-result')
     app._hooks_suppressed = False
     app._hook_corrections = 0
     app._hook_source = 'child-result'

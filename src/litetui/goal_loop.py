@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from litetui import paths, scheduler, textfmt
+from litetui import paths, scheduler, seat_authority, textfmt
 from litetui.tool_policy import AUTONOMOUS, INTERACTIVE
 
 GOAL_FILENAME = "goal.json"
@@ -326,7 +326,7 @@ def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
         return
     app._user_bubble(text, False)
     app._append({"role": "user", "content": text})
-    app._active_tool_profile = state.tool_profile
+    app._active_tool_profile = seat_authority.turn_profile(app, "goal", state.tool_profile)
     app._stream()
 
 
@@ -375,7 +375,7 @@ def goal_command(app: Any, arg: str) -> None:
     app._materialise_convo()
     state = GoalState(
         objective=arg,
-        tool_profile=getattr(app.settings, "tool_policy_profile", INTERACTIVE),
+        tool_profile=seat_authority.seat_profile(app),
     )
     save_goal(app.convo_dir, state)
     _deliver_goal_turn(

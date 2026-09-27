@@ -4,16 +4,19 @@ from litetui import convo_settings
 from litetui.app import LiteTUI
 
 
-def test_new_conversation_does_not_inherit_invocation_backend(tmp_path):
+def test_new_conversation_is_born_on_the_invocation_backend(tmp_path):
+    # T1027 (ruling 2b9aed25): the backend a flag launched is a fact about the
+    # transcript, so the born file records it; the global default is untouched.
     settings = Settings(backend='codex')
     app = NS(settings=settings, _cli_initial_backend='codex',
              _invocation_saved_values={'backend': 'ninfer', 'backend_chosen': True},
              convo_dir=tmp_path, seat=NS())
     LiteTUI._adopt_convo_settings(app, born=True)
     stored = convo_settings.load(tmp_path)
-    assert stored.backend == 'ninfer'
-    assert stored.execution['backend'] == 'ninfer'
+    assert stored.backend == 'codex'
+    assert stored.execution['backend'] == 'codex'
     assert app.settings.backend == 'codex'
+    assert app._invocation_saved_values['backend'] == 'ninfer', 'the saved global was rewritten'
 
 
 def test_unrelated_save_without_conversation_does_not_persist_invocation(tmp_path, monkeypatch):
@@ -99,7 +102,7 @@ def test_failed_explicit_save_keeps_invocation_override(tmp_path, monkeypatch):
     assert app._cli_initial_backend == 'codex'
 
 
-def test_resume_then_new_conversation_uses_resumed_saved_backend(tmp_path):
+def test_resume_then_new_conversation_is_born_on_the_launch_flag_backend(tmp_path):
     stored = convo_settings.born_from(Settings(backend='llamacpp'))
     convo_settings.save(tmp_path, stored)
     app = NS(settings=Settings(backend='codex'), convo_dir=tmp_path,
@@ -116,7 +119,11 @@ def test_resume_then_new_conversation_uses_resumed_saved_backend(tmp_path):
     new.mkdir()
     app.convo_dir = new
     LiteTUI._adopt_convo_settings(app, born=True)
-    assert convo_settings.load(new).backend == 'llamacpp'
+    # T1027 (Marquee's ruling 2b9aed25): the engine a flag launched is a fact
+    # about the transcript, so a new conversation is born on it. Recording the
+    # saved backend instead made a resume run a different engine
+    # (.convos/ec62c953: a claude seat's file said codex).
+    assert convo_settings.load(new).backend == 'codex'
 
 
 def test_conversation_explicit_edit_retires_only_after_success(tmp_path):

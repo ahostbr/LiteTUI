@@ -49,9 +49,9 @@ HEARTBEAT_EVERY = 12
 #: Set to a non-empty value to make registration a no-op.
 #:
 #: 🔴 SET THIS IN TESTS. Without it, constructing LiteTUI REGISTERS, and
-#: registration passes --takeover, which does not refuse a live holder -- so a
-#: test run EVICTS the developer's running app from the fleet registry and
-#: leaves a dead test process as the only LiteTUI row.
+#: registration passed --takeover (until T1027), which did not refuse a live
+#: holder -- so a test run EVICTED the developer's running app from the fleet
+#: registry and left a dead test process as the only LiteTUI row.
 #: The registry is live shared state and is not this repo's to write from a test.
 #: Why: Docs/adr/0002-tests-must-not-write-the-live-registry.md
 NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
@@ -290,6 +290,9 @@ class Seat:
         self.agent_id = agent_id
         self.name = name
         self.model = model or "unknown"
+        #: T1027: the engine the seat RESOLVED, reported beside the model so the
+        #: fleet floor judges what actually runs (None = not yet known).
+        self.backend: str | None = None
         self.tier = tier
         self.cli = cli
         # T1025: the level this process RESOLVED, reported beside the model so the
@@ -321,7 +324,9 @@ class Seat:
                 # was stealable) and the janitor's dead-owner purge (so dead
                 # rows piled up -- four ghosts on the roster). Added to the CLI
                 # as an opt-in flag; requires liteharness with --session-pid.
-                "--session-pid", str(os.getpid())]
+                "--session-pid", str(os.getpid())] + [
+                    arg for flag, value in (("--backend", self.backend),)
+                    if value for arg in (flag, value)]
 
     def refresh_name(self, root: Path | None = None) -> bool:
         """Adopt a rename of this agent's own registry row without claiming it.
@@ -357,17 +362,41 @@ class Seat:
         if not name or not self.registered or harness_disabled():
             return False
         try:
-            argv = self._presence_argv()
-            argv[argv.index("--name") + 1] = name
-            result = _cli(argv + ["--takeover"], timeout=30)
+            result, got = self._register_as(name)
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
             return False
         if result.returncode != 0:
             self.error = (result.stderr or result.stdout or "").strip()[:200] or f"exit {result.returncode}"
             return False
-        self.name = _resolved_name(result.stdout) or name
+        self.name = got
         return True
+
+    def _register_as(self, base: str):
+        """Register under `base`, or `base-2` .. `base-9` while a LIVE agent holds it.
+
+        🔴 NO --takeover (T1027). Its liveness bar is last_seen < 600 s, so it
+        evicted a holder whose pid was ALIVE but quiet for 700 s as a "dead
+        ghost" (measured against a throwaway registry, 2026-09-26). A plain
+        register refuses a live holder and still reclaims a dead-pid corpse,
+        which is all a relaunch needs. Ryan (liteask a-1db0f560): "the agents
+        name is supposed to auto change if the name is taken" — so a refusal
+        becomes the next suffix, never a random name. First come keeps it.
+
+        Returns (last CLI result, the name the registry assigned).
+        """
+        argv = self._presence_argv()
+        at = argv.index("--name") + 1
+        got = base
+        for candidate in [base] + [f"{base}-{n}" for n in range(2, 10)]:
+            argv[at] = candidate
+            result = _cli(argv, timeout=30)
+            if result.returncode != 0:
+                return result, self.name
+            got = _resolved_name(result.stdout) or candidate
+            if got == candidate:
+                break
+        return result, got
 
     def heartbeat(self) -> bool:
         """Refresh presence so the roster keeps showing this seat.
@@ -420,32 +449,24 @@ class Seat:
             self.error = f"disabled by {NO_HARNESS_ENV}"
             return False
         try:
-            r = _cli(
-                self._presence_argv() + [
-                 # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
-                 #
-                 # 🔴 The agent id is DERIVED from the conversation (agent_id_for_convo,
-                 # uuid5), never minted per process. the user rejected per-process ids on
-                 # 2026-08-21 after they put a dispatched task in a DEAD MAILBOX while
-                 # `send` exited 0. Do NOT reintroduce them -- and do not re-derive them
-                 # from first principles either, which is what happens when this note is
-                 # simply deleted.
-                 #
-                 # ⚠️ --takeover does NOT protect this seat. It is documented to refuse a
-                 # live holder and measurably does not, so a second process TAKES THE NAME.
-                 # Address mail by agent_id, never by name.
-                 #
-                 # ⚠️ A live session_pid is NOT enough: last_seen is written once, so a seat
-                 # decays to [ghost] at ~10 minutes. heartbeat() is what keeps it on the
-                 # roster.
-                 #
-                 # Why: Docs/adr/0003-seat-identity-is-derived-from-the-conversation.md
-                 "--takeover"],
-                timeout=30,
-            )
+            # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE — by a PLAIN register, which
+            # claims a name whose holder's pid is dead. `_register_as` says why
+            # --takeover is gone (T1027): it evicted a LIVE quiet holder.
+            #
+            # 🔴 The agent id is DERIVED from the conversation (agent_id_for_convo,
+            # uuid5), never minted per process. the user rejected per-process ids on
+            # 2026-08-21 after they put a dispatched task in a DEAD MAILBOX while
+            # `send` exited 0. Address mail by agent_id, never by name.
+            #
+            # ⚠️ A live session_pid is NOT enough: last_seen is written once, so a seat
+            # decays to [ghost] at ~10 minutes. heartbeat() is what keeps it on the
+            # roster.
+            #
+            # Why: Docs/adr/0003-seat-identity-is-derived-from-the-conversation.md
+            r, got = self._register_as(self.name)
             self.registered = r.returncode == 0
             if self.registered:
-                self.name = _resolved_name(r.stdout) or self.name
+                self.name = got
             else:
                 self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
             return self.registered
