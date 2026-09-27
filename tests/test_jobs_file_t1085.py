@@ -129,3 +129,11 @@ def test_another_folders_jobs_json_passes(tmp_path, monkeypatch):
     other = tmp_path / "elsewhere"
     other.mkdir()
     assert seat_authority.jobs_file_refusal(a, {"path": str(other / "jobs.json")}, tmp_path) is None
+
+
+@pytest.mark.parametrize("alias", ["jobs.json::$DATA", "jobs.json.", "jobs.json ", "jobs.json:x"])
+def test_a_windows_alias_of_jobs_json_is_refused_too(tmp_path, monkeypatch, alias):
+    """Dijkstra 69c7c209 A1: each alias opens the same jobs.json (measured with open())."""
+    a, _ = _locked(tmp_path, monkeypatch)
+    why = seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / "x")[:-1] + alias}, tmp_path)
+    assert why and "T1085" in why, alias
