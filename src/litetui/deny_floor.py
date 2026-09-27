@@ -184,14 +184,14 @@ def _separator(word: str) -> int:
 
 
 def _pieces(word: str) -> list[str]:
-    """A PowerShell comma array is ONE shell word: `'C:\\tmp\\x','C:\\Users\\u'`
+    """A PowerShell comma array is ONE shell word: `'C:\\tmp\\x','C:\\data\\b'`
     (review 400014dd F-A). Split it on commas outside quotes, so every path in
     it is judged; a word with no comma comes back whole.
 
     Unquoted braces go first (review 10cfe750 F-C): bash brace expansion runs
     before tilde and parameter expansion, so `rm -rf {x,~}` deletes ~ and
     `~{,}` is "~ ~". Dropping the braces over-approximates concatenation
-    (`/c/Users/{u,x}` is judged as "/c/Users/u" and "x"), which only ever
+    (`/data/{a,b}` is judged as "/data/a" and "b"), which only ever
     refuses more. `${HOME}` becomes `$HOME`, still a home variable."""
     braces = set(_outside_quotes(word, "{}"))
     word = "".join(ch for i, ch in enumerate(word) if i not in braces)
