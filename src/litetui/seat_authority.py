@@ -73,15 +73,33 @@ def turn_profile(app, source: str, requested: str | None = None) -> str:
     return flag or requested or seat_profile(app)
 
 
+def effective_thinking(app) -> str | None:
+    """The effort THIS request will send — chat_request's own expression
+    (turn_engine: the merged overrides' reasoning_effort, else thinking_level).
+
+    Dijkstra E1 (T1043 review): the precedence is the launch flag
+    (_cli_effective_thinking) > the per-model /modelcfg reasoning_effort >
+    thinking_level. Reading only the first and last passed gpt-6-sol with an
+    override of "medium" under /think high, and SENT medium. One function, used by
+    resolve() and by the presence report (app._sync_seat_resolution), so the floor,
+    the fleet and the wire judge one value. A host without the request builder
+    (a partial test double) falls back to the flag, then thinking_level."""
+    overrides = getattr(app, "_effective_request_overrides", None)
+    if overrides is not None:
+        try:
+            sent = overrides().get("reasoning_effort")
+        except Exception:  # noqa: BLE001 - an unbuildable request is refused by its own send
+            sent = None
+        return sent or getattr(app, "_thinking_level", None)
+    return getattr(app, "_cli_effective_thinking", None) or getattr(app, "_thinking_level", None)
+
+
 def resolve(app, source: str = "typed", requested: str | None = None) -> Effective:
     """The turn about to run, as the seat will actually run it."""
     return Effective(
         backend=getattr(getattr(app, "backend", None), "name", None),
         model=getattr(app, "model_id", None) or None,
-        # The same expression T1025 reports in presence (_sync_seat_resolution),
-        # so the seat and the spawner's verify_seat judge ONE value.
-        thinking_level=(getattr(app, "_cli_effective_thinking", None)
-                        or getattr(app, "_thinking_level", None)),
+        thinking_level=effective_thinking(app),
         profile=turn_profile(app, source, requested),
         source=source,
     )

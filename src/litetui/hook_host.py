@@ -139,9 +139,14 @@ def refuse_below_floor(app, item) -> bool:
         app.rejected_prompts = []
     app.rejected_prompts.append({**item, "reason": why})
     app._system(why)
-    emit = getattr(app, "_rpc_emit", None)
-    if emit is not None:
-        emit({"type": "turn_end", "stopReason": "fleet_floor"})
+    # Through the one turn_end door, WITH the reason: a supervising parent maps a
+    # not-started fleet_floor turn_end to a failed child carrying this text
+    # (Dijkstra Q3) instead of "Child completed without a started turn".
+    end = getattr(app, "_emit_turn_end", None)
+    if end is not None:
+        end("fleet_floor", None, None, error=why)
+    elif getattr(app, "_rpc_emit", None) is not None:
+        app._rpc_emit({"type": "turn_end", "stopReason": "fleet_floor", "error": why})
     return True
 
 

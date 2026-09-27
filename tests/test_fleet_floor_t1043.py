@@ -87,7 +87,7 @@ def test_a_reconnect_onto_the_pin_REFUSES_the_next_turn():
                    "Nothing was substituted", "built-in default"):
         assert needle in text, (needle, text)
     assert seat.rejected_prompts[0]["reason"] == text, "the prompt was not retained"
-    assert seat.emitted == [{"type": "turn_end", "stopReason": "fleet_floor"}]
+    assert seat.emitted == [{"type": "turn_end", "stopReason": "fleet_floor", "error": text}]
 
 
 def test_a_model_switch_after_launch_then_an_INBOX_turn_is_refused():
@@ -265,3 +265,112 @@ def test_CONTROL_a_connect_at_the_floor_is_quiet():
     seat = _Seat()
     seat_authority.warn_if_below_floor(seat)
     assert seat.said == []
+
+
+# ── review round (Dijkstra ef12509e, via Marquee 7015de6f) ───────────────────
+
+def test_B1_a_skill_on_a_below_floor_seat_starts_no_turn(monkeypatch):
+    """/skill appends and calls _stream itself (skills_plugin._invoke)."""
+    from litetui.plugins import skills_plugin
+
+    monkeypatch.setattr(skills_plugin.skills_mod, "load", lambda skills, want: "do the thing")
+    seat = _Seat(model="gpt-5.6-sol")
+    seat.skills, bubbles = [], []
+    seat._user_bubble = lambda *a, **k: bubbles.append(a)
+    skills_plugin._invoke(seat, "demo")
+    assert (seat.conversation, bubbles, seat.streams) == ([], [], 0)
+    assert "TURN REFUSED" in seat.said[-1]
+
+
+def test_B2_the_post_compact_wake_on_a_below_floor_seat_starts_no_turn():
+    seat = _Seat(model="gpt-5.6-sol")
+    seat._chat_running = lambda: False
+    seat._pending_input, seat._turn_abandoned = [], False
+    seat._materialise_convo = lambda: None
+    seat._user_bubble = lambda *a, **k: None
+    LiteTUI._wake_after_compact(seat)
+    assert seat.conversation == [] and seat.streams == 0
+    assert len(seat.said) == 1 and "TURN REFUSED" in seat.said[0]
+
+
+class _Overridden(_Seat):
+    """A codex seat whose /modelcfg reasoning_effort overrides /think."""
+
+    _effective_request_overrides = LiteTUI._effective_request_overrides
+
+    def __init__(self, override, thinking):
+        super().__init__(model="gpt-6-sol", thinking=thinking)
+        self._cli_effective_thinking = None
+        self._launch_options = None
+        self.backend.request_overrides = lambda key: {"reasoning_effort": override}
+
+
+def test_E1_the_floor_judges_the_effort_the_request_SENDS():
+    """/modelcfg reasoning_effort "medium" + /think high on gpt-6-sol passed the
+    floor and SENT medium (chat_request: overrides' effort, else thinking_level)."""
+    seat = _Overridden("medium", "high")
+    assert seat_authority.effective_thinking(seat) == "medium"
+    _typed(seat)
+    assert seat.streams == 0 and "'medium' is below high" in seat.said[-1]
+
+
+def test_E1_CONTROL_an_override_AT_the_floor_runs_under_a_low_think():
+    seat = _Overridden("high", "low")
+    _typed(seat)
+    assert seat.streams == 1
+
+
+def test_E1_presence_reports_the_effort_the_request_sends():
+    from litetui import app as app_mod
+    seat = _Overridden("medium", "high")
+    seat.seat = SimpleNamespace()
+    app_mod._sync_seat_resolution(seat)
+    assert seat.seat.thinking_level == "medium"
+
+
+@pytest.mark.asyncio
+async def test_Q3_a_refused_child_is_a_FAILED_child_carrying_the_reason():
+    """Was LaunchBlocked("Child completed without a started turn"): the parent
+    never saw why."""
+    from litetui.agent_supervisor import AgentProcess
+
+    why = "TURN REFUSED: FLEET FLOOR: model 'gpt-5.6-sol' is below gpt-6-sol."
+    events = [{"type": "turn_end", "stopReason": "fleet_floor", "error": why}]
+    child = AgentProcess()
+
+    async def receive(*, timeout):
+        return events.pop(0)
+
+    child.receive = receive
+    result = await child.collect_turn(timeout=5)
+    assert result == {"status": "failed", "summary": why, "stop_reason": "fleet_floor", "error": why}
+
+
+@pytest.mark.asyncio
+async def test_Q3_CONTROL_any_other_unstarted_turn_end_still_blocks():
+    from litetui.agent_launcher import LaunchBlocked
+    from litetui.agent_supervisor import AgentProcess
+
+    child = AgentProcess()
+
+    async def receive(*, timeout):
+        return {"type": "turn_end", "stopReason": "stop"}
+
+    child.receive = receive
+    with pytest.raises(LaunchBlocked, match="without a started turn"):
+        await child.collect_turn(timeout=5)
+
+
+def test_Q3_the_seat_emits_through_the_one_turn_end_door():
+    seat = _Seat(model="gpt-5.6-sol")
+    ends = []
+    seat._emit_turn_end = lambda reason, tps, source=None, **extra: ends.append((reason, extra))
+    _typed(seat)
+    assert ends == [("fleet_floor", {"error": seat.said[-1]})]
+
+
+def test_E1_the_fallback_is_UNREACHABLE_in_the_real_app():
+    """Marquee 04768348: effective_thinking's fallback (no request builder) exists
+    only for partial test hosts. The real class always has the builder, so in
+    production the floor judges exactly what chat_request sends."""
+    assert callable(getattr(LiteTUI, "_effective_request_overrides", None))

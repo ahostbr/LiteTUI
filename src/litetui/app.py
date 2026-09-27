@@ -674,8 +674,9 @@ def _sync_seat_resolution(app) -> None:
     `ready` event reports) -- never what the convo file or a launch flag said.
     Four sources disagree on a resumed seat (T1027); only this one is what runs."""
     app.seat.model = app.model_id or "unknown"
-    app.seat.thinking_level = (getattr(app, "_cli_effective_thinking", None)
-                               or getattr(app, "_thinking_level", None))
+    # T1043 (Dijkstra E1): the effort the request SENDS, /modelcfg override
+    # included -- one function with the fleet floor's own judgement.
+    app.seat.thinking_level = seat_authority.effective_thinking(app)
     # T1027: and the ENGINE it resolved -- a seat asked for local that the pin
     # put on codex read as ungoverned without it (Carmack8 d3c3d40c).
     app.seat.backend = getattr(getattr(app, "backend", None), "name", None)
@@ -8677,6 +8678,12 @@ class LiteTUI(App):
             # compaction gets scheduled (see _stream's stop branch). ABANDONED
             # only — a turn that merely ENDED still wakes, which is the whole
             # feature. Cleared at the next turn's start, never here.
+            return
+        # T1043 (Dijkstra B2): this ping calls _stream itself, so it meets the
+        # fleet floor itself. Said once; nothing appended, no turn started.
+        why = seat_authority.floor_refusal(self)
+        if why is not None:
+            self._system(why)
             return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)

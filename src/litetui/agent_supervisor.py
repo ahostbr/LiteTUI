@@ -176,6 +176,15 @@ class AgentProcess:
                             raise LaunchBlocked('Child output exceeds collection limit')
                         chunks.append(text)
                     elif kind == 'turn_end':
+                        reason = event.get('stopReason')
+                        if not started and reason == 'fleet_floor':
+                            # T1043: the child's seat is below the fleet floor and
+                            # refused before starting. A failed child WITH the reason.
+                            detail = event.get('error')
+                            error = (detail if isinstance(detail, str) and detail
+                                     else 'Child refused the turn: below the fleet floor')[:max_output]
+                            return {'status': 'failed', 'summary': error,
+                                    'stop_reason': reason, 'error': error}
                         if not started:
                             raise LaunchBlocked('Child completed without a started turn')
                         reason = event.get('stopReason')
