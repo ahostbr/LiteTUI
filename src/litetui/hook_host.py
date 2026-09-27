@@ -132,7 +132,12 @@ def _turn_source(item) -> str:
     # forgot to say what it is. The steering ledger's copy, for one, keeps
     # "source" but drops "goal_continuation". Its tool profile is unchanged:
     # turn_profile treats any unlisted source like an attended submit.
-    return "goal" if item.get("goal_continuation") else (item.get("source") or "unlabelled")
+    # T1043: a goal item's source carries its loop's origin ("goal-ryan" /
+    # "goal", goal_loop), so the source wins; goal_continuation alone (a goal item
+    # saved before that) is plain "goal".
+    if item.get("source"):
+        return item["source"]
+    return "goal" if item.get("goal_continuation") else "unlabelled"
 
 
 def refuse_below_floor(app, item) -> bool:

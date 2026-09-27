@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from litetui import fleet_policy, tool_policy
 
 #: Turn sources that carry a profile to be narrowed against the seat.
-NARROWING_SOURCES = frozenset({"harness", "child-result", "goal"})
+NARROWING_SOURCES = frozenset({"harness", "child-result", "goal", "goal-ryan"})
 
 
 @dataclass(frozen=True)
@@ -126,13 +126,33 @@ def resolve(app, source: str = "typed", requested: str | None = None) -> Effecti
 #: Labels are produced ONLY by typed submits: "typed" (_submit_text's default
 #: and the /mark paths), "queued" and "interrupted" (_submit_text, held or
 #: interrupting, where an rpc submit becomes "rpc" instead).
-#: ⚠️ PROVISIONAL, being put to Ryan (Sentinel 8d69c9fb): a /goal loop in HIS OWN
-#: instance meets the floor (Marquee's ruling (a): a goal loop runs unattended by
-#: nature, and running turn 1 only to dead-end at turn 2 is worse). THIS is the
-#: one line that flips it: True puts "goal" in ATTENDED_SOURCES.
-GOAL_TURNS_ARE_ATTENDED = False
+#: "goal-ryan": every turn of a /goal loop RYAN started (RYAN_GOAL_ORIGINS). Ryan,
+#: liteask a-04692a60 (answer 545c38e9), verbatim: "Exempt it: my /goal is mine".
+#: That flipped the provisional "goal loops meet the floor" (Marquee's ruling (a)).
+#: A goal issued any other way labels its turns "goal" and stays enforced.
 ATTENDED_SOURCES = frozenset({"typed", "queued", "interrupted", "compact-wake", "compact",
-                              "codex-question"} | ({"goal"} if GOAL_TURNS_ARE_ATTENDED else set()))
+                              "codex-question", "goal-ryan"})
+
+#: Where a /goal was issued (GoalState.started_by) that makes the loop Ryan's.
+#: "typed": his own TUI; "gui": LiteGUI's composer or Automation panel (an rpc
+#: host that sent gui.hello). "rpc" from a host that did not identify is NOT his.
+RYAN_GOAL_ORIGINS = frozenset({"typed", "gui"})
+
+
+def command_origin(app) -> str:
+    """Who issued the command being handled: _submit_text records its source in
+    app._command_source for the length of _handle_command. An rpc host that sent
+    gui.hello (LiteGUI) is "gui"."""
+    origin = getattr(app, "_command_source", None) or "unknown"
+    if origin == "rpc" and getattr(app, "_gui_rpc_enabled", False):
+        return "gui"
+    return origin
+
+
+def goal_source(state) -> str:
+    """The source every turn of this goal loop carries. The steering ledger keeps
+    "source" (and drops goal_continuation), so the origin survives it."""
+    return "goal-ryan" if getattr(state, "started_by", "") in RYAN_GOAL_ORIGINS else "goal"
 
 
 def is_spawned(app) -> bool:
@@ -211,7 +231,7 @@ def floor_refusal(app, source: str = "typed") -> str | None:
     why = fleet_policy.below_floor(name, floor, seat.model, seat.thinking_level)
     if why is None:
         return None
-    if source == "goal":
+    if source in ("goal", "goal-ryan"):
         why += " Goal loops run unattended and meet the fleet floor."
     elif source == "rpc" and not getattr(app, "_gui_rpc_enabled", False):
         why += " (rpc host did not identify)"

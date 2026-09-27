@@ -7216,7 +7216,13 @@ class LiteTUI(App):
             pass
 
         if text.startswith("/"):
-            self._handle_command(text)
+            # T1043: who issued this command (a /goal records it as its origin,
+            # seat_authority.command_origin). Scoped to this dispatch only.
+            self._command_source = source
+            try:
+                self._handle_command(text)
+            finally:
+                self._command_source = None
             return
 
         # Check if input names an image file (optionally followed by a prompt)

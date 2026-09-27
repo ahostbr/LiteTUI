@@ -603,27 +603,34 @@ def test_S1_a_malformed_seat_spawned_is_a_diagnostic_not_a_value(tmp_path):
 
 # ── test gap: a message Ryan types while a turn runs is held, then flushed ────
 
-def test_RYAN_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES():
+def _below_floor_backend():
+    return SimpleNamespace(name="codex", owns_native_turns=False,
+                           request_overrides=lambda key: {}, shutdown=lambda *a, **k: None)
+
+
+@pytest.mark.asyncio
+async def test_RYAN_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES():
     """Drives the real _submit_text (held as "queued") and _flush_pending_input."""
     app = LiteTUI()
+    app._connect = lambda: None
     assert app._spawned_seat is False
-    app._backend = SimpleNamespace(name="codex", owns_native_turns=False,
-                                   request_overrides=lambda key: {})
-    app._model_id, app._thinking_level = "gpt-5.6-sol", "medium"
-    said, streams, appended = [], [], []
-    app._system = said.append
-    app._user_bubble = lambda *a, **k: None
-    app.notify = lambda *a, **k: None
-    app._append = appended.append
-    app._stream = lambda: streams.append(1)
-    app._materialise_convo = lambda: None
-    app._chat_running = lambda: True
-    app._submit_text("while you work", alt_chord=False)
-    assert [item["source"] for item in app._pending_input] == ["queued"]
-    app._chat_running = lambda: False
-    app._flush_pending_input()
-    assert streams == [1] and appended, "the held message did not run"
-    assert not any("TURN REFUSED" in t or "fleet floor" in t for t in said), said
+    async with app.run_test(size=(110, 40)):
+        real = app._backend
+        app._backend = _below_floor_backend()
+        app._model_id, app._thinking_level = "gpt-5.6-sol", "medium"
+        said, streams = [], []
+        app._system = said.append
+        app._stream = lambda: streams.append(1)
+        app._chat_running = lambda: True
+        try:
+            app._submit_text("while you work", alt_chord=False)
+            assert [item["source"] for item in app._pending_input] == ["queued"]
+            app._chat_running = lambda: False
+            app._flush_pending_input()
+            assert streams == [1], "the held message did not run"
+            assert not any("TURN REFUSED" in t or "fleet floor" in t for t in said), said
+        finally:
+            app._backend = real
 
 
 @pytest.mark.asyncio
@@ -637,19 +644,22 @@ async def test_RYAN_a_mark_taken_while_BUSY_is_held_as_typed_then_PASSES(tmp_pat
     app = LiteTUI()
     app._connect = lambda: None
     async with app.run_test(size=(110, 40)):
-        app._backend = SimpleNamespace(name="codex", owns_native_turns=False,
-                                       request_overrides=lambda key: {})
+        real = app._backend
+        app._backend = _below_floor_backend()
         app._model_id, app._thinking_level = "gpt-5.6-sol", "medium"
         said, streams = [], []
         app._system = said.append
         app._stream = lambda: streams.append(1)
         app._chat_running = lambda: True
-        await app._mark_wait(handoff, None).wait()
-        assert [item.get("source") for item in app._pending_input] == ["typed"]
-        app._chat_running = lambda: False
-        app._flush_pending_input()
-        assert streams == [1]
-        assert not any("TURN REFUSED" in t for t in said), said
+        try:
+            await app._mark_wait(handoff, None).wait()
+            assert [item.get("source") for item in app._pending_input] == ["typed"]
+            app._chat_running = lambda: False
+            app._flush_pending_input()
+            assert streams == [1]
+            assert not any("TURN REFUSED" in t for t in said), said
+        finally:
+            app._backend = real
 
 
 # ── small items ──────────────────────────────────────────────────────────────
@@ -682,13 +692,113 @@ def test_the_effective_thinking_EXCEPT_branch_matches_the_no_builder_branch():
     assert seat_authority.effective_thinking(seat) == "high"
 
 
-def test_the_PROVISIONAL_goal_decision_flips_with_ONE_line(monkeypatch):
-    """Sentinel 8d69c9fb: Ryan's own /goal refusal is put to him. The line that
-    flips it is seat_authority.GOAL_TURNS_ARE_ATTENDED (seat_authority.py:133);
-    True puts "goal" in ATTENDED_SOURCES. Today: refused. Flipped: it runs."""
-    assert seat_authority.GOAL_TURNS_ARE_ATTENDED is False
-    assert "goal" not in seat_authority.ATTENDED_SOURCES
-    assert seat_authority.floor_refusal(_ryans(), "goal") is not None
-    monkeypatch.setattr(seat_authority, "ATTENDED_SOURCES",
-                        seat_authority.ATTENDED_SOURCES | {"goal"})
-    assert seat_authority.floor_refusal(_ryans(), "goal") is None
+# ── Ryan, liteask a-04692a60 (answer 545c38e9): "Exempt it: my /goal is mine" ──
+
+def _goal_seat(**kw):
+    seat = _ryans(**kw)
+    seat._user_bubble = lambda *a, **k: None
+    return seat
+
+
+def _ryans_goal():
+    return goal_loop.GoalState(objective="ship it", started_by="typed")
+
+
+def test_GOAL_a_ryan_started_goal_TURN_1_passes_with_NO_floor_text():
+    seat = _goal_seat()
+    seat._chat_running = lambda: False
+    goal_loop._deliver_goal_turn(seat, _ryans_goal(), "start")
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+def test_GOAL_a_ryan_started_goal_TURN_2_continuation_passes():
+    """Every continuation, not just turn 1: the queued item carries the loop's
+    origin in its SOURCE ("goal-ryan")."""
+    seat = _goal_seat()
+    seat._chat_running = lambda: True
+    seat._pending_input = []
+    goal_loop._deliver_goal_turn(seat, _ryans_goal(), "continue")
+    [item] = seat._pending_input
+    assert item["source"] == "goal-ryan"
+    hook_host.start_prompt(seat, item)
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+@pytest.mark.asyncio
+async def test_GOAL_a_ryan_continuation_STEERED_through_the_ledger_passes():
+    """The ledger keeps "source" and drops goal_continuation; the origin survives."""
+    from litetui.codex_steering import HostSteering
+
+    seat = _goal_seat()
+    seat._chat_running, seat._pending_input, seat._stop_requested = (lambda: True), [], False
+    goal_loop._deliver_goal_turn(seat, _ryans_goal(), "continue")
+    [item] = seat._pending_input
+    sent = []
+
+    async def request(method, params):
+        sent.append(method)
+        return {"turnId": "turn"}
+
+    steering = HostSteering(seat, SimpleNamespace(request=request), "thread", "turn", {}, lambda: None)
+    entry = steering.ledger.enqueue(item, "thread", "turn")
+    assert entry["item"]["source"] == "goal-ryan" and "goal_continuation" not in entry["item"]
+    allowed, context = await steering.admit(entry["item"])
+    assert allowed, context
+
+
+def test_GOAL_CONTROL_a_goal_in_a_SPAWNED_seat_is_refused_at_TURN_1_with_the_text():
+    seat = _Seat(model="gpt-5.6-sol", thinking="medium")
+    seat._spawned_seat = True
+    seat._chat_running = lambda: False
+    seat._user_bubble = lambda *a, **k: None
+    goal_loop._deliver_goal_turn(seat, _ryans_goal(), "start")
+    assert seat.streams == 0
+    assert "Goal loops run unattended and meet the fleet floor." in seat.said[-1]
+
+
+@pytest.mark.parametrize("started_by", ["", "rpc", "unknown"])
+def test_GOAL_a_goal_NOT_started_by_ryan_is_refused_in_his_instance(started_by):
+    """A goal saved before started_by existed (""), or issued by an rpc host that
+    did not identify, is not his."""
+    seat = _goal_seat()
+    seat._chat_running = lambda: False
+    goal_loop._deliver_goal_turn(seat, goal_loop.GoalState(objective="x", started_by=started_by), "go")
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+def test_GOAL_origin_reads_typed_gui_and_rpc():
+    seat = _ryans()
+    seat._command_source = "typed"
+    assert seat_authority.command_origin(seat) == "typed"
+    seat._command_source = "rpc"
+    assert seat_authority.command_origin(seat) == "rpc"
+    seat._gui_rpc_enabled = True
+    assert seat_authority.command_origin(seat) == "gui"
+
+
+def test_GOAL_goal_command_records_the_origin(monkeypatch):
+    seat = _goal_seat()
+    seat.backend.owns_native_turns = False
+    seat.convo_dir = None
+    seat._materialise_convo = lambda: None
+    seat._chat_running = lambda: True
+    seat._pending_input = []
+    saved = []
+    monkeypatch.setattr(goal_loop, "save_goal", lambda d, state: saved.append(state))
+    monkeypatch.setattr(goal_loop, "load_goal", lambda d: None)
+    seat._command_source = "typed"
+    goal_loop.goal_command(seat, "ship it")
+    assert saved[-1].started_by == "typed"
+    assert seat._pending_input[-1]["source"] == "goal-ryan"
+
+
+@pytest.mark.asyncio
+async def test_GOAL_submit_scopes_the_command_origin_to_its_dispatch():
+    app = LiteTUI()
+    app._connect = lambda: None
+    seen = []
+    async with app.run_test(size=(110, 40)):
+        app._handle_command = lambda text: seen.append(seat_authority.command_origin(app))
+        app._submit_text("/goal ship it", alt_chord=False)
+        assert seen == ["typed"]
+        assert app._command_source is None
