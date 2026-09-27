@@ -51,8 +51,12 @@ taken at its word; a command substitution whose OUTPUT runs as a command
 (`$(ls ~) | xargs rm -rf`) is not followed. This is a floor under the danger table, not a sandbox.
 The same ceiling holds for the launcher: a path built in a variable, a
 `Start-Process -WorkingDirectory` that moves the base, a script that calls
-run.bat itself, or a spelling that does not resolve here (an admin share
-`\\host\C$\...`, an 8.3 short name) is not seen.
+run.bat itself, a renamed copy in the same folder (run.bat opens with
+`cd /d "%~dp0"`), or a spelling that does not resolve here (an admin share
+`\\\\host\\C$\\...`, an 8.3 short name) is not seen. Known over-blocks, fail-safe
+and only inside a LiteTUI checkout: a bare `run` in an `if` segment
+(`if exist package.json bun run dev`), or after a `do` / `else` word in a
+non-reader command (`python x.py "please do run it"`).
 """
 from __future__ import annotations
 
@@ -136,11 +140,16 @@ _LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)])")
 #: The path in front of it: the longest run of path characters.
 _PATH_TAIL = re.compile(r"[\w.~$%{}:\\/-]*\Z")
 #: A bare `run` is a launch where cmd.exe takes a command next: after /c, /k,
-#: call, start, or OPENING a segment (`cd /d X && run`). cmd searches the current
-#: folder first whenever NoDefaultCurrentDirectoryInExePath is unset, which is
-#: the default (Dijkstra B1, measured against an echo-only run.bat).
+#: call, start, do, else, or OPENING a segment (`cd /d X && run`), with any
+#: @, ^ or redirection in between (`&& @run`, `&& 2>nul run`). cmd searches the
+#: current folder first whenever NoDefaultCurrentDirectoryInExePath is unset,
+#: which is the default (Dijkstra B1, measured against an echo-only run.bat).
+#: This lists where `run` IS a command, so it fails OPEN for any cmd syntax not
+#: listed; N1 (9ba69cb1) was five such spellings. Keep the `^` before
+#: call/start: `call run` opening the command has no character before `call`.
 _BARE_RUN_CONTEXT = re.compile(
-    r"(?i)(?:^|[;&|\n(]\s*|(?:^|[\s\"'])(?:/c|/k|call|start))\Z")
+    r"(?i)(?:^|[;&|\n(]|(?:^|[\s\"'])(?:/c|/k|call|start|do|else))"
+    r"(?:\s*(?:[@^]|\d?[<>]{1,2}&?[^\s<>&|]*))*\s*\Z")
 #: Words that pass a command on rather than being it (`cmd /d /c type x`).
 _WRAPPERS = frozenset({
     "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call", "start",
@@ -226,20 +235,23 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
         prefix = prefix.partition(":")[2]
     if prefix and prefix[-1] not in "\\/":
         return None   # `rerun`, `myrun.bat`: another name
-    if not prefix and match.group(0).lower() == "run" and not _BARE_RUN_CONTEXT.search(
-            command[:start].rstrip(" \t\"'")):
-        return None   # `bun run`, "don't run it": not a command name here
-    target = _resolve(prefix + match.group(0), base, home)
-    if target is None or target.name.lower() not in ("run", "run.bat"):
-        return None
-    if not (target.parent / "src" / "litetui").is_dir():
-        return None   # another project's run.bat (LiteSuite's, ...)
     # The head is judged PER SEGMENT: `echo x & run.bat` runs run.bat. A `(`
     # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
     # echo `run.bat`), so it starts a segment too.
     segment = re.split(r"[;&|\n(`]", command[:start])[-1]
     words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
     head = next((w for w in words if w not in _WRAPPERS), None)
+    # An `if` condition is free-form, so no prefix regex can bound it: a bare
+    # `run` anywhere in an `if` segment is taken as its command (N1).
+    if not prefix and match.group(0).lower() == "run" and not (
+            _BARE_RUN_CONTEXT.search(command[:start].rstrip(" \t\"'"))
+            or (head or "").lstrip("@") == "if"):
+        return None   # `bun run`, "don't run it": not a command name here
+    target = _resolve(prefix + match.group(0), base, home)
+    if target is None or target.name.lower() not in ("run", "run.bat"):
+        return None
+    if not (target.parent / "src" / "litetui").is_dir():
+        return None   # another project's run.bat (LiteSuite's, ...)
     if head in _READERS:
         return None   # `type run.bat`, `git diff run.bat`: read, not run
     return target
