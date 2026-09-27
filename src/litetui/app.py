@@ -668,6 +668,16 @@ class ChatLog(VerticalScroll):
 _INBOX_SETTLE_S = 2.0
 
 
+def _sync_seat_resolution(app) -> None:
+    """T1025: the seat reports what THIS process resolved -- the model the next
+    request goes to and the thinking level it carries (the same expression the rpc
+    `ready` event reports) -- never what the convo file or a launch flag said.
+    Four sources disagree on a resumed seat (T1027); only this one is what runs."""
+    app.seat.model = app.model_id or "unknown"
+    app.seat.thinking_level = (getattr(app, "_cli_effective_thinking", None)
+                               or getattr(app, "_thinking_level", None))
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -2183,7 +2193,16 @@ class LiteTUI(App):
         claims ONLY messages addressed to this seat.
         """
         await asyncio.sleep(_INBOX_SETTLE_S)  # let _connect settle so the model is known
-        self.seat.model = self.model_id or "unknown"
+        # T1025: a --model/--thinking-level launch is applied before it is reported,
+        # the same wait the rpc `ready` event makes.
+        done = getattr(self, "_cli_args_done", None)
+        if done is not None:
+            try:
+                await asyncio.wait_for(
+                    done.wait(), getattr(getattr(self, "_launch_options", None), "timeout", 30) + 5)
+            except TimeoutError:
+                pass
+        _sync_seat_resolution(self)
         ok = await asyncio.to_thread(self.seat.register)
         self._seat_started = True
         if ok and self._resumed_seat_name:
@@ -2292,6 +2311,7 @@ class LiteTUI(App):
                     # and reporting one would paint the transcript every minute
                     # that liteharness happened to be busy.
                     with idle_infra_phase(self):
+                        _sync_seat_resolution(self)  # a /model or /think since the last beat
                         await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise

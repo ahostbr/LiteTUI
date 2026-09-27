@@ -292,6 +292,9 @@ class Seat:
         self.model = model or "unknown"
         self.tier = tier
         self.cli = cli
+        # T1025: the level this process RESOLVED, reported beside the model so the
+        # spawner's fleet floor checks the effective value, not a file or a flag.
+        self.thinking_level: str | None = None
         self.registered = False
         self.error: str | None = None
 
@@ -309,6 +312,9 @@ class Seat:
                 "--model", self.model,
                 "--tier", self.tier,
                 "--name", self.name,
+                # Always sent: "default" says the seat chose no level, and an
+                # absent field is how the floor tells an old LiteTUI apart.
+                "--thinking-level", self.thinking_level or "default",
                 # OUR OWN pid, so the fleet can tell this seat from a corpse.
                 # Both mechanisms that read presence.session_pid treat a falsy
                 # one as not-live: the takeover guard (so a running seat's name
