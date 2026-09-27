@@ -22,6 +22,15 @@ class LaunchSpec:
     launch: dict | None = None
 
 
+def delegated_profile(parent_profile):
+    """The profile a managed child runs: T1049, Ryan's clause 2a (rpc children fall
+    under the autonomy lock). A child is never autonomous, and it could not be:
+    it carries no owner mark, so it would report interactive and fail its
+    handshake. An autonomous parent delegates INTERACTIVE; any other parent its own."""
+    from litetui.tool_policy import AUTONOMOUS, INTERACTIVE
+    return INTERACTIVE if parent_profile == AUTONOMOUS else parent_profile
+
+
 def validate_request(request, *, parent_profile, depth):
     if not isinstance(request, dict):
         raise LaunchBlocked('Launch request must be an object')
@@ -40,11 +49,12 @@ def validate_request(request, *, parent_profile, depth):
     from litetui.tool_policy import PROFILES
     if parent_profile not in PROFILES:
         raise LaunchBlocked('Unknown parent policy')
-    profile = request.get('tool_profile', parent_profile)
+    delegated = delegated_profile(parent_profile)
+    profile = request.get('tool_profile', delegated)
     # Profiles are not a simple numeric hierarchy: strict and interactive
     # have different approval semantics. Without explicit delegation, require
     # the same profile rather than guessing that one is universally weaker.
-    if profile != parent_profile:
+    if profile != delegated:
         raise LaunchBlocked('Child policy must match parent delegation')
     headed = request.get('headed', False)
     if type(headed) is not bool:

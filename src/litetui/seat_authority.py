@@ -57,10 +57,14 @@ def seat_profile(app) -> str:
     """The flag, else this conversation's choice, else the global default."""
     chosen = getattr(app, "chosen_tool_profile", None) or getattr(
         getattr(app, "settings", None), "tool_policy_profile", None)
-    return launch_flag(app) or chosen or tool_policy.STRICT
+    return locked_profile(app, launch_flag(app) or chosen or tool_policy.STRICT)
 
 
 def turn_profile(app, source: str, requested: str | None = None) -> str:
+    return locked_profile(app, _turn_profile(app, source, requested))
+
+
+def _turn_profile(app, source: str, requested: str | None) -> str:
     flag = launch_flag(app)
     if source == "scheduled":
         wanted = requested or tool_policy.AUTONOMOUS
@@ -71,6 +75,53 @@ def turn_profile(app, source: str, requested: str | None = None) -> str:
     # Attended: what the human's submit carried (the choice at that moment),
     # unless an explicit launch flag outranks it.
     return flag or requested or seat_profile(app)
+
+
+# ── T1049: the autonomy lock ────────────────────────────────────────────────
+#
+# Ryan (liteask a-29047520): "light TUI instances that are spawned by other agents
+# cannot be set to auto mode. They can only go to interactive mode and must be
+# handled by their leaders". The gate is `app._active_tool_profile` itself (a
+# property over the raw value, app.py): it has 9 writers and ~12 readers, and only
+# 3 writers go through the resolver, so a gate anywhere else leaves paths open.
+
+LOCK_REFUSAL = (
+    "autonomous refused: this LiteTUI was not launched by Ryan (an agent spawned it), "
+    "so it runs interactive and its approvals belong to its leader (T1049; Ryan: "
+    "\"they can only go to interactive mode\").")
+
+
+def locked(app) -> bool:
+    """No autonomous authority here: NOT Ryan's own instance. The cached answer
+    (recheck=False): this is read on every footer paint and tool decision, and the
+    taint is re-asked once per turn by the floor check in accept_prompt."""
+    return not is_ryans_own(app, recheck=False)
+
+
+def locked_profile(app, profile: str | None) -> str | None:
+    """THE gate: autonomous reads as interactive in a locked seat. Nothing else
+    changes, so the lock can only ever narrow."""
+    if profile == tool_policy.AUTONOMOUS and locked(app):
+        return tool_policy.INTERACTIVE
+    return profile
+
+
+def warn_if_capped(app) -> None:
+    """Said once at connect, beside warn_if_below_floor: the seat asked for
+    autonomous (a launch flag, the rpc default, a settings default, a resumed
+    choice) and runs interactive instead."""
+    if getattr(app, "_autonomy_cap_said", False) or not locked(app):
+        return
+    raw = getattr(app, "_active_tool_profile_raw", None)
+    asked = tool_policy.AUTONOMOUS in (launch_flag(app), raw, getattr(
+        getattr(app, "settings", None), "tool_policy_profile", None))
+    say = getattr(app, "_system", None)
+    if asked and say is not None:
+        try:
+            say("⚠ " + LOCK_REFUSAL + " Authority is interactive.")
+        except Exception:  # noqa: BLE001 - called from _apply_cli_args' finally, possibly with no screen yet
+            return  # not said: the connect site can still say it
+        app._autonomy_cap_said = True
 
 
 def effective_thinking(app) -> str | None:
@@ -219,9 +270,15 @@ def is_owner(app) -> bool:
     return True
 
 
-def is_ryans_own(app) -> bool:
-    """THE one test for "Ryan's own instance": owner-marked and not spawned."""
-    return not is_spawned(app) and is_owner(app)
+def is_ryans_own(app, recheck: bool = True) -> bool:
+    """THE one test for "Ryan's own instance": owner-marked and not spawned.
+    recheck=False skips re-asking LiteSuite about a bridge taint and uses the
+    answer as of the last check (T1049's hot-path getter). The floor check in
+    accept_prompt re-asks before every turn, so a taint (a bridge write, which
+    is itself how a new turn is typed in) is seen before the turn it starts."""
+    if is_spawned(app):
+        return False
+    return is_owner(app) if recheck else bool(getattr(app, "_owner_seat", False))
 
 
 def is_spawned(app) -> bool:

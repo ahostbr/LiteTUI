@@ -25,7 +25,8 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
             raise LaunchBlocked('Parent ownership changed during child preparation')
         settings = getattr(app, 'settings', None)
         profile = getattr(app, '_active_tool_profile', None) or getattr(settings, 'tool_policy_profile', None)
-        if profile is not None and profile != spec.tool_profile:
+        from litetui.agent_launcher import delegated_profile
+        if profile is not None and delegated_profile(profile) != spec.tool_profile:
             raise LaunchBlocked('Parent authority changed during child preparation')
 
     def notify(event):

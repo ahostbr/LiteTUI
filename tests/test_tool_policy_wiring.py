@@ -246,6 +246,7 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Ryan's own
     )
     app_mod.LiteTUI._fire_job(queued, job)
     assert queued._pending_input[0]["tool_profile"] == AUTONOMOUS
@@ -258,6 +259,7 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Ryan's own
         _append=lambda msg: streamed.append(msg),
         _stream=lambda: streamed.append("stream"),
         _active_tool_profile=INTERACTIVE,

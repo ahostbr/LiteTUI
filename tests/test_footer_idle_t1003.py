@@ -65,6 +65,16 @@ def footer_writes(a) -> str:
     return "".join(w for w in a.writes if FOOTER_ROW in w)
 
 
+def footer_text(a) -> str:
+    """What the footer writes SAY, escape sequences removed. The capture driver
+    splits a write every ~16 cells with a cursor move to the NEXT cell, so the
+    drawn text is contiguous while the raw bytes are not: a literal search in the
+    raw writes missed "thin|k:high" once the text before it changed length
+    (T1049: "|| interactive on" is one cell longer than ">> autonomous on")."""
+    import re
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", footer_writes(a))
+
+
 def terminal_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
@@ -134,13 +144,19 @@ async def test_a_real_change_still_repaints_the_footer() -> None:
         a.writes.clear()
         a.ctx_used = 54_321
         await pilot.pause(0.5)
-        assert "54,321" in footer_writes(a)
+        assert "54,321" in footer_text(a)
         a.writes.clear()
         a.ctx_used = 180_000  # crosses 90%: the percent AND its colour change
         await pilot.pause(0.5)
-        assert "90%" in footer_writes(a)
+        assert "90%" in footer_text(a)
         a.writes.clear()
         a.thinking_level = "high"
         a._refresh_ctx_label()
         await pilot.pause(0.5)
-        assert "think:high" in footer_writes(a)
+        assert "think:high" in footer_text(a)
+        # NEGATIVE: the instrument reads only what was written. Nothing changed,
+        # so nothing is written, and think:high must not be found.
+        a.writes.clear()
+        a._refresh_ctx_label()
+        await pilot.pause(0.5)
+        assert "think:high" not in footer_text(a)

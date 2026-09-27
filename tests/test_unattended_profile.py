@@ -53,6 +53,13 @@ from litetui.tool_policy import (
 ROOT = paths.ROOT
 
 
+def _ryans(app):
+    """T1049: these arms are about RYAN'S OWN instance (owner-marked, not
+    spawned), the only one that may run autonomous. conftest clears the mark."""
+    app._spawned_seat, app._owner_seat, app._pty_term = False, True, None
+    return app
+
+
 def _mail_app(profile_name: str):
     """Drive the REAL `_deliver_inbox`; return the app, the model-bound
     messages and the user bubbles it produced.
@@ -62,7 +69,7 @@ def _mail_app(profile_name: str):
     whether anything calls it that way -- the green-that-cannot-run this
     codebase already paid for once in T079.
     """
-    app = LiteTUI()
+    app = _ryans(LiteTUI())
     app._connect = lambda: None
     app.settings.tool_policy_profile = profile_name
     app._chat_running = lambda: False
@@ -179,7 +186,7 @@ async def test_an_unattended_CONFIRM_is_refused_in_words_never_a_modal(
         raise AssertionError(f"{name}/{source} opened a modal nobody can answer")
 
     monkeypatch.setattr(app_mod, "show_dialog", _no_modal)
-    app = LiteTUI()
+    app = _ryans(LiteTUI())
     app._active_tool_profile = name
     app._hook_source = source
     refusal = await app._authorize_action(
@@ -274,7 +281,7 @@ def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
     from litetui import scheduler
     from litetui import app as app_mod
 
-    app = LiteTUI()
+    app = _ryans(LiteTUI())
     app._connect = lambda: None
     app.settings.tool_policy_profile = setting
     app._chat_running = lambda: False

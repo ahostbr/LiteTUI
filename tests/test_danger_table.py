@@ -179,7 +179,9 @@ def test_autonomous_inbox_mail_gets_no_rule_it_does_not_need():
     from litetui.app import LiteTUI
 
     queued = []
+    # T1049: autonomous exists only in Ryan's own instance (owner-marked, not spawned).
     app = SimpleNamespace(settings=SimpleNamespace(tool_policy_profile=tp.AUTONOMOUS), _gui_quitting=False,
+                          _spawned_seat=False, _owner_seat=True,
                           _chat_running=lambda: True, _pending_input=queued,
                           _user_bubble=lambda *a, **k: None)
     LiteTUI._deliver_inbox(app, {"from": "sentinel", "body": "hello", "id": "m1", "type": "TASK"})
