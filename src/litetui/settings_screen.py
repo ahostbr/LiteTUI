@@ -476,7 +476,16 @@ class SettingsBody(Widget):
         self.call_after_refresh(self._capture_initial_state)
 
     def _capture_initial_state(self) -> None:
-        self._initial_state = self._canonical_state(self.get_state())
+        # Scheduled by on_mount for after the first refresh. A dialog dismissed
+        # before that refresh has already pruned its form (Textual removes children
+        # first), so there is nothing to capture: leave the empty baseline, which
+        # reads as not dirty.
+        from textual.css.query import NoMatches
+        try:
+            state = self.get_state()
+        except NoMatches:
+            return
+        self._initial_state = self._canonical_state(state)
 
     @staticmethod
     def _canonical_state(state: dict) -> dict:
