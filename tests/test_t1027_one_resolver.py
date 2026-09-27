@@ -147,6 +147,32 @@ def test_a_DELIBERATE_choice_retires_the_flag(tmp_path: Path, monkeypatch) -> No
     assert _accept(host, "typed", host.chosen_tool_profile) == "strict"
 
 
+@pytest.mark.asyncio
+async def test_a_STEERED_cron_item_is_hooked_under_the_flag_not_autonomous(tmp_path, monkeypatch):
+    """Dijkstra R1: codex_steering.HostSteering.admit dispatched prompt_before
+    with the RAW producer profile, so a cron item steered into a Codex turn on an
+    --tool-profile interactive seat authorized its hook under AUTONOMOUS."""
+    from litetui.codex_steering import HostSteering
+
+    host = _Host("autonomous", "interactive", tmp_path)
+    host.hook_config, host._stop_requested = object(), False
+    seen = []
+
+    async def dispatch(app, event, data, *, profile=None, **_kw):
+        seen.append(profile)
+        return SimpleNamespace(allowed=True, reason="")
+
+    async def drain(_app):
+        pass
+
+    monkeypatch.setattr(hook_host, "dispatch", dispatch)
+    monkeypatch.setattr(hook_host, "drain_lifecycle", drain)
+    steering = HostSteering(host, None, "thread", "turn", {}, lambda: None)
+    await steering.admit({"content": "nightly", "source": "scheduled", "tool_profile": "autonomous"})
+
+    assert seen == ["interactive"], seen
+
+
 def test_the_two_turns_that_skip_accept_prompt_use_the_resolver() -> None:
     """goal_loop and agent_parent_wake call _stream directly; a producer that
     writes `_active_tool_profile` itself is the divergence this card removes."""
@@ -330,11 +356,15 @@ def registry(tmp_path, monkeypatch):
 
 
 def _holder(root: Path, name: str, pid: int, quiet_s: int) -> str:
+    """Registered NOW, quiet for `quiet_s`: a record registered before its pid's
+    process started reads as a REUSED pid (liteharness T1027 L1), and the
+    sleeper here was started moments ago."""
     agent = str(uuid.uuid4())
     seen = (datetime.now(timezone.utc) - timedelta(seconds=quiet_s)).isoformat()
     (root / "agents" / f"{agent}.json").write_text(json.dumps({
         "agent_id": agent, "name": name, "cli": "litetui", "session_pid": pid,
-        "last_seen": seen, "registered_at": seen}), encoding="utf-8")
+        "last_seen": seen, "registered_at": datetime.now(timezone.utc).isoformat()}),
+        encoding="utf-8")
     (root / "names" / agent).write_text(name, encoding="utf-8")
     return agent
 

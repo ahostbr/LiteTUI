@@ -126,7 +126,7 @@ class HostSteering:
         self.ledger = SteeringLedger(metadata.setdefault("steering", []), save)
 
     async def admit(self, item):
-        from litetui import hook_host
+        from litetui import hook_host, seat_authority
 
         context = {
             **hook_host.context(self.app),
@@ -140,7 +140,10 @@ class HostSteering:
             self.app,
             "prompt_before",
             {"prompt": item["content"]},
-            profile=item.get("tool_profile"),
+            # T1027: the resolved authority, like hook_host.admit_prompt; the
+            # producer's profile is only a request (Dijkstra R1).
+            profile=seat_authority.turn_profile(
+                self.app, hook_host._turn_source(item), item.get("tool_profile")),
             captured=context,
         )
         context["reason"] = result.reason

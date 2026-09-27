@@ -381,7 +381,9 @@ class Seat:
         register refuses a live holder and still reclaims a dead-pid corpse,
         which is all a relaunch needs. Ryan (liteask a-1db0f560): "the agents
         name is supposed to auto change if the name is taken" — so a refusal
-        becomes the next suffix, never a random name. First come keeps it.
+        becomes the next suffix; only past -9 does the seat keep the registry's
+        generated name. First come keeps it. Worst case is 9 sequential
+        registers (30 s timeout each) on the startup path.
 
         Returns (last CLI result, the name the registry assigned).
         """
