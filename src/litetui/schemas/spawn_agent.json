@@ -16,7 +16,7 @@
         "headed": {"type": "boolean", "default": false},
         "reasoning_effort": {"type": "string", "description": "Must be advertised by the connected provider for the selected model; mutually exclusive with thinking_level."},
         "thinking_level": {"type": "string"},
-        "tool_profile": {"type": "string", "enum": ["autonomous", "interactive", "scheduled"]}
+        "tool_profile": {"type": "string", "enum": ["autonomous", "interactive"]}
       },
       "additionalProperties": false
     }
