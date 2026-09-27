@@ -7,14 +7,20 @@ from litetui import tool_policy as tp
 
 ROOT = Path(__file__).parent
 
+# The test owns the contract; reading the production sets at collection time
+# would prevent a RED run against the pre-fix source from collecting at all.
+SOTS_READS = ("sots_server_info", "sots_search", "sots_read_file", "sots_list_dir",
+              "sots_help", "sots_read_image")
+VIBEUE_READS = ("vibeue_list_tools", "vibeue_tool_schema", "vibeue_check_connection")
 
-@pytest.mark.parametrize("name", sorted(tp.SOTS_READ_TOOLS))
+
+@pytest.mark.parametrize("name", SOTS_READS)
 def test_sots_read_has_no_confirm(name):
     policy = tp.mcp_policy_for(f"mcp__SOTS_MCP_CORE__{name}")
     assert tp.evaluate(tp.INTERACTIVE, policy, {}, ROOT).action == tp.ALLOW
 
 
-@pytest.mark.parametrize("name", sorted(tp.VIBEUE_READ_TOOLS))
+@pytest.mark.parametrize("name", VIBEUE_READS)
 def test_vibeue_read_has_no_confirm(name):
     policy = tp.mcp_policy_for(f"mcp__VibeUE__{name}")
     assert tp.evaluate(tp.INTERACTIVE, policy, {}, ROOT).action == tp.ALLOW
