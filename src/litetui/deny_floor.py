@@ -50,8 +50,9 @@ is out of reach; a `find` narrowed by an -o chain or a regex alternation is
 taken at its word; a command substitution whose OUTPUT runs as a command
 (`$(ls ~) | xargs rm -rf`) is not followed. This is a floor under the danger table, not a sandbox.
 The same ceiling holds for the launcher: a path built in a variable, a
-`Start-Process -WorkingDirectory` that moves the base, or a script that calls
-run.bat itself is not seen.
+`Start-Process -WorkingDirectory` that moves the base, a script that calls
+run.bat itself, or a spelling that does not resolve here (an admin share
+`\\host\C$\...`, an 8.3 short name) is not seen.
 """
 from __future__ import annotations
 
@@ -134,8 +135,12 @@ _MSYS = re.compile(r"^/([a-z])(/.*)?$", re.IGNORECASE)
 _LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)])")
 #: The path in front of it: the longest run of path characters.
 _PATH_TAIL = re.compile(r"[\w.~$%{}:\\/-]*\Z")
-#: A bare `run` is a launch only where cmd.exe takes a command next.
-_BARE_RUN_CONTEXT = re.compile(r"(?i)(?:^|[\s\"'])(?:/c|/k|call|start)\Z")
+#: A bare `run` is a launch where cmd.exe takes a command next: after /c, /k,
+#: call, start, or OPENING a segment (`cd /d X && run`). cmd searches the current
+#: folder first whenever NoDefaultCurrentDirectoryInExePath is unset, which is
+#: the default (Dijkstra B1, measured against an echo-only run.bat).
+_BARE_RUN_CONTEXT = re.compile(
+    r"(?i)(?:^|[;&|\n(]\s*|(?:^|[\s\"'])(?:/c|/k|call|start))\Z")
 #: Words that pass a command on rather than being it (`cmd /d /c type x`).
 _WRAPPERS = frozenset({
     "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call", "start",
@@ -149,6 +154,8 @@ _READERS = frozenset({
     "diff", "fc", "code", "notepad", "vim", "vi", "nano", "sed", "awk", "ls",
     "dir", "get-item", "gi", "get-childitem", "gci", "test-path", "stat", "file",
     "xxd", "od", "sha256sum", "get-filehash",
+    # Copies and moves carry the file; they never run it.
+    "copy", "cp", "copy-item", "xcopy", "robocopy", "move", "mv", "move-item",
     # Output heads print their argument and never run it: agents echo file
     # names in status lines all the time.
     "echo", "write-output", "write-host", "printf",
