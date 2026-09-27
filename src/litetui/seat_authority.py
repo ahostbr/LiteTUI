@@ -61,7 +61,7 @@ def seat_profile(app) -> str:
 
 
 def turn_profile(app, source: str, requested: str | None = None) -> str:
-    return locked_profile(app, _turn_profile(app, source, requested), source)
+    return locked_profile(app, _turn_profile(app, source, requested))
 
 
 def _turn_profile(app, source: str, requested: str | None) -> str:
@@ -85,21 +85,6 @@ def _turn_profile(app, source: str, requested: str | None) -> str:
 # property over the raw value, app.py): it has 9 writers and ~12 readers, and only
 # 3 writers go through the resolver, so a gate anywhere else leaves paths open.
 
-#: 🟡 C4: what a cron/loop fire (source "scheduled") runs under in a seat that is
-#: NOT Ryan's own. INTERACTIVE: the lock caps it like every other source.
-#: Ryan ruled 2026-09-27 (per Sentinel 04169351): "whatever agent spawned the
-#: light qi instance should be babysitting it". INTERIM REFUSAL: today every
-#: CONFIRM in such a fire is refused as unattended (tool_policy.UNATTENDED_SOURCES);
-#: T1049-B routes that CONFIRM to the spawning parent, and if the parent is absent
-#: or silent it refuses and logs. Changing the profile itself is this line plus
-#: test_C4_a_locked_seats_schedule_runs_interactive.
-#: Read through the stamped turn's source (hook_host.accept_prompt sets
-#: app._active_turn_source; any other write of the profile clears it). If it is
-#: ever changed: like the raw profile, the source outlives its turn until the
-#: next write, so the seat keeps the scheduled answer until then.
-LOCKED_SCHEDULE_PROFILE = tool_policy.INTERACTIVE
-
-
 def lock_refusal(app) -> str:
     """Why autonomous was refused, true to THIS seat (Dijkstra F2): the lock keys
     on "not Ryan's own", so a seat Ryan launched unmarked is locked too, and must
@@ -119,12 +104,11 @@ def locked(app) -> bool:
     return not is_ryans_own(app, recheck=False)
 
 
-def locked_profile(app, profile: str | None, source: str | None = None) -> str | None:
+def locked_profile(app, profile: str | None) -> str | None:
     """THE gate: autonomous reads as interactive in a locked seat. Nothing else
-    changes, so the lock can only ever narrow. A "scheduled" turn's answer is the
-    C4 site, LOCKED_SCHEDULE_PROFILE."""
+    changes, so the lock can only ever narrow."""
     if profile == tool_policy.AUTONOMOUS and locked(app):
-        return LOCKED_SCHEDULE_PROFILE if source == "scheduled" else tool_policy.INTERACTIVE
+        return tool_policy.INTERACTIVE
     return profile
 
 

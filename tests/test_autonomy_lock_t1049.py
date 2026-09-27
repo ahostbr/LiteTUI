@@ -384,37 +384,15 @@ def test_a_child_that_ASKS_for_autonomous_under_an_autonomous_parent_is_blocked(
     assert validate_request(request, parent_profile=AUTONOMOUS, depth=0).tool_profile == INTERACTIVE
 
 
-# ── C4: a locked seat's cron/loop fire, at ONE site ─────────────────────────
-
-def _stamp(a, source, requested=None):
-    """hook_host.accept_prompt's two lines: the stamp, then the turn's source."""
-    a._active_tool_profile = seat_authority.turn_profile(a, source, requested)
-    a._active_turn_source = source
-
+# ── C4: a locked seat's cron/loop fire ───────────────────────────────────────
 
 def test_C4_a_locked_seats_schedule_runs_interactive():
-    """PINS TODAY'S ANSWER at seat_authority.LOCKED_SCHEDULE_PROFILE. Ryan ruled
-    2026-09-27 (per Sentinel 04169351) that the spawning agent babysits the seat:
-    B routes its CONFIRMs to that parent. Changing the profile is that line plus
-    this test."""
+    """PINS the lock's answer for a cron/loop fire: interactive, so its CONFIRMs
+    reach the unattended branch at app.py's door. Ryan ruled 2026-09-27 (per
+    Sentinel 04169351) that the spawning agent babysits the seat: T1049-B routes
+    those CONFIRMs to that parent (Dijkstra D1: one turn source, `_hook_source`)."""
     a = _app()
     assert seat_authority.turn_profile(a, "scheduled") == INTERACTIVE
     assert seat_authority.resolve(a, "scheduled", AUTONOMOUS).profile == INTERACTIVE
-    _stamp(a, "scheduled")
+    a._active_tool_profile = seat_authority.turn_profile(a, "scheduled")
     assert a._active_tool_profile == INTERACTIVE
-
-
-def test_C4_the_site_is_the_only_line_a_change_needs(monkeypatch):
-    """The C4 constant alone moves a scheduled turn, through the stamp and the
-    property, and nothing else: an attended stamp stays capped, and any later
-    write of the field drops the scheduled answer."""
-    monkeypatch.setattr(seat_authority, "LOCKED_SCHEDULE_PROFILE", AUTONOMOUS)
-    a = _app()
-    _stamp(a, "scheduled")
-    assert a._active_tool_profile == AUTONOMOUS
-    _stamp(a, "typed", AUTONOMOUS)
-    assert a._active_tool_profile == INTERACTIVE
-    _stamp(a, "scheduled")
-    a._active_tool_profile = AUTONOMOUS          # any other writer (goal, parent wake, settings)
-    assert a._active_tool_profile == INTERACTIVE
-    assert seat_authority.locked_profile(a, AUTONOMOUS) == INTERACTIVE   # no source: capped

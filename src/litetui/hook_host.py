@@ -178,9 +178,6 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
     # T1043: the fleet floor was checked above, before anything is appended.
     app._active_tool_profile = seat_authority.turn_profile(
         app, _turn_source(item), item.get("tool_profile"))
-    # T1049 C4: after the stamp, whose setter clears it; read by the lock (the
-    # property and _authorize_action) so a "scheduled" turn gets the C4 answer.
-    app._active_turn_source = _turn_source(item)
     app._hooks_suppressed = False
     app._hook_corrections = 0
     app._hook_turn_id = str(uuid.uuid4())
