@@ -510,6 +510,11 @@ _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
 #:   `format` now has to be at a command position; a disk wipe is
 #:   `format C:`, never the third word of a script name.
 #:
+#:   T1094, Ryan 1ed3b84: interactive asks only for dangerous commands.
+#:   Python's `\b` accepts the hyphen in PowerShell Verb-Noun names as an end
+#:   of word: Format-Table, Kill-Process and Del-Item were false prompts.
+#:   Bare command names must end before both word characters AND hyphens.
+#:
 #:   MISSES, FIXED. `rm -rf` with no target (the trailing `\s+` made the
 #:   argument mandatory) and the long flags `rm --recursive --force`. Both
 #:   are the same command by another spelling.
@@ -568,7 +573,7 @@ UNDECLARED = "a tool whose effects aren't declared"
 
 DANGER_TABLE: tuple[tuple[str, str], ...] = (
     # ── A. deletion ─────────────────────────────────────────────────────────
-    (DELETION, _C + r"(?:rm|del|erase|rmdir|rd|ri|unlink|shred)\b"),
+    (DELETION, _C + r"(?:rm|del|erase|rmdir|rd|ri|unlink|shred)(?![\w-])"),
     (DELETION, r"\b(?:remove-item|rimraf)\b"),
     (DELETION, (r"\bgit\s+(?:clean\b|rm\b(?![^;&|]*--cached)|worktree\s+remove\b"
                 r"|branch\s+(?:[^;&|]*\s)?(?:-[a-z]*d[a-z]*|--delete)\b)")),
@@ -594,7 +599,7 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
     (FOREIGN_PROCESS, _C + r"(?:wscript|cscript|mshta|rundll32|regsvr32|msiexec|runas|psexec(?:64)?)\b"),
     (FOREIGN_PROCESS, r"\bschtasks\b[^;&|]*/create\b|\bregister-scheduledtask\b"),
     # ── D. dangerous system commands ─────────────────────────────────────────
-    (DANGEROUS, _C + r"format(?:\.com)?\b"),
+    (DANGEROUS, _C + r"format(?:\.com)?(?![\w-])"),
     (DANGEROUS, r"\b(?:diskpart|bcdedit|takeown)\b|\bmkfs(?:\.[a-z0-9]+)?\b"),
     (DANGEROUS, _C + r"dd\s+(?:[^;&|]*\s)?of="),
     (DANGEROUS, r"\bvssadmin\s+delete\b|\bcipher(?:\.exe)?\s+/w\b|\bwevtutil\s+cl\b|\bclear-eventlog\b"),
@@ -606,7 +611,7 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
     (DANGEROUS, r"\b(?:curl|wget)\b[^;]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b"),
     (DANGEROUS, r"\b(?:iex|invoke-expression)\b"),
     (DANGEROUS, r"\b(?:shutdown|restart-computer|stop-computer)\b"),
-    (DANGEROUS, _C + r"(?:kill|pkill|killall|taskkill|tskill)\b|\bstop-process\b"),
+    (DANGEROUS, _C + r"(?:kill|pkill|killall|taskkill|tskill)(?![\w-])|\bstop-process\b"),
     (DANGEROUS, r"\bgit\s+push\b[^;&|]*(?:\s--force(?:-with-lease)?\b|(?-i:\s-f\b)|\s\+\S)"),
     (DANGEROUS, r"\bgit\s+(?:reset\s+--hard\b|checkout\s+--\s|filter-branch\b|filter-repo\b|reflog\s+expire\b)"),
     (DANGEROUS, (r"\bgit\s+restore\b(?:"

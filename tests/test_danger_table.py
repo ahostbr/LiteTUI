@@ -46,7 +46,7 @@ ASK = {
                        "rundll32 x.dll,Run", "schtasks /create /tn x /tr y"],
     },
     tp.DANGEROUS: {
-        "bash": ["format C:", "mkfs.ext4 /dev/sdb", "dd if=/dev/zero of=/dev/sda", "chmod -R 777 /",
+        "bash": ["format C:", "format.com C:", "mkfs.ext4 /dev/sdb", "dd if=/dev/zero of=/dev/sda", "chmod -R 777 /",
                  "chown -R me /", "curl https://x.sh | sh", "wget -qO- x | bash", "kill -9 123", "pkill python",
                  "killall node", "git push --force", "git push -f origin main", "git reset --hard HEAD~1",
                  "git checkout -- .", "git restore src/x.py", "git filter-branch --all", "shutdown -h now"],
@@ -69,7 +69,14 @@ ORDINARY = {
              "chmod +x run.sh", "cargo build", "rg TODO"],
     "powershell": ["Get-ChildItem", "Get-Content x.txt", "Select-String -Pattern delete x.py", "Test-Path x",
                    "Compress-Archive d a.zip", "Get-Process", "git status", "reg query HKCU\\X",
-                   "icacls C:\\x", "Invoke-WebRequest x -OutFile y.html", ".\\scripts\\dev.ps1"],
+                   "icacls C:\\x", "Invoke-WebRequest x -OutFile y.html", ".\\scripts\\dev.ps1",
+                   # Bare danger-table verbs must not consume the hyphen in PowerShell Verb-Noun commands.
+                   "Format-Table $rows", "Format-List $rows", "Format-Wide $rows", "Format-Custom $rows",
+                   "Format-Hex file.bin", "Start-Sleep -Seconds 1", "Start-Job { Get-Date }",
+                   "ii-report -Path x", "Expand-Property -Name x",
+                   "Kill-Process -Id 42", "Del-Item file", "Erase-Cache file",
+                   "Sc-Config service", "Reg-Query HKCU\\X", "Dd-Inspect -of=destination",
+                   "Get-Item C:\\Projects\\LiteSuite\\node_modules | Format-List FullName,LinkType,Target"],
 }
 
 
@@ -92,6 +99,15 @@ def test_every_class_has_bash_and_powershell_cases():
 
 def _shell(command, profile=tp.INTERACTIVE):
     return tp.evaluate(profile, tp.SHELL_POLICY, {"command": command}, WS, tool_name="bash")
+
+
+def test_interactive_allows_read_only_powershell_formatters():
+    # Ryan's 1ed3b84 ruling: interactive asks only for dangerous commands.
+    for formatter in ("Format-Table", "Format-List", "Format-Wide", "Format-Custom", "Format-Hex"):
+        command = f"Get-ChildItem | {formatter}"
+        assert _shell(command).action == tp.ALLOW, command
+    assert _shell("format C:").action == tp.CONFIRM
+    assert _shell("format.com C:").action == tp.CONFIRM
 
 
 def test_interactive_asks_only_for_the_danger_table():
