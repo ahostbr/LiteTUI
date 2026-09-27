@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from litetui import tool_policy as tp
+from litetui.plugins import PluginContext, PluginRegistry
 
 ROOT = Path(__file__).parent
 
@@ -12,6 +13,32 @@ ROOT = Path(__file__).parent
 SOTS_READS = ("sots_server_info", "sots_search", "sots_read_file", "sots_list_dir",
               "sots_help", "sots_read_image")
 VIBEUE_READS = ("vibeue_list_tools", "vibeue_tool_schema", "vibeue_check_connection")
+
+
+def test_registered_mcp_authorization_path_reads_and_effects():
+    """The app obtains policy from the registry, not the standalone helper.
+
+    This also runs against the pre-T1096 source: a VibeUE read must differ
+    from its old provider-wide CONFIRM policy, while writes remain guarded.
+    """
+    names = (
+        "mcp__VibeUE__vibeue_list_tools",
+        "mcp__SOTS_MCP_CORE__sots_view_screenshot",
+        "mcp__SOTS_MCP_CORE__sots_rag",
+    )
+    registry = PluginRegistry()
+    PluginContext(None, registry, "mcp").dynamic_tools(
+        lambda: [], lambda name: (lambda args: None) if name in names else None,
+    )
+    decisions = (
+        (names[0], {}, tp.ALLOW),
+        (names[1], {}, tp.CONFIRM),
+        (names[2], {"action": "index"}, tp.CONFIRM),
+    )
+    for name, args, expected in decisions:
+        policy = registry.policy_for(name)
+        assert policy is not None, f"registered MCP tool {name} has no policy"
+        assert tp.evaluate(tp.INTERACTIVE, policy, args, ROOT).action == expected, name
 
 
 @pytest.mark.parametrize("name", SOTS_READS)
