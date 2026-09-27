@@ -151,7 +151,7 @@ def confirm_route(app) -> str:
 # ⚠️ CEILING (Dijkstra P1): the record is only as trustworthy as the file. An agent
 # that can write jobs.json can schedule autonomous work in Ryan's instance. The
 # refusals below close the API doors, not the file. This is pre-existing (before
-# T1082 every cron fired autonomous, whoever wrote it) and not widened. It is closed
+# T1082 every cron fired autonomous, whoever wrote it) and not widened. To be closed
 # by T1085 (the floor + the locked-seat file-tool refusal), not in this card.
 
 LOOP_REFUSAL = ("loops are made with /loop in a live LiteTUI, never scheduled directly "
