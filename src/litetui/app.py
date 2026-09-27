@@ -964,18 +964,22 @@ class LiteTUI(App):
         background: $footer-background;
     }
 
-    /* The palette's only door (T573). WITHOUT `dock` THIS IS A ZERO-WIDTH
-       WIDGET: Footer gives an undocked child no space, so the button
-       mounted, rendered, reported visible=True display=True, and measured
-       Size(0, 0) -- its on_click worked when called directly and could
-       never be reached by an actual click. Docked, it sizes to content. */
+    /* Status on the upper row, binding hints and controls below it. */
+    ContextFooter { height: 2; }
+    .ctx-label { dock: top; height: 1; width: 100%; }
+    .permission-label {
+        dock: right;
+        width: auto;
+        height: 1;
+        padding-right: 1;
+        background: $footer-background;
+    }
     .footer-buttons {
         dock: right;
         width: auto;
         height: 1;
         background: $footer-background;
     }
-
     .palette-button {
         width: auto;
         padding: 0 2 0 1;
@@ -5496,6 +5500,9 @@ class LiteTUI(App):
             else:
                 add("seat", "no seat", "#5c6370")
 
+        if getattr(self, "model_id", ""):
+            add("model", str(self.model_id), "#7d8799")
+
         if s.footer_show_thinking:
             add("think", f"think:{self.thinking_level or 'default'}", "#5c6370", chip="think")
 
@@ -5578,22 +5585,19 @@ class LiteTUI(App):
             for key in settings_mod.normalize_footer_order(
                 getattr(s, "footer_order", None)
             )
-            if key in chunks_by_key
+            if key in chunks_by_key and key not in ("authority", "plan")
         ]
 
         # The footer owns the usable width. During its first compose it is
-        # mounted but its children are not, so use the measured palette width
-        # when available and its stable 12-cell footprint otherwise. The label's
-        # CSS right padding consumes the remaining one cell. FakeApp unit tests
-        # have no query/size at all; in that unmounted world width is unknown
-        # and the full historical text is returned unchanged.
+        # mounted but its children are not, so use the width from the footer's
+        # resize event when available. The label's CSS padding takes one cell.
+        # FakeApp unit tests have no query/size; unmounted width is unknown.
         available = getattr(self, "_footer_available_width", None)
 
         # Drop low-value fields until the protected visual-cron facts fit.
-        # Display order never changes; only membership does. Authority, plan,
-        # seat identity, thinking effort and context percent are protected: a
-        # narrow spawned-agent pane needs all five to identify the seat and
-        # confirm that its requested effort actually took effect. Calculate
+        # Display order never changes; only membership does. Seat identity,
+        # thinking effort and context percent are protected on the status line;
+        # authority and plan live on the second line. Calculate
         # against Rich cell widths (not len()) so wide glyphs cannot reintroduce
         # clipping.
         render_sep = sep
@@ -5609,7 +5613,7 @@ class LiteTUI(App):
             if width() > available:
                 render_sep = " · "
 
-            for drop_key in ("tps", "convo", "bg", "agents", "cache", "ctx"):
+            for drop_key in ("tps", "bg", "agents", "cache", "model", "convo", "ctx"):
                 if width() <= available:
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
@@ -5652,6 +5656,31 @@ class LiteTUI(App):
                 t.append(render_sep, foreground or "#5c6370")
             t.append(chunk)
         return t
+
+    @property
+    def permission_label_text(self) -> Text:
+        """Resolved permission mode and plan state on the line below status."""
+        profile = getattr(self, "_active_tool_profile", None)
+        level = profile_text(profile)
+        plan_on = bool(getattr(self, "_plan_mode", False))
+        nav = getattr(self, "_footer_nav", None)
+        chunks = {
+            "plan": Text("plan:on" if plan_on else "plan:off",
+                         "reverse bold" if nav == "plan" else
+                         ("bold #bb9af7" if plan_on else "#5c6370")),
+        }
+        if level:
+            chunks["authority"] = Text(
+                level, "reverse bold" if nav == "authority" else
+                ("#7d8799" if tool_policy.stops_you(profile) else "#7aa2f7")
+            )
+        text = Text()
+        for key in self.footer_display_order():
+            if key in chunks:
+                if text.plain:
+                    text.append("  ·  ", "#5c6370")
+                text.append(chunks[key])
+        return text
 
 
     def _rpc_emit_usage(self, used: int | None) -> None:
@@ -5713,7 +5742,7 @@ class LiteTUI(App):
         # behind; update every match instead so a transient duplicate is
         # cosmetic rather than an exception on a hot reactive path.
         try:
-            labels = list(self.query(".ctx-label"))
+            labels = list(self.query(".ctx-label, .permission-label"))
         except Exception:
             # No screen on the stack yet. _update_header and the conversation
             # setup both run before mount, and self.query() RAISES in that
@@ -5722,8 +5751,9 @@ class LiteTUI(App):
             return
         if not labels:
             return  # footer not composed yet; it reads the value when it composes
-        text = self.ctx_label_text
         for label in labels:
+            text = (self.permission_label_text if label.has_class("permission-label")
+                    else self.ctx_label_text)
             # T1003: the setter repaints even when nothing changed, and idle
             # timers (cache ticker, Codex events, on_resize) call this constantly.
             if label.content != text:

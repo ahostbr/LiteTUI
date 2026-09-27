@@ -33,7 +33,8 @@ from litetui import app as m  # noqa: E402
 from litetui import widgets  # noqa: E402
 
 ROWS = 34
-FOOTER_ROW = f"\x1b[{ROWS};"  # the cursor move that starts a write on the footer row
+# T1113: status is the upper row of the two-row footer.
+FOOTER_ROW = f"\x1b[{ROWS - 1};"  # the cursor move that starts a write on the footer row
 
 
 class CaptureDriver(HeadlessDriver):

@@ -1274,36 +1274,21 @@ class ContextFooter(Footer):
     PALETTE_LABEL = "≡ commands"
 
     def on_resize(self, _event) -> None:
-        """Re-fit after this footer has received its new layout width."""
-        palette_width = 12
-        buttons = list(self.query(".footer-buttons"))
-        button_width = max((button.size.width for button in buttons), default=0)
-        if button_width:
-            palette_width = button_width
-        self.app._footer_available_width = max(0, self.size.width - palette_width - 1)
+        """Refit the status line after layout changes."""
+        self.app._footer_available_width = max(0, self.size.width - 1)
         self.call_after_refresh(self.app._refresh_ctx_label)
 
     def compose(self) -> ComposeResult:
         yield from super().compose()
-        # CLASS, not id. Footer recomposes (Textual removes its children and
-        # re-runs compose), and a fixed `id` on a recomposed child raises
-        # DuplicateIds the moment the removal has not landed before the mount.
-        # That crashed the whole app; duplicate CLASSES are legal, so the worst
-        # case degrades to a stale label instead of a traceback.
-        label = Static("", classes="ctx-label")
         app = self.app
+        status = Static("", classes="ctx-label")
         if hasattr(app, "ctx_label_text"):
-            label.content = app.ctx_label_text
-        yield label
-        # AFTER the label, deliberately: two widgets docked to the same
-        # edge stack in compose order, so the one yielded LAST sits
-        # innermost -- and the label is the one that must keep the far
-        # right, where the context readout has always been.
-        # ONE docked container for both buttons. `dock: right` does not stack:
-        # a second right-docked sibling lands on the SAME cells and, composed
-        # last, wins the hit test - the palette button rendered and could not
-        # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
-        # Inside a Horizontal each button owns its own cells.
+            status.content = app.ctx_label_text
+        yield status
+        permission = Static("", classes="permission-label")
+        if hasattr(app, "permission_label_text"):
+            permission.content = app.permission_label_text
+        yield permission
         with Horizontal(classes="footer-buttons"):
             yield PaletteButton(self.PALETTE_LABEL, classes="palette-button")
 
