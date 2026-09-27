@@ -34,7 +34,7 @@ def _palette_new_job(app) -> None:
         app,
         partial(JobBody, None, NEW_JOB_PREFILL),
         partial(JobScreen, None, NEW_JOB_PREFILL),
-        lambda result: _apply_job_edit(app.jobs, None, result),
+        lambda result: _apply_job_edit(app.jobs, None, result, app=app),
     )
 
 

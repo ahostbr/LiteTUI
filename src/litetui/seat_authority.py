@@ -14,9 +14,10 @@ The rule, per source (Marquee's ruling on the T1027 design):
     submit carried — the human's choice at that moment — unless a flag outranks it.
   - inbox mail, a child's result and a goal continuation NARROW: the narrower of
     what they carried and the seat profile. Mail never widens a seat.
-  - a cron/loop fire is AUTONOMOUS (T085, Ryan: a schedule has nobody to ask) —
-    but an explicit flag is a CEILING on every source, so a seat launched
-    `--tool-profile interactive` does not escalate for its schedules either.
+  - a cron/loop fire runs at the level its schedule RECORDED at creation (T1082,
+    which supersedes T085's hardcoded autonomous). A seat that cannot grant that
+    level unchanged (the lock, or a narrower launch flag) SKIPS the job and never
+    runs it lower: `withheld`.
 
 📌 T1043 (the fleet floor on every turn) is one call beside the stamp in
 `accept_prompt`: `floor.check(resolve(app, source))`. Not built here.
@@ -67,7 +68,9 @@ def turn_profile(app, source: str, requested: str | None = None) -> str:
 def _turn_profile(app, source: str, requested: str | None) -> str:
     flag = launch_flag(app)
     if source == "scheduled":
-        wanted = requested or tool_policy.AUTONOMOUS
+        # T1082: every fire carries its job's recorded level. One that carries none
+        # lands on the floor (T084), never on the widest.
+        wanted = requested or tool_policy.STRICT
         return narrower(wanted, flag) if flag else wanted
     if source in NARROWING_SOURCES:
         seat = seat_profile(app)
@@ -85,15 +88,18 @@ def _turn_profile(app, source: str, requested: str | None) -> str:
 # property over the raw value, app.py): it has 9 writers and ~12 readers, and only
 # 3 writers go through the resolver, so a gate anywhere else leaves paths open.
 
+def _locked_because(app) -> str:
+    return ("was not launched by Ryan (an agent spawned it), so it runs interactive "
+            "and its approvals belong to its leader" if is_spawned(app) else
+            "is not Ryan's own (not owner-marked: launch it via run.bat or LiteGUI; "
+            "or its terminal was written by an agent), so it runs interactive")
+
+
 def lock_refusal(app) -> str:
     """Why autonomous was refused, true to THIS seat (Dijkstra F2): the lock keys
     on "not Ryan's own", so a seat Ryan launched unmarked is locked too, and must
     not be told an agent spawned it."""
-    why = ("was not launched by Ryan (an agent spawned it), so it runs interactive "
-           "and its approvals belong to its leader" if is_spawned(app) else
-           "is not Ryan's own (not owner-marked: launch it via run.bat or LiteGUI; "
-           "or its terminal was written by an agent), so it runs interactive")
-    return (f"autonomous refused: this LiteTUI {why} (T1049; Ryan: "
+    return (f"autonomous refused: this LiteTUI {_locked_because(app)} (T1049; Ryan: "
             "\"they can only go to interactive mode\").")
 
 
@@ -132,6 +138,89 @@ def confirm_route(app) -> str:
     if getattr(app, "_agent_launched", True):  # unknown: the fail-safe answer
         return "refuse"
     return "hand"
+
+
+# ── T1082 (T1049 phase C): a schedule's level is set when it is created ──────
+#
+# Ryan (liteask a-a203e2c0, lock_cron): "we need new settings to set this at the
+# time u create the schedule. in litetui and the sidecar. loops inherit the setting
+# they were created on ... loops should only be set manually during a live litetui
+# instance never scheduled directly. if a scheduled prompt has a /loop command in it
+# so be it ... it runs at the scheduled level."
+#
+# ⚠️ CEILING (Dijkstra P1): the record is only as trustworthy as the file. An agent
+# that can write jobs.json can schedule autonomous work in Ryan's instance. The
+# refusals below close the API doors, not the file. This is pre-existing (before
+# T1082 every cron fired autonomous, whoever wrote it) and not widened. It is closed
+# by T1085 (the floor + the locked-seat file-tool refusal), not in this card.
+
+LOOP_REFUSAL = ("loops are made with /loop in a live LiteTUI, never scheduled directly "
+                "(T1082; Ryan: \"loops should only be set manually during a live litetui "
+                "instance never scheduled directly\").")
+
+
+def schedule_level(app, chosen: str | None = None) -> str:
+    """The level a NEW schedule records: the creator's pick, else this seat's level.
+    ValueError for a name that is no level, and for autonomous in a locked seat
+    (T1049-A at creation: a locked seat can never RECORD autonomous)."""
+    if chosen is None:
+        return seat_profile(app)
+    if chosen not in tool_policy.PROFILES:
+        raise ValueError(f"no level {chosen!r}: one of {', '.join(tool_policy.PROFILE_NAMES)}")
+    if locked_profile(app, chosen) != chosen:
+        raise ValueError(lock_refusal(app))
+    return chosen
+
+
+def loop_level(app) -> str:
+    """What a /loop records: the EFFECTIVE LEVEL OF THE TURN it was created in
+    (Sentinel 8cc9ea00 (ii)): the running turn's level, else this seat's. A loop
+    takes no level argument anywhere, so its level is never set directly."""
+    running = getattr(app, "_chat_running", None)
+    level = getattr(app, "_active_tool_profile", None)
+    if running is not None and running() and level in tool_policy.PROFILES:
+        return locked_profile(app, level)
+    return seat_profile(app)
+
+
+def withheld(app, level: str) -> str | None:
+    """Why THIS instance does not run a schedule recorded at `level`, or None when it
+    runs it unchanged. A job runs at its recorded level or not at all ("it runs at the
+    scheduled level"): the lock (f4d49382, C5) or a narrower launch flag (e9576f7f,
+    R1; this narrows T1027's flag ceiling for schedules only) SKIPS it, so an instance
+    that can grant the level still runs it."""
+    if turn_profile(app, "scheduled", level) == level:
+        return None
+    if locked_profile(app, level) != level:
+        return lock_refusal(app)
+    return (f"it runs at {level}, above this LiteTUI's --tool-profile {launch_flag(app)}, "
+            "so a LiteTUI that can grant it runs it (T1082: a schedule runs at its "
+            "recorded level or not at all).")
+
+
+def job_write_refusal(app, job) -> str | None:
+    """A locked seat may not edit, pause, resume or delete a job recorded autonomous
+    (C8, R3). jobs.json is shared by every LiteTUI on the data root, so that job is
+    Ryan's. See the CEILING above: this closes the API doors only."""
+    from litetui import scheduler
+    if not locked(app) or scheduler.level_of(job.tool_profile) != tool_policy.AUTONOMOUS:
+        return None
+    return (f"job {job.id} runs autonomous, so this LiteTUI may not change or remove it: "
+            f"this LiteTUI {_locked_because(app)} (T1082).")
+
+
+def schedule_note(app, level: str) -> str:
+    """One line for every creation surface: the recorded level and who answers the
+    CONFIRMs its runs raise (confirm_route, T1049-B)."""
+    if level == tool_policy.AUTONOMOUS:
+        return "runs autonomous: no action asks for approval"
+    route = confirm_route(app)
+    who = {
+        "spawner": f"go to the launching agent {str(getattr(app, '_spawner_id', ''))[:8]}",
+        "host": "go to this LiteTUI's host",
+        "refuse": "are refused and logged (no launching agent is recorded)",
+    }.get(route, "are refused, because nobody is at the keyboard when it fires")
+    return f"runs {level}: actions that need approval {who}"
 
 
 def warn_if_capped(app) -> None:

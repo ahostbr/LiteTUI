@@ -272,6 +272,9 @@ def _jobs(app, action, cmd):
         job = next((j for j in app.jobs if j.id == cmd.get("job_id")), None)
         if job is None:
             raise ValueError("Unknown job_id")
+        why = seat_authority.withheld(app, scheduler.level_of(job.tool_profile))
+        if why:
+            raise ValueError(f"Job {job.id} not run: {why}")  # T1082: at its level or not at all
         delivered = app._fire_job(job, manual=True)
         if not delivered:
             raise ValueError("Job was not delivered: scheduler is paused, owned elsewhere, or its durable stamp failed")
@@ -279,9 +282,16 @@ def _jobs(app, action, cmd):
     candidate = list(app.jobs)
     if action == "create":
         payload = dict(cmd.get("job", {}))
+        # T1082: a loop created here (LiteGUI's loop form, a human in a live instance)
+        # records the level of the turn it was created in and takes none; a cron job
+        # records its creator's pick through schedule_level (none = this seat's level).
         if payload.get("kind") == "loop":
-            job = scheduler.Job.loop(prompt=payload["prompt"], interval_minutes=payload["interval_minutes"], owner_convo_id=app.convo_id)
+            if "tool_profile" in payload:
+                raise ValueError(seat_authority.LOOP_REFUSAL)
+            job = scheduler.Job.loop(prompt=payload["prompt"], interval_minutes=payload["interval_minutes"],
+                                     owner_convo_id=app.convo_id, tool_profile=seat_authority.loop_level(app))
         else:
+            payload["tool_profile"] = seat_authority.schedule_level(app, payload.get("tool_profile"))
             job = scheduler.Job(**payload)
             job.cron()
         if not job.prompt.strip():
@@ -293,6 +303,9 @@ def _jobs(app, action, cmd):
         job = next((j for j in candidate if j.id == cmd.get("job_id")), None)
         if job is None:
             raise ValueError("Unknown job_id")
+        why = seat_authority.job_write_refusal(app, job) if action in ("delete", "update") else None
+        if why:
+            raise ValueError(why)  # T1082 C8/R3
         if action == "delete":
             candidate.remove(job)
         elif action == "update":

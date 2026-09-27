@@ -175,7 +175,11 @@ class LoopListBody(Widget):
         if job is None or bool(job.enabled) == bool(event.value):
             return
         # THE SHARED VERB. Not `job.enabled = ...` — see the module docstring.
-        set_loop_enabled(self.app, job, bool(event.value))
+        why = set_loop_enabled(self.app, job, bool(event.value))
+        if why:
+            self.app._system(f"/loop: {why}")
+            self.refresh(recompose=True)  # the switch goes back to the job's state
+            return
         self._refresh_countdowns()
 
     @on(Button.Pressed)
@@ -185,7 +189,9 @@ class LoopListBody(Widget):
             return
         job = self._job(bid[len("ll-rm-"):])
         if job is not None:
-            remove_loop(self.app, job)
+            why = remove_loop(self.app, job)
+            if why:
+                self.app._system(f"/loop: {why}")
             # Rebuild from the live list rather than removing the row widgets:
             # the title count and the empty state both have to follow, and
             # pruning widgets by hand is how one of them gets forgotten.

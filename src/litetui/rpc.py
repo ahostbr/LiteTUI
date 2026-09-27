@@ -396,6 +396,7 @@ def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) 
     try:
         from litetui import scheduler
         from litetui import paths
+        from litetui import seat_authority
         verb = cmd_type.split(".", 1)[1] if "." in cmd_type else ""
         # 🔴 `app.jobs`, NOT A FRESH `scheduler.load` (T689). This handler used
         # to read its own copy off disk, which made it a SECOND holder of the
@@ -408,13 +409,24 @@ def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) 
         if verb == "list":
             _respond(cmd_id, ok=True, result=[j.__dict__ for j in app.jobs])
         elif verb == "create":
-            job = scheduler.Job(**{k: v for k, v in cmd.items() if k not in ("type", "id")})
+            fields = {k: v for k, v in cmd.items() if k not in ("type", "id")}
+            # T1082: a loop is made with /loop in a live LiteTUI, never through a
+            # scheduling API, and a cron job's level goes through schedule_level
+            # (missing = this seat's level; autonomous in a locked seat refused).
+            if fields.get("kind", "cron") == "loop":
+                raise ValueError(seat_authority.LOOP_REFUSAL)
+            fields["tool_profile"] = seat_authority.schedule_level(app, fields.get("tool_profile"))
+            job = scheduler.Job(**fields)
             app.jobs.append(job)
             scheduler.save(app.jobs, paths.data_root())
             _respond(cmd_id, ok=True, result=job.__dict__)
         elif verb == "delete":
             job_id = cmd.get("job_id", "")
-            for job in [j for j in app.jobs if getattr(j, "id", None) == job_id]:
+            hits = [j for j in app.jobs if getattr(j, "id", None) == job_id]
+            why = next(filter(None, (seat_authority.job_write_refusal(app, j) for j in hits)), None)
+            if why:
+                raise ValueError(why)  # T1082 R3: nothing is deleted
+            for job in hits:
                 app.jobs.remove(job)
             scheduler.save(app.jobs, paths.data_root())
             _respond(cmd_id, ok=True, result={"deleted": job_id})
