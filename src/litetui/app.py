@@ -688,6 +688,10 @@ class LiteTUI(App):
     TITLE = "LiteTUI"
     SUB_TITLE = "Connecting..."
 
+    # Below 80 columns the screen carries `-narrow` and the chat cards drop
+    # their bubble indents (see `.-narrow` in CSS). T1048.
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (80, "-wide")]
+
     # The stock providers (theme, keys, quit...) plus ours.
     COMMANDS = App.COMMANDS | {LiteTUICommands}
 
@@ -753,6 +757,15 @@ class LiteTUI(App):
     }
 
     #chat-log {
+        /* 100%, NOT the inherited 1fr (T1048). Textual's vertical layout
+           resolves a child's fr WIDTH against the screen minus the LARGEST
+           horizontal margin of any sibling (layouts/vertical.py resolve_margin),
+           so PromptBox's `margin: 0 1` cost the log 2 dead columns on the
+           right at every width (measured: log 43 wide in a 45-column screen).
+           A percentage resolves against the container minus the widget's OWN
+           margin, so PromptBox carries `width: 100%` for the same reason:
+           while #skill-ac (`margin: 0 2`) is open it would lose 2 more. */
+        width: 100%;
         height: 1fr;
         padding: 1 1;
         scrollbar-size: 1 1;
@@ -882,6 +895,50 @@ class LiteTUI(App):
 
     .tool-msg.expanded .tool-body {
         display: block;
+    }
+
+    /* NARROW: below 80 columns (HORIZONTAL_BREAKPOINTS), T1048. The 8-cell
+       bubble indents and 2-cell padding above are sized for a wide terminal;
+       at 45 columns they left the answer 24 columns of text (measured,
+       .scratch/t1048/capture.py). Here every card spans the log, and the
+       log's edges line up with the prompt box: 1 cell left, the scrollbar
+       gutter right, reserved so the edge does not jump when a scrollbar
+       appears. FULL SHORTHANDS, NOT LONGHANDS: in Textual a `margin-left`
+       in one rule resets that rule's other three edges to 0 (styles builder
+       `_process_space_partial` starts from (0,0,0,0)), so a longhand here
+       silently deleted every card's top margin and vertical padding. The
+       folded cards therefore need their own narrow rule. Who is speaking
+       stays readable from fill, border colour and title, not the indent.
+       the user, 2026-09-26: "thers a large gap to the right of the messages". */
+    .-narrow #chat-log {
+        padding: 1 0 1 1;
+        scrollbar-gutter: stable;
+    }
+
+    .-narrow .user-msg, .-narrow .assistant-msg {
+        margin: 1 0 0 0;
+        padding: 1 1;
+    }
+
+    .-narrow .user-msg.collapsed, .-narrow .assistant-msg.collapsed {
+        padding: 0 1;
+    }
+
+    .-narrow .tool-msg {
+        margin: 0;
+    }
+
+    .-narrow .tool-body {
+        padding: 0 1 1 1;
+    }
+
+    .-narrow .cancel-tool {
+        /* Still under the timer: tool margin 0 + tool-body padding 1. */
+        margin: 0 0 0 1;
+    }
+
+    .-narrow .system-msg {
+        margin: 0 1;
     }
 
     #image-indicator {
