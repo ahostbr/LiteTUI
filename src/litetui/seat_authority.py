@@ -155,12 +155,73 @@ def goal_source(state) -> str:
     return "goal-ryan" if getattr(state, "started_by", "") in RYAN_GOAL_ORIGINS else "goal"
 
 
+#: Set in a shell an AGENT runs: Claude Code's Bash (CLAUDECODE), LiteTUI's own
+#: tool shells (harness.AGENT_SHELL_MARKER), Codex's shell tool (it sets
+#: CODEX_SANDBOX_NETWORK_DISABLED "whenever you use the shell tool", measured =1 in
+#: a recorded session; CODEX_SANDBOX when sandboxed). Under any of them the owner
+#: mark is VOID: a UI-made LiteSuite panel carries the mark to every process in
+#: it, including a Claude or Codex Ryan starts there and THEIR shells.
+AGENT_SHELL_MARKERS = ("CLAUDECODE", "LITETUI_AGENT_SHELL",
+                       "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX")
+
+#: LiteSuite's pty daemon puts this in every terminal's env (process-children.ts).
+PTY_TERM_VAR = "LITESUITE_PTY_TERM"
+BRIDGE = "http://127.0.0.1:7423"
+
+
+def owner_mark_valid(environ) -> bool:
+    """LITETUI_OWNER=1, and NOT inside an agent's shell. Read at startup."""
+    return (environ.get("LITETUI_OWNER") == "1"
+            and not any(environ.get(name) for name in AGENT_SHELL_MARKERS))
+
+
+def pty_taint_clean(term: str, timeout: float = 1.0) -> bool:
+    """Ask LiteSuite whether this terminal was ever written by the bridge
+    (/pty/talk, /pty/write, MCP terminal writes; the taint is recorded BEFORE the
+    write). Only a clear "untainted" keeps the mark: no answer, a timeout, an error
+    or a tainted terminal all mean NOT the owner (fail-safe)."""
+    import json
+    import os
+    import urllib.parse
+    import urllib.request
+    from pathlib import Path
+    token = os.environ.get("LITESUITE_BRIDGE_TOKEN", "").strip()
+    if not token:
+        try:
+            token = (Path.home() / ".litesuite" / "bridge-token").read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+    url = f"{BRIDGE}/pty/owner-ok?term={urllib.parse.quote(term)}"
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            answer = json.loads(response.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - any failure to verify is "not the owner"
+        return False
+    return answer.get("tainted") is False
+
+
 def is_owner(app) -> bool:
     """Ryan's own launcher marked this process (LITETUI_OWNER=1, recorded at startup
-    as app._owner_seat). Unknown counts as NOT the owner: the floor is the default.
+    as app._owner_seat, void inside an agent's shell). Unknown counts as NOT the
+    owner: the floor is the default.
     T1043 finding F (Dijkstra 90a4ba0c): "not spawned" read 102 of 105 convos on
-    disk as Ryan's own, fleet seats typed into panes included."""
-    return getattr(app, "_owner_seat", False)
+    disk as Ryan's own, fleet seats typed into panes included.
+    Inside a LiteSuite terminal (app._pty_term) the mark also needs that terminal
+    to be untainted by the bridge, re-asked each time, because /pty/talk can type
+    into a shell Ryan opened. A taint is permanent: once seen, the mark is gone."""
+    if not getattr(app, "_owner_seat", False):
+        return False
+    term = getattr(app, "_pty_term", None)
+    if term and not pty_taint_clean(term):
+        app._owner_seat = False
+        return False
+    return True
+
+
+def is_ryans_own(app) -> bool:
+    """THE one test for "Ryan's own instance": owner-marked and not spawned."""
+    return not is_spawned(app) and is_owner(app)
 
 
 def is_spawned(app) -> bool:
@@ -187,7 +248,7 @@ def floor_applies(app, source: str) -> bool:
     `litetui --rpc` could send it. Today only LiteGUI does (LiteGUI
     src/host/supervisor.ts:28). The exemption covers rpc only; inbox, cron, goal
     and child-result turns in the same instance stay enforced."""
-    if is_spawned(app) or not is_owner(app):
+    if not is_ryans_own(app):
         return True   # spawned wins; and only Ryan's own launcher is exempt
     if source == "rpc":
         # ponytail: host claim via gui.hello; a real per-launch host token if anything but LiteGUI speaks it
@@ -217,7 +278,7 @@ def warn_if_below_floor(app) -> None:
     Enforcement is per turn (hook_host.accept_prompt); this only makes a refusal
     unsurprising. A function over `app`, like app._sync_seat_resolution, so
     the many partial test hosts need no stub."""
-    if is_owner(app) and not is_spawned(app):
+    if is_ryans_own(app):
         return  # Ryan, form 4: "no warning nothing" in his own instance
     why = floor_refusal(app)
     say = getattr(app, "_system", None)

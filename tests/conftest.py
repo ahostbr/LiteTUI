@@ -89,6 +89,14 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
     # (which EXISTS on the dev box). An absent path here = the built-in default,
     # so the suite never depends on the developer's own policy file.
     monkeypatch.setenv("LITESUITE_FLEET_POLICY", str(tmp_path / "fleet-policy.json"))
+    # T1043: the suite runs INSIDE an agent's shell (CLAUDECODE, a LiteSuite pane's
+    # LITESUITE_PTY_TERM), which would void or live-verify the owner mark; and every
+    # LiteTUI() exports LITETUI_AGENT_SHELL into os.environ. Clear them per test
+    # (monkeypatch's undo also removes what an app set), so no test reads the
+    # developer's session or reaches the live bridge.
+    for name in ("LITETUI_OWNER", "LITETUI_AGENT_SHELL", "CLAUDECODE", "LITESUITE_PTY_TERM",
+                 "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

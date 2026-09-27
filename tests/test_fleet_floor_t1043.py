@@ -898,7 +898,118 @@ def test_F_run_bat_marks_RYANS_launch_and_scopes_it():
     assert b"\n" not in raw.replace(b"\r\n", b""), "run.bat lost its CRLF endings"
     lines = raw.decode("ascii").split("\r\n")
     assert lines[0] == "@echo off" and lines[1] == "setlocal"
-    mark = lines.index('set "LITETUI_OWNER=1"')
+    # Dijkstra's guard: never from inside Claude Code's Bash or a LiteTUI tool shell.
+    mark = lines.index('if not defined CLAUDECODE if not defined LITETUI_AGENT_SHELL '
+                       'set "LITETUI_OWNER=1"')
     assert lines[mark + 1].startswith("uv run "), "the mark must sit right before uv run"
     assert any(line.startswith("uv sync") for line in lines[:mark]), "the mark reached uv sync"
 
+
+
+# ── consumption side (Marquee 1b8a423e / 68aec657, Sentinel 3d610d15) ─────────
+#    The mark is VOID inside an agent's shell, and inside a LiteSuite terminal it
+#    also needs that terminal untainted by the bridge.
+
+@pytest.mark.parametrize("marker", list(seat_authority.AGENT_SHELL_MARKERS))
+def test_VOID_the_owner_mark_inside_an_agents_shell(marker):
+    env = {"LITETUI_OWNER": "1", marker: "1"}
+    assert seat_authority.owner_mark_valid(env) is False
+    assert seat_authority.owner_mark_valid({"LITETUI_OWNER": "1"}) is True, "CONTROL"
+
+
+def test_VOID_claude_in_a_UI_panel_launching_litetui_is_ENFORCED(monkeypatch):
+    """A UI-made panel carries LITETUI_OWNER to Claude Code started in it; its
+    Bash (CLAUDECODE=1) launching litetui must not inherit Ryan's exemption."""
+    monkeypatch.setenv("LITETUI_OWNER", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert LiteTUI()._owner_seat is False
+
+
+def test_VOID_a_litetui_tool_shell_launching_litetui_is_ENFORCED(monkeypatch):
+    from litetui import harness
+    monkeypatch.setenv("LITETUI_OWNER", "1")
+    LiteTUI()                                   # Ryan's own: exports the marker
+    assert os.environ.get(harness.AGENT_SHELL_MARKER) == "1"
+    monkeypatch.setenv("LITETUI_OWNER", "1")    # a tool shell of it, relaunching
+    assert LiteTUI()._owner_seat is False
+
+
+def test_TAINT_is_checked_only_inside_a_LiteSuite_terminal(monkeypatch):
+    monkeypatch.setenv("LITETUI_OWNER", "1")
+    assert LiteTUI()._pty_term is None, "outside a LiteSuite pty nothing is asked"
+    monkeypatch.setenv("LITETUI_OWNER", "1")
+    monkeypatch.setenv("LITESUITE_PTY_TERM", "pty-1-1")
+    monkeypatch.delenv("LITETUI_AGENT_SHELL", raising=False)
+    assert LiteTUI()._pty_term == "pty-1-1"
+
+
+def test_TAINT_a_bridge_typed_UI_shell_LOSES_the_mark_for_good(monkeypatch):
+    """/pty/talk typed `litetui` into a shell Ryan opened: the bridge recorded the
+    taint BEFORE writing, so the owner mark is gone, and stays gone."""
+    answers = [False]
+    monkeypatch.setattr(seat_authority, "pty_taint_clean", lambda term, timeout=1.0: answers[0])
+    seat = _ryans()
+    seat._pty_term = "pty-9-9"
+    _typed(seat)
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+    answers[0] = True
+    assert seat_authority.is_owner(seat) is False, "a taint must be permanent"
+
+
+def test_TAINT_CONTROL_an_untouched_UI_shell_keeps_the_mark(monkeypatch):
+    monkeypatch.setattr(seat_authority, "pty_taint_clean", lambda term, timeout=1.0: True)
+    seat = _ryans()
+    seat._pty_term = "pty-9-9"
+    _typed(seat)
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+class _Answer:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self.body
+
+
+@pytest.mark.parametrize("body,expected", [
+    (b'{"tainted": false}', True),
+    (b'{"tainted": true}', False),
+    (b'{}', False),
+    (b'not json', False),
+])
+def test_TAINT_only_a_clear_untainted_answer_keeps_the_mark(monkeypatch, body, expected):
+    import urllib.request
+    seen = {}
+
+    def urlopen(request, timeout):
+        seen["url"], seen["auth"], seen["timeout"] = (request.full_url,
+                                                     request.get_header("Authorization"), timeout)
+        return _Answer(body)
+
+    monkeypatch.setenv("LITESUITE_BRIDGE_TOKEN", "tok")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert seat_authority.pty_taint_clean("pty-1-1") is expected
+    assert seen["url"].endswith("/pty/owner-ok?term=pty-1-1")
+    assert seen["auth"] == "Bearer tok" and seen["timeout"] <= 1.0
+
+
+def test_TAINT_no_answer_or_no_token_is_NOT_the_owner(monkeypatch, tmp_path):
+    import urllib.request
+
+    def refused(request, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setenv("LITESUITE_BRIDGE_TOKEN", "tok")
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    assert seat_authority.pty_taint_clean("pty-1-1") is False
+    monkeypatch.delenv("LITESUITE_BRIDGE_TOKEN")
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", staticmethod(lambda: tmp_path))   # no token file
+    assert seat_authority.pty_taint_clean("pty-1-1") is False

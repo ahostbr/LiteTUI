@@ -1726,7 +1726,14 @@ class LiteTUI(App):
         # inherits it. PROCESS-ONLY, never saved per conversation: it says who is
         # at the keyboard of THIS process, so a fleet agent that resumes one of
         # Ryan's conversations is enforced.
-        self._owner_seat = os.environ.pop(harness_mod.OWNER_MARKER, "") == "1"
+        self._owner_seat = seat_authority.owner_mark_valid(os.environ)
+        os.environ.pop(harness_mod.OWNER_MARKER, None)
+        # Inside a LiteSuite terminal the mark is also checked for bridge taint,
+        # lazily at turn time (seat_authority.is_owner): a constructor must not
+        # block on a socket.
+        self._pty_term = (os.environ.get(seat_authority.PTY_TERM_VAR) or None) if self._owner_seat else None
+        # Every tool shell and child this process starts runs inside an agent.
+        os.environ[harness_mod.AGENT_SHELL_MARKER] = "1"
         #: Marker OR a conversation born spawned (convo "seat_spawned"; set on
         #: every open in _adopt_convo_settings). Dijkstra S1, T1043 cycle 2.
         self._spawned_seat = self._spawned_marker

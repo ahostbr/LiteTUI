@@ -178,6 +178,10 @@ SPAWN_IDENTITY_MARKER = "LITETUI_SPAWN_IDENTITY"
 #: identification: an instance without it meets the fleet floor on every turn.
 #: Consumed at startup (app.__init__) so no shell or child inherits it.
 OWNER_MARKER = "LITETUI_OWNER"
+#: T1043: exported by every LiteTUI into its own environment at startup, so every
+#: tool shell and child it starts is known to run inside an agent. The owner mark
+#: is VOID under it (seat_authority.owner_mark_valid).
+AGENT_SHELL_MARKER = "LITETUI_AGENT_SHELL"
 _SPAWN_IDENTITY_ENV = (
     "LITEHARNESS_AGENT_ID",
     "LITEHARNESS_AGENT_NAME",
