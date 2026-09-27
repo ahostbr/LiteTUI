@@ -12,6 +12,7 @@ conftest points LITESUITE_FLEET_POLICY at an absent file: the built-in default.
 """
 from __future__ import annotations
 
+import os
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -374,3 +375,168 @@ def test_E1_the_fallback_is_UNREACHABLE_in_the_real_app():
     only for partial test hosts. The real class always has the builder, so in
     production the floor judges exactly what chat_request sends."""
     assert callable(getattr(LiteTUI, "_effective_request_overrides", None))
+
+
+# ── scope: Ryan, form 4 (via Marquee 1e92852f): "no leave that unchanged no
+#    warning nothing". His OWN instance (not spawned): the turns he drives are
+#    exempt with no text at all; unattended turns and spawned seats stay enforced.
+
+def _ryans(**kw):
+    seat = _Seat(model="gpt-5.6-sol", thinking="medium", **kw)
+    seat._spawned_seat = False
+    return seat
+
+
+def _no_floor_text(seat):
+    return not any("TURN REFUSED" in t or "fleet floor" in t for t in seat.said)
+
+
+def test_RYAN_his_typed_turn_goes_through_with_NO_floor_text():
+    seat = _ryans()
+    _typed(seat)
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+def test_RYAN_his_skill_goes_through_with_NO_floor_text(monkeypatch):
+    from litetui.plugins import skills_plugin
+    monkeypatch.setattr(skills_plugin.skills_mod, "load", lambda skills, want: "do it")
+    seat = _ryans()
+    seat.skills = []
+    seat._user_bubble = lambda *a, **k: None
+    skills_plugin._invoke(seat, "demo")
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+def test_RYAN_the_wake_after_his_compact_goes_through_with_NO_floor_text():
+    seat = _ryans()
+    seat._chat_running = lambda: False
+    seat._pending_input, seat._turn_abandoned = [], False
+    seat._materialise_convo = lambda: None
+    seat._user_bubble = lambda *a, **k: None
+    LiteTUI._wake_after_compact(seat)
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+@pytest.mark.parametrize("source", ["harness", "scheduled", "rpc", "child-result"])
+def test_RYAN_an_UNATTENDED_turn_in_his_own_instance_is_still_REFUSED(source):
+    seat = _ryans()
+    _typed(seat, "mail", source=source)
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+def test_RYAN_a_goal_continuation_in_his_own_instance_is_still_REFUSED():
+    seat = _ryans()
+    seat._chat_running = lambda: False
+    seat._user_bubble = lambda *a, **k: None
+    goal_loop._deliver_goal_turn(seat, goal_loop.GoalState(objective="x"), "continue")
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+def test_a_SPAWNED_seats_typed_turn_is_REFUSED():
+    seat = _Seat(model="gpt-5.6-sol", thinking="medium")
+    seat._spawned_seat = True
+    _typed(seat)
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+def test_the_connect_warning_is_said_in_a_SPAWNED_seat_and_NOT_in_ryans():
+    spawned = _Seat(model="gpt-5.6-sol", thinking="medium")
+    spawned._spawned_seat = True
+    seat_authority.warn_if_below_floor(spawned)
+    assert "every turn will be refused" in spawned.said[-1]
+
+    ryans = _ryans()
+    seat_authority.warn_if_below_floor(ryans)
+    assert ryans.said == []
+
+
+def test_the_app_records_spawned_BEFORE_the_marker_is_consumed(monkeypatch):
+    """spawned_seat_identity pops LITETUI_SPAWN_IDENTITY, so the app must read it
+    first; otherwise every seat would look like Ryan's own instance."""
+    from litetui import harness
+    monkeypatch.setenv(harness.SPAWN_IDENTITY_MARKER, "1")
+    spawned = LiteTUI()
+    assert spawned._spawned_seat is True
+    assert harness.SPAWN_IDENTITY_MARKER not in os.environ, "CONTROL: the marker was consumed"
+    assert LiteTUI()._spawned_seat is False, "Ryan's own launch read as spawned"
+
+
+def test_RYAN_an_UNLABELLED_item_in_his_own_instance_is_REFUSED():
+    """Marquee f1e1c415: "queued" must come only from a typed submit. An item with
+    no source is "unlabelled" (hook_host._turn_source), which is unattended."""
+    seat = _ryans()
+    hook_host.start_prompt(seat, {"content": "x", "tool_profile": "interactive"})
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+@pytest.mark.asyncio
+async def test_RYAN_a_goal_continuation_STEERED_through_the_ledger_is_REFUSED():
+    """The steering ledger copies content/text/source/tool_profile/operation_id and
+    DROPS goal_continuation, so a steered goal item used to arrive as "queued"."""
+    from litetui.codex_steering import HostSteering
+
+    seat = _ryans()
+    seat._stop_requested = False
+    sent = []
+
+    async def request(method, params):
+        sent.append(method)
+        return {"turnId": "turn"}
+
+    steering = HostSteering(seat, SimpleNamespace(request=request), "thread", "turn", {}, lambda: None)
+    goal_item = {"content": "[goal continuation]", "text": "g", "tool_profile": "interactive",
+                 "goal_continuation": True}
+    entry = steering.ledger.enqueue(goal_item, "thread", "turn")
+    assert "goal_continuation" not in entry["item"], "premise: the ledger drops the flag"
+    assert await steering.ledger.deliver(entry, admit=steering.admit, request=request) == "denied"
+    assert sent == []
+
+
+def test_RYAN_a_typed_item_steered_through_the_ledger_stays_ATTENDED():
+    """CONTROL: the label that survives the ledger is the one a typed submit set."""
+    seat = _ryans()
+    assert seat_authority.floor_refusal(seat, hook_host._turn_source({"source": "queued"})) is None
+
+
+def test_RYAN_his_reply_to_a_codex_question_goes_through_with_NO_floor_text():
+    """codex_async_questions' "shared human UI": Ryan typed the answer."""
+    seat = _ryans()
+    _typed(seat, "yes, go", source="codex-question")
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+# ── LiteGUI host (Marquee f2af2bcc): "rpc" is attended only in a hello'd,
+#    non-spawned instance. gui.hello is a host claim, not authentication.
+
+def _litegui(**kw):
+    seat = _ryans(**kw)
+    seat._gui_rpc_enabled = True
+    return seat
+
+
+def test_LITEGUI_a_hellod_non_spawned_rpc_turn_passes_with_NO_floor_text():
+    seat = _litegui()
+    _typed(seat, "from the LiteGUI composer", source="rpc")
+    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+
+
+def test_LITEGUI_a_non_hello_rpc_child_is_REFUSED():
+    """agent_supervisor drives subagent children over rpc and strips their spawn
+    marker, so a non-spawned rpc instance without the handshake is agent-driven."""
+    seat = _ryans()
+    _typed(seat, "from a parent agent", source="rpc")
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+def test_LITEGUI_a_SPAWNED_hellod_seat_is_REFUSED():
+    seat = _litegui()
+    seat._spawned_seat = True
+    _typed(seat, "x", source="rpc")
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+@pytest.mark.parametrize("source", ["harness", "scheduled", "child-result"])
+def test_LITEGUI_unattended_turns_in_a_hellod_instance_are_still_REFUSED(source):
+    seat = _litegui()
+    _typed(seat, "mail", source=source)
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]

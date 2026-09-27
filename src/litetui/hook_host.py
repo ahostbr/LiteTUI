@@ -126,7 +126,13 @@ def enter_conversation(app, event):
 
 
 def _turn_source(item) -> str:
-    return "goal" if item.get("goal_continuation") else item.get("source", "queued")
+    # T1043: an item with NO source is "unlabelled", never "queued". "queued" is
+    # an ATTENDED label (seat_authority.ATTENDED_SOURCES, exempt in Ryan's own
+    # instance) and must be earned by a typed submit, not by a producer that
+    # forgot to say what it is. The steering ledger's copy, for one, keeps
+    # "source" but drops "goal_continuation". Its tool profile is unchanged:
+    # turn_profile treats any unlisted source like an attended submit.
+    return "goal" if item.get("goal_continuation") else (item.get("source") or "unlabelled")
 
 
 def refuse_below_floor(app, item) -> bool:

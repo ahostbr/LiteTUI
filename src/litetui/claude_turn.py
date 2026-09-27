@@ -200,7 +200,9 @@ def queue_ready(app, item):
 def accept_input(app, item):
     metadata = {key: value for key, value in item.items() if key.startswith("_claude_")}
     if not metadata:
-        metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source", "queued"), item.get("operation_id"))
+        # T1043: an unlabelled item is recorded "unlabelled", never as an
+        # attended "queued" that a later replay would inherit.
+        metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source") or "unlabelled", item.get("operation_id"))
     app._claude_active_input = {**item, **metadata}
     return {"id": metadata["_claude_entry"]["id"], "segment_id": metadata["_claude_segment"], "state": "prepared"}
 

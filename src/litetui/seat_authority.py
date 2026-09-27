@@ -114,13 +114,47 @@ def resolve(app, source: str = "typed", requested: str | None = None) -> Effecti
 # byte-identical copy — scripts/sync_deny_floor.py).
 
 
+#: Turns Ryan drives himself: what he types (held or interrupting), a /skill he
+#: types, and the wake that follows HIS /compact ("compact-wake" on the host loop,
+#: "compact" for Claude's, submitted through _submit_text), and his reply to a
+#: Codex question ("codex-question", codex_async_questions' human UI). Everything else,
+#: including an item with no label ("unlabelled"), is unattended.
+#: Labels are produced ONLY by typed submits: "typed" (_submit_text's default
+#: and the /mark paths), "queued" and "interrupted" (_submit_text, held or
+#: interrupting, where an rpc submit becomes "rpc" instead).
+ATTENDED_SOURCES = frozenset({"typed", "queued", "interrupted", "compact-wake", "compact",
+                              "codex-question"})
+
+
+def is_spawned(app) -> bool:
+    """A launcher spawned this seat (LITETUI_SPAWN_IDENTITY, recorded at startup
+    as app._spawned_seat). Unknown counts as spawned: the floor is the default."""
+    return getattr(app, "_spawned_seat", True)
+
+
 def floor_applies(app, source: str) -> bool:
-    """Which turns the fleet floor governs: EVERY source, Ryan's own attended
-    typed turns included — the safe default for "must never happen again"
-    (Marquee 7d1e2cd3, Sentinel a9aa4df0). Ryan rules the scope; if he exempts
-    his own instance's typed turns, this is the one line, keyed on the absence of
-    harness.SPAWN_IDENTITY_MARKER."""
-    return True
+    """Which turns the fleet floor governs.
+
+    RYAN, form 4 (verbatim, via Marquee 1e92852f): "no leave that unchanged no
+    warning nothing". So in HIS OWN instance (not spawned) the turns he drives
+    are exempt, with no refusal and no warning. Every source in a spawned seat,
+    and every UNATTENDED source even in his instance (inbox, cron/loop, goal,
+    child-result, rpc from another process), stays enforced.
+
+    "rpc" is attended ONLY in a LiteGUI-hosted instance (Marquee f2af2bcc): LiteGUI's
+    composer sends "rpc" (its idle Send is the rpc `prompt`, rpc.py:141), and so
+    does agent_supervisor for LiteTUI subagent children, whose spawn marker it
+    strips. The host is told apart by `gui.hello`, which sets _gui_rpc_enabled.
+    ⚠️ gui.hello is a HOST CLAIM, NOT AUTHENTICATION: any process that launches
+    `litetui --rpc` could send it. Today only LiteGUI does (LiteGUI
+    src/host/supervisor.ts:28). The exemption covers rpc only; inbox, cron, goal
+    and child-result turns in the same instance stay enforced."""
+    if is_spawned(app):
+        return True
+    if source == "rpc":
+        # ponytail: host claim via gui.hello; a real per-launch host token if anything but LiteGUI speaks it
+        return not getattr(app, "_gui_rpc_enabled", False)
+    return source not in ATTENDED_SOURCES
 
 
 def seat_policy(app) -> tuple[dict, str]:
@@ -145,6 +179,8 @@ def warn_if_below_floor(app) -> None:
     Enforcement is per turn (hook_host.accept_prompt); this only makes a refusal
     unsurprising. A function over `app`, like app._sync_seat_resolution, so
     the many partial test hosts need no stub."""
+    if not is_spawned(app):
+        return  # Ryan, form 4: "no warning nothing" in his own instance
     why = floor_refusal(app)
     say = getattr(app, "_system", None)
     if why is not None and say is not None:

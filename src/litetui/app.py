@@ -1715,6 +1715,11 @@ class LiteTUI(App):
         if self.settings.mcp_enabled:
             self.mcp.reload_configs()
         self._mcp_dispatch = self.mcp.dispatch()
+        # T1043 (Ryan, form 4): was this seat SPAWNED by a launcher? Read BEFORE
+        # spawned_seat_identity, which consumes the marker. Ryan's own instance
+        # (not spawned) is exempt from the fleet floor for the turns HE drives;
+        # see seat_authority.floor_applies.
+        self._spawned_seat = os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
@@ -8681,7 +8686,7 @@ class LiteTUI(App):
             return
         # T1043 (Dijkstra B2): this ping calls _stream itself, so it meets the
         # fleet floor itself. Said once; nothing appended, no turn started.
-        why = seat_authority.floor_refusal(self)
+        why = seat_authority.floor_refusal(self, "compact-wake")
         if why is not None:
             self._system(why)
             return
@@ -9372,7 +9377,7 @@ class LiteTUI(App):
         # visibly and flushes as a real turn; idle it sends now.
         if self._chat_running():
             self._user_bubble(text, True, queued=True)
-            self._pending_input.append({"content": content, "text": text,
+            self._pending_input.append({"content": content, "text": text, "source": "typed",
                                         "tool_profile": seat_authority.seat_profile(self)})
             return
         self._materialise_convo()
