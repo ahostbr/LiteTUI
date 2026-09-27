@@ -267,7 +267,10 @@ def test_F3_the_removed_scheduled_level_runs_interactive_and_is_named_once():
                    paths.data_root())
     [job] = _on_disk()
     seat, said, pending, _c = _seat([job], own=True)
-    m.LiteTUI._fire_job(seat, job)
+    # _fire_job_owned, the delivery where the level is read: through _fire_job this
+    # on-disk @daily row would first meet the due check (84ec114's arm did, and
+    # delivered nothing).
+    m.LiteTUI._fire_job_owned(seat, job)
     assert pending[0]["tool_profile"] == INTERACTIVE
     seat.cron = SimpleNamespace(jobs=[job])
     cron.say_retired_levels(seat)
@@ -293,19 +296,22 @@ def test_S1_a_skipping_seat_never_takes_the_scheduler_lease(monkeypatch):
     real = shared_state.Lease
 
     class Recording(real):
-        def __init__(self, *a, **k):
-            taken.append(a)
-            super().__init__(*a, **k)
+        def __init__(self, path, *a, **k):
+            taken.append(str(path))
+            super().__init__(path, *a, **k)
 
+    # ONLY the scheduler's lease: a fire's save takes its own jobs.json.lock (84ec114's
+    # arm counted both and failed its CONTROL on 2 == 1).
+    scheduler_leases = lambda: [p for p in taken if p.endswith(".scheduler.lease")]  # noqa: E731
     monkeypatch.setattr(shared_state, "Lease", Recording)
     job = scheduler.Job(prompt="p", schedule="@daily", tool_profile=AUTONOMOUS)
     seat, _s, pending, _c = _seat([job])
     m.LiteTUI._fire_job(seat, job)
-    assert taken == [] and pending == []
+    assert scheduler_leases() == [] and pending == []
     # CONTROL: a job this seat can grant takes the lease and fires.
     job.tool_profile = INTERACTIVE
     m.LiteTUI._fire_job(seat, job)
-    assert len(taken) == 1 and pending[0]["tool_profile"] == INTERACTIVE
+    assert len(scheduler_leases()) == 1 and pending[0]["tool_profile"] == INTERACTIVE
 
 
 def test_F5_a_manual_run_of_a_job_this_seat_cannot_grant_is_refused():

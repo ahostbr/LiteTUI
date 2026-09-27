@@ -129,26 +129,26 @@ def test_every_first_party_registered_tool_has_explicit_policy():
         assert tui.plugins.policy_for(entry.name) is entry.policy
 
 
-def test_every_turn_defaults_to_autonomous_and_the_job_knob_is_dead(tmp_path):
-    """RENAMED, because the old name asserted a design the user overruled.
+def test_the_chat_defaults_to_autonomous_and_a_job_keeps_the_level_it_recorded(tmp_path):
+    """RENAMED AGAIN, because T1082 revived the job half.
 
     It was `..._conversations_are_interactive_and_jobs_are_narrow_by_default`,
-    and both halves are now wrong: the conversation default is `autonomous`
-    ("b default to auto"), and a job's own `tool_profile` is no longer read
-    when the job fires ("cron and loops run at same set profile level").
+    then `test_every_turn_defaults_to_autonomous_and_the_job_knob_is_dead`. The
+    conversation default is still `autonomous` ("b default to auto"). But a job's
+    own `tool_profile` is read again when it fires (T1082, Ryan: "we need new
+    settings to set this at the time u create the schedule ... it runs at the
+    scheduled level"), so the knob is live and what it records must survive the
+    round-trip.
 
-    The field itself still exists and still round-trips, which is why the
-    persistence half of this test is kept verbatim below -- removing a stored
-    field is a schema change and did not belong in the authority fix.
-
-    Its default is now AUTONOMOUS, the level a job actually fires at, since
-    `scheduled` was removed (the user 2026-09-24).
+    The dataclass default is INTERACTIVE, so a creation path that bypasses
+    seat_authority.schedule_level fails narrow; every real creation site records
+    a level explicitly.
     """
     assert Settings().tool_policy_profile == AUTONOMOUS
-    job = scheduler.Job(prompt="inspect status", schedule="@daily")
-    assert job.tool_profile == AUTONOMOUS
+    assert scheduler.Job(prompt="inspect status", schedule="@daily").tool_profile == INTERACTIVE
 
+    job = scheduler.Job(prompt="inspect status", schedule="@daily", tool_profile=STRICT)
     scheduler.save([job], tmp_path)
     restored = scheduler.load(tmp_path)
     assert len(restored) == 1
-    assert restored[0].tool_profile == AUTONOMOUS
+    assert restored[0].tool_profile == STRICT
