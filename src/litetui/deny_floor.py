@@ -61,6 +61,9 @@ _VERB = re.compile(
 #: unbalanced quote (the end of a `-c "..."` string) is a word of its own.
 _TOKEN = re.compile(r"""(?:"[^"]*"|'[^']*'|[^\s"'])+|["']""")
 _CMD_VERBS = frozenset({"rd", "rmdir", "del", "erase"})  # take cmd.exe /s /q flags
+#: PowerShell Remove-Item parameters whose value is a PATTERN that narrows what
+#: is deleted, never a target (review 10cfe750). Prefixes of 3+ letters count.
+_PATTERN_PARAMS = ("include", "exclude", "filter")
 #: A find predicate that narrows what is deleted. Without one, `find X -delete`
 #: (even with `-type f`) empties X, so it is judged as a recursive delete of X.
 _FIND_FILTERS = frozenset({
@@ -183,7 +186,15 @@ def _separator(word: str) -> int:
 def _pieces(word: str) -> list[str]:
     """A PowerShell comma array is ONE shell word: `'C:\\tmp\\x','C:\\Users\\u'`
     (review 400014dd F-A). Split it on commas outside quotes, so every path in
-    it is judged; a word with no comma comes back whole."""
+    it is judged; a word with no comma comes back whole.
+
+    Unquoted braces go first (review 10cfe750 F-C): bash brace expansion runs
+    before tilde and parameter expansion, so `rm -rf {x,~}` deletes ~ and
+    `~{,}` is "~ ~". Dropping the braces over-approximates concatenation
+    (`/c/Users/{u,x}` is judged as "/c/Users/u" and "x"), which only ever
+    refuses more. `${HOME}` becomes `$HOME`, still a home variable."""
+    braces = set(_outside_quotes(word, "{}"))
+    word = "".join(ch for i, ch in enumerate(word) if i not in braces)
     pieces, start = [], 0
     for i in _outside_quotes(word, ","):
         pieces.append(word[start:i])
@@ -196,6 +207,7 @@ def _arguments(verb: str, rest: str):
     recursive = verb == "rimraf"
     deletes = verb != "find"
     find_words, in_paths = [], True
+    pattern_next = False   # the word after -Include/-Exclude/-Filter
     targets: list[str] = []
     for token in _TOKEN.findall(rest.split("\n", 1)[0]):
         if token.startswith("\\;"):
@@ -209,6 +221,11 @@ def _arguments(verb: str, rest: str):
         token = token.rstrip(")")
         if token.count("}") > token.count("{"):
             token = token.rstrip("}")
+        if pattern_next:
+            pattern_next = False   # a pattern that only narrows, never a target
+            if stop:
+                break
+            continue
         for piece in _pieces(token):
             low = _unquote(piece).lower()
             if not low or low in ("--", "{}"):
@@ -226,7 +243,9 @@ def _arguments(verb: str, rest: str):
                 if (name == "--recursive" or ("recurse".startswith(name[1:]) and len(name) > 1)
                         or (re.fullmatch(r"-[a-z]*r[a-z]*", name) and len(name) <= 4)):
                     recursive = True
-                if value and value not in ("$true", "$false"):
+                if len(name) >= 4 and any(p.startswith(name[1:]) for p in _PATTERN_PARAMS):
+                    pattern_next = not value   # -Include *.log: the NEXT word is a pattern
+                elif value and value not in ("$true", "$false"):
                     targets.append(piece.partition(":")[2])
             elif verb in _CMD_VERBS and re.fullmatch(r"/[a-z]", low):
                 recursive = recursive or low == "/s"
@@ -249,14 +268,39 @@ def _pipeline_source(before: str) -> list[str]:
         tail = tail[:-1]
     else:
         return []
-    head = re.split(r"[;\n{(]|&&|\|\|", tail)[-1].split("|")[0]
-    words = [_unquote(p) for w in _TOKEN.findall(head) for p in _pieces(w)]
+    # Inside an enclosing script block (`& { gci ~ | ri -r }`) the head starts
+    # after its UNMATCHED opener. A matched pair is part of the head: cutting at
+    # every `{` turned `ls {x,~} | xargs rm -rf` into a head with no paths.
+    opened = []
+    for i in _outside_quotes(tail, "{()}"):
+        if tail[i] in "{(":
+            opened.append(i)
+        elif opened:
+            opened.pop()
+    if opened:
+        tail = tail[opened[-1] + 1:]
+    head = re.split(r"[;\n]|&&|\|\|", tail)[-1].split("|")[0]
+    # Grouped by shell word: every piece of one comma array is one argument.
+    groups = [[_unquote(p) for p in _pieces(w)] for w in _TOKEN.findall(head)]
+    words = [p for group in groups for p in group]
     if words[:1] == ["find"] and _find_filtered([w.lower() for w in words]):
         # A filtered listing names only what matched, not its root -- except a
         # home-variable root, refused whatever narrows it (review a93de8a9 R1:
         # `find $HOME -type d -name .claude | xargs rm -rf` deletes ~/.claude).
         return [w for w in words[1:] if not w.startswith("-") and _normal(w) in HOME_VARIABLES]
-    paths = [w for w in words[1:] if w and not w.startswith("-")]
+    paths, skip, narrowed = [], False, False
+    for group in groups[1:]:
+        flag = group[0].lower().partition(":")[0] if len(group) == 1 else ""
+        if skip:
+            skip = False   # the pattern(s) after -Include/-Exclude/-Filter
+            narrowed = narrowed or not all(re.fullmatch(r"[*?.]*", w) for w in group)
+        elif flag.startswith("-"):
+            skip = (len(flag) >= 4 and ":" not in group[0]
+                    and any(p.startswith(flag[1:]) for p in _PATTERN_PARAMS))
+        else:
+            paths += [w for w in group if w and not w.startswith("-")]
+    if narrowed and not paths:
+        return []   # `gci -Filter *.log | ri`: only what matched, not the folder
     # A listing with no path lists the current folder (review 2be2a62c N2:
     # `cd ~; ls | xargs rm -rf`); "." resolves against the tracked base. Empty
     # words (a lone quote) are dropped first, so "." still applies to them.
