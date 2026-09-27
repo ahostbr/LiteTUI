@@ -533,7 +533,12 @@ def dispatch(app, cmd):
             arg = str(cmd.get("objective", "")).strip() if action == "create" else action
             if not arg:
                 raise ValueError("objective must be nonempty")
-            goal_loop.goal_command(app, arg)
+            # T1043: the goal's origin; with gui.hello this reads "gui".
+            app._command_source = "rpc"
+            try:
+                goal_loop.goal_command(app, arg)
+            finally:
+                app._command_source = None
         goal = goal_loop.load_goal(app.convo_dir)
         return asdict(goal) if goal else None
     if domain == "calendar":

@@ -63,6 +63,8 @@ class _Host:
         self._cli_tool_profile = flag
         self._active_tool_profile = flag or saved_profile
         self.backend = SimpleNamespace(name="codex", owns_native_turns=False)
+        # At the T1043 fleet floor, so these arms test authority, not the floor.
+        self.model_id, self._thinking_level = "gpt-6-sol", "high"
         self.appended: list[dict] = []
 
     def _append(self, message):

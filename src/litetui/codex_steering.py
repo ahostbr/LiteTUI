@@ -133,6 +133,12 @@ class HostSteering:
             "source": item.get("source", "queued"),
             "turn_id": str(uuid.uuid4()),
         }
+        # T1043: a seat below the fleet floor steers nothing. Refused HERE,
+        # before the app-server holds it; the "denied" path retains the item.
+        why = seat_authority.floor_refusal(self.app, hook_host._turn_source(item))
+        if why is not None:
+            context["reason"] = why
+            return False, context
         if getattr(self.app, "hook_config", None) is None:
             return True, context
         await hook_host.drain_lifecycle(self.app)
@@ -181,8 +187,11 @@ class HostSteering:
                         "reason": entry["admission"].get("reason", "Prompt refused"),
                     }
                 )
+                reason = entry["admission"].get("reason") or ""
                 self.app._system(
-                    "Queued prompt rejected by its admission hook; retained in /hooks."
+                    # T1043: a floor refusal names itself, not a hook.
+                    reason if reason.startswith("TURN REFUSED")
+                    else "Queued prompt rejected by its admission hook; retained in /hooks."
                 )
                 remove_item(queue, item)
             else:
@@ -212,7 +221,8 @@ def accept_steered(app, item):
     ):
         hook_host.accept_prompt(
             app,
-            {
+            native_accepted=True,
+            item={
                 **item,
                 "_gui_in_turn": True,
                 "_codex_metadata": {

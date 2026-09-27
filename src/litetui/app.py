@@ -674,8 +674,9 @@ def _sync_seat_resolution(app) -> None:
     `ready` event reports) -- never what the convo file or a launch flag said.
     Four sources disagree on a resumed seat (T1027); only this one is what runs."""
     app.seat.model = app.model_id or "unknown"
-    app.seat.thinking_level = (getattr(app, "_cli_effective_thinking", None)
-                               or getattr(app, "_thinking_level", None))
+    # T1043 (Dijkstra E1): the effort the request SENDS, /modelcfg override
+    # included -- one function with the fleet floor's own judgement.
+    app.seat.thinking_level = seat_authority.effective_thinking(app)
     # T1027: and the ENGINE it resolved -- a seat asked for local that the pin
     # put on codex read as ungoverned without it (Carmack8 d3c3d40c).
     app.seat.backend = getattr(getattr(app, "backend", None), "name", None)
@@ -1771,6 +1772,28 @@ class LiteTUI(App):
         if self.settings.mcp_enabled:
             self.mcp.reload_configs()
         self._mcp_dispatch = self.mcp.dispatch()
+        # T1043 (Ryan, form 4): was this seat SPAWNED by a launcher? Read BEFORE
+        # spawned_seat_identity, which consumes the marker. Ryan's own instance
+        # (not spawned) is exempt from the fleet floor for the turns HE drives;
+        # see seat_authority.floor_applies.
+        self._spawned_marker = os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
+        # T1043 finding F: "not spawned" is NOT "Ryan's own" (fleet seats launched by
+        # typing `litetui` into a pane carry no marker). Ryan's own launchers set
+        # LITETUI_OWNER=1. POPPED, so no shell, tool or child of this process
+        # inherits it. PROCESS-ONLY, never saved per conversation: it says who is
+        # at the keyboard of THIS process, so a fleet agent that resumes one of
+        # Ryan's conversations is enforced.
+        self._owner_seat = seat_authority.owner_mark_valid(os.environ)
+        os.environ.pop(harness_mod.OWNER_MARKER, None)
+        # Inside a LiteSuite terminal the mark is also checked for bridge taint,
+        # lazily at turn time (seat_authority.is_owner): a constructor must not
+        # block on a socket.
+        self._pty_term = (os.environ.get(seat_authority.PTY_TERM_VAR) or None) if self._owner_seat else None
+        # Every tool shell and child this process starts runs inside an agent.
+        os.environ[harness_mod.AGENT_SHELL_MARKER] = "1"
+        #: Marker OR a conversation born spawned (convo "seat_spawned"; set on
+        #: every open in _adopt_convo_settings). Dijkstra S1, T1043 cycle 2.
+        self._spawned_seat = self._spawned_marker
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
@@ -4306,6 +4329,13 @@ class LiteTUI(App):
             cs.seat_name = getattr(self.seat, "name", None)
             cs.seat_id = getattr(self.seat, "agent_id", None)
             cs.seat_tier = getattr(self.seat, "tier", None)
+            # T1043 S1: "spawned" is a fact of the conversation, born with it.
+            # NOT seat_id: that is written for EVERY born convo (above), and an
+            # unspawned one gets harness.process_agent_id.
+            marker = getattr(self, "_spawned_marker", None)
+            if marker is not None:
+                cs.seat_spawned = marker
+                self._spawned_seat = marker
             self._convo_settings = cs
             try:
                 convo_settings_mod.save(self.convo_dir, cs)
@@ -4315,6 +4345,12 @@ class LiteTUI(App):
 
         cs = convo_settings_mod.load(self.convo_dir)
         self._convo_settings = cs
+        # T1043 S1: a conversation born in a spawned seat stays one when it is
+        # relaunched without the marker. Ryan resuming a fleet conversation
+        # himself is therefore enforced too: it IS a fleet conversation.
+        marker = getattr(self, "_spawned_marker", None)
+        if marker is not None:
+            self._spawned_seat = marker or getattr(cs, "seat_spawned", None) is True
         from copy import deepcopy
         from litetui.settings_scope import SETTING_SPECS, SettingScope
         self.settings = deepcopy(self.settings)
@@ -4712,6 +4748,11 @@ class LiteTUI(App):
                 # already resident; it must be an explicit act, never a side
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
+                # T1043: a reconnect can land on the pin below the fleet floor.
+                # Launch flags are judged once they are applied (_apply_cli_args).
+                done = getattr(self, "_cli_args_done", None)
+                if done is None or done.is_set():
+                    seat_authority.warn_if_below_floor(self)
                 if resume_path is not None and hasattr(self.backend, "app_server"):
                     self._native_history_worker = self._refresh_native_history(resume_path)
                 self._startup_history_path = None
@@ -5123,6 +5164,7 @@ class LiteTUI(App):
             done = getattr(self, '_cli_args_done', None)
             if done is not None:
                 done.set()
+            seat_authority.warn_if_below_floor(self)
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -7245,7 +7287,13 @@ class LiteTUI(App):
             pass
 
         if text.startswith("/"):
-            self._handle_command(text)
+            # T1043: who issued this command (a /goal records it as its origin,
+            # seat_authority.command_origin). Scoped to this dispatch only.
+            self._command_source = source
+            try:
+                self._handle_command(text)
+            finally:
+                self._command_source = None
             return
 
         # Check if input names an image file (optionally followed by a prompt)
@@ -8552,8 +8600,8 @@ class LiteTUI(App):
         # model this app is usually pointed at. The rest ride the next round,
         # and rounds are plentiful.
         item = self._pending_input.pop(0)
-        hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
-        return True
+        # T1043: False when the fleet floor refused it (retained, not delivered).
+        return hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
 
     def _flush_pending_input(self) -> None:
         """Send the oldest held message once the chat group is idle.
@@ -8728,6 +8776,12 @@ class LiteTUI(App):
             # compaction gets scheduled (see _stream's stop branch). ABANDONED
             # only — a turn that merely ENDED still wakes, which is the whole
             # feature. Cleared at the next turn's start, never here.
+            return
+        # T1043 (Dijkstra B2): this ping calls _stream itself, so it meets the
+        # fleet floor itself. Said once; nothing appended, no turn started.
+        why = seat_authority.floor_refusal(self, "compact-wake")
+        if why is not None:
+            self._system(why)
             return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)
@@ -9416,7 +9470,7 @@ class LiteTUI(App):
         # visibly and flushes as a real turn; idle it sends now.
         if self._chat_running():
             self._user_bubble(text, True, queued=True)
-            self._pending_input.append({"content": content, "text": text,
+            self._pending_input.append({"content": content, "text": text, "source": "typed",
                                         "tool_profile": seat_authority.seat_profile(self)})
             return
         self._materialise_convo()

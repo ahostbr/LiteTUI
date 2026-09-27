@@ -49,6 +49,10 @@ class GoalState:
     missing_evidence: list[str] = field(default_factory=list)
     no_progress_count: int = 0
     tool_profile: str = INTERACTIVE
+    #: T1043: who issued the /goal (seat_authority.command_origin): "typed",
+    #: "gui", "rpc", ... Ryan's own loops are exempt from the fleet floor in his
+    #: own instance; "" (a goal saved before this field) is enforced.
+    started_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -310,6 +314,9 @@ class GoalRuntime:
             "text": continuation,
             "tool_profile": state.tool_profile,
             "goal_continuation": True,
+            # T1043: the SOURCE carries the loop's origin, because the codex
+            # steering ledger keeps "source" and drops "goal_continuation".
+            "source": seat_authority.goal_source(state),
         })
 
 
@@ -322,7 +329,15 @@ def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
             "text": text,
             "tool_profile": state.tool_profile,
             "goal_continuation": True,
+            "source": seat_authority.goal_source(state),
         })
+        return
+    # T1043: this path calls _stream itself, so it meets the fleet floor itself.
+    from litetui import hook_host
+    if hook_host.refuse_below_floor(app, {"content": text, "text": text,
+                                          "tool_profile": state.tool_profile,
+                                          "goal_continuation": True,
+                                          "source": seat_authority.goal_source(state)}):
         return
     app._user_bubble(text, False)
     app._append({"role": "user", "content": text})
@@ -376,6 +391,7 @@ def goal_command(app: Any, arg: str) -> None:
     state = GoalState(
         objective=arg,
         tool_profile=seat_authority.seat_profile(app),
+        started_by=seat_authority.command_origin(app),
     )
     save_goal(app.convo_dir, state)
     _deliver_goal_turn(

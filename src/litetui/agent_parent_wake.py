@@ -24,6 +24,12 @@ async def wake_parent(app, *, parent, receipts):
     hooks = hook_host.snapshot(app)
     if hooks.hooks or hooks.error:
         return []
+    # T1043: checked BEFORE claim_wake, like the gates above: a seat below the
+    # fleet floor wakes nothing, and the receipts stay pending for a fixed seat.
+    why = seat_authority.floor_refusal(app, 'child-result')
+    if why is not None:
+        app._system(why)
+        return []
     ids = receipts.claim_wake(parent, conversation)
     if not ids:
         return []
