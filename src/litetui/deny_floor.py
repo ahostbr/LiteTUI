@@ -1,4 +1,4 @@
-"""The deny floor: shell deletes that no profile, standing rule or flag can run.
+"""The deny floor: shell commands that no profile, standing rule or flag can run.
 
 ONE RULE SET, TWO RUNTIMES. Canonical: liteharness-oss `liteharness/deny_floor.py`
 (the Claude Code PreToolUse hook). LiteTUI vendors a byte-identical copy at
@@ -14,7 +14,7 @@ script, and the user's profile folder was deleted. The command WAS classified
 as destructive; the profile allowed it anyway. This floor sits below every
 profile.
 
-Two rules, both about what the command TARGETS, never about how it is spelled:
+Three rules, all about what the command TARGETS, never about how it is spelled:
 
   home-variable-delete    any delete whose target is a home-directory variable
                           ($home, $HOME, ~, $env:USERPROFILE, %USERPROFILE%,
@@ -27,6 +27,16 @@ Two rules, both about what the command TARGETS, never about how it is spelled:
                           git repository root (a `.git` DIRECTORY; a worktree's
                           `.git` file is not one), or a folder containing the
                           workspace (the workspace itself only when it is a repo).
+  owner-launcher          running LiteTUI's run.bat: a `run.bat` (or `run`, which
+                          cmd.exe completes through PATHEXT) whose folder holds
+                          `src/litetui`, i.e. any LiteTUI checkout or worktree. It
+                          sets LITETUI_OWNER=1, the user's floor exemption, and is
+                          guarded only by CLAUDECODE / LITETUI_AGENT_SHELL, which a
+                          Codex seat or a plain subprocess does not carry (T1054;
+                          the user: "Deny floor blocks agents from it"). Every
+                          spelling that names it is refused unless a READER heads
+                          the command (cat, type, Get-Content, git, rg, ...);
+                          another project's run.bat is not this one.
 
 Relative targets resolve against the folder the command is IN at that point:
 `cd ~; Remove-Item * -Recurse` is judged as a delete of the profile, because a
@@ -39,6 +49,9 @@ not resolvable here and is not refused; a delete run from inside a script file
 is out of reach; a `find` narrowed by an -o chain or a regex alternation is
 taken at its word; a command substitution whose OUTPUT runs as a command
 (`$(ls ~) | xargs rm -rf`) is not followed. This is a floor under the danger table, not a sandbox.
+The same ceiling holds for the launcher: a path built in a variable, a
+`Start-Process -WorkingDirectory` that moves the base, or a script that calls
+run.bat itself is not seen.
 """
 from __future__ import annotations
 
@@ -117,6 +130,30 @@ _GIT_VERB = re.compile(r"(?i)(?:^|[;&|\n(])[ \t]*git[ \t]+\Z")  # \Z: `$` matche
 _GLOB = re.compile(r"[*?]")
 _MSYS = re.compile(r"^/([a-z])(/.*)?$", re.IGNORECASE)
 
+#: The last segment of LiteTUI's launcher as a shell word ends it.
+_LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)])")
+#: The path in front of it: the longest run of path characters.
+_PATH_TAIL = re.compile(r"[\w.~$%{}:\\/-]*\Z")
+#: A bare `run` is a launch only where cmd.exe takes a command next.
+_BARE_RUN_CONTEXT = re.compile(r"(?i)(?:^|[\s\"'])(?:/c|/k|call|start)\Z")
+#: Words that pass a command on rather than being it (`cmd /d /c type x`).
+_WRAPPERS = frozenset({
+    "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call", "start",
+    "powershell", "powershell.exe", "pwsh", "pwsh.exe", "-c", "-command",
+    "-nop", "-noprofile", "-noninteractive", "bash", "sh",
+})
+#: Commands that read or inspect a file without running it.
+_READERS = frozenset({
+    "cat", "type", "gc", "get-content", "more", "less", "head", "tail", "bat",
+    "grep", "egrep", "rg", "findstr", "select-string", "sls", "wc", "git",
+    "diff", "fc", "code", "notepad", "vim", "vi", "nano", "sed", "awk", "ls",
+    "dir", "get-item", "gi", "get-childitem", "gci", "test-path", "stat", "file",
+    "xxd", "od", "sha256sum", "get-filehash",
+    # Output heads print their argument and never run it: agents echo file
+    # names in status lines all the time.
+    "echo", "write-output", "write-host", "printf",
+})
+
 
 def refusal(command, workspace, home=None) -> str | None:
     """The sentence that refuses `command`, or None when the floor allows it."""
@@ -126,11 +163,21 @@ def refusal(command, workspace, home=None) -> str | None:
     home = Path(home) if home is not None else Path.home()
     base: Path | None = workspace   # where relative targets resolve; None = unknown
     steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
-                    *((m.start(), m) for m in _VERB.finditer(command))],
+                    *((m.start(), m) for m in _VERB.finditer(command)),
+                    *((m.start(), m) for m in _LAUNCH.finditer(command))],
                    key=lambda step: step[0])
     for _, match in steps:
         if match.re is _CD:
             base = _cd_target(command[match.end():], base, home)
+            continue
+        if match.re is _LAUNCH:
+            launcher = _owner_launch(command, match, base, home)
+            if launcher:
+                return _say("owner-launcher",
+                            f"it runs {launcher}, LiteTUI's owner launcher, which marks "
+                            "the user's own instance (LITETUI_OWNER=1); agents launch "
+                            "LiteTUI seats through the spawn service",
+                            "Launch a seat with `liteharness spawn` instead.")
             continue
         if _GIT_VERB.search(command[:match.start()]):
             continue  # `git rm` works on the index and tracked files, not a tree
@@ -155,10 +202,40 @@ def refusal(command, workspace, home=None) -> str | None:
     return None
 
 
-def _say(rule: str, what: str) -> str:
+def _say(rule: str, what: str,
+         instead: str = "Delete a specific folder by its literal path instead.") -> str:
     return (f"DENY FLOOR [{rule}]: {what}. No tool profile, standing rule or "
-            "rewording can run this; do not retry it in another form. Delete a "
-            "specific folder by its literal path instead.")
+            f"rewording can run this; do not retry it in another form. {instead}")
+
+
+def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) -> Path | None:
+    """The LiteTUI run.bat this `run` / `run.bat` word runs, or None when it
+    names something else, is only read, or cannot be resolved."""
+    start = match.start()
+    prefix = _PATH_TAIL.search(command[:start]).group(0)
+    if prefix.startswith("-"):   # -FilePath:.\run.bat names the path after the colon
+        if ":" not in prefix:
+            return None
+        prefix = prefix.partition(":")[2]
+    if prefix and prefix[-1] not in "\\/":
+        return None   # `rerun`, `myrun.bat`: another name
+    if not prefix and match.group(0).lower() == "run" and not _BARE_RUN_CONTEXT.search(
+            command[:start].rstrip(" \t\"'")):
+        return None   # `bun run`, "don't run it": not a command name here
+    target = _resolve(prefix + match.group(0), base, home)
+    if target is None or target.name.lower() not in ("run", "run.bat"):
+        return None
+    if not (target.parent / "src" / "litetui").is_dir():
+        return None   # another project's run.bat (LiteSuite's, ...)
+    # The head is judged PER SEGMENT: `echo x & run.bat` runs run.bat. A `(`
+    # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
+    # echo `run.bat`), so it starts a segment too.
+    segment = re.split(r"[;&|\n(`]", command[:start])[-1]
+    words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
+    head = next((w for w in words if w not in _WRAPPERS), None)
+    if head in _READERS:
+        return None   # `type run.bat`, `git diff run.bat`: read, not run
+    return target
 
 
 def _unquote(word: str) -> str:
