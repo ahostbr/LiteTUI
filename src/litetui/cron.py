@@ -160,29 +160,33 @@ class CronService:
             return
 
         try:
-            cron = sched_mod.Cron.parse(schedule)
-        except sched_mod.CronError as e:
-            # The error names the FIELD. "invalid cron expression" would leave
-            # the person guessing which of five to fix.
-            self._app._system(f"/cron add: {e}")
-            return
-
-        try:
-            level = seat_authority.schedule_level(self._app, chosen)
+            job = self.create(prompt, schedule, level=chosen)
         except ValueError as e:
+            # A CronError (a ValueError) names the FIELD. "invalid cron expression"
+            # would leave the person guessing which of five to fix.
             self._app._system(f"/cron add: {e}")
             return
 
-        job = sched_mod.Job(prompt=prompt, schedule=schedule, tool_profile=level)
-        self.jobs.append(job)
-        sched_mod.save(self.jobs, paths.data_root())
-
-        nxt = cron.next_after(datetime.now())
+        nxt = job.cron().next_after(datetime.now())
         when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"
         self._app._system(
             f"/cron: added {job.id} — next fire {when}\n  {prompt}\n"
-            f"  {seat_authority.schedule_note(self._app, level)}"
+            f"  {seat_authority.schedule_note(self._app, job.tool_profile)}"
         )
+
+    def create(self, prompt: str, schedule: str, *, label: str = "", level: str | None = None):
+        """THE cron creation path for /cron add and the sidecar's job_create (T1082):
+        the schedule parsed, the level through schedule_level (none = this seat's; a
+        locked seat is refused autonomous), then saved. ValueError says why not, and
+        nothing is written."""
+        if not prompt.strip():
+            raise ValueError("a scheduled prompt cannot be empty")
+        sched_mod.Cron.parse(schedule)
+        level = seat_authority.schedule_level(self._app, level)
+        job = sched_mod.Job(prompt=prompt, schedule=schedule, label=label, tool_profile=level)
+        self.jobs.append(job)
+        sched_mod.save(self.jobs, paths.data_root())
+        return job
 
     def list_jobs(self) -> None:
         if not self.jobs:
