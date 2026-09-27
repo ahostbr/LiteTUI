@@ -22,6 +22,7 @@ from litetui import convo_settings as convo_settings_mod
 # ConPTY structural-modifier filter before any app/driver instance is built.
 win32_input.install()
 from litetui import harness as harness_mod
+from litetui import approval_relay
 from litetui import second_instance
 from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
@@ -1789,6 +1790,20 @@ class LiteTUI(App):
         # lazily at turn time (seat_authority.is_owner): a constructor must not
         # block on a socket.
         self._pty_term = (os.environ.get(seat_authority.PTY_TERM_VAR) or None) if self._owner_seat else None
+        # T1049-B: who babysits this seat's CONFIRMs (approval_relay). The spawner
+        # comes ONLY from the marker envelope (Dijkstra M1: an inherited
+        # CLAUDE_CODE_SESSION_ID or SPAWNED_BY names whoever launched Electron, or a
+        # dead id). "Agent-launched" is the owner test's own markers, read BEFORE the
+        # write below. Both env vars are POPPED (Dijkstra E2): a tool shell's nested
+        # marked launch must not adopt this seat's leader, and a nested --rpc child
+        # must not route to this seat's host. Nothing is lost: `liteharness register`
+        # (cmd_register) never wrote spawned_by from a LiteTUI env (Marquee 26d5b28c).
+        self._spawner_id = ((os.environ.get(approval_relay.SPAWNED_BY_ENV) or "").strip() or None
+                            if self._spawned_marker else None)
+        self._agent_launched = any(os.environ.get(name) for name in seat_authority.AGENT_SHELL_MARKERS)
+        self._approval_host = os.environ.get(approval_relay.APPROVAL_HOST_ENV) == "1"
+        for name in (approval_relay.SPAWNED_BY_ENV, approval_relay.APPROVAL_HOST_ENV):
+            os.environ.pop(name, None)
         # Every tool shell and child this process starts runs inside an agent.
         os.environ[harness_mod.AGENT_SHELL_MARKER] = "1"
         #: Marker OR a conversation born spawned (convo "seat_spawned"; set on
@@ -2377,7 +2392,7 @@ class LiteTUI(App):
                     await asyncio.sleep(harness_mod.POLL_SECONDS)
                     msgs = await asyncio.to_thread(self.seat.poll)
                 for m in msgs:
-                    self._deliver_inbox(m)
+                    self._receive_mail(m)
 
                 # A CLI takeover can rename this live seat between heartbeats.
                 # Read-only identity sync is cheap and repaints the footer here,
@@ -2398,6 +2413,12 @@ class LiteTUI(App):
                         await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
+
+    def _receive_mail(self, msg: dict) -> None:
+        """T1049-B: an answer to a pending [APPROVAL] resumes its turn and is not
+        delivered (approval_relay.take_answer); anything else is ordinary mail."""
+        if not approval_relay.take_answer(self, msg):
+            self._deliver_inbox(msg)
 
     def _deliver_inbox(self, msg: dict) -> None:
         """Show the message, then WAKE the agent with it as a user turn.
@@ -2678,15 +2699,32 @@ class LiteTUI(App):
         if decision.action == tool_policy.CONFIRM:
             if not allow_prompt:
                 return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
+            # T1049 C4: a locked seat's cron/loop fire runs interactive (the lock), so
+            # its CONFIRMs land HERE. Ryan ruled 2026-09-27 (per Sentinel 04169351):
+            # "whatever agent spawned the light qi instance should be babysitting it".
+            # T1049-B routes by seat_authority.confirm_route. The ONE turn source read
+            # here is `_hook_source` (Dijkstra D1).
+            source = getattr(self, "_hook_source", None)
+            route = seat_authority.confirm_route(self)
+            if route in ("spawner", "refuse"):
+                status = ("no_spawner" if route == "refuse" else
+                          await approval_relay.ask_spawner(self, name, args, decision, source))
+                if route == "refuse":
+                    approval_relay.record(self, status, name, source)
+                if status == "approved":
+                    return None
+                # Only an APPROVE continues on a relay path (Marquee S1(b)): an
+                # unattended turn that cannot get approval ends, rather than retry.
+                reason = approval_relay.stop_line(self, name, status)
+                if stop_on_denial:
+                    self._stop_requested = True
+                    self._stop_reason = reason
+                return tool_denied("profile", name=name, reason=reason), False
             # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
             # refuse this ONE action in words, and let the rest of the turn go on.
-            # 🟡 T1049 C4: a locked seat's cron/loop fire runs interactive (the lock),
-            # so its CONFIRMs land HERE. Ryan ruled 2026-09-27 (per Sentinel
-            # 04169351): "whatever agent spawned the light qi instance should be
-            # babysitting it". INTERIM REFUSAL: T1049-B routes this CONFIRM to the
-            # spawning parent, and refuses and logs if the parent is absent or
-            # silent. The ONE turn source read here is `_hook_source` (Dijkstra D1).
-            if getattr(self, "_hook_source", None) in tool_policy.UNATTENDED_SOURCES:
+            if route != "host" and source in tool_policy.UNATTENDED_SOURCES:
+                if route == "hand":  # Marquee Q1: Ryan's unmarked launch gains the log only
+                    approval_relay.record(self, "no_spawner", name, source)
                 return tool_denied("profile", name=name, reason=tool_policy.unattended_refusal(decision)), False
             # Sidebar or modal, decided by the setting. `show_dialog` — not
             # `open_dialog` — because this frame ALREADY awaits, and the whole
@@ -2709,6 +2747,9 @@ class LiteTUI(App):
                 # choosing, the other is a host that never spoke, and they
                 # owe the model different sentences.
                 unanswered = answer is None
+                if route == "host":  # T1049-B: every relay outcome is logged
+                    approval_relay.record(self, "no_host" if unanswered else
+                                          "approved" if answer else "denied", name, source)
             else:
                 if getattr(getattr(self, "backend", None), "owns_native_turns", False):
                     from litetui.claude_turn import approval_dialog

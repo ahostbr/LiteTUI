@@ -141,8 +141,12 @@ def test_the_store_write_floor_holds_under_every_profile(tmp_path, profile):
 def _app(source):
     from litetui.settings import Settings
 
+    # T1049-B: a seat nobody launched as an agent (confirm_route "hand"), so the
+    # unattended refusal under test is the one it reaches; the double's unknown
+    # launch would otherwise take the fail-safe "refuse" route.
     return SimpleNamespace(settings=Settings(tool_policy_profile=tp.INTERACTIVE),
-                           _active_tool_profile=tp.INTERACTIVE, _hook_source=source, convo_dir=None, _rpc=False)
+                           _active_tool_profile=tp.INTERACTIVE, _hook_source=source, convo_dir=None, _rpc=False,
+                           _agent_launched=False)
 
 
 def _authorize(app, command):

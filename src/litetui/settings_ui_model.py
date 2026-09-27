@@ -187,7 +187,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "agent", "Agent loop", "agent-authority", "Authority & approvals",
         "The host-enforced safety profile and standing decisions.",
-        ("tool_policy_profile", "tool_always_allow", "tool_deny"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
+        ("tool_policy_profile", "tool_always_allow", "tool_deny", "relay_approval_timeout_s"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
     ),
     _section(
         "agent", "Agent loop", "agent-tools", "Tool surface",

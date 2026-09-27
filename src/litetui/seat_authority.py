@@ -112,6 +112,28 @@ def locked_profile(app, profile: str | None) -> str | None:
     return profile
 
 
+def confirm_route(app) -> str:
+    """Where a CONFIRM goes (T1049-B, plan ab8969c2 §2, approved 5ef7612a).
+      own      Ryan's own seat: UNCHANGED (modal / his GUI host; unattended refused).
+      host     a locked rpc seat whose host relays (agent_supervisor sets
+               LITETUI_APPROVAL_HOST): the host, for every source.
+      spawner  a locked seat with a recorded spawner: the spawner by inbox, for EVERY
+               source, typed and rpc included (Ryan 6e280dd4: "The launching agent").
+      refuse   locked, no spawner, launched by an agent: refused + logged, never a
+               modal and never the GUI human (Ryan 6e280dd4 (b)).
+      hand     locked, no spawner, not agent-launched (Ryan's unmarked hand launch):
+               as today, plus the log on its unattended refusal (Marquee Q1)."""
+    if not locked(app):
+        return "own"
+    if getattr(app, "_rpc", False) and getattr(app, "_approval_host", False):
+        return "host"
+    if getattr(app, "_spawner_id", None):
+        return "spawner"
+    if getattr(app, "_agent_launched", True):  # unknown: the fail-safe answer
+        return "refuse"
+    return "hand"
+
+
 def warn_if_capped(app) -> None:
     """Said once at connect, beside warn_if_below_floor: the seat asked for
     autonomous (a launch flag, the rpc default, a settings default, a resumed

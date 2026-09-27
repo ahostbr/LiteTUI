@@ -1114,6 +1114,13 @@ class SettingsBody(Widget):
                             "overridden by allowing the same thing.",
                             placeholder="none",
                         )
+                        yield from self._text_row(
+                            "relay_approval_timeout_s", "Spawner approval wait (seconds)",
+                            "A LiteTUI launched by an agent asks THAT agent, by inbox, "
+                            "before a sensitive action. With no answer in this many "
+                            "seconds the turn stops and the refusal is logged (T1049).",
+                            placeholder="600",
+                        )
                         yield self._section_header("agent-tools")
                         yield from self._text_row(
                             "tools_disabled", "Tools switched off",
