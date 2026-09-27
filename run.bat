@@ -1,4 +1,5 @@
 @echo off
+setlocal
 REM Launch LiteTUI from the LOCKED project environment.
 REM
 REM This used to be `python src\app.py`, which runs whatever interpreter is
@@ -16,6 +17,7 @@ REM .venv\Scripts\litetui.exe, which fails (os error 32) whenever another LiteTU
 REM running from this .venv - e.g. an agent seat. The package is an editable install,
 REM so the code is live without it. --extra claude keeps the pinned Claude SDK.
 uv sync --locked --inexact --no-install-project --extra claude || goto :done
+set "LITETUI_OWNER=1"
 uv run --no-sync python -c "import sys; from litetui.cli import main; sys.exit(main())" %*
 :done
 pause

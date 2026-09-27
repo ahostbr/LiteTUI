@@ -887,3 +887,18 @@ def test_F_the_owner_mark_is_PROCESS_ONLY_not_a_conversation_fact(tmp_path, monk
     fleet = _resumed(tmp_path, monkeypatch, False)
     fleet._owner_seat = False            # a fleet process, not Ryan's launcher
     assert seat_authority.floor_refusal(fleet, "typed") is not None
+
+
+def test_F_run_bat_marks_RYANS_launch_and_scopes_it():
+    """Ryan named run.bat as his launcher (Marquee 7048cfff). setlocal keeps the mark
+    from outliving the script in a console that runs it (a later `litetui`, the
+    same shim fleet agents type, would read as his). It is set after `uv sync` and
+    immediately before `uv run`, and the file stays CRLF (cmd.exe)."""
+    raw = (Path(__file__).resolve().parents[1] / "run.bat").read_bytes()
+    assert b"\n" not in raw.replace(b"\r\n", b""), "run.bat lost its CRLF endings"
+    lines = raw.decode("ascii").split("\r\n")
+    assert lines[0] == "@echo off" and lines[1] == "setlocal"
+    mark = lines.index('set "LITETUI_OWNER=1"')
+    assert lines[mark + 1].startswith("uv run "), "the mark must sit right before uv run"
+    assert any(line.startswith("uv sync") for line in lines[:mark]), "the mark reached uv sync"
+
