@@ -302,6 +302,8 @@ def test_E2_the_spawner_comes_only_from_the_marker_and_both_vars_are_popped(monk
     monkeypatch.setenv("LITETUI_APPROVAL_HOST", "1")
     a = m.LiteTUI()
     assert a._spawner_id == SPAWNER and a._approval_host is True
+    assert a.seat.spawned_by == SPAWNER
+    assert a.seat._presence_argv()[-2:] == ["--spawned-by", SPAWNER]
     assert "LITEHARNESS_SPAWNED_BY" not in os.environ and "LITETUI_APPROVAL_HOST" not in os.environ
 
 
@@ -313,6 +315,8 @@ def test_E2_M1_no_marker_means_no_spawner_whatever_the_env_says(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "e24ec61f-ee78-472e-931b-3ce4819c638e")
     a = m.LiteTUI()
     assert a._spawner_id is None
+    assert a.seat.spawned_by is None
+    assert "--spawned-by" not in a.seat._presence_argv()
     assert "LITEHARNESS_SPAWNED_BY" not in os.environ
 
 

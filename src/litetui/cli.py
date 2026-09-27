@@ -52,6 +52,8 @@ def main() -> None:
         default=None,
         help="read the system message from a UTF-8 file",
     )
+    parser.add_argument("--cognitive-file", type=str, default=None,
+                        help="canonical cognitive architecture file selected by the LiteSuite bridge")
     parser.add_argument("--cwd", type=str, default=None, help="change working directory before start")
     parser.add_argument(
         "--tool-profile",
@@ -118,6 +120,12 @@ def main() -> None:
             system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
         except OSError as exc:
             parser.error(f"cannot read --system-prompt-file: {exc}")
+    if args.cognitive_file:
+        try:
+            architecture = Path(args.cognitive_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            parser.error(f"cannot read --cognitive-file: {exc}")
+        system_prompt = (system_prompt + "\n\n" if system_prompt else "") + architecture
 
     app = LiteTUI(
         rpc=args.rpc,

@@ -803,6 +803,74 @@ USER_QUESTION_POLICY = ToolPolicy(
     frozenset({READ_ONLY}), "Ask the user a question inside LiteTUI"
 )
 
+# Only these reviewed, exact server/tool pairs declare read effects. A similar
+# name on another MCP server (or a new mutation on this one) stays unknown.
+SOTS_READ_TOOLS = frozenset({
+    "sots_server_info", "sots_search", "sots_read_file", "sots_list_dir",
+    "sots_help", "sots_read_image",
+})
+VIBEUE_READ_TOOLS = frozenset({
+    "vibeue_list_tools", "vibeue_tool_schema", "vibeue_check_connection",
+})
+
+
+def _mcp_router_action(args: Mapping[str, object]) -> str:
+    action = str(args.get("action") or "").strip().lower()
+    # A mutating top-level verb never becomes a free read by hiding a read op in
+    # payload. The current SOTS router does dispatch that read today, but a new
+    # implementation might act on the outer verb first. Refuse that ambiguity.
+    if action in {"run", "create", "update", "delete"}:
+        return ""
+    if action in {"list", "get", "read"}:
+        payload = args.get("payload")
+        if isinstance(payload, dict):
+            for key in ("op", "action", "operation", "name", "tool"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lower()
+        return action
+    return action
+
+
+def classify_sots_rag(args: Mapping[str, object], _workspace: Path) -> Iterable[str]:
+    action = _mcp_router_action(args)
+    if action in {"status", "query", "list", "get", "read"}:
+        return (READ_ONLY, NETWORK)
+    return (NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION, DESTRUCTIVE_IRREVERSIBLE)
+
+
+def classify_sots_meta(args: Mapping[str, object], _workspace: Path) -> Iterable[str]:
+    action = _mcp_router_action(args)
+    if action in {"help", "server_info", "where_am_i", "env_dump_safe", "last_error", "list", "get", "read"}:
+        return (READ_ONLY, NETWORK)
+    # smoketest_all and unknown operations stay supervised (including absent).
+    return (NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION, DESTRUCTIVE_IRREVERSIBLE)
+
+
+SOTS_RAG_POLICY = ToolPolicy(
+    frozenset({READ_ONLY, NETWORK}), "Query SOTS RAG; index builds require approval",
+    classify_args=classify_sots_rag,
+)
+SOTS_META_POLICY = ToolPolicy(
+    frozenset({READ_ONLY, NETWORK}), "Inspect SOTS metadata; unknown operations require approval",
+    classify_args=classify_sots_meta,
+)
+
+
+def mcp_policy_for(name: str) -> ToolPolicy:
+    if name.startswith("mcp__SOTS_MCP_CORE__"):
+        tool = name.removeprefix("mcp__SOTS_MCP_CORE__")
+        if tool in SOTS_READ_TOOLS:
+            return NETWORK_READ_POLICY
+        if tool == "sots_rag":
+            return SOTS_RAG_POLICY
+        if tool == "sots_meta":
+            return SOTS_META_POLICY
+    if name.startswith("mcp__VibeUE__") and name.removeprefix("mcp__VibeUE__") in VIBEUE_READ_TOOLS:
+        return NETWORK_READ_POLICY
+    return MCP_UNKNOWN_POLICY
+
+
 # MCP servers are external capability providers whose individual effects are
 # not described by LiteTUI.  They are offered, but never silently trusted.
 MCP_UNKNOWN_POLICY = ToolPolicy(

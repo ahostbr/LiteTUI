@@ -1821,6 +1821,7 @@ class LiteTUI(App):
             model="",
             tier=seat_tier,
         )
+        self.seat.spawned_by = self._spawner_id
         self._seat_started = False
         self._resumed_seat_name: str | None = None
         self._seat_claim_lock = asyncio.Lock()
