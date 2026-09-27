@@ -443,6 +443,9 @@ class PluginRegistry:
             return entry.policy
         for d in self.dynamic:
             if d.dispatch_fn(name) is not None:
+                if d.owner == "mcp":
+                    from litetui.tool_policy import mcp_policy_for
+                    return mcp_policy_for(name)
                 return d.policy
         return None
 

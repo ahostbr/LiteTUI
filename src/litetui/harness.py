@@ -306,6 +306,8 @@ class Seat:
         # T1025: the level this process RESOLVED, reported beside the model so the
         # spawner's fleet floor checks the effective value, not a file or a flag.
         self.thinking_level: str | None = None
+        # Captured from the explicit spawn marker envelope; never an inherited parent env.
+        self.spawned_by: str | None = None
         self.registered = False
         self.error: str | None = None
 
@@ -333,7 +335,8 @@ class Seat:
                 # rows piled up -- four ghosts on the roster). Added to the CLI
                 # as an opt-in flag; requires liteharness with --session-pid.
                 "--session-pid", str(os.getpid())] + [
-                    arg for flag, value in (("--backend", self.backend),)
+                    arg for flag, value in (("--backend", self.backend),
+                                            ("--spawned-by", self.spawned_by))
                     if value for arg in (flag, value)]
 
     def refresh_name(self, root: Path | None = None) -> bool:
