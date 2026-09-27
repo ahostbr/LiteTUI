@@ -24,9 +24,11 @@ The rule, per source (Marquee's ruling on the T1027 design):
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
-from litetui import fleet_policy, tool_policy
+from litetui import deny_floor, fleet_policy, tool_policy
 
 #: Turn sources that carry a profile to be narrowed against the seat.
 NARROWING_SOURCES = frozenset({"harness", "child-result", "goal", "goal-ryan"})
@@ -107,9 +109,9 @@ def confirm_route(app) -> str:
 #
 # ⚠️ CEILING (Dijkstra P1): the record is only as trustworthy as the file. An agent
 # that can write jobs.json can schedule autonomous work in Ryan's instance. The
-# refusals below close the API doors, not the file. This is pre-existing (before
-# T1082 every cron fired autonomous, whoever wrote it) and not widened. To be closed
-# by T1085 (the floor + the locked-seat file-tool refusal), not in this card.
+# T1085 file-tool guard below and the hook deny floor protect direct writes.
+# T1133 removed profile locks and schedule API caps; they remain removed. This
+# ownership-only guard does not constrain the profile Ryan manually selects.
 
 LOOP_REFUSAL = ("loops are made with /loop in a live LiteTUI, never scheduled directly "
                 "(T1082; Ryan: \"loops should only be set manually during a live litetui "
@@ -148,6 +150,88 @@ def withheld(app, level: str) -> str | None:
     return (f"it runs at {level}, above this LiteTUI's --tool-profile {launch_flag(app)}, "
             "so a LiteTUI that can grant it runs it (T1082: a schedule runs at its "
             "recorded level or not at all).")
+
+
+#: The file headers of a Codex patch: every path it adds, updates, deletes or moves to.
+_PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$", re.M)
+_PATH_KEYS = ("path", "file_path", "notebook_path")
+
+
+def _written(value, paths: list, commands: list, depth: int = 0) -> None:
+    """Every path and command a tool call's arguments carry, whatever the backend
+    names them: `path` (LiteTUI write/edit, Claude-native Write/Edit as mapped),
+    `file_path` / `notebook_path`, a `command`, and the file headers of a patch."""
+    if depth > 4:
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _PATH_KEYS and isinstance(item, str):
+                paths.append(item)
+            elif key == "command":
+                text = item if isinstance(item, str) else " ".join(map(str, item or ()))
+                commands.append(text)
+                paths.extend(_PATCH_PATH.findall(text))
+            else:
+                _written(item, paths, commands, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _written(item, paths, commands, depth + 1)
+    elif isinstance(value, str):
+        paths.extend(_PATCH_PATH.findall(value))
+
+
+def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
+    """T1085: only Ryan's own seat may directly write a data root's jobs.json.
+
+    Since T1082 a job's recorded level IS its authority, and jobs.json is the
+    file Ryan's own LiteTUI fires them from, so a written row is authority this
+    seat does not have (Dijkstra f0ae21c1 P1). The target test and the shell
+    rule are the floor's own (deny_floor.is_jobs_file / jobs_write_target), so
+    there is one definition. Ryan's own seat is not refused (it may write its
+    schedule, at any selected profile), and scheduler.save is in-process Python, never a tool call.
+
+    It is called FIRST in _authorize_action, before evaluate, the floor, the
+    relay and the modal: the rule is Ryan's, not the spawner's to waive, so it is
+    never relayed for an APPROVE (Dijkstra 0fd0f2d0).
+
+    Only after recognizing a protected write do we recheck current ownership.
+    The cached hot-path answer can miss bridge taint acquired during a turn.
+    Spawned/unknown seats are not owners; an owner-marked PTY must freshly prove
+    it is untainted. Bridge failure refuses this direct write, not scheduler.save.
+    T1133's removed profile caps and schedule API gates stay removed."""
+    # T1133 removed autonomy/profile locks and schedule API gates. This guard
+    # protects file ownership only; a read-only tool's path is not a write.
+    if policy is not None and policy.classify_args is None and policy.capabilities <= {
+            tool_policy.READ_ONLY, tool_policy.NETWORK}:
+        return None
+    paths: list[str] = []
+    commands: list[str] = []
+    _written(args, paths, commands)
+    if not paths and not commands:
+        return None
+    bases = [Path(workspace), Path.cwd()]
+    if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
+        bases.append(Path(workspace) / args["cwd"])
+    for base in dict.fromkeys(b.resolve() for b in bases):
+        for raw in paths:
+            try:   # the one door every tool passes: a malformed path is not the target
+                path = Path(deny_floor.dealias(raw.strip().strip("\"'"))).expanduser()
+                target = (path if path.is_absolute() else base / path).resolve()
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if deny_floor.is_jobs_file(target):
+                return None if is_ryans_own(app, recheck=True) else _jobs_words(target)
+        for command in commands:
+            if target := deny_floor.jobs_write_target(command, base):
+                return None if is_ryans_own(app, recheck=True) else _jobs_words(target)
+    return None
+
+
+def _jobs_words(target) -> str:
+    return (f"this LiteTUI may not write {target}: LiteTUI fires the jobs in that file at "
+            "each job's recorded level, and this seat cannot establish current Ryan ownership "
+            "(T1085). "
+            "Schedule with /cron instead")
 
 
 def schedule_note(app, level: str) -> str:

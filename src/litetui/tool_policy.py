@@ -1142,9 +1142,10 @@ def _floor(args: Mapping[str, object] | None, workspace: Path, *,
     if isinstance(tool_cwd, str) and tool_cwd:
         bases.append(Path(workspace) / tool_cwd)   # an absolute cwd replaces workspace
     for base in dict.fromkeys(b.resolve() for b in bases):
+        # T1085: ownership-only jobs guard lives in seat_authority.
         # core_tools.tool_powershell accepts a string and calls a PowerShell
         # executable with -Command, shell=False. An argv-list is not that route.
-        if reason := deny_floor.refusal(text, base, shell=shell if isinstance(command, str) else None):
+        if reason := deny_floor.refusal(text, base, jobs=False, shell=shell if isinstance(command, str) else None):
             return reason
     return None
 

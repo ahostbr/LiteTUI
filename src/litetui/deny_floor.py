@@ -14,7 +14,7 @@ script, and the user's profile folder was deleted. The command WAS classified
 as destructive; the profile allowed it anyway. This floor sits below every
 profile.
 
-Three rules, all about what the command TARGETS, never about how it is spelled:
+Four rules, all about what the command TARGETS, never about how it is spelled:
 
   home-variable-delete    any delete whose target is a home-directory variable
                           ($home, $HOME, ~, $env:USERPROFILE, %USERPROFILE%,
@@ -38,6 +38,24 @@ Three rules, all about what the command TARGETS, never about how it is spelled:
                           spelling that names it is refused unless a READER heads
                           the command (cat, type, Get-Content, git, rg, ...);
                           another project's run.bat is not this one.
+  jobs-file               writing a LiteTUI data root's `jobs.json`: the file
+                          whose rows LiteTUI fires at their RECORDED level, so
+                          since T1082 a written row is authority (T1085; Dijkstra
+                          f0ae21c1 P1). The target is a file named jobs.json whose
+                          folder holds `src/litetui` (a checkout: the default data
+                          root), or `.litetui-data.json` (the marker every data root
+                          gets on launch, check_data_version; Ryan's LiteGUI root
+                          is not a checkout), or is $LITETUI_DATA_ROOT. A redirect,
+                          tee / Out-File / Set-Content / Add-Content / New-Item, a
+                          copy ONTO it, any move or rename of it, a delete, an
+                          editor, sed -i or `python -c` are writes; a pure reader
+                          (cat, type, Get-Content, rg, git, a copy FROM it, ...)
+                          is not. `write_refusal` judges a Write/Edit tool's path
+                          by this rule ALONE. LiteTUI passes `jobs=False`: there the
+                          rule is seat-dependent (its seat_authority), because the
+                          user's own seat may write its schedule. Windows
+                          aliases of the name (`jobs.json::$DATA`, `:x`, a trailing
+                          dot or space) are the same file (canonical_name, A1).
 
 Relative targets resolve against the folder the command is IN at that point:
 `cd ~; Remove-Item * -Recurse` is judged as a delete of the profile, because a
@@ -65,6 +83,18 @@ proves the interpreter with shell="powershell". Unknown / other shells retain
 full scanning; syntax or a command's shell argument is not proof. Expandable strings,
 execution sinks and ambiguous expression contexts remain scanned; this is a
 small conservative allowlist, not a shell parser or a general quotation filter.
+The jobs-file ceiling is the same shape: a path in a variable, a write from
+inside a script file or through a reader's own exec feature, an 8.3 short name,
+an admin share or a \\\\?\\ prefix, a quoted path containing spaces (the path
+tail stops at the space, as for the launcher), a link made to jobs.json BEFORE this rule was
+live, a data root known only to another process's environment, and writers that
+are neither hooked agents nor LiteTUI seats (a Codex CLI seat, a plain
+subprocess). A data root whose LiteTUI never ran carries no marker, and no
+jobs.json either. `jobs.json.lock` is not protected (holding it can stall a
+save, never schedule anything). Known over-blocks, fail-safe and only for a
+protected jobs.json: `python -m json.tool jobs.json`, `sed -n p jobs.json`, an
+editor opened on it, robocopy naming it, and any worktree or test root that
+carries the marker (tests write it in-process, never through an agent's tool).
 """
 from __future__ import annotations
 
@@ -170,6 +200,25 @@ _READERS = frozenset({
     "echo", "write-output", "write-host", "printf",
 })
 
+#: The schedule file as a shell word ends it (T1085).
+#: ...with any Windows alias of it (Dijkstra 69c7c209 A1): a stream suffix
+#: (`::$DATA`, `:x`) and trailing dots name the same file. A trailing space is
+#: a separator unquoted, and inside quotes the path tail stops before it anyway.
+_JOBS = re.compile(r"(?i)jobs\.json(?::[^\s\"'`;&|)<>,]*)?\.*(?=$|[\s\"'`;&|)<>,])")
+#: A redirect straight onto the path in front of it: `> jobs.json`, `2>>"x\jobs.json"`.
+_REDIRECT_ONTO = re.compile(r"(?<![<>=-])>{1,2}\s*[\"']?\Z")
+#: Heads that only READ the schedule file. Not the T1054 reader set: an editor,
+#: sed/awk (-i) and a copy or move can WRITE it. An output head passes only when
+#: no redirect lands on the file, which is checked first.
+_JOBS_READERS = frozenset({
+    "cat", "type", "gc", "get-content", "more", "less", "head", "tail", "bat",
+    "grep", "egrep", "rg", "findstr", "select-string", "sls", "wc", "git",
+    "diff", "fc", "ls", "dir", "get-item", "gi", "get-childitem", "gci", "test-path",
+    "stat", "file", "xxd", "od", "sha256sum", "get-filehash",
+    "echo", "write-output", "write-host", "printf",
+})
+#: Copies read their SOURCE: only a copy whose destination is the file writes it.
+_JOBS_COPIES = frozenset({"cp", "copy", "copy-item", "cpi", "xcopy"})
 
 #: Recognize complete PowerShell here-strings, including expandable ones so
 #: literal-looking text inside an expandable body cannot gain an exemption.
@@ -228,7 +277,127 @@ def _literal_here_data(command: str) -> list[tuple[int, int]]:
     return spans
 
 
-def refusal(command, workspace, home=None, *, shell: str | None = None) -> str | None:
+
+def canonical_name(name: str) -> str:
+    """The file name Windows OPENS for `name` (its last path segment), lower-cased.
+
+    A stream suffix (`::$DATA` is the default stream, `:x` a named one) and
+    trailing dots and spaces are not part of it: measured with open() by
+    Dijkstra (69c7c209 A1), `jobs.json::$DATA`, `jobs.json.` and "jobs.json "
+    each overwrote jobs.json. A drive-relative `C:name` keeps its name. The ONE
+    definition: is_jobs_file, the shell target and LiteTUI's seat all use it (the
+    gate pre-filters on the substring, which this can never escape: the result is
+    a prefix of the lowered segment)."""
+    segments = re.split(r"[\\/]", name)
+    last = segments[-1]
+    if len(segments) == 1 and re.match(r"[A-Za-z]:", last):
+        last = last[2:]
+    return last.split(":", 1)[0].rstrip(" .").lower()
+
+
+def dealias(path: str) -> str:
+    """`path` with its last segment reduced to the file Windows opens (case kept),
+    so a stream suffix never reaches path resolution (a `$DATA` reads as a variable)."""
+    head, sep, last = path.replace("/", "\\").rpartition("\\")
+    drive = ""
+    if not sep and re.match(r"[A-Za-z]:", last):
+        drive, last = last[:2], last[2:]
+    return head + sep + drive + last.split(":", 1)[0].rstrip(" .")
+
+
+def is_jobs_file(path) -> bool:
+    """Is `path` a LiteTUI data root's jobs.json (T1085)? Its name, and a folder
+    that holds src/litetui (a checkout, the default root), or the
+    .litetui-data.json marker every data root gets on launch, or that IS
+    $LITETUI_DATA_ROOT."""
+    if path is None:
+        return False
+    path = Path(path)
+    if canonical_name(path.name) != "jobs.json":
+        return False
+    folder = path.parent
+    if (folder / "src" / "litetui").is_dir() or (folder / ".litetui-data.json").is_file():
+        return True
+    root = os.environ.get("LITETUI_DATA_ROOT")
+    if not root:
+        return False
+    try:
+        root_path = Path(root).expanduser().resolve()
+    except OSError:
+        return False
+    return os.path.normcase(str(root_path)) == os.path.normcase(str(folder))
+
+
+def _jobs_say(target: Path) -> str:
+    return _say("jobs-file",
+                f"it writes {target}, a LiteTUI data root's schedule file: since T1082 "
+                "a job's recorded level IS its authority, so a written row runs at that "
+                "level in the user's own LiteTUI",
+                "Schedule with /cron or LiteTUI's schedule tools instead.")
+
+
+def write_refusal(path, workspace, home=None) -> str | None:
+    """The jobs-file refusal for a Write/Edit tool's `file_path`, or None. This
+    rule ALONE: a tool write never meets the delete or launcher rules."""
+    if not isinstance(path, str) or not path:
+        return None
+    target = _resolve(dealias(path), Path(workspace),
+                      Path(home) if home is not None else Path.home())
+    return _jobs_say(target) if is_jobs_file(target) else None
+
+
+def jobs_write_target(command, workspace, home=None) -> Path | None:
+    """The protected jobs.json a shell command writes, or None (T1085)."""
+    if not isinstance(command, str):
+        command = " ".join(map(str, command or ()))
+    home = Path(home) if home is not None else Path.home()
+    base: Path | None = Path(workspace)
+    steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
+                    *((m.start(), m) for m in _JOBS.finditer(command))],
+                   key=lambda step: step[0])
+    for _, match in steps:
+        if match.re is _CD:
+            base = _cd_target(command[match.end():], base, home)
+        elif target := _jobs_write(command, match, base, home):
+            return target
+    return None
+
+
+def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) -> Path | None:
+    """The jobs.json this mention WRITES, or None when it is another file, is
+    only read, or cannot be resolved."""
+    start = match.start()
+    prefix = _PATH_TAIL.search(command[:start]).group(0)
+    param = ""
+    if prefix.startswith("-"):   # -Path:x\jobs.json, -Destination:x\jobs.json
+        if ":" not in prefix:
+            return None
+        param, _, prefix = prefix.partition(":")
+    if prefix and prefix[-1] not in "\\/":
+        return None   # `myjobs.json`: another name
+    target = _resolve(prefix + "jobs.json", base, home)   # any alias: the same file (A1)
+    if not is_jobs_file(target):
+        return None
+    before = command[:start - len(prefix)]
+    if param:
+        before = before[:-(len(param) + 1)]
+    if _REDIRECT_ONTO.search(before):
+        return target
+    segment = re.split(r"[;&|\n()`]", before)[-1]
+    words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
+    head = next((w for w in words if w not in _WRAPPERS), None)
+    if head in _JOBS_COPIES:
+        after = re.split(r"[;&|\n()`]", command[match.end():])[0]
+        rest = [w for w in re.findall(r"[^\s\"'`]+", after) if not w.startswith(("-", "/"))]
+        onto = (param.lower().startswith("-d") or (words and words[-1].startswith("-d"))
+                or not rest)
+        return target if onto else None
+    if head in _JOBS_READERS:
+        return None
+    return target   # a move, rename, delete, editor, interpreter ...: fail closed
+
+
+def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = None) -> str | None:
     """Refusal sentence, or None. Only a trusted runtime may prove `shell`.
 
     Omitted / unknown shell retains the original full scan. Never infer this
@@ -238,6 +407,8 @@ def refusal(command, workspace, home=None, *, shell: str | None = None) -> str |
         command = " ".join(map(str, command or ()))
     workspace = Path(workspace)
     home = Path(home) if home is not None else Path.home()
+    if jobs and (target := jobs_write_target(command, workspace, home)):
+        return _jobs_say(target)
     base: Path | None = workspace   # where relative targets resolve; None = unknown
     literal_data = _literal_here_data(command) if shell == "powershell" else []
     launcher_base: Path | None = workspace  # data cd text must not move a real launch
