@@ -52,7 +52,9 @@ taken at its word; a command substitution whose OUTPUT runs as a command
 The same ceiling holds for the launcher: a path built in a variable, a
 `Start-Process -WorkingDirectory` that moves the base, a script that calls
 run.bat itself, a renamed copy in the same folder (run.bat opens with
-`cd /d "%~dp0"`), or a spelling that does not resolve here (an admin share
+`cd /d "%~dp0"`), a reader's own exec feature (a git `!` alias,
+-c core.pager/core.editor, rebase -x; sed's `e`; vim/less `!`) that runs a
+path the reader rule excuses, or a spelling that does not resolve here (an admin share
 `\\\\host\\C$\\...`, an 8.3 short name) is not seen. Known over-blocks, fail-safe
 and only inside a LiteTUI checkout: a bare `run` in an `if` segment
 (`if exist package.json bun run dev`), or after a `do` / `else` word in a
