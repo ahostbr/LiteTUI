@@ -237,8 +237,9 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
         return None   # `rerun`, `myrun.bat`: another name
     # The head is judged PER SEGMENT: `echo x & run.bat` runs run.bat. A `(`
     # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
-    # echo `run.bat`), so it starts a segment too.
-    segment = re.split(r"[;&|\n(`]", command[:start])[-1]
+    # echo `run.bat`), so it starts a segment too. A `)` ends one: in
+    # `if 1==2 (echo a) else run.bat` the command is `else`'s, not echo's (P1).
+    segment = re.split(r"[;&|\n()`]", command[:start])[-1]
     words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
     head = next((w for w in words if w not in _WRAPPERS), None)
     # An `if` condition is free-form, so no prefix regex can bound it: a bare
