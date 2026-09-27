@@ -910,7 +910,11 @@ def test_F_run_bat_marks_RYANS_launch_and_scopes_it():
 #    The mark is VOID inside an agent's shell, and inside a LiteSuite terminal it
 #    also needs that terminal untainted by the bridge.
 
-@pytest.mark.parametrize("marker", list(seat_authority.AGENT_SHELL_MARKERS))
+# Pinned, not read from AGENT_SHELL_MARKERS: cases derived from the code under test
+# cannot catch a marker dropped from it.
+@pytest.mark.parametrize(
+    "marker", ["CLAUDECODE", "LITETUI_AGENT_SHELL", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"]
+)
 def test_VOID_the_owner_mark_inside_an_agents_shell(marker):
     env = {"LITETUI_OWNER": "1", marker: "1"}
     assert seat_authority.owner_mark_valid(env) is False
