@@ -240,6 +240,11 @@ def goal_source(state) -> str:
 #: a recorded session; CODEX_SANDBOX when sandboxed). Under any of them the owner
 #: mark is VOID: a UI-made LiteSuite panel carries the mark to every process in
 #: it, including a Claude or Codex Ryan starts there and THEIR shells.
+#: 🔴 MUST MATCH LiteSuite's AGENT_SHELL_ENV (packages/shared/src/agentShellEnv.ts),
+#: the names LiteSuite strips from an owner terminal and from the Frontier chat's
+#: LiteTUI child (T1049 K2). One added here and not there survives into Ryan's own
+#: seats and voids their owner mark (and, with no spawner, makes every CONFIRM a
+#: "refuse"); one added there only is stripped for nothing. Change both together.
 AGENT_SHELL_MARKERS = ("CLAUDECODE", "LITETUI_AGENT_SHELL",
                        "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX")
 
