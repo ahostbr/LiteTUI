@@ -204,8 +204,15 @@ async def test_denied_modal_and_unattended_confirm_never_execute(tmp_path):
     assert unattended_screens == []
 
 
-def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypatch):
-    """A scheduled turn resolves to AUTONOMOUS, ignoring both other sources.
+def test_a_cron_turn_runs_at_its_JOBS_recorded_level_whatever_the_conversation_is_set_to(monkeypatch):
+    """A scheduled turn resolves to the level its JOB recorded, ignoring both other
+    sources.
+
+    📌 T1082 (Ryan, liteask a-a203e2c0: "we need new settings to set this at the
+    time u create the schedule ... it runs at the scheduled level") RENAMED IT A
+    THIRD TIME and supersedes T085's hardcode. The three-distinct-sources premise
+    below is what lets the assertion name the new origin: STRICT can only have
+    come from the job's field.
 
     ⚠️ RENAMED TWICE NOW, AND THE SECOND RENAME IS THE INTERESTING ONE.
     It was `test_cron_profile_rides_...` when `job.tool_profile` decided; then
@@ -239,7 +246,8 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
     assert job.tool_profile == STRICT, "premise: the job's own answer differs"
 
     settings = Settings()
-    # ASK-FIRST, so a delivered AUTONOMOUS can only have come from the hardcode.
+    # ASK-FIRST, so a delivered STRICT can only have come from the job (T1082),
+    # and a delivered AUTONOMOUS only from T085's retired hardcode.
     settings.tool_policy_profile = INTERACTIVE
     assert len({INTERACTIVE, AUTONOMOUS, STRICT}) == 3, "premise: all three differ"
 
@@ -253,7 +261,7 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Ryan's own
     )
     app_mod.LiteTUI._fire_job(queued, job)
-    assert queued._pending_input[0]["tool_profile"] == AUTONOMOUS
+    assert queued._pending_input[0]["tool_profile"] == STRICT
 
     streamed = []
     idle = SimpleNamespace(
@@ -269,7 +277,7 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _active_tool_profile=INTERACTIVE,
     )
     app_mod.LiteTUI._fire_job(idle, job)
-    assert idle._active_tool_profile == AUTONOMOUS
+    assert idle._active_tool_profile == STRICT
     assert streamed[-1] == "stream"
 
 
@@ -294,7 +302,9 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
     profile the scheduled path resolved.
     """
     monkeypatch.setattr(app_mod.sched_mod, "save", lambda *_a, **_k: None)
-    job = scheduler.Job(prompt="inspect", schedule="@daily")
+    # T1082: the job's own recorded level decides now, so this job records
+    # autonomous, in Ryan's own seat (T1049: nowhere else runs it).
+    job = scheduler.Job(prompt="inspect", schedule="@daily", tool_profile=AUTONOMOUS)
 
     settings = Settings()
     settings.tool_policy_profile = INTERACTIVE  # the human asked to be asked
@@ -309,6 +319,7 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
         _append=lambda _msg: None,
         _stream=lambda: None,
         _active_tool_profile=INTERACTIVE,
+        _spawned_seat=False, _owner_seat=True,
     )
     app_mod.LiteTUI._fire_job(idle, job)
 

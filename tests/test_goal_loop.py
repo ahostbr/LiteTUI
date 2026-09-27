@@ -289,8 +289,7 @@ def test_due_loop_queues_behind_busy_owner_turn(tmp_path: Path, monkeypatch) -> 
         _pending_input=pending,
         _chat_running=lambda: True,
         _user_bubble=lambda *args, **kwargs: None,
-        # T085: _fire_job no longer reads settings or the job at all -- it
-        # resolves to autonomous outright -- so the double needs neither. Left
+        # T1082: _fire_job reads the JOB's recorded level, never settings. Left
         # carrying settings because _fire_job's other branches may use it.
         settings=SimpleNamespace(tool_policy_profile="interactive"),
     )
@@ -298,11 +297,11 @@ def test_due_loop_queues_behind_busy_owner_turn(tmp_path: Path, monkeypatch) -> 
     app_mod.LiteTUI._fire_job(app, job)
     assert job.run_count == 1
     assert len(pending) == 1
-    # T085: a scheduled turn always runs auto ("just change it so schedule
-    # only runs auto mode"). This test's subject -- that a due loop QUEUES
+    # T1082 (superseding T085's hardcoded autonomous): a scheduled turn runs at
+    # the level its job RECORDED. This test's subject -- that a due loop QUEUES
     # behind a busy turn rather than interrupting it -- is unchanged; only the
-    # authority stamped on the queued item moved.
-    assert pending[0]["tool_profile"] == "autonomous"
+    # authority stamped on the queued item moved, again.
+    assert pending[0]["tool_profile"] == job.tool_profile == "interactive"
     assert pending[0]["content"] == job.prompt
 
 
@@ -314,6 +313,7 @@ def test_loop_command_creates_a_conversation_owned_scheduled_job(
         convo_id="convo-a",
         convo_dir=tmp_path / "convo-a",
         jobs=[],
+        settings=SimpleNamespace(tool_policy_profile="interactive"),
         _materialise_convo=lambda: None,
         _system=notices.append,
     )
@@ -322,9 +322,9 @@ def test_loop_command_creates_a_conversation_owned_scheduled_job(
     [job] = app.jobs
     assert job.kind == "loop"
     assert job.owner_convo_id == "convo-a"
-    # `scheduled` was removed (the user 2026-09-24, "remove scheduled completely it
-    # makes no sense to me"); a /loop job carries the level it fires at.
-    assert job.tool_profile == "autonomous"
+    # A /loop job carries the level it fires at: T1082, the level of the turn it
+    # was created in (here, idle, so the seat's level). It was autonomous (T085).
+    assert job.tool_profile == "interactive"
     assert scheduler.load(tmp_path)[0].id == job.id
 
 

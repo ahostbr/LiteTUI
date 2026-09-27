@@ -122,8 +122,10 @@ def test_inbox_mail_NARROWS_and_never_widens(tmp_path: Path) -> None:
 
 
 def test_a_cron_fire_is_AUTONOMOUS_without_a_flag_and_capped_by_one(tmp_path: Path) -> None:
-    """T085 (Ryan): a schedule runs autonomous. The flag is a ceiling on every
-    source, so a seat launched --tool-profile interactive does not escalate."""
+    """A fire carries its job's recorded level (T1082; T085's hardcoded autonomous is
+    gone), here autonomous. The resolver still narrows it under a flag. T1082 R1
+    means _fire_job skips such a job before delivery (seat_authority.withheld), so
+    this pins the resolver, not the fire path."""
     # T1049: autonomous exists only in Ryan's own instance (owner-marked, not spawned).
     own = _Host("interactive", None, tmp_path)
     own._spawned_seat, own._owner_seat = False, True

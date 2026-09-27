@@ -9,7 +9,7 @@ from pathlib import Path
 from litetui import paths, runtime_log, settings_runtime
 from litetui.plugins import PluginManifest
 from litetui.sidecar_dispatch import SettingsPatchDispatcher
-from litetui.sidecar_jobs import public_jobs
+from litetui.sidecar_jobs import create_job, public_jobs
 from litetui.sidecar_launch import SidecarWindow
 from litetui.sidecar_patch import apply_patch
 from litetui.sidecar_settings import public_snapshot
@@ -68,7 +68,7 @@ def _open_background(app, owner: SidecarWindow, view: str, fallback=None) -> Non
             opened = owner.open_settings_snapshot(snapshot)
         elif view in {"calendar", "job", "timeline"} and hasattr(app, "jobs"):
             # The monitor may update in-memory jobs; capture its state on the UI thread.
-            snapshot = app.call_from_thread(lambda: public_jobs(app.jobs))
+            snapshot = app.call_from_thread(lambda: public_jobs(app.jobs, app))
             opened = owner.open_jobs_snapshot(view, snapshot)
         else:
             opened = owner.open(view)
@@ -100,8 +100,9 @@ def _owner(app) -> SidecarWindow:
     if owner is None:
         owner = _new_window(app)
         owner.settings_write = True
+        owner.jobs_write = True  # T1082 R4: the page creates cron jobs through the parent
         owner.on_event = SettingsPatchDispatcher(app, owner, apply=_apply_and_refresh,
-                                                 snapshot=_requested_snapshot)
+                                                 snapshot=_requested_snapshot, create_job=create_job)
         owner.warn = lambda message: _warn(app, message)
         app._sidecar_preview = owner
     return owner

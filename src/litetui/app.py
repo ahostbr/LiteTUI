@@ -2465,6 +2465,15 @@ class LiteTUI(App):
         from litetui.shared_state import Lease, OwnershipError
         if getattr(self, "_gui_schedules_paused", False):
             return
+        # T1082 (Dijkstra S1): a seat that cannot grant the job's level says so and
+        # returns BEFORE the lease. The tick is 20 s against a one-minute slot, so a
+        # skipping seat that held the lease could make Ryan's last attempt in the
+        # slot lose it. The in-lease re-check is in _fire_job_owned (the disk row
+        # may differ from this candidate).
+        why = None if manual else seat_authority.withheld(self, sched_mod.level_of(job.tool_profile))
+        if why:
+            LiteTUI._say_withheld(self, job, why)
+            return
         try:
             with Lease(paths.data_root() / ".scheduler.lease"):
                 from litetui.row_store import rows_on_disk
@@ -2490,11 +2499,21 @@ class LiteTUI(App):
                                 setattr(job, field, disk[field])
                         if not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
                             return
-                return LiteTUI._fire_job_owned(self, job)
+                return LiteTUI._fire_job_owned(self, job, manual=manual)
         except OwnershipError:
             return  # another scheduler owns this tick
 
-    def _fire_job_owned(self, job) -> bool | None:
+    def _say_withheld(self, job, why: str) -> None:
+        """Say a skipped job ONCE per job per slot: a due job is re-offered on every
+        20 s tick, and one line a minute is enough to say why it is not running."""
+        slot = sched_mod.slot_of(datetime.now())  # noqa: DTZ005 - scheduler local wall time
+        if getattr(self, "_withheld_slot", None) != slot:
+            self._withheld_slot, self._withheld_said = slot, set()
+        if job.id not in self._withheld_said:
+            self._withheld_said.add(job.id)
+            self._system(f"{getattr(job, 'kind', 'cron')} {job.label or job.id} not run here: {why}")
+
+    def _fire_job_owned(self, job, *, manual: bool = False) -> bool | None:
         """Deliver a job as a real user turn, holding if one is running.
 
         The slot is stamped and PERSISTED BEFORE delivery, not after. If the
@@ -2504,6 +2523,17 @@ class LiteTUI(App):
         in a log that only records successes.
         """
         now = datetime.now()
+        # T1082: the level this job RECORDED at creation. Checked before
+        # prepare_fire and the stamp, so a skipped job keeps its slot, run_count
+        # and next_run_at for an instance that can run it (C5).
+        level = sched_mod.level_of(job.tool_profile)
+        why = seat_authority.withheld(self, level)
+        if why:
+            if manual:
+                self._system(f"{job.label or job.id} not run: {why}")
+                return False
+            LiteTUI._say_withheld(self, job, why)
+            return None
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
         if blocked:
             try:
@@ -2524,27 +2554,25 @@ class LiteTUI(App):
 
         label = job.label or job.id
         text = job.prompt
-        # 🔴 A SCHEDULED TURN IS ALWAYS AUTONOMOUS. HARDCODED ON PURPOSE.
-        # T085, the user: "just change it so schedule only runs auto mode ... light
-        # warning when setting that it must run auto for this reason".
+        # 🔴 A SCHEDULED TURN RUNS AT THE LEVEL ITS JOB RECORDED WHEN IT WAS CREATED.
+        # T1082, Ryan: "we need new settings to set this at the time u create the
+        # schedule ... it runs at the scheduled level". This supersedes T085 ("just
+        # change it so schedule only runs auto mode"), which hardcoded AUTONOMOUS here.
         #
-        # THE REASON IS HERE because a hardcoded profile, on a path that used
-        # to read a setting, otherwise reads as a mistake: a scheduled task
-        # fires when nobody is at the keyboard. A level that stops to ASK has
-        # nobody to ask, so it would not run -- it would sit on a modal until
-        # someone came back. Choosing a level here is choosing between "runs"
-        # and "hangs", which is not a choice worth offering.
+        # ⚠️ THIS LINE HAS NOW HELD FOUR VALUES: the job's own field, then
+        # `settings.tool_policy_profile`, then T085's AUTONOMOUS, now the job's field
+        # again. The conversation setting still does NOT reach here: changing how
+        # autonomous the CHAT is must not silently change what a saved automation
+        # may do.
         #
-        # ⚠️ THIS LINE HAS HELD THREE VALUES IN ONE EVENING: the job's own
-        # field, then `settings.tool_policy_profile` (the user's first ruling),
-        # now this. None was wrong when written. The conversation setting
-        # deliberately does NOT reach here any more -- changing how autonomous
-        # the CHAT is must not silently change what every saved automation may
-        # do.
+        # Nobody is at the keyboard when it fires, so the level decides WHICH actions
+        # CONFIRM, and `_authorize_action`'s confirm_route decides WHO answers: in
+        # Ryan's own seat they are refused (tool_policy.UNATTENDED_SOURCES); in an
+        # agent-spawned seat they go to the launching agent (T1049-B).
         #
         # 📌 Inbox mail is NOT a job -- it reads the chat's profile and only
         # its confirms are refused (tool_policy.UNATTENDED_SOURCES).
-        profile = tool_policy.AUTONOMOUS
+        profile = level
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         header = f"{source} {label} \u00b7 {job.schedule}"
 

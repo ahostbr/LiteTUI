@@ -33,7 +33,7 @@ from textual import work
 
 from litetui import paths
 from litetui import runtime_log
-from litetui import textfmt
+from litetui import seat_authority
 from litetui import scheduler as sched_mod
 
 
@@ -67,6 +67,10 @@ class CronService:
             job = self.find(rest)
             if not job:
                 return
+            why = seat_authority.job_write_refusal(self._app, job)
+            if why:
+                self._app._system(f"/cron: {why}")
+                return
             self.jobs.remove(job)
             sched_mod.save(self.jobs, paths.data_root())
             self._app._system(f"/cron: removed {job.id} ({job.label or job.prompt[:40]})")
@@ -75,6 +79,10 @@ class CronService:
         if verb in ("on", "off", "enable", "disable"):
             job = self.find(rest)
             if not job:
+                return
+            why = seat_authority.job_write_refusal(self._app, job)
+            if why:
+                self._app._system(f"/cron: {why}")
                 return
             job.enabled = verb in ("on", "enable")
             sched_mod.save(self.jobs, paths.data_root())
@@ -93,7 +101,8 @@ class CronService:
             return
 
         self._app._system(
-            "/cron add <schedule> <prompt>   e.g. /cron add @daily summarise my inbox\n"
+            "/cron add [--level strict|interactive|autonomous] <schedule> <prompt>\n"
+            "  e.g. /cron add @daily summarise my inbox\n"
             "/cron list | rm <id> | on <id> | off <id> | run <id>\n"
             "schedule: 5-field cron (min hour day month weekday) or "
             "@hourly @daily @weekly @monthly"
@@ -122,10 +131,18 @@ class CronService:
 
     def add(self, rest: str) -> None:
         if not rest:
-            self._app._system("/cron add <schedule> <prompt>")
+            self._app._system("/cron add [--level strict|interactive|autonomous] <schedule> <prompt>")
             return
 
         tokens = rest.split()
+        # T1082: the level is chosen HERE, at creation (Ryan: "set this at the time
+        # u create the schedule"). No --level records this seat's level.
+        chosen = None
+        if tokens[0] == "--level":
+            if len(tokens) < 3:
+                self._app._system("/cron add: --level takes strict, interactive or autonomous, then the schedule.")
+                return
+            chosen, tokens = tokens[1], tokens[2:]
         if tokens[0].startswith("@"):
             schedule, prompt = tokens[0], " ".join(tokens[1:])
         elif len(tokens) > 5:
@@ -143,23 +160,33 @@ class CronService:
             return
 
         try:
-            cron = sched_mod.Cron.parse(schedule)
-        except sched_mod.CronError as e:
-            # The error names the FIELD. "invalid cron expression" would leave
-            # the person guessing which of five to fix.
+            job = self.create(prompt, schedule, level=chosen)
+        except ValueError as e:
+            # A CronError (a ValueError) names the FIELD. "invalid cron expression"
+            # would leave the person guessing which of five to fix.
             self._app._system(f"/cron add: {e}")
             return
 
-        job = sched_mod.Job(prompt=prompt, schedule=schedule)
-        self.jobs.append(job)
-        sched_mod.save(self.jobs, paths.data_root())
-
-        nxt = cron.next_after(datetime.now())
+        nxt = job.cron().next_after(datetime.now())
         when = nxt.strftime("%a %d %b %H:%M") if nxt else "never (no matching date)"
         self._app._system(
             f"/cron: added {job.id} — next fire {when}\n  {prompt}\n"
-            f"  {textfmt.SCHEDULED_AUTO_NOTE}"
+            f"  {seat_authority.schedule_note(self._app, job.tool_profile)}"
         )
+
+    def create(self, prompt: str, schedule: str, *, label: str = "", level: str | None = None):
+        """THE cron creation path for /cron add and the sidecar's job_create (T1082):
+        the schedule parsed, the level through schedule_level (none = this seat's; a
+        locked seat is refused autonomous), then saved. ValueError says why not, and
+        nothing is written."""
+        if not prompt.strip():
+            raise ValueError("a scheduled prompt cannot be empty")
+        sched_mod.Cron.parse(schedule)
+        level = seat_authority.schedule_level(self._app, level)
+        job = sched_mod.Job(prompt=prompt, schedule=schedule, label=label, tool_profile=level)
+        self.jobs.append(job)
+        sched_mod.save(self.jobs, paths.data_root())
+        return job
 
     def list_jobs(self) -> None:
         if not self.jobs:
@@ -182,10 +209,20 @@ class CronService:
                 # it beside working jobs is how it sits dead for weeks.
                 when = f"BROKEN — {e}"
             state = "on " if job.enabled else "off"
-            head = f"  {job.id}  {state}  {job.schedule:<16} next {when}"
+            head = f"  {job.id}  {state}  {job.schedule:<16} next {when}  · {sched_mod.level_of(job.tool_profile)}"
             lines.append(head)
             lines.append(f"        x{job.run_count}  {job.prompt}")
         self._app._system("\n".join(lines))
+
+
+def say_retired_levels(app) -> None:
+    """T1082 (R2), once when the monitor starts: name every job whose recorded level
+    is no longer a level (the removed "scheduled"). It runs interactive
+    (scheduler.level_of)."""
+    for job in app.cron.jobs:
+        if sched_mod.level_of(job.tool_profile) != job.tool_profile:
+            app._system(f"/cron: {job.id} recorded the removed level {job.tool_profile!r}; "
+                        "it now runs interactive (T1082).")
 
 
 @work(exclusive=True, group="cron")
@@ -198,6 +235,7 @@ async def monitor(app) -> None:
     checking.
     """
     from litetui.plugin_reload_activity import idle_infra_phase
+    say_retired_levels(app)
     while True:
         # The tick sleep is this worker's ONLY idle phase — register it as idle
         # infra so an MCP-mutation activity gate does not read the cron poller as

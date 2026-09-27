@@ -19,8 +19,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from litetui import paths, scheduler, seat_authority, textfmt
-from litetui.tool_policy import AUTONOMOUS, INTERACTIVE
+from litetui import paths, scheduler, seat_authority
+from litetui.tool_policy import INTERACTIVE
 
 GOAL_FILENAME = "goal.json"
 _INTERVAL = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
@@ -406,8 +406,9 @@ def _loop_jobs(app: Any) -> list[scheduler.Job]:
     return [job for job in app.jobs if getattr(job, "kind", "cron") == "loop"]
 
 
-def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> None:
-    """Pause or resume one loop, and persist it.
+def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> str | None:
+    """Pause or resume one loop, and persist it. Returns why not (T1082 C8: a
+    locked seat may not touch a loop recorded autonomous), else None.
 
     🔴 EXTRACTED SO THE GUI CANNOT GROW A SECOND COPY. Resuming is not just a
     flag: it also re-arms `next_run_at`, or a loop resumed after a long pause
@@ -415,18 +416,27 @@ def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> None:
     `enabled = True` by hand would look right, save correctly, and change the
     behaviour — the failure this codebase has paid for repeatedly today.
     """
+    why = seat_authority.job_write_refusal(app, job)
+    if why:
+        return why
     job.enabled = on
     if on:
         job.next_run_at = (
             datetime.now() + timedelta(minutes=job.interval_minutes)
         ).isoformat(timespec="seconds")
     scheduler.save(app.jobs, paths.data_root())
+    return None
 
 
-def remove_loop(app: Any, job: scheduler.Job) -> None:
-    """Delete one loop, and persist it. Same reason as `set_loop_enabled`."""
+def remove_loop(app: Any, job: scheduler.Job) -> str | None:
+    """Delete one loop, and persist it. Same reason, and the same refusal, as
+    `set_loop_enabled`."""
+    why = seat_authority.job_write_refusal(app, job)
+    if why:
+        return why
     app.jobs.remove(job)
     scheduler.save(app.jobs, paths.data_root())
+    return None
 
 
 def loop_command(app: Any, arg: str) -> None:
@@ -474,11 +484,12 @@ def loop_command(app: Any, arg: str) -> None:
             return
         job = hits[0]
         if verb.lower() in {"clear", "rm", "remove"}:
-            remove_loop(app, job)
-            app._system(f"/loop removed {job.id}")
+            why = remove_loop(app, job)
+            app._system(f"/loop: {why}" if why else f"/loop removed {job.id}")
         else:
-            set_loop_enabled(app, job, verb.lower() == "resume")
-            app._system(f"/loop {job.id} {'resumed' if job.enabled else 'paused'}")
+            why = set_loop_enabled(app, job, verb.lower() == "resume")
+            app._system(f"/loop: {why}" if why else
+                        f"/loop {job.id} {'resumed' if job.enabled else 'paused'}")
         return
     interval_token, _, prompt = arg.partition(" ")
     try:
@@ -490,15 +501,19 @@ def loop_command(app: Any, arg: str) -> None:
         app._system("/loop: a prompt is required after the interval")
         return
     app._materialise_convo()
+    # T1082: a loop inherits the level of the turn it was created in (Ryan: "loops
+    # inherit the setting they were created on"). /loop takes no level, so a loop's
+    # level is never set directly.
+    level = seat_authority.loop_level(app)
     job = scheduler.Job.loop(
         prompt=prompt.strip(),
         interval_minutes=minutes,
         owner_convo_id=app.convo_id,
-        tool_profile=AUTONOMOUS,
+        tool_profile=level,
     )
     app.jobs.append(job)
     scheduler.save(app.jobs, paths.data_root())
     app._system(
         f"/loop added {job.id} · every {minutes}m\n  {job.prompt}\n"
-        f"  {textfmt.SCHEDULED_AUTO_NOTE}"
+        f"  {seat_authority.schedule_note(app, level)}"
     )

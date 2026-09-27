@@ -117,7 +117,8 @@ def test_CONTROL_ryans_own_instance_still_runs_autonomous():
     assert a._active_tool_profile == AUTONOMOUS
     assert seat_authority.seat_profile(a) == AUTONOMOUS
     assert seat_authority.turn_profile(a, "typed", AUTONOMOUS) == AUTONOMOUS
-    assert seat_authority.turn_profile(a, "scheduled") == AUTONOMOUS
+    # T1082: a fire carries its job's recorded level; one recorded autonomous runs so here.
+    assert seat_authority.turn_profile(a, "scheduled", AUTONOMOUS) == AUTONOMOUS
 
 
 def test_CONTROL_a_spawned_seat_is_locked_even_when_owner_marked():
@@ -392,7 +393,11 @@ def test_C4_a_locked_seats_schedule_runs_interactive():
     Sentinel 04169351) that the spawning agent babysits the seat: T1049-B routes
     those CONFIRMs to that parent (Dijkstra D1: one turn source, `_hook_source`)."""
     a = _app()
-    assert seat_authority.turn_profile(a, "scheduled") == INTERACTIVE
+    # T1082: a fire carries its job's recorded level (none = the floor). The cap
+    # still holds at the resolver, and _fire_job never delivers an autonomous job
+    # here in the first place: it is skipped (C5, seat_authority.withheld).
+    assert seat_authority.turn_profile(a, "scheduled", AUTONOMOUS) == INTERACTIVE
     assert seat_authority.resolve(a, "scheduled", AUTONOMOUS).profile == INTERACTIVE
-    a._active_tool_profile = seat_authority.turn_profile(a, "scheduled")
+    a._active_tool_profile = seat_authority.turn_profile(a, "scheduled", AUTONOMOUS)
     assert a._active_tool_profile == INTERACTIVE
+    assert seat_authority.withheld(a, AUTONOMOUS) == seat_authority.lock_refusal(a)

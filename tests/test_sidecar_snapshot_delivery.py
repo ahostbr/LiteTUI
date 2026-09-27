@@ -31,5 +31,10 @@ def test_non_settings_preview_does_not_read_settings():
     app.jobs = []
     app.call_from_thread.side_effect = lambda fn, *args: fn(*args)
     sidecar_plugin._open_background(app, owner, "timeline")
-    owner.open_jobs_snapshot.assert_called_once_with("timeline", {"jobs": []})
+    owner.open_jobs_snapshot.assert_called_once()
+    view, snapshot = owner.open_jobs_snapshot.call_args.args
+    # T1082 R4: the jobs snapshot also carries the levels a new job may record here
+    # and this seat's default. That is the seat's authority, not a settings read.
+    assert (view, snapshot["jobs"]) == ("timeline", [])
+    assert set(snapshot) == {"jobs", "levels", "default_level"}
     owner.open_settings_snapshot.assert_not_called()
