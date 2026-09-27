@@ -321,14 +321,16 @@ async def test_the_supervised_child_is_launched_with_the_host_flag_and_its_deadl
     assert captured["LITETUI_APPROVAL_TIMEOUT_S"] == "0"
 
 
-@pytest.mark.parametrize("owner, expected", [(True, 0), (False, 600 + 60)])
+@pytest.mark.parametrize("seat, expected", [("own", 0), ("hand", 0), ("spawner", 600 + 60)])
 @pytest.mark.asyncio
-async def test_run_for_app_sets_no_deadline_for_ryans_own_and_the_relay_for_a_locked_parent(
-        monkeypatch, owner, expected):
+async def test_run_for_app_sets_no_deadline_for_a_human_and_the_relay_for_a_locked_parent(
+        monkeypatch, seat, expected):
+    """Dijkstra H1: a keypress is never timed out at Ryan's own parent AND at a
+    hand-launch modal; only a parent that relays to its spawner bounds the child."""
     from litetui import agent_app_runtime
-    a = _seat()
-    if owner:
-        _ryans(a)
+    a = {"own": lambda: _ryans(_seat(spawner=None)), "hand": lambda: _seat(spawner=None),
+         "spawner": lambda: _seat()}[seat]()
+    assert seat_authority.confirm_route(a) == seat
     a.store = SimpleNamespace(convo_id="convo", owned=True, pending=False, loading=False)
     a._start_child_delivery = lambda **_: None
     seen = {}
