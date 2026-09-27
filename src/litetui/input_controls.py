@@ -15,7 +15,7 @@ class ScrollLockButton(Static):
 
 class PromptBox(Container):
     DEFAULT_CSS = '''
-    PromptBox { height: 5; margin: 0 1 1 1; }
+    PromptBox { width: 100%; height: 5; margin: 0 1 1 1; }
     PromptBox #message-input { position: absolute; offset: 0 0; width: 100%; height: 5; margin: 0 !important; padding-bottom: 1; }
     PromptBox #scroll-lock { position: absolute; offset: 0 0; width: 4; height: 1; background: $surface; }
     PromptBox #prompt-actions { position: absolute; offset: 0 4; width: 17; height: 1; background: $surface; }
