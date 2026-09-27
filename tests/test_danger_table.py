@@ -141,8 +141,12 @@ def test_the_store_write_floor_holds_under_every_profile(tmp_path, profile):
 def _app(source):
     from litetui.settings import Settings
 
+    # T1049-B: a seat nobody launched as an agent (confirm_route "hand"), so the
+    # unattended refusal under test is the one it reaches; the double's unknown
+    # launch would otherwise take the fail-safe "refuse" route.
     return SimpleNamespace(settings=Settings(tool_policy_profile=tp.INTERACTIVE),
-                           _active_tool_profile=tp.INTERACTIVE, _hook_source=source, convo_dir=None, _rpc=False)
+                           _active_tool_profile=tp.INTERACTIVE, _hook_source=source, convo_dir=None, _rpc=False,
+                           _agent_launched=False)
 
 
 def _authorize(app, command):
@@ -179,7 +183,9 @@ def test_autonomous_inbox_mail_gets_no_rule_it_does_not_need():
     from litetui.app import LiteTUI
 
     queued = []
+    # T1049: autonomous exists only in Ryan's own instance (owner-marked, not spawned).
     app = SimpleNamespace(settings=SimpleNamespace(tool_policy_profile=tp.AUTONOMOUS), _gui_quitting=False,
+                          _spawned_seat=False, _owner_seat=True,
                           _chat_running=lambda: True, _pending_input=queued,
                           _user_bubble=lambda *a, **k: None)
     LiteTUI._deliver_inbox(app, {"from": "sentinel", "body": "hello", "id": "m1", "type": "TASK"})

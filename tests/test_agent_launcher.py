@@ -22,7 +22,7 @@ else:
     print(json.dumps({'type':'agent_ready', 'status':'ready', 'child_id':'child',
       'conversation_id':'convo', 'token':os.environ['CHILD_TOKEN'],
       'workspace':os.getcwd(), 'backend':'codex', 'model':os.environ['CHILD_MODEL'],
-      'tool_profile':'autonomous', 'reasoning_effort':None, 'thinking_level':None,
+      'tool_profile':'interactive', 'reasoning_effort':None, 'thinking_level':None,
       'pid':os.getpid(), 'process_created':process_creation_identity(os.getpid())}), flush=True)
     line = sys.stdin.readline()
     if line:

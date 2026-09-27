@@ -46,6 +46,10 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=ONCE):
         # headless child, and getattr's default cannot help a SimpleNamespace
         # that raises rather than returning a default.
         _rpc=False,
+        # T1049-B: a seat nobody launched as an agent (confirm_route "hand"), so the
+        # modal this host answers is the door it reaches; the double's unknown
+        # launch would otherwise take the fail-safe "refuse" route.
+        _agent_launched=False,
         _active_tool_profile=profile,
         _dispatch_for=lambda _name: run,
         plugins=_Policies(policy),
@@ -246,6 +250,7 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Ryan's own
     )
     app_mod.LiteTUI._fire_job(queued, job)
     assert queued._pending_input[0]["tool_profile"] == AUTONOMOUS
@@ -258,6 +263,7 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Ryan's own
         _append=lambda msg: streamed.append(msg),
         _stream=lambda: streamed.append("stream"),
         _active_tool_profile=INTERACTIVE,

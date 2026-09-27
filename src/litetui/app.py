@@ -22,6 +22,7 @@ from litetui import convo_settings as convo_settings_mod
 # ConPTY structural-modifier filter before any app/driver instance is built.
 win32_input.install()
 from litetui import harness as harness_mod
+from litetui import approval_relay
 from litetui import second_instance
 from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
@@ -1789,6 +1790,20 @@ class LiteTUI(App):
         # lazily at turn time (seat_authority.is_owner): a constructor must not
         # block on a socket.
         self._pty_term = (os.environ.get(seat_authority.PTY_TERM_VAR) or None) if self._owner_seat else None
+        # T1049-B: who babysits this seat's CONFIRMs (approval_relay). The spawner
+        # comes ONLY from the marker envelope (Dijkstra M1: an inherited
+        # CLAUDE_CODE_SESSION_ID or SPAWNED_BY names whoever launched Electron, or a
+        # dead id). "Agent-launched" is the owner test's own markers, read BEFORE the
+        # write below. Both env vars are POPPED (Dijkstra E2): a tool shell's nested
+        # marked launch must not adopt this seat's leader, and a nested --rpc child
+        # must not route to this seat's host. Nothing is lost: `liteharness register`
+        # (cmd_register) never wrote spawned_by from a LiteTUI env (Marquee 26d5b28c).
+        self._spawner_id = ((os.environ.get(approval_relay.SPAWNED_BY_ENV) or "").strip() or None
+                            if self._spawned_marker else None)
+        self._agent_launched = any(os.environ.get(name) for name in seat_authority.AGENT_SHELL_MARKERS)
+        self._approval_host = os.environ.get(approval_relay.APPROVAL_HOST_ENV) == "1"
+        for name in (approval_relay.SPAWNED_BY_ENV, approval_relay.APPROVAL_HOST_ENV):
+            os.environ.pop(name, None)
         # Every tool shell and child this process starts runs inside an agent.
         os.environ[harness_mod.AGENT_SHELL_MARKER] = "1"
         #: Marker OR a conversation born spawned (convo "seat_spawned"; set on
@@ -2377,7 +2392,7 @@ class LiteTUI(App):
                     await asyncio.sleep(harness_mod.POLL_SECONDS)
                     msgs = await asyncio.to_thread(self.seat.poll)
                 for m in msgs:
-                    self._deliver_inbox(m)
+                    self._receive_mail(m)
 
                 # A CLI takeover can rename this live seat between heartbeats.
                 # Read-only identity sync is cheap and repaints the footer here,
@@ -2398,6 +2413,12 @@ class LiteTUI(App):
                         await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
+
+    def _receive_mail(self, msg: dict) -> None:
+        """T1049-B: an answer to a pending [APPROVAL] resumes its turn and is not
+        delivered (approval_relay.take_answer); anything else is ordinary mail."""
+        if not approval_relay.take_answer(self, msg):
+            self._deliver_inbox(msg)
 
     def _deliver_inbox(self, msg: dict) -> None:
         """Show the message, then WAKE the agent with it as a user turn.
@@ -2649,7 +2670,39 @@ class LiteTUI(App):
         """Resolve a tool name across all three sources, static first."""
         return self.plugins.dispatch_for(name)
 
-    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True):
+    async def approve_for_child(self, event) -> bool:
+        """T1049-B2: a supervised child's tool_approval_requested, answered by THIS
+        parent's route (plan §5, gate Sentinel d47235da). Ryan's own parent asks
+        him with NO deadline: his modal, or his GUI host. A locked parent asks its
+        spawner by inbox, or its own host when it is itself supervised; a parent
+        with no route refuses. Every outcome is logged (operation "child")."""
+        name = str(event.get("tool") or "tool")
+        args = event.get("input")
+        decision = tool_policy.PolicyDecision(
+            tool_policy.CONFIRM, str(event.get("profile") or ""), frozenset(),
+            str(event.get("why") or "a supervised child asks"))
+        route = seat_authority.confirm_route(self)
+        if route == "spawner":
+            return await approval_relay.ask_spawner(self, name, args, decision, "child") == "approved"
+        if route == "refuse":
+            approval_relay.record(self, "no_spawner", name, "child")
+            return False
+        if self._rpc:
+            # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
+            answer = await tool_approval.approve_over_rpc(
+                self, name, args, decision, timeout=0 if route == "own" else None)
+        elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
+            from litetui.claude_turn import approval_dialog
+            answer = await approval_dialog(self, name, args, decision)
+        else:
+            answer = await show_dialog(
+                self, partial(ToolApprovalBody, name, args, decision),
+                modal_factory=partial(ToolApprovalScreen, name, args, decision))
+        approval_relay.record(self, "no_host" if answer is None else "approved" if answer else "denied",
+                              name, "child")
+        return bool(answer)
+
+    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False):
         """Shared policy and approval door for tools and hook processes."""
         decision = tool_policy.evaluate(
             # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
@@ -2659,7 +2712,12 @@ class LiteTUI(App):
             # also the settings default, so the two agreed by coincidence;
             # T084 moved the default to `autonomous` and that coincidence
             # became a contradiction pointing the permissive way.
-            profile or getattr(self, "_active_tool_profile", None) or tool_policy.STRICT,
+            # T1049 (Dijkstra F1): an explicit `profile` is capped here too, the one
+            # door every tool and hook decision passes, so no caller holding a raw
+            # value (the hook Test buttons passed chosen_tool_profile) runs autonomous
+            # in a locked seat.
+            seat_authority.locked_profile(
+                self, profile or getattr(self, "_active_tool_profile", None) or tool_policy.STRICT),
             policy,
             args,
             workspace or paths.ROOT,
@@ -2673,9 +2731,36 @@ class LiteTUI(App):
         if decision.action == tool_policy.CONFIRM:
             if not allow_prompt:
                 return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
+            # T1049 C4: a locked seat's cron/loop fire runs interactive (the lock), so
+            # its CONFIRMs land HERE. Ryan ruled 2026-09-27 (per Sentinel 04169351):
+            # "whatever agent spawned the light qi instance should be babysitting it".
+            # T1049-B routes by seat_authority.confirm_route. The ONE turn source read
+            # here is `_hook_source` (Dijkstra D1).
+            source = getattr(self, "_hook_source", None)
+            route = seat_authority.confirm_route(self)
+            if route in ("spawner", "refuse"):
+                status = ("no_spawner" if route == "refuse" else
+                          await approval_relay.ask_spawner(self, name, args, decision, source))
+                if route == "refuse":
+                    approval_relay.record(self, status, name, source)
+                if status == "approved":
+                    return None
+                # Only an APPROVE continues on a relay path (Marquee S1(b)): an
+                # unattended turn that cannot get approval ends, rather than retry.
+                # REGARDLESS of stop_on_denial (Dijkstra K1(a)): the Claude bridge
+                # passes False and would otherwise let the turn go on. The ONE
+                # exemption is the hook Test button, which runs no turn.
+                reason = approval_relay.stop_line(self, name, status)
+                if not hook_test:
+                    self._stop_requested = True
+                    self._stop_reason = reason
+                    self._stop_cause = "approval"  # turn_end stopReason "approval" (B2)
+                return tool_denied("profile", name=name, reason=reason), False
             # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
             # refuse this ONE action in words, and let the rest of the turn go on.
-            if getattr(self, "_hook_source", None) in tool_policy.UNATTENDED_SOURCES:
+            if route != "host" and source in tool_policy.UNATTENDED_SOURCES:
+                if route == "hand":  # Marquee Q1: Ryan's unmarked launch gains the log only
+                    approval_relay.record(self, "no_spawner", name, source)
                 return tool_denied("profile", name=name, reason=tool_policy.unattended_refusal(decision)), False
             # Sidebar or modal, decided by the setting. `show_dialog` — not
             # `open_dialog` — because this frame ALREADY awaits, and the whole
@@ -2698,6 +2783,9 @@ class LiteTUI(App):
                 # choosing, the other is a host that never spoke, and they
                 # owe the model different sentences.
                 unanswered = answer is None
+                if route == "host":  # T1049-B: every relay outcome is logged
+                    approval_relay.record(self, "no_host" if unanswered else
+                                          "approved" if answer else "denied", name, source)
             else:
                 if getattr(getattr(self, "backend", None), "owns_native_turns", False):
                     from litetui.claude_turn import approval_dialog
@@ -2726,6 +2814,8 @@ class LiteTUI(App):
                 # otherwise reports "reached N tool iterations" for ANY early
                 # break — see _stop_reason.
                 self._stop_requested = True
+                if route == "host":  # a supervised child: its host reads the reason (B2)
+                    self._stop_cause = "approval"
                 if unanswered:
                     # SAY IT. A timeout that reads as "you denied" would tell
                     # the model a person refused, and a person who refused is
@@ -4064,7 +4154,10 @@ class LiteTUI(App):
             # keeps Tab from walking out of a pending approval -- the app
             # binding is priority, so nothing else would stop it.
             return
-        self.set_tool_profile(tool_policy.cycle(self.settings.tool_policy_profile), source=source)
+        nxt = tool_policy.cycle(self.settings.tool_policy_profile)
+        if seat_authority.locked_profile(self, nxt) != nxt:
+            nxt = tool_policy.cycle(nxt)  # T1049: a locked seat's cycle skips autonomous
+        self.set_tool_profile(nxt, source=source)
 
     def set_tool_profile(self, profile: str, *, announce: bool = True, source: str = "wire") -> bool:
         """Authority to an EXPLICIT profile. False when the name is unknown.
@@ -4082,6 +4175,13 @@ class LiteTUI(App):
         worse answer than the caller being told no.
         """
         if profile not in tool_policy.PROFILES:
+            return False
+        if seat_authority.locked_profile(self, profile) != profile:
+            # T1049: an explicit ask for autonomous in a seat that is not Ryan's
+            # own. Refused in words and NOTHING is recorded: no settings write,
+            # no convo remember, the launch flag untouched.
+            self._system(seat_authority.lock_refusal(self)
+                         + f" Authority stays {self._active_tool_profile}.")
             return False
         previous = self.settings.tool_policy_profile
         # Every change leaves a record and says where it came from: the user's
@@ -4209,6 +4309,22 @@ class LiteTUI(App):
         # not hand a codex effort to a llama.cpp thinking level.
         if getattr(getattr(self, "_backend", None), "name", None) == "codex":
             self._remember_for_this_convo("reasoning_effort", value)
+
+    @property
+    def _active_tool_profile(self) -> str | None:
+        """T1049 THE AUTONOMY LOCK: the authority every tool decision reads,
+        through seat_authority.locked_profile. A property over the RAW value
+        because this field has 9 writers and ~12 readers (init, set_tool_profile,
+        resume, settings_runtime, gui_rpc, hook_host, goal_loop, a parent wake;
+        _authorize_action, hooks, the Claude and Codex policy bridges, spawn,
+        the footer, rpc), and only 3 writers go through the resolver. Capped on
+        READ, so a write made in __init__ before the owner/spawn markers exist
+        cannot bake in the wrong answer."""
+        return seat_authority.locked_profile(self, self.__dict__.get("_active_tool_profile_raw"))
+
+    @_active_tool_profile.setter
+    def _active_tool_profile(self, value: str | None) -> None:
+        self.__dict__["_active_tool_profile_raw"] = value
 
     @property
     def chosen_tool_profile(self) -> str:
@@ -4753,6 +4869,7 @@ class LiteTUI(App):
                 done = getattr(self, "_cli_args_done", None)
                 if done is None or done.is_set():
                     seat_authority.warn_if_below_floor(self)
+                    seat_authority.warn_if_capped(self)  # T1049
                 if resume_path is not None and hasattr(self.backend, "app_server"):
                     self._native_history_worker = self._refresh_native_history(resume_path)
                 self._startup_history_path = None
@@ -5165,6 +5282,7 @@ class LiteTUI(App):
             if done is not None:
                 done.set()
             seat_authority.warn_if_below_floor(self)
+            seat_authority.warn_if_capped(self)  # T1049
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -7823,6 +7941,7 @@ class LiteTUI(App):
         # Cleared with the flag it explains. A reason that outlived its turn
         # would attribute THIS turn's ending to the last turn's cause.
         self._stop_reason = None
+        self._stop_cause = None
         # A turn is starting, so nothing is abandoned any more. Cleared HERE
         # rather than where the ping reads it: a mark that only ever latched
         # would kill loop mode for the rest of the session after one Esc.
@@ -8510,7 +8629,15 @@ class LiteTUI(App):
                 final_tps=final_turn_tps,
                 stopped=True,
             )
-            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            # T1049-B2 (Dijkstra 79e113ce (3)): a stop caused by an approval outcome
+            # (a relay or a supervising host said no, or nobody answered) is its own
+            # stopReason carrying the reason, so a parent reports a FAILED child with
+            # it, never a bare "cancelled". An Esc stays "cancelled".
+            if getattr(self, "_stop_cause", None) == "approval":
+                self._emit_turn_end("approval", final_turn_tps, final_turn_tps_source,
+                                    error=self._stop_reason)
+            else:
+                self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
             return
 
         self._settle_turn_stop_line(
@@ -8839,6 +8966,7 @@ class LiteTUI(App):
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
             self._stop_reason = None
+            self._stop_cause = None
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()
@@ -8851,6 +8979,7 @@ class LiteTUI(App):
         # Keep _turn_abandoned: maintenance must not revive stopped user work.
         self._stop_requested = False
         self._stop_reason = None
+        self._stop_cause = None
         # Read-and-clear FIRST: the early returns below must also consume
         # the flag, or an aborted autocompact marks the next MANUAL one auto.
         auto = getattr(self, "_compact_is_auto", False)
@@ -9271,6 +9400,12 @@ class LiteTUI(App):
         if new is None:
             return
         old = self.settings
+        if (new.tool_policy_profile != old.tool_policy_profile
+                and seat_authority.locked_profile(self, new.tool_policy_profile) != new.tool_policy_profile):
+            # T1049: the settings Save is an explicit ask, and settings.json is
+            # shared by every LiteTUI on this box. Refused before anything persists.
+            new.tool_policy_profile = old.tool_policy_profile
+            self._system(seat_authority.lock_refusal(self) + f" Authority stays {old.tool_policy_profile}; the other settings are saved as usual.")
         self._settings_persist_error = None
         self.settings = new
         if not new.tts_enabled:

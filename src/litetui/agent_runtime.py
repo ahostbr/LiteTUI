@@ -6,7 +6,8 @@ from litetui.agent_supervisor import finish_child
 async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id,
                              workspace, data_root, branch, evidence,
                              supported_levels, notify, limit=1, timeout=300,
-                             parent_conversation=None, prepare=None, before_start=None):
+                             parent_conversation=None, prepare=None, before_start=None,
+                             on_approval=None, approval_timeout=None):
     """Claim before start, bind before prompt, persist/settle before notify.
 
     Runtime owns routing and persistent workspace/root preparation. A launch
@@ -48,7 +49,8 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
     launch_cancelled = None
     try:
         await start_headless_child(spec, process, workspace=workspace, data_root=data_root,
-                                   supported_levels=supported_levels, on_ready=bind)
+                                   supported_levels=supported_levels, on_ready=bind,
+                                   approval_timeout=approval_timeout)
     except (Exception, asyncio.CancelledError) as exc:
         if not bound:
             raise  # No verified identity: retain unknown claim, never invent a result.
@@ -60,7 +62,8 @@ async def run_prepared_child(spec, process, *, registry, inbox, parent, child_id
     try:
         completion = await finish_child(process, inbox, parent=parent, child_id=child_id,
             branch=branch, evidence=evidence, notify=lambda event: None,
-            timeout=timeout, data_root=data_root, launch_outcome=launch_outcome)
+            timeout=timeout, data_root=data_root, launch_outcome=launch_outcome,
+            on_approval=on_approval)
     except asyncio.CancelledError:
         # finish_child has joined cleanup and attempted persistence; a storage
         # failure may leave no outcome. Settle only a matching confirmed result;

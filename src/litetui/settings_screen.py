@@ -476,7 +476,16 @@ class SettingsBody(Widget):
         self.call_after_refresh(self._capture_initial_state)
 
     def _capture_initial_state(self) -> None:
-        self._initial_state = self._canonical_state(self.get_state())
+        # Scheduled by on_mount for after the first refresh. A dialog dismissed
+        # before that refresh has already pruned its form (Textual removes children
+        # first), so there is nothing to capture: leave the empty baseline, which
+        # reads as not dirty.
+        from textual.css.query import NoMatches
+        try:
+            state = self.get_state()
+        except NoMatches:
+            return
+        self._initial_state = self._canonical_state(state)
 
     @staticmethod
     def _canonical_state(state: dict) -> dict:
@@ -1104,6 +1113,13 @@ class SettingsBody(Widget):
                             "before any allow rule, so a refusal written here cannot be "
                             "overridden by allowing the same thing.",
                             placeholder="none",
+                        )
+                        yield from self._text_row(
+                            "relay_approval_timeout_s", "Spawner approval wait (seconds)",
+                            "A LiteTUI launched by an agent asks THAT agent, by inbox, "
+                            "before a sensitive action. With no answer in this many "
+                            "seconds the turn stops and the refusal is logged (T1049).",
+                            placeholder="600",
                         )
                         yield self._section_header("agent-tools")
                         yield from self._text_row(

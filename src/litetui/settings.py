@@ -267,6 +267,10 @@ class Settings:
     #: T517 — a FOREGROUND tool call still running after this many seconds is moved
     #: to a background task on its own (the result arrives later as a message). 0 = never.
     tool_auto_background_s: int = 30
+    #: T1049-B: seconds a locked seat waits for its SPAWNING agent to answer an
+    #: [APPROVAL] inbox message before the turn stops and is logged (Marquee
+    #: f4d49382: 600 s, no answer = deny). Read by approval_relay.timeout_s.
+    relay_approval_timeout_s: int = 600
     #: T538 — the model the subagent tool sends its child to when the call names
     #: none. None = the parent's own model. the user 2026-09-08 21:4x: "run it with
     #: the 27b using the 2B Q4 as its subagents" — a small model loaded beside

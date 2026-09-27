@@ -129,7 +129,7 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
                 # this build does not have is asking for authority it will not
                 # get, and a silent turn under the OLD authority is the wrong
                 # kind of surprise.
-                _respond(cmd_id, ok=False, error=f"unknown tool profile {profile!r}")
+                _respond(cmd_id, ok=False, error=_profile_error(app, profile))
                 return
         try:
             app.store.acquire()
@@ -150,7 +150,7 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         profile = cmd.get("profile")
         if isinstance(profile, str) and profile:
             if not app.set_tool_profile(profile):
-                _respond(cmd_id, ok=False, error=f"unknown tool profile {profile!r}")
+                _respond(cmd_id, ok=False, error=_profile_error(app, profile))
                 return
             changed["profile"] = profile
         mode = cmd.get("mode")
@@ -368,6 +368,14 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             _respond(cmd_id, ok=False, error=str(e))
     else:
         _respond(cmd_id, ok=False, error=f"unknown command: {cmd_type}")
+
+
+def _profile_error(app, profile: str) -> str:
+    """Why set_tool_profile said no: a known profile was refused by the T1049 lock."""
+    from litetui import seat_authority, tool_policy
+    if profile in tool_policy.PROFILES:
+        return seat_authority.lock_refusal(app)
+    return f"unknown tool profile {profile!r}"
 
 
 def _respond(cmd_id: Any, *, ok: bool, result: Any = None, error: str | None = None, needs: str | None = None) -> None:

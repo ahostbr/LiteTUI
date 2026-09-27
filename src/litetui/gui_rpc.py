@@ -353,7 +353,9 @@ def dispatch(app, cmd):
                 "capabilities": list(OPERATIONS), "operations": [f"gui.{name}" for name in OPERATIONS]}
     if operation == "state":
         return {"session_id": app.convo_id, "busy": app._chat_running() or bool(getattr(app, "_gui_management_busy", False)), "mode": "plan" if app._plan_mode else "normal",
-                "tool_profile": app.chosen_tool_profile, "model": app._rpc_model_state(),
+                # T1049 (Dijkstra F1): the LOCKED seat profile. LiteGUI echoes this on
+                # every prompt (App.tsx:144); the raw choice made a locked seat refuse every Send.
+                "tool_profile": seat_authority.seat_profile(app), "model": app._rpc_model_state(),
                 "settings": _settings(app), "conversations": _conversations(app, "list", {}),
                 "jobs": _jobs(app, "list", {}), "tasks": [t.to_row() for t in app.bg_tasks.values()],
                 "ownership": {"writable": app.store.owned, "data_version": DATA_VERSION},

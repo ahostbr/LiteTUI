@@ -78,6 +78,7 @@ def test_set_acks_what_is_in_force_not_what_was_asked_for():
 
 def test_an_unknown_profile_is_refused_and_changes_nothing():
     a = make_app()
+    a._spawned_seat, a._owner_seat = False, True  # T1049: holding autonomous = Ryan's own
     a._active_tool_profile = tool_policy.AUTONOMOUS
     a.settings.tool_policy_profile = tool_policy.AUTONOMOUS
 
@@ -173,6 +174,7 @@ def test_a_prompt_with_an_unknown_profile_does_not_run_the_turn():
     # Running it under the OLD authority is the wrong kind of surprise: the
     # caller asked for a restriction and would get a turn without it.
     a = make_app()
+    a._spawned_seat, a._owner_seat = False, True  # T1049: holding autonomous = Ryan's own
     a._active_tool_profile = tool_policy.AUTONOMOUS
     submitted: list[str] = []
     def submit(text, alt_chord=False, *, source="typed"):

@@ -54,6 +54,7 @@ async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=Fal
     refusal = await app._authorize_action(
         hook.approval_name(workspace), args, tool_policy.SHELL_POLICY,
         profile=profile, workspace=workspace, allow_prompt=allow_prompt, stop_on_denial=not testing,
+        hook_test=testing,  # T1049-B K1: the one caller a relay refusal must not stop
     )
     if refusal:
         result = hooks.HookResult(False, refusal[0])

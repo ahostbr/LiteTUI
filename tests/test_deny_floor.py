@@ -159,6 +159,9 @@ def _seat(run, *, launched, saved):
         _maybe_stage_shot=lambda name, args, result: result,
         _gui_quitting=False, _chat_running=lambda: False,
         _user_bubble=lambda *a, **k: None, _append=lambda message: None,
+        # T1049: only Ryan's own instance may hold autonomous, and these arms
+        # prove the floor holds AT autonomous.
+        _spawned_seat=False, _owner_seat=True,
     ), seen
 
 

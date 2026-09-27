@@ -52,6 +52,13 @@ from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 from litetui.widgets import ConfirmStopBody
 
 
+def _ryans(a):
+    """T1049: an app that holds autonomous models RYAN'S OWN instance, the only
+    one that may (owner-marked, not spawned). conftest clears the mark."""
+    a._spawned_seat, a._owner_seat, a._pty_term = False, True, None
+    return a
+
+
 def make_app(profile=AUTONOMOUS):
     a = m.LiteTUI()
     a.available_models = ["a-model"]
@@ -178,7 +185,7 @@ def test_the_cycle_visits_every_SELECTABLE_profile_and_returns():
 
 @pytest.mark.asyncio
 async def test_the_footer_names_the_level_and_follows_a_cycle():
-    a = make_app(AUTONOMOUS)
+    a = _ryans(make_app(AUTONOMOUS))
     async with a.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         assert profile_text(AUTONOMOUS) in a.ctx_label_text.plain
@@ -210,7 +217,7 @@ async def test_the_footer_shows_the_RESOLVED_level_not_the_stored_one(monkeypatc
     """
     from litetui import scheduler
     monkeypatch.setattr(m.sched_mod, "save", lambda *_a, **_k: None)
-    a = make_app(INTERACTIVE)
+    a = _ryans(make_app(INTERACTIVE))
     a._chat_running = lambda: False
     a._user_bubble = lambda *x, **k: None
     a._append = lambda *x, **k: None

@@ -18,6 +18,7 @@ _PARENT_SEAT_IDENTITY = {
     "LITEHARNESS_AGENT_NAME",
     "LITEHARNESS_TIER",
     "LITETUI_SEAT_NAME",
+    "LITEHARNESS_SPAWNED_BY",  # T1049-B: a child names its own spawner, never inherits one
 }
 
 
@@ -150,18 +151,38 @@ class AgentProcess:
         self.process.stdin.write((json.dumps({'type': 'prompt', 'message': text}) + '\n').encode('utf-8'))
         await self.process.stdin.drain()
 
-    async def collect_turn(self, *, timeout=300, max_output=1000000):
-        """Bounded first-turn collector; interactive requests require a relay."""
+    async def send_approval(self, approval_id, allow):
+        """The other half of the child's tool_approval_requested (rpc.py `approve`)."""
+        self.process.stdin.write((json.dumps({'type': 'approve', 'approval_id': approval_id,
+                                              'allow': bool(allow)}) + '\n').encode('utf-8'))
+        await self.process.stdin.drain()
+
+    async def collect_turn(self, *, timeout=300, max_output=1000000, on_approval=None):
+        """Bounded first-turn collector. A tool approval goes to `on_approval`
+        (T1049-B: the parent's approve_for_child); without one, or for any other
+        interactive request, the child still requires a relay it does not have."""
         started = False
         chunks = []
         size = 0
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(timeout) as deadline:
                 while True:
                     event = await self.receive(timeout=timeout)
                     kind = event.get('type')
                     if kind == 'error' or (kind == 'response' and event.get('ok') is False):
                         raise LaunchBlocked(str(event.get('error', 'Child rejected request')))
+                    if kind == 'tool_approval_requested' and on_approval is not None:
+                        # Clock C4 (plan S2): the deadline is PAUSED while a person or
+                        # the spawner answers (rescheduling after the await would be too
+                        # late: it fires DURING the wait), so thinking time never fails
+                        # the child. The remaining budget resumes afterwards.
+                        loop = asyncio.get_running_loop()
+                        remaining = deadline.when() - loop.time()
+                        deadline.reschedule(None)
+                        allow = await on_approval(event)
+                        deadline.reschedule(loop.time() + remaining)
+                        await self.send_approval(event.get('id'), allow)
+                        continue
                     if kind in ('tool_approval_requested', 'user_input_requested', 'model_load_requested'):
                         raise LaunchBlocked('Child requires a human relay')
                     if kind == 'turn_start':
@@ -255,7 +276,7 @@ def python_child_argv(*, module=None, script=None, args=()):
 
 
 async def finish_child(process, inbox, *, parent, child_id, branch, evidence, notify,
-                       timeout=300, data_root=None, launch_outcome=None):
+                       timeout=300, data_root=None, launch_outcome=None, on_approval=None):
     """Commit outcome after bounded process cleanup, then notify the parent.
 
     Process termination is not local-model absence; resource settlement must be
@@ -266,7 +287,7 @@ async def finish_child(process, inbox, *, parent, child_id, branch, evidence, no
     cancelled = None
     try:
         outcome = (dict(launch_outcome) if launch_outcome is not None
-                   else await process.collect_turn(timeout=timeout))
+                   else await process.collect_turn(timeout=timeout, on_approval=on_approval))
     except asyncio.CancelledError as exc:
         cancelled = exc
         outcome = {'status': 'cancelled', 'summary': 'Parent cancelled child collection'}
