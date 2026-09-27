@@ -67,6 +67,7 @@ def _calls(jobs):
     ]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("index", range(5))
 async def test_a_locked_seat_may_not_write_jobs_json_by_any_backend(tmp_path, monkeypatch, index):
     a, sent = _locked(tmp_path, monkeypatch)
@@ -79,6 +80,7 @@ async def test_a_locked_seat_may_not_write_jobs_json_by_any_backend(tmp_path, mo
     assert sent == [], "a jobs.json write was relayed to the spawner for an APPROVE"
 
 
+@pytest.mark.asyncio
 async def test_the_refusal_comes_before_the_relay(tmp_path, monkeypatch):
     """Dijkstra 0fd0f2d0: a locked spawner-route seat's `echo > jobs.json` is
     refused with NO [APPROVAL] sent; the rule is Ryan's, not the spawner's."""
