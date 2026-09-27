@@ -62,6 +62,11 @@ class ConvoSettings:
     seat_name: str | None = None
     seat_id: str | None = None
     seat_tier: str | None = None
+    #: T1043: was this conversation BORN in a spawned seat (LITETUI_SPAWN_IDENTITY)?
+    #: A fact of the conversation, so a relaunch without the marker (`litetui
+    #: --convo <id>` typed in a pane, /pty/talk, fleet.py send) stays a fleet seat.
+    #: None = born before this field existed.
+    seat_spawned: bool | None = None
     #: Additive execution snapshot; legacy top-level choices remain authoritative.
     schema_version: int = 2
     execution: dict = field(default_factory=dict)
@@ -125,6 +130,7 @@ def load(convo_dir: Path) -> ConvoSettings:
         if k in known:
             valid = (isinstance(v, dict) if k in ('execution', 'llama_load', 'lmstudio_load')
                      else type(v) is int and v in (1, 2) if k == 'schema_version'
+                     else v is None or type(v) is bool if k == 'seat_spawned'
                      else v is None or isinstance(v, str))
             if valid:
                 setattr(cs, k, v)

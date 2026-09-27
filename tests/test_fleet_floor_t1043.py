@@ -391,10 +391,12 @@ def _no_floor_text(seat):
     return not any("TURN REFUSED" in t or "fleet floor" in t for t in seat.said)
 
 
-def test_RYAN_his_typed_turn_goes_through_with_NO_floor_text():
+@pytest.mark.parametrize("source", sorted(seat_authority.ATTENDED_SOURCES))
+def test_RYAN_his_typed_turn_goes_through_with_NO_floor_text(source):
+    """Dijkstra cycle 2: EVERY attended source, so dropping one turns this red."""
     seat = _ryans()
-    _typed(seat)
-    assert seat.streams == 1 and _no_floor_text(seat), seat.said
+    _typed(seat, source=source)
+    assert seat.streams == 1 and _no_floor_text(seat), (source, seat.said)
 
 
 def test_RYAN_his_skill_goes_through_with_NO_floor_text(monkeypatch):
@@ -540,3 +542,153 @@ def test_LITEGUI_unattended_turns_in_a_hellod_instance_are_still_REFUSED(source)
     seat = _litegui()
     _typed(seat, "mail", source=source)
     assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+# ── cycle 2 (Dijkstra 7905c858 via Marquee ac75c2c6) ────────────────────────
+#    S1: "spawned" is a FACT OF THE CONVERSATION (convo "seat_spawned").
+
+from litetui import app as _app_mod  # noqa: E402
+from litetui import convo_settings as _cs  # noqa: E402
+from litetui import settings as _st  # noqa: E402
+from test_t1027_one_resolver import _BornHost  # noqa: E402
+
+
+def _born(tmp_path, marker):
+    host = _BornHost(_st.Settings(backend="codex"), tmp_path, "codex")
+    host._spawned_marker = marker
+    host._adopt_convo_settings(born=True)
+    return host
+
+
+def _resumed(tmp_path, monkeypatch, marker):
+    monkeypatch.setattr(_app_mod.llm_backend, "make_backend", lambda s: SimpleNamespace(name=s.backend))
+    host = _BornHost(_st.Settings(backend="codex"), tmp_path, "codex")
+    host._spawned_marker = marker
+    host._adopt_convo_settings(born=False)
+    host._model_id, host._thinking_level = "gpt-5.6-sol", "medium"
+    return host
+
+
+def test_S1_a_convo_BORN_spawned_resumed_WITHOUT_the_marker_is_REFUSED(tmp_path, monkeypatch):
+    """The SpawnSmith case: `litetui --convo <id>` typed in a pane, /pty/talk,
+    fleet.py send. It is also what happens when Ryan resumes a fleet seat's
+    conversation himself: it IS a fleet conversation, so it stays enforced."""
+    assert _born(tmp_path, True)._spawned_seat is True
+    assert _cs.load(tmp_path).seat_spawned is True
+    host = _resumed(tmp_path, monkeypatch, False)
+    assert host._spawned_seat is True
+    assert seat_authority.floor_refusal(host, "typed") is not None
+
+
+def test_S1_CONTROL_a_convo_born_unmarked_resumed_unmarked_passes_silently(tmp_path, monkeypatch):
+    assert _born(tmp_path, False)._spawned_seat is False
+    assert _cs.load(tmp_path).seat_spawned is False
+    host = _resumed(tmp_path, monkeypatch, False)
+    assert host._spawned_seat is False
+    assert seat_authority.floor_refusal(host, "typed") is None
+
+
+def test_S1_the_marker_still_wins_over_an_unmarked_convo(tmp_path, monkeypatch):
+    _born(tmp_path, False)
+    host = _resumed(tmp_path, monkeypatch, True)
+    assert host._spawned_seat is True
+
+
+def test_S1_a_malformed_seat_spawned_is_a_diagnostic_not_a_value(tmp_path):
+    import json
+    _cs.path_for(tmp_path).write_text(json.dumps({"seat_spawned": "yes"}), encoding="utf-8")
+    loaded = _cs.load(tmp_path)
+    assert loaded.seat_spawned is None and loaded._diagnostics
+
+
+# ── test gap: a message Ryan types while a turn runs is held, then flushed ────
+
+def test_RYAN_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES():
+    """Drives the real _submit_text (held as "queued") and _flush_pending_input."""
+    app = LiteTUI()
+    assert app._spawned_seat is False
+    app._backend = SimpleNamespace(name="codex", owns_native_turns=False,
+                                   request_overrides=lambda key: {})
+    app._model_id, app._thinking_level = "gpt-5.6-sol", "medium"
+    said, streams, appended = [], [], []
+    app._system = said.append
+    app._user_bubble = lambda *a, **k: None
+    app.notify = lambda *a, **k: None
+    app._append = appended.append
+    app._stream = lambda: streams.append(1)
+    app._materialise_convo = lambda: None
+    app._chat_running = lambda: True
+    app._submit_text("while you work", alt_chord=False)
+    assert [item["source"] for item in app._pending_input] == ["queued"]
+    app._chat_running = lambda: False
+    app._flush_pending_input()
+    assert streams == [1] and appended, "the held message did not run"
+    assert not any("TURN REFUSED" in t or "fleet floor" in t for t in said), said
+
+
+@pytest.mark.asyncio
+async def test_RYAN_a_mark_taken_while_BUSY_is_held_as_typed_then_PASSES(tmp_path, monkeypatch):
+    """The queued /mark item (app._mark_wait) is labelled "typed", so it is his."""
+    import json
+    handoff = tmp_path / "mark.json"
+    handoff.write_text(json.dumps({"x": 1, "y": 2, "mon": 0, "mon_x": 1, "mon_y": 2,
+                                   "png": str(tmp_path / "fixture.png")}))
+    monkeypatch.setattr("litetui.app.appsvc.load_image_file", lambda *a: "fixture-image")
+    app = LiteTUI()
+    app._connect = lambda: None
+    async with app.run_test(size=(110, 40)):
+        app._backend = SimpleNamespace(name="codex", owns_native_turns=False,
+                                       request_overrides=lambda key: {})
+        app._model_id, app._thinking_level = "gpt-5.6-sol", "medium"
+        said, streams = [], []
+        app._system = said.append
+        app._stream = lambda: streams.append(1)
+        app._chat_running = lambda: True
+        await app._mark_wait(handoff, None).wait()
+        assert [item.get("source") for item in app._pending_input] == ["typed"]
+        app._chat_running = lambda: False
+        app._flush_pending_input()
+        assert streams == [1]
+        assert not any("TURN REFUSED" in t for t in said), said
+
+
+# ── small items ──────────────────────────────────────────────────────────────
+
+def test_a_refused_GOAL_turn_says_goal_loops_run_unattended():
+    """Marquee's ruling (a): the first goal delivery below the floor is refused,
+    and says why plainly."""
+    seat = _ryans()
+    seat._chat_running = lambda: False
+    seat._user_bubble = lambda *a, **k: None
+    goal_loop._deliver_goal_turn(seat, goal_loop.GoalState(objective="x"), "continue")
+    assert "goal loops run unattended and meet the fleet floor" in seat.said[-1].lower()
+
+
+def test_an_rpc_turn_refused_for_want_of_gui_hello_says_so():
+    seat = _ryans()
+    _typed(seat, "x", source="rpc")
+    assert "(rpc host did not identify)" in seat.said[-1]
+
+
+def test_the_effective_thinking_EXCEPT_branch_matches_the_no_builder_branch():
+    """Dijkstra nit: a builder that raises falls back like no builder at all."""
+    seat = _Seat(thinking="medium")
+    seat._cli_effective_thinking = "high"
+
+    def boom():
+        raise RuntimeError("unbuildable")
+
+    seat._effective_request_overrides = boom
+    assert seat_authority.effective_thinking(seat) == "high"
+
+
+def test_the_PROVISIONAL_goal_decision_flips_with_ONE_line(monkeypatch):
+    """Sentinel 8d69c9fb: Ryan's own /goal refusal is put to him. The line that
+    flips it is seat_authority.GOAL_TURNS_ARE_ATTENDED (seat_authority.py:133);
+    True puts "goal" in ATTENDED_SOURCES. Today: refused. Flipped: it runs."""
+    assert seat_authority.GOAL_TURNS_ARE_ATTENDED is False
+    assert "goal" not in seat_authority.ATTENDED_SOURCES
+    assert seat_authority.floor_refusal(_ryans(), "goal") is not None
+    monkeypatch.setattr(seat_authority, "ATTENDED_SOURCES",
+                        seat_authority.ATTENDED_SOURCES | {"goal"})
+    assert seat_authority.floor_refusal(_ryans(), "goal") is None

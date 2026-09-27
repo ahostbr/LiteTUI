@@ -89,8 +89,12 @@ def effective_thinking(app) -> str | None:
         try:
             sent = overrides().get("reasoning_effort")
         except Exception:  # noqa: BLE001 - an unbuildable request is refused by its own send
-            sent = None
+            return _flag_then_think(app)   # Dijkstra nit: the same as no builder
         return sent or getattr(app, "_thinking_level", None)
+    return _flag_then_think(app)
+
+
+def _flag_then_think(app) -> str | None:
     return getattr(app, "_cli_effective_thinking", None) or getattr(app, "_thinking_level", None)
 
 
@@ -122,8 +126,13 @@ def resolve(app, source: str = "typed", requested: str | None = None) -> Effecti
 #: Labels are produced ONLY by typed submits: "typed" (_submit_text's default
 #: and the /mark paths), "queued" and "interrupted" (_submit_text, held or
 #: interrupting, where an rpc submit becomes "rpc" instead).
+#: ⚠️ PROVISIONAL, being put to Ryan (Sentinel 8d69c9fb): a /goal loop in HIS OWN
+#: instance meets the floor (Marquee's ruling (a): a goal loop runs unattended by
+#: nature, and running turn 1 only to dead-end at turn 2 is worse). THIS is the
+#: one line that flips it: True puts "goal" in ATTENDED_SOURCES.
+GOAL_TURNS_ARE_ATTENDED = False
 ATTENDED_SOURCES = frozenset({"typed", "queued", "interrupted", "compact-wake", "compact",
-                              "codex-question"})
+                              "codex-question"} | ({"goal"} if GOAL_TURNS_ARE_ATTENDED else set()))
 
 
 def is_spawned(app) -> bool:
@@ -202,6 +211,10 @@ def floor_refusal(app, source: str = "typed") -> str | None:
     why = fleet_policy.below_floor(name, floor, seat.model, seat.thinking_level)
     if why is None:
         return None
+    if source == "goal":
+        why += " Goal loops run unattended and meet the fleet floor."
+    elif source == "rpc" and not getattr(app, "_gui_rpc_enabled", False):
+        why += " (rpc host did not identify)"
     return (f"TURN REFUSED: {why} Policy: {where} (keys floors.{name}.models / "
             f"min_model / min_thinking_level). Nothing was substituted and nothing "
             f"was sent to the model.")

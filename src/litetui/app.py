@@ -1719,7 +1719,10 @@ class LiteTUI(App):
         # spawned_seat_identity, which consumes the marker. Ryan's own instance
         # (not spawned) is exempt from the fleet floor for the turns HE drives;
         # see seat_authority.floor_applies.
-        self._spawned_seat = os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
+        self._spawned_marker = os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
+        #: Marker OR a conversation born spawned (convo "seat_spawned"; set on
+        #: every open in _adopt_convo_settings). Dijkstra S1, T1043 cycle 2.
+        self._spawned_seat = self._spawned_marker
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
@@ -4255,6 +4258,13 @@ class LiteTUI(App):
             cs.seat_name = getattr(self.seat, "name", None)
             cs.seat_id = getattr(self.seat, "agent_id", None)
             cs.seat_tier = getattr(self.seat, "tier", None)
+            # T1043 S1: "spawned" is a fact of the conversation, born with it.
+            # NOT seat_id: that is written for EVERY born convo (above), and an
+            # unspawned one gets harness.process_agent_id.
+            marker = getattr(self, "_spawned_marker", None)
+            if marker is not None:
+                cs.seat_spawned = marker
+                self._spawned_seat = marker
             self._convo_settings = cs
             try:
                 convo_settings_mod.save(self.convo_dir, cs)
@@ -4264,6 +4274,12 @@ class LiteTUI(App):
 
         cs = convo_settings_mod.load(self.convo_dir)
         self._convo_settings = cs
+        # T1043 S1: a conversation born in a spawned seat stays one when it is
+        # relaunched without the marker. Ryan resuming a fleet conversation
+        # himself is therefore enforced too: it IS a fleet conversation.
+        marker = getattr(self, "_spawned_marker", None)
+        if marker is not None:
+            self._spawned_seat = marker or getattr(cs, "seat_spawned", None) is True
         from copy import deepcopy
         from litetui.settings_scope import SETTING_SPECS, SettingScope
         self.settings = deepcopy(self.settings)
