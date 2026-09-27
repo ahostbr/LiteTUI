@@ -61,7 +61,7 @@ def seat_profile(app) -> str:
 
 
 def turn_profile(app, source: str, requested: str | None = None) -> str:
-    return locked_profile(app, _turn_profile(app, source, requested))
+    return locked_profile(app, _turn_profile(app, source, requested), source)
 
 
 def _turn_profile(app, source: str, requested: str | None) -> str:
@@ -85,10 +85,31 @@ def _turn_profile(app, source: str, requested: str | None) -> str:
 # property over the raw value, app.py): it has 9 writers and ~12 readers, and only
 # 3 writers go through the resolver, so a gate anywhere else leaves paths open.
 
-LOCK_REFUSAL = (
-    "autonomous refused: this LiteTUI was not launched by Ryan (an agent spawned it), "
-    "so it runs interactive and its approvals belong to its leader (T1049; Ryan: "
-    "\"they can only go to interactive mode\").")
+#: 🟡 C4: what a cron/loop fire (source "scheduled") runs under in a seat that is
+#: NOT Ryan's own. INTERACTIVE: the lock caps it like every other source.
+#: Ryan ruled 2026-09-27 (per Sentinel 04169351): "whatever agent spawned the
+#: light qi instance should be babysitting it". INTERIM REFUSAL: today every
+#: CONFIRM in such a fire is refused as unattended (tool_policy.UNATTENDED_SOURCES);
+#: T1049-B routes that CONFIRM to the spawning parent, and if the parent is absent
+#: or silent it refuses and logs. Changing the profile itself is this line plus
+#: test_C4_a_locked_seats_schedule_runs_interactive.
+#: Read through the stamped turn's source (hook_host.accept_prompt sets
+#: app._active_turn_source; any other write of the profile clears it). If it is
+#: ever changed: like the raw profile, the source outlives its turn until the
+#: next write, so the seat keeps the scheduled answer until then.
+LOCKED_SCHEDULE_PROFILE = tool_policy.INTERACTIVE
+
+
+def lock_refusal(app) -> str:
+    """Why autonomous was refused, true to THIS seat (Dijkstra F2): the lock keys
+    on "not Ryan's own", so a seat Ryan launched unmarked is locked too, and must
+    not be told an agent spawned it."""
+    why = ("was not launched by Ryan (an agent spawned it), so it runs interactive "
+           "and its approvals belong to its leader" if is_spawned(app) else
+           "is not Ryan's own (not owner-marked: launch it via run.bat or LiteGUI; "
+           "or its terminal was written by an agent), so it runs interactive")
+    return (f"autonomous refused: this LiteTUI {why} (T1049; Ryan: "
+            "\"they can only go to interactive mode\").")
 
 
 def locked(app) -> bool:
@@ -98,11 +119,12 @@ def locked(app) -> bool:
     return not is_ryans_own(app, recheck=False)
 
 
-def locked_profile(app, profile: str | None) -> str | None:
+def locked_profile(app, profile: str | None, source: str | None = None) -> str | None:
     """THE gate: autonomous reads as interactive in a locked seat. Nothing else
-    changes, so the lock can only ever narrow."""
+    changes, so the lock can only ever narrow. A "scheduled" turn's answer is the
+    C4 site, LOCKED_SCHEDULE_PROFILE."""
     if profile == tool_policy.AUTONOMOUS and locked(app):
-        return tool_policy.INTERACTIVE
+        return LOCKED_SCHEDULE_PROFILE if source == "scheduled" else tool_policy.INTERACTIVE
     return profile
 
 
@@ -118,7 +140,7 @@ def warn_if_capped(app) -> None:
     say = getattr(app, "_system", None)
     if asked and say is not None:
         try:
-            say("⚠ " + LOCK_REFUSAL + " Authority is interactive.")
+            say("⚠ " + lock_refusal(app) + " Authority is interactive.")
         except Exception:  # noqa: BLE001 - called from _apply_cli_args' finally, possibly with no screen yet
             return  # not said: the connect site can still say it
         app._autonomy_cap_said = True

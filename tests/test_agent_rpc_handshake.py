@@ -11,7 +11,7 @@ async def test_real_rpc_envelope_checks_effective_state_and_owned_pid(tmp_path):
     from types import SimpleNamespace
     process.process = SimpleNamespace(pid=123, returncode=None)
     event = {'type':'ready','launch_status':'ready','backend':'codex','model':'model',
-             'cwd':str(tmp_path),'tool_profile':'autonomous','thinking_level':'high',
+             'cwd':str(tmp_path),'tool_profile':'interactive','thinking_level':'high',
              'pid':123,'process_created':'stamp','conversation_id':'actual-convo'}
     async def receive(**kwargs): return event
     process.receive = receive
@@ -21,7 +21,8 @@ async def test_real_rpc_envelope_checks_effective_state_and_owned_pid(tmp_path):
     process.close = close
     assert await process.rpc_handshake(spec, workspace=str(tmp_path), probe=lambda pid:'stamp') == event
     assert process.ready
-    for key, value in [('model','fallback'),('thinking_level','low'),('launch_status','blocked'),('pid',999)]:
+    for key, value in [('model','fallback'),('thinking_level','low'),('launch_status','blocked'),('pid',999),
+                       ('tool_profile','autonomous')]:
         original = event[key]
         event[key] = value
         with pytest.raises(LaunchBlocked):

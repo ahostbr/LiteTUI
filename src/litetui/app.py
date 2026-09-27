@@ -2659,7 +2659,14 @@ class LiteTUI(App):
             # also the settings default, so the two agreed by coincidence;
             # T084 moved the default to `autonomous` and that coincidence
             # became a contradiction pointing the permissive way.
-            profile or getattr(self, "_active_tool_profile", None) or tool_policy.STRICT,
+            # T1049 (Dijkstra F1): an explicit `profile` is capped here too, the one
+            # door every tool and hook decision passes, so no caller holding a raw
+            # value (the hook Test buttons passed chosen_tool_profile) runs autonomous
+            # in a locked seat. With the stamped turn's source, so the C4 answer
+            # (LOCKED_SCHEDULE_PROFILE) is the same here as in the property.
+            seat_authority.locked_profile(
+                self, profile or getattr(self, "_active_tool_profile", None) or tool_policy.STRICT,
+                getattr(self, "_active_turn_source", None)),
             policy,
             args,
             workspace or paths.ROOT,
@@ -4090,7 +4097,7 @@ class LiteTUI(App):
             # T1049: an explicit ask for autonomous in a seat that is not Ryan's
             # own. Refused in words and NOTHING is recorded: no settings write,
             # no convo remember, the launch flag untouched.
-            self._system(seat_authority.LOCK_REFUSAL
+            self._system(seat_authority.lock_refusal(self)
                          + f" Authority stays {self._active_tool_profile}.")
             return False
         previous = self.settings.tool_policy_profile
@@ -4229,12 +4236,17 @@ class LiteTUI(App):
         _authorize_action, hooks, the Claude and Codex policy bridges, spawn,
         the footer, rpc), and only 3 writers go through the resolver. Capped on
         READ, so a write made in __init__ before the owner/spawn markers exist
-        cannot bake in the wrong answer."""
-        return seat_authority.locked_profile(self, self.__dict__.get("_active_tool_profile_raw"))
+        cannot bake in the wrong answer.
+        `_active_turn_source` is set by hook_host.accept_prompt right after its
+        stamp and cleared by every write, so only the turn it stamped reads the
+        C4 answer (seat_authority.LOCKED_SCHEDULE_PROFILE)."""
+        return seat_authority.locked_profile(self, self.__dict__.get("_active_tool_profile_raw"),
+                                             self.__dict__.get("_active_turn_source"))
 
     @_active_tool_profile.setter
     def _active_tool_profile(self, value: str | None) -> None:
         self.__dict__["_active_tool_profile_raw"] = value
+        self.__dict__["_active_turn_source"] = None
 
     @property
     def chosen_tool_profile(self) -> str:
@@ -9304,7 +9316,7 @@ class LiteTUI(App):
             # T1049: the settings Save is an explicit ask, and settings.json is
             # shared by every LiteTUI on this box. Refused before anything persists.
             new.tool_policy_profile = old.tool_policy_profile
-            self._system(seat_authority.LOCK_REFUSAL + f" Authority stays {old.tool_policy_profile}; the other settings are saved as usual.")
+            self._system(seat_authority.lock_refusal(self) + f" Authority stays {old.tool_policy_profile}; the other settings are saved as usual.")
         self._settings_persist_error = None
         self.settings = new
         if not new.tts_enabled:

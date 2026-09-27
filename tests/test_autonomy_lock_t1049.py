@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from litetui import app as m
-from litetui import rpc, seat_authority, tool_policy
+from litetui import gui_rpc, rpc, seat_authority, tool_policy
 from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 
 
@@ -81,8 +81,7 @@ def test_LOCK_the_launch_flag_and_the_rpc_default_are_capped():
     "harness",                           # inbox mail
     "child-result",                      # agent_parent_wake.py:38
     "goal", "goal-ryan",                 # goal_loop.py:344
-    "scheduled",                         # a cron/loop fire (the T085 autonomous default)
-])
+])   # "scheduled" (a cron/loop fire) is C4's own arm: test_C4_a_locked_seats_schedule_runs_interactive
 def test_LOCK_the_resolver_never_answers_autonomous(source):
     a = _app()
     assert seat_authority.turn_profile(a, source, AUTONOMOUS) == INTERACTIVE
@@ -161,7 +160,7 @@ def test_REFUSED_set_tool_profile_autonomous(monkeypatch):
     calls, remembered = _no_persist(monkeypatch, a)
     a._cli_tool_profile = STRICT
     assert a.set_tool_profile(AUTONOMOUS, source="wire") is False
-    assert said == [seat_authority.LOCK_REFUSAL + " Authority stays interactive."]
+    assert said == [seat_authority.lock_refusal(a) + " Authority stays interactive."]
     assert "they can only go to interactive mode" in said[0]
     assert a.settings.tool_policy_profile == INTERACTIVE
     assert calls == [] and remembered == [], "a refusal persisted something"
@@ -185,8 +184,9 @@ def test_CONTROL_ryans_own_set_tool_profile_autonomous_is_accepted(monkeypatch):
 
 
 def test_REFUSED_over_rpc_names_the_lock_not_an_unknown_profile():
-    assert rpc._profile_error(AUTONOMOUS) == seat_authority.LOCK_REFUSAL
-    assert rpc._profile_error("wide-open") == "unknown tool profile 'wide-open'"
+    a = _app()
+    assert rpc._profile_error(a, AUTONOMOUS) == seat_authority.lock_refusal(a)
+    assert rpc._profile_error(a, "wide-open") == "unknown tool profile 'wide-open'"
 
 
 def test_REFUSED_a_settings_save_of_autonomous_before_it_persists(monkeypatch):
@@ -208,7 +208,7 @@ def test_REFUSED_a_settings_save_of_autonomous_before_it_persists(monkeypatch):
     a._refresh_prompt_controls = stop
     with pytest.raises(_Stop):
         a._on_settings_saved(new)
-    assert said == [seat_authority.LOCK_REFUSAL + " Authority stays interactive; the other settings are saved as usual."]
+    assert said == [seat_authority.lock_refusal(a) + " Authority stays interactive; the other settings are saved as usual."]
     assert new.tool_policy_profile == INTERACTIVE, "autonomous would have been persisted"
 
 
@@ -243,7 +243,7 @@ def test_the_implicit_cap_is_said_once():
     said = _said(a)
     seat_authority.warn_if_capped(a)
     seat_authority.warn_if_capped(a)
-    assert said == ["⚠ " + seat_authority.LOCK_REFUSAL + " Authority is interactive."]
+    assert said == ["⚠ " + seat_authority.lock_refusal(a) + " Authority is interactive."]
 
 
 def test_CONTROL_nothing_is_said_when_nothing_asked_for_autonomous():
@@ -258,3 +258,163 @@ def test_CONTROL_nothing_is_said_in_ryans_own():
     said = _said(a)
     seat_authority.warn_if_capped(a)
     assert said == []
+
+
+# ── F2: the refusal is true to the seat (Dijkstra e1f6a89c) ─────────────────
+
+def test_REFUSAL_text_a_spawned_seat_is_told_an_agent_spawned_it():
+    a = _app()
+    a._spawned_seat = True
+    text = seat_authority.lock_refusal(a)
+    assert "an agent spawned it" in text and "its leader" in text
+    assert "they can only go to interactive mode" in text
+
+
+def test_REFUSAL_text_an_unmarked_seat_ryan_launched_is_NOT_told_an_agent_spawned_it():
+    """A plain `python -m litetui`: not spawned, not owner-marked, so locked."""
+    a = _app()
+    a._spawned_seat, a._owner_seat = False, False
+    assert seat_authority.locked(a)
+    text = seat_authority.lock_refusal(a)
+    assert "spawned" not in text
+    assert "not owner-marked" in text and "run.bat or LiteGUI" in text
+
+
+# ── F1: no raw read of authority around the gate (Dijkstra e1f6a89c) ────────
+# Each arm runs in a LOCKED host whose settings hold autonomous (settings.py's
+# default), so chosen_tool_profile, the raw value the three sites read, is autonomous.
+
+def _gui_state_profile(monkeypatch, a):
+    monkeypatch.setattr(gui_rpc, "_settings", lambda *_a: {})
+    monkeypatch.setattr(gui_rpc, "_conversations", lambda *_a: [])
+    monkeypatch.setattr(gui_rpc, "_jobs", lambda *_a: [])
+    monkeypatch.setattr(gui_rpc, "active_work", lambda *_a: [])
+    a._rpc_model_state = lambda: None
+    a._chat_running = lambda: False
+    return gui_rpc.dispatch(a, {"type": "gui.state"})["tool_profile"]
+
+
+def _rpc_prompt(monkeypatch, a, profile):
+    """LiteGUI's Send: request('prompt', {message, tool_profile}) (App.tsx:144)."""
+    replies: list = []
+    submitted: list = []
+    monkeypatch.setattr(rpc, "_respond", lambda *args, **kw: replies.append(kw))
+    monkeypatch.setattr(a.store, "acquire", lambda *_a: None)
+    a._submit_text = lambda text, **kw: submitted.append((text, kw.get("source")))
+    rpc._dispatch(a, {"type": "prompt", "id": "p", "message": "hi", "tool_profile": profile})
+    return replies, submitted
+
+
+class _Decided(Exception):
+    pass
+
+
+async def _hook_test_decision(monkeypatch, a, tmp_path):
+    """What the hook Test buttons do (gui_rpc gui.hooks.test, hooks_screen Test):
+    hook_host.invoke(app, hook, document, app.chosen_tool_profile) reaches the
+    door as profile=<raw>. Stopped right after the policy decision."""
+    real = tool_policy.evaluate
+    seen: list = []
+
+    def spy(profile, policy, args, workspace, **kw):
+        seen.append(real(profile, policy, args, workspace, **kw))
+        raise _Decided
+
+    monkeypatch.setattr(tool_policy, "evaluate", spy)
+    with pytest.raises(_Decided):
+        await a._authorize_action("hook:fixture", {"command": "rm -rf ./build"}, tool_policy.SHELL_POLICY,
+                                  profile=a.chosen_tool_profile, workspace=tmp_path,
+                                  allow_prompt=False, stop_on_denial=False)
+    return seen[0]
+
+
+def test_F1_gui_state_reports_interactive_in_a_locked_seat(monkeypatch):
+    a = _app()
+    assert a.chosen_tool_profile == AUTONOMOUS, "the arm needs the raw value to be autonomous"
+    assert _gui_state_profile(monkeypatch, a) == INTERACTIVE
+
+
+def test_F1_an_rpc_prompt_carrying_gui_states_profile_starts_a_turn(monkeypatch):
+    a = _app()
+    _said(a)
+    _no_persist(monkeypatch, a)
+    replies, submitted = _rpc_prompt(monkeypatch, a, _gui_state_profile(monkeypatch, a))
+    assert replies == [{"ok": True, "result": {"turn": "accepted"}}], replies
+    assert submitted == [("hi", "rpc")]
+
+
+@pytest.mark.asyncio
+async def test_F1_a_hook_test_authorizes_under_interactive_in_a_locked_seat(monkeypatch, tmp_path):
+    a = _app()
+    assert a.chosen_tool_profile == AUTONOMOUS
+    decision = await _hook_test_decision(monkeypatch, a, tmp_path)
+    assert decision.profile == INTERACTIVE
+    assert decision.action == tool_policy.CONFIRM, "a destructive argv ran without asking"
+
+
+def test_CONTROL_F1_ryans_own_gui_state_and_rpc_prompt_stay_autonomous(monkeypatch):
+    a = _ryans(_app())
+    _said(a)
+    _no_persist(monkeypatch, a)
+    profile = _gui_state_profile(monkeypatch, a)
+    assert profile == AUTONOMOUS
+    replies, submitted = _rpc_prompt(monkeypatch, a, profile)
+    assert replies == [{"ok": True, "result": {"turn": "accepted"}}] and submitted == [("hi", "rpc")]
+    assert a._active_tool_profile == AUTONOMOUS
+
+
+@pytest.mark.asyncio
+async def test_CONTROL_F1_ryans_own_hook_test_authorizes_under_autonomous(monkeypatch, tmp_path):
+    a = _ryans(_app())
+    decision = await _hook_test_decision(monkeypatch, a, tmp_path)
+    assert decision.profile == AUTONOMOUS and decision.action == tool_policy.ALLOW
+
+
+# ── F3: the child-delegation invariant, which no arm held (Dijkstra e1f6a89c) ─
+
+def test_a_child_that_ASKS_for_autonomous_under_an_autonomous_parent_is_blocked():
+    """test_invalid_or_authority_increasing_request_is_rejected meant to hold this,
+    but its parent_profile='scheduled' is no profile, so every case dies at
+    "Unknown parent policy" (pre-existing; Marquee aa29fbe8 lists it separately)."""
+    from litetui.agent_launcher import LaunchBlocked, validate_request
+    request = {"prompt": "p", "backend": "codex", "model": "m", "workspace": "C:/fixture"}
+    with pytest.raises(LaunchBlocked, match="delegation"):
+        validate_request({**request, "tool_profile": AUTONOMOUS}, parent_profile=AUTONOMOUS, depth=0)
+    # CONTROL: the same parent, no explicit ask: the child is delegated interactive.
+    assert validate_request(request, parent_profile=AUTONOMOUS, depth=0).tool_profile == INTERACTIVE
+
+
+# ── C4: a locked seat's cron/loop fire, at ONE site ─────────────────────────
+
+def _stamp(a, source, requested=None):
+    """hook_host.accept_prompt's two lines: the stamp, then the turn's source."""
+    a._active_tool_profile = seat_authority.turn_profile(a, source, requested)
+    a._active_turn_source = source
+
+
+def test_C4_a_locked_seats_schedule_runs_interactive():
+    """PINS TODAY'S ANSWER at seat_authority.LOCKED_SCHEDULE_PROFILE. Ryan ruled
+    2026-09-27 (per Sentinel 04169351) that the spawning agent babysits the seat:
+    B routes its CONFIRMs to that parent. Changing the profile is that line plus
+    this test."""
+    a = _app()
+    assert seat_authority.turn_profile(a, "scheduled") == INTERACTIVE
+    assert seat_authority.resolve(a, "scheduled", AUTONOMOUS).profile == INTERACTIVE
+    _stamp(a, "scheduled")
+    assert a._active_tool_profile == INTERACTIVE
+
+
+def test_C4_the_site_is_the_only_line_a_change_needs(monkeypatch):
+    """The C4 constant alone moves a scheduled turn, through the stamp and the
+    property, and nothing else: an attended stamp stays capped, and any later
+    write of the field drops the scheduled answer."""
+    monkeypatch.setattr(seat_authority, "LOCKED_SCHEDULE_PROFILE", AUTONOMOUS)
+    a = _app()
+    _stamp(a, "scheduled")
+    assert a._active_tool_profile == AUTONOMOUS
+    _stamp(a, "typed", AUTONOMOUS)
+    assert a._active_tool_profile == INTERACTIVE
+    _stamp(a, "scheduled")
+    a._active_tool_profile = AUTONOMOUS          # any other writer (goal, parent wake, settings)
+    assert a._active_tool_profile == INTERACTIVE
+    assert seat_authority.locked_profile(a, AUTONOMOUS) == INTERACTIVE   # no source: capped
