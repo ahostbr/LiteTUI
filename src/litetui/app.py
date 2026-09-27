@@ -111,7 +111,7 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
 from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
-from litetui import tool_policy
+from litetui import seat_authority, tool_policy
 from litetui.turn_engine import TurnEngine, _resolve_reasoning_effort
 from litetui import thinking_probe
 from litetui import themes as themes_mod
@@ -676,6 +676,9 @@ def _sync_seat_resolution(app) -> None:
     app.seat.model = app.model_id or "unknown"
     app.seat.thinking_level = (getattr(app, "_cli_effective_thinking", None)
                                or getattr(app, "_thinking_level", None))
+    # T1027: and the ENGINE it resolved -- a seat asked for local that the pin
+    # put on codex read as ungoverned without it (Carmack8 d3c3d40c).
+    app.seat.backend = getattr(getattr(app, "backend", None), "name", None)
 
 
 class LiteTUI(App):
@@ -2337,7 +2340,9 @@ class LiteTUI(App):
         # refusal (`_authorize_action`, tool_policy.UNATTENDED_SOURCES), and
         # the model is told that rule up front so it plans around it instead
         # of retrying.
-        profile = self.settings.tool_policy_profile
+        # T1027: the SEAT's profile (a launch flag outranks the file); accept_prompt
+        # narrows it again at the moment the turn starts.
+        profile = seat_authority.seat_profile(self)
         content = text
         if tool_policy.PROFILES.get(profile) and tool_policy.PROFILES[profile].confirm:
             content = f"{text}\n\n{tool_policy.INBOX_TURN_RULE}"
@@ -4006,6 +4011,9 @@ class LiteTUI(App):
                            operation=source.replace(" ", "-"))
         self.settings.tool_policy_profile = profile
         self._active_tool_profile = profile
+        # T1027: a choice made after launch supersedes --tool-profile, the way
+        # /model supersedes --model (retire_cli_model).
+        self._cli_tool_profile = None
         # 🔴 THE ONE PLACE A PROFILE IS CHOSEN (T695), so the one place it is
         # remembered per conversation. The other eight writers of
         # `_active_tool_profile` are transient — see `chosen_tool_profile`.
@@ -4220,6 +4228,24 @@ class LiteTUI(App):
         if born:
             from litetui.settings_runtime import without_invocation
             cs = convo_settings_mod.born_from(without_invocation(self, self.settings))
+            # T1027: the engine a flag launched is a FACT about this transcript,
+            # not a grant, so the file records it — else a resume of a seat
+            # launched `--backend claude` ran Codex (.convos/ec62c953, measured).
+            # Authority stays T695: a flag's profile is born only when STRICTER
+            # (a restriction is not a grant, Sentinel 0118549d).
+            identity = {
+                "backend": getattr(self, "_cli_initial_backend", None),
+                "default_model": getattr(self, "_cli_initial_model", None) and (
+                    self._model_id or self._cli_initial_model),
+                "thinking_level": getattr(self, "_cli_thinking_level", None),
+            }
+            flag = seat_authority.launch_flag(self)
+            if flag:
+                identity["tool_policy_profile"] = seat_authority.narrower(flag, cs.tool_policy_profile)
+            for key, value in identity.items():
+                if value:
+                    cs.execution[key] = value
+                    setattr(cs, "model" if key == "default_model" else key, value)
             cs.seat_name = getattr(self.seat, "name", None)
             cs.seat_id = getattr(self.seat, "agent_id", None)
             cs.seat_tier = getattr(self.seat, "tier", None)
@@ -4266,6 +4292,13 @@ class LiteTUI(App):
             self._invocation_saved_values = saved
             effective_cs.backend = self._cli_initial_backend
             self.settings.backend = self._cli_initial_backend
+        # T1027: a resume never switches engine SILENTLY. An explicit launch
+        # still wins; it just has to say what it overrode.
+        recorded = cs.backend or cs.execution.get("backend")
+        if recorded and effective_cs.backend and recorded != effective_cs.backend:
+            self._system(
+                f"⚠ This conversation ran on {recorded}; this launch switches it to "
+                f"{effective_cs.backend}. Resume without --backend (or LITETUI_BACKEND) to keep {recorded}.")
         self._adopt_convo_backend(effective_cs)
         if getattr(getattr(self, '_backend', None), 'name', None) != previous_backend:
             # The previous engine's catalog says nothing about this engine.
@@ -4279,6 +4312,10 @@ class LiteTUI(App):
             else None
         )
         model = cli_model or convo_settings_mod.resolved(effective_cs, self.settings, "model")
+        recorded_model = cs.model or cs.execution.get("default_model")
+        if recorded_model and model and model != recorded_model:
+            self._system(
+                f"⚠ This conversation ran on {recorded_model}; this launch switches it to {model}.")
         if not cli_model and model and self.available_models and model not in self.available_models:
             # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
             # the server no longer has — it was uninstalled, or this is another
@@ -7224,7 +7261,7 @@ class LiteTUI(App):
             self._refuse_submit("message_over_budget", oversize)
             return
 
-        profile = self.chosen_tool_profile
+        profile = seat_authority.seat_profile(self)
         claude_metadata = {}
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import inline_images, prepare_input
@@ -9323,11 +9360,11 @@ class LiteTUI(App):
         if self._chat_running():
             self._user_bubble(text, True, queued=True)
             self._pending_input.append({"content": content, "text": text,
-                                        "tool_profile": self.chosen_tool_profile})
+                                        "tool_profile": seat_authority.seat_profile(self)})
             return
         self._materialise_convo()
         self._user_bubble(text, True)
-        hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": self.chosen_tool_profile})
+        hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": seat_authority.seat_profile(self)})
 
     def _handle_command(self, cmd: str) -> None:
         parts = cmd.split(maxsplit=1)

@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from litetui import lifecycle_hooks as hooks
-from litetui import tool_policy
+from litetui import seat_authority, tool_policy
 from litetui.widgets import _mark_delivered
 
 
@@ -125,11 +125,18 @@ def enter_conversation(app, event):
         queue_lifecycle(app, event, id)
 
 
+def _turn_source(item) -> str:
+    return "goal" if item.get("goal_continuation") else item.get("source", "queued")
+
+
 def accept_prompt(app, item):
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
-    app._active_tool_profile = item.get("tool_profile") or getattr(
-        getattr(app, "settings", None), "tool_policy_profile", tool_policy.STRICT)
+    # T1027: the ONE place a turn's authority is decided, for every source.
+    # The producer's profile is only a request; the seat's flag and choice rule.
+    # T1043 adds `floor.check(seat_authority.resolve(app, source))` here.
+    app._active_tool_profile = seat_authority.turn_profile(
+        app, _turn_source(item), item.get("tool_profile"))
     app._hooks_suppressed = False
     app._hook_corrections = 0
     app._hook_turn_id = str(uuid.uuid4())
@@ -163,7 +170,8 @@ async def admit_prompt(app, item):
     await drain_lifecycle(app)
     ctx = {**context(app), "source": item.get("source", "queued"), "turn_id": str(uuid.uuid4())}
     result = await dispatch(app, "prompt_before", {"prompt": item["content"]},
-                            profile=item.get("tool_profile"), captured=ctx)
+                            profile=seat_authority.turn_profile(app, _turn_source(item), item.get("tool_profile")),
+                            captured=ctx)
     if result.allowed and not app._stop_requested:
         accept_prompt(app, item)
         app._hook_turn_id = ctx["turn_id"]

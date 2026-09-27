@@ -17,7 +17,7 @@ def test_claim_name_uses_current_agent_id_and_adopts_registry_result(monkeypatch
     assert seat.claim_name("GlassGrid")
     assert calls[0][calls[0].index("--agent-id") + 1] == "current-id"
     assert calls[0][calls[0].index("--name") + 1] == "GlassGrid"
-    assert "--takeover" in calls[0]
+    assert "--takeover" not in calls[0], "T1027: never evict a live holder"
     assert seat.name == "GlassGrid"
 
 
