@@ -46,6 +46,10 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=ONCE):
         # headless child, and getattr's default cannot help a SimpleNamespace
         # that raises rather than returning a default.
         _rpc=False,
+        # T1049-B: a seat nobody launched as an agent (confirm_route "hand"), so the
+        # modal this host answers is the door it reaches; the double's unknown
+        # launch would otherwise take the fail-safe "refuse" route.
+        _agent_launched=False,
         _active_tool_profile=profile,
         _dispatch_for=lambda _name: run,
         plugins=_Policies(policy),
