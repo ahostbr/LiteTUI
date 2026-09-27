@@ -17,8 +17,11 @@ def test_public_registration_and_conservative_policy():
 
 @pytest.mark.parametrize('profile', ['scheduled', 'interactive'])
 def test_non_autonomous_parent_refused_before_any_storage(profile):
+    # T1049-B2: an interactive parent may spawn when its child's CONFIRMs have a
+    # route. This double (no spawner, launch unknown = agent-launched) has none,
+    # so it is still refused before any storage, now naming the missing route.
     app = SimpleNamespace(settings=SimpleNamespace(tool_policy_profile=profile))
-    with pytest.raises(LaunchBlocked, match='autonomous'):
+    with pytest.raises(LaunchBlocked, match='No approval path'):
         capture_launch(app, {})
 
 

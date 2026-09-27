@@ -253,7 +253,8 @@ def test_the_hook_matcher_carries_that_timeout_rather_than_the_sdk_default():
 
 @pytest.mark.asyncio
 async def test_a_decision_nobody_answers_is_denied_with_a_reason(monkeypatch):
-    monkeypatch.setattr("litetui.claude_tools._deadlines", lambda: (0.05, 0.5))
+    # T1049-B2 K1: _deadlines takes the seat now (a spawner seat outlasts its relay).
+    monkeypatch.setattr("litetui.claude_tools._deadlines", lambda app=None: (0.05, 0.5))
 
     async def never(name, args, policy):
         await asyncio.sleep(30)

@@ -172,12 +172,15 @@ class AgentProcess:
                     if kind == 'error' or (kind == 'response' and event.get('ok') is False):
                         raise LaunchBlocked(str(event.get('error', 'Child rejected request')))
                     if kind == 'tool_approval_requested' and on_approval is not None:
-                        # Clock C4 (plan S2): the time a person or the spawner takes
-                        # to answer is added back, so thinking time never fails the child.
+                        # Clock C4 (plan S2): the deadline is PAUSED while a person or
+                        # the spawner answers (rescheduling after the await would be too
+                        # late: it fires DURING the wait), so thinking time never fails
+                        # the child. The remaining budget resumes afterwards.
                         loop = asyncio.get_running_loop()
-                        asked = loop.time()
+                        remaining = deadline.when() - loop.time()
+                        deadline.reschedule(None)
                         allow = await on_approval(event)
-                        deadline.reschedule(deadline.when() + (loop.time() - asked))
+                        deadline.reschedule(loop.time() + remaining)
                         await self.send_approval(event.get('id'), allow)
                         continue
                     if kind in ('tool_approval_requested', 'user_input_requested', 'model_load_requested'):

@@ -45,4 +45,6 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
         branch=branch, evidence=evidence, supported_levels=supported_levels,
         notify=notify, limit=limit, timeout=timeout, parent_conversation=conversation,
         prepare=prepare, before_start=before_start,
-        on_approval=app.approve_for_child, approval_timeout=approval_timeout)
+        # getattr: a partial app double has no relay, and keeps the old
+        # "requires a human relay" refusal (every real LiteTUI has the method).
+        on_approval=getattr(app, "approve_for_child", None), approval_timeout=approval_timeout)
