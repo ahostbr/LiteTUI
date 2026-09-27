@@ -37,7 +37,8 @@ Ceiling (deliberate): a target, or a cd, held in an arbitrary variable or
 expression (`$x`, `$tmp`, `([Environment]::GetFolderPath('UserProfile'))`) is
 not resolvable here and is not refused; a delete run from inside a script file
 is out of reach; a `find` narrowed by an -o chain or a regex alternation is
-taken at its word. This is a floor under the danger table, not a sandbox.
+taken at its word; a command substitution whose OUTPUT runs as a command
+(`$(ls ~) | xargs rm -rf`) is not followed. This is a floor under the danger table, not a sandbox.
 """
 from __future__ import annotations
 
@@ -243,7 +244,7 @@ def _arguments(verb: str, rest: str):
                 if (name == "--recursive" or ("recurse".startswith(name[1:]) and len(name) > 1)
                         or (re.fullmatch(r"-[a-z]*r[a-z]*", name) and len(name) <= 4)):
                     recursive = True
-                if len(name) >= 4 and any(p.startswith(name[1:]) for p in _PATTERN_PARAMS):
+                if _pattern_param(name):
                     pattern_next = not value   # -Include *.log: the NEXT word is a pattern
                 elif value and value not in ("$true", "$false"):
                     targets.append(piece.partition(":")[2])
@@ -281,22 +282,29 @@ def _pipeline_source(before: str) -> list[str]:
         tail = tail[opened[-1] + 1:]
     head = re.split(r"[;\n]|&&|\|\|", tail)[-1].split("|")[0]
     # Grouped by shell word: every piece of one comma array is one argument.
-    groups = [[_unquote(p) for p in _pieces(w)] for w in _TOKEN.findall(head)]
+    # A parenthesised head keeps its brackets on its words: `(gci ~) | ri -r`
+    # read "~)" (review 0f435720 X3), so they are stripped as _arguments does.
+    groups = [[_unquote(p).strip("()").rstrip("}") for p in _pieces(w)]
+              for w in _TOKEN.findall(head)]
     words = [p for group in groups for p in group]
     if words[:1] == ["find"] and _find_filtered([w.lower() for w in words]):
         # A filtered listing names only what matched, not its root -- except a
         # home-variable root, refused whatever narrows it (review a93de8a9 R1:
         # `find $HOME -type d -name .claude | xargs rm -rf` deletes ~/.claude).
         return [w for w in words[1:] if not w.startswith("-") and _normal(w) in HOME_VARIABLES]
-    paths, skip, narrowed = [], False, False
+    paths, pending, narrowed = [], "", False
     for group in groups[1:]:
-        flag = group[0].lower().partition(":")[0] if len(group) == 1 else ""
-        if skip:
-            skip = False   # the pattern(s) after -Include/-Exclude/-Filter
-            narrowed = narrowed or not all(re.fullmatch(r"[*?.]*", w) for w in group)
+        flag = group[0].lower().partition(":")[0]
+        if pending:   # the pattern(s) after -Include/-Exclude/-Filter
+            narrowed = narrowed or _pattern_narrows(pending, group)
+            pending = ""
         elif flag.startswith("-"):
-            skip = (len(flag) >= 4 and ":" not in group[0]
-                    and any(p.startswith(flag[1:]) for p in _PATTERN_PARAMS))
+            param = _pattern_param(flag)
+            if param and ":" in group[0]:   # -Filter:a,b
+                value = [group[0].partition(":")[2], *group[1:]]
+                narrowed = narrowed or _pattern_narrows(param, value)
+            else:
+                pending = param
         else:
             paths += [w for w in group if w and not w.startswith("-")]
     if narrowed and not paths:
@@ -305,6 +313,28 @@ def _pipeline_source(before: str) -> list[str]:
     # `cd ~; ls | xargs rm -rf`); "." resolves against the tracked base. Empty
     # words (a lone quote) are dropped first, so "." still applies to them.
     return paths or ["."]
+
+
+def _pattern_param(flag: str) -> str:
+    """"include"/"exclude"/"filter" for that parameter (3+ letter prefix), else ""."""
+    return next((p for p in _PATTERN_PARAMS if len(flag) >= 4 and p.startswith(flag[1:])), "")
+
+
+def _pattern_narrows(param: str, pieces: list[str]) -> bool:
+    """Does this -Include/-Exclude/-Filter value narrow what a listing returns?
+
+    Never for -Exclude: it is a NEGATION and lists everything else, folders
+    included (review 0f435720 X2). Otherwise only when EVERY piece is a real
+    pattern: wildcards-only narrows nothing, and a piece that matches a
+    protected folder's name aims AT it (X1, the S2 test)."""
+    if param == "exclude":
+        return False
+    for piece in pieces:
+        low = piece.lower()
+        if re.fullmatch(r"[*?.]*", low) or any(
+                fnmatch.fnmatchcase(name, low) for name in _PROTECTED_NAMES):
+            return False
+    return True
 
 
 def _normal(raw: str) -> str:
