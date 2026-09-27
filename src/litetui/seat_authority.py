@@ -215,6 +215,8 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
     for base in dict.fromkeys(b.resolve() for b in bases):
         for raw in paths:
             try:   # the one door every tool passes: a malformed path is not the target
+                # dealias FIRST (Dijkstra A1): `jobs.json::$DATA` opens jobs.json, and
+                # un-reduced it fails to resolve, which would skip it as malformed.
                 path = Path(deny_floor.dealias(raw.strip().strip("\"'"))).expanduser()
                 target = (path if path.is_absolute() else base / path).resolve()
             except (OSError, ValueError, RuntimeError):
