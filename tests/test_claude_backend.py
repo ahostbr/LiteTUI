@@ -352,6 +352,9 @@ def test_claude_is_told_it_is_litetui_not_claude_code(monkeypatch):
     segment = ledger_for(app).select_segment("ws")
     prompt = system_prompt_for(app, segment)
     first_line = paths.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip().splitlines()[0]
+    # b4f810e (2026-09-26) put the ${USER_NAME_CLAUSE} slot on that line, and
+    # prompt_compiler fills it ("" or the name clause), so the raw line never appears.
+    first_line = first_line.replace("${USER_NAME_CLAUSE}", "")
     assert isinstance(prompt, str) and first_line[:60] in prompt
     assert "SOUL-MARKER-4471" in prompt and "HANDOFF-MARKER-9902" in prompt
     assert app.seat.agent_id in prompt and COMPACT_MARKER in prompt
