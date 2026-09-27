@@ -60,7 +60,7 @@ def _ryans(app):
     return app
 
 
-def _mail_app(profile_name: str):
+def _mail_app(profile_name: str, *, route: str | None = None):
     """Drive the REAL `_deliver_inbox`; return the app, the model-bound
     messages and the user bubbles it produced.
 
@@ -70,6 +70,16 @@ def _mail_app(profile_name: str):
     codebase already paid for once in T079.
     """
     app = _ryans(LiteTUI())
+    if route == "spawner":
+        app._owner_seat = False
+        app._spawned_seat = True
+        app._agent_launched = True
+        app._spawner_id = "leader-id"
+    elif route == "refuse":
+        app._owner_seat = False
+        app._spawned_seat = True
+        app._agent_launched = True
+        app._spawner_id = None
     app._connect = lambda: None
     app.settings.tool_policy_profile = profile_name
     app._chat_running = lambda: False
@@ -212,6 +222,36 @@ def test_an_explicitly_chosen_interactive_KEEPS_interactive_unattended():
     sent = appended[-1]["content"]
     assert sent.endswith("\n\n" + tool_policy.INBOX_TURN_RULE)
     assert tool_policy.INBOX_TURN_RULE not in bubbles[-1]
+
+
+def test_spawned_inbox_turn_names_its_approval_relay():
+    print("IMPORTED_APP=" + __import__("litetui.app", fromlist=["__file__"]).__file__)
+    _app, appended, bubbles = _mail_app(INTERACTIVE, route="spawner")
+    sent = appended[-1]["content"]
+    assert "sent to leader-id for approval; attempt it and wait for the answer" in sent
+    assert "will be refused this turn" not in sent
+    assert sent not in bubbles
+
+
+def test_spawnerless_inbox_keeps_refusal_guidance():
+    _app, appended, _bubbles = _mail_app(INTERACTIVE, route="refuse")
+    assert appended[-1]["content"].endswith(tool_policy.INBOX_TURN_RULE)
+
+
+def test_hosted_inbox_turn_names_host_relay():
+    app = _ryans(LiteTUI())
+    app._owner_seat = False
+    app._spawned_seat = True
+    app._agent_launched = True
+    app._rpc = True
+    app._approval_host = True
+    app._connect = lambda: None
+    app.settings.tool_policy_profile = INTERACTIVE
+    app._chat_running = lambda: True
+    app._pending_input = []
+    app._user_bubble = lambda *a, **k: None
+    app._deliver_inbox({"from": "host", "priority": "normal", "body": "go"})
+    assert "sent to your host for approval; attempt it and wait for the answer" in app._pending_input[-1]["content"]
 
 
 def test_an_autonomous_mail_turn_carries_no_rule_it_cannot_break():

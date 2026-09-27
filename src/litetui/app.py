@@ -2436,18 +2436,18 @@ class LiteTUI(App):
         # workspace_write denial while Settings showed autonomous. A control
         # that names a case it does not govern is worse than no control.
         #
-        # The turn keeps the CHOSEN profile, whole. the user 2026-09-24: "remove
-        # scheduled completely" -- mail no longer degrades to a read-only
-        # floor. Nobody is here to answer a modal, so only a CONFIRM becomes a
-        # refusal (`_authorize_action`, tool_policy.UNATTENDED_SOURCES), and
-        # the model is told that rule up front so it plans around it instead
-        # of retrying.
+        # The turn keeps the CHOSEN profile, whole. Mail no longer degrades to
+        # a read-only floor. A CONFIRM follows the seat's existing route: a
+        # spawner or host can answer, while an unrelayed unattended turn refuses.
+        # Tell the model that actual route before it plans around the action.
         # T1027: the SEAT's profile (a launch flag outranks the file); accept_prompt
         # narrows it again at the moment the turn starts.
         profile = seat_authority.seat_profile(self)
         content = text
         if tool_policy.PROFILES.get(profile) and tool_policy.PROFILES[profile].confirm:
-            content = f"{text}\n\n{tool_policy.INBOX_TURN_RULE}"
+            route = seat_authority.confirm_route(self)
+            rule = tool_policy.inbox_turn_rule(route, getattr(self, "_spawner_id", None))
+            content = f"{text}\n\n{rule}"
         if self._chat_running():
             # HELD, never appended: an appended mid-turn message lands where
             # nothing announces it and the model trusts its inbox tool over its

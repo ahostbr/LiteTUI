@@ -248,6 +248,18 @@ INBOX_TURN_RULE = (
 )
 
 
+def inbox_turn_rule(route: str, spawner_id: str | None = None) -> str:
+    """Tell an inbox-woken seat where its existing CONFIRM route actually leads."""
+    if route in ("spawner", "host"):
+        destination = spawner_id if route == "spawner" and spawner_id else "your host"
+        return (
+            "[This turn came from the inbox; nobody is at the keyboard. Act normally. "
+            "Anything that needs approval will be sent to " + destination +
+            " for approval; attempt it and wait for the answer.]"
+        )
+    return INBOX_TURN_RULE
+
+
 def unattended_refusal(decision: PolicyDecision) -> str:
     """The sentence an unattended turn gets instead of a modal. The rest of the
     turn proceeds; the model is told to leave the action for a person."""
