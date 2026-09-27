@@ -670,14 +670,98 @@ def _outside_workspace(raw: str, workspace: Path) -> bool:
     return not _inside(_resolve_path(raw, workspace), Path(workspace).resolve())
 
 
+# This scanner is a conservative VIEW for the danger table, not a shell parser.
+# Inert single-quoted arguments disappear, separators in double-quoted data
+# cannot manufacture command positions, but $() and backticks within double
+# quotes are recursively scanned as executable command text. Unknown/unclosed
+# quoting returns the original span (fail CLOSED, never grant it data status).
+_REAL_COMMAND = re.compile(
+    r"(?ix)(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*|\s(?:-c|-command|/c)\s+)$"
+)
+_COMMAND_PAYLOAD = re.compile(r"(?i)(?:^|\s)(?:-c|-command|/c)\s+$")
+
+
+def _command_view(command: str) -> str:
+    def scan(start: int, end: str = "", double: bool = False, depth: int = 0) -> tuple[str, int, bool]:
+        # Beyond this bound, stop masking: unknown nesting is command text,
+        # never a reason to silently allow a dangerous word in an argument.
+        if depth >= 32:
+            return command[start:], len(command), False
+        out: list[str] = []
+        i = start
+        while i < len(command):
+            ch = command[i]
+            if ch == "\\" and i + 1 < len(command):
+                # Bash treats backslash-quote as escaped, PowerShell does not.
+                # For a double-quoted span containing it, keep the WHOLE span
+                # as command text rather than risk masking a real PS command.
+                if double and command[i + 1] == '"':
+                    return "".join(out) + command[i:], len(command), False
+                out.append(command[i:i + 2])
+                i += 2
+                continue
+            if end and ch == end:
+                return "".join(out), i + 1, True
+            if ch == "'" and not double:
+                payload = bool(_COMMAND_PAYLOAD.search("".join(out)))
+                bash_ansi_command = i > 0 and command[i - 1] == "$" and _REAL_COMMAND.search("".join(out[:-1]))
+                j = i + 1
+                while j < len(command) and command[j] != "'":
+                    # Bash single quotes have NO escape syntax: backslash is literal.
+                    j += 1
+                if j == len(command):
+                    return "".join(out) + command[i:], len(command), False
+                quoted = command[i:j + 1]
+                if payload:
+                    out.append('"' + command[i + 1:j] + '"')  # quoted -c / -Command is executable code
+                elif bash_ansi_command:
+                    out.append(";" + command[i + 1:j])  # bash $'rm' can name a command
+                elif _REAL_COMMAND.search("".join(out)):
+                    out.append(quoted)  # e.g. 'format' C: is a real executable token
+                else:
+                    out.append(" " * len(quoted))
+                i = j + 1
+                continue
+            if ch == '"':
+                payload = bool(_COMMAND_PAYLOAD.search("".join(out)))
+                inner, after, closed = scan(i + 1, '"', not payload, depth + 1)
+                if not closed:
+                    return "".join(out) + command[i:], len(command), False
+                out.append('"' + inner + '"')
+                i = after
+                continue
+            if ch == "$" and command[i:i + 2] == "$(":
+                inner, after, closed = scan(i + 2, ")", depth=depth + 1)
+                if not closed:
+                    return "".join(out) + command[i:], len(command), False
+                out.append("$(" + inner + ")")
+                i = after
+                continue
+            if ch == "`":
+                inner, after, closed = scan(i + 1, "`", depth=depth + 1)
+                if not closed:
+                    return "".join(out) + command[i:], len(command), False
+                # A backtick substitution starts a fresh command even inside
+                # double quotes. The semicolon is a command-position marker.
+                out.append(";" + inner + " ")
+                i = after
+                continue
+            out.append(" " if double and ch in ";&|" else ch)
+            i += 1
+        return "".join(out), i, not end
+
+    return scan(0)[0]
+
+
 def danger(command: str, workspace: Path) -> str | None:
     """The danger CLASS of a shell command, or None when it is ordinary."""
-    unwrapped = _unwrap_command_verbs(command)
+    view = _command_view(command)
+    unwrapped = _unwrap_command_verbs(view)
     for label, pattern in _DANGER:
-        if pattern.search(command) or (unwrapped != command and pattern.search(unwrapped)):
+        if pattern.search(view) or (unwrapped != view and pattern.search(unwrapped)):
             return label
     for pattern in (_SCRIPT_RUN, _PATH_RUN):
-        for match in pattern.finditer(command):
+        for match in pattern.finditer(view):
             if _outside_workspace(match.group("path"), workspace):
                 return FOREIGN_PROCESS
     return None

@@ -146,6 +146,51 @@ def test_command_position_normalization_does_not_promote_arguments_or_lose_hits(
     assert tp.danger(command, WS) == label, command
 
 
+@pytest.mark.parametrize("command", [
+    "echo 'note; rm -rf build'",
+    "printf 'note; format C:'",
+    "echo 'a | kill 5'",
+    "printf 'note; \"format\" C:'",  # T1098's quoted-command unwrapping
+    'echo "note; rm -rf build"',
+    'echo "note | kill 5"',
+])
+def test_t1099_quoted_data_separators_are_not_command_positions(command):
+    assert tp.danger(command, WS) is None, command
+    assert _shell(command).action == tp.ALLOW, command
+
+
+@pytest.mark.parametrize("command,label", [
+    ('echo ok; "format" C:', tp.DANGEROUS),
+    ('echo ok; rm -rf build', tp.DELETION),
+    ('echo "x $(rm -rf build)"', tp.DELETION),
+    ('echo "$(Remove-Item x)"', tp.DELETION),
+    ('echo "`kill 5`"', tp.DANGEROUS),
+    ('echo "`echo $(rm -rf build)`"', tp.DELETION),
+    ('echo "$(echo `kill 5`)"', tp.DANGEROUS),
+    ('echo "$(echo \')\' ; rm -rf x)"', tp.DELETION),
+    ("echo 'note; rm -rf build", tp.DELETION),  # unterminated quote: fail closed
+    ('echo "note; format C:', tp.DANGEROUS),
+    ('Write-Output "foo\\"; Remove-Item x; Write-Output "bar"', tp.DELETION),
+    ('Write-Output "foo\\"; rm -rf build; Write-Output "bar"', tp.DELETION),
+    ('echo "a \\"; rm -rf build"', tp.DELETION),  # conservative union: Bash-only false prompt accepted
+    ("echo \\'ok; rm -rf build", tp.DELETION),  # escaped quote outside does not start it
+    ('bash -c "echo ok; rm -rf build"', tp.DELETION),
+    ('sh -c "echo ok; format C:"', tp.DANGEROUS),
+    ('powershell -Command "echo ok; format C:"', tp.DANGEROUS),
+    ("bash -c 'echo ok; rm -rf build'", tp.DELETION),
+    ("sh -c 'echo ok; format C:'", tp.DANGEROUS),
+    ("powershell -Command 'echo ok; format C:'", tp.DANGEROUS),
+    ('cmd /c "echo ok; format C:"', tp.FOREIGN_PROCESS),
+    ("cmd /c 'echo ok; format C:'", tp.FOREIGN_PROCESS),
+    ("$'rm' -rf build", tp.DELETION),
+    ("echo 'a\\' ; rm -rf build; echo 'done'", tp.DELETION),
+    ("echo 'a\\' ; format C:; echo 'done'", tp.DANGEROUS),
+])
+def test_t1099_executable_content_and_fail_closed_quotes_stay_dangerous(command, label):
+    assert tp.danger(command, WS) == label, command
+    assert _shell(command).action == tp.CONFIRM, command
+
+
 def test_powershell_call_operator_on_quoted_executable_still_prompts():
     # A launch may retain FOREIGN_PROCESS, or the normalized disk-wipe label.
     command = "& 'format.com' C:"
