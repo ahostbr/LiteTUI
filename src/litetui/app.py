@@ -974,19 +974,6 @@ class LiteTUI(App):
         padding-right: 1;
         background: $footer-background;
     }
-    .footer-buttons {
-        dock: right;
-        width: auto;
-        height: 1;
-        background: $footer-background;
-    }
-    .palette-button {
-        width: auto;
-        padding: 0 2 0 1;
-        background: $footer-background;
-        text-style: bold;
-    }
-
     .pause-button {
         width: auto;
         padding: 0 1;

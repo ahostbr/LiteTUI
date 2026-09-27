@@ -88,7 +88,7 @@ async def test_footer_glyphs_are_measured_the_way_a_terminal_draws_them() -> Non
     a = make_app()
     async with a.run_test(size=(120, ROWS), headless=False) as pilot:
         await pilot.pause(0.5)
-        labels = [str(a.query_one(".palette-button").content)]
+        labels = [str(w.content) for w in a.query(".pause-button, .mic-button")]
     labels += [widgets.PauseButton.LABEL_RUN, widgets.PauseButton.LABEL_PAUSED,
                widgets.MicButton.LABEL_IDLE, widgets.MicButton.LABEL_REC]
     for label in labels:
