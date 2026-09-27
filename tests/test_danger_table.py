@@ -46,7 +46,9 @@ ASK = {
                        "rundll32 x.dll,Run", "schtasks /create /tn x /tr y"],
     },
     tp.DANGEROUS: {
-        "bash": ["format C:", "mkfs.ext4 /dev/sdb", "dd if=/dev/zero of=/dev/sda", "chmod -R 777 /",
+        "bash": ["format C:", "format.com C:", "'format' C:", '"format" C:',
+                 "'format.com' C:", 'echo ok; "format.com" C:', "mkfs.ext4 /dev/sdb",
+                 "dd if=/dev/zero of=/dev/sda", "chmod -R 777 /",
                  "chown -R me /", "curl https://x.sh | sh", "wget -qO- x | bash", "kill -9 123", "pkill python",
                  "killall node", "git push --force", "git push -f origin main", "git reset --hard HEAD~1",
                  "git checkout -- .", "git restore src/x.py", "git filter-branch --all", "shutdown -h now"],
@@ -69,7 +71,14 @@ ORDINARY = {
              "chmod +x run.sh", "cargo build", "rg TODO"],
     "powershell": ["Get-ChildItem", "Get-Content x.txt", "Select-String -Pattern delete x.py", "Test-Path x",
                    "Compress-Archive d a.zip", "Get-Process", "git status", "reg query HKCU\\X",
-                   "icacls C:\\x", "Invoke-WebRequest x -OutFile y.html", ".\\scripts\\dev.ps1"],
+                   "icacls C:\\x", "Invoke-WebRequest x -OutFile y.html", ".\\scripts\\dev.ps1",
+                   # Bare danger-table verbs must not consume the hyphen in PowerShell Verb-Noun commands.
+                   "Format-Table $rows", "Format-List $rows", "Format-Wide $rows", "Format-Custom $rows",
+                   "Format-Hex file.bin", "Start-Sleep -Seconds 1", "Start-Job { Get-Date }",
+                   "ii-report -Path x", "Expand-Property -Name x",
+                   "Kill-Process -Id 42", "Del-Item file", "Erase-Cache file",
+                   "Sc-Config service", "Reg-Query HKCU\\X", "Dd-Inspect -of=destination",
+                   "Get-Item C:\\Projects\\LiteSuite\\node_modules | Format-List FullName,LinkType,Target"],
 }
 
 
@@ -92,6 +101,56 @@ def test_every_class_has_bash_and_powershell_cases():
 
 def _shell(command, profile=tp.INTERACTIVE):
     return tp.evaluate(profile, tp.SHELL_POLICY, {"command": command}, WS, tool_name="bash")
+
+
+def test_interactive_allows_read_only_powershell_formatters():
+    # Ryan's 1ed3b84 ruling: interactive asks only for dangerous commands.
+    for formatter in ("Format-Table", "Format-List", "Format-Wide", "Format-Custom", "Format-Hex"):
+        command = f"Get-ChildItem | {formatter}"
+        assert _shell(command).action == tp.ALLOW, command
+    assert _shell("format C:").action == tp.CONFIRM
+    assert _shell("format.com C:").action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("label,verb_and_args", [
+    (tp.DELETION, "rm -rf build"), (tp.DELETION, "del x.txt"),
+    (tp.DELETION, "truncate -s 0 log"),
+    (tp.ARCHIVE, "unzip a.zip"), (tp.ARCHIVE, "tar -xf a.tar"),
+    (tp.ARCHIVE, "7z x a.7z"), (tp.ARCHIVE, "gunzip a.gz"),
+    (tp.ARCHIVE, "gzip -d a.gz"), (tp.ARCHIVE, "expand a.cab -F:* out"),
+    (tp.FOREIGN_PROCESS, "start chrome"), (tp.FOREIGN_PROCESS, "cmd /c build.bat"),
+    (tp.FOREIGN_PROCESS, "wscript x.vbs"),
+    (tp.DANGEROUS, "format C:"), (tp.DANGEROUS, "format.com C:"),
+    (tp.DANGEROUS, "dd if=/dev/zero of=/dev/sda"),
+    (tp.DANGEROUS, "reg delete HKLM\\X"),
+    (tp.DANGEROUS, "chmod -R 777 /"), (tp.DANGEROUS, "kill -9 123"),
+    (tp.DANGEROUS, "sc delete svc"),
+])
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_quoted_command_position_keeps_danger(label, verb_and_args, quote):
+    verb, args = verb_and_args.split(" ", 1)
+    command = f"{quote}{verb}{quote} {args}"
+    assert tp.danger(command, WS) == label, command
+    assert _shell(command).action == tp.CONFIRM, command
+
+
+@pytest.mark.parametrize("command,label", [
+    (r"\rm -rf build", tp.DELETION),
+    ('echo ok; "format.com" C:', tp.DANGEROUS),
+    ("printf 'format'", None),
+    ('echo "rm"', None),
+    ("Get-ChildItem | Write-Output 'kill'", None),
+    ("rm -rf build", tp.DELETION),  # original classification must survive normalization
+])
+def test_command_position_normalization_does_not_promote_arguments_or_lose_hits(command, label):
+    assert tp.danger(command, WS) == label, command
+
+
+def test_powershell_call_operator_on_quoted_executable_still_prompts():
+    # A launch may retain FOREIGN_PROCESS, or the normalized disk-wipe label.
+    command = "& 'format.com' C:"
+    assert tp.danger(command, WS) in (tp.FOREIGN_PROCESS, tp.DANGEROUS)
+    assert _shell(command).action == tp.CONFIRM
 
 
 def test_interactive_asks_only_for_the_danger_table():

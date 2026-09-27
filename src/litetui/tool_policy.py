@@ -497,6 +497,23 @@ def classify_write(args: Mapping[str, object], workspace: Path, *, active_conver
 _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
                  r"|\s(?:-c|-command|/c)\s+[\"'])")
 
+#: T1098 — reuse the SAME command-position definition as every `_C` danger
+#: row. A shell can execute 'format', "rm" or \rm; only the executable token
+#: at a command position is unwrapped, never a quoted argument to printf/echo.
+_QUOTED_COMMAND = re.compile(
+    r"(?ix)" + _CMD_POSITION
+    + r"(?:(?P<slash>\\)(?P<bare>[a-z0-9][\w.-]*)|"
+    + r"(?P<quote>['\"])(?P<quoted>[a-z0-9][\w.-]*)(?P=quote))(?=[\s;&|()]|$)"
+)
+
+
+def _unwrap_command_verbs(command: str) -> str:
+    def unwrap(match: re.Match[str]) -> str:
+        prefix_group, verb_group = ("slash", "bare") if match.group("slash") else ("quote", "quoted")
+        return command[match.start():match.start(prefix_group)] + match.group(verb_group)
+
+    return _QUOTED_COMMAND.sub(unwrap, command)
+
 #: 🔴 EVERY MATCH IS NOW AN UNSKIPPABLE PROMPT, so this pattern is held to
 #: BOTH polarities. Before the floor a false positive cost an extra confirm
 #: on a profile that was already confirming; after it, no profile can
@@ -509,6 +526,11 @@ _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
 #:   `npm run format:check`, `git log --format=%h` and `printf 'format'`.
 #:   `format` now has to be at a command position; a disk wipe is
 #:   `format C:`, never the third word of a script name.
+#:
+#:   T1094, Ryan 1ed3b84: interactive asks only for dangerous commands.
+#:   Python's `\b` accepts the hyphen in PowerShell Verb-Noun names as an end
+#:   of word: Format-Table, Kill-Process and Del-Item were false prompts.
+#:   Bare command names must end before both word characters AND hyphens.
 #:
 #:   MISSES, FIXED. `rm -rf` with no target (the trailing `\s+` made the
 #:   argument mandatory) and the long flags `rm --recursive --force`. Both
@@ -568,7 +590,7 @@ UNDECLARED = "a tool whose effects aren't declared"
 
 DANGER_TABLE: tuple[tuple[str, str], ...] = (
     # ── A. deletion ─────────────────────────────────────────────────────────
-    (DELETION, _C + r"(?:rm|del|erase|rmdir|rd|ri|unlink|shred)\b"),
+    (DELETION, _C + r"(?:rm|del|erase|rmdir|rd|ri|unlink|shred)(?![\w-])"),
     (DELETION, r"\b(?:remove-item|rimraf)\b"),
     (DELETION, (r"\bgit\s+(?:clean\b|rm\b(?![^;&|]*--cached)|worktree\s+remove\b"
                 r"|branch\s+(?:[^;&|]*\s)?(?:-[a-z]*d[a-z]*|--delete)\b)")),
@@ -594,7 +616,7 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
     (FOREIGN_PROCESS, _C + r"(?:wscript|cscript|mshta|rundll32|regsvr32|msiexec|runas|psexec(?:64)?)\b"),
     (FOREIGN_PROCESS, r"\bschtasks\b[^;&|]*/create\b|\bregister-scheduledtask\b"),
     # ── D. dangerous system commands ─────────────────────────────────────────
-    (DANGEROUS, _C + r"format(?:\.com)?\b"),
+    (DANGEROUS, _C + r"format(?:\.com)?(?![\w-])"),
     (DANGEROUS, r"\b(?:diskpart|bcdedit|takeown)\b|\bmkfs(?:\.[a-z0-9]+)?\b"),
     (DANGEROUS, _C + r"dd\s+(?:[^;&|]*\s)?of="),
     (DANGEROUS, r"\bvssadmin\s+delete\b|\bcipher(?:\.exe)?\s+/w\b|\bwevtutil\s+cl\b|\bclear-eventlog\b"),
@@ -606,7 +628,7 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
     (DANGEROUS, r"\b(?:curl|wget)\b[^;]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b"),
     (DANGEROUS, r"\b(?:iex|invoke-expression)\b"),
     (DANGEROUS, r"\b(?:shutdown|restart-computer|stop-computer)\b"),
-    (DANGEROUS, _C + r"(?:kill|pkill|killall|taskkill|tskill)\b|\bstop-process\b"),
+    (DANGEROUS, _C + r"(?:kill|pkill|killall|taskkill|tskill)(?![\w-])|\bstop-process\b"),
     (DANGEROUS, r"\bgit\s+push\b[^;&|]*(?:\s--force(?:-with-lease)?\b|(?-i:\s-f\b)|\s\+\S)"),
     (DANGEROUS, r"\bgit\s+(?:reset\s+--hard\b|checkout\s+--\s|filter-branch\b|filter-repo\b|reflog\s+expire\b)"),
     (DANGEROUS, (r"\bgit\s+restore\b(?:"
@@ -638,8 +660,9 @@ def _outside_workspace(raw: str, workspace: Path) -> bool:
 
 def danger(command: str, workspace: Path) -> str | None:
     """The danger CLASS of a shell command, or None when it is ordinary."""
+    unwrapped = _unwrap_command_verbs(command)
     for label, pattern in _DANGER:
-        if pattern.search(command):
+        if pattern.search(command) or (unwrapped != command and pattern.search(unwrapped)):
             return label
     for pattern in (_SCRIPT_RUN, _PATH_RUN):
         for match in pattern.finditer(command):
