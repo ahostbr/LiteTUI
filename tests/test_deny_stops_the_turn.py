@@ -98,16 +98,18 @@ class _ToolCallStream:
 def _app(answer, iterations: int = 3):
     """A LiteTUI whose one tool needs confirmation, answered with `answer`."""
     a = app_mod.LiteTUI()
-    # Same reason as test_tool_approval: this file is ABOUT the deny path,
-    # which only exists under a confirm profile. T084's default never asks.
-    a.settings.tool_policy_profile = app_mod.tool_policy.INTERACTIVE
-    # BOTH, because `_active_tool_profile` is stamped from settings at
-    # CONSTRUCTION and `_execute_tool` reads that, not the settings field.
-    # Setting only the settings value leaves the door on the old profile.
-    a._active_tool_profile = app_mod.tool_policy.INTERACTIVE
+    # STRICT, because this file is ABOUT the deny path, which only exists when
+    # the probe CONFIRMs. INTERACTIVE stopped confirming ordinary shell in
+    # 5e3c7be (2026-09-19), and Ryan's ruling in 1ed3b84 (2026-09-24) made it
+    # ask only for the danger table, so `git status` never asks there. STRICT
+    # still confirms process_execution.
+    # BOTH fields: `_execute_tool` reads `_active_tool_profile`, and the fresh
+    # Settings below would otherwise carry the AUTONOMOUS default.
+    a._active_tool_profile = app_mod.tool_policy.STRICT
     a.settings = Settings(
         tools_enabled=True,
         tool_iterations=iterations,
+        tool_policy_profile=app_mod.tool_policy.STRICT,
         autocompact_enabled=False,
         wake_after_compact=False,
         clear_screen_after_compact=False,
@@ -147,7 +149,12 @@ def _app(answer, iterations: int = 3):
         return _ToolCallStream(rounds["n"])
 
     a._create = create
-    return a
+    # WS3 b5f1f40: local LM Studio inference is refused before any HTTP, and this
+    # app boots on LM Studio (conftest pins LITETUI_BACKEND), so every turn died
+    # "BLOCKED" in the error widget before the tool loop -- even the approve
+    # control ran 0 times. See test_compaction_ui.off_local_lm_studio.
+    from test_compaction_ui import off_local_lm_studio
+    return off_local_lm_studio(a)
 
 
 async def _settle(a, pilot, extra: int = 10):
