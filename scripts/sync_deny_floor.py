@@ -1,10 +1,12 @@
-"""Copy the canonical deny floor from liteharness-oss into LiteTUI.
+"""Copy the canonical deny floor (T1026) and fleet floor (T1043) from
+liteharness-oss into LiteTUI: one rule set each, kept byte-identical.
 
     python scripts/sync_deny_floor.py [path/to/liteharness-oss]
 
 Source, first that exists: the argument, $LITEHARNESS_SRC, then the first
 `liteharness-oss` checkout beside this one or beside any parent of it.
-tests/test_deny_floor.py fails while the two files differ.
+tests/test_deny_floor.py and tests/test_fleet_floor_t1043.py fail while a
+copy differs from its canonical file.
 """
 import os
 import shutil
@@ -12,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "src" / "litetui" / "deny_floor.py"
+SHARED = ("deny_floor.py", "fleet_policy.py")
 
 
 def sibling(explicit: str | None = None) -> Path | None:
@@ -25,14 +27,16 @@ def sibling(explicit: str | None = None) -> Path | None:
     return None
 
 
-def canonical(explicit: str | None = None) -> Path | None:
+def canonical(explicit: str | None = None, name: str = "deny_floor.py") -> Path | None:
     repo = sibling(explicit)
-    return repo / "liteharness" / "deny_floor.py" if repo else None
+    return repo / "liteharness" / name if repo else None
 
 
 if __name__ == "__main__":
-    source = canonical(sys.argv[1] if len(sys.argv) > 1 else None)
-    if source is None or not source.is_file():
-        sys.exit(f"no liteharness/deny_floor.py at {source}; pass the repo path")
-    shutil.copyfile(source, TARGET)
-    print(f"{source} -> {TARGET}")
+    for name in SHARED:
+        source = canonical(sys.argv[1] if len(sys.argv) > 1 else None, name)
+        if source is None or not source.is_file():
+            sys.exit(f"no liteharness/{name} at {source}; pass the repo path")
+        target = ROOT / "src" / "litetui" / name
+        shutil.copyfile(source, target)
+        print(f"{source} -> {target}")

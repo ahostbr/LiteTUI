@@ -129,12 +129,37 @@ def _turn_source(item) -> str:
     return "goal" if item.get("goal_continuation") else item.get("source", "queued")
 
 
-def accept_prompt(app, item):
+def refuse_below_floor(app, item) -> bool:
+    """T1043: True (and the item retained, said and reported) when the seat is
+    below the fleet floor. Nothing is appended and nothing reaches the model."""
+    why = seat_authority.floor_refusal(app, _turn_source(item))
+    if why is None:
+        return False
+    if not hasattr(app, "rejected_prompts"):
+        app.rejected_prompts = []
+    app.rejected_prompts.append({**item, "reason": why})
+    app._system(why)
+    emit = getattr(app, "_rpc_emit", None)
+    if emit is not None:
+        emit({"type": "turn_end", "stopReason": "fleet_floor"})
+    return True
+
+
+def accept_prompt(app, item, *, native_accepted=False) -> bool:
+    """Start this item's turn. False when the fleet floor refused it (T1043).
+
+    `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
+    the Codex app-server already holds: it was checked at HostSteering.admit, and
+    refusing it here would leave the transcript and the thread disagreeing. A
+    keyword, not item data, so no stored or forged state can reach the skip; and
+    accept_steered never starts a stream."""
+    if not native_accepted and refuse_below_floor(app, item):
+        return False
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
     # T1027: the ONE place a turn's authority is decided, for every source.
     # The producer's profile is only a request; the seat's flag and choice rule.
-    # T1043 adds `floor.check(seat_authority.resolve(app, source))` here.
+    # T1043: the fleet floor was checked above, before anything is appended.
     app._active_tool_profile = seat_authority.turn_profile(
         app, _turn_source(item), item.get("tool_profile"))
     app._hooks_suppressed = False
@@ -161,9 +186,13 @@ def accept_prompt(app, item):
     app._append(message)
     if not entry or entry["state"] == "accepted":
         _mark_delivered(item)
+    return True
 
 
 async def admit_prompt(app, item):
+    # T1043: before the prompt_before hooks, so no hook runs for a refused turn.
+    if refuse_below_floor(app, item):
+        return False
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
     app._stop_requested = False
@@ -173,7 +202,8 @@ async def admit_prompt(app, item):
                             profile=seat_authority.turn_profile(app, _turn_source(item), item.get("tool_profile")),
                             captured=ctx)
     if result.allowed and not app._stop_requested:
-        accept_prompt(app, item)
+        if not accept_prompt(app, item):
+            return False
         app._hook_turn_id = ctx["turn_id"]
         await drain_lifecycle(app)
         return True
@@ -186,14 +216,15 @@ async def admit_prompt(app, item):
 def start_prompt(app, item):
     entry = item.get("_codex_entry")
     if entry and entry.get("state") in ("admitted", "next_turn"):
-        accept_prompt(app, item)
+        if not accept_prompt(app, item):
+            return
         app._hook_turn_id = entry.get("admission", {}).get("turn_id", app._hook_turn_id)
         app._stream()
         return
     state = snapshot(app)
     if not state.hooks and not state.error:
-        accept_prompt(app, item)
-        app._stream()
+        if accept_prompt(app, item):
+            app._stream()
         return
 
     async def deliver():

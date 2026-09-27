@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from litetui import tool_policy
+from litetui import fleet_policy, tool_policy
 
 #: Turn sources that carry a profile to be narrowed against the seat.
 NARROWING_SOURCES = frozenset({"harness", "child-result", "goal"})
@@ -78,7 +78,76 @@ def resolve(app, source: str = "typed", requested: str | None = None) -> Effecti
     return Effective(
         backend=getattr(getattr(app, "backend", None), "name", None),
         model=getattr(app, "model_id", None) or None,
-        thinking_level=getattr(app, "thinking_level", None),
+        # The same expression T1025 reports in presence (_sync_seat_resolution),
+        # so the seat and the spawner's verify_seat judge ONE value.
+        thinking_level=(getattr(app, "_cli_effective_thinking", None)
+                        or getattr(app, "_thinking_level", None)),
         profile=turn_profile(app, source, requested),
         source=source,
     )
+
+
+# ── T1043: the fleet floor, enforced by the SEAT on every turn ──────────────
+#
+# Ryan (2026-09-26 17:5x): "this MUST NEVER happen again" (a codex seat ran
+# gpt-5.6-sol at medium). Every spawn-time check is a snapshot: a reconnect onto
+# the pin, a LITETUI_NO_HARNESS seat, a /model or /think after launch. Only the
+# seat sees every turn. The rule set is liteharness's own (fleet_policy.py, a
+# byte-identical copy — scripts/sync_deny_floor.py).
+
+
+def floor_applies(app, source: str) -> bool:
+    """Which turns the fleet floor governs: EVERY source, Ryan's own attended
+    typed turns included — the safe default for "must never happen again"
+    (Marquee 7d1e2cd3, Sentinel a9aa4df0). Ryan rules the scope; if he exempts
+    his own instance's typed turns, this is the one line, keyed on the absence of
+    harness.SPAWN_IDENTITY_MARKER."""
+    return True
+
+
+def seat_policy(app) -> tuple[dict, str]:
+    """(policy, where). ⚠️ ASYMMETRIC WITH THE SPAWN PATH ON PURPOSE (Marquee
+    7d1e2cd3): a malformed policy file refuses every SPAWN (fleet_policy.check),
+    but here it falls back to the module's own DEFAULT_POLICY — Ryan's ruled
+    floor — with one loud warning. Refusing every turn would lock Ryan out of his
+    own LiteTUI, local models included, over a typo in a JSON file."""
+    try:
+        return fleet_policy.load()
+    except fleet_policy.PolicyError as exc:
+        if getattr(app, "_fleet_policy_warned", None) != str(exc):
+            app._fleet_policy_warned = str(exc)
+            say = getattr(app, "_system", None)
+            if say is not None:
+                say(f"⚠ {exc} This seat enforces the BUILT-IN default floor until it is fixed.")
+        return fleet_policy.DEFAULT_POLICY, f"the built-in default ({fleet_policy.policy_path()} is malformed)"
+
+
+def warn_if_below_floor(app) -> None:
+    """Said at connect and after launch flags apply, before anyone types.
+    Enforcement is per turn (hook_host.accept_prompt); this only makes a refusal
+    unsurprising. A function over `app`, like app._sync_seat_resolution, so
+    the many partial test hosts need no stub."""
+    why = floor_refusal(app)
+    say = getattr(app, "_system", None)
+    if why is not None and say is not None:
+        say("⚠ This seat is below the fleet floor, so every turn will be refused "
+            "until /model or /think meets it. " + why)
+
+
+def floor_refusal(app, source: str = "typed") -> str | None:
+    """None when this turn may run; otherwise the refusal text. Nothing is ever
+    substituted: a seat below the floor stops, it does not pick another model."""
+    if not floor_applies(app, source):
+        return None
+    policy, where = seat_policy(app)
+    seat = resolve(app, source)
+    governed = fleet_policy.floor_for(policy, seat.backend, seat.model)
+    if governed is None:
+        return None
+    name, floor = governed
+    why = fleet_policy.below_floor(name, floor, seat.model, seat.thinking_level)
+    if why is None:
+        return None
+    return (f"TURN REFUSED: {why} Policy: {where} (keys floors.{name}.models / "
+            f"min_model / min_thinking_level). Nothing was substituted and nothing "
+            f"was sent to the model.")

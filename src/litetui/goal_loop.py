@@ -324,6 +324,12 @@ def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
             "goal_continuation": True,
         })
         return
+    # T1043: this path calls _stream itself, so it meets the fleet floor itself.
+    from litetui import hook_host
+    if hook_host.refuse_below_floor(app, {"content": text, "text": text,
+                                          "tool_profile": state.tool_profile,
+                                          "goal_continuation": True}):
+        return
     app._user_bubble(text, False)
     app._append({"role": "user", "content": text})
     app._active_tool_profile = seat_authority.turn_profile(app, "goal", state.tool_profile)

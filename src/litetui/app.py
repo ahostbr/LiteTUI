@@ -4655,6 +4655,11 @@ class LiteTUI(App):
                 # already resident; it must be an explicit act, never a side
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
+                # T1043: a reconnect can land on the pin below the fleet floor.
+                # Launch flags are judged once they are applied (_apply_cli_args).
+                done = getattr(self, "_cli_args_done", None)
+                if done is None or done.is_set():
+                    seat_authority.warn_if_below_floor(self)
                 if resume_path is not None and hasattr(self.backend, "app_server"):
                     self._native_history_worker = self._refresh_native_history(resume_path)
                 self._startup_history_path = None
@@ -5066,6 +5071,7 @@ class LiteTUI(App):
             done = getattr(self, '_cli_args_done', None)
             if done is not None:
                 done.set()
+            seat_authority.warn_if_below_floor(self)
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -8495,8 +8501,8 @@ class LiteTUI(App):
         # model this app is usually pointed at. The rest ride the next round,
         # and rounds are plentiful.
         item = self._pending_input.pop(0)
-        hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
-        return True
+        # T1043: False when the fleet floor refused it (retained, not delivered).
+        return hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
 
     def _flush_pending_input(self) -> None:
         """Send the oldest held message once the chat group is idle.

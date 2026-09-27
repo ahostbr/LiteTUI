@@ -85,6 +85,10 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(listen_tool, "WORKDIR", tmp_path / "temp-working-dir")
     monkeypatch.setattr(listen_tool, "SERVER_LOG", tmp_path / "temp-working-dir" / "llama_server.log")
     monkeypatch.setattr(seat_guard, "BREADCRUMB", tmp_path / "suspended_seat.json")
+    # T1043: every turn meets the fleet floor, read from ~/.litesuite/fleet-policy.json
+    # (which EXISTS on the dev box). An absent path here = the built-in default,
+    # so the suite never depends on the developer's own policy file.
+    monkeypatch.setenv("LITESUITE_FLEET_POLICY", str(tmp_path / "fleet-policy.json"))
 
 
 @pytest.fixture(autouse=True)
