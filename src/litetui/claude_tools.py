@@ -15,7 +15,7 @@ NATIVE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "We
 HOST_TOOLS = frozenset({"chrome", "pccontrol", "studio", "listen", "harness", "convo_search", "skill", "view_image"})
 
 
-def _deadlines():
+def _deadlines(app=None):
     """(local decision deadline, hook timeout) — the second always outlives the first.
 
     🔴 THE MANDATORY GATE HAD A DEADLINE IT DID NOT SET AND COULD NOT SEE. An
@@ -32,9 +32,20 @@ def _deadlines():
     deadline, and our deadline always answers first. An expiry is a DENIAL
     with a stated reason, never a fall-through.
     """
-    from litetui.tool_approval import APPROVAL_TIMEOUT_S
+    from litetui.tool_approval import approval_timeout_s
 
-    decision = APPROVAL_TIMEOUT_S + 15.0
+    # T1049-B (clock C2): the SAME deadline the rpc approval uses, so the two cannot
+    # drift when a supervised child's is lifted. Unbounded (None) still needs a
+    # number for the SDK hook.
+    # ponytail: a day stands in for "no deadline"; a real None if the SDK takes one
+    base = approval_timeout_s() or 86400.0
+    if app is not None:
+        # Dijkstra K1(b): a seat that relays to its SPAWNER waits relay_approval_timeout_s
+        # (600 s by default), so this deadline must outlast it or it cuts the relay.
+        from litetui import approval_relay, seat_authority
+        if seat_authority.confirm_route(app) == "spawner":
+            base = max(base, approval_relay.timeout_s(app) + 60.0)
+    decision = base + 15.0
     return decision, decision + 45.0
 
 
@@ -134,7 +145,7 @@ class ClaudeTools:
         a denial with a reason — because the one thing the hook must never do
         is fail to reply.
         """
-        decision_s, _ = _deadlines()
+        decision_s, _ = _deadlines(self.app)
         task = asyncio.ensure_future(self.app._authorize_action(
             name, args, policy,
             profile=self.app._active_tool_profile,
@@ -218,7 +229,7 @@ class ClaudeTools:
 
             tools.append(tool(name, spec.get("description", name), spec.get("parameters", {"type": "object"}))(invoke))
         disabled = frozenset(self.app.settings.tools_disabled or ())
-        _, hook_s = _deadlines()
+        _, hook_s = _deadlines(self.app)
         return {
             "tools": [n for n in NATIVE_TOOLS if n not in disabled] if self.app.tools_enabled else [],
             "permission_mode": "default",

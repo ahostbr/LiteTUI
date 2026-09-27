@@ -14,7 +14,7 @@ below stops accidents (a stray or late reply), not a malicious local agent.
 
 Only an APPROVE continues. A DENY, no answer within `relay_approval_timeout_s`, and
 a spawner the registry does not know all STOP the turn, and every outcome is logged
-to runtime.jsonl as "approval_relay" (Marquee S1(b)).
+to runtime.jsonl as "approval_relay" (Marquee S1(b)), a cancelled wait included.
 """
 from __future__ import annotations
 
@@ -77,6 +77,9 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     future = asyncio.get_running_loop().create_future()
     pending = _pending(app)
     pending[ident] = (future, spawner)
+    # Dijkstra K1(c): logged in the finally, so a wait cancelled by Esc, stop() or
+    # the Claude bridge's deadline still leaves its line ("cancelled").
+    status = "cancelled"
     try:
         seat = getattr(app, "seat", None)
         # Unregistered means no inbox poller, so no answer could ever arrive. The
@@ -95,7 +98,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
                 status = "timeout"
     finally:
         pending.pop(ident, None)
-    record(app, status, name, source, ident)
+        record(app, status, name, source, ident)
     if status == "approved":
         app._system(f"{spawner[:8]} approved {name} ({ident})")
     return status
@@ -104,7 +107,9 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
 def take_answer(app, msg: dict) -> bool:
     """Consume `msg` only if it answers a PENDING request, from the agent that
     request went to. Anything else stays ordinary mail, so nothing is eaten."""
-    match = _ANSWER.match(str(msg.get("body") or ""))
+    # Dijkstra SHOULD: LiteSuite's orchestrator writes payload.text, not body.
+    text = msg.get("body") or (msg.get("payload") or {}).get("text") or ""
+    match = _ANSWER.match(str(text))
     if match is None:
         return False
     entry = _pending(app).get(match.group(2))

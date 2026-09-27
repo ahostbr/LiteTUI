@@ -357,6 +357,7 @@ async def stream_turn(app):
     app._active_turn_started_at = started
     app._stop_requested = False
     app._stop_reason = None
+    app._stop_cause = None
     app._turn_stop_line_settled = False
     app._turn_abandoned = False
     app.tps = None
@@ -593,7 +594,11 @@ async def stream_turn(app):
                     failure = event.detail or "Claude reported an error"
                 elif event.kind == "result":
                     terminal = True
-                    reason = "error" if event.is_error or failure else ("cancelled" if app._stop_requested else "stop")
+                    reason = "error" if event.is_error or failure else (
+                        ("approval" if getattr(app, "_stop_cause", None) == "approval" else "cancelled")
+                        if app._stop_requested else "stop")
+                    if reason == "approval":  # T1049-B2: the host reads why (Dijkstra 79e113ce (3))
+                        failure = app._stop_reason
                     ledger.update_delivery(entry_id, "terminal", stop_reason=reason)
                     if event.is_error:
                         failure = event.detail or event.text or failure or "Claude turn failed"

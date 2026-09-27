@@ -34,8 +34,15 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
         # parent might be in a tool round. The timer owns idle application.
         receipts.replay_from_inbox(parent, inbox=inbox, registry=registry)
 
+    # T1049-B: the child's CONFIRMs come back to THIS parent (plan §5, gate
+    # d47235da): Ryan's own parent asks him with no deadline, a locked parent its
+    # spawner. The child waits as long as its parent will.
+    from litetui import approval_relay, seat_authority
+    owner = seat_authority.confirm_route(app) == "own"
+    approval_timeout = 0 if owner else int(approval_relay.timeout_s(app)) + 60
     return await run_prepared_child(spec, process, registry=registry, inbox=inbox,
         parent=parent, child_id=child_id, workspace=workspace, data_root=data_root,
         branch=branch, evidence=evidence, supported_levels=supported_levels,
         notify=notify, limit=limit, timeout=timeout, parent_conversation=conversation,
-        prepare=prepare, before_start=before_start)
+        prepare=prepare, before_start=before_start,
+        on_approval=app.approve_for_child, approval_timeout=approval_timeout)

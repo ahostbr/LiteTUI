@@ -2670,7 +2670,39 @@ class LiteTUI(App):
         """Resolve a tool name across all three sources, static first."""
         return self.plugins.dispatch_for(name)
 
-    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True):
+    async def approve_for_child(self, event) -> bool:
+        """T1049-B2: a supervised child's tool_approval_requested, answered by THIS
+        parent's route (plan §5, gate Sentinel d47235da). Ryan's own parent asks
+        him with NO deadline: his modal, or his GUI host. A locked parent asks its
+        spawner by inbox, or its own host when it is itself supervised; a parent
+        with no route refuses. Every outcome is logged (operation "child")."""
+        name = str(event.get("tool") or "tool")
+        args = event.get("input")
+        decision = tool_policy.PolicyDecision(
+            tool_policy.CONFIRM, str(event.get("profile") or ""), frozenset(),
+            str(event.get("why") or "a supervised child asks"))
+        route = seat_authority.confirm_route(self)
+        if route == "spawner":
+            return await approval_relay.ask_spawner(self, name, args, decision, "child") == "approved"
+        if route == "refuse":
+            approval_relay.record(self, "no_spawner", name, "child")
+            return False
+        if self._rpc:
+            # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
+            answer = await tool_approval.approve_over_rpc(
+                self, name, args, decision, timeout=0 if route == "own" else None)
+        elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
+            from litetui.claude_turn import approval_dialog
+            answer = await approval_dialog(self, name, args, decision)
+        else:
+            answer = await show_dialog(
+                self, partial(ToolApprovalBody, name, args, decision),
+                modal_factory=partial(ToolApprovalScreen, name, args, decision))
+        approval_relay.record(self, "no_host" if answer is None else "approved" if answer else "denied",
+                              name, "child")
+        return bool(answer)
+
+    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False):
         """Shared policy and approval door for tools and hook processes."""
         decision = tool_policy.evaluate(
             # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
@@ -2715,10 +2747,14 @@ class LiteTUI(App):
                     return None
                 # Only an APPROVE continues on a relay path (Marquee S1(b)): an
                 # unattended turn that cannot get approval ends, rather than retry.
+                # REGARDLESS of stop_on_denial (Dijkstra K1(a)): the Claude bridge
+                # passes False and would otherwise let the turn go on. The ONE
+                # exemption is the hook Test button, which runs no turn.
                 reason = approval_relay.stop_line(self, name, status)
-                if stop_on_denial:
+                if not hook_test:
                     self._stop_requested = True
                     self._stop_reason = reason
+                    self._stop_cause = "approval"  # turn_end stopReason "approval" (B2)
                 return tool_denied("profile", name=name, reason=reason), False
             # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
             # refuse this ONE action in words, and let the rest of the turn go on.
@@ -2778,6 +2814,8 @@ class LiteTUI(App):
                 # otherwise reports "reached N tool iterations" for ANY early
                 # break — see _stop_reason.
                 self._stop_requested = True
+                if route == "host":  # a supervised child: its host reads the reason (B2)
+                    self._stop_cause = "approval"
                 if unanswered:
                     # SAY IT. A timeout that reads as "you denied" would tell
                     # the model a person refused, and a person who refused is
@@ -7903,6 +7941,7 @@ class LiteTUI(App):
         # Cleared with the flag it explains. A reason that outlived its turn
         # would attribute THIS turn's ending to the last turn's cause.
         self._stop_reason = None
+        self._stop_cause = None
         # A turn is starting, so nothing is abandoned any more. Cleared HERE
         # rather than where the ping reads it: a mark that only ever latched
         # would kill loop mode for the rest of the session after one Esc.
@@ -8590,7 +8629,15 @@ class LiteTUI(App):
                 final_tps=final_turn_tps,
                 stopped=True,
             )
-            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            # T1049-B2 (Dijkstra 79e113ce (3)): a stop caused by an approval outcome
+            # (a relay or a supervising host said no, or nobody answered) is its own
+            # stopReason carrying the reason, so a parent reports a FAILED child with
+            # it, never a bare "cancelled". An Esc stays "cancelled".
+            if getattr(self, "_stop_cause", None) == "approval":
+                self._emit_turn_end("approval", final_turn_tps, final_turn_tps_source,
+                                    error=self._stop_reason)
+            else:
+                self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
             return
 
         self._settle_turn_stop_line(
@@ -8919,6 +8966,7 @@ class LiteTUI(App):
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
             self._stop_reason = None
+            self._stop_cause = None
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()
@@ -8931,6 +8979,7 @@ class LiteTUI(App):
         # Keep _turn_abandoned: maintenance must not revive stopped user work.
         self._stop_requested = False
         self._stop_reason = None
+        self._stop_cause = None
         # Read-and-clear FIRST: the early returns below must also consume
         # the flag, or an aborted autocompact marks the next MANUAL one auto.
         auto = getattr(self, "_compact_is_auto", False)

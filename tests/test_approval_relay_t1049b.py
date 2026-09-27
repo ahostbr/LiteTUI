@@ -164,14 +164,18 @@ async def test_RELAY_an_unregistered_seat_cannot_relay(wire, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_RELAY_stop_on_denial_False_callers_get_the_refusal_without_a_stop(wire, tmp_path):
-    """The Claude native bridge (claude_tools) decides its own stop."""
+@pytest.mark.parametrize("hook_test, stops", [(False, True), (True, False)])
+async def test_RELAY_stops_even_for_stop_on_denial_False_and_only_a_hook_test_is_exempt(
+        wire, tmp_path, hook_test, stops):
+    """Dijkstra K1(a), REPLACING B1's arm that pinned the opposite: the Claude bridge
+    (claude_tools._decide) passes stop_on_denial=False, and a relay refusal must still
+    end its turn (Marquee S1(b)). The hook Test button runs no turn, so it alone does not."""
     a = _seat()
     state = wire(a, send_ok=False)
     a._hook_source = "scheduled"
     text, ok = await a._authorize_action("bash", DESTRUCTIVE, tool_policy.SHELL_POLICY,
-                                         workspace=tmp_path, stop_on_denial=False)
-    assert ok is False and not a._stop_requested
+                                         workspace=tmp_path, stop_on_denial=False, hook_test=hook_test)
+    assert ok is False and a._stop_requested is stops
 
 
 # ── accidents are not answers ───────────────────────────────────────────────

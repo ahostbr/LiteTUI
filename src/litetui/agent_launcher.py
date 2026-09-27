@@ -122,7 +122,8 @@ def validate_process_identity(event, *, owned_pid, probe=None):
         raise LaunchBlocked('Child identity unknown or PID reused')
     return True
 
-async def start_headless_child(spec, process, *, workspace, data_root, supported_levels, on_ready=None):
+async def start_headless_child(spec, process, *, workspace, data_root, supported_levels, on_ready=None,
+                               approval_timeout=None):
     """Wire validated hosted invocation to contained startup and authenticated RPC.
 
     Internal only: caller must prepare isolated workspace, persistent storage,
@@ -157,9 +158,14 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
             raise LaunchBlocked(str(exc)) from exc
         args += to_argv(options)
     try:
-        await process.start_python(module='litetui.cli', args=args, cwd=target,
-                                   env={'LITETUI_DATA_ROOT': str(root),
-                                        'LITETUI_AGENT_DEPTH': str(spec.child_depth)})
+        # T1049-B: this parent's supervisor answers the child's approvals
+        # (confirm_route "host"), on a deadline the parent sets: "0" = none (an
+        # owner parent, Ryan's keypress), else its relay timeout + 60 s.
+        env = {'LITETUI_DATA_ROOT': str(root), 'LITETUI_AGENT_DEPTH': str(spec.child_depth),
+               'LITETUI_APPROVAL_HOST': '1'}
+        if approval_timeout is not None:
+            env['LITETUI_APPROVAL_TIMEOUT_S'] = str(approval_timeout)
+        await process.start_python(module='litetui.cli', args=args, cwd=target, env=env)
         ready = await process.rpc_handshake(spec, workspace=str(target))
         if on_ready is not None:
             on_ready(ready)

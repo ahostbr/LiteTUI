@@ -31,6 +31,23 @@ from litetui.tool_policy import PolicyDecision, approval_preview
 #: host can show a countdown and does not have to guess when its answer
 #: stops being wanted.
 APPROVAL_TIMEOUT_S = 300.0
+#: T1049-B (plan S2, clock C1): set by agent_launcher.start_headless_child on a
+#: supervised child. "0" = no deadline (an OWNER parent's keypress, Sentinel
+#: d47235da: never a timeout-deny); otherwise the parent's relay timeout + 60 s.
+APPROVAL_TIMEOUT_ENV = "LITETUI_APPROVAL_TIMEOUT_S"
+
+
+def approval_timeout_s() -> float | None:
+    """This process's approval deadline; None = unbounded. Read at call time."""
+    import os
+    raw = os.environ.get(APPROVAL_TIMEOUT_ENV)
+    if raw is None or raw == "":
+        return APPROVAL_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return APPROVAL_TIMEOUT_S  # a malformed value keeps the bounded default
+    return None if value <= 0 else value
 
 
 
@@ -334,7 +351,9 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     # READ AT CALL TIME, not bound as a default: a module constant captured
     # in a signature cannot be changed by anything, including an arm that
     # needs the timeout to be short enough to measure.
-    timeout = APPROVAL_TIMEOUT_S if timeout is None else timeout
+    # T1049-B: None = this process's deadline (approval_timeout_s); <= 0 = none at
+    # all (an owner parent relaying a child's CONFIRM to Ryan's keypress).
+    timeout = approval_timeout_s() if timeout is None else (None if timeout <= 0 else timeout)
     approval_id = "appr-" + uuid4().hex[:12]
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
     _approval_registry(app)[approval_id] = fut
