@@ -82,8 +82,9 @@ def _find_filtered(words: list[str]) -> bool:
     """Does this find expression (lower-case, unquoted words) narrow its matches?
 
     Not narrowing: a negated test (`! -name x` keeps everything else, S1); a
-    pattern of wildcards only (R2); a -name/-iname pattern that matches a
-    protected folder's name (`-name .claude`, `-name '.c*'`, S2)."""
+    pattern of wildcards only (R2); a name or path pattern whose LAST segment
+    matches a protected folder's name (`-name .claude`, `-name '.c*'` S2;
+    `-path '*/.claude'` F-B)."""
     for i, word in enumerate(words):
         if i and words[i - 1] in ("!", "-not"):
             continue
@@ -91,13 +92,17 @@ def _find_filtered(words: list[str]) -> bool:
             pattern = words[i + 1] if i + 1 < len(words) else ""
             if re.fullmatch(r"[*?.+]*", pattern):
                 continue
-            if word in ("-name", "-iname") and any(
-                    fnmatch.fnmatchcase(name, pattern) for name in _PROTECTED_NAMES):
+            last = re.split(r"[\\/]", pattern)[-1]
+            if word not in ("-regex", "-iregex") and any(
+                    fnmatch.fnmatchcase(name, last) for name in _PROTECTED_NAMES):
                 continue
             return True
         if word in _FIND_FILTERS:
             return True
     return False
+
+
+
 #: A change of directory; the words after it name the new base.
 _CD = re.compile(
     r"(?i)(?<![\w.$-])(?:cd|chdir|pushd|set-location|sl|push-location)(?![\w.:\\-])")
@@ -156,17 +161,34 @@ def _unquote(word: str) -> str:
     return word.replace('"', "").replace("'", "").strip()
 
 
-def _separator(word: str) -> int:
-    """Index of the first `;`, `|` or `&` outside quotes, or -1."""
-    quote = ""
+def _outside_quotes(word: str, chars: str) -> list[int]:
+    """Indexes of `chars` in `word` that are not inside quotes."""
+    quote, hits = "", []
     for i, ch in enumerate(word):
         if quote:
             quote = "" if ch == quote else quote
         elif ch in "\"'":
             quote = ch
-        elif ch in ";|&":
-            return i
-    return -1
+        elif ch in chars:
+            hits.append(i)
+    return hits
+
+
+def _separator(word: str) -> int:
+    """Index of the first `;`, `|` or `&` outside quotes, or -1."""
+    hits = _outside_quotes(word, ";|&")
+    return hits[0] if hits else -1
+
+
+def _pieces(word: str) -> list[str]:
+    """A PowerShell comma array is ONE shell word: `'C:\\tmp\\x','C:\\Users\\u'`
+    (review 400014dd F-A). Split it on commas outside quotes, so every path in
+    it is judged; a word with no comma comes back whole."""
+    pieces, start = [], 0
+    for i in _outside_quotes(word, ","):
+        pieces.append(word[start:i])
+        start = i + 1
+    return pieces + [word[start:]]
 
 
 def _arguments(verb: str, rest: str):
@@ -187,28 +209,29 @@ def _arguments(verb: str, rest: str):
         token = token.rstrip(")")
         if token.count("}") > token.count("{"):
             token = token.rstrip("}")
-        low = _unquote(token).lower()
-        if not low or low in ("--", "{}"):
-            pass
-        elif verb == "find":
-            in_paths = in_paths and not (low.startswith("-") or low in ("(", "!"))
-            if in_paths:
-                targets.append(token)
+        for piece in _pieces(token):
+            low = _unquote(piece).lower()
+            if not low or low in ("--", "{}"):
+                pass
+            elif verb == "find":
+                in_paths = in_paths and not (low.startswith("-") or low in ("(", "!"))
+                if in_paths:
+                    targets.append(piece)
+                else:
+                    find_words.append(low)
+                    if low in ("-delete", "rm", "rmdir", "remove-item", "rimraf"):
+                        deletes = True
+            elif low.startswith("-"):
+                name, _, value = low.partition(":")
+                if (name == "--recursive" or ("recurse".startswith(name[1:]) and len(name) > 1)
+                        or (re.fullmatch(r"-[a-z]*r[a-z]*", name) and len(name) <= 4)):
+                    recursive = True
+                if value and value not in ("$true", "$false"):
+                    targets.append(piece.partition(":")[2])
+            elif verb in _CMD_VERBS and re.fullmatch(r"/[a-z]", low):
+                recursive = recursive or low == "/s"
             else:
-                find_words.append(low)
-                if low in ("-delete", "rm", "rmdir", "remove-item", "rimraf"):
-                    deletes = True
-        elif low.startswith("-"):
-            name, _, value = low.partition(":")
-            if (name == "--recursive" or ("recurse".startswith(name[1:]) and len(name) > 1)
-                    or (re.fullmatch(r"-[a-z]*r[a-z]*", name) and len(name) <= 4)):
-                recursive = True
-            if value and value not in ("$true", "$false"):
-                targets.append(token.partition(":")[2])
-        elif verb in _CMD_VERBS and re.fullmatch(r"/[a-z]", low):
-            recursive = recursive or low == "/s"
-        else:
-            targets.append(token)
+                targets.append(piece)
         if stop:
             break
     if verb == "find":
@@ -227,15 +250,16 @@ def _pipeline_source(before: str) -> list[str]:
     else:
         return []
     head = re.split(r"[;\n{(]|&&|\|\|", tail)[-1].split("|")[0]
-    words = [_unquote(w) for w in _TOKEN.findall(head)]
+    words = [_unquote(p) for w in _TOKEN.findall(head) for p in _pieces(w)]
     if words[:1] == ["find"] and _find_filtered([w.lower() for w in words]):
         # A filtered listing names only what matched, not its root -- except a
         # home-variable root, refused whatever narrows it (review a93de8a9 R1:
         # `find $HOME -type d -name .claude | xargs rm -rf` deletes ~/.claude).
         return [w for w in words[1:] if not w.startswith("-") and _normal(w) in HOME_VARIABLES]
-    paths = [w for w in words[1:] if not w.startswith("-")]
+    paths = [w for w in words[1:] if w and not w.startswith("-")]
     # A listing with no path lists the current folder (review 2be2a62c N2:
-    # `cd ~; ls | xargs rm -rf`); "." resolves against the tracked base.
+    # `cd ~; ls | xargs rm -rf`); "." resolves against the tracked base. Empty
+    # words (a lone quote) are dropped first, so "." still applies to them.
     return paths or ["."]
 
 
