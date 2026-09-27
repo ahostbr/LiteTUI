@@ -1720,6 +1720,13 @@ class LiteTUI(App):
         # (not spawned) is exempt from the fleet floor for the turns HE drives;
         # see seat_authority.floor_applies.
         self._spawned_marker = os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
+        # T1043 finding F: "not spawned" is NOT "Ryan's own" (fleet seats launched by
+        # typing `litetui` into a pane carry no marker). Ryan's own launchers set
+        # LITETUI_OWNER=1. POPPED, so no shell, tool or child of this process
+        # inherits it. PROCESS-ONLY, never saved per conversation: it says who is
+        # at the keyboard of THIS process, so a fleet agent that resumes one of
+        # Ryan's conversations is enforced.
+        self._owner_seat = os.environ.pop(harness_mod.OWNER_MARKER, "") == "1"
         #: Marker OR a conversation born spawned (convo "seat_spawned"; set on
         #: every open in _adopt_convo_settings). Dijkstra S1, T1043 cycle 2.
         self._spawned_seat = self._spawned_marker

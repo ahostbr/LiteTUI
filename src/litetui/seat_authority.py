@@ -155,6 +155,14 @@ def goal_source(state) -> str:
     return "goal-ryan" if getattr(state, "started_by", "") in RYAN_GOAL_ORIGINS else "goal"
 
 
+def is_owner(app) -> bool:
+    """Ryan's own launcher marked this process (LITETUI_OWNER=1, recorded at startup
+    as app._owner_seat). Unknown counts as NOT the owner: the floor is the default.
+    T1043 finding F (Dijkstra 90a4ba0c): "not spawned" read 102 of 105 convos on
+    disk as Ryan's own, fleet seats typed into panes included."""
+    return getattr(app, "_owner_seat", False)
+
+
 def is_spawned(app) -> bool:
     """A launcher spawned this seat (LITETUI_SPAWN_IDENTITY, recorded at startup
     as app._spawned_seat). Unknown counts as spawned: the floor is the default."""
@@ -165,7 +173,8 @@ def floor_applies(app, source: str) -> bool:
     """Which turns the fleet floor governs.
 
     RYAN, form 4 (verbatim, via Marquee 1e92852f): "no leave that unchanged no
-    warning nothing". So in HIS OWN instance (not spawned) the turns he drives
+    warning nothing". So in HIS OWN instance (owner-marked, LITETUI_OWNER, and not
+    spawned; finding F: unmarked is NOT his) the turns he drives
     are exempt, with no refusal and no warning. Every source in a spawned seat,
     and every UNATTENDED source even in his instance (inbox, cron/loop, goal,
     child-result, rpc from another process), stays enforced.
@@ -178,8 +187,8 @@ def floor_applies(app, source: str) -> bool:
     `litetui --rpc` could send it. Today only LiteGUI does (LiteGUI
     src/host/supervisor.ts:28). The exemption covers rpc only; inbox, cron, goal
     and child-result turns in the same instance stay enforced."""
-    if is_spawned(app):
-        return True
+    if is_spawned(app) or not is_owner(app):
+        return True   # spawned wins; and only Ryan's own launcher is exempt
     if source == "rpc":
         # ponytail: host claim via gui.hello; a real per-launch host token if anything but LiteGUI speaks it
         return not getattr(app, "_gui_rpc_enabled", False)
@@ -208,7 +217,7 @@ def warn_if_below_floor(app) -> None:
     Enforcement is per turn (hook_host.accept_prompt); this only makes a refusal
     unsurprising. A function over `app`, like app._sync_seat_resolution, so
     the many partial test hosts need no stub."""
-    if not is_spawned(app):
+    if is_owner(app) and not is_spawned(app):
         return  # Ryan, form 4: "no warning nothing" in his own instance
     why = floor_refusal(app)
     say = getattr(app, "_system", None)

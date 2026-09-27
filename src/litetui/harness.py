@@ -174,6 +174,10 @@ def new_agent_id() -> str:
 
 
 SPAWN_IDENTITY_MARKER = "LITETUI_SPAWN_IDENTITY"
+#: T1043 finding F: set to "1" ONLY by Ryan's own launchers. POSITIVE owner
+#: identification: an instance without it meets the fleet floor on every turn.
+#: Consumed at startup (app.__init__) so no shell or child inherits it.
+OWNER_MARKER = "LITETUI_OWNER"
 _SPAWN_IDENTITY_ENV = (
     "LITEHARNESS_AGENT_ID",
     "LITEHARNESS_AGENT_NAME",

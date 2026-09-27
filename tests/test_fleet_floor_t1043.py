@@ -382,8 +382,10 @@ def test_E1_the_fallback_is_UNREACHABLE_in_the_real_app():
 #    exempt with no text at all; unattended turns and spawned seats stay enforced.
 
 def _ryans(**kw):
+    """Ryan's own instance: not spawned AND owner-marked (LITETUI_OWNER, finding F)."""
     seat = _Seat(model="gpt-5.6-sol", thinking="medium", **kw)
     seat._spawned_seat = False
+    seat._owner_seat = True
     return seat
 
 
@@ -564,6 +566,7 @@ def _resumed(tmp_path, monkeypatch, marker):
     monkeypatch.setattr(_app_mod.llm_backend, "make_backend", lambda s: SimpleNamespace(name=s.backend))
     host = _BornHost(_st.Settings(backend="codex"), tmp_path, "codex")
     host._spawned_marker = marker
+    host._owner_seat = True          # resumed by Ryan's own (owner-marked) process
     host._adopt_convo_settings(born=False)
     host._model_id, host._thinking_level = "gpt-5.6-sol", "medium"
     return host
@@ -609,8 +612,9 @@ def _below_floor_backend():
 
 
 @pytest.mark.asyncio
-async def test_RYAN_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES():
+async def test_RYAN_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES(monkeypatch):
     """Drives the real _submit_text (held as "queued") and _flush_pending_input."""
+    monkeypatch.setenv("LITETUI_OWNER", "1")
     app = LiteTUI()
     app._connect = lambda: None
     assert app._spawned_seat is False
@@ -641,6 +645,7 @@ async def test_RYAN_a_mark_taken_while_BUSY_is_held_as_typed_then_PASSES(tmp_pat
     handoff.write_text(json.dumps({"x": 1, "y": 2, "mon": 0, "mon_x": 1, "mon_y": 2,
                                    "png": str(tmp_path / "fixture.png")}))
     monkeypatch.setattr("litetui.app.appsvc.load_image_file", lambda *a: "fixture-image")
+    monkeypatch.setenv("LITETUI_OWNER", "1")
     app = LiteTUI()
     app._connect = lambda: None
     async with app.run_test(size=(110, 40)):
@@ -802,3 +807,83 @@ async def test_GOAL_submit_scopes_the_command_origin_to_its_dispatch():
         app._submit_text("/goal ship it", alt_chord=False)
         assert seen == ["typed"]
         assert app._command_source is None
+
+
+# ── finding F (Dijkstra 90a4ba0c): POSITIVE owner identification ─────────────
+#    "not spawned" is not "Ryan's own": 102 of 105 convos on disk carry no marker,
+#    fleet seats launched by typing `litetui` into a pane included.
+
+def test_F_an_unmarked_NON_OWNER_instances_typed_turn_is_REFUSED():
+    """The case F found: a fleet seat typed into a pane (OpenBolt, CyanBrace, ...):
+    no spawn marker, no owner mark. Its --prompt / pane-typed turns meet the floor."""
+    seat = _Seat(model="gpt-5.6-sol", thinking="medium")
+    seat._spawned_seat = False           # no LITETUI_SPAWN_IDENTITY
+    _typed(seat)
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+def test_F_an_unmarked_non_owner_instances_goal_and_skill_are_REFUSED(monkeypatch):
+    from litetui.plugins import skills_plugin
+    monkeypatch.setattr(skills_plugin.skills_mod, "load", lambda skills, want: "do it")
+    seat = _Seat(model="gpt-5.6-sol", thinking="medium")
+    seat._spawned_seat = False
+    seat.skills, seat._user_bubble = [], (lambda *a, **k: None)
+    skills_plugin._invoke(seat, "demo")
+    seat._chat_running = lambda: False
+    goal_loop._deliver_goal_turn(seat, goal_loop.GoalState(objective="x", started_by="typed"), "go")
+    assert seat.streams == 0 and len([t for t in seat.said if "TURN REFUSED" in t]) == 2
+
+
+def test_F_the_connect_warning_is_said_in_an_unmarked_non_owner_instance():
+    seat = _Seat(model="gpt-5.6-sol", thinking="medium")
+    seat._spawned_seat = False
+    seat_authority.warn_if_below_floor(seat)
+    assert "every turn will be refused" in seat.said[-1]
+
+
+def test_F_OWNER_marked_AND_spawned_is_REFUSED_spawned_wins():
+    seat = _ryans()
+    seat._spawned_seat = True
+    _typed(seat)
+    assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
+
+
+def test_F_an_OWNER_marked_instance_keeps_every_exemption(monkeypatch):
+    """typed/queued/interrupted/wakes/codex-question/goal-ryan (the parametrized arm
+    covers each ATTENDED source), and here: hello'd rpc and /goal turn 2."""
+    seat = _ryans()
+    seat._gui_rpc_enabled = True
+    _typed(seat, "gui", source="rpc")
+    _typed(seat, "turn 2", source="goal-ryan")
+    assert seat.streams == 2 and _no_floor_text(seat), seat.said
+
+
+def test_F_the_app_CONSUMES_the_owner_mark(monkeypatch):
+    """Read once and popped: no shell, tool or child of Ryan's process inherits it."""
+    from litetui import harness
+    monkeypatch.setenv(harness.OWNER_MARKER, "1")
+    app = LiteTUI()
+    assert app._owner_seat is True
+    assert harness.OWNER_MARKER not in os.environ
+    assert LiteTUI()._owner_seat is False, "a launch without the mark read as Ryan's"
+
+
+def test_F_the_owner_mark_does_NOT_leak_into_a_managed_child(monkeypatch):
+    from litetui.agent_supervisor import child_process_env
+    monkeypatch.setenv("LITETUI_OWNER", "1")
+    assert "LITETUI_OWNER" not in child_process_env()
+    assert "LITETUI_OWNER" not in child_process_env({"LITETUI_OWNER": "1"}), (
+        "an explicit override re-granted ownership to a child")
+
+
+def test_F_the_owner_mark_is_PROCESS_ONLY_not_a_conversation_fact(tmp_path, monkeypatch):
+    """A fleet agent resuming one of Ryan's conversations is enforced: nothing about
+    ownership is written to .convos/<id>/settings.json."""
+    host = _BornHost(_st.Settings(backend="codex"), tmp_path, "codex")
+    host._spawned_marker, host._owner_seat = False, True
+    host._adopt_convo_settings(born=True)
+    raw = _cs.path_for(tmp_path).read_text(encoding="utf-8")
+    assert "owner" not in raw.lower()
+    fleet = _resumed(tmp_path, monkeypatch, False)
+    fleet._owner_seat = False            # a fleet process, not Ryan's launcher
+    assert seat_authority.floor_refusal(fleet, "typed") is not None
