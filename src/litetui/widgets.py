@@ -1196,29 +1196,8 @@ class ConfirmStop(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class PaletteButton(Static):
-    """The command palette's ONLY route, and the reason it is a mouse target.
-
-    the user, liteask a-5d6c1ca0 (2026-09-10 21:3x): "Keep plan on Ctrl+P, move the
-    palette -- palette via click only".
-
-    🔴 BEFORE THIS THE PALETTE HAD NO ROUTE AT ALL (T573). Textual opens it
-    from COMMAND_PALETTE_BINDING and nothing else -- nothing in this tree calls
-    `action_command_palette` or pushes the screen -- so when 9660da1 bound
-    ctrl+p to plan mode with priority=True, the binding did not override the
-    palette, it DELETED it. Fourteen of the fifteen arms in
-    tests/test_command_palette.py kept passing throughout, because they call the
-    provider rows directly; only the one that drives the real UI noticed.
-    A feature whose every route runs through one keybinding has no route at all
-    the day something else claims that key.
-    """
-
-    def on_click(self) -> None:
-        self.app.action_command_palette()
-
-
 class PauseButton(Static):
-    """/pause as a mouse target, next to the palette button (the user, 2026-09-18:
+    """/pause as a mouse target (the user, 2026-09-18:
     "add a onscreen button also kinda like the tool cancel one"). Same body as
     the command and the footer chip: `action_toggle_pause`, one definition."""
 
@@ -1269,43 +1248,22 @@ class MicButton(Static):
 class ContextFooter(Footer):
     """Textual's Footer plus a live context-window readout on the right."""
 
-    # NOT U+2630 (T1003). Rich sizes the trigram at 2 cells, a terminal draws it
-    # in 1, so every repaint that started mid-button tore it into "coommands".
-    PALETTE_LABEL = "≡ commands"
-
     def on_resize(self, _event) -> None:
-        """Re-fit after this footer has received its new layout width."""
-        palette_width = 12
-        buttons = list(self.query(".footer-buttons"))
-        button_width = max((button.size.width for button in buttons), default=0)
-        if button_width:
-            palette_width = button_width
-        self.app._footer_available_width = max(0, self.size.width - palette_width - 1)
+        """Refit the status line after layout changes."""
+        self.app._footer_available_width = max(0, self.size.width - 1)
         self.call_after_refresh(self.app._refresh_ctx_label)
 
     def compose(self) -> ComposeResult:
         yield from super().compose()
-        # CLASS, not id. Footer recomposes (Textual removes its children and
-        # re-runs compose), and a fixed `id` on a recomposed child raises
-        # DuplicateIds the moment the removal has not landed before the mount.
-        # That crashed the whole app; duplicate CLASSES are legal, so the worst
-        # case degrades to a stale label instead of a traceback.
-        label = Static("", classes="ctx-label")
         app = self.app
+        status = Static("", classes="ctx-label")
         if hasattr(app, "ctx_label_text"):
-            label.content = app.ctx_label_text
-        yield label
-        # AFTER the label, deliberately: two widgets docked to the same
-        # edge stack in compose order, so the one yielded LAST sits
-        # innermost -- and the label is the one that must keep the far
-        # right, where the context readout has always been.
-        # ONE docked container for both buttons. `dock: right` does not stack:
-        # a second right-docked sibling lands on the SAME cells and, composed
-        # last, wins the hit test - the palette button rendered and could not
-        # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
-        # Inside a Horizontal each button owns its own cells.
-        with Horizontal(classes="footer-buttons"):
-            yield PaletteButton(self.PALETTE_LABEL, classes="palette-button")
+            status.content = app.ctx_label_text
+        yield status
+        permission = Static("", classes="permission-label")
+        if hasattr(app, "permission_label_text"):
+            permission.content = app.permission_label_text
+        yield permission
 
 
 class LiteTUICommands(Provider):
@@ -1314,8 +1272,7 @@ class LiteTUICommands(Provider):
     The stock palette knows five Textual commands and nothing about this
     app — 90% of what LiteTUI does was undiscoverable from the palette before
     these rows existed. (It USED to open on ctrl+p; that key is plan mode since
-    T558, and the palette opens from the footer's "commands" button — the user,
-    liteask a-5d6c1ca0.) Each row
+    T558, and the palette opens by clicking Textual's HeaderIcon. Each row
     here carries the SAME command string the dispatcher handles, invoked
     through the same `_handle_command` the keyboard uses, so the palette can
     never grow behaviour of its own. A drift test walks this table against

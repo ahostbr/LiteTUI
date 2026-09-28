@@ -33,7 +33,8 @@ from litetui import app as m  # noqa: E402
 from litetui import widgets  # noqa: E402
 
 ROWS = 34
-FOOTER_ROW = f"\x1b[{ROWS};"  # the cursor move that starts a write on the footer row
+# T1113: status is the upper row of the two-row footer.
+FOOTER_ROW = f"\x1b[{ROWS - 1};"  # the cursor move that starts a write on the footer row
 
 
 class CaptureDriver(HeadlessDriver):
@@ -87,7 +88,7 @@ async def test_footer_glyphs_are_measured_the_way_a_terminal_draws_them() -> Non
     a = make_app()
     async with a.run_test(size=(120, ROWS), headless=False) as pilot:
         await pilot.pause(0.5)
-        labels = [str(a.query_one(".palette-button").content)]
+        labels = [str(w.content) for w in a.query(".pause-button, .mic-button")]
     labels += [widgets.PauseButton.LABEL_RUN, widgets.PauseButton.LABEL_PAUSED,
                widgets.MicButton.LABEL_IDLE, widgets.MicButton.LABEL_REC]
     for label in labels:

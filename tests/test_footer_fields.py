@@ -175,8 +175,8 @@ async def test_footer_order_is_applied_left_to_right():
             text.index("616cc9c0"),
             text.index("think:"),
             text.index("unregistered"),
-            text.index("plan:"),
-            text.index(">> "),
             text.index("tok/s"),
         ]
         assert positions == sorted(positions)
+        permission = a.permission_label_text.plain
+        assert permission.index("plan:") < permission.index(">> ")

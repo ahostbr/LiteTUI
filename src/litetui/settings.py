@@ -51,17 +51,8 @@ ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max
 # editor. Authority and plan are intentionally included: they remain always
 # visible, but their position is still part of the user's left-to-right layout.
 FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
-    "authority",
-    "plan",
-    "seat",
-    "think",
-    "bg",
-    "agents",
-    "convo",
-    "ctx",
-    "pct",
-    "cache",
-    "tps",
+    "pct", "ctx", "seat", "convo", "model", "think",
+    "cache", "tps", "bg", "agents", "authority", "plan",
 )
 
 
@@ -75,6 +66,13 @@ def normalize_footer_order(value: Any) -> list[str]:
     """
     if not isinstance(value, (list, tuple)):
         value = ()
+    # Existing installations persisted the former default. Treat that exact
+    # untouched preference as the new default, while preserving custom orders.
+    if tuple(value) == (
+        "authority", "plan", "seat", "think", "bg", "agents",
+        "convo", "ctx", "pct", "cache", "tps",
+    ):
+        value = FOOTER_ORDER_DEFAULT
     known = set(FOOTER_ORDER_DEFAULT)
     seen: set[str] = set()
     result: list[str] = []
