@@ -2005,6 +2005,12 @@ class LiteTUI(App):
             self._end_wait()
 
     def _begin_wait(self, owner: str, reason: str) -> None:
+        import threading
+        if threading.get_ident() != self._thread_id:
+            if self._loop is None or self._loop.is_closed():
+                return  # teardown: no UI remains to update
+            self.call_from_thread(self._begin_wait, owner, reason)
+            return
         self._elapsed.ensure_running()
         try:
             self.query_one(NowCard).begin_wait(owner, reason)
@@ -2012,6 +2018,12 @@ class LiteTUI(App):
             pass
 
     def _end_wait(self) -> None:
+        import threading
+        if threading.get_ident() != self._thread_id:
+            if self._loop is None or self._loop.is_closed():
+                return  # teardown: no UI remains to update
+            self.call_from_thread(self._end_wait)
+            return
         try:
             self.query_one(NowCard).end_wait()
         except Exception:
@@ -8397,6 +8409,9 @@ class LiteTUI(App):
             # One render and one scroll per frame for this round's answer.
             from litetui.stream_sink import StreamSink
             sink = StreamSink(self, widget)
+            from litetui.recap import RecapStream
+            recap_stream = RecapStream()
+            recap = None
             self._eta.clear_prefill()  # NInfer prefill %, this request only
             thinking: ThinkingBlock | None = None
             text_full = ""
@@ -8638,9 +8653,10 @@ class LiteTUI(App):
                         self._thinking_done()
                         self._elapsed.stop_body()
                         text_full += delta.content
-                        self._rpc_emit({"type": "text_delta", "text": delta.content})
-                        from litetui.recap import split_recap
-                        sink.show(split_recap(text_full)[0])
+                        visible_delta = recap_stream.feed(delta.content)
+                        if visible_delta:
+                            self._rpc_emit({"type": "text_delta", "text": visible_delta})
+                        sink.show(recap_stream.visible)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
                         # chunk is already in hand, and the dialog promises that
@@ -8758,11 +8774,13 @@ class LiteTUI(App):
                 # card summary is made from. Summarising the rendered widget
                 # instead would summarise a Markdown object; summarising the
                 # reasoning would describe work the card never shows.
-                from litetui.recap import split_recap
-                shown, recap = split_recap(text_full, final=True)
-                sink.finish(shown)
+                final_delta = recap_stream.finish()
+                if final_delta:
+                    self._rpc_emit({"type": "text_delta", "text": final_delta})
+                sink.finish(recap_stream.visible)
                 # The completion hook may reject this draft or this may be a
                 # tool round. Keep recap pending until the terminal acceptance gate.
+                recap = recap_stream.recap
             else:
                 sink.cancel()
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.

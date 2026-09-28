@@ -82,6 +82,53 @@ def test_tool_summaries_do_not_invent_counts():
     assert 'server.tool' in summary('mcp__server__tool', '{}', 'ok', True, 46, '.1s')
 
 
+@pytest.mark.parametrize('chunks, expected, recap', [
+    (['Plain', ' text.'], 'Plain text.', None),
+    (['Answer. ', '<re', 'cap>Did work\nTests green</recap>', ' trailing'], 'Answer.  trailing', None),
+    (['Answer. ', '<re', 'cap>Did work\nTests green</recap>'], 'Answer.', 'Did work / Tests green'),
+    (['Answer ', '<recap>one\ntwo\nthree</recap>'], 'Answer', None),
+    (['Answer ', '<recap>one</recap> more ', '<re', 'cap>two</recap>'], 'Answer  more', 'two'),
+])
+def test_recap_stream_rpc_and_display_share_one_prefix(chunks, expected, recap):
+    from litetui.recap import RecapStream
+    stream = RecapStream()
+    emitted = []
+    for chunk in chunks:
+        emitted.append(stream.feed(chunk))
+        assert '<recap' not in stream.visible and '</recap>' not in stream.visible
+    emitted.append(stream.finish())
+    assert ''.join(emitted) == stream.visible == expected
+    assert stream.recap == recap
+
+
+@pytest.mark.asyncio
+async def test_ask_worker_thread_wait_card_ticks_and_clears():
+    import asyncio
+    from litetui import ask_user_question as aq
+    app = app_for_pilot()
+    app._rpc = True
+    app._rpc_emit = lambda event: None
+    async with app.run_test(size=(46, 22)) as pilot:
+        task = asyncio.create_task(asyncio.to_thread(aq.run, {
+            'questions': [{'label': 'A', 'question': 'Proceed?', 'options': [{'title': 'Yes'}]}]
+        }, app))
+        try:
+            card = app.query_one(NowCard)
+            for _ in range(40):
+                if card.wait:
+                    break
+                await pilot.pause(.05)
+            assert card.wait is not None and 'WAITING ON host' in card.content
+            first = card.content
+            await pilot.pause(2.2)
+            assert '0:02' in card.content and card.content != first
+        finally:
+            aq.cancel_pending_asks(app)
+            await asyncio.wait_for(task, timeout=7)
+            await pilot.pause(.1)
+        assert card.wait is None
+
+
 def test_recap_stream_split_and_missing_malformed():
     text = 'Answer.\n<recap>Did work\nTests green</recap>'
     for i in range(len(text)):
@@ -92,7 +139,7 @@ def test_recap_stream_split_and_missing_malformed():
     assert split_recap('Answer only', final=True) == ('Answer only', None)
     malformed = 'Answer <recap>unfinished'
     assert split_recap(malformed, final=True) == ('Answer', None)
-    assert split_recap('Answer <recap>too many words</recap> trailing', final=True) == ('Answer', None)
+    assert split_recap('Answer <recap>too many words</recap> trailing', final=True) == ('Answer  trailing', None)
 
 
 @pytest.mark.asyncio
