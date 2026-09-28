@@ -940,18 +940,6 @@ def test_a_turn_saved_before_card_positions_replays_the_old_way():
     assert split_card_texts({"activities": []}, "text") is None
 
 
-@pytest.mark.asyncio
-async def test_recap_chunks_never_escape_claude_rpc_or_display(tmp_path):
-    chunks = ['Answer. ', '<re', 'cap>Did work\nTests green</recap>']
-    app = turn_app(tmp_path, messages=['m'] * len(chunks))
-    app._events = [[ClaudeEvent(kind='text_delta', text=c, message_id='m1')] for c in chunks]
-    app._record_recap = lambda recap: None
-    await stream_turn(app)
-    wire = ''.join(e['text'] for e in app.emitted if e.get('type') == 'text_delta')
-    assert wire == app.bubble.answer == 'Answer.'
-    assert app.bubble.recap == 'Did work / Tests green'
-
-
 def test_lengths_that_do_not_add_up_are_refused_not_guessed():
     from litetui.claude_turn import split_card_texts
     assert split_card_texts({"card_text_lengths": [3, 3]}, "abc\n\nabcd") is None

@@ -66,7 +66,6 @@ def system_prompt_for(app, segment):
     parts.append(appsvc.store_block(app).strip())
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
         parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
-    parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
     parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
     text = "\n\n".join(p for p in parts if p)
     return ledger_for(app).fix_system_prompt(segment["id"], text)
@@ -376,8 +375,6 @@ async def stream_turn(app):
     # Each card's streamed text is drawn by its own StreamSink: one render and
     # one scroll per frame, Markdown from the first frame (stream_sink.py).
     sinks = {}
-    from litetui.recap import RecapStream, split_recap
-    recap_streams = {}  # each answer card owns the projection shared by its pane and RPC
     tool_card_index = {}   # tool id -> the card it followed; its result keeps it
     tool_below = False
     tool_cards = {}
@@ -448,20 +445,6 @@ async def stream_turn(app):
                 sinks[card] = StreamSink(app, card)
             return sinks[card]
 
-        def show_answer(card, *, replace=False, message_id=None):
-            answer = card_text(card)  # the same join rule used for replay and persistence
-            stream = recap_streams.setdefault(card, RecapStream())
-            if replace or not answer.startswith(stream.raw):
-                stream = recap_streams[card] = RecapStream()
-                stream.feed(answer)
-                app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
-                               "message_id": message_id, "text": stream.visible})
-            else:
-                visible_delta = stream.feed(answer[len(stream.raw):])
-                if visible_delta:
-                    app._rpc_emit({"type": "text_delta", "text": visible_delta})
-            sink_for(card).show(stream.visible)
-
         def stop_live_clocks():
             # The elapsed clock repaints the first card's body every 250ms until
             # told to stop; left running it overwrote streamed text all turn.
@@ -483,25 +466,24 @@ async def stream_turn(app):
                     stop_live_clocks()
                     message_texts[key] = message_texts.get(key, "") + event.text
                     text = _joined(message_texts)
-                    show_answer(card)
+                    sink_for(card).show(card_text(card))
+                    app._rpc_emit({"type": "text_delta", "text": event.text})
                 elif event.kind == "message":
                     key = event.message_id or "current"
                     if event.reconcile == "append":
                         message_texts[key] = message_texts.get(key, "") + event.text
                         if event.text:
-                            card = card_for(key)
-                            show_answer(card)
+                            app._rpc_emit({"type": "text_delta", "text": event.text})
                     else:
                         message_texts[key] = event.text
-                        # Publish the sanitized snapshot after updating the card.
+                        app._rpc_emit({"type": "native_text_snapshot", "provider": "claude", "message_id": key, "text": event.text})
                     text = _joined(message_texts)
                     # A snapshot with no text (a tool-only message) opens no card;
                     # one that corrects text re-renders the card that shows it.
                     if message_texts[key] or any(key in keys for _, keys in cards):
                         card = card_for(key)
                         stop_live_clocks()
-                        if event.reconcile == "replace":
-                            show_answer(card, replace=True, message_id=key)
+                        sink_for(card).show(card_text(card))
                 elif event.kind in {"thinking_delta", "thinking"}:
                     from litetui.widgets import ThinkingBlock
                     card_for(event.message_id or "current")
@@ -601,9 +583,6 @@ async def stream_turn(app):
                         app._refresh_ctx_label()
                     app._rpc_emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
                 elif event.kind in {"diagnostic", "notice", "rate_limit", "task", "session", "user_text"}:
-                    # Native Claude rate_limit is a status transition (including allowed_warning),
-                    # not a confirmed retry-begin/retry-end. Keep it diagnostic: claiming a
-                    # WAITING banner here would invent a blocked state with no reliable exit.
                     app._rpc_emit({"type": "native_event", "provider": "claude", "kind": event.kind,
                                    "detail": event.detail, "data": event.data})
                     if event.kind == "diagnostic":
@@ -668,25 +647,7 @@ async def stream_turn(app):
                           for _, keys in cards]
             for (card, _), card_answer in zip(cards, card_texts):
                 # sinks.get: a turn can fail before sink_for exists.
-                stream = recap_streams.get(card)
-                if stream is not None:
-                    if card_answer != stream.raw:
-                        # Native reconciliation can append a message after a tool
-                        # without a text delta. Reproject the saved card text.
-                        stream = recap_streams[card] = RecapStream()
-                        stream.feed(card_answer)
-                        app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
-                                       "message_id": None, "text": stream.visible})
-                    final_delta = stream.finish()
-                    if final_delta:
-                        app._rpc_emit({"type": "text_delta", "text": final_delta})
-                    shown, recap = stream.visible, stream.recap
-                else:
-                    shown, recap = split_recap(card_answer, final=True)
-                (sinks.get(card) or StreamSink(app, card)).finish(shown)
-                if recap:
-                    card.recap = recap
-                    app._record_recap(recap)
+                (sinks.get(card) or StreamSink(app, card)).finish(card_answer)
             native = {
                 "segment_id": item["_claude_segment"], "session_id": (segment or {}).get("session_id"), "delivery_id": entry_id,
                 "activities": activity_records, "message_ids": list(message_texts),
@@ -804,13 +765,8 @@ def replay_activity(app, metadata, content=None):
     answers = []
     for index, card_text in enumerate(texts):
         if card_text:
-            from litetui.recap import split_recap
-            shown, recap = split_recap(card_text, final=True)
             bubble = app._assistant_bubble()
-            bubble.set_answer(shown)
-            if recap:
-                bubble.recap = recap
-                bubble.set_summary(recap)
+            bubble.set_answer(card_text)
             bubble.settled = True
             answers.append(bubble)
         _replay_tools(app, [a for a in activities if a.get("card") == index], ToolMessage)

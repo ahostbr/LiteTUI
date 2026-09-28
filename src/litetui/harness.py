@@ -27,8 +27,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
-import time
 from litetui import ttyguard
 import uuid
 from datetime import datetime, timezone
@@ -61,43 +59,6 @@ NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
 
 def harness_disabled() -> bool:
     return bool(os.environ.get(NO_HARNESS_ENV, "").strip())
-
-
-def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
-    """Merge only recap fields into an existing seat row; never create a row.
-
-    Contract copied from liteharness-oss/liteharness/config.py:merge_presence_fields:
-    missing/unreadable/non-dict -> False; re-read before update, atomic temp-file
-    replace. The optional liteharness package is not installed in LiteTUI's venv.
-    """
-    if not path.exists():
-        return False
-    try:
-        row = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
-    if not isinstance(row, dict) or row.get("agent_id") != agent_id:
-        return False
-    row.update({"last_recap": recap, "last_recap_at": datetime.now(timezone.utc).isoformat()})
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".recap-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as output:
-            json.dump(row, output, ensure_ascii=False)
-        # A purged seat must not be brought back by a pending recap write.
-        if not path.exists():
-            return False
-        for attempt in range(8):
-            try:
-                os.replace(temporary, path)
-                return True
-            except PermissionError:
-                if attempt == 7:
-                    raise
-                time.sleep(.02 * (attempt + 1))
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-    return False
 
 
 class _Refused:
