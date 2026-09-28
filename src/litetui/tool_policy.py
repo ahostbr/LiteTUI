@@ -21,7 +21,7 @@ from typing import Callable, Iterable, Mapping
 # import time, and the store is REDIRECTED by many tests (and could be by any
 # future caller) — a snapshot would silently classify against a directory that
 # is no longer the store. Same late-binding trap as the profile choices.
-from litetui import deny_floor, paths
+from litetui import deny_floor, paths, trusted_executables
 
 
 # The required vocabulary.  A tool may carry more than one capability: shell
@@ -658,8 +658,8 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
 )
 _DANGER = tuple((label, re.compile(r"(?ix)" + pattern)) for label, pattern in DANGER_TABLE)
 
-# Explicit executables by path remain foreign launches; interpreters and project
-# tools are not. Resolve roots rather than trusting a path-name substring.
+# Explicit executables by path remain foreign launches unless their resolved
+# location is trusted. A matching basename alone can be spoofed.
 _PATH_RUN = re.compile(
     r"(?ix)" + _CMD_POSITION
     + r"(?:&\s*)?(?:[\"'](?P<quoted>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\"']+)[\"']"
@@ -675,14 +675,14 @@ def _foreign_path_launch(raw: str, workspace: Path) -> bool:
         return False
     if path.suffix.lower() in {".bat", ".cmd"}:
         return not _inside(path, workspace.resolve())
-    # Ceiling: basename identity can be spoofed, but the fleet's interpreters
-    # live in several venvs and user installs; they are ordinary dev tools.
-    if path.stem.lower() in _TOOL_EXECUTABLES:
-        return False
     home = Path.home()
     roots = (workspace, home / ".claude" / "skills",
              home / ".claude" / "plugins" / "cache" / "liteharness")
-    return not any(_inside(path, root.resolve()) for root in roots)
+    if any(_inside(path, root.resolve()) for root in roots):
+        return False
+    if path.stem.lower() in _TOOL_EXECUTABLES and trusted_executables.is_installed_tool(path):
+        return False
+    return True
 
 
 # This scanner is a conservative VIEW for the danger table, not a shell parser.
@@ -690,6 +690,9 @@ def _foreign_path_launch(raw: str, workspace: Path) -> bool:
 # cannot manufacture command positions, but $() and backticks within double
 # quotes are recursively scanned as executable command text. Unknown/unclosed
 # quoting returns the original span (fail CLOSED, never grant it data status).
+# Without a shell identity, PowerShell backtick-escaped and Bash backslash-
+# escaped quotes can produce conservative false prompts in mixed-shell input;
+# never mask an ambiguous span merely to suppress a prompt.
 _REAL_COMMAND = re.compile(
     r"(?ix)(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*|\s(?:-c|-command|/c)\s+)$"
 )
@@ -738,10 +741,13 @@ def _command_view(command: str) -> str:
                 i = j + 1
                 continue
             if ch == '"':
-                payload = bool(_COMMAND_PAYLOAD.search("".join(out)))
-                inner, after, closed = scan(i + 1, '"', not payload, depth + 1)
+                prefix = "".join(out)
+                executable = bool(_COMMAND_PAYLOAD.search(prefix) or _REAL_COMMAND.search(prefix))
+                inner, after, closed = scan(i + 1, '"', not executable, depth + 1)
                 if not closed:
                     return "".join(out) + command[i:], len(command), False
+                # An inert quoted argument contributes no command verbs. Keep
+                # any executable substitutions emitted by the recursive scan.
                 out.append('"' + inner + '"')
                 i = after
                 continue
@@ -761,7 +767,7 @@ def _command_view(command: str) -> str:
                 out.append(";" + inner + " ")
                 i = after
                 continue
-            out.append(" " if double and ch in ";&|" else ch)
+            out.append(" " if double and ch in ";&|" else (" " if double else ch))
             i += 1
         return "".join(out), i, not end
 

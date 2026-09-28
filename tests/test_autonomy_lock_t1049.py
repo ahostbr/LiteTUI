@@ -64,15 +64,30 @@ def test_launch_flag_stays_ceiling_until_explicit_human_choice(monkeypatch):
     assert seat_authority.turn_profile(a, "harness", AUTONOMOUS) == AUTONOMOUS
 
 
-def test_spawned_seat_rpc_and_schedule_accept_autonomous(monkeypatch):
-    a = _app(INTERACTIVE)
+@pytest.mark.parametrize("route", ["cycle", "rpc", "inbox_profile"])
+def test_spawned_interactive_launch_can_choose_autonomous(monkeypatch, route):
+    a = _app(INTERACTIVE, tool_profile=INTERACTIVE)
     a._spawned_seat = True
     monkeypatch.setattr(m.settings_runtime, "persist_or_raise", lambda *_: None)
     responses = []
     monkeypatch.setattr(rpc, "_respond", lambda *args, **kw: responses.append(kw))
-    rpc._dispatch(a, {"type": "set", "id": "p", "profile": AUTONOMOUS})
-    assert responses[-1]["ok"] is True
-    assert a._active_tool_profile == AUTONOMOUS
+    if route == "cycle":
+        a.action_cycle_tool_profile()  # the seat's own shift+tab key
+        assert a._active_tool_profile == STRICT
+        a.action_cycle_tool_profile()  # strict -> autonomous
+    elif route == "rpc":
+        rpc._dispatch(a, {"type": "set", "id": "p", "profile": AUTONOMOUS})
+    else:
+        # An inbox *profile request* is a host prompt with tool_profile, not
+        # a message that happens to mention the word autonomous.
+        a.store.acquire = lambda: None
+        a._submit_text = lambda *_args, **_kw: None
+        rpc._dispatch(a, {"type": "prompt", "id": "p", "message": "continue",
+                          "tool_profile": AUTONOMOUS})
+    if route != "cycle":
+        assert responses[-1]["ok"] is True
+    assert a._active_tool_profile == a.settings.tool_policy_profile == AUTONOMOUS
+    assert a._cli_tool_profile is None  # explicit selection retires launch flag
     assert seat_authority.schedule_level(a, AUTONOMOUS) == AUTONOMOUS
     assert seat_authority.withheld(a, AUTONOMOUS) is None
 

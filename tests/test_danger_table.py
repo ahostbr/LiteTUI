@@ -221,6 +221,45 @@ def test_scripts_and_path_runs_are_ordinary_but_chained_deletion_still_asks():
             assert tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY, {"command": cmd}, workspace).action == tp.ALLOW
 
 
+@pytest.mark.parametrize("exe", ["python.exe", "ruff.exe"])
+def test_executable_basename_cannot_spoof_project_tools(exe):
+    workspace = Path("C:/Projects/LiteTUI")
+    for command in (f"& 'E:/untrusted/{exe}' --version", f"E:/untrusted/{exe} --version"):
+        assert tp.danger(command, workspace) == tp.FOREIGN_PROCESS
+        assert tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY,
+                           {"command": command}, workspace).action == tp.CONFIRM
+
+
+def test_only_resolved_runtime_venv_or_path_executable_is_trusted(monkeypatch):
+    workspace = Path("C:/Projects/LiteTUI")
+    runtime = Path("C:/Projects/LiteTUI/.venv")
+    monkeypatch.setattr(tp.trusted_executables.sys, "prefix", str(runtime))
+    monkeypatch.setattr(tp.trusted_executables.sys, "executable", str(runtime / "Scripts/python.exe"))
+    monkeypatch.setattr(tp.trusted_executables.shutil, "which",
+                        lambda name: "C:/trusted/bin/ruff.exe" if name == "ruff.exe" else None)
+    assert tp.danger("& 'C:/Projects/LiteTUI/.venv/Scripts/python.exe' -m pytest", WS) is None
+    assert tp.danger("& 'C:/trusted/bin/ruff.exe' check .", workspace) is None
+    assert tp.danger("& 'E:/untrusted/.venv/Scripts/python.exe' -m pytest", workspace) == tp.FOREIGN_PROCESS
+    assert tp.danger("& 'E:/untrusted/.venv/Scripts/ruff.exe' check .", workspace) == tp.FOREIGN_PROCESS
+
+
+@pytest.mark.parametrize("command,label", [
+    ('git commit -m "fix Remove-Item x2"', None),
+    ('gh pr create --body "Remove-Item x2"', None),
+    ('git commit -m "x"; Remove-Item y', tp.DELETION),
+    ('git commit -m "fix rm -rf x"', None),
+    ('git commit -m "fix format C:"', None),
+    ('git commit -m "fix; rm -rf x"', None),
+    ('echo "$(rm -rf y)"', tp.DELETION),
+    ('echo "$(Remove-Item x)"', tp.DELETION),
+    ('echo "`kill 5`"', tp.DANGEROUS),
+    ('bash -c "rm -rf x"', tp.DELETION),
+])
+def test_double_quoted_argument_is_data_except_executable_substitution(command, label):
+    assert tp.danger(command, WS) == label
+    assert _shell(command).action == (tp.CONFIRM if label else tp.ALLOW)
+
+
 def test_fleet_mcp_executable_payloads_not_inbox_quotations():
     cases = (
         ("mcp__litesuite-tools__pccontrol", {"action": "launch"}, tp.CONFIRM, tp.FOREIGN_PROCESS),
