@@ -40,7 +40,7 @@ from litetui import model_residency, model_transport
 from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
-from litetui import runtime_log, spawner_errors
+from litetui import runtime_log
 from litetui.friendly_errors import present
 from litetui.conversation import (
     CONVO_SEED_FILES,
@@ -113,7 +113,7 @@ from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import seat_authority, tool_policy
-from litetui.turn_engine import TurnEngine, side_call_reasoning_effort
+from litetui.turn_engine import TurnEngine, _resolve_reasoning_effort
 from litetui import thinking_probe
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -1816,7 +1816,6 @@ class LiteTUI(App):
             tier=seat_tier,
         )
         self.seat.spawned_by = self._spawner_id
-        self._spawner_errors = spawner_errors.SpawnerErrorReporter()
         self._seat_started = False
         self._resumed_seat_name: str | None = None
         self._seat_claim_lock = asyncio.Lock()
@@ -2659,12 +2658,7 @@ class LiteTUI(App):
                 # literal: it is already tuned for the local-model failure
                 # where reasoning eats a small budget before any output.
                 max_tokens=self.settings.compact_max_tokens,
-                extra_body={"reasoning_effort": side_call_reasoning_effort(
-                    "low", self.backend.name, fold_model,
-                    self.settings.lmstudio_graded_thinking_models,
-                    self.backend.reasoning_levels(fold_model)
-                    if hasattr(self.backend, "reasoning_levels") else (),
-                )},
+                extra_body={"reasoning_effort": "low"},
             )
             summary = (resp.choices[0].message.content or "").strip()
             why_no_summary = "side call returned an empty summary"
@@ -6155,29 +6149,6 @@ class LiteTUI(App):
         tps = self.tps or 0.0
         self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
 
-    def _report_spawner_error(self, text: str, activity: str) -> None:
-        seat = getattr(self, "seat", None)
-        if seat is not None:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(asyncio.to_thread(
-                    self._spawner_errors.send, seat, getattr(self, "convo_id", None),
-                    text, activity,
-                ))
-            except Exception:
-                pass  # a diagnostic must never break the UI or recursively report
-
-    @staticmethod
-    def _is_error_message(text: str) -> bool:
-        return bool(re.search(
-            r"\b(error|failed|failure|crash|could not|cannot|refused|unable to)\b", text, re.I
-        ))
-
-    def notify(self, message, *, severity="information", **kwargs):
-        if severity == "error":
-            self._report_spawner_error(str(message), "notification")
-        return super().notify(message, severity=severity, **kwargs)
-
     def system_message(self, text: str) -> None:
         """Post a system line into the chat log — **the supported way for a
         plugin to say something to the user.**
@@ -6200,8 +6171,6 @@ class LiteTUI(App):
         **in scope** to replace it with. Ask "is X reachable from every call
         site?" before scheduling any "seal it behind X" step.
         """
-        if self._is_error_message(text):
-            self._report_spawner_error(text, "system message")
         shown = present(text, self.settings.error_message_style)
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(shown), classes="system-msg"))
@@ -6677,12 +6646,9 @@ class LiteTUI(App):
         convenience; it must never be able to break a finished turn.
         """
         try:
-            levels = (self.backend.reasoning_levels(model)
-                      if hasattr(self.backend, "reasoning_levels") else ())
-            effort = side_call_reasoning_effort(
-                "off", self.backend.name, model,
-                self.settings.lmstudio_graded_thinking_models, levels,
-            )
+            # Reasoning OFF through the backend's own knob, not a literal:
+            # lmstudio omits the field, llamacpp wants "none" (T539).
+            effort = _resolve_reasoning_effort("off", self.backend.name)
             extra = {"reasoning_effort": effort} if effort else {}
             resp = await model_transport.for_app(self).create(
                 # 🔴 NOT PART OF THE TURN (T821). This side call used to be
@@ -8279,7 +8245,6 @@ class LiteTUI(App):
                 )
                 self._elapsed.stop_body()
                 self._thinking_done()
-                self._report_spawner_error(str(e), "opening model stream")
                 # T688 F: if the app that owned our attached llama.cpp router has
                 # left, take it over HERE, before the words are chosen — "start it
                 # or switch backends" is advice for a situation that is not the
@@ -8530,7 +8495,6 @@ class LiteTUI(App):
                 self._elapsed.stop_body()
                 self._thinking_done()
                 sink.cancel()   # a late render must not draw over the error
-                self._report_spawner_error(str(e), "streaming model response")
                 # T688 F: if the app that owned our attached llama.cpp router has
                 # left, take it over HERE, before the words are chosen — "start it
                 # or switch backends" is advice for a situation that is not the
@@ -8713,8 +8677,6 @@ class LiteTUI(App):
                 # model — the same string serves both, and a secret on screen is
                 # a secret in the screenshot.
                 result = sanitize.redact_secrets(result)
-                if not ok and not self._stop_requested:
-                    self._report_spawner_error(result, f"tool {name}")
                 sanitize.reset_terminal_modes()
                 if msg is not None:
                     msg.set_result(present(result, self.settings.error_message_style, surface="tool")
@@ -9415,7 +9377,6 @@ class LiteTUI(App):
                 exc=e,
             )
             card.fail("failed \u2014 conversation unchanged")
-            self._report_spawner_error(str(e), "compaction")
             self._system(
                 f"Compact failed — conversation unchanged.\n"
                 f"{_plain_backend_error(e, self.backend)}"

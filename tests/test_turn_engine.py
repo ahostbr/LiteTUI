@@ -224,14 +224,14 @@ def test_unset_compaction_effort_does_not_invent_a_fallback():
     assert "reasoning_effort" not in k.get("extra_body", {})
 
 
-def test_compaction_uses_lowest_supported_effort_not_per_model_override():
+def test_compaction_prefers_a_supported_per_model_effort_as_fallback():
     k = _compact(
         backend_name="codex",
         thinking_level="off",
         model_reasoning_effort="high",
         supported_reasoning_levels=["low", "medium", "high", "xhigh"],
     )
-    assert k["extra_body"]["reasoning_effort"] == "low"
+    assert k["extra_body"]["reasoning_effort"] == "high"
 
 
 # ── per-model thinking level (/modelcfg Inference tab) ───────────────

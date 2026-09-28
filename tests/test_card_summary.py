@@ -86,28 +86,6 @@ async def test_summary_titles_the_card_that_asked_for_it(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_card_summary_uses_lowest_model_effort_when_off_is_unsupported(monkeypatch):
-    app = _app()
-    seen = []
-    app._backend = type('Backend', (), {
-        'name': 'free', 'reasoning_levels': lambda self, model: ['high', 'low'],
-        'shutdown': lambda self: None,
-    })()
-    async with app.run_test(size=(100, 20)) as pilot:
-        card = AssistantMessage()
-        app.query_one('#chat-log').mount(card)
-        await pilot.pause()
-
-        async def create(**kw):
-            seen.append(kw)
-            return _Resp('title')
-        monkeypatch.setattr(app_mod.model_transport, 'for_app',
-                            lambda _a: type('T', (), {'create': staticmethod(create)})())
-        await app._summarise_card(card, 'qwen', 'answer')
-    assert seen[0]['extra_body']['reasoning_effort'] == 'low'
-
-
-@pytest.mark.asyncio
 async def test_a_late_summary_cannot_stamp_a_newer_card(monkeypatch):
     """THE BINDING. Two cards, two models; the FIRST card's summary lands last.
 

@@ -980,31 +980,7 @@ class OpenAITransport:
             {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
             for m in kwargs["messages"]
         ]
-        try:
-            return await self.client.chat.completions.create(**kwargs)
-        except Exception as error:
-            # Some routed models advertise no capability and reject 'none' only
-            # at request time. Retry this precise refusal once, never a generic 400.
-            body = getattr(error, "body", None)
-            detail = str(body) if body is not None else str(error)
-            extra = kwargs.get("extra_body") or {}
-            mandatory = "Reasoning is mandatory for this endpoint and cannot be disabled"
-            if (purpose == "turn" or getattr(error, "status_code", None) != 400
-                    or mandatory not in detail or extra.get("reasoning_effort") != "none"):
-                raise
-            from litetui.turn_engine import side_call_reasoning_effort
-            backend = self.backend
-            levels_fn = getattr(backend, "reasoning_levels", None)
-            levels = levels_fn(kwargs["model"]) if callable(levels_fn) else ()
-            allowed = [level for level in levels if level != "none"] or ["low"]
-            kwargs["extra_body"] = {
-                **extra,
-                "reasoning_effort": side_call_reasoning_effort(
-                    "off", getattr(backend, "name", ""), kwargs["model"],
-                    supported_levels=allowed,
-                ),
-            }
-            return await self.client.chat.completions.create(**kwargs)
+        return await self.client.chat.completions.create(**kwargs)
 
 
 @dataclass(frozen=True)

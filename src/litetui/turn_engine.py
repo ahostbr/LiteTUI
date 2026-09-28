@@ -39,25 +39,6 @@ from __future__ import annotations
 from litetui import llm_backend
 
 
-_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
-
-
-def side_call_reasoning_effort(
-    level: str | None,
-    backend_name: str,
-    model_id: str | None = None,
-    graded_models: tuple[str, ...] | list[str] = (),
-    supported_levels: tuple[str, ...] | list[str] = (),
-) -> str | None:
-    """Choose the cheapest supported wire effort, never an unsupported 'none'."""
-    wire = _resolve_reasoning_effort(level, backend_name, model_id, graded_models)
-    levels = list(supported_levels)
-    if not wire or not levels or wire in levels:
-        return wire
-    known = [item for item in levels if item in _EFFORT_ORDER]
-    return min(known, key=_EFFORT_ORDER.index) if known else levels[0]
-
-
 def _resolve_reasoning_effort(
     level: str | None,
     backend_name: str,
@@ -281,10 +262,21 @@ class TurnEngine:
         # Compaction owns its thinking budget. Chat/model overrides must not
         # replace the dedicated compact_thinking_level setting.
         extra_body: dict = {}
-        wire = side_call_reasoning_effort(
-            thinking_level, backend_name, model_id, graded_thinking_models,
-            supported_reasoning_levels,
+        wire = _resolve_reasoning_effort(
+            thinking_level, backend_name, model_id, graded_thinking_models
         )
+        levels = list(supported_reasoning_levels)
+        if wire and levels and wire not in levels:
+            if model_reasoning_effort in levels:
+                wire = model_reasoning_effort
+            else:
+                effort_order = {
+                    name: rank for rank, name in enumerate(
+                        ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+                    )
+                }
+                known = [level for level in levels if level in effort_order]
+                wire = min(known, key=effort_order.__getitem__) if known else levels[0]
         if wire:
             extra_body["reasoning_effort"] = wire
         # NInfer streams real prompt-processing progress when asked (the same
