@@ -258,6 +258,140 @@ async def test_only_accepted_terminal_answer_publishes_recap(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('initial_width', [46, 120])
+async def test_real_turn_read_tool_finishes_as_compact_row(monkeypatch, initial_width):
+    from litetui import app as app_module
+    from test_card_summary import _Chunk, _Stream, _TC
+
+    app = app_for_pilot()
+    app.settings.tool_iterations = 3
+    app.tools_enabled = True
+    app._active_tool_profile = 'autonomous'
+    app.settings.tool_policy_profile = 'autonomous'
+    app._resync_ctx_if_stale = lambda: None
+    app._maybe_autocompact = lambda: None
+    app._report_spawner_error = lambda *args: None
+
+    async def ready():
+        pass
+
+    app._ensure_chat_ready = ready
+    app._execute_tool = lambda *args, **kwargs: asyncio.sleep(0, result=('README contents', True))
+    streams = iter([
+        _Stream([_Chunk(tool_calls=[_TC(0, id='read1', name='read')]),
+                 _Chunk(tool_calls=[_TC(0, arguments='{"path":"C:/Projects/LiteTUI/README.md","offset":1,"limit":40}')])]),
+        _Stream([_Chunk(content='Read the requested README lines.')]),
+    ])
+
+    async def create(**kwargs):
+        if kwargs.get('purpose') == 'card-summary':
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='summary'))])
+        return next(streams)
+
+    monkeypatch.setattr(app_module.model_transport, 'for_app',
+                        lambda _: SimpleNamespace(create=create))
+    async with app.run_test(size=(initial_width, 22)) as pilot:
+        await pilot.pause(.2)
+        assert app._compact_mode == (initial_width == 46)
+        app._append({'role': 'user', 'content': 'read README'})
+        app._stream()
+        for _ in range(100):
+            await pilot.pause(.05)
+            if not app._chat_running():
+                break
+        assert not app._chat_running()
+        tools = list(app.query(ToolMessage))
+        assert len(tools) == 1
+        tool = tools[0]
+        assert tool._result is not None
+        assert tool.tool_name == 'read'
+        assert json.loads(tool._args) == {'path': 'C:/Projects/LiteTUI/README.md', 'offset': 1, 'limit': 40}
+        if initial_width != 46:
+            await pilot.resize_terminal(46, 22)
+            await pilot.pause(.3)
+        assert app._compact_mode and app.query_one(NowCard).display
+        assert app.query_one('.compact-footer-hints').display
+        assert tool.header.content.plain.startswith('▸ read  README.md:1 +40'), (
+            tool.header.content.plain, tool._compact, tool.expanded, tool._explicit_expansion)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind,tool_name,server,as_text', [
+    ('dynamicToolCall', 'litetui_read', None, False),
+    ('mcpToolCall', 'read', 'workspace', True),
+])
+async def test_native_codex_item_read_row_is_compact(kind, tool_name, server, as_text):
+    from litetui.codex_tool_ui import CodexToolUI
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        assert app._compact_mode
+        ui = CodexToolUI(app, thread_id='thread', turn_id='turn')
+        args = {'path': 'C:/Projects/LiteTUI/README.md', 'offset': 1, 'limit': 40}
+        item = {'type': kind, 'id': 'read1', 'tool': tool_name,
+                'arguments': json.dumps(args) if as_text else args}
+        if server:
+            item['server'] = server
+        await ui.item(item)
+        await ui.item({**item, 'success': True, 'durationMs': 10,
+                       'contentItems': [{'type': 'inputText', 'text': 'README contents'}]}, True)
+        tool = list(app.query(ToolMessage))[-1]
+        assert tool.tool_name == ('workspace/read' if server else 'read')
+        assert json.loads(tool._args) == args
+        assert tool.header.content.plain.startswith('▸ read  README.md:1 +40'), (
+            tool.header.content.plain, tool._compact, tool.expanded, tool._explicit_expansion)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('item,expected', [
+    ({'type': 'commandExecution', 'id': 'native', 'command': 'echo hello'}, '$ command  echo'),
+    ({'type': 'fileChange', 'id': 'native', 'changes': [{'path': 'src/a.py'}]}, '✎ file changes  files 1 changes'),
+    ({'type': 'webSearch', 'id': 'native', 'query': 'LiteTUI'}, '⌕ web search  LiteTUI'),
+])
+async def test_native_codex_builtin_items_have_compact_summary(item, expected):
+    from litetui.codex_tool_ui import CodexToolUI
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        ui = CodexToolUI(app, thread_id='thread', turn_id='turn')
+        await ui.item(item)
+        await ui.item({**item, 'status': 'completed', 'durationMs': 25}, True)
+        tool = list(app.query(ToolMessage))[-1]
+        assert tool._compact and not tool.expanded
+        assert tool.header.content.plain.startswith(expected), (tool._args, tool.header.content.plain)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('resize_while_running', [False, True])
+async def test_native_codex_read_started_wide_then_resized_compact(resize_while_running):
+    from litetui.codex_tool_ui import CodexToolUI
+    app = app_for_pilot()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause(.2)
+        assert not app._compact_mode
+        ui = CodexToolUI(app, thread_id='thread', turn_id='turn')
+        item = {'type': 'dynamicToolCall', 'id': 'read1', 'tool': 'litetui_read',
+                'arguments': {'path': 'C:/Projects/LiteTUI/README.md', 'offset': 1, 'limit': 40}}
+        await ui.item(item)
+        tool = list(app.query(ToolMessage))[-1]
+        if resize_while_running:
+            await pilot.resize_terminal(80, 25)
+            await pilot.resize_terminal(46, 22)
+            await pilot.pause(.3)
+        await ui.item({**item, 'success': True, 'durationMs': 10,
+                       'contentItems': [{'type': 'inputText', 'text': 'README contents'}]}, True)
+        if not resize_while_running:
+            await pilot.resize_terminal(80, 25)
+            await pilot.resize_terminal(46, 22)
+            await pilot.pause(.3)
+        assert app._compact_mode and app.has_class('compact-profile')
+        assert app.query_one(NowCard).display
+        assert app.query_one('.compact-footer-hints').display
+        assert tool.header.content.plain.startswith('▸ read  README.md:1 +40'), (
+            tool.header.content.plain, tool._compact, tool.expanded)
+
+
+@pytest.mark.asyncio
 async def test_missing_recap_keeps_side_call_fallback():
     app = app_for_pilot()
     async with app.run_test(size=(46, 22)) as pilot:
