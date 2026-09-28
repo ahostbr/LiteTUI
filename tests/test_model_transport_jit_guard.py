@@ -87,6 +87,46 @@ async def test_standalone_transport_without_backend_passes():
     assert len(spy.calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_side_call_retries_only_reasoning_mandatory_400():
+    calls = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            error = ValueError('Reasoning is mandatory for this endpoint and cannot be disabled')
+            error.status_code = 400
+            raise error
+        return 'success'
+
+    backend = SimpleNamespace(name='free', reasoning_levels=lambda model: [])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    transport = OpenAITransport(client, backend=backend)
+    result = await transport.create(purpose='compaction', model='m', messages=[],
+                                    extra_body={'reasoning_effort': 'none'})
+    assert result == 'success'
+    assert [call['extra_body']['reasoning_effort'] for call in calls] == ['none', 'low']
+
+
+@pytest.mark.asyncio
+async def test_turn_and_unrelated_400_do_not_retry():
+    for purpose, detail in [('turn', 'Reasoning is mandatory for this endpoint and cannot be disabled'),
+                            ('compaction', 'invalid API key')]:
+        calls = []
+
+        async def create(**kwargs):
+            calls.append(kwargs)
+            error = ValueError(detail)
+            error.status_code = 400
+            raise error
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with pytest.raises(ValueError):
+            await OpenAITransport(client).create(purpose=purpose, model='m', messages=[],
+                                                extra_body={'reasoning_effort': 'none'})
+        assert len(calls) == 1
+
+
 def test_sidecall_local_lmstudio_refused_before_urllib():
     called = []
 

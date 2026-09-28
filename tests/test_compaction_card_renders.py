@@ -271,6 +271,6 @@ async def test_compaction_does_not_compute_effective_chat_overrides(monkeypatch)
         await m.LiteTUI._compact.__wrapped__(a)
 
     assert seen, 'dead chat override computation blocked compaction transport'
-    assert seen[0]['extra_body']['reasoning_effort'] == 'medium'
+    assert seen[0]['extra_body']['reasoning_effort'] == 'low'  # lowest allowed, not chat override
     assert a._autocompact_failed_at is None
     assert any('summary survives' in str(msg.get('content')) for msg in a.conversation)
