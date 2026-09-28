@@ -84,9 +84,11 @@ class ToolPolicy:
     classify_args: Classifier | None = None
     confirm_always: bool = False
 
-    def classify(self, args: Mapping[str, object], workspace: Path) -> frozenset[str]:
+    def classify(self, args: Mapping[str, object], workspace: Path, *, shell: str | None = None) -> frozenset[str]:
         caps = set(self.capabilities)
-        if self.classify_args is not None:
+        if self.classify_args is classify_shell:
+            caps.update(classify_shell(args, workspace, shell=shell))
+        elif self.classify_args is not None:
             caps.update(self.classify_args(args, workspace))
         unknown = caps - CAPABILITIES
         if unknown:
@@ -343,6 +345,7 @@ def evaluate(
     active_conversation: Path | None = None,
     always_allow: frozenset[str] = frozenset(),
     deny: frozenset[str] = frozenset(),
+    shell: str | None = None,
 ) -> PolicyDecision:
     """Return the host action for one proposed tool call.
 
@@ -368,7 +371,7 @@ def evaluate(
     That is the fail-safe direction.
     """
     profile = PROFILES.get(profile_name)
-    capabilities = policy.classify(args or {}, Path(workspace).resolve())
+    capabilities = policy.classify(args or {}, Path(workspace).resolve(), shell=shell)
     if policy.classify_args is classify_write:
         capabilities = frozenset(policy.capabilities) | frozenset(classify_write(args or {}, Path(workspace).resolve(), active_conversation=active_conversation))
     names = ", ".join(sorted(capabilities))
@@ -419,7 +422,7 @@ def evaluate(
                 capabilities,
                 f"allowed by a standing rule for {key}",
             )
-        what = _danger_of(policy, args or {}, Path(workspace).resolve())
+        what = _danger_of(policy, args or {}, Path(workspace).resolve(), shell=shell)
         return PolicyDecision(
             CONFIRM,
             profile.name,
@@ -430,10 +433,10 @@ def evaluate(
     return PolicyDecision(ALLOW, profile.name, capabilities, f"allowed: {names}")
 
 
-def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path) -> str:
+def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path, *, shell: str | None = None) -> str:
     """Which DANGER_TABLE class a confirm is for, in words a person reads."""
     if policy.classify_args is classify_shell:
-        return danger(str(args.get("command") or ""), workspace) or ""
+        return danger(str(args.get("command") or ""), workspace, shell=shell) or ""
     if policy.classify_args is classify_pccontrol:
         return FOREIGN_PROCESS
     if policy.classify_args is classify_fleet_mcp:
@@ -690,16 +693,14 @@ def _foreign_path_launch(raw: str, workspace: Path) -> bool:
 # cannot manufacture command positions, but $() and backticks within double
 # quotes are recursively scanned as executable command text. Unknown/unclosed
 # quoting returns the original span (fail CLOSED, never grant it data status).
-# Without a shell identity, PowerShell backtick-escaped and Bash backslash-
-# escaped quotes can produce conservative false prompts in mixed-shell input;
-# never mask an ambiguous span merely to suppress a prompt.
+# Unknown shell identity retains the conservative mixed-shell interpretation.
 _REAL_COMMAND = re.compile(
     r"(?ix)(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*|\s(?:-c|-command|/c)\s+)$"
 )
 _COMMAND_PAYLOAD = re.compile(r"(?i)(?:^|\s)(?:-c|-command|/c)\s+$")
 
 
-def _command_view(command: str) -> str:
+def _command_view(command: str, shell: str | None = None) -> str:
     def scan(start: int, end: str = "", double: bool = False, depth: int = 0) -> tuple[str, int, bool]:
         # Beyond this bound, stop masking: unknown nesting is command text,
         # never a reason to silently allow a dangerous word in an argument.
@@ -709,14 +710,22 @@ def _command_view(command: str) -> str:
         i = start
         while i < len(command):
             ch = command[i]
-            if ch == "\\" and i + 1 < len(command):
-                # Bash treats backslash-quote as escaped, PowerShell does not.
-                # For a double-quoted span containing it, keep the WHOLE span
-                # as command text rather than risk masking a real PS command.
-                if double and command[i + 1] == '"':
+            if ch == "\\" and i + 1 < len(command) and shell != "powershell":
+                # Bash escapes the next character; unknown shell identity
+                # conservatively leaves a double-quoted span unmasked.
+                if double and command[i + 1] == '"' and shell != "bash":
                     return "".join(out) + command[i:], len(command), False
-                out.append(command[i:i + 2])
+                out.append("  " if double else command[i:i + 2])
                 i += 2
+                continue
+            if ch == "`" and shell == "powershell":
+                # PowerShell backtick escapes one character, not a command.
+                if i + 1 < len(command):
+                    out.append("  " if double else command[i:i + 2])
+                    i += 2
+                else:
+                    out.append(ch)
+                    i += 1
                 continue
             if end and ch == end:
                 return "".join(out), i + 1, True
@@ -774,9 +783,9 @@ def _command_view(command: str) -> str:
     return scan(0)[0]
 
 
-def danger(command: str, workspace: Path) -> str | None:
+def danger(command: str, workspace: Path, *, shell: str | None = None) -> str | None:
     """The danger CLASS of a shell command, or None when it is ordinary."""
-    view = _command_view(command)
+    view = _command_view(command, shell)
     unwrapped = _unwrap_command_verbs(view)
     for label, pattern in _DANGER:
         if pattern.search(view) or (unwrapped != view and pattern.search(unwrapped)):
@@ -820,8 +829,8 @@ def _floor(args: Mapping[str, object] | None, workspace: Path) -> str | None:
     return None
 
 
-def classify_shell(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
-    if danger(str(args.get("command") or ""), workspace):
+def classify_shell(args: Mapping[str, object], workspace: Path, *, shell: str | None = None) -> Iterable[str]:
+    if danger(str(args.get("command") or ""), workspace, shell=shell):
         return (DESTRUCTIVE_IRREVERSIBLE,)
     return ()
 
