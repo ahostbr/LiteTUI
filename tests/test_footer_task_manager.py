@@ -10,8 +10,11 @@ from litetui import footer_telemetry as telemetry
 from litetui.widgets import TaskManagerToggle
 
 
-def make_app():
+def make_app(meters_on=True):
+    # The meters default OFF (T1115c); these arms test them switched on unless told not to.
     a = app_mod.LiteTUI()
+    if meters_on is not None:
+        a.settings.footer_task_manager = meters_on
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a.available_models = ["test"]
@@ -150,3 +153,18 @@ async def test_live_shaped_status_keeps_meters_on_second_row(width):
         assert meter_widget.region.right <= width
         assert app.query_one(".task-manager-toggle").region.right <= app.query_one(".footer-meters").region.x
         assert (app.query_one(".footer-meters").region.width == app.footer_meters_text.cell_len)
+
+
+@pytest.mark.asyncio
+async def test_meters_are_off_by_default_and_run_no_sampler(monkeypatch):
+    # Ryan 2026-09-27: "turn this off in light UI though. Uh, make a setting to toggle that".
+    from litetui.settings import Settings
+    assert Settings().footer_task_manager is False
+    monkeypatch.setattr(telemetry.Sampler, "sample", lambda self: telemetry.Reading(cpu=40, ram=50))
+    app = make_app(meters_on=None)
+    async with app.run_test(size=(160, 34)) as pilot:
+        await pilot.pause(0.3)
+        assert app.settings.footer_task_manager is False
+        assert app._footer_sample_timer is None and app._footer_telemetry is None
+        assert app.query_one(TaskManagerToggle).content == "meters:off"
+        assert "CPU" not in app.footer_meters_text.plain

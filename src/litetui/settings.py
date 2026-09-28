@@ -501,8 +501,10 @@ class Settings:
     footer_show_tps: bool = True
     #: Claude prompt-cache health and time left on it, e.g. "cache warm 97% 52m" (T911).
     footer_show_cache: bool = True
-    #: Live machine meters and footer switch; ON unless explicitly disabled.
-    footer_task_manager: bool = True
+    #: Live machine meters on footer line 2. OFF by default (Ryan 2026-09-27: "turn this off in
+    #: light UI though. Uh, make a setting to toggle that"); /settings and the meters:on/off click
+    #: turn it on.
+    footer_task_manager: bool = False
     #: Footer item ids in left-to-right order. Visibility remains controlled by
     #: the switches above; omitted/unknown ids are repaired on load/save.
     footer_order: list[str] = field(
