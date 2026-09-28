@@ -151,6 +151,12 @@ def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkey
     body = app.conversation[0]["content"]
     assert NEW in body
     assert OLD not in body
+    edits = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+             if json.loads(line).get("type") == "edit" and json.loads(line).get("index") == 0]
+    assert edits, "resume rewrote only memory; on-disk index 0 still names the dead seat"
+    saved = edits[-1]["message"]["content"]
+    assert saved.count("You are registered in the LiteHarness fleet") == 1
+    assert NEW in saved and OLD not in saved
 
 
 @pytest.mark.asyncio

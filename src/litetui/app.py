@@ -6007,6 +6007,8 @@ class LiteTUI(App):
         if not n:
             return False   # no line yet; the registration path appends it
         self.conversation[0]["content"] = fixed
+        if not getattr(self, "_convo_loading", False):
+            self._edit(0, "fleet identity corrected")
         return True
 
 

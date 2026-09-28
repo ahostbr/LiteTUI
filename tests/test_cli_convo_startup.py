@@ -75,6 +75,8 @@ def test_actual_resume_restores_before_render_and_defers_native_history(tmp_path
     app._pending_input = []
     app._sync_seat_identity = lambda: None
     app._sync_fleet_identity = lambda: None
+    app.seat = SimpleNamespace(name='TestSeat', registry_name=lambda: None)
+    app._launch_seat_name = ''
     app._refresh_ctx_label = lambda: None
     app._adopt_convo_settings = lambda **kw: calls.append('settings')
     app._render_resumed = lambda path: calls.append('render')
