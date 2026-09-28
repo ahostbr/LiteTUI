@@ -956,6 +956,15 @@ class LiteTUI(App):
         padding-right: 1;
         background: $footer-background;
     }
+    .task-manager-toggle {
+        dock: right;
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        background: $footer-background;
+        color: $accent;
+    }
+    .task-manager-toggle:hover { background: $accent 40%; }
     .pause-button {
         width: auto;
         padding: 0 1;
@@ -1562,6 +1571,11 @@ class LiteTUI(App):
         # opens something the user was not pointing at. An id that is no longer
         # in the list simply drops the selection, which is visible.
         self._footer_nav: str | None = None
+        self._footer_telemetry = None
+        self._footer_history = []
+        self._footer_sampler = None
+        self._footer_sample_timer = None
+        self._footer_sample_pending = False
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
@@ -1945,6 +1959,7 @@ class LiteTUI(App):
             return False
 
     def on_mount(self) -> None:
+        self._sync_footer_sampler()
         state = hook_host.snapshot(self)
         if state.disabled:
             self._system("Hooks disabled by LITETUI_HOOKS=off")
@@ -2201,6 +2216,7 @@ class LiteTUI(App):
         await super()._shutdown()
 
     async def on_unmount(self) -> None:
+        self._stop_footer_sampler()
         from litetui import voice_backend
         voice_backend.stop()
         self._hook_shutting_down = True
@@ -5288,6 +5304,63 @@ class LiteTUI(App):
 
     # ── Context window readout (footer) ───────────────────────
 
+    def _stop_footer_sampler(self) -> None:
+        timer = self._footer_sample_timer
+        if timer is not None:
+            timer.stop()
+            self._footer_sample_timer = None
+        self._footer_sampler = None
+        self._footer_telemetry = None
+        self._footer_history.clear()
+
+    def _sync_footer_sampler(self) -> None:
+        """Only an enabled footer has a timer; slow sensors run in a thread."""
+        if not self.settings.footer_task_manager:
+            self._stop_footer_sampler()
+            self._refresh_ctx_label()
+            return
+        if self._footer_sample_timer is not None:
+            return
+        try:
+            from litetui.footer_telemetry import Sampler
+        except ImportError as exc:
+            # psutil missing from a stale env: no meters, never a seat that can't mount.
+            self._system(f"Task manager off: {exc}. Reinstall LiteTUI's dependencies to enable it.")
+            return
+        self._footer_sampler = Sampler()
+        self._footer_sample_timer = self.set_interval(2.0, self._sample_footer)
+        self._sample_footer()
+
+    def _sample_footer(self) -> None:
+        if self._footer_sample_pending or not self.settings.footer_task_manager:
+            return
+        self._footer_sample_pending = True
+        sampler = self._footer_sampler
+
+        async def run() -> None:
+            import asyncio
+            try:
+                reading = await asyncio.to_thread(sampler.sample)
+                if self.settings.footer_task_manager and sampler is self._footer_sampler:
+                    self._footer_telemetry = reading
+                    # Repeated measurements do not shift the graph or repaint.
+                    if not self._footer_history or reading != self._footer_history[-1]:
+                        self._footer_history.append(reading)
+                        del self._footer_history[:-6]
+                    self._refresh_ctx_label()
+            except (OSError, ValueError, RuntimeError):
+                # A failed sensor isn't a measured zero; try again next tick.
+                pass
+            finally:
+                self._footer_sample_pending = False
+
+        asyncio.create_task(run())
+
+    def toggle_footer_task_manager(self) -> None:
+        from dataclasses import replace
+        self._on_settings_saved(replace(
+            self.settings, footer_task_manager=not self.settings.footer_task_manager))
+
     def footer_display_order(self) -> list[str]:
         """The normalized left-to-right order used by every footer surface."""
         return settings_mod.normalize_footer_order(
@@ -5545,6 +5618,12 @@ class LiteTUI(App):
             if stats.plain:
                 chunks_by_key["tps"] = stats
 
+        if s.footer_task_manager and getattr(self, "_footer_telemetry", None) is not None:
+            from litetui.footer_telemetry import meter
+            history = getattr(self, "_footer_history", [])
+            for index, (label, color) in enumerate(meter(self._footer_telemetry, 180, history)):
+                add(f"telemetry-{index}", label, color)
+
         # Build the actual chunks only after every field has been computed.
         # This keeps the switches and dynamic zero-state rules independent of
         # the user's ordering preference, while giving rendering and navigation
@@ -5556,6 +5635,13 @@ class LiteTUI(App):
             )
             if key in chunks_by_key and key not in ("authority", "plan")
         ]
+        # The synthetic telemetry key expands to individually droppable meters.
+        telemetry = [(key, chunk) for key, chunk in chunks_by_key.items()
+                     if key.startswith("telemetry-")]
+        order = self.footer_display_order() if telemetry else []
+        preceding = set(order[:order.index("telemetry")]) if telemetry else set()
+        insert_at = sum(key in preceding for key, _ in chunks)
+        chunks[insert_at:insert_at] = telemetry
 
         # The footer owns the usable width. During its first compose it is
         # mounted but its children are not, so use the width from the footer's
@@ -5582,7 +5668,9 @@ class LiteTUI(App):
             if width() > available:
                 render_sep = " · "
 
-            for drop_key in ("tps", "bg", "agents", "cache", "model", "convo", "ctx"):
+            for drop_key in ("telemetry-5", "telemetry-4", "telemetry-3",
+                             "telemetry-2", "telemetry-1", "telemetry-0",
+                             "tps", "bg", "agents", "cache", "model", "convo", "ctx"):
                 if width() <= available:
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
@@ -9436,6 +9524,10 @@ class LiteTUI(App):
             self._system(seat_authority.lock_refusal(self) + f" Authority stays {old.tool_policy_profile}; the other settings are saved as usual.")
         self._settings_persist_error = None
         self.settings = new
+        if new.footer_task_manager != old.footer_task_manager:
+            self._sync_footer_sampler()
+            for control in self.query(".task-manager-toggle"):
+                control.sync()
         if not new.tts_enabled:
             from litetui import voice_backend
             voice_backend.stop()

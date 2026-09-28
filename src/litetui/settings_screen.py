@@ -1397,10 +1397,15 @@ class SettingsBody(Widget):
                             "Whether the prompt cache is warm and its hit rate. On Claude, also "
                             "the time left before it expires. Shown on the Claude and Codex backends.",
                         )
+                        yield from self._switch_row(
+                            "footer_task_manager", "Live task manager",
+                            "Real CPU, RAM, GPU/VRAM, disk and network meters in the footer. "
+                            "The footer switch also controls sampling.",
+                        )
                         yield from self._text_row(
                             "footer_order", "Footer order (left to right)",
                             "Comma-separated ids. Use authority, plan, seat, think, "
-                            "bg, agents, convo, ctx, pct, cache, and tps. The switches "
+                            "bg, agents, convo, ctx, pct, cache, tps, and telemetry. The switches "
                             "above control visibility; authority and plan stay "
                             "available because they are interactive status controls. "
                             "Unknown or repeated ids are ignored and missing ids "

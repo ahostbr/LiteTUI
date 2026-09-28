@@ -52,7 +52,7 @@ ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max
 # visible, but their position is still part of the user's left-to-right layout.
 FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
     "pct", "ctx", "seat", "convo", "model", "think",
-    "cache", "tps", "bg", "agents", "authority", "plan",
+    "cache", "tps", "telemetry", "bg", "agents", "authority", "plan",
 )
 
 
@@ -74,6 +74,9 @@ def normalize_footer_order(value: Any) -> list[str]:
          "convo", "ctx", "pct", "tps"),
         ("authority", "plan", "seat", "think", "bg", "agents",
          "convo", "ctx", "pct", "cache", "tps"),
+        # T1113's default, saved to the shared settings.json before "telemetry" (T1115).
+        ("pct", "ctx", "seat", "convo", "model", "think",
+         "cache", "tps", "bg", "agents", "authority", "plan"),
     )
     for former in former_defaults:
         suffix = value[len(former):]
@@ -498,6 +501,8 @@ class Settings:
     footer_show_tps: bool = True
     #: Claude prompt-cache health and time left on it, e.g. "cache warm 97% 52m" (T911).
     footer_show_cache: bool = True
+    #: Live machine meters and footer switch; ON unless explicitly disabled.
+    footer_task_manager: bool = True
     #: Footer item ids in left-to-right order. Visibility remains controlled by
     #: the switches above; omitted/unknown ids are repaired on load/save.
     footer_order: list[str] = field(

@@ -20,7 +20,7 @@ def test_footer_order_defaults_and_repairs_partial_values():
         ["tps", "think", "think", "not-a-field"]
     ) == [
         "tps", "think", "pct", "ctx", "seat", "convo", "model",
-        "cache", "bg", "agents", "authority", "plan",
+        "cache", "telemetry", "bg", "agents", "authority", "plan",
     ]
 
 
@@ -32,8 +32,20 @@ def test_settings_load_repairs_an_old_or_hand_edited_footer_order(tmp_path):
     loaded = settings_mod.load(tmp_path)
     assert loaded.footer_order == [
         "ctx", "seat", "pct", "convo", "model", "think", "cache",
+        "tps", "telemetry", "bg", "agents", "authority", "plan",
+    ]
+
+
+def test_saved_t1113_default_migrates_telemetry_into_status_line(tmp_path):
+    former_default = [
+        "pct", "ctx", "seat", "convo", "model", "think", "cache",
         "tps", "bg", "agents", "authority", "plan",
     ]
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"footer_order": former_default}), encoding="utf-8",
+    )
+    assert settings_mod.load(tmp_path).footer_order == list(settings_mod.FOOTER_ORDER_DEFAULT)
+    assert settings_mod.FOOTER_ORDER_DEFAULT.index("telemetry") < settings_mod.FOOTER_ORDER_DEFAULT.index("authority")
 
 
 @pytest.mark.parametrize(
@@ -76,7 +88,8 @@ def test_custom_complete_footer_order_is_preserved_on_load(tmp_path):
     (tmp_path / "settings.json").write_text(
         json.dumps({"footer_order": custom}), encoding="utf-8"
     )
-    assert settings_mod.load(tmp_path).footer_order == custom
+    # Kept as the user ordered it; a field added later (T1115 telemetry) is appended.
+    assert settings_mod.load(tmp_path).footer_order == custom + ["telemetry"]
 
 
 @pytest.mark.asyncio
@@ -94,5 +107,5 @@ async def test_interface_exposes_and_collects_footer_order():
         saved = body._collect()
         assert saved.footer_order == [
             "tps", "pct", "ctx", "convo", "think", "seat", "plan",
-            "authority", "model", "cache", "bg", "agents",
+            "authority", "model", "cache", "telemetry", "bg", "agents",
         ]
