@@ -133,8 +133,12 @@ async def test_live_shaped_status_keeps_meters_on_second_row(width):
         # wait; keep the geometry assertions independent of scheduler timing.
         for _ in range(40):
             await pilot.pause(0.05)
-            if app.query_one(".ctx-label").region.height and app.query_one(".footer-meters").region.y:
+            status_nodes = list(app.query(".ctx-label"))
+            meter_nodes = list(app.query(".footer-meters"))
+            if (status_nodes and meter_nodes and status_nodes[0].region.height
+                    and meter_nodes[0].region.y):
                 break
+        assert status_nodes and meter_nodes, "footer did not mount within 2 seconds"
         status = app.ctx_label_text.plain
         permission = app.permission_label_text.plain
         meters = app.footer_meters_text.plain
