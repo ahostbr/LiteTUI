@@ -1806,6 +1806,10 @@ class LiteTUI(App):
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
+        self._launch_seat_name = (
+            (os.environ.get("LITEHARNESS_AGENT_NAME") or os.environ.get("LITETUI_SEAT_NAME") or "").strip()
+            if self._spawned_marker else ""
+        )
         seat_id, seat_name, seat_tier = harness_mod.spawned_seat_identity(
             (self.settings.seat_name or "").strip() or "LiteTUI"
         )
@@ -2301,7 +2305,7 @@ class LiteTUI(App):
         _sync_seat_resolution(self)
         ok = await asyncio.to_thread(self.seat.register)
         self._seat_started = True
-        if ok and self._resumed_seat_name:
+        if ok and self._resumed_seat_name and self.seat.name != self._resumed_seat_name:
             async with self._seat_claim_lock:
                 await asyncio.to_thread(self.seat.claim_name, self._resumed_seat_name)
             self._refresh_ctx_label()
@@ -3374,6 +3378,8 @@ class LiteTUI(App):
         """Claim the saved conversation name without blocking the UI thread."""
         if not self._seat_started or not self.seat.registered:
             return  # initial registration will pick up the pending resume
+        if self.seat.name == name:
+            return  # already holds the registry name
         async with self._seat_claim_lock:
             if self.convo_id != convo_id or self._resumed_seat_name != name:
                 return
@@ -3702,8 +3708,12 @@ class LiteTUI(App):
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
         saved_name = meta.get("agent_name")
-        self._resumed_seat_name = saved_name.strip() if isinstance(saved_name, str) and saved_name.strip() else None
-        if self._resumed_seat_name:
+        saved_name = saved_name.strip() if isinstance(saved_name, str) else ""
+        registry_name = self.seat.registry_name()
+        self._resumed_seat_name = self._launch_seat_name or registry_name or saved_name or None
+        if registry_name and not self._launch_seat_name and registry_name != self.seat.name:
+            self.seat.name = registry_name  # footer reflects the existing claim immediately
+        if self._resumed_seat_name and self._resumed_seat_name != registry_name:
             self._claim_resumed_seat_name(self._resumed_seat_name, self.convo_id)
         from litetui.codex_steering import restore_queue
         restore_queue(self)

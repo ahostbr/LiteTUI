@@ -339,26 +339,26 @@ class Seat:
                                             ("--spawned-by", self.spawned_by))
                     if value for arg in (flag, value)]
 
-    def refresh_name(self, root: Path | None = None) -> bool:
-        """Adopt a rename of this agent's own registry row without claiming it.
-
-        A separate CLI can rename the seat while this TUI runs. Read only our
-        agent-id file (never search by name); an absent or malformed row must
-        not replace the last verified identity. Heartbeat calls this BEFORE
-        writing presence, otherwise its stale --name immediately undoes the
-        external rename.
-        """
-        if not self.registered or harness_disabled():
-            return False
+    def registry_name(self, root: Path | None = None) -> str | None:
+        """Name held by this seat's agent id, independent of conversation metadata."""
+        if harness_disabled():
+            return None
         path = (root or Path.home() / ".liteharness") / "agents" / f"{self.agent_id}.json"
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return False
+            return None
         if not isinstance(row, dict) or row.get("agent_id") != self.agent_id:
-            return False
+            return None
         name = row.get("name")
-        if not isinstance(name, str) or not name.strip() or name == self.name:
+        return name.strip() if isinstance(name, str) and name.strip() else None
+
+    def refresh_name(self, root: Path | None = None) -> bool:
+        """Adopt a registry rename before heartbeat could overwrite it."""
+        if not self.registered:
+            return False
+        name = self.registry_name(root)
+        if not name or name == self.name:
             return False
         self.name = name
         return True
