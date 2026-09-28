@@ -1,15 +1,18 @@
 """Responsive compact pane: measured geometry, expansion, recap and board ownership."""
 import json
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from litetui.app import LiteTUI
+from litetui.claude_turn import replay_activity
+from litetui.codex_trace import replay as replay_codex
 from litetui.compact_tools import summary
 from litetui.now_card import NowCard
 from litetui.recap import split_recap
-from litetui.widgets import ToolMessage
+from litetui.widgets import AssistantMessage, ToolMessage
 
 
 def app_for_pilot():
@@ -29,12 +32,21 @@ def app_for_pilot():
 async def test_footer_regions_and_compact_tool(width):
     app = app_for_pilot()
     async with app.run_test(size=(width, 22)) as pilot:
-        await pilot.pause(.3)
+        for _ in range(40):
+            await pilot.pause(.05)
+            status_nodes = list(app.query('.ctx-label'))
+            controls_nodes = list(app.query('.footer-second-row'))
+            if status_nodes and controls_nodes and status_nodes[0].region.height and controls_nodes[0].region.y:
+                break
         status = app.query_one('.ctx-label')
         controls = app.query_one('.footer-second-row')
         assert status.region.y + 1 == controls.region.y
         assert status.region.height == controls.region.height == 1
         assert '9%' in status.content.plain and 'Carmack' in status.content.plain
+        for _ in range(20):
+            if app.query_one('.compact-footer-hints').display == (width <= 93):
+                break
+            await pilot.pause(.05)
         assert app.query_one('.compact-footer-hints').display == (width <= 93)
         assert app.query_one('.footer-hints').display == (width >= 101)
         tool = ToolMessage('read')
@@ -83,6 +95,84 @@ def test_recap_stream_split_and_missing_malformed():
 
 
 @pytest.mark.asyncio
+async def test_recap_receipt_summary_now_and_presence(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    presence = tmp_path / '.liteharness' / 'agents' / 'test-agent.json'
+    presence.parent.mkdir(parents=True)
+    presence.write_text(json.dumps({'agent_id': 'test-agent', 'name': 'Carmack'}), encoding='utf-8')
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        card = AssistantMessage()
+        card.set_answer('Answer.')
+        card.recap = 'Changed renderer / Checks passed'
+        app.query_one('#chat-log').mount(card)
+        await pilot.pause(.1)
+        summary_calls = []
+        app._kick_card_summary = summary_calls.append
+        app._record_recap(card.recap)
+        app._settle_turn_stop_line(card, started_at=0, final_tps=2.0, stopped=False)
+        assert not summary_calls
+        assert card.recap in card.summary and card.recap in str(card.stop_line.content)
+        assert card.recap in app.query_one(NowCard).content
+        data = json.loads(presence.read_text(encoding='utf-8'))
+        assert data['last_recap'] == card.recap and data['last_recap_at']
+        assert data['name'] == 'Carmack'
+
+
+@pytest.mark.asyncio
+async def test_missing_recap_keeps_side_call_fallback():
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        card = AssistantMessage()
+        card.set_answer('No recap returned.')
+        app.query_one('#chat-log').mount(card)
+        await pilot.pause(.1)
+        calls = []
+        app._kick_card_summary = calls.append
+        app._settle_turn_stop_line(card, started_at=0, final_tps=None, stopped=False)
+        assert calls == [card]
+        assert 'No recap returned' not in str(card.stop_line.content)
+
+
+@pytest.mark.asyncio
+async def test_saved_recaps_replay_without_tags(tmp_path):
+    text = 'Answer.\n<recap>Did work\nGreen checks</recap>'
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        app.conversation = [{'role': 'assistant', 'content': text}]
+        app._render_resumed(tmp_path / 'convo.jsonl')
+        await pilot.pause(.2)
+        card = list(app.query(AssistantMessage))[-1]
+        assert card.answer_text == 'Answer.'
+        assert card.recap == card.summary == 'Did work / Green checks'
+        metadata = {'card_text_lengths': [len(text)], 'activities': []}
+        claude_card = replay_activity(app, metadata, text)[0]
+        await pilot.pause(.1)
+        assert claude_card.answer_text == 'Answer.' and claude_card.recap == card.recap
+        trace = {'display_trace': {'version': 1, 'items': [{'id': 'a', 'kind': 'agentMessage', 'result': text}]}}
+        replay_codex(app, trace, set())
+        await pilot.pause(.1)
+        codex_card = list(app.query(AssistantMessage))[-1]
+        assert codex_card.answer_text == 'Answer.' and codex_card.recap == card.recap
+
+
+@pytest.mark.asyncio
+async def test_retry_banner_lifetime_and_cancellation():
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.15)
+        card = app.query_one(NowCard)
+        app._retry_notice('Codex rate limited (HTTP 429); retrying in 2s.')
+        assert card.wait[:2] == ('provider', 'rate-limit retry')
+        assert 'WAITING ON provider' in card.content
+        app._end_wait()  # first resumed chunk, terminal error, or stream cancellation
+        assert card.wait is None
+        app._retry_notice('Codex rate limited (HTTP 429); retrying in 2s.')
+        app._retry_notice('Codex connection reset; retrying in 2s.')
+        assert card.wait is None
+
+
+@pytest.mark.asyncio
 async def test_card_reads_only_assignee_from_sqlite(tmp_path, monkeypatch):
     import litetui.now_card as now
     monkeypatch.setattr(now.Path, 'home', lambda: tmp_path)
@@ -111,8 +201,7 @@ async def test_slim_input_focus_and_text_growth():
         await pilot.pause(.3)
         box = app.query_one('PromptBox')
         field = app.query_one('#message-input')
-        assert box.region.height == 2
-        assert field.region.height >= 2  # Textual Input intrinsic minimum with a full border.
+        assert box.region.height == field.region.height == 3  # Borders and one text row remain visible.
         field.focus()
         await pilot.pause(.2)
         assert box.region.height == 5
@@ -124,7 +213,7 @@ async def test_slim_input_focus_and_text_growth():
         field.value = ''
         box.sync_compact()
         await pilot.pause(.2)
-        assert box.region.height == 2
+        assert box.region.height == field.region.height == 3
 
 
 @pytest.mark.asyncio

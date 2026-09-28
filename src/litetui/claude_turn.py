@@ -773,8 +773,13 @@ def replay_activity(app, metadata, content=None):
     answers = []
     for index, card_text in enumerate(texts):
         if card_text:
+            from litetui.recap import split_recap
+            shown, recap = split_recap(card_text, final=True)
             bubble = app._assistant_bubble()
-            bubble.set_answer(card_text)
+            bubble.set_answer(shown)
+            if recap:
+                bubble.recap = recap
+                bubble.set_summary(recap)
             bubble.settled = True
             answers.append(bubble)
         _replay_tools(app, [a for a in activities if a.get("card") == index], ToolMessage)

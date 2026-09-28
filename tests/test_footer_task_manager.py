@@ -129,7 +129,12 @@ async def test_live_shaped_status_keeps_meters_on_second_row(width):
     app._footer_telemetry = history[-1]
     app._footer_history = history
     async with app.run_test(size=(width, 34)) as pilot:
-        await pilot.pause(0.2)
+        # The footer's layout may lag mount under a loaded CI loop. Bound the
+        # wait; keep the geometry assertions independent of scheduler timing.
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.query_one(".ctx-label").region.height and app.query_one(".footer-meters").region.y:
+                break
         status = app.ctx_label_text.plain
         permission = app.permission_label_text.plain
         meters = app.footer_meters_text.plain

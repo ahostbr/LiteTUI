@@ -462,7 +462,11 @@ class ThinkingBlock(Vertical):
             self.add_class("expanded")
         else:
             self.remove_class("expanded")
-        self.set_class(getattr(self, "_compact", False) and not value, "compact-folded")
+        if getattr(self, "_compact", False):
+            if value:
+                self.remove_class("compact-folded")
+            else:
+                self.add_class("compact-folded")
         marker = "\u25be" if value else "\u25b8"
         self._marker = marker
         # A finished block keeps its readout across toggles (the user): the frozen
@@ -574,7 +578,7 @@ class ThinkingBlock(Vertical):
         `tokens` is the reasoning-delta count for the turn (T079). Same
         discipline as tps: passed in, never fetched, and defaulted so every
         existing caller and double keeps working untouched."""
-        if self._compact and not self.expanded and self._t0 is not None:
+        if getattr(self, "_compact", False) and not self.expanded and self._t0 is not None:
             from litetui.fmt import fmt_dur
             lines = [line.strip(" #*\t") for line in self._buffer.splitlines() if line.strip()]
             current = lines[-1][:65] if lines else "Thinking"

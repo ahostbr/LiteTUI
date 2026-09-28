@@ -82,4 +82,7 @@ def summary(name: str, args_json: str, result: str | None, ok: bool, width: int,
         left = (budget - 1) // 2
         right = budget - 1 - left
         target = target[:left] + "…" + (target[-right:] if right else "") if budget > 1 else "…"
-    return (prefix + target + detail + suffix)[:width]
+    # Detail can exceed the budget at very narrow widths. Rich cell slicing
+    # handles wide glyphs without turning one terminal row into two.
+    from rich.text import Text
+    return Text(prefix + target + detail + suffix)[:width].plain

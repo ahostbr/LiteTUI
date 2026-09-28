@@ -45,10 +45,12 @@ class PromptBox(Container):
         narrow = getattr(app, '_compact_mode', False) and not (
             app.screen.focused is field or bool(field.value))
         self.set_class(narrow, 'slim-prompt')
-        self.styles.height = 2 if narrow else 5
-        field.styles.height = 2 if narrow else 5
+        # Input has a three-cell intrinsic minimum: top border, one text row,
+        # bottom border. Two cells clip the bottom edge and its controls.
+        self.styles.height = 3 if narrow else 5
+        field.styles.height = 3 if narrow else 5
         field.styles.padding_bottom = 0 if narrow else 1
-        field.styles.border_bottom = ('solid', '#525252') if narrow else None
+        field.styles.border_bottom = None
         self.query_one('#scroll-lock').styles.offset = (max(0, self.size.width - 6), 0)
         self.query_one('#prompt-actions').styles.offset = (
             max(0, self.size.width - 19), 1 if narrow else 4)

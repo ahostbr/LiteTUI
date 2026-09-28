@@ -21,14 +21,21 @@ class NowCard(Static):
         self.wait: tuple[str, str, float] | None = None
         self.idle_since: float | None = time.time()
         self._read_at = 0.0
+        self._agent_id: str | None = None
 
     def read_task(self, agent_id: str | None) -> None:
-        if not agent_id or time.monotonic() - self._read_at < 30:
+        if not agent_id:
+            self._agent_id = None
+            self.card_label = "no card claimed"
             return
+        if agent_id == self._agent_id and time.monotonic() - self._read_at < 30:
+            return
+        previous = self.card_label if agent_id == self._agent_id else "no card claimed"
+        self._agent_id = agent_id
         self._read_at = time.monotonic()
-        previous = self.card_label
         path = Path.home() / ".litesuite" / "harness" / "tasks.db"
         if not path.exists():
+            self.card_label = "no card claimed"
             return
         try:
             # URI mode=ro keeps the UI from creating/locking the board. SQLite

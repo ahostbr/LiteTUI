@@ -1989,6 +1989,14 @@ class LiteTUI(App):
             tool.set_expanded(not tool.expanded)
             tool.scroll_visible()
 
+    def _retry_notice(self, text: str) -> None:
+        self._system(text)
+        if "429" in text or "rate limited" in text.lower():
+            self._begin_wait("provider", "rate-limit retry")
+        else:
+            # A later non-429 retry supersedes the earlier rate-limit wait.
+            self._end_wait()
+
     def _begin_wait(self, owner: str, reason: str) -> None:
         self._elapsed.ensure_running()
         try:
@@ -2815,17 +2823,21 @@ class LiteTUI(App):
         if route == "refuse":
             approval_relay.record(self, "no_spawner", name, "child")
             return False
-        if self._rpc:
-            # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
-            answer = await tool_approval.approve_over_rpc(
-                self, name, args, decision, timeout=0 if route == "own" else None)
-        elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
-            from litetui.claude_turn import approval_dialog
-            answer = await approval_dialog(self, name, args, decision)
-        else:
-            answer = await show_dialog(
-                self, partial(ToolApprovalBody, name, args, decision),
-                modal_factory=partial(ToolApprovalScreen, name, args, decision))
+        self._begin_wait("host" if self._rpc else "you", "approval")
+        try:
+            if self._rpc:
+                # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
+                answer = await tool_approval.approve_over_rpc(
+                    self, name, args, decision, timeout=0 if route == "own" else None)
+            elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
+                from litetui.claude_turn import approval_dialog
+                answer = await approval_dialog(self, name, args, decision)
+            else:
+                answer = await show_dialog(
+                    self, partial(ToolApprovalBody, name, args, decision),
+                    modal_factory=partial(ToolApprovalScreen, name, args, decision))
+        finally:
+            self._end_wait()
         approval_relay.record(self, "no_host" if answer is None else "approved" if answer else "denied",
                               name, "child")
         return bool(answer)
@@ -2919,19 +2931,19 @@ class LiteTUI(App):
                     approval_relay.record(self, "no_host" if unanswered else
                                           "approved" if answer else "denied", name, source)
             else:
-                if getattr(getattr(self, "backend", None), "owns_native_turns", False):
-                    from litetui.claude_turn import approval_dialog
-                    answer = await approval_dialog(self, name, args, decision)
-                else:
-                    self._begin_wait("you", "approval")
-                    try:
+                self._begin_wait("you", "approval")
+                try:
+                    if getattr(getattr(self, "backend", None), "owns_native_turns", False):
+                        from litetui.claude_turn import approval_dialog
+                        answer = await approval_dialog(self, name, args, decision)
+                    else:
                         answer = await show_dialog(
                             self,
                             partial(ToolApprovalBody, name, args, decision),
                             modal_factory=partial(ToolApprovalScreen, name, args, decision),
                         )
-                    finally:
-                        self._end_wait()
+                finally:
+                    self._end_wait()
                 unanswered = False
             # `not answer` covers three cases on purpose: DENIED, and None from
             # a screen dismissed without a value, and any future falsy answer.
@@ -3911,15 +3923,20 @@ class LiteTUI(App):
                 native_text = native_text or split_card_texts(
                     m.get("claude_native") or {}, text) is not None
                 if text and not native_text:
+                    from litetui.recap import split_recap
+                    shown, recap = split_recap(text, final=True)
                     w = self._assistant_bubble()
-                    w.set_answer(text)
+                    w.set_answer(shown)
+                    if recap:
+                        w.recap = recap
+                        w.set_summary(recap)
                     # A restored turn is finished by definition, so it can fold
                     # like any other. Its summary comes from the store, and
                     # summary_done stops the reopen from re-asking the model for
                     # a line it already has - the user asked for exactly that.
                     w.settled = True
                     stored = restored_summaries.get(self._card_summary_key(text))
-                    if stored:
+                    if stored and not recap:
                         w.set_summary(stored)
                         w.summary_done = True
                     assistants += 1
@@ -3931,7 +3948,7 @@ class LiteTUI(App):
                 from litetui.claude_turn import replay_activity
                 for w in replay_activity(self, m["claude_native"], text):
                     stored = restored_summaries.get(self._card_summary_key(w.answer_text))
-                    if stored:
+                    if stored and not getattr(w, "recap", None):
                         w.set_summary(stored)
                         w.summary_done = True
                     assistants += 1
@@ -6496,16 +6513,15 @@ class LiteTUI(App):
         if not getattr(seat, "registered", False) or not getattr(seat, "agent_id", None):
             return
         from pathlib import Path
-        import json
+        from datetime import datetime, timezone
         path = Path.home() / ".liteharness" / "agents" / f"{seat.agent_id}.json"
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("agent_id") != seat.agent_id:
-                return
-            data["last_recap"] = recap
-            data["last_recap_at"] = time.time()
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except (OSError, ValueError):
+            from liteharness.config import merge_presence_fields
+            merge_presence_fields(path, {
+                "last_recap": recap,
+                "last_recap_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except (ImportError, OSError, ValueError):
             pass
 
     def _settle_turn_stop_line(
@@ -8415,7 +8431,7 @@ class LiteTUI(App):
                 # A closure, not the bound method: test fakes deepcopy their
                 # kwargs, and deepcopying a bound method copies the whole app.
                 stream = await model_transport.for_app(self).create(
-                    retry_notice=lambda text: self._system(text), **kwargs
+                    retry_notice=self._retry_notice, **kwargs
                 )
             except Exception as e:
                 runtime_log.record(
@@ -8430,6 +8446,7 @@ class LiteTUI(App):
                     detail=f"{type(e).__name__}: {e}",
                     exc=e,
                 )
+                self._end_wait()
                 self._elapsed.stop_body()
                 self._thinking_done()
                 # T688 F: if the app that owned our attached llama.cpp router has
@@ -8468,6 +8485,7 @@ class LiteTUI(App):
 
             try:
                 async for chunk in stream:
+                    self._end_wait()  # A retry has actually resumed output, not merely opened a socket.
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
                     # T806: llama.cpp-compatible engines publish their OWN
@@ -8721,6 +8739,7 @@ class LiteTUI(App):
                                      error=takeover or _plain_backend_error(e, self.backend))
                 return
             finally:
+                self._end_wait()  # Cancellation, exhausted retries, and empty streams clear the banner.
                 if hasattr(stream, "close"):
                     await stream.close()
 
