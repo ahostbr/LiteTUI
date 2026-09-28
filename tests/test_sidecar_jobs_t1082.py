@@ -49,8 +49,8 @@ def _replies(owner):
 
 def test_SC1_the_snapshot_offers_only_the_levels_this_seat_may_record():
     jobs = [scheduler.Job(prompt="p", schedule="@daily", tool_profile="scheduled")]
-    locked = public_jobs(jobs, _app(AUTONOMOUS))
-    assert (locked["levels"], locked["default_level"]) == ([STRICT, INTERACTIVE], INTERACTIVE)
+    spawned = public_jobs(jobs, _app(AUTONOMOUS))
+    assert (spawned["levels"], spawned["default_level"]) == ([STRICT, INTERACTIVE, AUTONOMOUS], AUTONOMOUS)
     own = public_jobs(jobs, _app(INTERACTIVE, own=True))
     assert (own["levels"], own["default_level"]) == ([STRICT, INTERACTIVE, AUTONOMOUS], INTERACTIVE)
     # Each job shows the level it RUNS at; the stored value is untouched.
@@ -104,16 +104,14 @@ def test_SC3_job_create_goes_through_the_one_cron_creation_path():
     assert [j.tool_profile for j in scheduler.load(paths.data_root())] == [STRICT]
 
 
-def test_SC3_a_locked_seat_cannot_create_an_autonomous_job_from_the_sidecar():
+def test_SC3_spawned_seat_can_create_an_autonomous_job_from_the_sidecar():
     a = _app(AUTONOMOUS)
     owner = Mock()
     handler = SettingsPatchDispatcher(a, owner, create_job=create_job)
     handler({"id": 1, "command": "job_create", "payload": {**JOB, "tool_profile": AUTONOMOUS}})
     [reply] = _replies(owner)
-    assert reply["saved"] is False and seat_authority.lock_refusal(a) in reply["error"]
-    assert scheduler.load(paths.data_root()) == []
-    handler({"id": 2, "command": "job_create", "payload": JOB})   # no level: this seat's, capped
-    assert _replies(owner)[-1]["job"]["tool_profile"] == INTERACTIVE
+    assert reply["saved"] is True and reply["job"]["tool_profile"] == AUTONOMOUS
+    assert [j.tool_profile for j in scheduler.load(paths.data_root())] == [AUTONOMOUS]
 
 
 def test_SC3_a_window_without_the_create_hook_refuses():

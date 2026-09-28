@@ -67,10 +67,6 @@ class CronService:
             job = self.find(rest)
             if not job:
                 return
-            why = seat_authority.job_write_refusal(self._app, job)
-            if why:
-                self._app._system(f"/cron: {why}")
-                return
             self.jobs.remove(job)
             sched_mod.save(self.jobs, paths.data_root())
             self._app._system(f"/cron: removed {job.id} ({job.label or job.prompt[:40]})")
@@ -79,10 +75,6 @@ class CronService:
         if verb in ("on", "off", "enable", "disable"):
             job = self.find(rest)
             if not job:
-                return
-            why = seat_authority.job_write_refusal(self._app, job)
-            if why:
-                self._app._system(f"/cron: {why}")
                 return
             job.enabled = verb in ("on", "enable")
             sched_mod.save(self.jobs, paths.data_root())

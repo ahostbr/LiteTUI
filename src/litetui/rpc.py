@@ -371,10 +371,7 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
 
 
 def _profile_error(app, profile: str) -> str:
-    """Why set_tool_profile said no: a known profile was refused by the T1049 lock."""
-    from litetui import seat_authority, tool_policy
-    if profile in tool_policy.PROFILES:
-        return seat_authority.lock_refusal(app)
+    """The setter only refuses unknown profile names."""
     return f"unknown tool profile {profile!r}"
 
 
@@ -423,9 +420,6 @@ def _handle_jobs(app: LiteTUI, cmd_type: str, cmd: dict[str, Any], cmd_id: Any) 
         elif verb == "delete":
             job_id = cmd.get("job_id", "")
             hits = [j for j in app.jobs if getattr(j, "id", None) == job_id]
-            why = next(filter(None, (seat_authority.job_write_refusal(app, j) for j in hits)), None)
-            if why:
-                raise ValueError(why)  # T1082 R3: nothing is deleted
             for job in hits:
                 app.jobs.remove(job)
             scheduler.save(app.jobs, paths.data_root())
