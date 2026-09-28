@@ -1,6 +1,8 @@
 """Footer telemetry: measured-only meters, switch ownership and idle discipline."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from litetui import app as app_mod
@@ -38,7 +40,6 @@ def test_sparklines_follow_changing_cpu_gpu_network_series():
 
 
 def test_sampler_uses_real_counters_and_rates(monkeypatch):
-    from types import SimpleNamespace
     clock = iter([10.0, 12.0])
     disk = iter([SimpleNamespace(read_bytes=100, write_bytes=200),
                  SimpleNamespace(read_bytes=1100, write_bytes=1200)])
@@ -100,3 +101,52 @@ async def test_a_missing_sensor_library_hides_meters_instead_of_failing_mount(mo
         await pilot.pause(0.2)
         assert app._footer_sample_timer is None
         assert app._footer_telemetry is None
+
+
+@pytest.mark.parametrize("width", [160, 120, 80])
+@pytest.mark.asyncio
+async def test_live_shaped_status_keeps_meters_on_second_row(width):
+    app = make_app()
+    app.seat = SimpleNamespace(name="Carmack", registered=True)
+    app.convo_id = "a766a2d6-4c6e-42e7-ae12-f2075825041a"
+    app.model_id = "gpt-6-sol"
+    app.thinking_level = "high"
+    app.ctx_used, app.ctx_max, app.ctx_loaded = 22824, 258400, True
+    app.tps = 12.0
+    app.settings.footer_show_cache = True
+    app.backend = SimpleNamespace(name="codex", shutdown=lambda: None)
+    app.last_usage = {"latest_request_usage": {"inputTokens": 1000,
+                                               "cachedInputTokens": 990}}
+    # No real sampling: each measure and its history are deterministic.
+    app._sync_footer_sampler = lambda: None
+    history = [telemetry.Reading(cpu=10, gpu=20, network=1024, ram=50,
+                                 vram=30, disk=1024),
+               telemetry.Reading(cpu=65, gpu=75, network=8192, ram=60,
+                                 vram=40, disk=2048)]
+    app._footer_telemetry = history[-1]
+    app._footer_history = history
+    async with app.run_test(size=(width, 34)) as pilot:
+        await pilot.pause(0.2)
+        status = app.ctx_label_text.plain
+        permission = app.permission_label_text.plain
+        meters = app.footer_meters_text.plain
+        print(f"\n{width}: line1 {status}\n{width}: line2 {permission}  meters:on{meters}")
+        assert "CPU" not in status and "GPU" not in status
+        if width == 160:
+            assert "cache warm 99%" in status
+        assert all(value in status for value in ("9%", "Carmack", "think:high"))
+        if width == 120:
+            assert "12.0 tok/s" in status and "cache warm 99%" in status
+            assert all(value in meters for value in ("CPU", "GPU", "NET"))
+            assert "▁" in meters and "█" in meters
+        assert "CPU" in meters
+        assert "DISK" not in meters  # Lowest priority goes first, not a clipped fragment.
+        assert app.query_one(".ctx-label").region.y + 1 == app.query_one(".footer-meters").region.y
+        row = app.query_one(".footer-second-row")
+        toggle = app.query_one(".task-manager-toggle")
+        meter_widget = app.query_one(".footer-meters")
+        assert (row.query_one(".permission-label").region.width + toggle.region.width
+                + meter_widget.region.width <= width)
+        assert meter_widget.region.right <= width
+        assert app.query_one(".task-manager-toggle").region.right <= app.query_one(".footer-meters").region.x
+        assert (app.query_one(".footer-meters").region.width == app.footer_meters_text.cell_len)

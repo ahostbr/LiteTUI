@@ -1262,11 +1262,16 @@ class ContextFooter(Footer):
         if hasattr(app, "ctx_label_text"):
             status.content = app.ctx_label_text
         yield status
-        permission = Static("", classes="permission-label")
-        if hasattr(app, "permission_label_text"):
-            permission.content = app.permission_label_text
-        yield permission
-        yield TaskManagerToggle()
+        with Horizontal(classes="footer-second-row"):
+            permission = Static("", classes="permission-label")
+            if hasattr(app, "permission_label_text"):
+                permission.content = app.permission_label_text
+            yield permission
+            yield TaskManagerToggle()
+            meters = Static("", classes="footer-meters")
+            if hasattr(app, "footer_meters_text"):
+                meters.content = app.footer_meters_text
+            yield meters
 
 
 class TaskManagerToggle(Static):

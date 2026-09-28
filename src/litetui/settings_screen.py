@@ -1405,7 +1405,9 @@ class SettingsBody(Widget):
                         yield from self._text_row(
                             "footer_order", "Footer order (left to right)",
                             "Comma-separated ids. Use authority, plan, seat, think, "
-                            "bg, agents, convo, ctx, pct, cache, tps, and telemetry. The switches "
+                            "bg, agents, convo, ctx, pct, cache, and tps. Telemetry always "
+                            "follows meters:on on the second row; its saved order id is kept "
+                            "for compatibility. The switches "
                             "above control visibility; authority and plan stay "
                             "available because they are interactive status controls. "
                             "Unknown or repeated ids are ignored and missing ids "
