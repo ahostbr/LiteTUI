@@ -257,6 +257,28 @@ async def test_slim_input_focus_and_text_growth():
 
 
 @pytest.mark.asyncio
+async def test_keyboard_selects_older_tool_without_collapsing_newer():
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        older, newer = ToolMessage('read'), ToolMessage('read')
+        older.set_args('{"path":"older.py"}')
+        older.set_result('older full output', True)
+        newer.set_args('{"path":"newer.py"}')
+        newer.set_result('newer full output', True)
+        await app.query_one('#chat-log').mount(older, newer)
+        await pilot.pause(.2)
+        expected = older._body_content().plain
+        await pilot.press('ctrl+b')  # first selection: latest
+        await pilot.press('ctrl+b')  # then previous/older
+        assert app.focused is older.header
+        await pilot.press('ctrl+e')
+        await pilot.pause(.1)
+        assert older.expanded and older.body.content.plain == expected
+        assert not newer.expanded
+
+
+@pytest.mark.asyncio
 async def test_hysteresis_override_and_click_expansion():
     app = app_for_pilot()
     async with app.run_test(size=(46, 22)) as pilot:

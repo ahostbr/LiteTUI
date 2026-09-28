@@ -1531,6 +1531,7 @@ class LiteTUI(App):
                 priority=True, show=False),
         Binding("ctrl+p", "toggle_plan_mode", "Plan", priority=True, show=False),
         Binding("ctrl+g", "toggle_compact_view", "Compact view", priority=True),
+        Binding("ctrl+b", "select_previous_tool", "Select tool", priority=True),
         Binding("ctrl+e", "expand_recent_tool", "Expand tool", priority=True),
     ]
 
@@ -1981,11 +1982,23 @@ class LiteTUI(App):
         self._compact_override = not self._compact_mode
         self._apply_compact_profile()
 
+    def action_select_previous_tool(self) -> None:
+        if not self._compact_mode:
+            return
+        tools = list(self.query(ToolMessage))
+        if not tools:
+            return
+        focused = self.focused
+        selected = next((i for i, tool in enumerate(tools) if tool.header is focused), len(tools))
+        tool = tools[(selected - 1) % len(tools)]
+        tool.header.focus()
+        tool.scroll_visible()
+
     def action_expand_recent_tool(self) -> None:
-        # Latest row first; keyboard access does not steal arrow keys from input.
+        # Ctrl+B selects older rows without stealing the prompt's history keys.
         tools = list(self.query(ToolMessage))
         if tools:
-            tool = tools[-1]
+            tool = next((tool for tool in tools if tool.header is self.focused), tools[-1])
             tool.set_expanded(not tool.expanded)
             tool.scroll_visible()
 
