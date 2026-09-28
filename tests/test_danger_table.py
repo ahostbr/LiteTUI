@@ -99,8 +99,9 @@ def test_every_class_has_bash_and_powershell_cases():
         assert set(shells) == {"bash", "powershell"} and all(shells.values()), label
 
 
-def _shell(command, profile=tp.INTERACTIVE):
-    return tp.evaluate(profile, tp.SHELL_POLICY, {"command": command}, WS, tool_name="bash")
+def _shell(command, profile=tp.INTERACTIVE, shell=None):
+    return tp.evaluate(profile, tp.SHELL_POLICY, {"command": command}, WS,
+                       tool_name=shell or "bash", shell=shell)
 
 
 def test_interactive_allows_read_only_powershell_formatters():
@@ -260,6 +261,30 @@ def test_double_quoted_argument_is_data_except_executable_substitution(command, 
     assert _shell(command).action == (tp.CONFIRM if label else tp.ALLOW)
 
 
+@pytest.mark.parametrize("shell,command", [
+    ("powershell", 'git commit -m "fixed `"Remove-Item`" wording"'),
+    ("bash", 'git commit -m "fixed \\"Remove-Item\\" wording"'),
+    ("bash", 'echo "a \\"; rm -rf build"'),  # the semicolon is still inside Bash quotes
+])
+def test_shell_escaped_quotes_in_message_do_not_ask(shell, command):
+    assert tp.danger(command, WS, shell=shell) is None
+    assert _shell(command, shell=shell).action == tp.ALLOW
+
+
+@pytest.mark.parametrize("shell,command", [
+    ("powershell", 'git commit -m "fixed `"wording`""; Remove-Item x'),
+    ("bash", 'git commit -m "fixed \\"wording\\""; Remove-Item x'),
+    ("powershell", 'echo "$(Remove-Item x)"'),
+    ("bash", 'echo "$(rm -rf x)"'),
+    ("powershell", 'powershell -Command "Remove-Item x"'),
+    ("bash", 'bash -c "rm -rf x"'),
+    ("bash", 'echo "`rm -rf x`"'),
+])
+def test_shell_escape_does_not_hide_executable_commands(shell, command):
+    assert tp.danger(command, WS, shell=shell) == tp.DELETION
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
 def test_fleet_mcp_executable_payloads_not_inbox_quotations():
     cases = (
         ("mcp__litesuite-tools__pccontrol", {"action": "launch"}, tp.CONFIRM, tp.FOREIGN_PROCESS),
@@ -337,10 +362,10 @@ def _app(source):
                            _agent_launched=False)
 
 
-def _authorize(app, command):
+def _authorize(app, command, shell="bash"):
     from litetui.app import LiteTUI
 
-    return asyncio.run(LiteTUI._authorize_action(app, "bash", {"command": command}, tp.SHELL_POLICY, workspace=WS))
+    return asyncio.run(LiteTUI._authorize_action(app, shell, {"command": command}, tp.SHELL_POLICY, workspace=WS))
 
 
 @pytest.mark.parametrize("source", sorted(tp.UNATTENDED_SOURCES))
@@ -352,6 +377,14 @@ def test_an_unattended_turn_is_refused_only_the_dangerous_action(source):
     assert "Nothing ran" in text
     assert not getattr(app, "_stop_requested", False), "the rest of the turn must go on"
     assert _authorize(app, "git status") is None  # authorized: the turn keeps interactive's powers
+
+
+@pytest.mark.parametrize("shell,command", [
+    ("powershell", 'git commit -m "fixed `"Remove-Item`" wording"'),
+    ("bash", 'git commit -m "fixed \\"Remove-Item\\" wording"'),
+])
+def test_authorization_passes_shell_identity_to_classifier(shell, command):
+    assert _authorize(_app("typed"), command, shell=shell) is None
 
 
 def test_inbox_mail_keeps_interactive_and_tells_the_model_the_rule():

@@ -54,6 +54,10 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=ONCE):
         _dispatch_for=lambda _name: run,
         plugins=_Policies(policy),
         push_screen_wait=confirm,
+        # T1124 tracks visible approval waits; this headless policy host has
+        # no card, so the wait lifecycle has no UI work to perform.
+        _begin_wait=lambda owner, reason: None,
+        _end_wait=lambda token: None,
         # Standing allow/deny rules are read straight off settings, by the same
         # reasoning as tools_enabled above: a missing rule set must not mean
         # "no rules apply" by accident. Defaults are empty, so this host models
