@@ -39,10 +39,10 @@ ASK = {
         "powershell": ["Expand-Archive a.zip -DestinationPath out", "expand a.cab -F:* out", "7z e a.zip"],
     },
     tp.FOREIGN_PROCESS: {
-        "bash": ["python /tmp/evil.py", "node ~/x.js", "bash /opt/install.sh", "/usr/local/bin/tool --go"],
+        "bash": ["start chrome", "cmd /c build.bat"],
         "powershell": ["Start-Process notepad", "saps calc", "start chrome", "ii report.pdf",
                        "Invoke-Item x.exe", "cmd /c build.bat", "& \"C:\\Program Files\\x\\y.exe\"",
-                       "powershell -File C:\\temp\\x.ps1", "C:\\Windows\\notepad.exe", "msiexec /i x.msi",
+                       "C:\\Windows\\notepad.exe", "msiexec /i x.msi",
                        "rundll32 x.dll,Run", "schtasks /create /tn x /tr y"],
     },
     tp.DANGEROUS: {
@@ -194,8 +194,53 @@ def test_t1099_executable_content_and_fail_closed_quotes_stay_dangerous(command,
 def test_powershell_call_operator_on_quoted_executable_still_prompts():
     # A launch may retain FOREIGN_PROCESS, or the normalized disk-wipe label.
     command = "& 'format.com' C:"
-    assert tp.danger(command, WS) in (tp.FOREIGN_PROCESS, tp.DANGEROUS)
+    assert tp.danger(command, WS) == tp.DANGEROUS
     assert _shell(command).action == tp.CONFIRM
+
+
+def test_scripts_and_path_runs_are_ordinary_but_chained_deletion_still_asks():
+    lookup = "python C:/Users/Ryan/.claude/skills/ls-conversation-lookup/find_conversation.py --search x --mode all"
+    for workspace in (Path("E:/SAS/ShadowsAndShurikens"), Path("C:/Projects/LiteTUI")):
+        assert tp.danger(lookup, workspace) is None
+        assert tp.danger("python C:/elsewhere/foreign.py", workspace) is None
+        assert tp.danger("powershell -File C:/elsewhere/read.ps1", workspace) is None
+        assert tp.danger(lookup + "; rm -rf C:/tmp/x", workspace) == tp.DELETION
+    assert tp.danger("Start-Process C:/elsewhere/foreign.py", WS) == tp.FOREIGN_PROCESS
+    assert tp.danger("& 'C:/Projects/LiteSuite/run.bat'", Path("C:/Projects/LiteTUI")) == tp.FOREIGN_PROCESS
+    assert tp.danger("& 'C:/Projects/LiteSuite/run.bat'", Path("C:/Projects/LiteSuite")) is None
+    assert tp.danger("& 'C:/Projects/LiteTUI/dist/litetui-sidecar.exe'",
+                     Path("E:/SAS/ShadowsAndShurikens")) == tp.FOREIGN_PROCESS
+    workspace = Path("C:/Projects/LiteTUI")
+    assert tp.danger("& ../foreign.exe", workspace) == tp.FOREIGN_PROCESS
+    assert tp.danger(r".\tools\x.exe", workspace) is None
+    assert tp.danger(r"..\tools\x.exe", Path("C:/Projects/LiteTUI")) == tp.FOREIGN_PROCESS
+    for workspace in (Path("C:/Projects/LiteSuite"), Path("E:/SAS/ShadowsAndShurikens")):
+        for exe, args in (("python.exe", "-m pytest tests -q"), ("ruff.exe", "check x")):
+            cmd = f"& 'C:/Projects/LiteTUI/.venv/Scripts/{exe}' {args}"
+            assert tp.danger(cmd, workspace) is None
+            assert tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY, {"command": cmd}, workspace).action == tp.ALLOW
+
+
+def test_fleet_mcp_executable_payloads_not_inbox_quotations():
+    cases = (
+        ("mcp__litesuite-tools__pccontrol", {"action": "launch"}, tp.CONFIRM, tp.FOREIGN_PROCESS),
+        ("mcp__VibeUE__execute_python_code", {"code": "import shutil; shutil.rmtree('x')"}, tp.CONFIRM, tp.DELETION),
+        ("mcp__litesuite-tools__inbox", {"action": "send", "message": "quote: rm -rf x"}, tp.ALLOW, ""),
+        ("mcp__litesuite-tools__shell", {"command": "rm -rf x"}, tp.CONFIRM, tp.DELETION),
+    )
+    for name, args, action, what in cases:
+        decision = tp.evaluate(tp.INTERACTIVE, tp.mcp_policy_for(name), args, WS, tool_name=name)
+        assert (decision.action, decision.danger) == (action, what), name
+
+
+def test_fleet_mcp_server_identity_is_allowed_not_tool_name_substring():
+    for server in tp.FLEET_MCP_SERVERS:
+        name = f"mcp__{server}__arbitrary_write"
+        decision = tp.evaluate(tp.INTERACTIVE, tp.mcp_policy_for(name), {}, WS, tool_name=name)
+        assert decision.action == tp.ALLOW, name
+    for name in ("mcp__outside__litesuite-tools_inbox", "mcp__evil-litesuite-tools__inbox",
+                 "mcp__litesuite-tools-evil__inbox"):
+        assert tp.evaluate(tp.INTERACTIVE, tp.mcp_policy_for(name), {}, WS).action == tp.CONFIRM
 
 
 def test_interactive_asks_only_for_the_danger_table():
