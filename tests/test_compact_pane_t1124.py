@@ -341,12 +341,35 @@ async def test_now_card_long_fields_stay_in_three_cells_and_wait_keeps_clock():
 
 
 @pytest.mark.asyncio
+async def test_focused_empty_input_survives_resize_before_slimming():
+    app = app_for_pilot()
+    async with app.run_test(size=(120, 22)) as pilot:
+        field = app.query_one('#message-input')
+        box = app.query_one('PromptBox')
+        field.focus()
+        await pilot.pause(.2)
+        assert field.has_focus and box.region.height == 5
+        await pilot.resize_terminal(46, 22)
+        await pilot.pause(.3)
+        assert field.has_focus and box.region.height == 5
+        app.set_focus(None)
+        await pilot.pause(.2)
+        assert box.region.height == 3
+        field.focus()
+        await pilot.pause(.2)
+        assert field.has_focus and box.region.height == 5
+
+
+@pytest.mark.asyncio
 async def test_slim_input_focus_and_text_growth():
     app = app_for_pilot()
     async with app.run_test(size=(46, 22)) as pilot:
         await pilot.pause(.3)
         box = app.query_one('PromptBox')
         field = app.query_one('#message-input')
+        assert field.has_focus and box.region.height == 5
+        app.set_focus(None)
+        await pilot.pause(.2)
         assert box.region.height == field.region.height == 3  # Borders and one text row remain visible.
         field.focus()
         await pilot.pause(.2)
@@ -404,8 +427,14 @@ async def test_hysteresis_override_and_click_expansion():
         await app.query_one('#chat-log').mount(tool)
         await pilot.pause(.2)
         assert app._compact_mode
-        await pilot.click(tool.header)
+        tool.scroll_visible()
+        await pilot.pause(.1)
+        field = app.query_one('#message-input')
+        assert field.has_focus
+        assert await pilot.click(tool.header)
         await pilot.pause(.2)
+        assert app.focused is field  # click does not blur and reflow the prompt
+        assert app.query_one('PromptBox').region.height == 5
         assert tool.expanded and 'hello' in tool.body.content.plain
         app.action_toggle_compact_view()
         await pilot.pause(.2)

@@ -1952,13 +1952,6 @@ class LiteTUI(App):
             return
         self._compact_mode = compact
         self.set_class(compact, "compact-profile")
-        if compact:
-            try:
-                prompt = self.query_one("#message-input", Input)
-                if prompt.has_focus and not prompt.value:
-                    self.set_focus(None)
-            except Exception:
-                pass
         try:
             self.query_one(ContextFooter)._on_resize_for_compact()
         except Exception:

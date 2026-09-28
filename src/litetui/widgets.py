@@ -691,6 +691,12 @@ class _FoldHeader(Static):
         super().__init__(f"\u25b8 {label}", classes="thinking-header")
         self.label = label
 
+    def focus_on_click(self) -> bool:
+        # A focused prompt expands from 3 to 5 rows. Focusing this header on
+        # mouse-down would blur/slim the prompt before mouse-up, moving the row
+        # and losing Textual's click. Ctrl+B still focuses it by keyboard.
+        return False
+
     def on_click(self) -> None:
         # No event.stop() here, deliberately. A FoldBlock is only ever mounted
         # into #chat-log (tool cards, app.py:5785/6434, codex_tool_ui.py:63) or
