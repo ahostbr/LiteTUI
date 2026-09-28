@@ -58,7 +58,7 @@ def seat_profile(app) -> str:
     """The flag, else this conversation's choice, else the global default."""
     chosen = getattr(app, "chosen_tool_profile", None) or getattr(
         getattr(app, "settings", None), "tool_policy_profile", None)
-    return chosen or launch_flag(app) or tool_policy.STRICT
+    return launch_flag(app) or chosen or tool_policy.STRICT
 
 
 def turn_profile(app, source: str, requested: str | None = None) -> str:
@@ -66,15 +66,15 @@ def turn_profile(app, source: str, requested: str | None = None) -> str:
 
 
 def _turn_profile(app, source: str, requested: str | None) -> str:
+    flag = launch_flag(app)
     if source == "scheduled":
         # A fire carries its recorded level; a narrower launch flag still withholds it.
         wanted = requested or tool_policy.STRICT
-        flag = launch_flag(app)
         return narrower(wanted, flag) if flag else wanted
     if source in NARROWING_SOURCES:
         seat = seat_profile(app)
         return narrower(requested or seat, seat)
-    return requested or seat_profile(app)
+    return flag or requested or seat_profile(app)
 
 
 # ── Confirm routing is independent of tool authority ───────────────────────

@@ -51,6 +51,19 @@ def test_ryan_can_always_manually_set_autonomous(monkeypatch, seat):
     assert seat_authority.resolve(a, "typed", a.settings.tool_policy_profile).profile == AUTONOMOUS
 
 
+def test_launch_flag_stays_ceiling_until_explicit_human_choice(monkeypatch):
+    a = _app(STRICT, tool_profile=INTERACTIVE)
+    a.settings.tool_policy_profile = AUTONOMOUS  # shared file is not an explicit seat act
+    assert seat_authority.seat_profile(a) == INTERACTIVE
+    assert seat_authority.turn_profile(a, "harness", AUTONOMOUS) == INTERACTIVE
+    assert seat_authority.turn_profile(a, "goal", AUTONOMOUS) == INTERACTIVE
+    assert seat_authority.withheld(a, AUTONOMOUS) is not None
+    monkeypatch.setattr(m.settings_runtime, "persist_or_raise", lambda *_: None)
+    assert a.set_tool_profile(AUTONOMOUS, source="footer")
+    assert a._cli_tool_profile is None  # explicit human choice retires the launch flag
+    assert seat_authority.turn_profile(a, "harness", AUTONOMOUS) == AUTONOMOUS
+
+
 def test_spawned_seat_rpc_and_schedule_accept_autonomous(monkeypatch):
     a = _app(INTERACTIVE)
     a._spawned_seat = True
