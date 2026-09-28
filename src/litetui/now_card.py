@@ -18,6 +18,7 @@ class NowCard(Static):
         super().__init__("", **kwargs)
         self.card_label = "no card claimed"
         self.last = "—"
+        self._waits: dict[object, tuple[str, str, float]] = {}
         self.wait: tuple[str, str, float] | None = None
         self.idle_since: float | None = time.time()
         self._read_at = 0.0
@@ -87,10 +88,16 @@ class NowCard(Static):
             title = f"{prefix} · {clock}"
         self.content = "\n".join((fit(title), fit(step), fit(f"last {self.last}")))
 
-    def begin_wait(self, owner: str, reason: str) -> None:
-        self.wait = (owner, reason, time.monotonic())
+    def begin_wait(self, owner: str, reason: str) -> object:
+        token = object()
+        self._waits[token] = (owner, reason, time.monotonic())
+        self.wait = self._waits[token]
         self.repaint(agent_id=self._agent_id)
+        return token
 
-    def end_wait(self) -> None:
-        self.wait = None
+    def end_wait(self, token: object | None) -> None:
+        if token is None or token not in self._waits:
+            return
+        del self._waits[token]
+        self.wait = next(reversed(self._waits.values())) if self._waits else None
         self.repaint(agent_id=self._agent_id)

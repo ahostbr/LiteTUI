@@ -1560,6 +1560,8 @@ class LiteTUI(App):
         super().__init__(**app_kwargs)
         self._rpc = rpc
         self.last_recap = None
+        self._now_turn_active_at: float | None = None
+        self._retry_wait_token: object | None = None
         self._compact_mode = False
         self._compact_override = None
         self._compact_resize_timer = None
@@ -1999,48 +2001,55 @@ class LiteTUI(App):
     def _retry_notice(self, text: str) -> None:
         self._system(text)
         if "429" in text or "rate limited" in text.lower():
-            self._begin_wait("provider", "rate-limit retry")
+            if self._retry_wait_token is None:
+                self._retry_wait_token = self._begin_wait("provider", "rate-limit retry")
         else:
             # A later non-429 retry supersedes the earlier rate-limit wait.
-            self._end_wait()
+            self._clear_retry_wait()
 
-    def _begin_wait(self, owner: str, reason: str) -> None:
+    def _now_card(self) -> NowCard | None:
+        try:
+            return self.screen_stack[0].query_one(NowCard)
+        except Exception:
+            return None  # startup, teardown, or no mounted base card
+
+    def _clear_retry_wait(self) -> None:
+        token, self._retry_wait_token = self._retry_wait_token, None
+        self._end_wait(token)
+
+    def _begin_wait(self, owner: str, reason: str) -> object | None:
         import threading
         if threading.get_ident() != self._thread_id:
             if self._loop is None or self._loop.is_closed():
-                return  # teardown: no UI remains to update
-            self.call_from_thread(self._begin_wait, owner, reason)
-            return
+                return None  # teardown: no UI remains to update
+            return self.call_from_thread(self._begin_wait, owner, reason)
         self._elapsed.ensure_running()
-        try:
-            self.query_one(NowCard).begin_wait(owner, reason)
-        except Exception:
-            pass
+        card = self._now_card()
+        return card.begin_wait(owner, reason) if card is not None else None
 
-    def _end_wait(self) -> None:
+    def _end_wait(self, token: object | None) -> None:
+        if token is None:
+            return
         import threading
         if threading.get_ident() != self._thread_id:
             if self._loop is None or self._loop.is_closed():
                 return  # teardown: no UI remains to update
-            self.call_from_thread(self._end_wait)
+            self.call_from_thread(self._end_wait, token)
             return
-        try:
-            self.query_one(NowCard).end_wait()
-        except Exception:
-            pass
+        card = self._now_card()
+        if card is not None:
+            card.end_wait(token)
 
     def _paint_now(self) -> None:
-        try:
-            card = self.query_one(NowCard)
-        except Exception:
+        card = self._now_card()
+        if card is None:
             return
         seat = getattr(self, "seat", None)
         tools = getattr(self, "_inflight_tools", ())
         card.repaint(agent_id=getattr(seat, "agent_id", None),
                      tool=tools[-1] if tools else None,
                      thinking=getattr(self, "_thinking_live", None),
-                     elapsed=getattr(getattr(self, "_elapsed", None), "body_t0", None)
-                     if getattr(getattr(self, "_elapsed", None), "body", None) else None)
+                     elapsed=self._now_turn_active_at)
 
     def _splash(self) -> None:
         """The launch wordmark. First thing drawn, before the backend answers.
@@ -2845,7 +2854,7 @@ class LiteTUI(App):
         if route == "refuse":
             approval_relay.record(self, "no_spawner", name, "child")
             return False
-        self._begin_wait("host" if self._rpc else "you", "approval")
+        wait_token = self._begin_wait("host" if self._rpc else "you", "approval")
         try:
             if self._rpc:
                 # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
@@ -2859,7 +2868,7 @@ class LiteTUI(App):
                     self, partial(ToolApprovalBody, name, args, decision),
                     modal_factory=partial(ToolApprovalScreen, name, args, decision))
         finally:
-            self._end_wait()
+            self._end_wait(wait_token)
         approval_relay.record(self, "no_host" if answer is None else "approved" if answer else "denied",
                               name, "child")
         return bool(answer)
@@ -2938,13 +2947,13 @@ class LiteTUI(App):
             # the user, 2026-09-10: "i want the approvals to route threw frontier
             # chat GUI".
             if self._rpc:
-                self._begin_wait("host", "approval")
+                wait_token = self._begin_wait("host", "approval")
                 try:
                     answer = await tool_approval.approve_over_rpc(
                         self, name, args, decision
                     )
                 finally:
-                    self._end_wait()
+                    self._end_wait(wait_token)
                 # None is NOT DENIED. See approve_over_rpc: one is a person
                 # choosing, the other is a host that never spoke, and they
                 # owe the model different sentences.
@@ -2953,7 +2962,7 @@ class LiteTUI(App):
                     approval_relay.record(self, "no_host" if unanswered else
                                           "approved" if answer else "denied", name, source)
             else:
-                self._begin_wait("you", "approval")
+                wait_token = self._begin_wait("you", "approval")
                 try:
                     if getattr(getattr(self, "backend", None), "owns_native_turns", False):
                         from litetui.claude_turn import approval_dialog
@@ -2965,7 +2974,7 @@ class LiteTUI(App):
                             modal_factory=partial(ToolApprovalScreen, name, args, decision),
                         )
                 finally:
-                    self._end_wait()
+                    self._end_wait(wait_token)
                 unanswered = False
             # `not answer` covers three cases on purpose: DENIED, and None from
             # a screen dismissed without a value, and any future falsy answer.
@@ -5170,6 +5179,9 @@ class LiteTUI(App):
 
     def _rpc_emit(self, data: dict) -> None:
         """Emit one JSON event on stdout (no-op outside --rpc)."""
+        if data.get("type") == "turn_start":
+            self._now_turn_active_at = self._active_turn_started_at
+            self._paint_now()
         if not self._rpc:
             return
         from litetui.rpc import rpc_emit
@@ -6526,11 +6538,10 @@ class LiteTUI(App):
     def _record_recap(self, recap: str) -> None:
         """Publish latest final recap, preserving the registry's existing keys."""
         self.last_recap = recap
-        try:
-            self.query_one(NowCard).last = recap
+        card = self._now_card()
+        if card is not None:
+            card.last = recap
             self._paint_now()
-        except Exception:
-            pass
         seat = getattr(self, "seat", None)
         if not getattr(seat, "registered", False) or not getattr(seat, "agent_id", None):
             return
@@ -6642,11 +6653,9 @@ class LiteTUI(App):
             self._cancel_buttons.pop(tool, None)
 
     def _tool_end(self, tool) -> None:
-        try:
-            card = self.query_one(NowCard)
+        card = self._now_card()
+        if card is not None:
             card.last = tool._header_content("▸").plain
-        except Exception:
-            pass
         if tool in self._inflight_tools:
             self._inflight_tools.remove(tool)
         self._paint_now()
@@ -6689,7 +6698,8 @@ class LiteTUI(App):
                 or self._inflight_tools
                 or self._thinking_live is not None
                 or card_live
-                or bool(getattr(self.query_one(NowCard), "wait", None))
+                or bool(getattr(self._now_card(), "wait", None))
+                or self._now_turn_active_at is not None
             )
             # The cancel button tracks the SLOT, not the tool bubble — and not
             # child liveness: a populated slot means communicate() may still be
@@ -8223,6 +8233,8 @@ class LiteTUI(App):
         "no figure" -- and a host that sees the key absent cannot tell those
         from a version that never sent it.
         """
+        self._now_turn_active_at = None
+        self._paint_now()
         self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
                         "tps": tps, "tpsSource": tps_source, **extra})
 
@@ -8466,7 +8478,7 @@ class LiteTUI(App):
                     detail=f"{type(e).__name__}: {e}",
                     exc=e,
                 )
-                self._end_wait()
+                self._clear_retry_wait()
                 self._elapsed.stop_body()
                 self._thinking_done()
                 # T688 F: if the app that owned our attached llama.cpp router has
@@ -8505,7 +8517,7 @@ class LiteTUI(App):
 
             try:
                 async for chunk in stream:
-                    self._end_wait()  # A retry has actually resumed output, not merely opened a socket.
+                    self._clear_retry_wait()  # A retry has actually resumed output, not merely opened a socket.
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
                     # T806: llama.cpp-compatible engines publish their OWN
@@ -8760,7 +8772,7 @@ class LiteTUI(App):
                                      error=takeover or _plain_backend_error(e, self.backend))
                 return
             finally:
-                self._end_wait()  # Cancellation, exhausted retries, and empty streams clear the banner.
+                self._clear_retry_wait()  # Cancellation, exhausted retries, and empty streams clear the banner.
                 if hasattr(stream, "close"):
                     await stream.close()
 

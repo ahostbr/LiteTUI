@@ -1,4 +1,5 @@
 """Responsive compact pane: measured geometry, expansion, recap and board ownership."""
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -302,11 +303,157 @@ async def test_retry_banner_lifetime_and_cancellation():
         app._retry_notice('Codex rate limited (HTTP 429); retrying in 2s.')
         assert card.wait[:2] == ('provider', 'rate-limit retry')
         assert 'WAITING ON provider' in card.content
-        app._end_wait()  # first resumed chunk, terminal error, or stream cancellation
+        app._clear_retry_wait()  # first resumed chunk, terminal error, or stream cancellation
         assert card.wait is None
         app._retry_notice('Codex rate limited (HTTP 429); retrying in 2s.')
         app._retry_notice('Codex connection reset; retrying in 2s.')
         assert card.wait is None
+
+
+@pytest.mark.asyncio
+async def test_now_card_wait_survives_modal_repaint_and_pop():
+    from textual.screen import ModalScreen
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        card = app._now_card()
+        token = app._begin_wait('host', 'question')
+        await app.push_screen(ModalScreen())
+        await pilot.pause(.6)  # two elapsed repaint ticks with a modal on top
+        assert app._now_card() is card
+        assert card.wait is not None and 'WAITING ON host' in card.content
+        app.pop_screen()
+        await pilot.pause(.1)
+        assert 'WAITING ON host' in card.content
+        app._end_wait(token)
+        assert card.wait is None
+
+
+@pytest.mark.asyncio
+async def test_overlapping_waits_keep_newest_owner_and_clock():
+    import time
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        card = app._now_card()
+        first = app._begin_wait('you', 'question')
+        second = app._begin_wait('KeyStone', 'approval')
+        card._waits[second] = ('KeyStone', 'approval', time.monotonic() - 2)
+        card.wait = card._waits[second]
+        app._paint_now()
+        assert 'WAITING ON KeyStone' in card.content and '0:02' in card.content
+        app._end_wait(first)
+        assert 'WAITING ON KeyStone' in card.content and '0:02' in card.content
+        app._end_wait(second)
+        assert card.wait is None
+        app._end_wait(None)
+        app._end_wait(second)  # a settled token cannot clear another wait
+
+        first = app._begin_wait('you', 'question')
+        card._waits[first] = ('you', 'question', time.monotonic() - 8)
+        card.wait = card._waits[first]
+        second = app._begin_wait('KeyStone', 'approval')
+        app._end_wait(second)
+        assert card.wait[:2] == ('you', 'question')
+        assert 'WAITING ON you' in card.content and '0:08' in card.content
+        app._end_wait(second)
+        assert 'WAITING ON you' in card.content
+        app._end_wait(first)
+        assert card.wait is None
+
+
+@pytest.mark.asyncio
+async def test_failed_spawner_send_clears_only_its_wait():
+    from litetui import approval_relay, tool_policy
+    app = app_for_pilot()
+    app._spawner_id = 'KeyStone'
+    app.seat.send = lambda *_: False
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        question = app._begin_wait('you', 'question')
+        decision = tool_policy.PolicyDecision(tool_policy.CONFIRM, 'interactive', frozenset(), 'approval')
+        result = await approval_relay.ask_spawner(app, 'read', {}, decision, 'tool')
+        assert result == 'absent'
+        assert app._now_card().wait[:2] == ('you', 'question')
+        app._end_wait(question)
+        assert app._now_card().wait is None
+
+
+@pytest.mark.asyncio
+async def test_worker_thread_wait_token_clears_its_own_banner():
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        token = await asyncio.to_thread(app._begin_wait, 'host', 'question')
+        assert token is not None and 'WAITING ON host' in app._now_card().content
+        await asyncio.to_thread(app._end_wait, token)
+        assert app._now_card().wait is None
+
+
+@pytest.mark.asyncio
+async def test_turn_active_survives_body_timer_stop_and_clears_on_every_end():
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        card = app._now_card()
+        for provider in ('codex', 'claude'):
+            app._active_turn_started_at = __import__('time').monotonic()
+            app._rpc_emit({'type': 'turn_start', 'provider': provider})
+            app._elapsed.stop_body()  # the first answer token ends this timer
+            app._paint_now()
+            assert 'now responding' in card.content and 'idle since' not in card.content
+            app._emit_turn_end('cancelled' if provider == 'claude' else 'stop', None)
+            assert 'now idle' in card.content and 'idle since' in card.content
+
+
+@pytest.mark.asyncio
+async def test_real_codex_stream_keeps_responding_after_first_chunk(monkeypatch):
+    from litetui import app as app_module
+    from test_card_summary import _Chunk
+
+    first_chunk = asyncio.Event()
+    finish = asyncio.Event()
+    app = app_for_pilot()
+    app._resync_ctx_if_stale = lambda: None
+    app._maybe_autocompact = lambda: None
+    app._report_spawner_error = lambda *args: None
+
+    async def ready():
+        pass
+    app._ensure_chat_ready = ready
+
+    class Stream:
+        async def __aiter__(self):
+            await asyncio.sleep(.01)
+            yield _Chunk(content='Answer begins. ')
+            first_chunk.set()
+            await finish.wait()
+            yield _Chunk(content='Answer ends.')
+
+        async def close(self):
+            pass
+
+    async def create(**kwargs):
+        if kwargs.get('purpose') == 'card-summary':
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='summary'))])
+        return Stream()
+
+    monkeypatch.setattr(app_module.model_transport, 'for_app',
+                        lambda _: SimpleNamespace(create=create))
+    async with app.run_test(size=(46, 22)) as pilot:
+        app._append({'role': 'user', 'content': 'go'})
+        app._stream()
+        await asyncio.wait_for(first_chunk.wait(), 5)
+        await pilot.pause(.4)
+        card = app._now_card()
+        assert 'now responding' in card.content and 'idle since' not in card.content
+        finish.set()
+        for _ in range(100):
+            await pilot.pause(.05)
+            if not app._chat_running():
+                break
+        assert not app._chat_running()
+        assert 'now idle' in card.content and 'idle since' in card.content
 
 
 @pytest.mark.asyncio
@@ -325,9 +472,9 @@ async def test_card_reads_only_assignee_from_sqlite(tmp_path, monkeypatch):
         card = app.query_one(NowCard)
         card.repaint(agent_id='test-agent', tool=SimpleNamespace(tool_name='read', _t0=0))
         assert 'T1124 Compact pane' in card.content
-        card.begin_wait('Marquee', 'approval')
+        token = card.begin_wait('Marquee', 'approval')
         assert 'WAITING ON Marquee' in card.content
-        card.end_wait()
+        card.end_wait(token)
         assert card.wait is None
         assert 'T1124 Compact pane' in card.content  # idle still shows the claimed card
 
@@ -372,7 +519,7 @@ async def test_now_card_long_fields_stay_in_three_cells_and_wait_keeps_clock():
         assert len(lines) == card.region.height == 3
         assert all(cell_len(line) <= card.content_region.width for line in lines)
         assert lines[2].startswith('last ')
-        card.begin_wait('LongOwnerNameThatDoesNotFitAcrossThisPane', 'approval')
+        token = card.begin_wait('LongOwnerNameThatDoesNotFitAcrossThisPane', 'approval')
         waiting = card.content.splitlines()[0]
         assert 'WAITING ON' in waiting and '0:00' in waiting
         assert cell_len(waiting) <= card.content_region.width
