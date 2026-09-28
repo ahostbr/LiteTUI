@@ -525,6 +525,50 @@ async def test_worker_thread_wait_token_clears_its_own_banner():
 
 
 @pytest.mark.asyncio
+async def test_wait_dispatch_teardown_race_does_not_hide_other_errors():
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        original = app.call_from_thread
+        try:
+            def fail(*args, **kwargs):
+                raise RuntimeError('Event loop is closed')
+            app.call_from_thread = fail
+            assert await asyncio.to_thread(app._begin_wait, 'host', 'approval') is None
+            await asyncio.to_thread(app._end_wait, object())
+
+            def unrelated(*args, **kwargs):
+                raise RuntimeError('callback failed')
+            app.call_from_thread = unrelated
+            with pytest.raises(RuntimeError, match='callback failed'):
+                await asyncio.to_thread(app._begin_wait, 'host', 'approval')
+            with pytest.raises(RuntimeError, match='callback failed'):
+                await asyncio.to_thread(app._end_wait, object())
+        finally:
+            app.call_from_thread = original
+
+
+@pytest.mark.asyncio
+async def test_now_step_eta_requires_reliable_sample_and_live_prefill():
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        card = app._now_card()
+        app._active_turn_started_at = __import__('time').monotonic()
+        app._rpc_emit({'type': 'turn_start'})
+        assert 'est ~' not in card.content
+        app._eta.last_prompt_tokens = 1000
+        app._eta.samples = [100.0]
+        app._elapsed.body = SimpleNamespace(content=None)
+        app._paint_now()
+        assert 'est ~10.0s' in card.content
+        app._elapsed.stop_body()
+        app._paint_now()
+        assert 'est ~' not in card.content
+        app._emit_turn_end('stop', None)
+
+
+@pytest.mark.asyncio
 async def test_turn_active_survives_body_timer_stop_and_clears_on_every_end():
     app = app_for_pilot()
     async with app.run_test(size=(46, 22)) as pilot:
@@ -588,6 +632,34 @@ async def test_real_codex_stream_keeps_responding_after_first_chunk(monkeypatch)
                 break
         assert not app._chat_running()
         assert 'now idle' in card.content and 'idle since' in card.content
+
+
+@pytest.mark.asyncio
+async def test_unexpected_stream_worker_error_clears_now_card(monkeypatch):
+    from litetui import app as app_module
+
+    app = app_for_pilot()
+    app._resync_ctx_if_stale = lambda: None
+    app._report_spawner_error = lambda *args: None
+
+    async def ready():
+        pass
+    app._ensure_chat_ready = ready
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('unexpected request construction')
+    monkeypatch.setattr(app_module.TurnEngine, 'chat_request', fail)
+    async with app.run_test(size=(46, 22)) as pilot:
+        app._append({'role': 'user', 'content': 'go'})
+        worker = app._stream()
+        worker.exit_on_error = False  # inspect the failed worker without exiting the pilot
+        for _ in range(80):
+            await pilot.pause(.05)
+            if worker.is_finished:
+                break
+        assert worker.is_finished and worker.error is not None
+        assert 'now idle' in app._now_card().content
+        assert app._now_turn_active_at is None
 
 
 @pytest.mark.asyncio
@@ -657,6 +729,11 @@ async def test_now_card_long_fields_stay_in_three_cells_and_wait_keeps_clock():
         waiting = card.content.splitlines()[0]
         assert 'WAITING ON' in waiting and '0:00' in waiting
         assert cell_len(waiting) <= card.content_region.width
+        card._waits[token] = ('very-long-owner-' * 12, 'approval', __import__('time').monotonic() - 2)
+        card.wait = card._waits[token]
+        card.repaint(agent_id='test-agent')
+        assert '0:02' in card.content.splitlines()[0]
+        assert cell_len(card.content.splitlines()[0]) <= card.content_region.width
         await pilot.resize_terminal(101, 22)
         await pilot.pause(.3)
         assert not card.display and card.region.height == 0

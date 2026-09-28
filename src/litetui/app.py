@@ -2034,7 +2034,12 @@ class LiteTUI(App):
         if threading.get_ident() != self._thread_id:
             if self._loop is None or self._loop.is_closed():
                 return None  # teardown: no UI remains to update
-            return self.call_from_thread(self._begin_wait, owner, reason)
+            try:
+                return self.call_from_thread(self._begin_wait, owner, reason)
+            except RuntimeError as exc:
+                if str(exc) != "Event loop is closed":
+                    raise
+                return None  # loop closed after the preflight check
         self._elapsed.ensure_running()
         card = self._now_card()
         return card.begin_wait(owner, reason) if card is not None else None
@@ -2046,7 +2051,12 @@ class LiteTUI(App):
         if threading.get_ident() != self._thread_id:
             if self._loop is None or self._loop.is_closed():
                 return  # teardown: no UI remains to update
-            self.call_from_thread(self._end_wait, token)
+            try:
+                self.call_from_thread(self._end_wait, token)
+            except RuntimeError as exc:
+                if str(exc) != "Event loop is closed":
+                    raise
+                # Loop closed between preflight and dispatch: no UI remains.
             return
         card = self._now_card()
         if card is not None:
@@ -2058,10 +2068,21 @@ class LiteTUI(App):
             return
         seat = getattr(self, "seat", None)
         tools = getattr(self, "_inflight_tools", ())
+        # Only the learned, non-native projection used by the answer bubble
+        # qualifies as an ETA; native turns and cache-only samples do not.
+        eta = None
+        if (self._now_turn_active_at is not None
+                and self._elapsed.body is not None
+                and not hasattr(self.backend, "app_server")
+                and self._eta.prefill_readout() is None):
+            tokens = self._eta.estimate_tokens()
+            rate = self._eta.learned_rate()
+            if tokens and rate and rate > 0:
+                eta = tokens / rate
         card.repaint(agent_id=getattr(seat, "agent_id", None),
                      tool=tools[-1] if tools else None,
                      thinking=getattr(self, "_thinking_live", None),
-                     elapsed=self._now_turn_active_at)
+                     elapsed=self._now_turn_active_at, eta=eta)
 
     def _splash(self) -> None:
         """The launch wordmark. First thing drawn, before the backend answers.
@@ -9260,6 +9281,13 @@ class LiteTUI(App):
         to remember the flush."""
         if getattr(event.worker, "group", None) != "chat":
             return
+        if (getattr(event.worker, "name", None) == "_stream"
+                and event.state == WorkerState.ERROR):
+            # An unexpected error bypasses _stream's normal turn_end exits.
+            # Do not leave the compact seat claiming a turn still responds.
+            self._now_turn_active_at = None
+            self._elapsed.stop_body()
+            self._paint_now()
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             self.call_after_refresh(self._flush_pending_input)
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from rich.cells import cell_len, set_cell_size
 from textual.widgets import Static
 
+from litetui.fmt import fmt_dur
+
 
 class NowCard(Static):
     DEFAULT_CSS = """
@@ -49,7 +51,7 @@ class NowCard(Static):
         except (sqlite3.Error, OSError):
             self.card_label = previous
 
-    def repaint(self, *, agent_id=None, tool=None, thinking=None, elapsed=None) -> None:
+    def repaint(self, *, agent_id=None, tool=None, thinking=None, elapsed=None, eta=None) -> None:
         self.read_task(agent_id)
         if self.wait:
             owner, reason, since = self.wait
@@ -68,6 +70,8 @@ class NowCard(Static):
             step = f"now  thinking  {int(time.monotonic() - (thinking._t0 or time.monotonic()))}s"
         elif elapsed is not None:
             step = f"now  responding  {int(time.monotonic() - elapsed)}s"
+            if eta is not None and eta > 0:
+                step += f"  · est ~{fmt_dur(eta)}"
         else:
             step = "now  idle"
         width = max(1, self.content_region.width or self.size.width or 46)
@@ -84,7 +88,9 @@ class NowCard(Static):
             prefix = f"⏳ WAITING ON {owner} · {reason}"
             if cell_len(prefix) + cell_len(clock) + 3 > width:
                 prefix = f"⏳ WAITING ON {owner}"
-            prefix = set_cell_size(prefix, max(0, width - cell_len(clock) - 3)).rstrip()
+            budget = max(0, width - cell_len(clock) - 3)
+            if cell_len(prefix) > budget:
+                prefix = set_cell_size(prefix, max(0, budget - 1)).rstrip() + "…"
             title = f"{prefix} · {clock}"
         self.content = "\n".join((fit(title), fit(step), fit(f"last {self.last}")))
 
