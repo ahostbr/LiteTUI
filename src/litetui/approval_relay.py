@@ -80,6 +80,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     # Dijkstra K1(c): logged in the finally, so a wait cancelled by Esc, stop() or
     # the Claude bridge's deadline still leaves its line ("cancelled").
     status = "cancelled"
+    wait_token = app._begin_wait(spawner[:8], "approval")
     try:
         seat = getattr(app, "seat", None)
         # Unregistered means no inbox poller, so no answer could ever arrive. The
@@ -97,6 +98,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
             except TimeoutError:
                 status = "timeout"
     finally:
+        app._end_wait(wait_token)
         pending.pop(ident, None)
         record(app, status, name, source, ident)
     if status == "approved":
