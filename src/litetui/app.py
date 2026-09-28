@@ -2331,12 +2331,15 @@ class LiteTUI(App):
             # Same approach as _inject_store_once: extend conversation[0].
             # Replace a stale line from a previous process before appending a
             # second one — a resumed conversation already carries one.
-            if self._sync_fleet_identity():
-                return
-            self._append_to_system(
-                self._fleet_identity_sentence()
-                + load_prompt("harness-capabilities")
-            )
+            self._sync_fleet_identity()
+            # A correct sentence returns False too; inspect the resulting prompt,
+            # not the 'changed' flag, before adding a missing one.
+            if not (self.conversation and self._fleet_identity_sentence()
+                    in str(self.conversation[0].get("content") or "")):
+                self._append_to_system(
+                    self._fleet_identity_sentence()
+                    + load_prompt("harness-capabilities")
+                )
         else:
             # Say so once. A seat nobody can reach that reports nothing is
             # indistinguishable from one that is simply idle.
