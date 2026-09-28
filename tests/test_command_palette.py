@@ -53,18 +53,10 @@ def _run(coro):
 
 
 def _table(app):
-    """The provider's table, with the group prefix stripped off the title.
-
-    Rows render as "Backend  >  Switch model" since the palette was grouped
-    (2026-08-22) -- Textual has no section headers, so the group name leads the
-    title. Every assertion in this file is about the ROW: that it exists, and
-    that running it reaches the right handler. Matching the decorated label
-    instead would make each of them a test of the prefix, which is already
-    covered by tests/test_palette_groups.py.
-    """
+    """The provider's table with its trailing group label removed."""
     provider = m.LiteTUICommands(app.screen)
     return [
-        (title.split("›")[-1].strip(), help_text, run)
+        (title.split(" · ")[0], help_text, run)
         for title, help_text, run in provider._commands()
     ]
 
@@ -77,8 +69,8 @@ def test_the_provider_is_registered_on_the_app():
     assert m.LiteTUICommands in m.LiteTUI.COMMANDS, (
         "a Provider class nobody registers is not in any palette"
     )
-    # And the stock providers survive — extending must not replace.
-    assert len(m.LiteTUI.COMMANDS) > 1
+    # The stock Theme row is replaced by our registry row, not duplicated.
+    assert m.LiteTUI.COMMANDS == {m.LiteTUICommands}
 
 
 def test_the_palette_covers_the_features_it_was_missing():
@@ -158,6 +150,58 @@ def test_search_finds_the_calendar_and_scores_it():
             assert hits, "searching 'calend' found nothing"
             texts = [str(h.match_display) for h in hits]
             assert any("Calendar" in t for t in texts)
+    _run(body())
+
+
+def test_pinned_and_alphabetical_order_with_and_without_search():
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)):
+            provider = m.LiteTUICommands(a.screen)
+            titles = [t for t, _h, _r in _table(a)]
+            assert titles[:2] == ["Settings", "Theme"]
+            assert titles[2:] == sorted(titles[2:], key=str.casefold)
+
+            hits = [h async for h in provider.search("the")]
+            matched = [h.text.split(" · ")[0] for h in hits]
+            assert matched[0] == "Theme"
+            assert "Settings" not in matched  # unrelated pinned rows stay filtered
+            assert matched[1:] == sorted(matched[1:], key=str.casefold)
+            settings_hits = [h async for h in provider.search("set")]
+            assert settings_hits[0].text.split(" · ")[0] == "Settings"
+            assert [h.score for h in hits] == sorted(
+                (h.score for h in hits), reverse=True
+            ), "Textual's score sort must retain our ordering"
+
+            unrelated = [h async for h in provider.search("calendar")]
+            assert "Settings" not in [h.text.split(" · ")[0] for h in unrelated]
+            assert "Theme" not in [h.text.split(" · ")[0] for h in unrelated]
+
+            family = [h async for h in provider.search("backend")]
+            assert family and all("Backend" in h.text for h in family)
+            assert any(h.text.startswith("Switch backend · ") for h in family)
+            # The suffix is dim in discovery and search, while matched group
+            # characters keep their fuzzy highlight above that base style.
+            display = family[0].match_display
+            group_start = display.plain.index(" · ") + 3
+            assert display.get_style_at_offset(group_start).dim
+            assert display.get_style_at_offset(group_start).reverse
+            discovered = [h async for h in provider.discover()]
+            assert discovered[0].display.get_style_at_offset(
+                discovered[0].text.index(" · ") + 3
+            ).dim
+    _run(body())
+
+
+def test_theme_row_delegates_to_textual_theme_picker():
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)) as pilot:
+            run = next(run for title, _help, run in _table(a) if title == "Theme")
+            run()
+            await pilot.pause()
+            assert isinstance(a.screen, CommandPalette)
+            assert "ThemeProvider" in [type(p).__name__ for p in a.screen._providers]
     _run(body())
 
 
