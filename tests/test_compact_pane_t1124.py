@@ -276,6 +276,15 @@ async def test_keyboard_selects_older_tool_without_collapsing_newer():
         await pilot.pause(.1)
         assert older.expanded and older.body.content.plain == expected
         assert not newer.expanded
+        await pilot.resize_terminal(120, 22)
+        await pilot.pause(.3)
+        field = app.query_one('#message-input')
+        assert app.focused is field and not older.header.can_focus
+        field.value = 'draft text'
+        field.cursor_position = 0
+        await pilot.press('ctrl+e')
+        assert field.cursor_position == len(field.value)
+        assert older.expanded and not newer.expanded
 
 
 @pytest.mark.asyncio

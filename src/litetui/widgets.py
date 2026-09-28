@@ -1041,6 +1041,8 @@ class ToolMessage(FoldBlock):
         if value == self._compact:
             return
         self._compact = value
+        if not value and self.header.has_focus:
+            self.app.query_one("#message-input").focus()
         self.header.can_focus = value
         self.set_class(value, "compact-tool")
         self.set_class(value and not self.expanded, "compact-folded")
@@ -1326,7 +1328,7 @@ class ContextFooter(Footer):
             if hasattr(app, "ctx_label_text"):
                 status.content = app.ctx_label_text
             yield status
-            yield Static("^G view · ^B prev · ^E open", classes="compact-footer-hints")
+            yield Static("^G view · ^B select · ^E open", classes="compact-footer-hints")
         with Horizontal(classes="footer-second-row"):
             permission = Static("", classes="permission-label")
             if hasattr(app, "permission_label_text"):

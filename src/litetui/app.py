@@ -1532,7 +1532,7 @@ class LiteTUI(App):
         Binding("ctrl+p", "toggle_plan_mode", "Plan", priority=True, show=False),
         Binding("ctrl+g", "toggle_compact_view", "Compact view", priority=True),
         Binding("ctrl+b", "select_previous_tool", "Select tool", priority=True),
-        Binding("ctrl+e", "expand_recent_tool", "Expand tool", priority=True),
+        Binding("ctrl+e", "expand_recent_tool", "Expand tool"),
     ]
 
     pending_image: reactive[str | None] = reactive(None)
