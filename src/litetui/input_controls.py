@@ -25,14 +25,33 @@ class PromptBox(Container):
     '''
 
     def on_mount(self):
-        # App CSS takes precedence over widget defaults.
         self.query_one('#message-input').styles.margin = 0
         for button in self.query('#prompt-actions > Static'):
             button.styles.padding = 0
+        self.call_after_refresh(self.sync_compact)
 
     def on_resize(self):
+        self.sync_compact()
+
+    def on_descendant_focus(self, _event):
+        self.sync_compact()
+
+    def on_descendant_blur(self, _event):
+        self.call_after_refresh(self.sync_compact)
+
+    def sync_compact(self):
+        field = self.query_one('#message-input', PromptInput)
+        app = self.app
+        narrow = getattr(app, '_compact_mode', False) and not (
+            app.screen.focused is field or bool(field.value))
+        self.set_class(narrow, 'slim-prompt')
+        self.styles.height = 2 if narrow else 5
+        field.styles.height = 2 if narrow else 5
+        field.styles.padding_bottom = 0 if narrow else 1
+        field.styles.border_bottom = ('solid', '#525252') if narrow else None
         self.query_one('#scroll-lock').styles.offset = (max(0, self.size.width - 6), 0)
-        self.query_one('#prompt-actions').styles.offset = (max(0, self.size.width - 19), 4)
+        self.query_one('#prompt-actions').styles.offset = (
+            max(0, self.size.width - 19), 1 if narrow else 4)
 
     def compose(self):
         yield PromptInput(placeholder='Message... (Ctrl+V paste | Ctrl+O image | /help)', id='message-input')

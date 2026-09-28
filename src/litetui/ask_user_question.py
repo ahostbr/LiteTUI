@@ -787,6 +787,7 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
     done = threading.Event()
     result_box: list[dict] = []
     _ask_registry(app)[ask_id] = (done, result_box, states)
+    getattr(app, "_begin_wait", lambda *_: None)("host", "question")
     try:
         app._rpc_emit({
             "type": "user_input_requested",
@@ -808,6 +809,7 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
             return UNANSWERED_NO_HOST
         return _serialize(result_box[0])
     finally:
+        getattr(app, "_end_wait", lambda: None)()
         _ask_registry(app).pop(ask_id, None)
 
 
@@ -900,6 +902,14 @@ def run(args: dict, app: App | None) -> str:
 
     # Block until Submit / Chat / Esc. Poll so a LiteTUI that exits
     # mid-question cannot hang this thread forever.
+    getattr(app, "_begin_wait", lambda *_: None)("you", "question")
+    try:
+        return _wait_local_question(app, done, lifetime, states, result_box)
+    finally:
+        getattr(app, "_end_wait", lambda: None)()
+
+
+def _wait_local_question(app, done, lifetime, states, result_box):
     while not done.wait(timeout=0.1 if lifetime is not None else 5):
         if lifetime is not None and lifetime.is_set():
             def cancel_owned_question():

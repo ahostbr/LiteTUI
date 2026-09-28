@@ -92,11 +92,13 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
         else:
             app._system(f"asked {spawner[:8]} (the spawning agent) to approve {name} "
                         f"({ident}); waiting up to {timeout:.0f} s")
+            app._begin_wait(spawner[:8], "approval")
             try:
                 status = "approved" if await asyncio.wait_for(future, timeout) else "denied"
             except TimeoutError:
                 status = "timeout"
     finally:
+        app._end_wait()
         pending.pop(ident, None)
         record(app, status, name, source, ident)
     if status == "approved":

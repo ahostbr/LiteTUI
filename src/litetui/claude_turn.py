@@ -66,6 +66,7 @@ def system_prompt_for(app, segment):
     parts.append(appsvc.store_block(app).strip())
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
         parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
+    parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
     parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
     text = "\n\n".join(p for p in parts if p)
     return ledger_for(app).fix_system_prompt(segment["id"], text)
@@ -466,7 +467,8 @@ async def stream_turn(app):
                     stop_live_clocks()
                     message_texts[key] = message_texts.get(key, "") + event.text
                     text = _joined(message_texts)
-                    sink_for(card).show(card_text(card))
+                    from litetui.recap import split_recap
+                    sink_for(card).show(split_recap(card_text(card))[0])
                     app._rpc_emit({"type": "text_delta", "text": event.text})
                 elif event.kind == "message":
                     key = event.message_id or "current"
@@ -483,7 +485,8 @@ async def stream_turn(app):
                     if message_texts[key] or any(key in keys for _, keys in cards):
                         card = card_for(key)
                         stop_live_clocks()
-                        sink_for(card).show(card_text(card))
+                        from litetui.recap import split_recap
+                        sink_for(card).show(split_recap(card_text(card))[0])
                 elif event.kind in {"thinking_delta", "thinking"}:
                     from litetui.widgets import ThinkingBlock
                     card_for(event.message_id or "current")
@@ -647,7 +650,12 @@ async def stream_turn(app):
                           for _, keys in cards]
             for (card, _), card_answer in zip(cards, card_texts):
                 # sinks.get: a turn can fail before sink_for exists.
-                (sinks.get(card) or StreamSink(app, card)).finish(card_answer)
+                from litetui.recap import split_recap
+                shown, recap = split_recap(card_answer, final=True)
+                (sinks.get(card) or StreamSink(app, card)).finish(shown)
+                if recap:
+                    card.recap = recap
+                    app._record_recap(recap)
             native = {
                 "segment_id": item["_claude_segment"], "session_id": (segment or {}).get("session_id"), "delivery_id": entry_id,
                 "activities": activity_records, "message_ids": list(message_texts),

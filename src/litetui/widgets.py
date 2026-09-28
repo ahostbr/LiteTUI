@@ -433,6 +433,8 @@ class ThinkingBlock(Vertical):
         self._settled: int | None = None   # the server's own count, once known
         self._frozen: tuple | None = None   # (elapsed, tokens, avg) once done
         self._marker = "\u25be"      # expand glyph, kept in sync by set_expanded
+        self._compact = False
+        self._explicit_expansion = False
         self.text = Static("", id="thinking-text")
         self.scroll = VerticalScroll(self.text, classes="thinking-body")
 
@@ -440,15 +442,27 @@ class ThinkingBlock(Vertical):
         yield ThinkingHeader()
         yield self.scroll
 
+    def on_mount(self) -> None:
+        self.set_compact(bool(getattr(self.app, "_compact_mode", False)))
+
     @property
     def expanded(self) -> bool:
         return self.has_class("expanded")
 
-    def set_expanded(self, value: bool) -> None:
+    def set_compact(self, value: bool) -> None:
+        self._compact = value
+        if not getattr(self, "_explicit_expansion", False):
+            self.set_expanded(not value, explicit=False)
+        self.repaint_header(None)
+
+    def set_expanded(self, value: bool, *, explicit: bool = True) -> None:
+        if explicit:
+            self._explicit_expansion = True
         if value:
             self.add_class("expanded")
         else:
             self.remove_class("expanded")
+        self.set_class(getattr(self, "_compact", False) and not value, "compact-folded")
         marker = "\u25be" if value else "\u25b8"
         self._marker = marker
         # A finished block keeps its readout across toggles (the user): the frozen
@@ -486,6 +500,8 @@ class ThinkingBlock(Vertical):
         self._buffer += token
         self._toks += 1
         self._chars += len(token)
+        if self._compact:
+            self.repaint_header(None)
         # This never scrolled the VerticalScroll it owns, so the trace grew
         # below the fold with the viewport pinned at the top. Measure BEFORE
         # the content grows: afterwards we are no longer at the bottom by
@@ -558,6 +574,13 @@ class ThinkingBlock(Vertical):
         `tokens` is the reasoning-delta count for the turn (T079). Same
         discipline as tps: passed in, never fetched, and defaulted so every
         existing caller and double keeps working untouched."""
+        if self._compact and not self.expanded and self._t0 is not None:
+            from litetui.fmt import fmt_dur
+            lines = [line.strip(" #*\t") for line in self._buffer.splitlines() if line.strip()]
+            current = lines[-1][:65] if lines else "Thinking"
+            duration = fmt_dur(time.monotonic() - self._t0) if self._t0 else ""
+            self._set_header(f"{self._marker} ◌ think {current} {duration}")
+            return
         if self._t0 is None:
             return
         self._set_header(thinking_header_text(
@@ -1007,6 +1030,22 @@ class ToolMessage(FoldBlock):
         # Construction already seeds a plain header. Rich styling arrives on
         # mount's first elapsed tick; assigning Rich Text before mount asks
         # Textual for an app console that does not exist yet.
+        self._compact = False
+        self._explicit_expansion = False
+
+    def set_compact(self, value: bool) -> None:
+        if value == self._compact:
+            return
+        self._compact = value
+        self.set_class(value, "compact-tool")
+        self.set_class(value and not self.expanded, "compact-folded")
+        if self._result is not None and not self._explicit_expansion:
+            super().set_expanded(False)
+            self.set_class(value, "compact-folded")
+        self._refresh_header()
+
+    def on_mount(self) -> None:
+        self.set_compact(bool(getattr(self.app, "_compact_mode", False)))
 
     @staticmethod
     def _one_line(value: str) -> str:
@@ -1019,6 +1058,14 @@ class ToolMessage(FoldBlock):
         return summary
 
     def _header_content(self, marker: str) -> Text:
+        if self._compact and not self.expanded:
+            from litetui.compact_tools import summary
+            duration = fmt_dur(time.monotonic() - self._t0) if self._result is None else (
+                fmt_dur(self._took) if self._took is not None else "?s")
+            line = summary(self.tool_name, self._args, self._result, self._ok,
+                           max(8, self.size.width or 44) - 2, duration)
+            if line is not None:
+                return Text(line.replace("▸ ", f"{marker} ", 1), overflow="ellipsis", no_wrap=True)
         color = self._tool_name_color()
         parts = [(f"{marker} \U0001F527 {self.tool_name}", f"bold {color}")]
         summary = self._arg_summary()
@@ -1062,7 +1109,9 @@ class ToolMessage(FoldBlock):
         self._result = result
         self._ok = ok
         self._took = None if duration_unknown else time.monotonic() - self._t0 if elapsed is None else elapsed
-        self.set_expanded(False)
+        if not self._explicit_expansion:
+            super().set_expanded(False)
+            self.set_class(self._compact, "compact-folded")
         self._update_display()
 
     def _tick(self) -> None:
@@ -1083,7 +1132,9 @@ class ToolMessage(FoldBlock):
         # hidden. Once a result lands it follows FoldBlock's shared toggle.
         if self._result is None and not value:
             return
+        self._explicit_expansion = True
         super().set_expanded(value)
+        self.set_class(self._compact and not value, "compact-folded")
 
     def _update_display(self) -> None:
         self._refresh_header()
@@ -1251,17 +1302,26 @@ class ContextFooter(Footer):
     """Textual's Footer plus a live context-window readout on the right."""
 
     def on_resize(self, _event) -> None:
-        """Refit the status line after layout changes."""
-        self.app._footer_available_width = max(0, self.size.width - 1)
+        self._on_resize_for_compact()
+
+    def _on_resize_for_compact(self) -> None:
+        """Refit status to the actual first-row region, not a guessed screen width."""
+        try:
+            hints = self.query_one(".compact-footer-hints")
+            reserved = hints.region.width if hints.display else 0
+        except Exception:
+            reserved = 0
+        self.app._footer_available_width = max(0, self.size.width - reserved - 1)
         self.call_after_refresh(self.app._refresh_ctx_label)
 
     def compose(self) -> ComposeResult:
-        yield from super().compose()
         app = self.app
-        status = Static("", classes="ctx-label")
-        if hasattr(app, "ctx_label_text"):
-            status.content = app.ctx_label_text
-        yield status
+        with Horizontal(classes="footer-first-row"):
+            status = Static("", classes="ctx-label")
+            if hasattr(app, "ctx_label_text"):
+                status.content = app.ctx_label_text
+            yield status
+            yield Static("Ctrl+G view · Ctrl+E tool", classes="compact-footer-hints")
         with Horizontal(classes="footer-second-row"):
             permission = Static("", classes="permission-label")
             if hasattr(app, "permission_label_text"):
@@ -1272,6 +1332,8 @@ class ContextFooter(Footer):
             if hasattr(app, "footer_meters_text"):
                 meters.content = app.footer_meters_text
             yield meters
+            with Horizontal(classes="footer-hints"):
+                yield from super().compose()
 
 
 class TaskManagerToggle(Static):
