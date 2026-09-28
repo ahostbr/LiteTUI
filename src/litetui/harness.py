@@ -333,7 +333,8 @@ class Seat:
     """This LiteTUI session's identity in the harness."""
 
     def __init__(self, agent_id: str, name: str, model: str,
-                 tier: str = DEFAULT_TIER, cli: str = DEFAULT_CLI):
+                 tier: str = DEFAULT_TIER, cli: str = DEFAULT_CLI,
+                 canvas_session: str | None = None, leaf_id: str | None = None):
         self.agent_id = agent_id
         self.name = name
         self.model = model or "unknown"
@@ -347,6 +348,11 @@ class Seat:
         self.thinking_level: str | None = None
         # Captured from the explicit spawn marker envelope; never an inherited parent env.
         self.spawned_by: str | None = None
+        # Bound to the launching canvas session, not to a cwd or a possibly
+        # inherited environment in later tool subprocesses.
+        self.canvas_session = canvas_session
+        self.leaf_id = leaf_id
+        self.rename_error: str | None = None
         self.registered = False
         self.error: str | None = None
 
@@ -375,7 +381,9 @@ class Seat:
                 # as an opt-in flag; requires liteharness with --session-pid.
                 "--session-pid", str(os.getpid())] + [
                     arg for flag, value in (("--backend", self.backend),
-                                            ("--spawned-by", self.spawned_by))
+                                            ("--spawned-by", self.spawned_by),
+                                            ("--canvas-session", self.canvas_session),
+                                            ("--leaf-id", self.leaf_id))
                     if value for arg in (flag, value)]
 
     def registry_name(self, root: Path | None = None) -> str | None:

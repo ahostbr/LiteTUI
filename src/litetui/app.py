@@ -1831,6 +1831,8 @@ class LiteTUI(App):
             name=seat_name,
             model="",
             tier=seat_tier,
+            canvas_session=os.environ.get("LITESUITE_CANVAS_SESSION") if self._spawned_marker else None,
+            leaf_id=os.environ.get("LITESUITE_LEAF_ID") if self._spawned_marker else None,
         )
         self.seat.spawned_by = self._spawner_id
         self._spawner_errors = spawner_errors.SpawnerErrorReporter()
