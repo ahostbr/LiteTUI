@@ -21,6 +21,8 @@ dependencies = [
     "openai>=1.0.0",
     "httpx>=0.28.1",
     "Pillow>=10.0.0",
+    # Real machine counters for the default-on footer task manager.
+    "psutil>=5.9",
     # In-sidebar image viewer: paints pasted/staged images as real pixels (sixel /
     # kitty TGP / half-cell / unicode). Only new dep for that feature — its own
     # requires are pillow + rich, already above.

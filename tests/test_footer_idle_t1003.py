@@ -108,6 +108,10 @@ def test_no_text_still_names_the_trigram_button():
 
 @pytest.mark.asyncio
 async def test_an_idle_footer_neither_recomposes_nor_repaints(monkeypatch) -> None:
+    # A real machine may change; a stable measured reading must not repaint.
+    from litetui import footer_telemetry
+    monkeypatch.setattr(footer_telemetry.Sampler, "sample", lambda self:
+                        footer_telemetry.Reading(cpu=25, ram=50))
     recomposes = []
     real = widgets.ContextFooter.recompose
 
@@ -136,7 +140,10 @@ async def test_an_idle_footer_neither_recomposes_nor_repaints(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_a_real_change_still_repaints_the_footer() -> None:
+async def test_a_real_change_still_repaints_the_footer(monkeypatch) -> None:
+    from litetui import footer_telemetry
+    monkeypatch.setattr(footer_telemetry.Sampler, "sample", lambda self:
+                        footer_telemetry.Reading(cpu=25, ram=50))
     a = make_app()
     async with a.run_test(size=(120, ROWS), headless=False) as pilot:
         a.ctx_max = 200_000

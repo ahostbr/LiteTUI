@@ -1264,6 +1264,24 @@ class ContextFooter(Footer):
         if hasattr(app, "permission_label_text"):
             permission.content = app.permission_label_text
         yield permission
+        yield TaskManagerToggle()
+
+
+class TaskManagerToggle(Static):
+    """Owns its lower-row cells; a click cannot hit a neighbor's control."""
+
+    def __init__(self) -> None:
+        super().__init__("", classes="task-manager-toggle")
+
+    def on_mount(self) -> None:
+        self.sync()
+
+    def sync(self) -> None:
+        self.update("meters:on" if self.app.settings.footer_task_manager else "meters:off")
+
+    def on_click(self, event) -> None:
+        event.stop()
+        self.app.toggle_footer_task_manager()
 
 
 class LiteTUICommands(Provider):
