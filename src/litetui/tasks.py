@@ -66,6 +66,9 @@ TAIL_CHARS = 2500
 #: The store is rewritten on every task transition, so an unbounded prompt is
 #: paid for repeatedly. A panel shows a dozen lines; this is generous of that.
 PROMPT_CAP = 4000
+# A 2.4M-character foreground result can exhaust a model context in one turn.
+# 50K leaves ordinary output intact while bounding any one host-tool result.
+TOOL_RESULT_CAP = 50_000
 
 
 @dataclass
@@ -308,6 +311,24 @@ def excerpt(text: str) -> str:
         return text
     cut = len(text) - HEAD_CHARS - TAIL_CHARS
     return f"{text[:HEAD_CHARS]}\n[... {cut} chars cut — the log has all of it ...]\n{text[-TAIL_CHARS:]}"
+
+
+def cap_tool_result(text: str, root: Path | str) -> str:
+    """Bound one model-visible host-tool result; keep its full text on disk.
+
+    The same excerpt and output/tasks log location as background results. A
+    storage failure is explicit rather than presenting a cut as the whole result.
+    """
+    if len(text) <= TOOL_RESULT_CAP:
+        return text
+    path = Path(root).joinpath(*LOG_DIR) / f"tool-{uuid.uuid4().hex}.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", errors="replace")
+        where = f"full output: {path.resolve().as_posix()}"
+    except OSError as exc:
+        where = f"full output could not be saved ({type(exc).__name__}); excerpt only"
+    return f"[{len(text)} chars; {where}]\n{excerpt(text)}"
 
 
 def finish(task: Task, result: str, ok: bool, root: Path | str) -> str:

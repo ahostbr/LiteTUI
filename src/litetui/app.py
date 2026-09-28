@@ -3417,6 +3417,10 @@ class LiteTUI(App):
 
     def _append(self, msg: dict, *, usage: dict | None = None) -> None:
         """Append to the live conversation AND to disk. Single choke point."""
+        if msg.get("role") == "tool":
+            msg = {**msg, "content": tasks_mod.cap_tool_result(
+                str(msg.get("content") or ""), paths.data_root()
+            )}
         self.conversation.append(msg)
         if usage is not None:
             self.store.record_msg(msg, usage=usage, model=self.model_id)
@@ -9237,7 +9241,7 @@ class LiteTUI(App):
                         "role": "tool",
                         "tool_call_id": slot["id"] or f"call_{i}",
                         "name": fname,
-                        "content": str(result),
+                        "content": tasks_mod.cap_tool_result(str(result), paths.data_root()),
                     })
                 timing["tools_s"] = time.perf_counter() - tools_started
                 card.record_round(timing)
