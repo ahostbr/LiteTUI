@@ -26,6 +26,17 @@ def test_missing_sensors_are_absent_and_meter_fits_whole_cells():
         assert sum(len(text) for text, _ in chunks) + max(0, len(chunks) - 1) * 3 <= width
 
 
+def test_sparklines_follow_changing_cpu_gpu_network_series():
+    readings = [telemetry.Reading(cpu=0, gpu=0, network=0),
+                telemetry.Reading(cpu=25, gpu=50, network=1024),
+                telemetry.Reading(cpu=75, gpu=100, network=4096)]
+    labels = {text.split()[0]: text for text, _ in telemetry.meter(readings[-1], 180, readings)}
+    assert labels["CPU"].endswith("▁▁▁▁▂▆")
+    assert labels["GPU"].endswith("▁▁▁▁▄█")
+    assert labels["NET"].endswith("▁▁▁▁▂█")
+    assert len(telemetry.sparkline(readings, "cpu", percent=True)) == 6
+
+
 def test_sampler_uses_real_counters_and_rates(monkeypatch):
     from types import SimpleNamespace
     clock = iter([10.0, 12.0])

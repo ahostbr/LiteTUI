@@ -66,18 +66,31 @@ class Sampler:
         return Reading(cpu, ram, gpu, vram, disk_rate, net_rate)
 
 
-def meter(reading: Reading, budget: int) -> list[tuple[str, str]]:
+def sparkline(history: list[Reading], name: str, *, percent: bool) -> str:
+    """Six fixed cells; percentages share a 0-100 scale, rates use their peak."""
+    values = [getattr(sample, name) for sample in history[-6:]]
+    values = [value for value in values if value is not None and value >= 0]
+    if not values:
+        return ""
+    values = [values[0]] * (6 - len(values)) + values
+    ceiling = 100 if percent else max(values) or 1
+    levels = "▁▂▃▄▅▆▇█"
+    return "".join(levels[min(7, int(value * 7 / ceiling))] for value in values)
+
+
+def meter(reading: Reading, budget: int,
+          history: list[Reading] | None = None) -> list[tuple[str, str]]:
     """Return complete Rich chunks in priority order; never split a meter."""
     values = (
-        ("CPU", reading.cpu, "#8bd878", True),
-        ("RAM", reading.ram, "#e3c66d", True),
-        ("GPU", reading.gpu, "#78aaff", True),
-        ("VRAM", reading.vram, "#78aaff", True),
-        ("DISK", reading.disk, "#8bd878", False),
-        ("NET", reading.network, "#78aaff", False),
+        ("CPU", "cpu", reading.cpu, "#8bd878", True),
+        ("GPU", "gpu", reading.gpu, "#78aaff", True),
+        ("NET", "network", reading.network, "#78aaff", False),
+        ("RAM", "ram", reading.ram, "#e3c66d", True),
+        ("VRAM", "vram", reading.vram, "#78aaff", True),
+        ("DISK", "disk", reading.disk, "#8bd878", False),
     )
     result: list[tuple[str, str]] = []
-    for name, value, color, percent in values:
+    for name, field, value, color, percent in values:
         if value is None:
             continue
         if percent:
@@ -88,6 +101,8 @@ def meter(reading: Reading, budget: int) -> list[tuple[str, str]]:
         else:
             rate = f"{value / 1048576:.1f}M/s" if value >= 1048576 else f"{value / 1024:.0f}K/s"
             text = f"{name} {rate}"
+        if history:
+            text += " " + sparkline(history, field, percent=percent)
         cost = len(text) + (3 if result else 0)
         if cost <= budget:
             result.append((text, color))

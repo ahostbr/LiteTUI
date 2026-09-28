@@ -1590,6 +1590,7 @@ class LiteTUI(App):
         # in the list simply drops the selection, which is visible.
         self._footer_nav: str | None = None
         self._footer_telemetry = None
+        self._footer_history = []
         self._footer_sampler = None
         self._footer_sample_timer = None
         self._footer_sample_pending = False
@@ -5328,6 +5329,7 @@ class LiteTUI(App):
             self._footer_sample_timer = None
         self._footer_sampler = None
         self._footer_telemetry = None
+        self._footer_history.clear()
 
     def _sync_footer_sampler(self) -> None:
         """Only an enabled footer has a timer; slow sensors run in a thread."""
@@ -5354,6 +5356,10 @@ class LiteTUI(App):
                 reading = await asyncio.to_thread(sampler.sample)
                 if self.settings.footer_task_manager and sampler is self._footer_sampler:
                     self._footer_telemetry = reading
+                    # Repeated measurements do not shift the graph or repaint.
+                    if not self._footer_history or reading != self._footer_history[-1]:
+                        self._footer_history.append(reading)
+                        del self._footer_history[:-6]
                     self._refresh_ctx_label()
             except (OSError, ValueError, RuntimeError):
                 # A failed sensor isn't a measured zero; try again next tick.
@@ -5627,7 +5633,8 @@ class LiteTUI(App):
 
         if s.footer_task_manager and getattr(self, "_footer_telemetry", None) is not None:
             from litetui.footer_telemetry import meter
-            for index, (label, color) in enumerate(meter(self._footer_telemetry, 120)):
+            history = getattr(self, "_footer_history", [])
+            for index, (label, color) in enumerate(meter(self._footer_telemetry, 180, history)):
                 add(f"telemetry-{index}", label, color)
 
         # Build the actual chunks only after every field has been computed.
