@@ -5,13 +5,13 @@ import sqlite3
 import time
 from pathlib import Path
 
+from rich.cells import cell_len, set_cell_size
 from textual.widgets import Static
 
 
 class NowCard(Static):
     DEFAULT_CSS = """
-    NowCard { display: none; height: 3; background: $surface-darken-2; }
-    .compact-profile NowCard { display: block; }
+    NowCard { display: none; height: 3; background: $surface-darken-2; text-wrap: nowrap; }
     """
 
     def __init__(self, **kwargs):
@@ -69,7 +69,23 @@ class NowCard(Static):
             step = f"now  responding  {int(time.monotonic() - elapsed)}s"
         else:
             step = "now  idle"
-        self.content = f"{title}\n{step}\nlast {self.last}"
+        width = max(1, self.content_region.width or self.size.width or 46)
+
+        def fit(line: str) -> str:
+            line = " ".join(str(line).split())
+            return line if cell_len(line) <= width else set_cell_size(line, width - 1).rstrip() + "…"
+
+        if self.wait:
+            owner, reason, since = self.wait
+            delta = int(time.monotonic() - since)
+            clock = f"{delta // 60}:{delta % 60:02}"
+            # Keep the time at the right edge even if a long owner drops reason.
+            prefix = f"⏳ WAITING ON {owner} · {reason}"
+            if cell_len(prefix) + cell_len(clock) + 3 > width:
+                prefix = f"⏳ WAITING ON {owner}"
+            prefix = set_cell_size(prefix, max(0, width - cell_len(clock) - 3)).rstrip()
+            title = f"{prefix} · {clock}"
+        self.content = "\n".join((fit(title), fit(step), fit(f"last {self.last}")))
 
     def begin_wait(self, owner: str, reason: str) -> None:
         self.wait = (owner, reason, time.monotonic())

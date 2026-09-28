@@ -307,6 +307,40 @@ async def test_idle_now_card_refreshes_assignment_without_turn(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_now_card_long_fields_stay_in_three_cells_and_wait_keeps_clock():
+    from rich.cells import cell_len
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        card = app.query_one(NowCard)
+        for _ in range(20):
+            if card.region.width:
+                break
+            await pilot.pause(.05)
+        assert card.region.width == 46 and card.region.height == 3 and card.display
+        card.card_label = 'T1124 ' + 'long-title-' * 12
+        card.last = 'result ' + 'long recap words ' * 30
+        card.repaint(agent_id='test-agent', tool=SimpleNamespace(tool_name='long-tool-' * 10, _t0=0))
+        lines = card.content.splitlines()
+        assert len(lines) == card.region.height == 3
+        assert all(cell_len(line) <= card.content_region.width for line in lines)
+        assert lines[2].startswith('last ')
+        card.begin_wait('LongOwnerNameThatDoesNotFitAcrossThisPane', 'approval')
+        waiting = card.content.splitlines()[0]
+        assert 'WAITING ON' in waiting and '0:00' in waiting
+        assert cell_len(waiting) <= card.content_region.width
+        await pilot.resize_terminal(101, 22)
+        await pilot.pause(.3)
+        assert not card.display and card.region.height == 0
+        await pilot.resize_terminal(46, 22)
+        await pilot.pause(.3)
+        assert card.display and card.region.height == 3
+        await pilot.resize_terminal(101, 22)
+        await pilot.pause(.3)
+        assert not card.display and card.region.height == 0
+
+
+@pytest.mark.asyncio
 async def test_slim_input_focus_and_text_growth():
     app = app_for_pilot()
     async with app.run_test(size=(46, 22)) as pilot:

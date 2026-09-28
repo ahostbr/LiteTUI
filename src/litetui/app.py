@@ -858,6 +858,7 @@ class LiteTUI(App):
         display: block;
     }
 
+    .compact-profile NowCard { display: block; }
     .compact-profile .tool-msg.compact-tool.compact-folded { margin: 0; height: 1; }
     .compact-profile .tool-msg.compact-tool.compact-folded .thinking-header { padding: 0; height: 1; }
     .compact-profile .thinking-block.compact-folded { margin-bottom: 0; height: 1; border: none; }
