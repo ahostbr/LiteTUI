@@ -2068,6 +2068,9 @@ class LiteTUI(App):
 
     def on_mount(self) -> None:
         self.call_after_refresh(self._apply_compact_profile)
+        # The fast elapsed loop retires after one idle second; board assignment
+        # can change with no turn or keypress. Read the board at its slow cadence.
+        self.set_interval(1.0, self._paint_now)
 
         self._sync_footer_sampler()
         state = hook_host.snapshot(self)
@@ -6512,17 +6515,12 @@ class LiteTUI(App):
         seat = getattr(self, "seat", None)
         if not getattr(seat, "registered", False) or not getattr(seat, "agent_id", None):
             return
-        from pathlib import Path
-        from datetime import datetime, timezone
         path = Path.home() / ".liteharness" / "agents" / f"{seat.agent_id}.json"
         try:
-            from liteharness.config import merge_presence_fields
-            merge_presence_fields(path, {
-                "last_recap": recap,
-                "last_recap_at": datetime.now(timezone.utc).isoformat(),
-            })
-        except (ImportError, OSError, ValueError):
-            pass
+            if not harness_mod.merge_recap_presence(path, seat.agent_id, recap):
+                self._system("Recap could not be saved to seat presence; the answer is intact.")
+        except OSError as exc:
+            self._system(f"Recap could not be saved to seat presence: {exc}")
 
     def _settle_turn_stop_line(
         self,

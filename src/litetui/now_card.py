@@ -60,7 +60,7 @@ class NowCard(Static):
         else:
             if self.idle_since is None:
                 self.idle_since = time.time()
-            title = f"idle since {time.strftime('%H:%M', time.localtime(self.idle_since))} \u00b7 last: done"
+            title = f"{self.card_label} \u00b7 idle since {time.strftime('%H:%M', time.localtime(self.idle_since))}"
         if tool is not None:
             step = f"now  {tool.tool_name}  {int(time.monotonic() - tool._t0)}s"
         elif thinking is not None:
@@ -73,8 +73,8 @@ class NowCard(Static):
 
     def begin_wait(self, owner: str, reason: str) -> None:
         self.wait = (owner, reason, time.monotonic())
-        self.repaint()
+        self.repaint(agent_id=self._agent_id)
 
     def end_wait(self) -> None:
         self.wait = None
-        self.repaint()
+        self.repaint(agent_id=self._agent_id)

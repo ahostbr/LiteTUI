@@ -91,7 +91,8 @@ def test_recap_stream_split_and_missing_malformed():
     assert split_recap(text, final=True) == ('Answer.', 'Did work / Tests green')
     assert split_recap('Answer only', final=True) == ('Answer only', None)
     malformed = 'Answer <recap>unfinished'
-    assert split_recap(malformed, final=True) == (malformed, None)
+    assert split_recap(malformed, final=True) == ('Answer', None)
+    assert split_recap('Answer <recap>too many words</recap> trailing', final=True) == ('Answer', None)
 
 
 @pytest.mark.asyncio
@@ -99,7 +100,9 @@ async def test_recap_receipt_summary_now_and_presence(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     presence = tmp_path / '.liteharness' / 'agents' / 'test-agent.json'
     presence.parent.mkdir(parents=True)
-    presence.write_text(json.dumps({'agent_id': 'test-agent', 'name': 'Carmack'}), encoding='utf-8')
+    original = {'agent_id': 'test-agent', 'name': 'Carmack', 'tier': 'worker',
+                'model': 'test', 'spawned_by': 'Marquee'}
+    presence.write_text(json.dumps(original), encoding='utf-8')
     app = app_for_pilot()
     async with app.run_test(size=(46, 22)) as pilot:
         card = AssistantMessage()
@@ -116,7 +119,22 @@ async def test_recap_receipt_summary_now_and_presence(tmp_path, monkeypatch):
         assert card.recap in app.query_one(NowCard).content
         data = json.loads(presence.read_text(encoding='utf-8'))
         assert data['last_recap'] == card.recap and data['last_recap_at']
-        assert data['name'] == 'Carmack'
+        assert all(data[key] == value for key, value in original.items())
+
+
+def test_recap_presence_never_resurrects_missing_or_malformed_seat(tmp_path):
+    from litetui.harness import merge_recap_presence
+
+    missing = tmp_path / 'absent.json'
+    assert not merge_recap_presence(missing, 'test-agent', 'Work complete')
+    assert not missing.exists()
+    malformed = tmp_path / 'broken.json'
+    malformed.write_text('{not json', encoding='utf-8')
+    assert not merge_recap_presence(malformed, 'test-agent', 'Work complete')
+    assert malformed.read_text(encoding='utf-8') == '{not json'
+    malformed.write_text('[]', encoding='utf-8')
+    assert not merge_recap_presence(malformed, 'test-agent', 'Work complete')
+    assert malformed.read_text(encoding='utf-8') == '[]'
 
 
 @pytest.mark.asyncio
@@ -192,6 +210,28 @@ async def test_card_reads_only_assignee_from_sqlite(tmp_path, monkeypatch):
         assert 'WAITING ON Marquee' in card.content
         card.end_wait()
         assert card.wait is None
+        assert 'T1124 Compact pane' in card.content  # idle still shows the claimed card
+
+
+@pytest.mark.asyncio
+async def test_idle_now_card_refreshes_assignment_without_turn(tmp_path, monkeypatch):
+    import litetui.now_card as now
+    monkeypatch.setattr(now.Path, 'home', lambda: tmp_path)
+    dbpath = tmp_path / '.litesuite' / 'harness' / 'tasks.db'
+    dbpath.parent.mkdir(parents=True)
+    with sqlite3.connect(dbpath) as db:
+        db.execute('CREATE TABLE tasks (id TEXT,title TEXT,assignee TEXT,status TEXT,claimed_at TEXT)')
+    app = app_for_pilot()
+    async with app.run_test(size=(46, 22)) as pilot:
+        await pilot.pause(.2)
+        card = app.query_one(NowCard)
+        assert 'no card claimed' in card.content
+        with sqlite3.connect(dbpath) as db:
+            db.execute('INSERT INTO tasks VALUES (?,?,?,?,?)',
+                       ('T1124', 'Compact pane', 'test-agent', 'building', '2026-01-01'))
+        card._read_at -= 31  # simulate the 30-second board read interval
+        await pilot.pause(1.2)  # no turn, input, resize, or explicit repaint
+        assert 'T1124 Compact pane' in card.content
 
 
 @pytest.mark.asyncio

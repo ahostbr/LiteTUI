@@ -586,6 +586,9 @@ async def stream_turn(app):
                         app._refresh_ctx_label()
                     app._rpc_emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
                 elif event.kind in {"diagnostic", "notice", "rate_limit", "task", "session", "user_text"}:
+                    # Native Claude rate_limit is a status transition (including allowed_warning),
+                    # not a confirmed retry-begin/retry-end. Keep it diagnostic: claiming a
+                    # WAITING banner here would invent a blocked state with no reliable exit.
                     app._rpc_emit({"type": "native_event", "provider": "claude", "kind": event.kind,
                                    "detail": event.detail, "data": event.data})
                     if event.kind == "diagnostic":
