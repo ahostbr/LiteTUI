@@ -81,6 +81,7 @@ from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
 # ThinkingBlock. The re-export is what makes O0 a move instead of a break.
 # ⚠️ It buys a shorter app.py and nothing else: same API surface, same method
 # count on LiteTUI, same plugin reach-through.
+from litetui.now_card import NowCard
 from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AnswerBody,
     AssistantMessage,
@@ -857,6 +858,12 @@ class LiteTUI(App):
         display: block;
     }
 
+    .compact-profile NowCard { display: block; }
+    .compact-profile .tool-msg.compact-tool.compact-folded { margin: 0; height: 1; }
+    .compact-profile .tool-msg.compact-tool.compact-folded .thinking-header { padding: 0; height: 1; }
+    .compact-profile .thinking-block.compact-folded { margin-bottom: 0; height: 1; border: none; }
+    .compact-profile .thinking-block.compact-folded .thinking-header { padding: 0; height: 1; }
+
     .tool-msg {
         height: auto;
         margin: 0 2;
@@ -940,16 +947,13 @@ class LiteTUI(App):
         margin: 0 1 1 1;
     }
 
-    .ctx-label {
-        dock: right;
-        padding-right: 1;
-        background: $footer-background;
-    }
-
-    /* Status on the upper row, binding hints and controls below it. */
-    ContextFooter { height: 2; }
-    .ctx-label { dock: top; height: 1; width: 100%; }
-    .footer-second-row { dock: bottom; width: 100%; height: 1; }
+    ContextFooter { height: 2; layout: vertical; }
+    .footer-first-row, .footer-second-row { height: 1; width: 100%; }
+    .ctx-label { height: 1; width: auto; max-width: 100%; overflow: hidden; padding-right: 1; background: $footer-background; }
+    .compact-footer-hints { display: none; width: auto; height: 1; }
+    .compact-profile .compact-footer-hints { display: block; }
+    .footer-hints { width: 1fr; height: 1; overflow: hidden; }
+    .compact-profile .footer-hints { display: none; }
     .permission-label {
         dock: none;
         width: auto;
@@ -1527,6 +1531,9 @@ class LiteTUI(App):
         Binding("shift+tab", "cycle_tool_profile", "Authority",
                 priority=True, show=False),
         Binding("ctrl+p", "toggle_plan_mode", "Plan", priority=True, show=False),
+        Binding("ctrl+g", "toggle_compact_view", "Compact view", priority=True),
+        Binding("ctrl+b", "select_previous_tool", "Select tool", priority=True),
+        Binding("ctrl+e", "expand_recent_tool", "Expand tool"),
     ]
 
     pending_image: reactive[str | None] = reactive(None)
@@ -1552,6 +1559,12 @@ class LiteTUI(App):
     ):
         super().__init__(**app_kwargs)
         self._rpc = rpc
+        self.last_recap = None
+        self._now_turn_active_at: float | None = None
+        self._retry_wait_token: object | None = None
+        self._compact_mode = False
+        self._compact_override = None
+        self._compact_resize_timer = None
         self._first_prompt = first_prompt
         self._cli_system_prompt = system_prompt
         self._cli_initial_model = initial_model
@@ -1915,6 +1928,7 @@ class LiteTUI(App):
         yield Header()
         # No cancel control here any more: it is mounted next to the tool it
         # kills, by _tool_begin. See CancelToolButton.
+        yield NowCard(id="now-card")
         yield ChatLog(id="chat-log")
         yield Static(
             "  Image attached — Ctrl+X to remove", id="image-indicator"
@@ -1926,6 +1940,116 @@ class LiteTUI(App):
         from litetui.input_controls import PromptBox
         yield PromptBox()
         yield ContextFooter()
+
+    def _apply_compact_profile(self) -> None:
+        width = self.size.width
+        if self._compact_override is not None:
+            compact = self._compact_override
+        elif self._compact_mode:
+            compact = width < 101
+        else:
+            compact = width < 100 if not getattr(self, "_compact_initialized", False) else width <= 93
+        self._compact_initialized = True
+        if compact == self._compact_mode:
+            return
+        self._compact_mode = compact
+        self.set_class(compact, "compact-profile")
+        try:
+            self.query_one(ContextFooter)._on_resize_for_compact()
+        except Exception:
+            pass
+        for tool in self.query(ToolMessage):
+            tool.set_compact(compact)
+        for thinking in self.query(ThinkingBlock):
+            thinking.set_compact(compact)
+        self._paint_now()
+        try:
+            self.query_one("PromptBox").sync_compact()
+        except Exception:
+            pass
+
+    def on_resize(self, _event) -> None:
+        timer = self._compact_resize_timer
+        if timer is not None:
+            timer.stop()
+        self._compact_resize_timer = self.set_timer(0.1, self._apply_compact_profile)
+
+    def action_toggle_compact_view(self) -> None:
+        self._compact_override = not self._compact_mode
+        self._apply_compact_profile()
+
+    def action_select_previous_tool(self) -> None:
+        if not self._compact_mode:
+            return
+        tools = list(self.query(ToolMessage))
+        if not tools:
+            return
+        focused = self.focused
+        selected = next((i for i, tool in enumerate(tools) if tool.header is focused), len(tools))
+        tool = tools[(selected - 1) % len(tools)]
+        tool.header.focus()
+        tool.scroll_visible()
+
+    def action_expand_recent_tool(self) -> None:
+        # Ctrl+B selects older rows without stealing the prompt's history keys.
+        tools = list(self.query(ToolMessage))
+        if tools:
+            tool = next((tool for tool in tools if tool.header is self.focused), tools[-1])
+            tool.set_expanded(not tool.expanded)
+            tool.scroll_visible()
+
+    def _retry_notice(self, text: str) -> None:
+        self._system(text)
+        if "429" in text or "rate limited" in text.lower():
+            if self._retry_wait_token is None:
+                self._retry_wait_token = self._begin_wait("provider", "rate-limit retry")
+        else:
+            # A later non-429 retry supersedes the earlier rate-limit wait.
+            self._clear_retry_wait()
+
+    def _now_card(self) -> NowCard | None:
+        try:
+            return self.screen_stack[0].query_one(NowCard)
+        except Exception:
+            return None  # startup, teardown, or no mounted base card
+
+    def _clear_retry_wait(self) -> None:
+        token, self._retry_wait_token = self._retry_wait_token, None
+        self._end_wait(token)
+
+    def _begin_wait(self, owner: str, reason: str) -> object | None:
+        import threading
+        if threading.get_ident() != self._thread_id:
+            if self._loop is None or self._loop.is_closed():
+                return None  # teardown: no UI remains to update
+            return self.call_from_thread(self._begin_wait, owner, reason)
+        self._elapsed.ensure_running()
+        card = self._now_card()
+        return card.begin_wait(owner, reason) if card is not None else None
+
+    def _end_wait(self, token: object | None) -> None:
+        if token is None:
+            return
+        import threading
+        if threading.get_ident() != self._thread_id:
+            if self._loop is None or self._loop.is_closed():
+                return  # teardown: no UI remains to update
+            self.call_from_thread(self._end_wait, token)
+            return
+        card = self._now_card()
+        if card is not None:
+            card.end_wait(token)
+
+    def _paint_now(self) -> None:
+        card = self._now_card()
+        if card is None:
+            return
+        seat = getattr(self, "seat", None)
+        tools = getattr(self, "_inflight_tools", ())
+        card.repaint(agent_id=getattr(seat, "agent_id", None),
+                     tool=tools[-1] if tools else None,
+                     thinking=getattr(self, "_thinking_live", None),
+                     elapsed=self._now_turn_active_at)
 
     def _splash(self) -> None:
         """The launch wordmark. First thing drawn, before the backend answers.
@@ -1971,6 +2095,11 @@ class LiteTUI(App):
             return False
 
     def on_mount(self) -> None:
+        self.call_after_refresh(self._apply_compact_profile)
+        # The fast elapsed loop retires after one idle second; board assignment
+        # can change with no turn or keypress. Read the board at its slow cadence.
+        self.set_interval(1.0, self._paint_now)
+
         self._sync_footer_sampler()
         state = hook_host.snapshot(self)
         if state.disabled:
@@ -2725,17 +2854,21 @@ class LiteTUI(App):
         if route == "refuse":
             approval_relay.record(self, "no_spawner", name, "child")
             return False
-        if self._rpc:
-            # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
-            answer = await tool_approval.approve_over_rpc(
-                self, name, args, decision, timeout=0 if route == "own" else None)
-        elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
-            from litetui.claude_turn import approval_dialog
-            answer = await approval_dialog(self, name, args, decision)
-        else:
-            answer = await show_dialog(
-                self, partial(ToolApprovalBody, name, args, decision),
-                modal_factory=partial(ToolApprovalScreen, name, args, decision))
+        wait_token = self._begin_wait("host" if self._rpc else "you", "approval")
+        try:
+            if self._rpc:
+                # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
+                answer = await tool_approval.approve_over_rpc(
+                    self, name, args, decision, timeout=0 if route == "own" else None)
+            elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
+                from litetui.claude_turn import approval_dialog
+                answer = await approval_dialog(self, name, args, decision)
+            else:
+                answer = await show_dialog(
+                    self, partial(ToolApprovalBody, name, args, decision),
+                    modal_factory=partial(ToolApprovalScreen, name, args, decision))
+        finally:
+            self._end_wait(wait_token)
         approval_relay.record(self, "no_host" if answer is None else "approved" if answer else "denied",
                               name, "child")
         return bool(answer)
@@ -2814,9 +2947,13 @@ class LiteTUI(App):
             # the user, 2026-09-10: "i want the approvals to route threw frontier
             # chat GUI".
             if self._rpc:
-                answer = await tool_approval.approve_over_rpc(
-                    self, name, args, decision
-                )
+                wait_token = self._begin_wait("host", "approval")
+                try:
+                    answer = await tool_approval.approve_over_rpc(
+                        self, name, args, decision
+                    )
+                finally:
+                    self._end_wait(wait_token)
                 # None is NOT DENIED. See approve_over_rpc: one is a person
                 # choosing, the other is a host that never spoke, and they
                 # owe the model different sentences.
@@ -2825,15 +2962,19 @@ class LiteTUI(App):
                     approval_relay.record(self, "no_host" if unanswered else
                                           "approved" if answer else "denied", name, source)
             else:
-                if getattr(getattr(self, "backend", None), "owns_native_turns", False):
-                    from litetui.claude_turn import approval_dialog
-                    answer = await approval_dialog(self, name, args, decision)
-                else:
-                    answer = await show_dialog(
-                        self,
-                        partial(ToolApprovalBody, name, args, decision),
-                        modal_factory=partial(ToolApprovalScreen, name, args, decision),
-                    )
+                wait_token = self._begin_wait("you", "approval")
+                try:
+                    if getattr(getattr(self, "backend", None), "owns_native_turns", False):
+                        from litetui.claude_turn import approval_dialog
+                        answer = await approval_dialog(self, name, args, decision)
+                    else:
+                        answer = await show_dialog(
+                            self,
+                            partial(ToolApprovalBody, name, args, decision),
+                            modal_factory=partial(ToolApprovalScreen, name, args, decision),
+                        )
+                finally:
+                    self._end_wait(wait_token)
                 unanswered = False
             # `not answer` covers three cases on purpose: DENIED, and None from
             # a screen dismissed without a value, and any future falsy answer.
@@ -3263,7 +3404,7 @@ class LiteTUI(App):
         itself lives in the registry (PROMPT_ORDER slots); host sections are
         registered in __init__, the skills index by the skills plugin.
         """
-        return self.plugins.compose_prompt()
+        return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
 
     def _load_system_prompt(self) -> None:
         base = self._system_prompt_text()
@@ -3813,15 +3954,20 @@ class LiteTUI(App):
                 native_text = native_text or split_card_texts(
                     m.get("claude_native") or {}, text) is not None
                 if text and not native_text:
+                    from litetui.recap import split_recap
+                    shown, recap = split_recap(text, final=True)
                     w = self._assistant_bubble()
-                    w.set_answer(text)
+                    w.set_answer(shown)
+                    if recap:
+                        w.recap = recap
+                        w.set_summary(recap)
                     # A restored turn is finished by definition, so it can fold
                     # like any other. Its summary comes from the store, and
                     # summary_done stops the reopen from re-asking the model for
                     # a line it already has - the user asked for exactly that.
                     w.settled = True
                     stored = restored_summaries.get(self._card_summary_key(text))
-                    if stored:
+                    if stored and not recap:
                         w.set_summary(stored)
                         w.summary_done = True
                     assistants += 1
@@ -3833,7 +3979,7 @@ class LiteTUI(App):
                 from litetui.claude_turn import replay_activity
                 for w in replay_activity(self, m["claude_native"], text):
                     stored = restored_summaries.get(self._card_summary_key(w.answer_text))
-                    if stored:
+                    if stored and not getattr(w, "recap", None):
                         w.set_summary(stored)
                         w.summary_done = True
                     assistants += 1
@@ -5033,6 +5179,9 @@ class LiteTUI(App):
 
     def _rpc_emit(self, data: dict) -> None:
         """Emit one JSON event on stdout (no-op outside --rpc)."""
+        if data.get("type") == "turn_start":
+            self._now_turn_active_at = self._active_turn_started_at
+            self._paint_now()
         if not self._rpc:
             return
         from litetui.rpc import rpc_emit
@@ -6386,6 +6535,23 @@ class LiteTUI(App):
     def watch_tps(self, value: float | None) -> None:
         self._refresh_ctx_label()
 
+    def _record_recap(self, recap: str) -> None:
+        """Publish latest final recap, preserving the registry's existing keys."""
+        self.last_recap = recap
+        card = self._now_card()
+        if card is not None:
+            card.last = recap
+            self._paint_now()
+        seat = getattr(self, "seat", None)
+        if not getattr(seat, "registered", False) or not getattr(seat, "agent_id", None):
+            return
+        path = Path.home() / ".liteharness" / "agents" / f"{seat.agent_id}.json"
+        try:
+            if not harness_mod.merge_recap_presence(path, seat.agent_id, recap):
+                self._system("Recap could not be saved to seat presence; the answer is intact.")
+        except OSError as exc:
+            self._system(f"Recap could not be saved to seat presence: {exc}")
+
     def _settle_turn_stop_line(
         self,
         widget: AssistantMessage | None,
@@ -6411,7 +6577,10 @@ class LiteTUI(App):
         # unrelated behaviour.
         if widget is not None:
             widget.settled = True
-            self._kick_card_summary(widget)
+            if getattr(widget, "recap", None):
+                widget.set_summary(widget.recap)
+            else:
+                self._kick_card_summary(widget)
         line = format_turn_stop_line(
             started_at=started_at,
             final_tps=final_tps,
@@ -6426,6 +6595,8 @@ class LiteTUI(App):
             widget = self._assistant_bubble()
             widget.body.styles.display = "none"
             widget.settled = True
+        if getattr(widget, "recap", None):
+            line += " · " + widget.recap
         widget.set_stop_line(line)
         self._scroll_down()
 
@@ -6455,6 +6626,7 @@ class LiteTUI(App):
             # up for a call the app does not consider in flight.
             self._glassbox_tool(getattr(tool, "tool_name", "") or "tool")
         self._elapsed.ensure_running()
+        self._paint_now()
 
     def _attach_cancel_button(self, tool, _retry: bool = False) -> None:
         """Put a cancel control directly after `tool`, whenever that becomes possible.
@@ -6481,8 +6653,12 @@ class LiteTUI(App):
             self._cancel_buttons.pop(tool, None)
 
     def _tool_end(self, tool) -> None:
+        card = self._now_card()
+        if card is not None:
+            card.last = tool._header_content("▸").plain
         if tool in self._inflight_tools:
             self._inflight_tools.remove(tool)
+        self._paint_now()
         btn = self._cancel_buttons.pop(tool, None)
         if btn is not None:
             try:
@@ -6514,6 +6690,7 @@ class LiteTUI(App):
         while True:
             await asyncio.sleep(0.25)
             now = time.monotonic()
+            self._paint_now()
             card = self._compact_card
             card_live = card is not None and card._took is None
             active = (
@@ -6521,6 +6698,8 @@ class LiteTUI(App):
                 or self._inflight_tools
                 or self._thinking_live is not None
                 or card_live
+                or bool(getattr(self._now_card(), "wait", None))
+                or self._now_turn_active_at is not None
             )
             # The cancel button tracks the SLOT, not the tool bubble — and not
             # child liveness: a populated slot means communicate() may still be
@@ -7413,6 +7592,7 @@ class LiteTUI(App):
     @on(Input.Changed, "#message-input")
     def _skill_ac_changed(self, event: Input.Changed) -> None:
         self.sync_skill_autocomplete(event.value)
+        self.query_one("PromptBox").sync_compact()
 
     def sync_skill_autocomplete(self, value: str) -> None:
         """Show the picker only while a bare slash NAME is being typed.
@@ -8053,6 +8233,8 @@ class LiteTUI(App):
         "no figure" -- and a host that sees the key absent cannot tell those
         from a version that never sent it.
         """
+        self._now_turn_active_at = None
+        self._paint_now()
         self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
                         "tps": tps, "tpsSource": tps_source, **extra})
 
@@ -8239,6 +8421,9 @@ class LiteTUI(App):
             # One render and one scroll per frame for this round's answer.
             from litetui.stream_sink import StreamSink
             sink = StreamSink(self, widget)
+            from litetui.recap import RecapStream
+            recap_stream = RecapStream()
+            recap = None
             self._eta.clear_prefill()  # NInfer prefill %, this request only
             thinking: ThinkingBlock | None = None
             text_full = ""
@@ -8278,7 +8463,7 @@ class LiteTUI(App):
                 # A closure, not the bound method: test fakes deepcopy their
                 # kwargs, and deepcopying a bound method copies the whole app.
                 stream = await model_transport.for_app(self).create(
-                    retry_notice=lambda text: self._system(text), **kwargs
+                    retry_notice=self._retry_notice, **kwargs
                 )
             except Exception as e:
                 runtime_log.record(
@@ -8293,6 +8478,7 @@ class LiteTUI(App):
                     detail=f"{type(e).__name__}: {e}",
                     exc=e,
                 )
+                self._clear_retry_wait()
                 self._elapsed.stop_body()
                 self._thinking_done()
                 # T688 F: if the app that owned our attached llama.cpp router has
@@ -8331,6 +8517,7 @@ class LiteTUI(App):
 
             try:
                 async for chunk in stream:
+                    self._clear_retry_wait()  # A retry has actually resumed output, not merely opened a socket.
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
                     # T806: llama.cpp-compatible engines publish their OWN
@@ -8478,8 +8665,10 @@ class LiteTUI(App):
                         self._thinking_done()
                         self._elapsed.stop_body()
                         text_full += delta.content
-                        self._rpc_emit({"type": "text_delta", "text": delta.content})
-                        sink.show(text_full)
+                        visible_delta = recap_stream.feed(delta.content)
+                        if visible_delta:
+                            self._rpc_emit({"type": "text_delta", "text": visible_delta})
+                        sink.show(recap_stream.visible)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
                         # chunk is already in hand, and the dialog promises that
@@ -8583,6 +8772,7 @@ class LiteTUI(App):
                                      error=takeover or _plain_backend_error(e, self.backend))
                 return
             finally:
+                self._clear_retry_wait()  # Cancellation, exhausted retries, and empty streams clear the banner.
                 if hasattr(stream, "close"):
                     await stream.close()
 
@@ -8596,7 +8786,13 @@ class LiteTUI(App):
                 # card summary is made from. Summarising the rendered widget
                 # instead would summarise a Markdown object; summarising the
                 # reasoning would describe work the card never shows.
-                sink.finish(text_full)
+                final_delta = recap_stream.finish()
+                if final_delta:
+                    self._rpc_emit({"type": "text_delta", "text": final_delta})
+                sink.finish(recap_stream.visible)
+                # The completion hook may reject this draft or this may be a
+                # tool round. Keep recap pending until the terminal acceptance gate.
+                recap = recap_stream.recap
             else:
                 sink.cancel()
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.
@@ -8643,7 +8839,10 @@ class LiteTUI(App):
                 # cannot tell a finished card from a draft the completion
                 # hook just rejected, and a rejected draft never gets a line.
                 terminal_widget.settled = True
-                self._kick_card_summary(terminal_widget)
+                if getattr(terminal_widget, "recap", None):
+                    terminal_widget.set_summary(terminal_widget.recap)
+                else:
+                    self._kick_card_summary(terminal_widget)
 
             if self._stop_requested:
                 self._system(
@@ -8679,6 +8878,9 @@ class LiteTUI(App):
                 await self.plugins.finalize_turn()
                 if not getattr(self, "_hooks_suppressed", False):
                     await hook_host.dispatch(self, "completion_after", {"answer": text_full or ""})
+                if recap and terminal_widget is not None:
+                    terminal_widget.recap = recap
+                    self._record_recap(recap)
                 self._settle_turn_stop_line(
                     terminal_widget,
                     started_at=turn_started_at,
