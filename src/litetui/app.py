@@ -949,15 +949,16 @@ class LiteTUI(App):
     /* Status on the upper row, binding hints and controls below it. */
     ContextFooter { height: 2; }
     .ctx-label { dock: top; height: 1; width: 100%; }
+    .footer-second-row { dock: bottom; width: 100%; height: 1; }
     .permission-label {
-        dock: right;
+        dock: none;
         width: auto;
         height: 1;
         padding-right: 1;
         background: $footer-background;
     }
     .task-manager-toggle {
-        dock: right;
+        dock: none;
         width: auto;
         height: 1;
         padding: 0 1;
@@ -965,6 +966,12 @@ class LiteTUI(App):
         color: $accent;
     }
     .task-manager-toggle:hover { background: $accent 40%; }
+    .footer-meters {
+        dock: none;
+        width: auto;
+        height: 1;
+        background: $footer-background;
+    }
     .pause-button {
         width: auto;
         padding: 0 1;
@@ -5622,12 +5629,6 @@ class LiteTUI(App):
             if stats.plain:
                 chunks_by_key["tps"] = stats
 
-        if s.footer_task_manager and getattr(self, "_footer_telemetry", None) is not None:
-            from litetui.footer_telemetry import meter
-            history = getattr(self, "_footer_history", [])
-            for index, (label, color) in enumerate(meter(self._footer_telemetry, 180, history)):
-                add(f"telemetry-{index}", label, color)
-
         # Build the actual chunks only after every field has been computed.
         # This keeps the switches and dynamic zero-state rules independent of
         # the user's ordering preference, while giving rendering and navigation
@@ -5639,14 +5640,6 @@ class LiteTUI(App):
             )
             if key in chunks_by_key and key not in ("authority", "plan")
         ]
-        # The synthetic telemetry key expands to individually droppable meters.
-        telemetry = [(key, chunk) for key, chunk in chunks_by_key.items()
-                     if key.startswith("telemetry-")]
-        order = self.footer_display_order() if telemetry else []
-        preceding = set(order[:order.index("telemetry")]) if telemetry else set()
-        insert_at = sum(key in preceding for key, _ in chunks)
-        chunks[insert_at:insert_at] = telemetry
-
         # The footer owns the usable width. During its first compose it is
         # mounted but its children are not, so use the width from the footer's
         # resize event when available. The label's CSS padding takes one cell.
@@ -5672,9 +5665,7 @@ class LiteTUI(App):
             if width() > available:
                 render_sep = " · "
 
-            for drop_key in ("telemetry-5", "telemetry-4", "telemetry-3",
-                             "telemetry-2", "telemetry-1", "telemetry-0",
-                             "tps", "bg", "agents", "cache", "model", "convo", "ctx"):
+            for drop_key in ("tps", "bg", "agents", "cache", "model", "convo", "ctx"):
                 if width() <= available:
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
@@ -5743,6 +5734,40 @@ class LiteTUI(App):
                 text.append(chunks[key])
         return text
 
+    @property
+    def footer_meters_text(self) -> Text:
+        """Measured meters on the lower row, after the independent on/off switch."""
+        reading = getattr(self, "_footer_telemetry", None)
+        if not self.settings.footer_task_manager or reading is None:
+            return Text()
+        from litetui.footer_telemetry import meter
+
+        separator = "  ·  "
+        # The second row owns its own width. Reserve permission text and its
+        # one-cell padding, the clickable toggle and its two-cell padding, and
+        # the separator before admitting any whole meter. The status row never
+        # participates in this budget.
+        available = getattr(self, "_footer_available_width", None)
+        if available is not None:
+            available -= (self.permission_label_text.cell_len + 1
+                          + len("meters:on") + 2 + Text(separator).cell_len)
+            if available <= 0:
+                return Text()
+        history = getattr(self, "_footer_history", [])
+        candidates = meter(reading, 180, history)
+        result = Text()
+        for label, color in candidates:
+            cost = Text(label).cell_len + (3 if result.plain else 0)
+            if available is not None and cost > available:
+                break  # Priority order: CPU, GPU, NET, RAM, VRAM, DISK.
+            if result.plain:
+                result.append(" · ", "#5c6370")
+            result.append(label, color)
+            if available is not None:
+                available -= cost
+        if result.plain:
+            result = Text(separator, "#5c6370") + result
+        return result
 
     def _rpc_emit_usage(self, used: int | None) -> None:
         """Tell the host how full the window is. No-op outside `--rpc`.
@@ -5803,7 +5828,7 @@ class LiteTUI(App):
         # behind; update every match instead so a transient duplicate is
         # cosmetic rather than an exception on a hot reactive path.
         try:
-            labels = list(self.query(".ctx-label, .permission-label"))
+            labels = list(self.query(".ctx-label, .permission-label, .footer-meters"))
         except Exception:
             # No screen on the stack yet. _update_header and the conversation
             # setup both run before mount, and self.query() RAISES in that
@@ -5814,6 +5839,7 @@ class LiteTUI(App):
             return  # footer not composed yet; it reads the value when it composes
         for label in labels:
             text = (self.permission_label_text if label.has_class("permission-label")
+                    else self.footer_meters_text if label.has_class("footer-meters")
                     else self.ctx_label_text)
             # T1003: the setter repaints even when nothing changed, and idle
             # timers (cache ticker, Codex events, on_resize) call this constantly.
