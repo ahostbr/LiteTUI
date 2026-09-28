@@ -32,6 +32,67 @@ def test_patch_persists_through_authoritative_service_and_applies_runtime(tmp_pa
     assert result["runtime"][0]["status"] == "applied"
 
 
+def test_custom_theme_color_picker_patch_roundtrips_through_parent(tmp_path):
+    from litetui import themes
+    from litetui.sidecar_settings import public_snapshot
+
+    app = host(tmp_path)
+    registered = []
+    app._register_custom_themes = lambda: registered.append(dict(app.settings.custom_themes))
+    base = themes.ALL_THEMES["oscura-midnight"]
+    colors = {"primary": base.primary, "secondary": base.secondary, "accent": base.accent,
+              "success": base.success, "warning": base.warning, "error": base.error,
+              "background": base.background, "surface": base.surface, "panel": base.panel,
+              "foreground": base.foreground}
+    request = {"changes": [{"key": "custom_themes", "scope": "device",
+                            "value": {"name": "my-studio", "tokens": colors}}],
+               "expected_revisions": app._settings_service.snapshot("abc").revisions}
+    assert apply_patch(app, request)["saved"] is True
+    saved = app._settings_service.snapshot("abc")
+    assert saved.saved.custom_themes["my-studio"]["primary"] == base.primary
+    assert registered and registered[-1]["my-studio"]["primary"] == base.primary
+    assert public_snapshot(saved)["ui"]["custom_themes"]["my-studio"] == colors
+    assert any(t["id"] == "my-studio" for t in public_snapshot(saved)["ui"]["themes"])
+    request["changes"][0]["value"] = {"name": "my-studio", "tokens": {"primary": "#123456"}}
+    request["expected_revisions"] = saved.revisions
+    assert apply_patch(app, request)["saved"] is True
+    assert app._settings_service.snapshot("abc").saved.custom_themes["my-studio"]["primary"] == "#123456"
+
+
+def test_custom_theme_creation_selects_new_theme_after_registration(tmp_path):
+    from litetui import themes
+
+    app = host(tmp_path)
+    base = themes.ALL_THEMES["oscura-midnight"]
+    colors = {key: getattr(base, key) for key in themes.THEME_TOKENS}
+    registered = []
+    app._register_custom_themes = lambda: registered.append(dict(app.settings.custom_themes))
+    request = {"changes": [
+        {"key": "custom_themes", "scope": "device", "value": {"name": "new-studio", "tokens": colors}},
+        {"key": "theme_name", "scope": "device", "value": "new-studio"},
+    ], "expected_revisions": app._settings_service.snapshot("abc").revisions}
+    result = apply_patch(app, request)
+    assert result["saved"] is True
+    assert registered and "new-studio" in registered[-1]
+    assert app.settings.theme_name == "new-studio"
+    assert app._settings_service.snapshot("abc").saved.theme_name == "new-studio"
+    assert any(item["field"] == "theme_name" and item["status"] == "applied" for item in result["runtime"])
+
+
+def test_custom_theme_rejects_unknown_token_malformed_color_and_overwrite(tmp_path):
+    app = host(tmp_path)
+    before = app._settings_service.snapshot("abc").revisions
+    for value, error in [
+        ({"name": "my-theme", "tokens": {"surprise": "#123456"}}, "Unknown custom theme token"),
+        ({"name": "my-theme", "tokens": {"primary": "red"}}, "choose a #RRGGBB"),
+        ({"name": "oscura-midnight", "tokens": {"primary": "#123456"}}, "Built-in themes"),
+    ]:
+        with pytest.raises(ValueError, match=error):
+            apply_patch(app, {"changes": [{"key": "custom_themes", "scope": "device", "value": value}],
+                              "expected_revisions": before})
+    assert app._settings_service.snapshot("abc").revisions == before
+
+
 def test_stale_revision_conflicts_without_overwrite(tmp_path):
     app = host(tmp_path)
     stale = payload(app)
