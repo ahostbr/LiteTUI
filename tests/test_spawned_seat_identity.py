@@ -80,6 +80,7 @@ def test_app_constructs_seat_from_marked_identity_and_consumes_it(monkeypatch):
         env["LITEHARNESS_AGENT_ID"], "AppPathProbe", "thinker"
     )
     assert all(key not in os.environ for key in KEYS)
+    assert app._launch_seat_name == "AppPathProbe"
 
 
 def test_invalid_spawn_tier_logs_and_falls_back(capsys):

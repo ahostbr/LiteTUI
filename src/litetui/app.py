@@ -40,7 +40,7 @@ from litetui import model_residency, model_transport
 from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
-from litetui import runtime_log
+from litetui import runtime_log, spawner_errors
 from litetui.friendly_errors import present
 from litetui.conversation import (
     CONVO_SEED_FILES,
@@ -114,7 +114,7 @@ from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import seat_authority, tool_policy
-from litetui.turn_engine import TurnEngine, _resolve_reasoning_effort
+from litetui.turn_engine import TurnEngine, side_call_reasoning_effort
 from litetui import thinking_probe
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -1815,6 +1815,10 @@ class LiteTUI(App):
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
+        self._launch_seat_name = (
+            (os.environ.get("LITEHARNESS_AGENT_NAME") or os.environ.get("LITETUI_SEAT_NAME") or "").strip()
+            if self._spawned_marker else ""
+        )
         seat_id, seat_name, seat_tier = harness_mod.spawned_seat_identity(
             (self.settings.seat_name or "").strip() or "LiteTUI"
         )
@@ -1825,6 +1829,7 @@ class LiteTUI(App):
             tier=seat_tier,
         )
         self.seat.spawned_by = self._spawner_id
+        self._spawner_errors = spawner_errors.SpawnerErrorReporter()
         self._seat_started = False
         self._resumed_seat_name: str | None = None
         self._seat_claim_lock = asyncio.Lock()
@@ -2390,7 +2395,7 @@ class LiteTUI(App):
         _sync_seat_resolution(self)
         ok = await asyncio.to_thread(self.seat.register)
         self._seat_started = True
-        if ok and self._resumed_seat_name:
+        if ok and self._resumed_seat_name and self.seat.name != self._resumed_seat_name:
             async with self._seat_claim_lock:
                 await asyncio.to_thread(self.seat.claim_name, self._resumed_seat_name)
             self._refresh_ctx_label()
@@ -2416,12 +2421,15 @@ class LiteTUI(App):
             # Same approach as _inject_store_once: extend conversation[0].
             # Replace a stale line from a previous process before appending a
             # second one — a resumed conversation already carries one.
-            if self._sync_fleet_identity():
-                return
-            self._append_to_system(
-                self._fleet_identity_sentence()
-                + load_prompt("harness-capabilities")
-            )
+            self._sync_fleet_identity()
+            # A correct sentence returns False too; inspect the resulting prompt,
+            # not the 'changed' flag, before adding a missing one.
+            if not (self.conversation and self._fleet_identity_sentence()
+                    in str(self.conversation[0].get("content") or "")):
+                self._append_to_system(
+                    self._fleet_identity_sentence()
+                    + load_prompt("harness-capabilities")
+                )
         else:
             # Say so once. A seat nobody can reach that reports nothing is
             # indistinguishable from one that is simply idle.
@@ -2748,7 +2756,12 @@ class LiteTUI(App):
                 # literal: it is already tuned for the local-model failure
                 # where reasoning eats a small budget before any output.
                 max_tokens=self.settings.compact_max_tokens,
-                extra_body={"reasoning_effort": "low"},
+                extra_body={"reasoning_effort": side_call_reasoning_effort(
+                    "low", self.backend.name, fold_model,
+                    self.settings.lmstudio_graded_thinking_models,
+                    self.backend.reasoning_levels(fold_model)
+                    if hasattr(self.backend, "reasoning_levels") else (),
+                )},
             )
             summary = (resp.choices[0].message.content or "").strip()
             why_no_summary = "side call returned an empty summary"
@@ -3466,6 +3479,8 @@ class LiteTUI(App):
         """Claim the saved conversation name without blocking the UI thread."""
         if not self._seat_started or not self.seat.registered:
             return  # initial registration will pick up the pending resume
+        if self.seat.name == name:
+            return  # already holds the registry name
         async with self._seat_claim_lock:
             if self.convo_id != convo_id or self._resumed_seat_name != name:
                 return
@@ -3794,8 +3809,12 @@ class LiteTUI(App):
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
         saved_name = meta.get("agent_name")
-        self._resumed_seat_name = saved_name.strip() if isinstance(saved_name, str) and saved_name.strip() else None
-        if self._resumed_seat_name:
+        saved_name = saved_name.strip() if isinstance(saved_name, str) else ""
+        registry_name = self.seat.registry_name()
+        self._resumed_seat_name = self._launch_seat_name or registry_name or saved_name or None
+        if registry_name and not self._launch_seat_name and registry_name != self.seat.name:
+            self.seat.name = registry_name  # footer reflects the existing claim immediately
+        if self._resumed_seat_name and self._resumed_seat_name != registry_name:
             self._claim_resumed_seat_name(self._resumed_seat_name, self.convo_id)
         from litetui.codex_steering import restore_queue
         restore_queue(self)
@@ -6086,6 +6105,8 @@ class LiteTUI(App):
         if not n:
             return False   # no line yet; the registration path appends it
         self.conversation[0]["content"] = fixed
+        if not getattr(self, "_convo_loading", False):
+            self._edit(0, "fleet identity corrected")
         return True
 
 
@@ -6247,6 +6268,29 @@ class LiteTUI(App):
         tps = self.tps or 0.0
         self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
 
+    def _report_spawner_error(self, text: str, activity: str) -> None:
+        seat = getattr(self, "seat", None)
+        if seat is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(asyncio.to_thread(
+                    self._spawner_errors.send, seat, getattr(self, "convo_id", None),
+                    text, activity,
+                ))
+            except Exception:
+                pass  # a diagnostic must never break the UI or recursively report
+
+    @staticmethod
+    def _is_error_message(text: str) -> bool:
+        return bool(re.search(
+            r"\b(error|failed|failure|crash|could not|cannot|refused|unable to)\b", text, re.I
+        ))
+
+    def notify(self, message, *, severity="information", **kwargs):
+        if severity == "error":
+            self._report_spawner_error(str(message), "notification")
+        return super().notify(message, severity=severity, **kwargs)
+
     def system_message(self, text: str) -> None:
         """Post a system line into the chat log — **the supported way for a
         plugin to say something to the user.**
@@ -6269,6 +6313,9 @@ class LiteTUI(App):
         **in scope** to replace it with. Ask "is X reachable from every call
         site?" before scheduling any "seal it behind X" step.
         """
+        if self._is_error_message(text):
+            activity = "compaction" if text.startswith("Compact failed") else "system message"
+            self._report_spawner_error(text, activity)
         shown = present(text, self.settings.error_message_style)
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(shown), classes="system-msg"))
@@ -6782,9 +6829,12 @@ class LiteTUI(App):
         convenience; it must never be able to break a finished turn.
         """
         try:
-            # Reasoning OFF through the backend's own knob, not a literal:
-            # lmstudio omits the field, llamacpp wants "none" (T539).
-            effort = _resolve_reasoning_effort("off", self.backend.name)
+            levels = (self.backend.reasoning_levels(model)
+                      if hasattr(self.backend, "reasoning_levels") else ())
+            effort = side_call_reasoning_effort(
+                "off", self.backend.name, model,
+                self.settings.lmstudio_graded_thinking_models, levels,
+            )
             extra = {"reasoning_effort": effort} if effort else {}
             resp = await model_transport.for_app(self).create(
                 # 🔴 NOT PART OF THE TURN (T821). This side call used to be
@@ -8405,6 +8455,7 @@ class LiteTUI(App):
                     style="bold red"
                 )
                 widget.border_title = "Error"
+                self._report_spawner_error(str(widget.body.content), "model response")
                 self._settle_turn_stop_line(
                     widget,
                     started_at=turn_started_at,
@@ -8656,6 +8707,7 @@ class LiteTUI(App):
                     style="bold red"
                 )
                 widget.border_title = "Error"
+                self._report_spawner_error(str(widget.body.content), "model response")
                 self._settle_turn_stop_line(
                     widget,
                     started_at=turn_started_at,
@@ -8823,6 +8875,12 @@ class LiteTUI(App):
                 # model — the same string serves both, and a secret on screen is
                 # a secret in the screenshot.
                 result = sanitize.redact_secrets(result)
+                if not self._stop_requested and (not ok or result.startswith((
+                    "[error]", "[denied]", "[hook denied]", "[policy denied]",
+                    "[policy denied by user]", "[refused]", "[tool reported an error]",
+                    "[loop-break]",
+                ))):
+                    self._report_spawner_error(result, f"{name} tool")
                 sanitize.reset_terminal_modes()
                 if msg is not None:
                     msg.set_result(present(result, self.settings.error_message_style, surface="tool")

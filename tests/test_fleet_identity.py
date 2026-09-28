@@ -24,10 +24,13 @@ see it, and "absent" is the answer that stops you looking.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from litetui import app as app_mod
 from litetui import paths
@@ -48,6 +51,9 @@ PROMPT = (
 class _Seat:
     def __init__(self, agent_id=NEW, name="LiteTUI", tier="worker"):
         self.agent_id, self.name, self.tier = agent_id, name, tier
+
+    def registry_name(self):
+        return None
 
 
 def _app(prompt=PROMPT, seat=None):
@@ -145,6 +151,76 @@ def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkey
     body = app.conversation[0]["content"]
     assert NEW in body
     assert OLD not in body
+    edits = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+             if json.loads(line).get("type") == "edit" and json.loads(line).get("index") == 0]
+    assert edits, "resume rewrote only memory; on-disk index 0 still names the dead seat"
+    saved = edits[-1]["message"]["content"]
+    assert saved.count("You are registered in the LiteHarness fleet") == 1
+    assert NEW in saved and OLD not in saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", [PROMPT, PROMPT.replace(OLD, NEW),
+                                    "You are a helpful assistant."])
+async def test_registered_monitor_keeps_polling_and_heartbeat_after_identity_sync(
+        prompt, monkeypatch):
+    """Changed, already-correct, and absent sentences all reach the poll loop."""
+    from litetui import harness
+
+    monkeypatch.setattr(app_mod, "_INBOX_SETTLE_S", 0)
+    monkeypatch.setattr(harness, "POLL_SECONDS", 0)
+    monkeypatch.setattr(harness, "HEARTBEAT_EVERY", 1)
+    app = app_mod.LiteTUI()
+    app._connect = lambda: None
+    app._fetch_ctx_window = lambda: None
+    seen = []
+
+    class FakeSeat:
+        name, agent_id, tier, registered = "LiteTUI", NEW, "worker", False
+        error = None
+        model = None
+        thinking_level = None
+
+        def register(self):
+            self.registered = True
+            return True
+
+        def poll(self):
+            seen.append("poll")
+            return []
+
+        def refresh_name(self):
+            return False
+
+        def heartbeat(self):
+            seen.append("heartbeat")
+            return True
+
+    app.seat = FakeSeat()
+    app._resumed_seat_name = None
+    app._update_header = lambda: None
+    app._system = lambda text: None
+    app._append_to_system = lambda text: app.conversation.__setitem__(
+        0, {**app.conversation[0], "content": app.conversation[0]["content"] + text})
+    app.conversation = [{"role": "system", "content": prompt}]
+
+    task = asyncio.create_task(app_mod.LiteTUI._inbox_monitor.__wrapped__(app))
+    try:
+        await asyncio.wait_for(_wait_for_heartbeat(seen), 2)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    body = app.conversation[0]["content"]
+    assert seen[:2] == ["poll", "heartbeat"]
+    assert body.count("You are registered in the LiteHarness fleet") == 1
+    assert app._fleet_identity_sentence() in body
+    assert OLD not in body
+
+
+async def _wait_for_heartbeat(seen):
+    while "heartbeat" not in seen:
+        await asyncio.sleep(0.01)
 
 
 def test_registration_replaces_rather_than_appending_a_second_line():

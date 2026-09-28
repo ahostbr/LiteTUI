@@ -505,7 +505,10 @@ class FreeBackend(CustomBackend):
         return (min(windows) if windows else None), 'llm', True
 
     def reasoning_levels(self, key):
-        return ['none']
+        # A group routes to multiple providers/models. The API does not expose
+        # each source's vocabulary; low is the safe side-call floor. 'none' is
+        # accepted by some sources, and runtime 400 retry handles the others.
+        return ['none', 'low']
 
     def http_client(self):
         from openai import DefaultAsyncHttpxClient
