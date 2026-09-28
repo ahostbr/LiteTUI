@@ -8,6 +8,7 @@ import pytest
 from textual.app import App
 from textual.widgets import Input
 
+from litetui import app as app_mod
 from litetui import settings as settings_mod
 from litetui.settings import Settings
 from litetui.settings_screen import SettingsBody, SettingsScreen
@@ -33,6 +34,49 @@ def test_settings_load_repairs_an_old_or_hand_edited_footer_order(tmp_path):
         "ctx", "seat", "pct", "convo", "model", "think", "cache",
         "tps", "bg", "agents", "authority", "plan",
     ]
+
+
+@pytest.mark.parametrize(
+    "saved_order",
+    [
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps"],
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "cache", "tps"],
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps", "cache"],  # exact shared-file list
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps", "cache", "model"],
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "cache", "tps", "model"],
+    ],
+)
+@pytest.mark.asyncio
+async def test_historical_default_loads_and_renders_context_first(tmp_path, saved_order):
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"footer_order": saved_order}), encoding="utf-8"
+    )
+    loaded = settings_mod.load(tmp_path)
+    assert loaded.footer_order == list(settings_mod.FOOTER_ORDER_DEFAULT)
+    app = app_mod.LiteTUI()
+    app._connect = lambda: None
+    app._fetch_ctx_window = lambda: None
+    app._apply_context_length = lambda: None
+    app.settings = loaded
+    app.ctx_used, app.ctx_max = 23_133, 120_064
+    async with app.run_test(size=(200, 24)) as pilot:
+        await pilot.pause()
+        footer = app.ctx_label_text.plain
+        assert footer.index("19%") < footer.index("ctx ") < footer.index("unregistered"), footer
+
+
+def test_custom_complete_footer_order_is_preserved_on_load(tmp_path):
+    custom = ["seat", "ctx", "pct", "think", "convo", "tps", "cache",
+              "bg", "agents", "authority", "plan", "model"]
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"footer_order": custom}), encoding="utf-8"
+    )
+    assert settings_mod.load(tmp_path).footer_order == custom
 
 
 @pytest.mark.asyncio

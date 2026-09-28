@@ -66,13 +66,23 @@ def normalize_footer_order(value: Any) -> list[str]:
     """
     if not isinstance(value, (list, tuple)):
         value = ()
-    # Existing installations persisted the former default. Treat that exact
-    # untouched preference as the new default, while preserving custom orders.
-    if tuple(value) == (
-        "authority", "plan", "seat", "think", "bg", "agents",
-        "convo", "ctx", "pct", "cache", "tps",
-    ):
-        value = FOOTER_ORDER_DEFAULT
+    # Older defaults were persisted and later fields were appended on load.
+    # Migrate those untouched prefixes, including their auto-appended fields,
+    # without changing a user's reordered preference.
+    former_defaults = (
+        ("authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps"),
+        ("authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "cache", "tps"),
+    )
+    for former in former_defaults:
+        suffix = value[len(former):]
+        if (tuple(value[:len(former)]) == former
+                and all(isinstance(item, str) and item in FOOTER_ORDER_DEFAULT
+                        and item not in former for item in suffix)
+                and len(suffix) == len(set(suffix))):
+            value = FOOTER_ORDER_DEFAULT
+            break
     known = set(FOOTER_ORDER_DEFAULT)
     seen: set[str] = set()
     result: list[str] = []
