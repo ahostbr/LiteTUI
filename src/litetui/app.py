@@ -2569,13 +2569,13 @@ class LiteTUI(App):
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
         """What this tool result contributes to the CONVERSATION (tool_context).
 
-        The tool bubble always shows the raw result — this changes only what
-        the model re-reads on every subsequent turn. The raw is never
-        destroyed: both processing modes park it in a sidecar file under the
-        conversation's own directory and the placeholder carries the path, so
-        the model can `read` it back on demand. Every early return here is the
-        raw itself — the fail-safe direction is the one that keeps everything.
+        The tool bubble shows the raw result. Conversation output over the
+        hard ceiling is excerpted with a pointer to the complete sidecar,
+        regardless of the selected mode; smaller output keeps the mode's
+        existing mask/summarise/verbatim behavior.
         """
+        if len(raw) > tool_context.TOOL_RESULT_CAP:
+            return tool_context.cap_tool_result(raw, self.convo_dir, paths.data_root(), name)
         plan = tool_context.plan_tool_result(
             self.settings.tool_context_mode,
             name,
@@ -3418,8 +3418,8 @@ class LiteTUI(App):
     def _append(self, msg: dict, *, usage: dict | None = None) -> None:
         """Append to the live conversation AND to disk. Single choke point."""
         if msg.get("role") == "tool":
-            msg = {**msg, "content": tasks_mod.cap_tool_result(
-                str(msg.get("content") or ""), paths.data_root()
+            msg = {**msg, "content": tool_context.cap_tool_result(
+                str(msg.get("content") or ""), getattr(self, "convo_dir", None), paths.data_root(), msg.get("name") or "tool"
             )}
         self.conversation.append(msg)
         if usage is not None:
@@ -9241,7 +9241,7 @@ class LiteTUI(App):
                         "role": "tool",
                         "tool_call_id": slot["id"] or f"call_{i}",
                         "name": fname,
-                        "content": tasks_mod.cap_tool_result(str(result), paths.data_root()),
+                        "content": tool_context.cap_tool_result(str(result), self.convo_dir, paths.data_root(), fname),
                     })
                 timing["tools_s"] = time.perf_counter() - tools_started
                 card.record_round(timing)

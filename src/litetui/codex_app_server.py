@@ -15,7 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from litetui import paths, sanitize, tasks as tasks_mod
+from litetui import paths, sanitize, tool_context
 from litetui.codex_runtime import RuntimeActivity
 from litetui.codex_workspace import workspace
 from litetui.model_transport import ProviderError, _chunk, collect
@@ -505,9 +505,9 @@ class AppServerTransport:
                         output, success = await self.app._execute_tool(
                             name, params.get("arguments", {})
                         )
-                output = tasks_mod.cap_tool_result(
+                output = tool_context.cap_tool_result(
                     sanitize.redact_secrets(sanitize.strip_escapes(str(output))),
-                    paths.data_root(),
+                    getattr(self.app, "convo_dir", None), paths.data_root(), name,
                 )
                 if not getattr(self.app, "_rpc", False):
                     sanitize.reset_terminal_modes()
