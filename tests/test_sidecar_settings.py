@@ -16,6 +16,49 @@ def test_snapshot_scope_effective_and_revisions(tmp_path, monkeypatch):
         k for k in SETTING_SPECS if is_sensitive(k) and k not in SECRET_FIELDS}
 
 
+def test_every_public_field_uses_the_same_ui_model_for_label_and_search(tmp_path):
+    from litetui.settings_ui_model import SETTINGS_SECTIONS, SETTINGS_TABS
+
+    result = public_snapshot(SettingsService(tmp_path).snapshot("abc"))
+    ui = result["ui"]
+    assert set(ui["fields"]) == set(result["fields"])
+    assert [tab["id"] for tab in ui["tabs"]] == [tab.tab_id for tab in SETTINGS_TABS]
+    for section in SETTINGS_SECTIONS:
+        got = next(item for item in ui["sections"] if item["id"] == section.section_id)
+        assert got["keywords"] == list(section.keywords)
+        for field in section.fields:
+            if field.name not in result["fields"]:
+                continue
+            metadata = ui["fields"][field.name]
+            assert metadata == {"key": field.name, "label": field.label,
+                                "description": field.description, "keywords": list(field.keywords)}
+    descriptions = [field["description"] for field in ui["fields"].values()]
+    assert len(descriptions) == len(set(descriptions))
+    assert all(description and "choose how" not in description.lower() for description in descriptions)
+    assert ui["fields"]["default_context_length"]["description"] == (
+        "Tokens loaded for the context window; a larger window can cost VRAM and speed.")
+    assert ui["fields"]["tool_deny"]["description"] == (
+        "Tool:authority refusals checked before any allow rule or profile.")
+    assert ui["fields"]["autocompact_at_percent"]["description"] == (
+        "Percent of context used before compaction starts; leave room to write its summary.")
+    assert ui["fields"]["show_stop_time"]["label"] == "Show when a reply finished"
+    assert "completion" in next(section["keywords"] for section in ui["sections"]
+                                if section["id"] == "interface-transcript")
+    from litetui import themes
+    from litetui.settings_screen import _theme_choices
+    assert [theme["id"] for theme in ui["themes"]] == [name for _, name in _theme_choices({})]
+    oscura = next(theme for theme in ui["themes"] if theme["id"] == "oscura-midnight")
+    assert oscura["accent"] == themes.ALL_THEMES["oscura-midnight"].primary
+    # Browser pickers only accept concrete #RRGGBB, even when a Textual
+    # built-in stores None/ANSI names and lets the color system resolve them.
+    for theme in ui["themes"]:
+        assert all(isinstance(theme["tokens"][key], str)
+                   and len(theme["tokens"][key]) == 7
+                   and theme["tokens"][key].startswith("#")
+                   for key in themes.THEME_TOKENS)
+    assert set(ui["theme_tokens"]) == set(themes.THEME_FORM_TOKENS)
+
+
 def test_key_token_secret_password_auth_names_are_excluded_even_without_flags(tmp_path):
     service = SettingsService(tmp_path)
     assert all(is_sensitive(name) for name in ("my_KEY", "auth_method", "secret", "access_token", "password"))

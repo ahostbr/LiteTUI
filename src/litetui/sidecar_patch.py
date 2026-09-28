@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import copy
+import re
 
 from litetui import settings_runtime
 from litetui.settings_apply import RuntimeSettingStatus, SettingsSaveResult
@@ -11,6 +12,42 @@ from litetui.sidecar_settings import SECRET_FIELDS, is_sensitive
 
 MAX_CHANGES = 32
 _NO_CHANGE = object()
+_THEME_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$")
+_THEME_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _validated_theme_change(value, current):
+    """Only one named palette may change; merge into the TUI-owned store.
+
+    This is a field patch like every other setting, but its value on the wire
+    is one bounded {name,tokens} edit rather than a wholesale replacement of
+    all saved themes. No client can silently delete or alter sibling palettes.
+    """
+    from litetui import themes
+    from textual.theme import BUILTIN_THEMES
+
+    if not isinstance(value, dict) or set(value) != {"name", "tokens"}:
+        raise ValueError("Custom theme needs a name and color tokens")
+    name, tokens = value["name"], value["tokens"]
+    if not isinstance(name, str) or not _THEME_NAME.fullmatch(name):
+        raise ValueError("Custom theme name must be 1–48 letters, numbers, underscores or hyphens")
+    if name in themes.ALL_THEMES or name in BUILTIN_THEMES:
+        raise ValueError("Built-in themes cannot be overwritten; choose another name")
+    if not isinstance(tokens, dict) or not tokens or len(tokens) > len(themes.THEME_FORM_TOKENS):
+        raise ValueError("Custom theme needs 1–15 color tokens")
+    if set(tokens) - set(themes.THEME_FORM_TOKENS):
+        raise ValueError("Unknown custom theme token: " + ", ".join(sorted(set(tokens) - set(themes.THEME_FORM_TOKENS))))
+    for key, color in tokens.items():
+        if not isinstance(color, str) or not _THEME_COLOR.fullmatch(color):
+            raise ValueError(f"{key}: choose a #RRGGBB color")
+    if not isinstance(current, dict) or len(current) >= 64 and name not in current:
+        raise ValueError("Too many saved themes")
+    merged = dict(current.get(name, {}))
+    merged.update(tokens)
+    if set(themes.THEME_TOKENS) - set(merged):
+        raise ValueError("New themes need all 10 core colors; start from a preset")
+    themes.theme_from_tokens(name, merged)
+    return {**current, name: merged}
 
 
 def apply_patch(app, payload: dict) -> dict:
@@ -42,7 +79,8 @@ def apply_patch(app, payload: dict) -> dict:
         from litetui.settings_screen import NOT_A_SETTINGS_CONTROL
 
         if (not isinstance(key, str) or key not in SETTING_SPECS
-                or (is_sensitive(key) and key not in SECRET_FIELDS) or key in NOT_A_SETTINGS_CONTROL):
+                or (is_sensitive(key) and key not in SECRET_FIELDS)
+                or (key in NOT_A_SETTINGS_CONTROL and key != "custom_themes")):
             raise ValueError("Setting not editable from sidecar")
         if key in SECRET_FIELDS and not isinstance(change["value"], str):
             raise ValueError("Invalid key value")
@@ -54,6 +92,8 @@ def apply_patch(app, payload: dict) -> dict:
         # A field set at launch (--backend ...) is edited against the value in
         # effect, as the TUI's /settings shows it, not against the saved one.
         current = getattr(app.settings, key) if key in launch else getattr(snapshot.saved, key)
+        if key == "custom_themes":
+            change["value"] = _validated_theme_change(change["value"], current)
         if current == change["value"]:
             raise ValueError("No change to saved setting")
         if key not in launch and getattr(snapshot.effective, key) != getattr(snapshot.saved, key):
@@ -71,11 +111,19 @@ def apply_patch(app, payload: dict) -> dict:
         return {"saved": False, "conflict": False, "revisions": snapshot.revisions,
                 "cache_warning": {"kind": warning[0], "text": warning[1] + claude_cache.WARNING_TAIL},
                 "persistence": [], "runtime": []}
+    def apply_with_theme_registration(requested, result):
+        # The same save may select the newly created theme. Register before
+        # runtime_apply sets app.theme, which rejects unknown theme names.
+        if any("custom_themes" in item.fields for item in result.persistence if item.saved):
+            app.settings.custom_themes = requested.custom_themes
+            app._register_custom_themes()
+        return settings_runtime.apply_saved_result(app, requested, result)
+
     adapter = SettingsUiAdapter(
         app.settings,
         snapshot_provider=lambda: snapshot,
         save_patch=lambda requested, revisions: service.save_patch(directory.name, requested, revisions),
-        runtime_apply=lambda requested, result: settings_runtime.apply_saved_result(app, requested, result),
+        runtime_apply=apply_with_theme_registration,
     )
     # Choosing the SAVED value for a launch-set field writes nothing: it only
     # releases the launch value, so the saved preference governs from here on.
