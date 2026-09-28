@@ -6201,7 +6201,8 @@ class LiteTUI(App):
         site?" before scheduling any "seal it behind X" step.
         """
         if self._is_error_message(text):
-            self._report_spawner_error(text, "system message")
+            activity = "compaction" if text.startswith("Compact failed") else "system message"
+            self._report_spawner_error(text, activity)
         shown = present(text, self.settings.error_message_style)
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(shown), classes="system-msg"))
@@ -8279,7 +8280,6 @@ class LiteTUI(App):
                 )
                 self._elapsed.stop_body()
                 self._thinking_done()
-                self._report_spawner_error(str(e), "opening model stream")
                 # T688 F: if the app that owned our attached llama.cpp router has
                 # left, take it over HERE, before the words are chosen — "start it
                 # or switch backends" is advice for a situation that is not the
@@ -8303,6 +8303,7 @@ class LiteTUI(App):
                     style="bold red"
                 )
                 widget.border_title = "Error"
+                self._report_spawner_error(str(widget.body.content), "model response")
                 self._settle_turn_stop_line(
                     widget,
                     started_at=turn_started_at,
@@ -8530,7 +8531,6 @@ class LiteTUI(App):
                 self._elapsed.stop_body()
                 self._thinking_done()
                 sink.cancel()   # a late render must not draw over the error
-                self._report_spawner_error(str(e), "streaming model response")
                 # T688 F: if the app that owned our attached llama.cpp router has
                 # left, take it over HERE, before the words are chosen — "start it
                 # or switch backends" is advice for a situation that is not the
@@ -8554,6 +8554,7 @@ class LiteTUI(App):
                     style="bold red"
                 )
                 widget.border_title = "Error"
+                self._report_spawner_error(str(widget.body.content), "model response")
                 self._settle_turn_stop_line(
                     widget,
                     started_at=turn_started_at,
@@ -8713,8 +8714,12 @@ class LiteTUI(App):
                 # model — the same string serves both, and a secret on screen is
                 # a secret in the screenshot.
                 result = sanitize.redact_secrets(result)
-                if not ok and not self._stop_requested:
-                    self._report_spawner_error(result, f"tool {name}")
+                if not self._stop_requested and (not ok or result.startswith((
+                    "[error]", "[denied]", "[hook denied]", "[policy denied]",
+                    "[policy denied by user]", "[refused]", "[tool reported an error]",
+                    "[loop-break]",
+                ))):
+                    self._report_spawner_error(result, f"{name} tool")
                 sanitize.reset_terminal_modes()
                 if msg is not None:
                     msg.set_result(present(result, self.settings.error_message_style, surface="tool")
@@ -9415,7 +9420,6 @@ class LiteTUI(App):
                 exc=e,
             )
             card.fail("failed \u2014 conversation unchanged")
-            self._report_spawner_error(str(e), "compaction")
             self._system(
                 f"Compact failed — conversation unchanged.\n"
                 f"{_plain_backend_error(e, self.backend)}"
