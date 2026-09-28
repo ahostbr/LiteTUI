@@ -70,12 +70,12 @@ async def test_the_palette_is_grouped_and_ordered() -> None:
         assert rows, "the palette is empty"
 
         titles = [t for t, _h, _r in rows]
-        # Every row is prefixed with its group label — the grouping has to be
-        # VISIBLE, since Textual's palette has no section headers.
+        # Every row retains a trailing group label without hiding the
+        # alphabetical title at the start of the visible line.
         seen: list[str] = []
         for title in titles:
-            assert "›" in title, f"row is not group-prefixed: {title!r}"
-            label = title.split("›")[0].strip()
+            assert " · " in title, f"row has no trailing group: {title!r}"
+            label = title.split(" · ", 1)[1]
             if not seen or seen[-1] != label:
                 seen.append(label)
 
@@ -91,7 +91,7 @@ async def test_quit_follows_the_pinned_rows_alphabetically() -> None:
     async with a.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         titles = [t for t, _h, _r in _rows(a)]
-        names = [title.split("›")[-1].strip() for title in titles]
+        names = [title.split(" · ", 1)[0] for title in titles]
         assert names.index("Quit") < names.index("Screenshot")
 
 
@@ -124,11 +124,11 @@ async def test_reclaimed_rows_have_real_commands() -> None:
 
 @pytest.mark.asyncio
 async def test_theme_survives_and_nothing_is_offered_twice() -> None:
-    """The stock provider is FILTERED, not dropped — theme is the whole reason."""
+    """Registry Theme replaces the stock row without duplicating it."""
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        titles = [t.split("›")[-1].strip() for t, _h, _run in _rows(a)]
+        titles = [t.split(" · ", 1)[0] for t, _h, _run in _rows(a)]
         assert titles.count("Theme") == 1, "the theme picker needs exactly one row"
         assert a.COMMANDS == {m.LiteTUICommands}, "stock provider duplicates registry rows"
         for reclaimed in ("Keys", "Maximize", "Screenshot", "Quit"):

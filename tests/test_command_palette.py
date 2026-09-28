@@ -53,18 +53,10 @@ def _run(coro):
 
 
 def _table(app):
-    """The provider's table, with the group prefix stripped off the title.
-
-    Rows render as "Backend  >  Switch model" since the palette was grouped
-    (2026-08-22) -- Textual has no section headers, so the group name leads the
-    title. Every assertion in this file is about the ROW: that it exists, and
-    that running it reaches the right handler. Matching the decorated label
-    instead would make each of them a test of the prefix, which is already
-    covered by tests/test_palette_groups.py.
-    """
+    """The provider's table with its trailing group label removed."""
     provider = m.LiteTUICommands(app.screen)
     return [
-        (title.split("›")[-1].strip(), help_text, run)
+        (title.split(" · ")[0], help_text, run)
         for title, help_text, run in provider._commands()
     ]
 
@@ -171,19 +163,33 @@ def test_pinned_and_alphabetical_order_with_and_without_search():
             assert titles[2:] == sorted(titles[2:], key=str.casefold)
 
             hits = [h async for h in provider.search("the")]
-            matched = [h.text.split("›")[-1].strip() for h in hits]
+            matched = [h.text.split(" · ")[0] for h in hits]
             assert matched[0] == "Theme"
             assert "Settings" not in matched  # unrelated pinned rows stay filtered
             assert matched[1:] == sorted(matched[1:], key=str.casefold)
             settings_hits = [h async for h in provider.search("set")]
-            assert settings_hits[0].text.split("›")[-1].strip() == "Settings"
+            assert settings_hits[0].text.split(" · ")[0] == "Settings"
             assert [h.score for h in hits] == sorted(
                 (h.score for h in hits), reverse=True
             ), "Textual's score sort must retain our ordering"
 
             unrelated = [h async for h in provider.search("calendar")]
-            assert "Settings" not in [h.text.split("›")[-1].strip() for h in unrelated]
-            assert "Theme" not in [h.text.split("›")[-1].strip() for h in unrelated]
+            assert "Settings" not in [h.text.split(" · ")[0] for h in unrelated]
+            assert "Theme" not in [h.text.split(" · ")[0] for h in unrelated]
+
+            family = [h async for h in provider.search("backend")]
+            assert family and all("Backend" in h.text for h in family)
+            assert any(h.text.startswith("Switch backend · ") for h in family)
+            # The suffix is dim in discovery and search, while matched group
+            # characters keep their fuzzy highlight above that base style.
+            display = family[0].match_display
+            group_start = display.plain.index(" · ") + 3
+            assert display.get_style_at_offset(group_start).dim
+            assert display.get_style_at_offset(group_start).reverse
+            discovered = [h async for h in provider.discover()]
+            assert discovered[0].display.get_style_at_offset(
+                discovered[0].text.index(" · ") + 3
+            ).dim
     _run(body())
 
 

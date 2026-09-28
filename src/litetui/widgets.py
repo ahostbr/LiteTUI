@@ -40,6 +40,8 @@ from litetui import plugins as plugins_mod
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
+from textual.content import Content
+from textual.style import Style
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.geometry import Region
 from textual.screen import ModalScreen
@@ -1323,13 +1325,11 @@ class LiteTUICommands(Provider):
             row[2],
         ))
 
-        # The group name leads the title. Textual's palette has no section
-        # headers, so this is what makes the grouping visible -- and it makes
-        # search BETTER rather than worse: typing "backend" now surfaces the
-        # whole family together instead of one row that happens to say it.
+        # Lead with the title so the visible rows read alphabetically. The
+        # trailing group remains part of the searchable text.
         labels = plugins_mod.PALETTE_GROUP_LABELS
         return [
-            (f"{labels.get(group, group.title())}  \u203a  {title}", help_text, run)
+            (f"{title} · {labels.get(group, group.title())}", help_text, run)
             for _key, group, title, help_text, run in rows
         ]
 
@@ -1341,10 +1341,20 @@ class LiteTUICommands(Provider):
             return text
         return f"{text}   {token}" if text else token
 
+    @staticmethod
+    def _dim_group(display):
+        """Dim the group suffix without erasing fuzzy-match highlighting."""
+        start = display.plain.rfind(" · ")
+        return (
+            display.stylize_before(Style.parse("dim"), start + 3)
+            if start >= 0 else display
+        )
+
     async def discover(self) -> Hits:
         """The list shown before any query is typed — full feature roll."""
         for title, help_text, run in self._commands():
-            yield DiscoveryHit(title, run, help=help_text)
+            yield DiscoveryHit(self._dim_group(Content(title)), run,
+                               text=title, help=help_text)
 
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
@@ -1358,4 +1368,5 @@ class LiteTUICommands(Provider):
         # reorder the matches; unmatched pinned commands are never included.
         for index, (title, help_text, run) in enumerate(matches):
             yield Hit(1 - index / (len(matches) + 1),
-                      matcher.highlight(title), run, help=help_text)
+                      self._dim_group(matcher.highlight(title)), run,
+                      text=title, help=help_text)
