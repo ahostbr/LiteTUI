@@ -1950,6 +1950,18 @@ class LiteTUI(App):
         else:
             compact = width < 100 if not getattr(self, "_compact_initialized", False) else width <= 93
         self._compact_initialized = True
+        if os.environ.get("LITETUI_COMPACT_TRACE") == "1":
+            try:
+                base_count = len(self.screen_stack[0].query(ToolMessage))
+                active_count = len(self.query(ToolMessage))
+                screen_name = type(self.screen).__name__
+            except Exception:
+                base_count, active_count, screen_name = -1, -1, "unavailable"
+            runtime_log.record("compact_profile", site="app", operation="resize",
+                               count=active_count, messages=base_count,
+                               status=f"{int(self._compact_mode)}to{int(compact)}",
+                               name=screen_name, duration_ms=width,
+                               channel=str(self._compact_override).lower())
         if compact == self._compact_mode:
             return
         self._compact_mode = compact

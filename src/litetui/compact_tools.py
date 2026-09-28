@@ -24,7 +24,7 @@ def summary(name: str, args_json: str, result: str | None, ok: bool, width: int,
         return None
     if not isinstance(args, dict):
         return None
-    kind = name.lower().split(".")[-1]
+    kind = name.lower().replace("__", "/").rsplit("/", 1)[-1].split(".")[-1]
     target = ""
     detail = ""
     glyph = "▸"
@@ -45,7 +45,7 @@ def summary(name: str, args_json: str, result: str | None, ok: bool, width: int,
             # a unified patch or actual edit result supplies one.
             match = re.search(r"(\d+) insertions?\(\+\).*?(\d+) deletions?\(-\)", result or "")
             detail = f" +{match[1]} −{match[2]}" if match else ""
-    elif kind in ("bash", "powershell", "shell", "exec", "command"):
+    elif kind in ("bash", "powershell", "shell", "exec", "command", "commandexecution"):
         command = args.get("command") or args.get("cmd")
         if not isinstance(command, str) or not command.strip():
             return None
@@ -65,7 +65,16 @@ def summary(name: str, args_json: str, result: str | None, ok: bool, width: int,
         if result is not None:
             match = re.search(r"(\d+) hits? (?:in|/) (\d+) files?", result)
             detail = f" {match[1]} hits/{match[2]} files" if match else ""
-    elif "." in name or name.startswith("mcp__"):
+    elif kind == "file changes" or kind == "filechange":
+        glyph = "✎"
+        target = _path(args.get("path")) or "files"
+        changes = args.get("changes")
+        if isinstance(changes, list):
+            detail = f" {len(changes)} changes"
+    elif kind == "web search" or kind == "websearch":
+        glyph = "⌕"
+        target = str(args.get("query") or "web")
+    elif "." in name or "/" in name or name.startswith("mcp__"):
         target = name.replace("mcp__", "", 1).replace("__", ".")
     else:
         return None
