@@ -18,6 +18,7 @@ unchanged. See PLAN.md §6 — a line count is one metric of three.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, fields as fields_of
@@ -1043,8 +1044,23 @@ class ToolMessage(FoldBlock):
         self._compact = False
         self._explicit_expansion = False
 
+    def _trace_compact(self, operation: str) -> None:
+        if os.environ.get("LITETUI_COMPACT_TRACE") != "1":
+            return
+        from litetui import runtime_log
+        try:
+            app_compact = bool(getattr(self.app, "_compact_mode", False))
+        except Exception:
+            app_compact = False
+        runtime_log.record("compact_tool", site="widget", operation=operation,
+                           id=str(id(self)), name=self.tool_name,
+                           status=f"{int(self._compact)}:{int(self.expanded)}:{int(self._explicit_expansion)}",
+                           ok=app_compact)
+
     def set_compact(self, value: bool) -> None:
+        self._trace_compact("set_before")
         if value == self._compact:
+            self._trace_compact("set_unchanged")
             return
         self._compact = value
         if not value and self.header.has_focus:
@@ -1056,9 +1072,12 @@ class ToolMessage(FoldBlock):
             super().set_expanded(False)
             self.set_class(value, "compact-folded")
         self._refresh_header()
+        self._trace_compact("set_after")
 
     def on_mount(self) -> None:
+        self._trace_compact("mount_before")
         self.set_compact(bool(getattr(self.app, "_compact_mode", False)))
+        self._trace_compact("mount_after")
 
     @staticmethod
     def _one_line(value: str) -> str:
@@ -1119,6 +1138,7 @@ class ToolMessage(FoldBlock):
 
     def set_result(self, result: str, ok: bool, *, elapsed: float | None = None,
                    duration_unknown: bool = False) -> None:
+        self._trace_compact("result_before")
         self._result = result
         self._ok = ok
         self._took = None if duration_unknown else time.monotonic() - self._t0 if elapsed is None else elapsed
@@ -1126,6 +1146,7 @@ class ToolMessage(FoldBlock):
             super().set_expanded(False)
             self.set_class(self._compact, "compact-folded")
         self._update_display()
+        self._trace_compact("result_after")
 
     def _tick(self) -> None:
         """Refresh live elapsed without changing the user's fold state."""
