@@ -8767,9 +8767,8 @@ class LiteTUI(App):
                 from litetui.recap import split_recap
                 shown, recap = split_recap(text_full, final=True)
                 sink.finish(shown)
-                if recap:
-                    terminal_widget.recap = recap
-                    self._record_recap(recap)
+                # The completion hook may reject this draft or this may be a
+                # tool round. Keep recap pending until the terminal acceptance gate.
             else:
                 sink.cancel()
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.
@@ -8855,6 +8854,9 @@ class LiteTUI(App):
                 await self.plugins.finalize_turn()
                 if not getattr(self, "_hooks_suppressed", False):
                     await hook_host.dispatch(self, "completion_after", {"answer": text_full or ""})
+                if recap and terminal_widget is not None:
+                    terminal_widget.recap = recap
+                    self._record_recap(recap)
                 self._settle_turn_stop_line(
                     terminal_widget,
                     started_at=turn_started_at,

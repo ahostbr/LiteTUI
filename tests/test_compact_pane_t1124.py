@@ -138,6 +138,78 @@ def test_recap_presence_never_resurrects_missing_or_malformed_seat(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('rounds,verdicts,want', [
+    (['Draft.\n<recap>Rejected draft</recap>', 'Final.\n<recap>Accepted final</recap>'],
+     ['retry', 'allow'], 'Accepted final'),
+    (['Draft.\n<recap>Rejected draft</recap>'], ['pause'], 'Previous recap'),
+    (['Tool preface.\n<recap>Not final</recap>', 'Final.\n<recap>Accepted final</recap>'],
+     ['allow'], 'Accepted final'),
+])
+async def test_only_accepted_terminal_answer_publishes_recap(tmp_path, monkeypatch, rounds, verdicts, want):
+    from litetui import app as app_module, hook_host
+    from litetui.tool_policy import READ_POLICY
+    from test_card_summary import _Chunk, _Stream, _TC
+
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    presence = tmp_path / '.liteharness' / 'agents' / 'test-agent.json'
+    presence.parent.mkdir(parents=True)
+    presence.write_text(json.dumps({'agent_id': 'test-agent', 'last_recap': 'Previous recap'}), encoding='utf-8')
+    app = app_for_pilot()
+    app.settings.tool_iterations = 3
+    app.tools_enabled = True
+    app._active_tool_profile = 'autonomous'
+    app.settings.tool_policy_profile = 'autonomous'
+    app.settings.tool_auto_background_s = 0
+    app._resync_ctx_if_stale = lambda: None
+    app._maybe_autocompact = lambda: None
+    app._report_spawner_error = lambda *args: None
+    async def ready():
+        pass
+    app._ensure_chat_ready = ready
+    app.plugins.add_tool('test', {'type': 'function', 'function': {'name': 'probe',
+        'description': 'fixture', 'parameters': {'type': 'object', 'properties': {}}}},
+        lambda args: 'ok', policy=READ_POLICY)
+    streams = []
+    for i, answer in enumerate(rounds):
+        chunks = [_Chunk(content=answer)]
+        if len(rounds) == 2 and i == 0 and answer.startswith('Tool'):
+            chunks += [_Chunk(tool_calls=[_TC(0, id='tool1', name='probe')]),
+                       _Chunk(tool_calls=[_TC(0, arguments='{}')])]
+        streams.append(_Stream(chunks))
+    stream_iter = iter(streams)
+    requests = []
+    async def create(**kwargs):
+        purpose = kwargs.get('purpose', 'turn')
+        requests.append(purpose)
+        if purpose == 'card-summary':
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='summary'))])
+        return next(stream_iter)
+    monkeypatch.setattr(app_module.model_transport, 'for_app',
+                        lambda app: SimpleNamespace(create=create))
+    decisions = iter(verdicts)
+    completions = []
+    async def completion(app, answer):
+        completions.append(answer)
+        # A rejected draft or tool round must leave presence untouched at the gate.
+        assert json.loads(presence.read_text(encoding='utf-8'))['last_recap'] == 'Previous recap'
+        return next(decisions)
+    monkeypatch.setattr(hook_host, 'completion', completion)
+    async with app.run_test(size=(46, 22)) as pilot:
+        app.last_recap = 'Previous recap'
+        app.query_one(NowCard).last = 'Previous recap'
+        app._append({'role': 'user', 'content': 'go'})
+        app._stream()
+        for _ in range(200):
+            await pilot.pause(.05)
+            if not app._chat_running():
+                break
+        assert not app._chat_running(), f"turn still running: {requests}, {completions}"
+        assert app.last_recap == want, (requests, completions, app.conversation[-3:])
+        assert app.query_one(NowCard).last == want
+        assert json.loads(presence.read_text(encoding='utf-8'))['last_recap'] == want
+
+
+@pytest.mark.asyncio
 async def test_missing_recap_keeps_side_call_fallback():
     app = app_for_pilot()
     async with app.run_test(size=(46, 22)) as pilot:
