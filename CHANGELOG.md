@@ -18,6 +18,11 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+### Changed
+- **Splash tagline** is "a self-evolving, open-source TUI in pure Python", not
+  "local-only coding agent": it now runs local, Codex OAuth and free cloud
+  models (Ryan, liteask a-b848bb60: "pure python opensource self-evolving TUI").
+
 ## [0.24.0] — 2026-09-18
 
 NInfer becomes a first-class engine LiteTUI can own, and the TUI grows the two

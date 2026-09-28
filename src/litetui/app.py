@@ -273,7 +273,7 @@ LITETUI_SPLASH = (
     #
     # It does not enumerate now. `/backend` renders the live list, which cannot
     # fall behind because it IS the registry.
-    "      local-only coding agent \u00b7 /backend to choose an engine \u00b7 /help\n"
+    "      a self-evolving, open-source TUI in pure Python \u00b7 /backend to choose an engine \u00b7 /help\n"
 )
 
 
