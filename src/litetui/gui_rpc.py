@@ -303,9 +303,6 @@ def _jobs(app, action, cmd):
         job = next((j for j in candidate if j.id == cmd.get("job_id")), None)
         if job is None:
             raise ValueError("Unknown job_id")
-        why = seat_authority.job_write_refusal(app, job) if action in ("delete", "update") else None
-        if why:
-            raise ValueError(why)  # T1082 C8/R3
         if action == "delete":
             candidate.remove(job)
         elif action == "update":

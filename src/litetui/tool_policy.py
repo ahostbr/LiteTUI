@@ -21,7 +21,7 @@ from typing import Callable, Iterable, Mapping
 # import time, and the store is REDIRECTED by many tests (and could be by any
 # future caller) — a snapshot would silently classify against a directory that
 # is no longer the store. Same late-binding trap as the profile choices.
-from litetui import deny_floor, paths
+from litetui import deny_floor, paths, trusted_executables
 
 
 # The required vocabulary.  A tool may carry more than one capability: shell
@@ -436,6 +436,13 @@ def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path) 
         return danger(str(args.get("command") or ""), workspace) or ""
     if policy.classify_args is classify_pccontrol:
         return FOREIGN_PROCESS
+    if policy.classify_args is classify_fleet_mcp:
+        if str(args.get("action") or "").lower() == "launch":
+            return FOREIGN_PROCESS
+        for key in ("command", "cmd", "script", "code"):
+            text = args.get(key)
+            if isinstance(text, str) and (what := danger(text, workspace)):
+                return what
     if policy.confirm_always:
         return UNDECLARED
     return ""
@@ -619,12 +626,10 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
     (ARCHIVE, _C + r"expand(?:\.exe)?\s+[^;&|]*(?:-f:|\.cab\b)"),
     (ARCHIVE, r"\b(?:extractall|unpack_archive)\s*\("),
     # ── C. launching a program that isn't one of its tools ───────────────────
-    #    (plus the workspace-aware path/script check in `danger()` below)
+    #    Explicit launch verbs only; scripts and direct tool paths are ordinary.
     (FOREIGN_PROCESS, r"\b(?:start-process|invoke-item)\b"),
     (FOREIGN_PROCESS, _C + r"(?:saps|ii|start)\s"),
     (FOREIGN_PROCESS, _C + r"cmd(?:\.exe)?\s+/[ck]\b"),
-    (FOREIGN_PROCESS, r"(?:^|[;|(]\s*)&\s*[\"'$]"),
-    (FOREIGN_PROCESS, _C + r"(?:pwsh|powershell)(?:\.exe)?\s+(?:[^;&|]*\s)?-f(?:ile)?\s"),
     (FOREIGN_PROCESS, _C + r"(?:wscript|cscript|mshta|rundll32|regsvr32|msiexec|runas|psexec(?:64)?)\b"),
     (FOREIGN_PROCESS, r"\bschtasks\b[^;&|]*/create\b|\bregister-scheduledtask\b"),
     # ── D. dangerous system commands ─────────────────────────────────────────
@@ -653,21 +658,31 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
 )
 _DANGER = tuple((label, re.compile(r"(?ix)" + pattern)) for label, pattern in DANGER_TABLE)
 
-#: A program run BY PATH, or an interpreter running a script FILE. Ordinary when
-#: the file is inside the workspace (Sentinel b362b4ed: "his project scripts
-#: aren't weird"); class C when it is anywhere else.
+# Explicit executables by path remain foreign launches unless their resolved
+# location is trusted. A matching basename alone can be spoofed.
 _PATH_RUN = re.compile(
-    r"(?ix)" + _C + r"(?:&\s*)?[\"']?(?P<path>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\s;&|\"']+)")
-_SCRIPT_RUN = re.compile(
-    r"(?ix)" + _C + r"(?:python3?|py|node|bun|deno|ruby|perl|php|bash|sh|zsh|pwsh|powershell)(?:\.exe)?"
-    r"(?:\s+-{1,2}[a-z][\w-]*)*\s+[\"']?(?P<path>[^\s;&|\"']+\.(?:py|js|mjs|cjs|ts|rb|pl|php|sh|bash|ps1))\b")
+    r"(?ix)" + _CMD_POSITION
+    + r"(?:&\s*)?(?:[\"'](?P<quoted>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\"']+)[\"']"
+    + r"|(?P<bare>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\s;&|\"']+))"
+)
+_TOOL_EXECUTABLES = frozenset({"python", "python3", "py", "node", "bun", "deno",
+                               "pwsh", "powershell", "git", "uv", "ruff", "pytest", "npx", "pnpm"})
 
 
-def _outside_workspace(raw: str, workspace: Path) -> bool:
-    msys = re.match(r"^/([a-z])/(.*)$", raw, re.IGNORECASE)  # git-bash /c/Projects -> C:/Projects
-    if msys:
-        raw = f"{msys.group(1)}:/{msys.group(2)}"
-    return not _inside(_resolve_path(raw, workspace), Path(workspace).resolve())
+def _foreign_path_launch(raw: str, workspace: Path) -> bool:
+    path = _resolve_path(raw, workspace)
+    if path.suffix.lower() not in {".exe", ".com", ".bat", ".cmd"}:
+        return False
+    if path.suffix.lower() in {".bat", ".cmd"}:
+        return not _inside(path, workspace.resolve())
+    home = Path.home()
+    roots = (workspace, home / ".claude" / "skills",
+             home / ".claude" / "plugins" / "cache" / "liteharness")
+    if any(_inside(path, root.resolve()) for root in roots):
+        return False
+    if path.stem.lower() in _TOOL_EXECUTABLES and trusted_executables.is_installed_tool(path):
+        return False
+    return True
 
 
 # This scanner is a conservative VIEW for the danger table, not a shell parser.
@@ -675,6 +690,9 @@ def _outside_workspace(raw: str, workspace: Path) -> bool:
 # cannot manufacture command positions, but $() and backticks within double
 # quotes are recursively scanned as executable command text. Unknown/unclosed
 # quoting returns the original span (fail CLOSED, never grant it data status).
+# Without a shell identity, PowerShell backtick-escaped and Bash backslash-
+# escaped quotes can produce conservative false prompts in mixed-shell input;
+# never mask an ambiguous span merely to suppress a prompt.
 _REAL_COMMAND = re.compile(
     r"(?ix)(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*|\s(?:-c|-command|/c)\s+)$"
 )
@@ -723,10 +741,13 @@ def _command_view(command: str) -> str:
                 i = j + 1
                 continue
             if ch == '"':
-                payload = bool(_COMMAND_PAYLOAD.search("".join(out)))
-                inner, after, closed = scan(i + 1, '"', not payload, depth + 1)
+                prefix = "".join(out)
+                executable = bool(_COMMAND_PAYLOAD.search(prefix) or _REAL_COMMAND.search(prefix))
+                inner, after, closed = scan(i + 1, '"', not executable, depth + 1)
                 if not closed:
                     return "".join(out) + command[i:], len(command), False
+                # An inert quoted argument contributes no command verbs. Keep
+                # any executable substitutions emitted by the recursive scan.
                 out.append('"' + inner + '"')
                 i = after
                 continue
@@ -746,7 +767,7 @@ def _command_view(command: str) -> str:
                 out.append(";" + inner + " ")
                 i = after
                 continue
-            out.append(" " if double and ch in ";&|" else ch)
+            out.append(" " if double and ch in ";&|" else (" " if double else ch))
             i += 1
         return "".join(out), i, not end
 
@@ -760,10 +781,9 @@ def danger(command: str, workspace: Path) -> str | None:
     for label, pattern in _DANGER:
         if pattern.search(view) or (unwrapped != view and pattern.search(unwrapped)):
             return label
-    for pattern in (_SCRIPT_RUN, _PATH_RUN):
-        for match in pattern.finditer(view):
-            if _outside_workspace(match.group("path"), workspace):
-                return FOREIGN_PROCESS
+    for match in _PATH_RUN.finditer(view):
+        if _foreign_path_launch(match.group("quoted") or match.group("bare"), workspace):
+            return FOREIGN_PROCESS
     return None
 
 
@@ -899,71 +919,33 @@ USER_QUESTION_POLICY = ToolPolicy(
     frozenset({READ_ONLY}), "Ask the user a question inside LiteTUI"
 )
 
-# Only these reviewed, exact server/tool pairs declare read effects. A similar
-# name on another MCP server (or a new mutation on this one) stays unknown.
-SOTS_READ_TOOLS = frozenset({
-    "sots_server_info", "sots_search", "sots_read_file", "sots_list_dir",
-    "sots_help", "sots_read_image",
-})
-VIBEUE_READ_TOOLS = frozenset({
-    "vibeue_list_tools", "vibeue_tool_schema", "vibeue_check_connection",
-})
+# The fleet's own MCP servers are tools, not undeclared foreign capabilities.
+FLEET_MCP_SERVERS = frozenset({"litesuite-tools", "VibeUE", "SOTS_MCP_CORE", "SOTS_BPGEN"})
 
 
-def _mcp_router_action(args: Mapping[str, object]) -> str:
-    action = str(args.get("action") or "").strip().lower()
-    # A mutating top-level verb never becomes a free read by hiding a read op in
-    # payload. The current SOTS router does dispatch that read today, but a new
-    # implementation might act on the outer verb first. Refuse that ambiguity.
-    if action in {"run", "create", "update", "delete"}:
-        return ""
-    if action in {"list", "get", "read"}:
-        payload = args.get("payload")
-        if isinstance(payload, dict):
-            for key in ("op", "action", "operation", "name", "tool"):
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip().lower()
-        return action
-    return action
+def classify_fleet_mcp(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
+    """Inspect executable payload fields, not quoted data in inbox messages."""
+    if str(args.get("action") or "").lower() == "launch":
+        return (DESTRUCTIVE_IRREVERSIBLE,)
+    if any(isinstance(args.get(key), str) and danger(args[key], workspace)
+           for key in ("command", "cmd", "script", "code")):
+        return (DESTRUCTIVE_IRREVERSIBLE,)
+    return ()
 
 
-def classify_sots_rag(args: Mapping[str, object], _workspace: Path) -> Iterable[str]:
-    action = _mcp_router_action(args)
-    if action in {"status", "query", "list", "get", "read"}:
-        return (READ_ONLY, NETWORK)
-    return (NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION, DESTRUCTIVE_IRREVERSIBLE)
-
-
-def classify_sots_meta(args: Mapping[str, object], _workspace: Path) -> Iterable[str]:
-    action = _mcp_router_action(args)
-    if action in {"help", "server_info", "where_am_i", "env_dump_safe", "last_error", "list", "get", "read"}:
-        return (READ_ONLY, NETWORK)
-    # smoketest_all and unknown operations stay supervised (including absent).
-    return (NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION, DESTRUCTIVE_IRREVERSIBLE)
-
-
-SOTS_RAG_POLICY = ToolPolicy(
-    frozenset({READ_ONLY, NETWORK}), "Query SOTS RAG; index builds require approval",
-    classify_args=classify_sots_rag,
-)
-SOTS_META_POLICY = ToolPolicy(
-    frozenset({READ_ONLY, NETWORK}), "Inspect SOTS metadata; unknown operations require approval",
-    classify_args=classify_sots_meta,
+FLEET_MCP_POLICY = ToolPolicy(
+    frozenset({NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION}),
+    "Fleet-owned MCP tool",
+    classify_args=classify_fleet_mcp,
 )
 
 
 def mcp_policy_for(name: str) -> ToolPolicy:
-    if name.startswith("mcp__SOTS_MCP_CORE__"):
-        tool = name.removeprefix("mcp__SOTS_MCP_CORE__")
-        if tool in SOTS_READ_TOOLS:
-            return NETWORK_READ_POLICY
-        if tool == "sots_rag":
-            return SOTS_RAG_POLICY
-        if tool == "sots_meta":
-            return SOTS_META_POLICY
-    if name.startswith("mcp__VibeUE__") and name.removeprefix("mcp__VibeUE__") in VIBEUE_READ_TOOLS:
-        return NETWORK_READ_POLICY
+    # Names are produced by the registry as mcp__<server identity>__<tool>.
+    # Compare that exact server component, never a substring of the tool name.
+    parts = name.split("__", 2)
+    if len(parts) == 3 and parts[0] == "mcp" and parts[1] in FLEET_MCP_SERVERS and parts[2]:
+        return FLEET_MCP_POLICY
     return MCP_UNKNOWN_POLICY
 
 

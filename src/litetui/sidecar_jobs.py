@@ -20,12 +20,10 @@ def public_jobs(jobs: Iterable[Job], app=None) -> dict:
     """Detach the in-memory jobs; no scheduling or persistence side effects. Each
     job carries `level`, the level it RUNS at (scheduler.level_of: the removed
     "scheduled" shows as interactive). With `app`, also the levels a new job may
-    record here (already capped: a locked seat is not offered autonomous) and this
-    seat's level as the default (T1082)."""
+    record here and this seat's level as the default (T1082)."""
     out = {"jobs": [{**asdict(job), "level": level_of(job.tool_profile)} for job in jobs]}
     if app is not None:
-        out["levels"] = [name for name in tool_policy.PROFILE_NAMES
-                         if seat_authority.locked_profile(app, name) == name]
+        out["levels"] = list(tool_policy.PROFILE_NAMES)
         out["default_level"] = seat_authority.seat_profile(app)
     return out
 

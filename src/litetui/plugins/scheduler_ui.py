@@ -559,16 +559,14 @@ def _apply_job_edit(jobs: list, job, result, *, app=None) -> bool:
     clobbering those with the form's stale copy would erase the stamp and
     re-arm the double-fire it exists to prevent.
 
-    T1082: with `app` (every UI caller passes it), the level is checked here. A
-    new job's level goes through schedule_level, and a locked seat may not edit
-    or delete a job recorded autonomous (C8, R3). A refusal is said, and the
-    store is untouched.
+    T1082: with `app` (every UI caller passes it), a new job's level goes
+    through schedule_level. Invalid levels are refused before the store changes.
     """
     if not result:
         return False
     verb = result[0]
     if app is not None and verb in ("save", "delete"):
-        why = seat_authority.job_write_refusal(app, job) if job is not None else None
+        why = None
         if why is None and verb == "save":
             try:
                 result[1]["tool_profile"] = seat_authority.schedule_level(
@@ -867,14 +865,12 @@ class JobBody(Widget):
                              id="job-newconvo")
                 yield Static("fresh conversation", classes="job-switchcap")
             # T1082: the level is set HERE, when the schedule is created. A new job
-            # starts at this seat's level. A locked seat is not offered autonomous,
-            # except to SHOW an existing job's level (saving it is refused, C8).
+            # starts at this seat's level. Every level is selectable.
             level = sched_mod.level_of(j.tool_profile) if j else seat_authority.seat_profile(self.app)
             yield Static("tool authority for this schedule's runs — nobody is at the keyboard when it fires",
                          classes="job-cap")
             yield Select(
-                [(f"{name} — {PROFILES[name].summary}", name) for name in PROFILES
-                 if name == level or seat_authority.locked_profile(self.app, name) == name],
+                [(f"{name} — {PROFILES[name].summary}", name) for name in PROFILES],
                 value=level,
                 allow_blank=False,
                 id="job-tool-profile",

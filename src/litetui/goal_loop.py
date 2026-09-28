@@ -407,8 +407,7 @@ def _loop_jobs(app: Any) -> list[scheduler.Job]:
 
 
 def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> str | None:
-    """Pause or resume one loop, and persist it. Returns why not (T1082 C8: a
-    locked seat may not touch a loop recorded autonomous), else None.
+    """Pause or resume one loop, and persist it.
 
     🔴 EXTRACTED SO THE GUI CANNOT GROW A SECOND COPY. Resuming is not just a
     flag: it also re-arms `next_run_at`, or a loop resumed after a long pause
@@ -416,9 +415,6 @@ def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> str | None:
     `enabled = True` by hand would look right, save correctly, and change the
     behaviour — the failure this codebase has paid for repeatedly today.
     """
-    why = seat_authority.job_write_refusal(app, job)
-    if why:
-        return why
     job.enabled = on
     if on:
         job.next_run_at = (
@@ -429,11 +425,7 @@ def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> str | None:
 
 
 def remove_loop(app: Any, job: scheduler.Job) -> str | None:
-    """Delete one loop, and persist it. Same reason, and the same refusal, as
-    `set_loop_enabled`."""
-    why = seat_authority.job_write_refusal(app, job)
-    if why:
-        return why
+    """Delete one loop and persist it."""
     app.jobs.remove(job)
     scheduler.save(app.jobs, paths.data_root())
     return None

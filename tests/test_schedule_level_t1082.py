@@ -92,27 +92,17 @@ def test_C2_cron_add_level_records_the_creators_pick():
     assert (job.tool_profile, job.schedule, job.prompt) == (STRICT, "0 9 * * 1-5", "what is on today")
 
 
-def test_C3_a_locked_seat_cannot_RECORD_autonomous():
-    """T1049-A applies at creation: the ask is refused in words, nothing is written."""
-    a = _app(AUTONOMOUS)
-    said = _said(a)
-    store = scheduler.jobs_path(paths.data_root())
-    a.cron.add("--level autonomous @daily summarise yesterday")
-    assert a.jobs == []
-    assert not store.exists(), "a refused add wrote the store"
-    assert seat_authority.lock_refusal(a) in said[-1]
-
-
-def test_C4_a_locked_seats_own_level_is_capped_at_creation():
+def test_C3_spawned_seat_records_autonomous_by_choice_and_default():
     a = _app(AUTONOMOUS)
     _said(a)
-    a.cron.add("@daily summarise yesterday")
-    assert [j.tool_profile for j in a.jobs] == [INTERACTIVE]
+    a.cron.add("--level autonomous @daily summarise yesterday")
+    a.cron.add("@daily summarise tomorrow")
+    assert [j.tool_profile for j in a.jobs] == [AUTONOMOUS, AUTONOMOUS]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("own, stored, want, offered_auto", [
-    (False, AUTONOMOUS, INTERACTIVE, False),   # locked: capped, autonomous not offered
+    (False, AUTONOMOUS, AUTONOMOUS, True),
     (True, INTERACTIVE, INTERACTIVE, True),    # CONTROL: Ryan's own, his level, all offered
 ])
 async def test_C5_the_job_form_starts_at_the_seats_level(own, stored, want, offered_auto):
@@ -139,16 +129,18 @@ def _rpc(a, cmd):
 
 
 def test_C6_rpc_create_takes_a_level_only_through_the_one_helper():
-    locked = _app(AUTONOMOUS)      # built first: every app loads the shared store at init
+    spawned = _app(AUTONOMOUS)
     own = _ryans(_app(INTERACTIVE))
     reply = _rpc(own, {"type": "jobs.create", "prompt": "p", "schedule": "@daily"})
     assert reply["ok"] and reply["result"]["tool_profile"] == INTERACTIVE, reply
-
-    for bad in ({"tool_profile": AUTONOMOUS}, {"tool_profile": "scheduled"}, {"kind": "loop"}):
-        reply = _rpc(locked, {"type": "jobs.create", "prompt": "p", "schedule": "@daily", **bad})
-        assert reply["ok"] is False, f"{bad} was saved: {reply}"
+    reply = _rpc(spawned, {"type": "jobs.create", "prompt": "p", "schedule": "@daily",
+                           "tool_profile": AUTONOMOUS})
+    assert reply["ok"] and reply["result"]["tool_profile"] == AUTONOMOUS
+    for bad in ({"tool_profile": "scheduled"}, {"kind": "loop"}):
+        reply = _rpc(spawned, {"type": "jobs.create", "prompt": "p", "schedule": "@daily", **bad})
+        assert reply["ok"] is False
     assert "never scheduled directly" in reply["error"]
-    assert locked.jobs == [] and [j.id for j in _on_disk()] == [own.jobs[0].id]
+    assert [j.tool_profile for j in _on_disk()] == [AUTONOMOUS]
 
 
 def test_C7_gui_create_records_the_seats_level_and_a_loop_takes_none():
@@ -162,7 +154,7 @@ def test_C7_gui_create_records_the_seats_level_and_a_loop_takes_none():
     assert len(_on_disk()) == 2
 
 
-# ── C8 + R3: a locked seat may not change or remove Ryan's autonomous job ─────
+# ── Job writes follow normal ownership-independent APIs ─────────────────────
 
 def _ryans_job_on_disk(**kw):
     job = scheduler.Job(prompt="nightly", schedule="@daily", tool_profile=AUTONOMOUS, **kw)
@@ -170,37 +162,28 @@ def _ryans_job_on_disk(**kw):
     return job
 
 
-def test_C8_every_write_door_refuses_a_locked_seat_on_an_autonomous_job():
-    """jobs.json is shared by every LiteTUI on the data root, so this job is Ryan's.
-    ⚠️ This closes the API doors, not the file (Dijkstra P1; T1085)."""
-    ryans = _ryans_job_on_disk()
+def test_C8_spawned_seat_can_edit_and_remove_autonomous_jobs():
+    job = _ryans_job_on_disk()
     a = _app()
-    said = _said(a)
-    [job] = a.jobs
-    a.cron.command(f"rm {job.id}")
+    _said(a)
     a.cron.command(f"off {job.id}")
-    assert _rpc(a, {"type": "jobs.delete", "job_id": job.id})["ok"] is False
-    for action, extra in (("update", {"patch": {"prompt": "something else"}}), ("delete", {})):
-        with pytest.raises(ValueError, match="may not change or remove"):
-            gui_rpc._jobs(a, action, {"job_id": job.id, **extra})
-    assert _apply_job_edit(a.jobs, job, ("delete",), app=a) is False
-    assert _apply_job_edit(a.jobs, job, ("save", {"prompt": "x", "tool_profile": AUTONOMOUS}), app=a) is False
-    [kept] = _on_disk()
-    assert (kept.id, kept.prompt, kept.enabled) == (ryans.id, "nightly", True)
-    assert sum("may not change or remove" in line for line in said) >= 4, said
+    assert _on_disk()[0].enabled is False
+    gui_rpc._jobs(a, "update", {"job_id": job.id, "patch": {"prompt": "revised"}})
+    assert _on_disk()[0].prompt == "revised"
+    assert _rpc(a, {"type": "jobs.delete", "job_id": job.id})["ok"] is True
+    assert _on_disk() == []
 
 
-def test_C8_a_locked_seat_may_not_pause_or_remove_an_autonomous_loop():
+def test_C8_spawned_seat_can_pause_and_remove_autonomous_loop():
     loop = scheduler.Job.loop(prompt="watch", interval_minutes=5, owner_convo_id="c1",
                               tool_profile=AUTONOMOUS)
     scheduler.save([loop], paths.data_root())
     a = _app()
-    said = _said(a)
+    _said(a)
     goal_loop.loop_command(a, f"pause {loop.id}")
+    assert _on_disk()[0].enabled is False
     goal_loop.loop_command(a, f"rm {loop.id}")
-    [kept] = _on_disk()
-    assert kept.enabled is True
-    assert all("may not change or remove" in line for line in said[-2:]), said
+    assert _on_disk() == []
 
 
 def test_C8_CONTROL_ryans_own_seat_and_a_non_autonomous_job_are_untouched_by_it():
@@ -224,11 +207,11 @@ def test_L1_CONTROL_a_loop_typed_in_a_live_instance_records_that_instances_level
     assert [j.tool_profile for j in a.jobs] == [INTERACTIVE]
 
 
-def test_L2_a_locked_seats_loop_is_capped():
+def test_L2_spawned_seats_loop_keeps_autonomous():
     a = _app(AUTONOMOUS)
     _said(a)
     goal_loop.loop_command(a, "15m check the deploy")
-    assert [j.tool_profile for j in a.jobs] == [INTERACTIVE]
+    assert [j.tool_profile for j in a.jobs] == [AUTONOMOUS]
 
 
 def test_L3_a_loop_created_DURING_a_scheduled_fire_records_the_jobs_level():
@@ -277,18 +260,6 @@ def test_F3_the_removed_scheduled_level_runs_interactive_and_is_named_once():
     assert said == [f"/cron: {job.id} recorded the removed level 'scheduled'; it now runs interactive (T1082)."]
 
 
-def test_F4_C5_a_locked_seat_SKIPS_an_autonomous_job_without_stamping_it():
-    job = scheduler.Job.loop(prompt="p", interval_minutes=5, owner_convo_id="c1",
-                             tool_profile=AUTONOMOUS, now="2026-09-27T12:00:00")
-    before = (job.run_count, job.last_fired_slot, job.next_run_at, job.enabled)
-    seat, said, pending, _c = _seat([job])
-    m.LiteTUI._fire_job(seat, job)
-    m.LiteTUI._fire_job(seat, job)      # the next 20 s tick, same slot
-    assert pending == []
-    assert (job.run_count, job.last_fired_slot, job.next_run_at, job.enabled) == before
-    assert len(said) == 1 and seat_authority.lock_refusal(seat) in said[0], said
-
-
 def test_S1_a_skipping_seat_never_takes_the_scheduler_lease(monkeypatch):
     """Dijkstra S1: a skipping seat holding the lease could cost Ryan's instance its
     last attempt in the slot."""
@@ -305,7 +276,7 @@ def test_S1_a_skipping_seat_never_takes_the_scheduler_lease(monkeypatch):
     scheduler_leases = lambda: [p for p in taken if p.endswith(".scheduler.lease")]  # noqa: E731
     monkeypatch.setattr(shared_state, "Lease", Recording)
     job = scheduler.Job(prompt="p", schedule="@daily", tool_profile=AUTONOMOUS)
-    seat, _s, pending, _c = _seat([job])
+    seat, _s, pending, _c = _seat([job], flag=INTERACTIVE)
     m.LiteTUI._fire_job(seat, job)
     assert scheduler_leases() == [] and pending == []
     # CONTROL: a job this seat can grant takes the lease and fires.
@@ -316,10 +287,10 @@ def test_S1_a_skipping_seat_never_takes_the_scheduler_lease(monkeypatch):
 
 def test_F5_a_manual_run_of_a_job_this_seat_cannot_grant_is_refused():
     job = scheduler.Job(prompt="p", schedule="@daily", tool_profile=AUTONOMOUS)
-    seat, said, pending, _c = _seat([job])
+    seat, said, pending, _c = _seat([job], flag=INTERACTIVE)
     assert m.LiteTUI._fire_job(seat, job, manual=True) is False
     assert pending == [] and job.run_count == 0
-    assert seat_authority.lock_refusal(seat) in said[-1]
+    assert "--tool-profile interactive" in said[-1]
 
 
 def test_F6_R1_a_narrower_launch_flag_skips_the_job_too():

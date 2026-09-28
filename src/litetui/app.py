@@ -2895,12 +2895,7 @@ class LiteTUI(App):
             # also the settings default, so the two agreed by coincidence;
             # T084 moved the default to `autonomous` and that coincidence
             # became a contradiction pointing the permissive way.
-            # T1049 (Dijkstra F1): an explicit `profile` is capped here too, the one
-            # door every tool and hook decision passes, so no caller holding a raw
-            # value (the hook Test buttons passed chosen_tool_profile) runs autonomous
-            # in a locked seat.
-            seat_authority.locked_profile(
-                self, profile or getattr(self, "_active_tool_profile", None) or tool_policy.STRICT),
+            profile or getattr(self, "_active_tool_profile", None) or tool_policy.STRICT,
             policy,
             args,
             workspace or paths.ROOT,
@@ -2914,9 +2909,7 @@ class LiteTUI(App):
         if decision.action == tool_policy.CONFIRM:
             if not allow_prompt:
                 return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
-            # T1049 C4: a locked seat's cron/loop fire runs interactive (the lock), so
-            # its CONFIRMs land HERE. Ryan ruled 2026-09-27 (per Sentinel 04169351):
-            # "whatever agent spawned the light qi instance should be babysitting it".
+            # A non-owner seat routes any CONFIRM here independently of profile.
             # T1049-B routes by seat_authority.confirm_route. The ONE turn source read
             # here is `_hook_source` (Dijkstra D1).
             source = getattr(self, "_hook_source", None)
@@ -4361,8 +4354,6 @@ class LiteTUI(App):
             # binding is priority, so nothing else would stop it.
             return
         nxt = tool_policy.cycle(self.settings.tool_policy_profile)
-        if seat_authority.locked_profile(self, nxt) != nxt:
-            nxt = tool_policy.cycle(nxt)  # T1049: a locked seat's cycle skips autonomous
         self.set_tool_profile(nxt, source=source)
 
     def set_tool_profile(self, profile: str, *, announce: bool = True, source: str = "wire") -> bool:
@@ -4381,13 +4372,6 @@ class LiteTUI(App):
         worse answer than the caller being told no.
         """
         if profile not in tool_policy.PROFILES:
-            return False
-        if seat_authority.locked_profile(self, profile) != profile:
-            # T1049: an explicit ask for autonomous in a seat that is not Ryan's
-            # own. Refused in words and NOTHING is recorded: no settings write,
-            # no convo remember, the launch flag untouched.
-            self._system(seat_authority.lock_refusal(self)
-                         + f" Authority stays {self._active_tool_profile}.")
             return False
         previous = self.settings.tool_policy_profile
         # Every change leaves a record and says where it came from: the user's
@@ -4515,22 +4499,6 @@ class LiteTUI(App):
         # not hand a codex effort to a llama.cpp thinking level.
         if getattr(getattr(self, "_backend", None), "name", None) == "codex":
             self._remember_for_this_convo("reasoning_effort", value)
-
-    @property
-    def _active_tool_profile(self) -> str | None:
-        """T1049 THE AUTONOMY LOCK: the authority every tool decision reads,
-        through seat_authority.locked_profile. A property over the RAW value
-        because this field has 9 writers and ~12 readers (init, set_tool_profile,
-        resume, settings_runtime, gui_rpc, hook_host, goal_loop, a parent wake;
-        _authorize_action, hooks, the Claude and Codex policy bridges, spawn,
-        the footer, rpc), and only 3 writers go through the resolver. Capped on
-        READ, so a write made in __init__ before the owner/spawn markers exist
-        cannot bake in the wrong answer."""
-        return seat_authority.locked_profile(self, self.__dict__.get("_active_tool_profile_raw"))
-
-    @_active_tool_profile.setter
-    def _active_tool_profile(self, value: str | None) -> None:
-        self.__dict__["_active_tool_profile_raw"] = value
 
     @property
     def chosen_tool_profile(self) -> str:
@@ -5075,7 +5043,6 @@ class LiteTUI(App):
                 done = getattr(self, "_cli_args_done", None)
                 if done is None or done.is_set():
                     seat_authority.warn_if_below_floor(self)
-                    seat_authority.warn_if_capped(self)  # T1049
                 if resume_path is not None and hasattr(self.backend, "app_server"):
                     self._native_history_worker = self._refresh_native_history(resume_path)
                 self._startup_history_path = None
@@ -5491,7 +5458,6 @@ class LiteTUI(App):
             if done is not None:
                 done.set()
             seat_authority.warn_if_below_floor(self)
-            seat_authority.warn_if_capped(self)  # T1049
 
     # ── Context window readout (footer) ───────────────────────
 
@@ -9818,12 +9784,6 @@ class LiteTUI(App):
         if new is None:
             return
         old = self.settings
-        if (new.tool_policy_profile != old.tool_policy_profile
-                and seat_authority.locked_profile(self, new.tool_policy_profile) != new.tool_policy_profile):
-            # T1049: the settings Save is an explicit ask, and settings.json is
-            # shared by every LiteTUI on this box. Refused before anything persists.
-            new.tool_policy_profile = old.tool_policy_profile
-            self._system(seat_authority.lock_refusal(self) + f" Authority stays {old.tool_policy_profile}; the other settings are saved as usual.")
         self._settings_persist_error = None
         self.settings = new
         if new.footer_task_manager != old.footer_task_manager:

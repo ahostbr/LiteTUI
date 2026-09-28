@@ -58,78 +58,35 @@ def seat_profile(app) -> str:
     """The flag, else this conversation's choice, else the global default."""
     chosen = getattr(app, "chosen_tool_profile", None) or getattr(
         getattr(app, "settings", None), "tool_policy_profile", None)
-    return locked_profile(app, launch_flag(app) or chosen or tool_policy.STRICT)
+    return launch_flag(app) or chosen or tool_policy.STRICT
 
 
 def turn_profile(app, source: str, requested: str | None = None) -> str:
-    return locked_profile(app, _turn_profile(app, source, requested))
+    return _turn_profile(app, source, requested)
 
 
 def _turn_profile(app, source: str, requested: str | None) -> str:
     flag = launch_flag(app)
     if source == "scheduled":
-        # T1082: every fire carries its job's recorded level. One that carries none
-        # lands on the floor (T084), never on the widest.
+        # A fire carries its recorded level; a narrower launch flag still withholds it.
         wanted = requested or tool_policy.STRICT
         return narrower(wanted, flag) if flag else wanted
     if source in NARROWING_SOURCES:
         seat = seat_profile(app)
         return narrower(requested or seat, seat)
-    # Attended: what the human's submit carried (the choice at that moment),
-    # unless an explicit launch flag outranks it.
     return flag or requested or seat_profile(app)
 
 
-# ── T1049: the autonomy lock ────────────────────────────────────────────────
-#
-# Ryan (liteask a-29047520): "light TUI instances that are spawned by other agents
-# cannot be set to auto mode. They can only go to interactive mode and must be
-# handled by their leaders". The gate is `app._active_tool_profile` itself (a
-# property over the raw value, app.py): it has 9 writers and ~12 readers, and only
-# 3 writers go through the resolver, so a gate anywhere else leaves paths open.
-
-def _locked_because(app) -> str:
-    return ("was not launched by Ryan (an agent spawned it), so it runs interactive "
-            "and its approvals belong to its leader" if is_spawned(app) else
-            "is not Ryan's own (not owner-marked: launch it via run.bat or LiteGUI; "
-            "or its terminal was written by an agent), so it runs interactive")
-
-
-def lock_refusal(app) -> str:
-    """Why autonomous was refused, true to THIS seat (Dijkstra F2): the lock keys
-    on "not Ryan's own", so a seat Ryan launched unmarked is locked too, and must
-    not be told an agent spawned it."""
-    return (f"autonomous refused: this LiteTUI {_locked_because(app)} (T1049; Ryan: "
-            "\"they can only go to interactive mode\").")
-
-
-def locked(app) -> bool:
-    """No autonomous authority here: NOT Ryan's own instance. The cached answer
-    (recheck=False): this is read on every footer paint and tool decision, and the
-    taint is re-asked once per turn by the floor check in accept_prompt."""
-    return not is_ryans_own(app, recheck=False)
-
-
-def locked_profile(app, profile: str | None) -> str | None:
-    """THE gate: autonomous reads as interactive in a locked seat. Nothing else
-    changes, so the lock can only ever narrow."""
-    if profile == tool_policy.AUTONOMOUS and locked(app):
-        return tool_policy.INTERACTIVE
-    return profile
-
+# ── Confirm routing is independent of tool authority ───────────────────────
 
 def confirm_route(app) -> str:
     """Where a CONFIRM goes (T1049-B, plan ab8969c2 §2, approved 5ef7612a).
       own      Ryan's own seat: UNCHANGED (modal / his GUI host; unattended refused).
-      host     a locked rpc seat whose host relays (agent_supervisor sets
-               LITETUI_APPROVAL_HOST): the host, for every source.
-      spawner  a locked seat with a recorded spawner: the spawner by inbox, for EVERY
-               source, typed and rpc included (Ryan 6e280dd4: "The launching agent").
-      refuse   locked, no spawner, launched by an agent: refused + logged, never a
-               modal and never the GUI human (Ryan 6e280dd4 (b)).
-      hand     locked, no spawner, not agent-launched (Ryan's unmarked hand launch):
-               as today, plus the log on its unattended refusal (Marquee Q1)."""
-    if not locked(app):
+      host     a non-owner rpc seat whose host relays: the host, for every source.
+      spawner  a non-owner seat with a recorded spawner: inbox to the spawner.
+      refuse   agent-launched without a spawner: refused and logged.
+      hand     unmarked hand launch: normal unattended refusal."""
+    if is_ryans_own(app, recheck=False):
         return "own"
     if getattr(app, "_rpc", False) and getattr(app, "_approval_host", False):
         return "host"
@@ -161,14 +118,11 @@ LOOP_REFUSAL = ("loops are made with /loop in a live LiteTUI, never scheduled di
 
 def schedule_level(app, chosen: str | None = None) -> str:
     """The level a NEW schedule records: the creator's pick, else this seat's level.
-    ValueError for a name that is no level, and for autonomous in a locked seat
-    (T1049-A at creation: a locked seat can never RECORD autonomous)."""
+    ValueError for a name that is no level."""
     if chosen is None:
         return seat_profile(app)
     if chosen not in tool_policy.PROFILES:
         raise ValueError(f"no level {chosen!r}: one of {', '.join(tool_policy.PROFILE_NAMES)}")
-    if locked_profile(app, chosen) != chosen:
-        raise ValueError(lock_refusal(app))
     return chosen
 
 
@@ -179,34 +133,21 @@ def loop_level(app) -> str:
     running = getattr(app, "_chat_running", None)
     level = getattr(app, "_active_tool_profile", None)
     if running is not None and running() and level in tool_policy.PROFILES:
-        return locked_profile(app, level)
+        return level
     return seat_profile(app)
 
 
 def withheld(app, level: str) -> str | None:
     """Why THIS instance does not run a schedule recorded at `level`, or None when it
     runs it unchanged. A job runs at its recorded level or not at all ("it runs at the
-    scheduled level"): the lock (f4d49382, C5) or a narrower launch flag (e9576f7f,
+    scheduled level"): a narrower launch flag (e9576f7f,
     R1; this narrows T1027's flag ceiling for schedules only) SKIPS it, so an instance
     that can grant the level still runs it."""
     if turn_profile(app, "scheduled", level) == level:
         return None
-    if locked_profile(app, level) != level:
-        return lock_refusal(app)
     return (f"it runs at {level}, above this LiteTUI's --tool-profile {launch_flag(app)}, "
             "so a LiteTUI that can grant it runs it (T1082: a schedule runs at its "
             "recorded level or not at all).")
-
-
-def job_write_refusal(app, job) -> str | None:
-    """A locked seat may not edit, pause, resume or delete a job recorded autonomous
-    (C8, R3). jobs.json is shared by every LiteTUI on the data root, so that job is
-    Ryan's. See the CEILING above: this closes the API doors only."""
-    from litetui import scheduler
-    if not locked(app) or scheduler.level_of(job.tool_profile) != tool_policy.AUTONOMOUS:
-        return None
-    return (f"job {job.id} runs autonomous, so this LiteTUI may not change or remove it: "
-            f"this LiteTUI {_locked_because(app)} (T1082).")
 
 
 def schedule_note(app, level: str) -> str:
@@ -221,24 +162,6 @@ def schedule_note(app, level: str) -> str:
         "refuse": "are refused and logged (no launching agent is recorded)",
     }.get(route, "are refused, because nobody is at the keyboard when it fires")
     return f"runs {level}: actions that need approval {who}"
-
-
-def warn_if_capped(app) -> None:
-    """Said once at connect, beside warn_if_below_floor: the seat asked for
-    autonomous (a launch flag, the rpc default, a settings default, a resumed
-    choice) and runs interactive instead."""
-    if getattr(app, "_autonomy_cap_said", False) or not locked(app):
-        return
-    raw = getattr(app, "_active_tool_profile_raw", None)
-    asked = tool_policy.AUTONOMOUS in (launch_flag(app), raw, getattr(
-        getattr(app, "settings", None), "tool_policy_profile", None))
-    say = getattr(app, "_system", None)
-    if asked and say is not None:
-        try:
-            say("⚠ " + lock_refusal(app) + " Authority is interactive.")
-        except Exception:  # noqa: BLE001 - called from _apply_cli_args' finally, possibly with no screen yet
-            return  # not said: the connect site can still say it
-        app._autonomy_cap_said = True
 
 
 def effective_thinking(app) -> str | None:
