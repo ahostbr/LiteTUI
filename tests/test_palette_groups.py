@@ -6,19 +6,17 @@ Screen, App — keeping every /slashcmd name exactly as is.
 
 Three things are asserted here, because each was a real decision:
 
-  1. ORDER IS DERIVED, NOT TABULATED. Every row declares its own group and rank
-     at the point it is registered. The provider sorts; it owns no list. A
-     hand-authored second table is the drift class the derived palette already
-     replaced, and it would silently drop any command nobody remembered to add.
+  1. ORDER IS DERIVED, NOT TABULATED. Rows come from the registry; Settings
+     and Theme lead, then titles sort alphabetically, regardless of their
+     retained group labels. No second inventory of commands exists.
 
   2. THE SLASH COMMAND IS DERIVED TOO. It used to be typed into the help string
      as "(/compact)" — a machine token mid-sentence, and a second copy of the
      command name that could drift from the real one. It is now appended from
      entry.tokens[0], so it cannot disagree with what the dispatcher handles.
 
-  3. THEME SURVIVES. Textual's stock provider is filtered, not dropped, because
-     it is the only source of the theme picker and /settings promises in writing
-     that ctrl+p still has one.
+  3. THEME SURVIVES. The registry's Theme row delegates to Textual's own
+     theme action, with the stock provider removed to avoid duplication.
 """
 
 from __future__ import annotations
@@ -81,21 +79,20 @@ async def test_the_palette_is_grouped_and_ordered() -> None:
             if not seen or seen[-1] != label:
                 seen.append(label)
 
-        # Groups appear as contiguous blocks, in the user's order. A label showing
-        # up twice means the sort is not actually grouping.
-        assert len(seen) == len(set(seen)), f"a group is split across the list: {seen}"
+        # The labels survive even though alphabetical titles split groups.
         wanted = [plugins_mod.PALETTE_GROUP_LABELS[g] for g in EXPECTED_GROUPS]
-        assert seen == [w for w in wanted if w in seen], f"groups out of order: {seen}"
+        assert set(wanted) <= set(seen), f"groups missing from palette: {seen}"
 
 
 @pytest.mark.asyncio
-async def test_quit_is_the_last_row() -> None:
-    """Nothing destructive sits near anything frequent."""
+async def test_quit_follows_the_pinned_rows_alphabetically() -> None:
+    """Quit follows alphabetical title order rather than legacy group rank."""
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         titles = [t for t, _h, _r in _rows(a)]
-        assert titles[-1].endswith("Quit"), f"last row is {titles[-1]!r}, expected Quit"
+        names = [title.split("›")[-1].strip() for title in titles]
+        assert names.index("Quit") < names.index("Screenshot")
 
 
 @pytest.mark.asyncio
@@ -131,12 +128,8 @@ async def test_theme_survives_and_nothing_is_offered_twice() -> None:
     a = make_app()
     async with a.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        stock = [c.title for c in a.get_system_commands(a.screen)]
-        assert "Theme" in stock, (
-            "the theme picker is gone from ctrl+p, and /settings promises it is there"
-        )
+        titles = [t.split("›")[-1].strip() for t, _h, _run in _rows(a)]
+        assert titles.count("Theme") == 1, "the theme picker needs exactly one row"
+        assert a.COMMANDS == {m.LiteTUICommands}, "stock provider duplicates registry rows"
         for reclaimed in ("Keys", "Maximize", "Screenshot", "Quit"):
-            assert reclaimed not in stock, (
-                f"{reclaimed} is offered by BOTH providers — it would appear twice, "
-                "in two different vocabularies"
-            )
+            assert titles.count(reclaimed) == 1, f"{reclaimed} is offered twice"

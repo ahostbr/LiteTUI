@@ -120,6 +120,10 @@ def _register(ctx) -> None:
         group="app",
         order=10,
     )
+    # Palette escape hatch: the stock Theme command has no slash dispatcher
+    # entry, but must share our provider's ordering and call its same action.
+    ctx.palette_row("Theme", "Change the current theme",
+                    ctx.app.action_change_theme, group="app")
 
 
 PLUGIN = PluginManifest(id="settings-ui", register=_register)

@@ -693,27 +693,9 @@ class LiteTUI(App):
     # their bubble indents (see `.-narrow` in CSS). T1048.
     HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (80, "-wide")]
 
-    # The stock providers (theme, keys, quit...) plus ours.
-    COMMANDS = App.COMMANDS | {LiteTUICommands}
-
-    def get_system_commands(self, screen):
-        """Keep Textual's Theme picker. Everything else is ours, and grouped.
-
-        The stock provider also offers Keys, Maximize, Screenshot, Quit and
-        Bell. All of those now exist as real commands in our own palette, with
-        a group, a plain-English description and a slash command -- yielding
-        them here as well would show each of them twice, in two different
-        vocabularies, which is worse than the ungrouped list this replaces.
-
-        Theme is the exception and is deliberately kept: it opens Textual's own
-        picker, we do not reimplement it, and /settings promises in writing
-        that "ctrl+p still has a quick-select". Dropping the stock provider
-        wholesale would have quietly broken that promise -- the reason this is
-        a filter rather than a deletion.
-        """
-        for command in super().get_system_commands(screen):
-            if command.title == "Theme":
-                yield command
+    # Our registry owns all palette rows, including Theme (delegated to
+    # Textual's existing action_change_theme). No duplicate stock provider.
+    COMMANDS = {LiteTUICommands}
 
     CSS = """
     Screen {

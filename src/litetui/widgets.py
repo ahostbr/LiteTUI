@@ -1313,7 +1313,15 @@ class LiteTUICommands(Provider):
                 self._describe(r.help, r.tag or None),
                 r.run,
             ))
-        rows.sort(key=lambda row: row[0])
+        # Keep group labels for discovery, but order by the actual command
+        # title. The two frequent entries lead regardless of their group.
+        pinned = {"Settings": 0, "Theme": 1}
+        rows.sort(key=lambda row: (
+            0 if row[2] in pinned else 1,
+            pinned.get(row[2], 0),
+            row[2].casefold(),
+            row[2],
+        ))
 
         # The group name leads the title. Textual's palette has no section
         # headers, so this is what makes the grouping visible -- and it makes
@@ -1340,7 +1348,14 @@ class LiteTUICommands(Provider):
 
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
-        for title, help_text, run in self._commands():
-            score = matcher.match(title)
-            if score > 0:
-                yield Hit(score, matcher.highlight(title), run, help=help_text)
+        matches = [
+            (title, help_text, run)
+            for title, help_text, run in self._commands()
+            if matcher.match(title) > 0
+        ]
+        # Textual sorts hits by score across providers. Assign descending
+        # scores in our display order, rather than letting fuzzy relevance
+        # reorder the matches; unmatched pinned commands are never included.
+        for index, (title, help_text, run) in enumerate(matches):
+            yield Hit(1 - index / (len(matches) + 1),
+                      matcher.highlight(title), run, help=help_text)

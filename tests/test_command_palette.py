@@ -77,8 +77,8 @@ def test_the_provider_is_registered_on_the_app():
     assert m.LiteTUICommands in m.LiteTUI.COMMANDS, (
         "a Provider class nobody registers is not in any palette"
     )
-    # And the stock providers survive — extending must not replace.
-    assert len(m.LiteTUI.COMMANDS) > 1
+    # The stock Theme row is replaced by our registry row, not duplicated.
+    assert m.LiteTUI.COMMANDS == {m.LiteTUICommands}
 
 
 def test_the_palette_covers_the_features_it_was_missing():
@@ -158,6 +158,44 @@ def test_search_finds_the_calendar_and_scores_it():
             assert hits, "searching 'calend' found nothing"
             texts = [str(h.match_display) for h in hits]
             assert any("Calendar" in t for t in texts)
+    _run(body())
+
+
+def test_pinned_and_alphabetical_order_with_and_without_search():
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)):
+            provider = m.LiteTUICommands(a.screen)
+            titles = [t for t, _h, _r in _table(a)]
+            assert titles[:2] == ["Settings", "Theme"]
+            assert titles[2:] == sorted(titles[2:], key=str.casefold)
+
+            hits = [h async for h in provider.search("the")]
+            matched = [h.text.split("›")[-1].strip() for h in hits]
+            assert matched[0] == "Theme"
+            assert "Settings" not in matched  # unrelated pinned rows stay filtered
+            assert matched[1:] == sorted(matched[1:], key=str.casefold)
+            settings_hits = [h async for h in provider.search("set")]
+            assert settings_hits[0].text.split("›")[-1].strip() == "Settings"
+            assert [h.score for h in hits] == sorted(
+                (h.score for h in hits), reverse=True
+            ), "Textual's score sort must retain our ordering"
+
+            unrelated = [h async for h in provider.search("calendar")]
+            assert "Settings" not in [h.text.split("›")[-1].strip() for h in unrelated]
+            assert "Theme" not in [h.text.split("›")[-1].strip() for h in unrelated]
+    _run(body())
+
+
+def test_theme_row_delegates_to_textual_theme_picker():
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)) as pilot:
+            run = next(run for title, _help, run in _table(a) if title == "Theme")
+            run()
+            await pilot.pause()
+            assert isinstance(a.screen, CommandPalette)
+            assert "ThemeProvider" in [type(p).__name__ for p in a.screen._providers]
     _run(body())
 
 
