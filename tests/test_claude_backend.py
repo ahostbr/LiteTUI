@@ -289,7 +289,7 @@ async def test_catalog_keeps_cli_rows_first_and_adds_every_context_variant(monke
     backend = ClaudeBackend(Settings(backend="claude"))
     keys = [row.key for row in await backend.list_models()]
     assert keys[:len(queried)] == queried
-    for key in ("claude-opus-5-5", "claude-opus-5-5[1m]", "claude-sonnet-5[1m]",
+    for key in ("claude-opus-5-5", "claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-sonnet-5[1m]",
                 "claude-fable-5-1", "claude-haiku-4-5-20251001", "fable", "opus"):
         assert key in keys
     assert len(keys) == len(set(keys))

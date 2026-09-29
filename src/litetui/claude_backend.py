@@ -74,6 +74,7 @@ STATIC_MODELS = (
     "default", "opus", "opus[1m]", "fable", "fable[1m]", "sonnet", "sonnet[1m]", "haiku",
     "claude-opus-5-5", "claude-opus-5-5[1m]",
     "claude-fable-5-1", "claude-fable-5-1[1m]",
+    "claude-sonnet-5-5", "claude-sonnet-5-5[1m]",
     "claude-sonnet-5", "claude-sonnet-5[1m]",
     "claude-haiku-4-5-20251001",
 )
