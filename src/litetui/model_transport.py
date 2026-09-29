@@ -461,6 +461,26 @@ class ResponseStream:
         finally:
             await _close_http(self.client, self.provider, "client", completed=self._completed)
 
+    def _interrupted(self):
+        return _logged_provider_error(
+            f"{self.provider.title()} connection was interrupted. "
+            "The response was not replayed; check any completed tool effects before retrying."
+        )
+
+    async def _resend(self, cause):
+        """Run the retry, and state a transport failure of the retry itself.
+
+        T0092 (was T1041). The retry is awaited inside an `except` handler of
+        __aiter__, and a sibling `except` clause never sees what a handler
+        raises - so a timeout out of the retry's send() (not in
+        _CONNECTION_FAILURES, so send() lets it through) left as a raw httpx
+        exception. Timeouts stay un-retried, as on the first attempt.
+        """
+        try:
+            return await self._retry(cause)
+        except httpx.HTTPError:
+            raise self._interrupted() from None
+
     async def __aiter__(self):
         # This is one completion request, not a turn replay. Once ANY chunk
         # escapes, retries are forbidden. Text and reasoning escape live;
@@ -487,7 +507,7 @@ class ResponseStream:
                     if emitted or self._retry is None:
                         raise ProviderError(str(error)) from None
                     try:
-                        self.response = await self._retry("overloaded")
+                        self.response = await self._resend("overloaded")
                     except ProviderError as exhausted:
                         raise ProviderError(
                             f"{exhausted} Last provider failure: {error}"
@@ -502,12 +522,9 @@ class ResponseStream:
                         )
                         return
                     if isinstance(error, _CONNECTION_FAILURES) and not emitted and self._retry is not None:
-                        self.response = await self._retry("connection reset")
+                        self.response = await self._resend("connection reset")
                         continue
-                    raise _logged_provider_error(
-                        f"{self.provider.title()} connection was interrupted. "
-                        "The response was not replayed; check any completed tool effects before retrying."
-                    ) from None
+                    raise self._interrupted() from None
         finally:
             await self.close()
 
