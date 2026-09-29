@@ -291,7 +291,8 @@ async def test_LITEGUI_an_enveloped_gui_seat_asks_the_launching_agent_not_the_gu
 
 def _clear(monkeypatch):
     for name in ("LITETUI_SPAWN_IDENTITY", "LITEHARNESS_SPAWNED_BY", "LITETUI_APPROVAL_HOST",
-                 "CLAUDE_CODE_SESSION_ID", *seat_authority.AGENT_SHELL_MARKERS):
+                 "LITESUITE_LEAF_ID", "LITESUITE_CANVAS_SESSION", "CLAUDE_CODE_SESSION_ID",
+                 *seat_authority.AGENT_SHELL_MARKERS):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -300,10 +301,12 @@ def test_E2_the_spawner_comes_only_from_the_marker_and_both_vars_are_popped(monk
     monkeypatch.setenv("LITETUI_SPAWN_IDENTITY", "1")
     monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", SPAWNER)
     monkeypatch.setenv("LITETUI_APPROVAL_HOST", "1")
+    monkeypatch.setenv("LITESUITE_LEAF_ID", "leaf0001")
     a = m.LiteTUI()
     assert a._spawner_id == SPAWNER and a._approval_host is True
     assert a.seat.spawned_by == SPAWNER
-    assert a.seat._presence_argv()[-2:] == ["--spawned-by", SPAWNER]
+    # The launcher appends --leaf-id after --spawned-by (fcec6cf, T1150).
+    assert a.seat._presence_argv()[-4:] == ["--spawned-by", SPAWNER, "--leaf-id", "leaf0001"]
     assert "LITEHARNESS_SPAWNED_BY" not in os.environ and "LITETUI_APPROVAL_HOST" not in os.environ
 
 
