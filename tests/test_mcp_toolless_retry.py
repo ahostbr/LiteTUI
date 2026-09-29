@@ -196,3 +196,45 @@ async def test_a_human_decision_landing_after_the_reconnect_finishes_is_not_anno
     await app._mcp_retry_toolless(["srv"])
     assert len(mgr.built) == 2
     assert not any("after retry" in s for s in app.said), app.said
+
+
+# ── the SHIPPED /mcp stop route, during a real (unpatched) retry backoff ──────────────
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", ["tools", "empty"], ids=["CONTROL_healthy_server", "retry_pending"])
+async def test_a_real_mcp_stop_during_the_retry_backoff_is_served_not_refused(tmp_path, monkeypatch, script):
+    """T0124, Sentinel's characterisation: type the real `/mcp stop` (mcp_manage._cmd_mcp, with
+    its own busy gate) while the retry is asleep in its 30 s backoff. The control arm has a
+    healthy server, so no retry is pending: it says whether the test app itself is idle."""
+    import json
+
+    from _settle import settle_until
+
+    from litetui.plugins import mcp_manage
+
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"srv": {"command": "x"}}}), encoding="utf-8")
+    monkeypatch.setattr(MCPManager, "_build", lambda self, name, sc: ScriptedServer(name, script))
+    monkeypatch.setattr(app_mod, "MCP_RETRY_DELAYS", (30.0, 30.0, 30.0))
+    a = app_mod.LiteTUI()
+    a.available_models, a.model_id = ["a-model"], "a-model"
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    said: list[str] = []
+    a.system_message = lambda text: said.append(str(text))
+
+    async with a.run_test(size=(120, 40)) as pilot:
+        assert await settle_until(pilot, lambda: "srv" in a.mcp.servers, n=200), said
+        # A fresh conversation is "pending" and the gate reads that as a turn in progress,
+        # for any /mcp verb, retry or not. Born, the way app.py does it at materialisation.
+        a.store.pending = False
+        # The test app's own inbox poller is not the subject (no fleet here); in production it
+        # is registered idle infra while it polls.
+        for w in list(a.workers):
+            if w.group == "inbox":
+                w.cancel()
+        await pilot.pause()
+        from litetui.plugin_reload_activity import produce_activity
+        gate = [(r.source, r.detail) for r in produce_activity(a).reasons]
+        mcp_manage._cmd_mcp(a, "mcp", "stop srv")
+        served = await settle_until(pilot, lambda: "srv" not in a.mcp.servers, n=60)
+    assert served, (f"/mcp stop was not served during the backoff; the app said: {said!r}; "
+                    f"the gate's reasons: {gate!r}")

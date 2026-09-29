@@ -2476,11 +2476,13 @@ class LiteTUI(App):
         refused connect never started and is already announced above. Each retry is
         `reconnect` - a fresh object, the existing verb - so no new lifecycle path.
         """
+        from litetui.plugin_reload_activity import idle_infra_phase
         pending = [n for n in names if self.mcp.toolless_started(n)]
         for delay in MCP_RETRY_DELAYS:
             if not pending:
                 return
-            await asyncio.sleep(delay)
+            with idle_infra_phase(self):           # asleep is not busy: /mcp stop must work
+                await asyncio.sleep(delay)
             for name in list(pending):
                 if not self._mcp_retry_wanted(name, toolless=True):
                     pending.remove(name)           # a human stop or a config change wins
