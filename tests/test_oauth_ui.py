@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 
 import httpx
 import pytest
@@ -22,6 +23,9 @@ async def test_remote_compaction_uses_tool_door_and_preserves_transcript(
         wake_after_compact=False,
         clear_screen_after_compact=False,
     )
+    # settings.load() always hands back a baselined Settings; save_selection_defaults
+    # (via _switch_backend below) pops keys from that baseline.
+    object.__setattr__(cfg, "_baseline", asdict(cfg))
     monkeypatch.setattr(settings, "load", lambda: cfg)
     async def ready(self):
         return "ok"

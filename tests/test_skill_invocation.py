@@ -69,6 +69,9 @@ class _StubApp:
     def __init__(self, skills):
         self.skills = skills
         self.settings = _Settings()
+        # refresh_skills_guarded asks `hasattr(app.backend, "app_server")`; the
+        # real app always has a backend, and a plain one has no app_server.
+        self.backend = object()
         self.said: list[str] = []
         self.bubbles: list[str] = []
         self.pushed: list = []
