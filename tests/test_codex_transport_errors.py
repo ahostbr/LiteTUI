@@ -325,6 +325,31 @@ async def test_tool_call_from_a_retried_attempt_is_never_delivered(tmp_path, pau
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout])
+@pytest.mark.parametrize("failure", ["reset", "overload"])
+async def test_timeout_from_the_retry_send_is_stated_not_raw(tmp_path, pauses, diagnostics, failure, timeout):
+    # T0092 (was T1041; T1019 follow-up N3): a timeout raised by the RETRY's send()
+    # escaped __aiter__ as a raw httpx exception, skipping the "interrupted" wording.
+    # Same class as F9. Timeouts stay un-retried (test_connection_retry_allowlist).
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            if failure == "reset":
+                return httpx.Response(200, stream=ResetStream())
+            return httpx.Response(200, content=sse(OVERLOAD))
+        raise timeout("PRIVATE TIMEOUT DETAIL", request=request)
+
+    stream = await transport(tmp_path, handle).create(model="gpt-test", messages=[], stream=True)
+    with pytest.raises(mt.ProviderError, match="interrupted") as raised:
+        async for _ in stream:
+            pass
+    assert len(requests) == 2 and pauses == [2.0]
+    assert "PRIVATE TIMEOUT DETAIL" not in str(raised.value) + str(diagnostics)
+
+
+@pytest.mark.asyncio
 async def test_held_tool_call_precedes_terminal_chunk(tmp_path):
     stream = await transport(
         tmp_path, lambda request: httpx.Response(200, content=sse(CALL, TEXT, DONE))
