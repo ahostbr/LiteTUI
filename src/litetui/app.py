@@ -3213,6 +3213,22 @@ class LiteTUI(App):
         # the user: "not everything should be backgroundable"): the flag on any other
         # tool is dropped, and the auto-promotion below never applies to it.
         may_bg = tasks_mod.backgroundable(name)
+        # 🔴 A BACKGROUNDABLE TOOL'S HOME MUST EXIST BEFORE ANY SIDE EFFECT (T0132).
+        # Auto-promotion hands over a call that is ALREADY RUNNING, and a
+        # materialise failure at `_start_background` would then leave that work
+        # untracked: no row, no wake, no `/tasks kill`. So the conversation is
+        # born HERE, before the awaitable exists, and a failure comes back as an
+        # ordinary tool failure with nothing started. Only tools whose schema
+        # declares `background` pay this (a staged seat that runs a foreground
+        # shell now gets its directory); reads, edits and MCP calls do not.
+        # `_start_background` keeps its own call as the defence for a creator
+        # reached some other way.
+        if may_bg:
+            try:
+                self._materialise_convo()
+            except Exception as e:
+                return (f"[error] {name} not started: its conversation could not be created "
+                        f"({type(e).__name__}: {e})"), False
         background = may_bg and isinstance(args, dict) and bool(args.pop("background", False))
         if isinstance(args, dict):
             args.pop("background", None)
@@ -3282,9 +3298,11 @@ class LiteTUI(App):
         # tool with it still STAGED: `gui.tools.execute` (no turn at all) and
         # `/skill` (streams without materialising). A store save into a staged
         # conversation would mkdir a half-born `.convos/<id>/`, and skipping the
-        # save would drop an accepted row - so the guarantee lives here, at the
-        # ONE creator, and idempotently. Visible consequence: a conversation
-        # directory appears when the first background task starts on a fresh seat.
+        # save would drop an accepted row. `_execute_tool` already materialised
+        # BEFORE the call started (so a failure there starts nothing); this call
+        # is the idempotent defence at the ONE creator for any route that does
+        # not pass through it. Visible consequence: a conversation directory
+        # appears when the first background-capable tool runs on a fresh seat.
         self._materialise_convo()
         task = tasks_mod.new_task(name, args, getattr(self, "convo_id", ""))
         task._pending_process_handoff = not promoted_after or process_slot is not None

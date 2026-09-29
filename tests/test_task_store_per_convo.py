@@ -32,10 +32,13 @@ it can, in principle, happen.
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import json
 import os
 import threading
+import time
+import warnings
 from pathlib import Path
 
 import pytest
@@ -492,3 +495,78 @@ async def test_an_unborn_conversation_at_save_time_is_surfaced_not_swallowed(mon
 
         assert any("never-born" in s or "task store" in s.lower() for s in shown), shown
         assert not (paths.CONVO_DIR / "never-born").exists(), "the tripwire created the directory"
+
+
+# ── a materialise failure must start NOTHING (already-started work is never orphaned) ──
+
+
+def _spy_tool(monkeypatch, app, seconds=0.0):
+    """Replace the dispatched tool body; the Event says whether it ever ran."""
+    started = threading.Event()
+
+    def body(_args):
+        started.set()
+        time.sleep(seconds)
+        return "ran"
+
+    monkeypatch.setattr(app, "_dispatch_for", lambda _name: body)
+    return started
+
+
+def _boom():
+    raise OSError("disk full")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("promotable", [False, True], ids=["explicit-background", "slow-auto-promotable"])
+async def test_a_materialise_failure_starts_nothing_and_the_caller_sees_it(monkeypatch, promotable):
+    """Auto-promotion hands over a call that is ALREADY RUNNING, so the home has
+    to exist (or the call has to fail) BEFORE anything starts. The slow producer
+    would have outlived the failure untracked: no row, no wake, no kill."""
+    a = _app(monkeypatch)
+    a.settings.tool_auto_background_s = 1 if promotable else 0
+    started = _spy_tool(monkeypatch, a, seconds=2 if promotable else 0)
+    monkeypatch.setattr(a, "_materialise_convo", _boom)
+    async with a.run_test(size=(100, 30)):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            text, ok = await a._execute_tool(
+                "powershell", dict(_QUICK, background=not promotable))
+            gc.collect()
+
+        assert ok is False and "not started" in text and "disk full" in text, text
+        assert not await asyncio.to_thread(started.wait, 0.5), "the tool ran despite the failure"
+        assert a.bg_tasks == {}, "a row was accepted for work that never started"
+        assert a.store.pending and not paths.CONVO_DIR.exists(), "a phantom conversation directory"
+        assert not [w for w in caught if "never awaited" in str(w.message)], "an awaitable was orphaned"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("promotable", [False, True], ids=["explicit-background", "slow-auto-promotable"])
+async def test_CONTROL_the_same_call_runs_when_the_conversation_can_be_born(monkeypatch, promotable):
+    """Positive control: without the failure the spy IS reached and a row is
+    kept, so the arms above are not green merely because the tool never runs."""
+    a = _app(monkeypatch)
+    a.settings.tool_auto_background_s = 1 if promotable else 0
+    started = _spy_tool(monkeypatch, a, seconds=2 if promotable else 0)
+    async with a.run_test(size=(100, 30)) as pilot:
+        _, ok = await a._execute_tool("powershell", dict(_QUICK, background=not promotable))
+        assert ok and await asyncio.to_thread(started.wait, 5)
+        (task,) = a.bg_tasks.values()
+        await _wait(pilot, task)
+
+        assert not a.store.pending and _ids(a.convo_dir) == [task.id]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_cannot_background_does_not_birth_the_conversation(monkeypatch):
+    """The scope is `backgroundable` tools only: a read on a staged seat leaves it
+    staged, so idle traffic (reads, MCP) still mints nothing."""
+    a = _app(monkeypatch)
+    started = _spy_tool(monkeypatch, a)
+    async with a.run_test(size=(100, 30)):
+        assert not tasks_mod.backgroundable("read"), "the fixture tool became backgroundable"
+        await a._execute_tool("read", {"path": "x"})
+
+        assert await asyncio.to_thread(started.wait, 5), "the tool did not run"
+        assert a.store.pending and not paths.CONVO_DIR.exists()

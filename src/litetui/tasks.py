@@ -441,11 +441,14 @@ def save(tasks, root: Path | str) -> None:
 class StoreNotBorn(Exception):
     """A row belongs to a conversation with no directory to keep it in.
 
-    Deliberately NOT an OSError: `_save_background` tolerates a genuine write
-    failure so the task can run, and this must never fall into that net. It is
-    the tripwire behind `_start_background`'s materialise: `row_store.write`
-    would mkdir a missing conversation directory, and a half-born
-    `.convos/<id>/` litters /resume. Refusing is loud; skipping would lose a row.
+    Not an OSError, so a caller can tell "this row has no home" from "the disk
+    failed". `save_by_convo` RAISES it; `LiteTUI._save_background` REPORTS it
+    (runtime log plus one system line, once per distinct failure, never silent)
+    rather than raising, because that method also runs from the completion
+    worker and a raise there would skip the wake. It is the tripwire behind the
+    materialise in `_execute_tool` / `_start_background`: `row_store.write` would
+    mkdir a missing conversation directory, and a half-born `.convos/<id>/`
+    litters /resume. Refusing is loud; skipping would lose a row.
     """
 
 
@@ -549,6 +552,14 @@ def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str) 
     started keeps its in-memory object: it carries the live child handle, which
     no disk copy can, and it is at least as new as the disk. Everything else the
     store says replaces what `held` had.
+
+    ⚠️ BIND ONLY ADDS. Nothing is evicted when the user resumes another
+    conversation, so `held` (the app's `bg_tasks`) accumulates every row of every
+    conversation this process has bound or started, finished history included.
+    Consumers that take `bg_tasks.values()` unfiltered (the GUI state snapshot and
+    `tasks.list`) therefore show that whole set - NOT rows of conversations never
+    resumed here, which the pre-T0132 boot-time load did show. `/tasks` and the
+    rpc `tasks.list` filter to the current conversation (`host_tasks_for_app`).
     """
     topup(convo_dir, legacy_root)
     for task_id, task in load(convo_dir).items():
