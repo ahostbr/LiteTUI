@@ -401,6 +401,61 @@ def test_inbox_mail_keeps_interactive_and_tells_the_model_the_rule():
 
 
 @pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("executable", [
+    "C:/Users/Ryan/AppData/Local/Programs/Python/Python311/Scripts/lst.exe",
+    "E:/untrusted/lst",
+])
+@pytest.mark.parametrize("args", [
+    "run tasks action=help", "run tasks action=list", "run tasks action=list status=reviewing",
+    "run inbox action=read agent_id=agent", "run inbox action=list", "run inbox action=discover",
+    "run pattern action=query query=readonly", "run environment action=get", "run image action=help",
+])
+def test_t0197_read_only_lst_forms_including_actual_python_scripts_path(shell, executable, args):
+    command = ("& " if shell == "powershell" else "") + executable + " " + args
+    assert _shell(command, shell=shell).action == tp.ALLOW
+    assert _shell(command, tp.STRICT, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("args", [
+    "discover 10", "inbox --agent-id agent --all", "list", "query-patterns --query readonly --top 5",
+])
+def test_t0197_read_only_liteharness_cli_forms(shell, args):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/liteharness.exe " + args
+    assert _shell(command, shell=shell).action == tp.ALLOW
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("args", [
+    "run tasks action=update task_id=T001 status=done", "run tasks action=claim task_id=T001",
+    "run tasks action=create title=new", "run inbox action=send to=agent message=hello",
+    "run pattern action=record task=readonly", "run tasks action=help action=update",
+    "run tasks action=update action=help", "run tasks help action=update", "run tasks list",
+    "run tasks action=help title=new", "run tasks action=list output=file", "run tasks --json-input=payload",
+    "run tasks action=list; unknown-writer", "run tasks action=list | E:/untrusted/unknown.exe",
+    "run tasks action=list > report.txt", "run tasks action=help; E:/untrusted/lst.exe run tasks action=claim",
+])
+def test_t0197_lst_writes_and_ambiguous_dispatch_stay_gated(shell, args):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/lst.exe " + args
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("args", ["send agent hello", "register --agent-id agent", "record-pattern --task new"])
+def test_t0197_liteharness_writes_stay_gated(shell, args):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/liteharness.exe " + args
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("executable", ["lst.cmd", "lst.exe.ps1", "lst-other.exe", "other.exe"])
+def test_t0197_harness_cli_names_do_not_trust_the_python_scripts_directory(shell, executable):
+    path = "C:/Users/Ryan/AppData/Local/Programs/Python/Python311/Scripts/" + executable
+    command = ("& " if shell == "powershell" else "") + path + " run tasks action=help"
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
 @pytest.mark.parametrize("inspection", [
     "ffprobe.exe -v error -show_entries format=duration -of json 'clip name.mp4'",
     "ffprobe -show_streams clip.mp4",

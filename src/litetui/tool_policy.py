@@ -677,7 +677,7 @@ def _foreign_path_launch(raw: str, workspace: Path) -> bool:
     path = _resolve_path(raw, workspace)
     if path.suffix.lower() not in {"", ".exe", ".com", ".bat", ".cmd"}:
         # A second suffix must not turn an inspection-name impostor into a non-launch.
-        return path.name.lower().split(".", 1)[0] in {"ffprobe", "git", "rg"}
+        return path.name.lower().split(".", 1)[0] in {"ffprobe", "git", "rg", "lst", "liteharness"}
     if path.suffix.lower() in {".bat", ".cmd"}:
         return not _inside(path, workspace.resolve())
     home = Path.home()
@@ -764,6 +764,47 @@ def _inspection_options(args: list[str], flags: frozenset[str], values: frozense
     return operands
 
 
+def _read_only_harness_cli(name: str, args: list[str]) -> bool:
+    """Finite inspection actions, never trust all executables beside the installed CLI."""
+    if name == "liteharness":
+        if not args:
+            return False
+        verb, args = args[0], args[1:]
+        if verb in {"discover", "list", "inbox", "query-patterns"}:
+            flags = {"inbox": {"--all"}, "list": {"--all"}}
+            values = {"inbox": {"--agent", "--agent-id"},
+                      "query-patterns": {"--top", "--format", "--query"}}
+            operands = _inspection_options(args, frozenset(flags.get(verb, set())),
+                                           frozenset(values.get(verb, set())))
+            return operands is not None and all(value.isdecimal() for value in operands)
+        return verb == "--help" and not args
+    if args in (["--help"], ["list"], ["run"], ["run", "help"]):
+        return True
+    if len(args) < 2 or args[0] != "run" or not re.fullmatch(r"[a-z_]+", args[1]):
+        return False
+    tool = args[1]
+    params: dict[str, str] = {}
+    for arg in args[2:]:
+        key, equal, value = arg.partition("=")
+        # The real CLI overwrites duplicate keys and permits positional action shorthand.
+        # Neither ambiguity nor --json-input belongs in this permission exception.
+        if not equal or not re.fullmatch(r"[a-z_]+", key) or key in params:
+            return False
+        params[key] = value
+    action = params.pop("action", "")
+    if action == "help":
+        return not params  # ANY tool's help, not help combined with mutation arguments
+    allowed = {
+        ("tasks", "list"): {"status", "assignee", "parent_id"},
+        ("inbox", "read"): {"agent_id", "count", "limit", "all"},
+        ("inbox", "list"): {"agent_id", "count", "limit", "all"},
+        ("inbox", "discover"): {"limit", "count"},
+        ("pattern", "query"): {"query", "top_k", "limit", "outcome"},
+        ("environment", "get"): {"cwd"},
+    }
+    return (tool, action) in allowed and params.keys() <= allowed[(tool, action)]
+
+
 def _read_only_inspection(command: str, shell: str | None) -> bool:
     """Declared command forms, NOT proof about an arbitrary binary's implementation.
 
@@ -783,7 +824,10 @@ def _read_only_inspection(command: str, shell: str | None) -> bool:
         if name.endswith(".exe"):
             name = name[:-4]
         args = argv[1:]
-        if name == "ffprobe":
+        if name in {"lst", "liteharness"}:
+            if not _read_only_harness_cli(name, args):
+                return False
+        elif name == "ffprobe":
             if "--" in args:  # ffprobe is not the GNU option-parser contract
                 return False
             operands = _inspection_options(args,
