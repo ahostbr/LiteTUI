@@ -662,7 +662,8 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
 _DANGER = tuple((label, re.compile(r"(?ix)" + pattern)) for label, pattern in DANGER_TABLE)
 
 # Explicit executables by path remain foreign launches unless their resolved
-# location is trusted. A matching basename alone can be spoofed.
+# location is trusted or the ENTIRE command is a declared read-only inspection.
+# A matching basename alone can be spoofed and never grants the exception.
 _PATH_RUN = re.compile(
     r"(?ix)" + _CMD_POSITION
     + r"(?:&\s*)?(?:[\"'](?P<quoted>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\"']+)[\"']"
@@ -674,8 +675,9 @@ _TOOL_EXECUTABLES = frozenset({"python", "python3", "py", "node", "bun", "deno",
 
 def _foreign_path_launch(raw: str, workspace: Path) -> bool:
     path = _resolve_path(raw, workspace)
-    if path.suffix.lower() not in {".exe", ".com", ".bat", ".cmd"}:
-        return False
+    if path.suffix.lower() not in {"", ".exe", ".com", ".bat", ".cmd"}:
+        # A second suffix must not turn an inspection-name impostor into a non-launch.
+        return path.name.lower().split(".", 1)[0] in {"ffprobe", "git", "rg", "lst", "liteharness"}
     if path.suffix.lower() in {".bat", ".cmd"}:
         return not _inside(path, workspace.resolve())
     home = Path.home()
@@ -685,6 +687,204 @@ def _foreign_path_launch(raw: str, workspace: Path) -> bool:
         return False
     if path.stem.lower() in _TOOL_EXECUTABLES and trusted_executables.is_installed_tool(path):
         return False
+    return True
+
+
+def _inspection_segments(command: str, shell: str | None) -> list[list[str]] | None:
+    """A finite literal argv view, not a general shell parser. Unknown syntax keeps gates."""
+    segments: list[list[str]] = [[]]
+    token = ""
+    active = False
+    quote = ""
+    for ch in command.strip():
+        # No expansions, script blocks, redirects or escaping in the exception. In
+        # particular quoted option values must not hide an executable substitution.
+        if ch in "$`<>\n\r(){}#" or (ch == "\\" and shell != "powershell"):
+            return None
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                token += ch
+            continue
+        if ch in "\"'":
+            if active:  # concatenated shell tokens are deliberately outside this grammar
+                return None
+            quote = ch
+            active = True
+        elif ch.isspace():
+            if active:
+                segments[-1].append(token)
+                token, active = "", False
+        elif ch in ";|":
+            if active:
+                segments[-1].append(token)
+                token, active = "", False
+            if not segments[-1]:
+                return None
+            segments.append([])
+        elif ch == "&":
+            if shell != "powershell" or active or segments[-1]:
+                return None
+            segments[-1].append("&")
+        else:
+            token += ch
+            active = True
+    if quote:
+        return None
+    if active:
+        segments[-1].append(token)
+    return segments if all(segments) else None
+
+
+def _inspection_options(args: list[str], flags: frozenset[str], values: frozenset[str]) -> list[str] | None:
+    """Return operands only when every option is a known inspection option."""
+    operands: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return operands + args[i + 1:]
+        if arg.startswith("-"):
+            key, equal, value = arg.partition("=")
+            if key in flags and not equal:
+                pass
+            elif key in values:
+                if not equal:
+                    i += 1
+                    if i == len(args) or args[i].startswith("-"):
+                        return None
+                elif not value:
+                    return None
+            else:
+                return None
+        else:
+            operands.append(arg)
+        i += 1
+    return operands
+
+
+def _read_only_harness_cli(name: str, args: list[str]) -> bool:
+    """Finite inspection actions, never trust all executables beside the installed CLI."""
+    if name == "liteharness":
+        if not args:
+            return False
+        verb, args = args[0], args[1:]
+        if verb in {"discover", "list", "inbox", "query-patterns"}:
+            flags = {"inbox": {"--all"}, "list": {"--all"}}
+            values = {"inbox": {"--agent", "--agent-id"},
+                      "query-patterns": {"--top", "--format", "--query"}}
+            operands = _inspection_options(args, frozenset(flags.get(verb, set())),
+                                           frozenset(values.get(verb, set())))
+            return operands is not None and all(value.isdecimal() for value in operands)
+        return verb == "--help" and not args
+    if args in (["--help"], ["list"], ["run"], ["run", "help"]):
+        return True
+    if len(args) < 2 or args[0] != "run" or not re.fullmatch(r"[a-z_]+", args[1]):
+        return False
+    tool = args[1]
+    params: dict[str, str] = {}
+    for arg in args[2:]:
+        key, equal, value = arg.partition("=")
+        # The real CLI overwrites duplicate keys and permits positional action shorthand.
+        # Neither ambiguity nor --json-input belongs in this permission exception.
+        if not equal or not re.fullmatch(r"[a-z_]+", key) or key in params:
+            return False
+        params[key] = value
+    action = params.pop("action", "")
+    if action == "help":
+        return not params  # ANY tool's help, not help combined with mutation arguments
+    allowed = {
+        ("tasks", "list"): {"status", "assignee", "parent_id"},
+        ("inbox", "read"): {"agent_id", "count", "limit", "all"},
+        ("inbox", "list"): {"agent_id", "count", "limit", "all"},
+        ("inbox", "discover"): {"limit", "count"},
+        ("pattern", "query"): {"query", "top_k", "limit", "outcome"},
+        ("environment", "get"): {"cwd"},
+    }
+    return (tool, action) in allowed and params.keys() <= allowed[(tool, action)]
+
+
+def _read_only_inspection(command: str, shell: str | None) -> bool:
+    """Declared command forms, NOT proof about an arbitrary binary's implementation.
+
+    Ryan T0197: default/interactive read-only inspection should not prompt. Strict
+    still confirms process execution. Entire-command validation means an inspection
+    cannot excuse a chained write/launch; danger-table checks always run first.
+    """
+    segments = _inspection_segments(command, shell)
+    if segments is None:
+        return False
+    for argv in segments:
+        if argv[0] == "&":
+            argv = argv[1:]
+        if not argv:
+            return False
+        name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        args = argv[1:]
+        if name in {"lst", "liteharness"}:
+            if not _read_only_harness_cli(name, args):
+                return False
+        elif name == "ffprobe":
+            if "--" in args:  # ffprobe is not the GNU option-parser contract
+                return False
+            operands = _inspection_options(args,
+                frozenset({"-show_format", "-show_streams", "-show_frames", "-show_packets",
+                           "-show_programs", "-show_chapters", "-show_error", "-show_versions",
+                           "-count_frames", "-count_packets", "-hide_banner", "-sexagesimal",
+                           "-pretty", "-unit", "-prefix", "-byte_binary_prefix"}),
+                frozenset({"-v", "-loglevel", "-show_entries", "-select_streams", "-read_intervals",
+                           "-of", "-print_format"}))
+            if operands is None or len(operands) != 1:
+                return False
+        elif name == "git":
+            # A foreign git must not launch a configured pager or diff/textconv tool.
+            if not args or args[0] != "--no-pager":
+                return False
+            args = args[1:]
+            if not args or args[0] not in {"status", "log", "show", "diff", "rev-parse"}:
+                return False
+            verb, args = args[0], args[1:]
+            option_args = args[:args.index("--")] if "--" in args else args
+            if verb in {"diff", "show"} or (verb == "log" and any(a in {"-p", "--patch"} for a in option_args)):
+                if not {"--no-ext-diff", "--no-textconv"}.issubset(option_args):
+                    return False
+            flags = {
+                "status": {"--short", "-s", "--branch", "-b", "--porcelain", "--untracked-files", "-uno"},
+                "log": {"--oneline", "--all", "--graph", "--decorate", "--no-decorate", "-p", "--patch",
+                        "--stat", "--name-only", "--name-status", "--no-ext-diff", "--no-textconv"},
+                "show": {"--stat", "--name-only", "--name-status", "--no-patch", "--no-ext-diff", "--no-textconv"},
+                "diff": {"--stat", "--name-only", "--name-status", "--cached", "--staged", "--check",
+                         "--no-ext-diff", "--no-textconv", "--no-patch"},
+                "rev-parse": {"--show-toplevel", "--abbrev-ref", "--verify", "--short", "--git-dir", "--is-inside-work-tree"},
+            }
+            values = {"log": {"--format", "--pretty", "--max-count", "-n"},
+                      "status": {"--porcelain", "--untracked-files"}, "rev-parse": {"--short"}}
+            if _inspection_options(args, frozenset(flags[verb]), frozenset(values.get(verb, set()))) is None:
+                return False
+        elif name == "rg":
+            if _inspection_options(args,
+                frozenset({"--files", "--hidden", "--no-ignore", "--no-ignore-vcs", "-n", "--line-number",
+                           "-l", "--files-with-matches", "-i", "--ignore-case", "-s", "--case-sensitive",
+                           "-F", "--fixed-strings", "-w", "--word-regexp", "--count", "-c", "--json",
+                           "--no-heading", "--heading", "--with-filename", "-H", "--version"}),
+                frozenset({"-e", "--regexp", "-g", "--glob", "--iglob", "-t", "--type", "--type-not",
+                           "--max-count", "-m", "--context", "-C", "--before-context", "-B",
+                           "--after-context", "-A", "--color"})) is None:
+                return False
+        elif shell == "powershell" and name in {"get-childitem", "get-content", "select-object"}:
+            flags = {"get-childitem": {"-Recurse", "-Force", "-File", "-Directory", "-Name"},
+                     "get-content": {"-Raw", "-Wait"}, "select-object": {"-Unique"}}
+            values = {"get-childitem": {"-Path", "-LiteralPath", "-Filter", "-Include", "-Exclude", "-Depth"},
+                      "get-content": {"-Path", "-LiteralPath", "-TotalCount", "-Tail", "-Encoding"},
+                      "select-object": {"-Property", "-First", "-Last", "-Skip", "-ExpandProperty"}}
+            if _inspection_options([a.lower() for a in args], frozenset(f.lower() for f in flags[name]),
+                                   frozenset(v.lower() for v in values[name])) is None:
+                return False
+        else:
+            return False
     return True
 
 
@@ -792,7 +992,8 @@ def danger(command: str, workspace: Path, *, shell: str | None = None) -> str | 
             return label
     for match in _PATH_RUN.finditer(view):
         if _foreign_path_launch(match.group("quoted") or match.group("bare"), workspace):
-            return FOREIGN_PROCESS
+            if not _read_only_inspection(command, shell):
+                return FOREIGN_PROCESS
     return None
 
 

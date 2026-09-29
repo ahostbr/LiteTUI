@@ -400,6 +400,150 @@ def test_inbox_mail_keeps_interactive_and_tells_the_model_the_rule():
     assert item["content"].endswith(tp.INBOX_TURN_RULE) and tp.INBOX_TURN_RULE not in item["text"]
 
 
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("executable", [
+    "C:/Users/Ryan/AppData/Local/Programs/Python/Python311/Scripts/lst.exe",
+    "E:/untrusted/lst",
+])
+@pytest.mark.parametrize("args", [
+    "run tasks action=help", "run tasks action=list", "run tasks action=list status=reviewing",
+    "run inbox action=read agent_id=agent", "run inbox action=list", "run inbox action=discover",
+    "run pattern action=query query=readonly", "run environment action=get", "run image action=help",
+])
+def test_t0197_read_only_lst_forms_including_actual_python_scripts_path(shell, executable, args):
+    command = ("& " if shell == "powershell" else "") + executable + " " + args
+    assert _shell(command, shell=shell).action == tp.ALLOW
+    assert _shell(command, tp.STRICT, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("args", [
+    "discover 10", "inbox --agent-id agent --all", "list", "query-patterns --query readonly --top 5",
+])
+def test_t0197_read_only_liteharness_cli_forms(shell, args):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/liteharness.exe " + args
+    assert _shell(command, shell=shell).action == tp.ALLOW
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("args", [
+    "run tasks action=update task_id=T001 status=done", "run tasks action=claim task_id=T001",
+    "run tasks action=create title=new", "run inbox action=send to=agent message=hello",
+    "run pattern action=record task=readonly", "run tasks action=help action=update",
+    "run tasks action=update action=help", "run tasks help action=update", "run tasks list",
+    "run tasks action=help title=new", "run tasks action=list output=file", "run tasks --json-input=payload",
+    "run tasks action=list; unknown-writer", "run tasks action=list | E:/untrusted/unknown.exe",
+    "run tasks action=list > report.txt", "run tasks action=help; E:/untrusted/lst.exe run tasks action=claim",
+])
+def test_t0197_lst_writes_and_ambiguous_dispatch_stay_gated(shell, args):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/lst.exe " + args
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("args", ["send agent hello", "register --agent-id agent", "record-pattern --task new"])
+def test_t0197_liteharness_writes_stay_gated(shell, args):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/liteharness.exe " + args
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("executable", ["lst.cmd", "lst.exe.ps1", "lst-other.exe", "other.exe"])
+def test_t0197_harness_cli_names_do_not_trust_the_python_scripts_directory(shell, executable):
+    path = "C:/Users/Ryan/AppData/Local/Programs/Python/Python311/Scripts/" + executable
+    command = ("& " if shell == "powershell" else "") + path + " run tasks action=help"
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("inspection", [
+    "ffprobe.exe -v error -show_entries format=duration -of json 'clip name.mp4'",
+    "ffprobe -show_streams clip.mp4",
+    "git.exe --no-pager status --short",
+    "git.exe --no-pager log --oneline -n 5",
+    "git.exe --no-pager log -p --no-ext-diff --no-textconv",
+    "git.exe --no-pager show --no-ext-diff --no-textconv HEAD:src/x.py",
+    "git.exe --no-pager diff --no-ext-diff --no-textconv --stat",
+    "git.exe --no-pager rev-parse --show-toplevel",
+    "rg.exe -n --glob '*.py' TODO src",
+    "rg --files src",
+])
+def test_t0197_foreign_literal_read_only_forms_are_non_prompting(shell, inspection):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/" + inspection
+    assert tp.danger(command, WS, shell=shell) is None
+    assert _shell(command, shell=shell).action == tp.ALLOW
+    # This is an interactive false-prompt correction, not a weakening of strict.
+    assert _shell(command, tp.STRICT, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("command", [
+    "Get-ChildItem -LiteralPath 'E:/notes' | Select-Object -First 5",
+    "Get-Content -LiteralPath 'E:/notes.txt' -Raw",
+    "& 'E:/WinGet Media/ffprobe.exe' -v error -show_entries format=duration 'clip.mp4' | Select-Object -First 1",
+])
+def test_t0197_powershell_inspection_pipelines_do_not_prompt(command):
+    assert _shell(command, shell="powershell").action == tp.ALLOW
+
+
+@pytest.mark.parametrize("shell,command", [
+    ("bash", "E:/untrusted/rg.exe -n TODO src | E:/untrusted/ffprobe.exe -show_format clip.mp4"),
+    ("powershell", r'& "E:\WinGet Media\ffprobe.exe" -v error -show_entries format=duration "clip.mp4"'),
+])
+def test_t0197_literal_paths_and_inspection_only_chains(shell, command):
+    assert _shell(command, shell=shell).action == tp.ALLOW
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+@pytest.mark.parametrize("inspection", [
+    "ffprobe.exe -report clip.mp4", "ffprobe.exe -o report.json clip.mp4",
+    "ffprobe.exe -output report.json clip.mp4", "ffprobe.exe -unknown clip.mp4",
+    "ffprobe.exe -v", "ffprobe.exe -show_format clip.mp4 > report.json",
+    "ffprobe.cmd -show_format clip.mp4", "ffprobe.bat -show_format clip.mp4",
+    "ffprobe.com -show_format clip.mp4", "ffprobe-other.exe -show_format clip.mp4",
+    "ffprobe.exe.bat -show_format clip.mp4", "ffprobe.exe.ps1 -show_format clip.mp4",
+    "ffprobe.exe -show_format clip.mp4; echo write > report.txt",
+    "ffprobe.exe -- -report", "ffprobe.exe -show_format clip.mp4 # comment",
+    "ffprobe.exe -show_format clip.mp4; unknown-writer result.txt",
+    "git.exe status", "git.exe --no-pager diff", "git.exe --no-pager show HEAD",
+    "git.exe --no-pager log -p", "git.exe --no-pager -c alias.status=!writer status",
+    "git.exe --no-pager diff -- --no-ext-diff --no-textconv",
+    "git.exe --no-pager show -- --no-ext-diff --no-textconv",
+    "git.exe --no-pager log -p -- --no-ext-diff --no-textconv",
+    "git.exe --no-pager --config-env=core.pager=PAGER status",
+    "git.exe --no-pager diff --no-ext-diff --no-textconv --ext-diff",
+    "git.exe --no-pager diff --no-ext-diff --no-textconv --textconv",
+    "git.exe --no-pager diff --no-ext-diff --no-textconv --output=file",
+    "git.exe --no-pager diff --no-ext-diff --no-textconv -O order",
+    "git.exe --no-pager log --exec=writer", "git.exe --no-pager alias",
+    "rg.exe --pre writer TODO src", "rg.exe --pre=writer TODO src",
+    "rg.exe -n TODO src; E:/untrusted/unknown.exe",
+    "rg.exe -n TODO src | unknown-writer", "unknown.exe --version",
+    "rg.exe -n TODO 'src",  # unmatched quote cannot gain an exception
+])
+def test_t0197_unknown_mutating_and_launch_options_remain_foreign(shell, inspection):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/" + inspection
+    assert tp.danger(command, WS, shell=shell) == tp.FOREIGN_PROCESS
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell,suffix,label", [
+    ("bash", "; rm -rf old", tp.DELETION),
+    ("powershell", "; Remove-Item old -Recurse", tp.DELETION),
+    ("bash", "; tar -xf archive.tar", tp.ARCHIVE),
+    ("powershell", "; Expand-Archive archive.zip out", tp.ARCHIVE),
+    ("bash", "; start chrome", tp.FOREIGN_PROCESS),
+    ("powershell", "; Start-Process chrome", tp.FOREIGN_PROCESS),
+    ("bash", "; git reset --hard", tp.DANGEROUS),
+    ("powershell", "; Stop-Process -Id 42", tp.DANGEROUS),
+    ("bash", ' "$(rm -rf old)"', tp.DELETION),
+    ("powershell", ' "$(Remove-Item old)"', tp.DELETION),
+])
+def test_t0197_full_command_danger_wins_over_inspection(shell, suffix, label):
+    command = ("& " if shell == "powershell" else "") + "E:/untrusted/ffprobe.exe -show_format clip.mp4" + suffix
+    assert tp.danger(command, WS, shell=shell) == label
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
 def test_autonomous_inbox_mail_gets_no_rule_it_does_not_need():
     from litetui.app import LiteTUI
 
