@@ -233,6 +233,8 @@ class ClaudeBackend:
             "cli_path": override or None,
             "setting_sources": [], "skills": [], "strict_mcp_config": True, "mcp_servers": {},
             "tools": [], "permission_mode": "dontAsk", "include_partial_messages": True,
+            # Image reads can exceed the SDK's 1 MiB stream-json line limit.
+            "max_buffer_size": 32 * 1024 * 1024,
             "verbatim_prompts": True,
             "system_prompt": {"type": "preset", "preset": "claude_code", "append": APPEND},
             "extra_args": {"no-chrome": None, "disable-slash-commands": None, "replay-user-messages": None},
