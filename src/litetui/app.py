@@ -1873,6 +1873,8 @@ class LiteTUI(App):
         # Connections start after mount; bind only the finalized owned seat.
         self.mcp.agent_id = self.seat.agent_id
         self.seat.spawned_by = self._spawner_id
+        # T0085: POPPED so no tool shell or child of this process inherits the id.
+        self.seat.provisional_id = (os.environ.pop(harness_mod.PROVISIONAL_ID_ENV, "") or "").strip() or None
         self._spawner_errors = spawner_errors.SpawnerErrorReporter()
         self._seat_started = False
         self._resumed_seat_name: str | None = None
