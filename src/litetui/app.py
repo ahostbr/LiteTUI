@@ -1702,8 +1702,11 @@ class LiteTUI(App):
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
         self._pending_input: list = []
-        # Background tool tasks (T499). Rows still running at boot come back LOST.
-        self.bg_tasks: dict = tasks_mod.load(paths.data_root())
+        # Background tool tasks (T499). Empty at boot: the store lives with its
+        # conversation (T0132), and no conversation is bound until /resume
+        # (`_bind_task_store`) - a staged one has no directory and no rows.
+        self.bg_tasks: dict = {}
+        self._task_store_reported: set = set()
         #: Host authority for the turn currently consuming tools. Human turns
         #: start from settings; cron/inbox turns explicitly replace it with a
         #: narrower profile. The model never writes this field.
@@ -3268,6 +3271,22 @@ class LiteTUI(App):
         # the user: "not everything should be backgroundable"): the flag on any other
         # tool is dropped, and the auto-promotion below never applies to it.
         may_bg = tasks_mod.backgroundable(name)
+        # 🔴 A BACKGROUNDABLE TOOL'S HOME MUST EXIST BEFORE ANY SIDE EFFECT (T0132).
+        # Auto-promotion hands over a call that is ALREADY RUNNING, and a
+        # materialise failure at `_start_background` would then leave that work
+        # untracked: no row, no wake, no `/tasks kill`. So the conversation is
+        # born HERE, before the awaitable exists, and a failure comes back as an
+        # ordinary tool failure with nothing started. Only tools whose schema
+        # declares `background` pay this (a staged seat that runs a foreground
+        # shell now gets its directory); reads, edits and MCP calls do not.
+        # `_start_background` keeps its own call as the defence for a creator
+        # reached some other way.
+        if may_bg:
+            try:
+                self._materialise_convo()
+            except Exception as e:
+                return (f"[error] {name} not started: its conversation could not be created "
+                        f"({type(e).__name__}: {e})"), False
         background = may_bg and isinstance(args, dict) and bool(args.pop("background", False))
         if isinstance(args, dict):
             args.pop("background", None)
@@ -3332,6 +3351,17 @@ class LiteTUI(App):
 
     def _start_background(self, name: str, args: dict, aw, promoted_after: float | None = None,
                           process_slot=None) -> str:
+        # 🔴 THE ROW'S HOME MUST EXIST BEFORE THE ROW DOES (T0132). Every turn
+        # starter materialises the conversation first, but two routes reach a
+        # tool with it still STAGED: `gui.tools.execute` (no turn at all) and
+        # `/skill` (streams without materialising). A store save into a staged
+        # conversation would mkdir a half-born `.convos/<id>/`, and skipping the
+        # save would drop an accepted row. `_execute_tool` already materialised
+        # BEFORE the call started (so a failure there starts nothing); this call
+        # is the idempotent defence at the ONE creator for any route that does
+        # not pass through it. Visible consequence: a conversation directory
+        # appears when the first background-capable tool runs on a fresh seat.
+        self._materialise_convo()
         task = tasks_mod.new_task(name, args, getattr(self, "convo_id", ""))
         task._pending_process_handoff = not promoted_after or process_slot is not None
         if promoted_after:
@@ -3403,13 +3433,54 @@ class LiteTUI(App):
         waits sees a stale chip for as long as it waits.
         """
         try:
-            tasks_mod.save(self.bg_tasks.values(), paths.data_root())
-        except OSError:
-            pass  # an unwritable store must not stop the task
+            tasks_mod.save_by_convo(self.bg_tasks.values())
+        except (tasks_mod.StoreNotBorn, OSError) as e:
+            # The task must keep running, so this does not raise - but it is
+            # never silent: an accepted row that cannot be kept is the failure
+            # T0132 exists to make loud. `_start_background` materialises first,
+            # so StoreNotBorn here means a creator stopped doing that.
+            self._report_task_store_error(e)
         # AFTER the save, and deliberately not inside the try: a store that
         # cannot be written is a reason to keep going, not a reason to leave the
         # footer lying about what is running.
         self._refresh_ctx_label()
+
+    def _report_task_store_error(self, e: Exception) -> None:
+        """Say once per distinct failure that task rows are not being kept.
+
+        Once, because a store that has gone away fails on every transition and a
+        repeat would bury the conversation - the same rule as
+        `ConversationRepository.note_error`. The runtime log keeps every word.
+        """
+        key = (type(e).__name__, str(e))
+        if key in self._task_store_reported:
+            return
+        self._task_store_reported.add(key)
+        runtime_log.record_error("task_store_unwritable", detail=f"{type(e).__name__}: {e}", exc=e)
+        try:
+            self._system(
+                f"[task store] background task rows are not being saved: {type(e).__name__}: {e}. "
+                "The task keeps running, but its row may not survive a restart."
+            )
+        except Exception:
+            pass  # not mounted yet; the runtime log has it
+
+    def _bind_task_store(self) -> None:
+        """Load the bound conversation's task rows (T0132). Called by `_resume`.
+
+        A STAGED conversation has no directory, hence no rows and nothing to
+        migrate: it is bound by `_materialise_convo` creating an empty store on
+        the first save. A resumed one tops up from the legacy shared file
+        (copy-only, every time - see `tasks.topup`) and merges its rows into
+        `bg_tasks`, leaving tasks this process runs for other conversations alone.
+        """
+        d = self.convo_dir
+        if d is None or not d.is_dir():
+            return
+        try:
+            tasks_mod.bind(self.bg_tasks, d, paths.data_root())
+        except OSError as e:
+            self._report_task_store_error(e)
 
     def _kill_background(self, task_id: str) -> str | None:
         """Kill one background task. Returns None when it was killed, otherwise
@@ -3938,6 +4009,7 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        self._bind_task_store()
         saved_name = meta.get("agent_name")
         saved_name = saved_name.strip() if isinstance(saved_name, str) else ""
         registry_name = self.seat.registry_name()

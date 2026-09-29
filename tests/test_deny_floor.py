@@ -162,6 +162,9 @@ def _seat(run, *, launched, saved):
         # T1049: only Ryan's own instance may hold autonomous, and these arms
         # prove the floor holds AT autonomous.
         _spawned_seat=False, _owner_seat=True,
+        # T0132: `_execute_tool` births the conversation before a backgroundable
+        # tool starts; this double is a seat whose conversation already exists.
+        _materialise_convo=lambda: None,
     ), seen
 
 

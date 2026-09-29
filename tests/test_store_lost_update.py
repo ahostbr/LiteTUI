@@ -108,6 +108,9 @@ class _Instance:
     def start(self, command):
         t = tasks_mod.new_task("bash", {"command": command}, "")
         t.owner_pid = self.pid          # this instance's process, not pytest's
+        # T0132: `_owner_alive` treats the pytest process's own instance id as
+        # "ours, alive", so a simulated sibling needs an instance id of its own.
+        t.owner_instance = f"instance-{self.pid}"
         self.tasks[t.id] = t
         self.save()
         return t
@@ -289,19 +292,23 @@ def test_a_row_carrying_OUR_OWN_pid_is_marked_lost(tmp_path, monkeypatch):
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: True)
     t = tasks_mod.new_task("bash", {"command": "sleep 900"}, "")
     assert t.owner_pid == os.getpid(), "the arm is not testing what it claims"
+    # T0132: a row of THIS instance is alive (bind reloads mid-session); a reused
+    # pid is our pid on a row from ANOTHER instance.
+    t.owner_instance = "a-predecessor-that-held-this-pid"
     tasks_mod.save([t], tmp_path)
 
     assert _on_disk(tmp_path)[t.id].state == tasks_mod.LOST
 
 
-def test_load_is_called_once_at_construction_and_nowhere_else():
-    """⚠️ THE PREMISE THE IDENTITY CHECK RESTS ON, pinned so it cannot rot.
+def test_load_runs_only_through_bind_and_bind_only_from_the_resume_path():
+    """T0132 rewrite of "load is called once, at construction, and nowhere else".
 
-    "Our own pid means a reused pid" is true only because `load` runs at BOOT.
-    A reload added later — a `/tasks refresh`, a data-root switch — would make
-    this instance re-read the store it has been writing to and mark its OWN
-    live tasks LOST. That is a silent, plausible change, so the rule's
-    precondition is asserted rather than described.
+    The old premise ("our own pid on a row means a reused pid, because `load`
+    only runs at boot") is gone: the store is per-conversation, so it is read at
+    every bind, mid-session. What makes that safe is `_owner_alive` keying on the
+    INSTANCE id (pinned in test_task_store_per_convo.py). What must still hold is
+    WHERE the store is read: never at construction (no conversation is bound), and
+    only through `tasks.bind`, called only from `LiteTUI._bind_task_store`.
     """
     import ast
     from pathlib import Path
@@ -310,7 +317,7 @@ def test_load_is_called_once_at_construction_and_nowhere_else():
     calls: list[tuple[str, tuple[str, ...]]] = []
 
     class TasksLoadVisitor(ast.NodeVisitor):
-        """Record every tasks.load call with its lexical class/function owner."""
+        """Record every tasks.load / tasks.bind call with its lexical owner."""
 
         def __init__(self, filename: str) -> None:
             self.filename = filename
@@ -333,11 +340,11 @@ def test_load_is_called_once_at_construction_and_nowhere_else():
         def visit_Call(self, node: ast.Call) -> None:
             if (
                 isinstance(node.func, ast.Attribute)
-                and node.func.attr == "load"
+                and node.func.attr in ("load", "bind")
                 and isinstance(node.func.value, ast.Name)
                 and "tasks" in node.func.value.id.lower()
             ):
-                calls.append((self.filename, tuple(self.scope)))
+                calls.append((node.func.attr, self.filename, tuple(self.scope)))
             self.generic_visit(node)
 
     for py in sorted(src.rglob("*.py")):
@@ -347,8 +354,7 @@ def test_load_is_called_once_at_construction_and_nowhere_else():
             continue
         TasksLoadVisitor(py.name).visit(tree)
 
-    assert calls == [("app.py", ("LiteTUI", "__init__"))], (
-        f"tasks.load is called from {calls}. It may only run in LiteTUI.__init__: "
-        f"`_owner_alive` reads OUR pid on a disk row as a reused pid, which is "
-        f"only true before this process has started any task."
+    assert calls == [("bind", "app.py", ("LiteTUI", "_bind_task_store"))], (
+        f"tasks.load/bind is called from {calls}. The store may only be read through "
+        f"tasks.bind, from LiteTUI._bind_task_store (the resume path)."
     )

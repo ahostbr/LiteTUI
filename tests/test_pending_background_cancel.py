@@ -64,7 +64,7 @@ async def test_stop_pending_shell_prevents_side_effect_and_persists_killed(tmp_p
             assert task.state == tasks.RUNNING and task.proc is None
             assert app._kill_background(task.id) is None
             assert task.state == tasks.KILLED
-            rows = json.loads((tmp_path / tasks.STORE).read_text(encoding="utf-8"))
+            rows = json.loads((app.convo_dir / tasks.STORE).read_text(encoding="utf-8"))  # T0132: per-conversation store
             assert next(row for row in rows if row["id"] == task.id)["state"] == tasks.KILLED
             if promoted:
                 # A new foreground call may start after promotion. Finishing
