@@ -345,11 +345,11 @@ in one window survives a theme change in the other. Env-sourced fields
 save: the file records what you *chose*, so unsetting a variable must not
 silently revert the knob.
 
-⚠️ **`background-tasks.json` is not merged this way yet.** It is a list store, and
-two instances editing tasks can still drop each other's rows (measured: A's row
-gone after B saves). Merging it needs a rule for deletion that a plain
-read-merge-write cannot give — a removed row would be resurrected from disk — so
-it is its own change, not a line here.
+⚠️ **`background-tasks.json` no longer lives in the data root.** Each conversation
+keeps its own at `.convos/<id>/background-tasks.json`, so two windows only meet in
+a store when they share a conversation (which the session lease forbids). The old
+shared file is read, never written, and a conversation copies its rows out of it
+when it is resumed; task output logs still live in `output/tasks/`.
 
 ⚠️ **The model ceiling is shared too.** The llama.cpp router holds at most
 `--models-max` models and that limit belongs to whichever instance started it, so

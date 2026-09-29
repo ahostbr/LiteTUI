@@ -49,6 +49,7 @@ def test_store_round_trips_and_marks_running_rows_lost(tmp_path, monkeypatch):
 
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: False)
     a = tasks_mod.new_task("bash", {"command": "a"}, "")
+    a.owner_instance = "a-dead-predecessor"   # T0132: this instance's own rows are alive
     b = tasks_mod.new_task("bash", {"command": "b"}, "")
     tasks_mod.finish(b, "ok", True, tmp_path)
     tasks_mod.save([a, b], tmp_path)

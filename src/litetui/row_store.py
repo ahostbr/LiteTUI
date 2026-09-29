@@ -150,19 +150,55 @@ def write(
         merged = apply_delta(
             _BASELINE.get(_key_of(path), []), rows, rows_on_disk(path), key=key
         )
-
-        payload = json.dumps(merged, indent=2, ensure_ascii=ensure_ascii)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(payload)
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        _replace(path, merged, prefix, ensure_ascii)
     # Our own rows, NOT `merged`: adopting a sibling's rows as ours would make
     # them look deleted the next time we save without them.
     rebaseline(path, rows)
+
+
+def _replace(path: Path, rows: list[dict], prefix: str, ensure_ascii: bool) -> None:
+    payload = json.dumps(rows, indent=2, ensure_ascii=ensure_ascii)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def add_missing(
+    path: Path,
+    rows: list[dict],
+    *,
+    key: str = "id",
+    prefix: str,
+    ensure_ascii: bool = True,
+) -> int:
+    """Append the rows whose `key` is not already on disk. Returns how many.
+
+    For rows that are HISTORY to this process, not its own: a migration copying
+    in what another store already holds. The check and the replace share one
+    lock and one re-read, so a concurrent writer's rows survive, and an id that
+    is already there is never overwritten - the file's copy wins. The baseline
+    is deliberately untouched: these rows are not this process's delta.
+    ⚠️ Like `write`, it CREATES a missing parent (the lock lease mkdirs its own
+    directory), so a caller that must not mint a directory checks first.
+    """
+    path = Path(path)
+    from litetui.shared_state import coordinated_write
+    with coordinated_write(path):
+        disk = rows_on_disk(path)
+        have = {r[key] for r in disk if key in r}
+        new = []
+        for r in rows:
+            if key in r and r[key] not in have:
+                have.add(r[key])
+                new.append(r)
+        if new:
+            _replace(path, disk + new, prefix, ensure_ascii)
+    return len(new)
