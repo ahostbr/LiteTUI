@@ -945,6 +945,8 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         """
         with self._servers_lock:
             srv = self.servers.pop(name, None)
+        # T0124: a stopped server is no longer owed a retry.
+        self.late_failures.discard(name)
         if srv is None:
             return False
         try:

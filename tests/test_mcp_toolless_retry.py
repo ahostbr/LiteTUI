@@ -131,3 +131,68 @@ async def test_a_busy_manager_costs_a_round_not_the_loop(app, mgr):
     mgr.reconnect = busy
     await app._mcp_retry_toolless(["srv"])
     assert "[!] mcp srv" in app.said[-1]
+
+
+# ── a human decision DURING the retry wait wins (leader's lifecycle concern, T0124) ──
+def _act_once_during_the_wait(monkeypatch, act):
+    """The retry sleeps 5/15/45 s. Run `act` (a /mcp verb or a setting) at the first sleep."""
+    import asyncio
+    real, done = asyncio.sleep, []
+
+    async def sleep(delay):
+        if not done:
+            done.append(1)
+            act()
+        await real(0)
+
+    monkeypatch.setattr(app_mod.asyncio, "sleep", sleep)
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_disconnect_during_the_wait_is_not_undone(app, mgr, monkeypatch):
+    mgr.scripts = ["empty"]
+    mgr.connect("srv")
+    _act_once_during_the_wait(monkeypatch, lambda: mgr.disconnect("srv"))
+    await app._mcp_retry_toolless(["srv"])
+    assert "srv" not in mgr.servers, f"a human stopped it; the retry reconnected it ({len(mgr.built)} builds)"
+
+
+@pytest.mark.asyncio
+async def test_a_server_disabled_during_the_wait_is_not_reconnected(app, mgr, monkeypatch):
+    mgr.scripts = ["empty"]
+    mgr.connect("srv")
+    _act_once_during_the_wait(monkeypatch, lambda: setattr(app.settings, "mcp_disabled_servers", ["srv"]))
+    await app._mcp_retry_toolless(["srv"])
+    assert len(mgr.built) == 1, f"disabled during the wait, yet rebuilt {len(mgr.built)} times"
+
+
+@pytest.mark.asyncio
+async def test_disconnect_clears_the_late_failure_mark(app, mgr):
+    mgr.scripts = ["late"]
+    mgr.connect("srv")
+    assert "srv" in mgr.late_failures
+    mgr.disconnect("srv")
+    assert "srv" not in mgr.late_failures, "a stopped server keeps its retry eligibility"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("act", ["disconnect", "disable"])
+async def test_a_human_decision_landing_after_the_reconnect_finishes_is_not_announced(app, mgr, act):
+    """reconnect() holds the maintenance claim, so a /mcp disconnect DURING it is refused
+    (MCPBusy), not lost. The remaining window is between its return and our announce."""
+    mgr.scripts = ["empty", "tools"]
+    mgr.connect("srv")
+    real = mgr.reconnect
+
+    def reconnect_then_the_human_acts(name):
+        err = real(name)
+        if act == "disconnect":
+            mgr.disconnect(name)
+        else:
+            app.settings.mcp_disabled_servers = [name]
+        return err
+
+    mgr.reconnect = reconnect_then_the_human_acts
+    await app._mcp_retry_toolless(["srv"])
+    assert len(mgr.built) == 2
+    assert not any("after retry" in s for s in app.said), app.said

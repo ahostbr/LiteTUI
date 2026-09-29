@@ -2452,6 +2452,16 @@ class LiteTUI(App):
             self.system_message(f"[!] mcp {line}")
         await self._mcp_retry_toolless(dialled)
 
+    def _mcp_retry_wanted(self, name: str, *, toolless: bool = False) -> bool:
+        """T0124. Asked before EVERY reconnect and every announce: the wait is up to 45 s,
+        and a /mcp disconnect, a disable or a config edit in that time is a human decision.
+        Declared and enabled; with `toolless`, also still started-without-tools."""
+        sc = self.mcp.configs.get(name)
+        if (not self.settings.mcp_enabled or not isinstance(sc, dict) or sc.get("disabled")
+                or name in (self.settings.mcp_disabled_servers or ())):
+            return False
+        return self.mcp.toolless_started(name) if toolless else True
+
     async def _mcp_retry_toolless(self, names: list[str]) -> None:
         """T0124 (was T1097): a server that STARTED and never listed its tools is retried
         with backoff, then named. Otherwise the seat stays silently toolless.
@@ -2472,6 +2482,9 @@ class LiteTUI(App):
                 return
             await asyncio.sleep(delay)
             for name in list(pending):
+                if not self._mcp_retry_wanted(name, toolless=True):
+                    pending.remove(name)           # a human stop or a config change wins
+                    continue
                 try:
                     err = await asyncio.to_thread(self.mcp.reconnect, name)
                 except mcp_client.MCPBusy:
@@ -2479,8 +2492,9 @@ class LiteTUI(App):
                 if not err and self.mcp.tool_count(name):
                     pending.remove(name)
                     self.rebuild_mcp_dispatch()
-                    self._update_header()
-                    self.system_message(f"mcp: {name} ({self.mcp.tool_count(name)} tools) after retry")
+                    if self._mcp_retry_wanted(name) and self.mcp.tool_count(name):
+                        self._update_header()
+                        self.system_message(f"mcp: {name} ({self.mcp.tool_count(name)} tools) after retry")
                 elif not self.mcp.toolless_started(name):
                     pending.remove(name)           # now a hard failure, not a toolless start
                     self.system_message(f"[!] mcp {name}: {err}")
