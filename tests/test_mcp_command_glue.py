@@ -76,6 +76,87 @@ def _last(app):
     return app._msgs[-1] if app._msgs else ""
 
 
+@pytest.mark.real_mcp_load
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", ["idle", "chat", "tasks", "child-wake", "mcp",
+                                    "unknown", "loading", "maintenance", "native",
+                                    "store-malformed", "manager-claim", "children", "children-unknown"])
+async def test_fresh_bare_app_command_connects_without_materialising(monkeypatch, tmp_path, blocker):
+    """Exercise the real registry route and staged store, not a fake busy expression."""
+    import asyncio
+    import json
+
+    from litetui.app import LiteTUI
+    from litetui.mcp_client import MCPManager
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"fresh": {"command": "stub"}}}), encoding="utf-8")
+    server = NS(tools=[], stopped=0)
+    server.start = lambda: None
+    server.stop = lambda: setattr(server, "stopped", server.stopped + 1)
+    monkeypatch.setattr(MCPManager, "_build", lambda *a: server)
+    app = LiteTUI()
+    app.mcp = MCPManager(root)
+    app.mcp.reload_configs()
+    msgs = []
+    monkeypatch.setattr(app, "system_message", msgs.append)
+    # Bare App has no Textual runner; substitute scheduling, not activity or
+    # command handling. The production guarded worker and manager still run.
+    monkeypatch.setattr(app, "run_worker", _app().run_worker)
+    directory = app.store.convo_dir
+    assert app.store.pending is True
+    assert not directory.exists()
+    assert list(app.workers) == []
+    assert app.plugins.commands["/mcp"].handler is mm._cmd_mcp
+
+    staged_store = app.store
+    if blocker in ("chat", "tasks", "child-wake", "mcp", "unknown"):
+        from textual.worker import Worker
+        # A real PENDING worker in the real manager: no start, no cancellation.
+        app.workers.add_worker(Worker(app, lambda: None, group=blocker),
+                               start=False, exclusive=False)
+    elif blocker == "loading":
+        app.store.loading = True
+    elif blocker == "maintenance":
+        app._mcp_maintenance = True
+    elif blocker == "native":
+        app.backend = NS(name="codex", app_server=object())
+    elif blocker in ("children", "children-unknown"):
+        monkeypatch.setattr("litetui.plugin_reload_children.children_pending",
+                            lambda *a: True if blocker == "children" else None)
+    elif blocker == "store-malformed":
+        app.store = NS(pending=True)  # missing required loading capability
+    elif blocker == "manager-claim":
+        assert app.mcp._try_claim()  # genuine MCPBusy, not an injected exception
+
+    app._handle_command("/mcp connect fresh")
+    if blocker not in ("idle", "manager-claim"):
+        assert msgs and any(word in msgs[-1].lower() for word in ("busy", "maintenance", "restart"))
+        assert "fresh" not in app.mcp.servers
+        assert not app.mcp._maint_active
+    else:
+        assert getattr(app, "_mcp_maintenance", False) is True, msgs
+        for _ in range(100):
+            if not app._mcp_maintenance:
+                break
+            await asyncio.sleep(0.01)
+        assert not app._mcp_maintenance
+        if blocker == "manager-claim":
+            assert "maintenance is in progress" in msgs[-1].lower()
+            assert "fresh" not in app.mcp.servers
+            assert app.mcp._maint_active  # refused contender never releases holder
+            app.mcp._release_claim()
+        else:
+            assert app.mcp.servers["fresh"] is server
+            assert "Connected 'fresh'" in msgs[-1]
+            app.mcp.disconnect("fresh")
+    assert {row["name"] for row in app.mcp.describe()} == {"fresh"}
+    assert staged_store.pending is True
+    assert not directory.exists()
+
+
 # ── /mcp reconcile command + gate ─────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_reconcile_happy_claims_and_schedules():

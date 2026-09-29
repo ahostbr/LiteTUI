@@ -197,8 +197,10 @@ def produce_activity(
             if group == "mcp":
                 mark("management_active", "worker:mcp", "app", "mcp worker also counts as management")
 
-    # 2. store (REQUIRED). Absent / None / unreadable => busy: early boot is not
-    #    reload-ready. Management is the clearer dimension; turn is kept too.
+    # 2. store (REQUIRED). Absent / None / unreadable => busy. Replay/loading
+    #    blocks management and turns. store.pending is ONLY persistence staging
+    #    (an unmaterialised fresh conversation), not activity; real turns are
+    #    owned by nonterminal chat workers above, including PENDING workers.
     try:
         store = app.store
     except Exception as e:  # noqa: BLE001
@@ -209,13 +211,13 @@ def produce_activity(
             _store_unreadable(mark, unreadable, "app.store is None (early boot, not reload-ready)")
         else:
             try:
-                busy = bool(store.pending) or bool(store.loading)
+                busy = bool(store.loading)
             except Exception as e:  # noqa: BLE001
                 _store_unreadable(mark, unreadable, f"{type(e).__name__}: {e}")
             else:
                 if busy:
-                    mark("management_active", "app.store", "app", "conversation store pending/loading")
-                    mark("turn_active", "app.store", "app", "conversation store pending/loading")
+                    mark("management_active", "app.store", "app", "conversation store loading")
+                    mark("turn_active", "app.store", "app", "conversation store loading")
 
     # 3. screen_stack (REQUIRED). Absent / unreadable => management busy.
     try:
