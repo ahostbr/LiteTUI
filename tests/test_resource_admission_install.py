@@ -221,6 +221,20 @@ def test_real_backend_setter_installs_admission(tmp_path):
     assert backend._admission_session is not None
 
 
+def test_real_backend_setter_without_injected_admission_keeps_local_load_available():
+    from litetui.app import LiteTUI
+
+    class _Owner:
+        def _remember_for_this_convo(self, field, value):
+            pass
+
+    owner = _Owner()
+    backend = _ninfer()
+    LiteTUI.backend.fset(owner, backend)
+    assert owner._backend is backend
+    assert getattr(backend, "resource_admission", None) is None
+
+
 class _SwapOwner:
     def __init__(self, bundle):
         self._admission_bundle = bundle

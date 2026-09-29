@@ -680,14 +680,13 @@ AGENTS_DIR = Path.home() / ".liteharness" / "agents"
 
 
 def other_live_litetui(self_id: str | None = None) -> str | None:
-    """The NAME of another live LiteTUI, or None when this is the only one.
+    """The NAME of another live local-model LiteTUI, if one exists.
 
     🔴 THE REGISTRY, NOT A PROCESS SCAN. the user's ruling (a-62edbbe0): two
-    instances SHARE a model server and run in parallel, and the only thing he
-    wants guarded is a load that puts a SECOND set of weights in VRAM. So the
-    question is not "is another litetui.exe running" — LiteSuite's headless
-    children are LiteTUI too, they load models, and they are not that image.
-    A registry row with `cli == "litetui"` is every one of them.
+    instances may share a model server and run in parallel, and the only thing
+    he wants guarded is a load that puts a SECOND set of weights in VRAM. A
+    cloud-backed LiteTUI cannot add local weights. The registry includes both
+    headed and headless local seats, so a process-name scan is insufficient.
 
     ⚠️ LIVENESS IS `session_pid`, AND AN UNREADABLE ROW COUNTS AS ALIVE. A stale
     file left by a crash must not raise a modal forever; an ELEVATED sibling we
@@ -707,6 +706,11 @@ def other_live_litetui(self_id: str | None = None) -> str | None:
         except Exception:
             continue
         if data.get("cli") != "litetui":
+            continue
+        # Hosted seats cannot add model weights to this host's VRAM. Keep an
+        # unknown backend in scope for older presence rows and local custom
+        # endpoints, where skipping the warning would be an unsafe guess.
+        if data.get("backend") in {"codex", "claude", "cline", "free"}:
             continue
         aid = data.get("agent_id") or f.stem
         if self_id and aid == self_id:

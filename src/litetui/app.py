@@ -4495,13 +4495,14 @@ class LiteTUI(App):
         self._backend = value
         self._resume_backend_error = None
         self._remember_for_this_convo("backend", getattr(value, "name", None))
-        # Install fail-closed local-model admission on the new backend. Idempotent
-        # and install-only: it never releases the OLD backend's leases here, which
-        # would free capacity the old engine may still hold (release requires
-        # confirmed quiescence and is a separate coordinated slice). codex and any
-        # non-_VramGate backend are left untouched.
-        from litetui import resource_admission_install
-        resource_admission_install.install_on(self, value)
+        # An explicitly injected WS3 admission bundle installs on the new
+        # backend. Any old session keeps its leases until confirmed teardown.
+        # WS3 admission has no production demand resolver yet. Installing its
+        # placeholder rejects every local load, so keep it for explicitly
+        # injected admission bundles until the resolver is ready.
+        if getattr(self, "_admission_bundle", None) is not None:
+            from litetui import resource_admission_install
+            resource_admission_install.install_on(self, value)
 
     @property
     def thinking_level(self) -> str | None:
@@ -4826,8 +4827,9 @@ class LiteTUI(App):
         else:
             close_native(self, previous)
         self._backend = new_backend
-        from litetui import resource_admission_install
-        resource_admission_install.install_on(self, new_backend)
+        if getattr(self, "_admission_bundle", None) is not None:
+            from litetui import resource_admission_install
+            resource_admission_install.install_on(self, new_backend)
 
     async def _vram_gate_allows(self, model: str) -> bool:
         """May this load proceed? Asks the human when it would add weights.

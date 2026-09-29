@@ -1,10 +1,9 @@
 """Request-level LM Studio JIT guard in model_transport (WS3).
 
 Fake client/opener spies, real backend objects (no __init__, no engine, no HTTP).
-Proves a LOCAL LM Studio inference is refused BEFORE any request (nonstream AND
-stream AND sync sidecall => zero HTTP), that a trusted-remote LM Studio and other
-backends pass, an unknown-locality LM Studio blocks, and a standalone
-OpenAITransport(client) stays compatible.
+Proves the provisional WS3 guard is active only with WS3 admission installed.
+The production path can serve local LM Studio while its unfinished admission
+protocol remains available for explicit integration tests.
 """
 from __future__ import annotations
 
@@ -24,8 +23,9 @@ def _bare(cls, **attrs):
     return backend
 
 
-def _lmstudio(host="http://127.0.0.1:1234"):
-    return _bare(LMStudioBackend, _host=host)
+def _lmstudio(host="http://127.0.0.1:1234", *, admission=False):
+    return _bare(LMStudioBackend, _host=host,
+                 resource_admission=object() if admission else None)
 
 
 def _llama(host="http://127.0.0.1:7470"):
@@ -47,7 +47,7 @@ class _SpyClient:
 @pytest.mark.parametrize("stream", [False, True])
 async def test_local_lmstudio_refused_before_any_http(stream):
     spy = _SpyClient()
-    transport = OpenAITransport(spy, backend=_lmstudio("http://127.0.0.1:1234"))
+    transport = OpenAITransport(spy, backend=_lmstudio("http://127.0.0.1:1234", admission=True))
     with pytest.raises(AdmissionBlocked):
         await transport.create(model="m", messages=[], stream=stream)
     assert spy.calls == []   # no request sent
@@ -56,7 +56,7 @@ async def test_local_lmstudio_refused_before_any_http(stream):
 @pytest.mark.asyncio
 async def test_unknown_locality_lmstudio_blocks(spy=None):
     spy = _SpyClient()
-    transport = OpenAITransport(spy, backend=_lmstudio("http://10.0.0.5:1234"))  # non-loopback, no marker
+    transport = OpenAITransport(spy, backend=_lmstudio("http://10.0.0.5:1234", admission=True))  # non-loopback, no marker
     with pytest.raises(AdmissionBlocked):
         await transport.create(model="m", messages=[])
     assert spy.calls == []
@@ -65,9 +65,16 @@ async def test_unknown_locality_lmstudio_blocks(spy=None):
 @pytest.mark.asyncio
 async def test_explicit_remote_lmstudio_passes():
     spy = _SpyClient()
-    transport = OpenAITransport(spy, backend=_lmstudio("http://10.0.0.5:1234"),
+    transport = OpenAITransport(spy, backend=_lmstudio("http://10.0.0.5:1234", admission=True),
                                 remote_marker=lambda b: True)
     await transport.create(model="m", messages=[])
+    assert len(spy.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_lmstudio_without_unfinished_admission_can_send():
+    spy = _SpyClient()
+    await OpenAITransport(spy, backend=_lmstudio()).create(model="m", messages=[])
     assert len(spy.calls) == 1
 
 
@@ -134,18 +141,42 @@ def test_sidecall_local_lmstudio_refused_before_urllib():
         called.append(req)
         raise AssertionError("urllib must not be reached on a blocked local LM Studio sidecall")
 
-    app = SimpleNamespace(backend=_lmstudio("http://127.0.0.1:1234"),
+    app = SimpleNamespace(backend=_lmstudio("http://127.0.0.1:1234", admission=True),
                           settings=SimpleNamespace(lm_host="http://127.0.0.1:1234"))
     with pytest.raises(AdmissionBlocked):
         complete_sidecall(app, {"model": "m", "messages": []}, opener=opener)
     assert called == []
 
 
+def test_sidecall_without_unfinished_admission_reaches_local_endpoint():
+    called = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"choices": []}'
+
+    def opener(req, timeout=None):
+        called.append(req)
+        return _Response()
+
+    app = SimpleNamespace(backend=_lmstudio(),
+                          settings=SimpleNamespace(lm_host="http://127.0.0.1:1234"))
+    assert complete_sidecall(app, {"model": "m", "messages": []}, opener=opener) == {"choices": []}
+    assert len(called) == 1
+
+
 def test_guard_ignores_non_lmstudio_and_missing_backend():
     _refuse_unsupported_local_lm(None)                          # no backend -> no-op
     _refuse_unsupported_local_lm(_llama("http://127.0.0.1:7470"))  # llama -> no-op
     with pytest.raises(AdmissionBlocked):
-        _refuse_unsupported_local_lm(_lmstudio("http://127.0.0.1:1234"))
+        _refuse_unsupported_local_lm(_lmstudio("http://127.0.0.1:1234", admission=True))
+    _refuse_unsupported_local_lm(_lmstudio("http://127.0.0.1:1234"))
 
 
 # ── stale client<->backend pair refusal in for_app ──────────────────────────
@@ -201,7 +232,7 @@ def test_backend_swap_and_endpoint_mutation_refuse():
 
 
 @pytest.mark.asyncio
-async def test_rebound_pair_works_then_lm_still_jit_blocked():
+async def test_rebound_pair_uses_lm_without_unfinished_admission():
     app = _bound_app(_llama("http://127.0.0.1:7470"))
     spy = _SpyClient()
     app.backend = _lmstudio("http://127.0.0.1:1234")   # rebuild client + re-bind
@@ -209,9 +240,8 @@ async def test_rebound_pair_works_then_lm_still_jit_blocked():
     app._client_binding = model_transport.bind_client(spy, app.backend)
     transport = model_transport.for_app(app)           # binding matched again
     assert isinstance(transport, OpenAITransport)
-    with pytest.raises(AdmissionBlocked):              # ...but LM is still JIT-blocked
-        await transport.create(model="m", messages=[])
-    assert spy.calls == []
+    await transport.create(model="m", messages=[])
+    assert len(spy.calls) == 1
 
 
 def test_a_non_free_backend_with_an_http_client_keeps_the_local_branch_and_its_guard():
@@ -223,7 +253,7 @@ def test_a_non_free_backend_with_an_http_client_keeps_the_local_branch_and_its_g
         called.append(req)
         raise AssertionError("urllib must not be reached on a blocked local LM Studio sidecall")
 
-    backend = _lmstudio("http://127.0.0.1:1234")
+    backend = _lmstudio("http://127.0.0.1:1234", admission=True)
     backend.http_client = lambda: pytest.fail("only the Free tier sends through its own client")
     app = SimpleNamespace(backend=backend, settings=SimpleNamespace(lm_host="http://127.0.0.1:1234"))
     with pytest.raises(AdmissionBlocked):

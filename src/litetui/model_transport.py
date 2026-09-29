@@ -931,20 +931,24 @@ class OAuthTransport:
 
 
 def _refuse_unsupported_local_lm(backend, *, remote_marker=None):
-    """Fail-closed request-level guard for LM Studio's JIT-on-inference (WS3).
+    """WS3 request guard when its admission hook is explicitly installed.
 
     LM Studio JIT-loads a cold model into local VRAM on the FIRST inference
     request itself — not through our load path — so the request IS a load. A
     resident snapshot is not a safe bypass (the model can evict between the
     check and the request), and a safe per-request usage admission does not exist
-    yet. So a LOCAL LM Studio inference is refused BEFORE any HTTP, unconditionally
-    (cold, warm, or even once calibration exists), with an actionable reason and
-    NO stream/lifecycle wrapper. A trusted REMOTE endpoint (its VRAM is not ours)
-    passes; an UNKNOWN locality blocks. Other backends (llama, ninfer, codex) are
-    not request-JIT — their loads are gated at the load/spawn path — so they pass.
+    yet. With WS3 admission active, a LOCAL LM Studio inference is refused
+    before HTTP. Production leaves unfinished WS3 admission uninstalled, so
+    normal LM Studio turns continue. Explicit loads use the existing confirmation.
+    A trusted REMOTE endpoint passes; UNKNOWN locality blocks when WS3 is on.
     """
     from litetui.llm_backend import LMStudioBackend
     if not isinstance(backend, LMStudioBackend):
+        return
+    # The WS3 request guard belongs to WS3 admission. Production does not
+    # install that admission until its usage/lease resolver can admit a load;
+    # otherwise this provisional guard rejects even an existing local model.
+    if getattr(backend, "resource_admission", None) is None:
         return
     from litetui.resource_admission_install import classify_locality
     from litetui.model_resource_session import AdmissionBlocked
@@ -1156,8 +1160,7 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
             return result.model_dump()
 
         return asyncio.run(routed())
-    # Local sync sidecall: refuse LM Studio JIT-on-inference BEFORE the urllib
-    # request (synchronous raise, no event loop needed).
+    # The WS3 JIT guard, when enabled, refuses before urllib.
     _refuse_unsupported_local_lm(backend)
     url = backend.base_url() if backend else app.settings.lm_host.rstrip("/") + "/v1"
     req = urllib.request.Request(
