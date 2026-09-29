@@ -23,6 +23,11 @@ import json
 import re
 import uuid
 
+from textual.containers import Horizontal
+from textual.app import ScreenStackError
+from textual.css.query import NoMatches
+from textual.widgets import Button, Static
+
 from litetui import runtime_log
 
 #: Set ONLY by a launcher whose rpc host relays approvals (agent_supervisor).
@@ -32,6 +37,47 @@ SPAWNED_BY_ENV = "LITEHARNESS_SPAWNED_BY"
 
 _ANSWER = re.compile(r"\s*(APPROVE|DENY)\s+(appr-[0-9a-f]{12})\b")
 _INPUT_LIMIT = 2048
+
+
+class HumanApproval(Static):
+    """Local seat control for one pending relay request; never an inbox answer."""
+
+    DEFAULT_CSS = """
+    HumanApproval { height: auto; border: round $warning; padding: 0 1; }
+    HumanApproval Horizontal { height: auto; }
+    HumanApproval Button { margin-right: 1; }
+    """
+
+    def __init__(self, ident: str, name: str) -> None:
+        super().__init__(classes="human-approval")
+        self.ident = ident
+        self.tool_name = name
+
+    def compose(self):
+        yield Static(f"{self.tool_name} ({self.ident}) — human override")
+        with Horizontal():
+            yield Button("Deny", variant="error", classes="human-approval-deny")
+            yield Button("Approve", variant="warning", classes="human-approval-allow")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.has_class("human-approval-deny"):
+            allow = False
+        elif event.button.has_class("human-approval-allow"):
+            allow = True
+        else:
+            return
+        event.stop()
+        if take_human_answer(self.app, self.ident, allow):
+            self.remove()
+
+
+def take_human_answer(app, ident: str, allow: bool) -> bool:
+    """Only this local UI call resolves the exact pending request, once."""
+    entry = _pending(app).get(ident)
+    if entry is None or entry[0].done() or not isinstance(allow, bool):
+        return False
+    entry[0].set_result(allow)
+    return True
 
 
 def _pending(app) -> dict:
@@ -80,6 +126,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     # Dijkstra K1(c): logged in the finally, so a wait cancelled by Esc, stop() or
     # the Claude bridge's deadline still leaves its line ("cancelled").
     status = "cancelled"
+    control = None
     wait_token = app._begin_wait(spawner[:8], "approval")
     try:
         seat = getattr(app, "seat", None)
@@ -94,15 +141,24 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
             app._system(f"asked {spawner[:8]} (the spawning agent) to approve {name} "
                         f"({ident}); waiting up to {timeout:.0f} s")
             try:
+                log = app.query_one("#chat-log")
+            except (AttributeError, NoMatches, ScreenStackError):
+                pass  # Headless/unmounted tests still use the spawner inbox.
+            else:
+                control = HumanApproval(ident, name)
+                await log.mount(control)
+            try:
                 status = "approved" if await asyncio.wait_for(future, timeout) else "denied"
             except TimeoutError:
                 status = "timeout"
     finally:
         app._end_wait(wait_token)
         pending.pop(ident, None)
+        if control is not None and control.is_mounted:
+            await control.remove()
         record(app, status, name, source, ident)
     if status == "approved":
-        app._system(f"{spawner[:8]} approved {name} ({ident})")
+        app._system(f"approval received for {name} ({ident})")
     return status
 
 
