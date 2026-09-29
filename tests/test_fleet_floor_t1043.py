@@ -75,6 +75,13 @@ def test_the_copy_is_byte_identical_to_liteharness():
         "and run scripts/sync_deny_floor.py")
 
 
+def test_gpt_6_1_sol_is_listed_and_still_needs_the_level():
+    # T0193: the built-in allow-list names it (the copy is liteharness's own), the floor is unchanged.
+    assert fleet_policy.check("codex", "gpt-6.1-sol", "high") is None
+    why = fleet_policy.check("codex", "gpt-6.1-sol", "low")
+    assert why and "thinking_level 'low' is below high" in why and "is not in the codex list" not in why, why
+
+
 # ── the incident, and the ways a spawn-time snapshot misses it ──────────────
 
 def test_a_reconnect_onto_the_pin_REFUSES_the_next_turn():
