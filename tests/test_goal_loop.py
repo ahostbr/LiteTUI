@@ -9,7 +9,7 @@ import pytest
 
 from litetui import app as app_mod
 from litetui import goal_loop as goal_mod
-from litetui import scheduler
+from litetui import model_transport, scheduler
 from litetui.goal_loop import (
     GoalRuntime,
     GoalState,
@@ -85,6 +85,10 @@ def _runtime_app(tmp_path: Path, payload: dict, transcript: str):
             self.client = SimpleNamespace(
                 chat=SimpleNamespace(completions=completions)
             )
+            # for_app (6186548) refuses an app with no backend or client binding.
+            # Not an LMStudioBackend, so the request-level JIT guard passes.
+            self.backend = SimpleNamespace(name="stub", base_url=lambda: "http://stub")
+            self._client_binding = model_transport.bind_client(self.client, self.backend)
             self.settings = SimpleNamespace(
                 compact_max_tokens=2048,
                 tool_policy_profile="interactive",
