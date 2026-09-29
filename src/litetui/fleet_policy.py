@@ -44,7 +44,7 @@ DEFAULT_POLICY: dict = {
             "exempt_prefixes": ["gpt-oss-"],
             "models": [
                 "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
-                "gpt-6-luna", "gpt-6-sol", "gpt-6-astra",
+                "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra",
             ],
             "min_model": "gpt-6-sol",
             "thinking_levels": [
@@ -225,6 +225,98 @@ def check_available(model: str, cache: Path | None = None,
             "nothing was spawned.")
 
 
+# ── T0088: the codex CLI's own record of what it ran ───────────────────────────
+
+def codex_sessions_dir() -> Path:
+    home = os.environ.get("CODEX_HOME", "").strip()
+    return (Path(home) if home else Path.home() / ".codex") / "sessions"
+
+
+def _codex_first_turn(rollout: Path) -> tuple[dict | None, dict | None]:
+    """(session_meta payload, first turn_context payload) of a rollout. session_meta
+    carries id/cwd/timestamp; the effective `model` and `effort` are on turn_context,
+    which exists only once the seat has taken a turn."""
+    meta = turn = None
+    try:
+        with open(rollout, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("type") == "session_meta" and meta is None:
+                    meta = rec.get("payload") or {}
+                elif rec.get("type") == "turn_context":
+                    turn = rec.get("payload") or {}
+                    break
+    except OSError:
+        pass
+    return meta, turn
+
+
+def _same_dir(a: object, b: object) -> bool:
+    norm = lambda p: os.path.normcase(os.path.normpath(str(p)))  # noqa: E731
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
+def verify_codex_rollout(cwd: str, since: float, expect_model: str | None, expect_effort: str | None,
+                         path: Path | None = None, sessions: Path | None = None, wait: float = 90,
+                         sleep: Callable[[float], None] = time.sleep,
+                         clock: Callable[[], float] = time.monotonic) -> str | None:
+    """DORMANT (T0088): no spawn path calls this. T0088-A enables it once a codex seat can
+    be tied to its own rollout; until then the codex CLI stays refused outright.
+
+    Post-launch check of a codex CLI seat: correlated, not identity-proven.
+    Finds the rollouts opened in `cwd` since `since` (epoch seconds), reads the model
+    and effort of their first turn, and fails on a mismatch with what the spawn asked
+    for or on anything below the codex floor. No turn within `wait`, or more than one
+    candidate rollout (which one is ours?), is refused. None means exactly one
+    rollout matched and it ran what was asked; it does NOT prove that rollout is this
+    seat's. Attribution is cwd + time only (a codex process does not hold its rollout
+    open, and the pty daemon returns no pid), so a compliant rollout from another seat
+    in the same cwd, while this seat wrote none or has not yet, is a false pass. Only a
+    spawner-controlled marker that lands in the rollout would close that; it needs a
+    live codex to validate. Launch with the first prompt on the command line so a turn
+    exists to read."""
+    try:
+        policy, where = load(path)
+    except PolicyError as exc:
+        return f"SEAT FAILED FLOOR: {exc}"
+    root = sessions or codex_sessions_dir()
+    deadline = clock() + wait
+    while True:
+        seen: list[tuple[str, str, str | None, str | None]] = []
+        for rollout in root.rglob("rollout-*.jsonl") if root.exists() else ():
+            try:
+                if rollout.stat().st_mtime < since - 5:
+                    continue
+            except OSError:
+                continue
+            meta, turn = _codex_first_turn(rollout)
+            if not meta or not turn or not _same_dir(meta.get("cwd"), cwd):
+                continue
+            seen.append((rollout.name, meta.get("id") or rollout.name, turn.get("model"), turn.get("effort")))
+        if len(seen) > 1:
+            return (f"SEAT FAILED FLOOR: {len(seen)} codex rollouts opened in {cwd} since the spawn "
+                    f"({', '.join(s[1] for s in seen)}); which one is this seat's cannot be told. Refused.")
+        if seen:
+            for name, sid, model, effort in seen:
+                if ((expect_model and not _same(model, expect_model))
+                        or (expect_effort and not _same(effort, expect_effort))):
+                    return (f"SEAT FAILED MISMATCH: codex session {sid} was asked for model={expect_model or '<any>'} "
+                            f"thinking_level={expect_effort or '<any>'} and ran model={model} effort={effort}. "
+                            f"Policy: {where}.")
+                governed = floor_for(policy, "codex", model)
+                why = below_floor(*governed, model, effort, path) if governed else None
+                if why:
+                    return f"SEAT FAILED FLOOR: codex session {sid} ran model={model} effort={effort}. {why} Policy: {where}."
+            return None
+        if clock() >= deadline:
+            return (f"SEAT FAILED FLOOR: no codex rollout in {cwd} recorded a turn within {wait:g}s, so the "
+                    "model and effort it ran cannot be read. Unverified is refused.")
+        sleep(2)
+
+
 # ── item 2: what the seat actually resolved ────────────────────────────────────
 
 def _same(a: object, b: object) -> bool:
@@ -274,15 +366,17 @@ def verify_seat(agent_id: str, root: Path, wait: float = 90, path: Path | None =
                         f"thinking_level={row.get('thinking_level', '<absent>')}. A pinned default can "
                         "override --model (T1004), so the spawn fails on any mismatch, not only below "
                         f"the floor. Policy: {where}.")
-            governed = floor_for(policy, backend, model)
-            if governed is None and not expect_thinking:
+            # T0095: governed by the spawner's backend OR the backend the seat reports
+            # (T1027), and it must clear every floor that applies: a reported backend
+            # can add a floor (local request pinned to codex/o4-mini) but never remove one.
+            governed = [g for g in (floor_for(policy, backend, model),
+                                    floor_for(policy, row.get("backend"), model)) if g]
+            if not governed and not expect_thinking:
                 return None
             if "thinking_level" in row:
-                if governed is None:
-                    return None
-                why = below_floor(*governed, model, row["thinking_level"], path)
+                whys = [w for g in governed if (w := below_floor(*g, model, row["thinking_level"], path))]
                 return (f"SEAT FAILED FLOOR: {agent_id} resolved model={model} "
-                        f"thinking_level={row['thinking_level']}. {why} Policy: {where}.") if why else None
+                        f"thinking_level={row['thinking_level']}. {whys[0]} Policy: {where}.") if whys else None
         if clock() >= deadline:
             if allow_silent and not (model and model != "unknown"):
                 return None
