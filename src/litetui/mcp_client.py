@@ -87,6 +87,9 @@ class MCPServer:
         self._log = log_handle
         self.proc: subprocess.Popen | None = None
         self.tools: list[dict] = []
+        #: True once `initialize` was answered: the server STARTED. A start() that
+        #: fails after this point (tools/list never came) is not a dead server.
+        self.initialized = False
         self.error: str | None = None
         self._lock = threading.Lock()
         self._id = 0
@@ -419,6 +422,7 @@ class MCPServer:
             },
             timeout=INIT_TIMEOUT,
         )
+        self.initialized = True
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
         self.tools = list(self._request("tools/list", timeout=INIT_TIMEOUT).get("tools") or [])
 
@@ -524,6 +528,7 @@ class HTTPMCPServer:
         #: bridge endpoint is auth-exempt on loopback, so this is usually empty.
         self.headers = {str(k): str(v) for k, v in (cfg.get("headers") or {}).items()}
         self.tools: list[dict] = []
+        self.initialized = False        # see MCPServer.initialized
         self.error: str | None = None
         self.proc = None  # interface parity with MCPServer; there is no process
         self._lock = threading.Lock()
@@ -600,6 +605,7 @@ class HTTPMCPServer:
             },
             timeout=INIT_TIMEOUT,
         )
+        self.initialized = True
         self._notify("notifications/initialized")
         self.tools = list(self._request("tools/list", None, INIT_TIMEOUT).get("tools") or [])
 
@@ -802,6 +808,10 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         #: to such a name is refused (never reconnect over a possibly-live
         #: process) until it is cleared by a successful later stop.
         self._stop_failed: set[str] = set()
+        #: Names whose start() failed AFTER the handshake: the server answered
+        #: `initialize` and never listed its tools (T0124). Started, not dead, so
+        #: unlike a refused connect they are worth a retry.
+        self.late_failures: set[str] = set()
 
     # ── plumbing ────────────────────────────────────────────────────────────
     def _log(self):
@@ -895,6 +905,8 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 error_type=type(e).__name__,
             )
             self.failures[name] = f"{type(e).__name__}: {e}"
+            if getattr(srv, "initialized", False):
+                self.late_failures.add(name)
             try:
                 srv.stop()
             except Exception:
@@ -908,7 +920,20 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         with self._servers_lock:
             self.servers[name] = srv
         self.failures.pop(name, None)          # a success clears the old error
+        self.late_failures.discard(name)
         return None
+
+    def toolless_started(self, name: str) -> bool:
+        """T0124. STARTED but never listed a tool: connected with an empty list, or
+        failed after the handshake. A refused connect is neither - it never started."""
+        with self._servers_lock:
+            srv = self.servers.get(name)
+        return name in self.late_failures or (srv is not None and not srv.tools)
+
+    def tool_count(self, name: str) -> int:
+        with self._servers_lock:
+            srv = self.servers.get(name)
+        return len(srv.tools) if srv is not None else 0
 
     def _disconnect_locked(self, name: str) -> bool:
         """Stop ONE server and forget it. It stays in `configs`.
@@ -1097,7 +1122,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 state, error = "failed", srv_error
             elif srv is not None:
                 state = "connected" if declared else "orphan"
-                error = self.failures.get(name)
+                # T0124: "connected" with no tools reads as healthy and is not.
+                error = self.failures.get(name) or (
+                    None if srv.tools else "connected, but listed 0 tools")
             elif name in self.failures:
                 state, error = "failed", self.failures.get(name)
             elif sc.get("disabled"):

@@ -668,6 +668,8 @@ class ChatLog(VerticalScroll):
 #: (wrapped, idle) poll phase quickly instead of blocking the suite on real time;
 #: production keeps the full settle.
 _INBOX_SETTLE_S = 2.0
+#: T0124: pauses before each retry of a started MCP server that listed no tools.
+MCP_RETRY_DELAYS = (5.0, 15.0, 45.0)
 
 
 def _sync_seat_resolution(app) -> None:
@@ -2420,6 +2422,7 @@ class LiteTUI(App):
         disabled = set(self.settings.mcp_disabled_servers or ())
         failed: list[str] = []
         connected: list[str] = []
+        dialled: list[str] = []
         for name, sc in list(self.mcp.configs.items()):
             # The denylist is applied by NOT DIALLING, where it used to connect
             # and then stop. mcp.json stays the single source of what EXISTS —
@@ -2429,6 +2432,7 @@ class LiteTUI(App):
             if name in disabled or not isinstance(sc, dict) or sc.get("disabled"):
                 continue
             err = await asyncio.to_thread(self.mcp.connect, name)
+            dialled.append(name)
             (failed if err else connected).append(f"{name}: {err}" if err else name)
 
         if connected:
@@ -2446,6 +2450,44 @@ class LiteTUI(App):
             self.system_message(f"mcp: {', '.join(connected)}")
         for line in failed:
             self.system_message(f"[!] mcp {line}")
+        await self._mcp_retry_toolless(dialled)
+
+    async def _mcp_retry_toolless(self, names: list[str]) -> None:
+        """T0124 (was T1097): a server that STARTED and never listed its tools is retried
+        with backoff, then named. Otherwise the seat stays silently toolless.
+
+        Measured 2026-09-27 (mcp.log): three VibeUE proxies started 15:33:27/31/35,
+        each answered LiteTUI's `tools/list` ~8 ms after start, and the proxy only
+        discovers its upstream tools on a later CallToolRequest - two seats did that
+        (15:34:10, 15:34:56); the third had nothing to call, so it never would.
+        `start()` took that first list as final and nothing looked again.
+
+        Only servers that answered `initialize` are retried (`toolless_started`); a
+        refused connect never started and is already announced above. Each retry is
+        `reconnect` - a fresh object, the existing verb - so no new lifecycle path.
+        """
+        pending = [n for n in names if self.mcp.toolless_started(n)]
+        for delay in MCP_RETRY_DELAYS:
+            if not pending:
+                return
+            await asyncio.sleep(delay)
+            for name in list(pending):
+                try:
+                    err = await asyncio.to_thread(self.mcp.reconnect, name)
+                except mcp_client.MCPBusy:
+                    continue                       # a /mcp verb holds the slot; next round
+                if not err and self.mcp.tool_count(name):
+                    pending.remove(name)
+                    self.rebuild_mcp_dispatch()
+                    self._update_header()
+                    self.system_message(f"mcp: {name} ({self.mcp.tool_count(name)} tools) after retry")
+                elif not self.mcp.toolless_started(name):
+                    pending.remove(name)           # now a hard failure, not a toolless start
+                    self.system_message(f"[!] mcp {name}: {err}")
+        for name in pending:
+            self.system_message(
+                f"[!] mcp {name}: started but listed no tools after "
+                f"{len(MCP_RETRY_DELAYS)} retries; /mcp to reconnect")
 
     @work(exclusive=True, group="inbox")
     async def _inbox_monitor(self) -> None:
