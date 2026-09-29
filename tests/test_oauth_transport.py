@@ -371,6 +371,7 @@ async def test_cloud_backend_uses_cli_capabilities_and_rejects_local_controls(
     tmp_path, monkeypatch
 ):
     from litetui.llm_backend import BackendError, make_backend
+    from litetui.oauth_backend import OAuthBackend
     from litetui.settings import Settings
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
@@ -402,8 +403,9 @@ async def test_cloud_backend_uses_cli_capabilities_and_rejects_local_controls(
     assert await backend.model_info("gpt-test") == (90000, "vlm", True)
     with pytest.raises(BackendError):
         await backend.load("gpt-test")
-    with pytest.raises(BackendError):
-        make_backend(Settings(backend="claude"))
+    # Claude became a first-class SDK backend in 67a1469, so the factory no longer
+    # refuses it; the contract that survives is that it is never the Codex OAuth path.
+    assert not isinstance(make_backend(Settings(backend="claude")), OAuthBackend)
     with pytest.raises(mt.ProviderError, match="reasoning effort"):
         await mt.OAuthTransport("codex", models=backend.models).create(
             model="gpt-test", messages=[], extra_body={"reasoning_effort": "ultra"}
