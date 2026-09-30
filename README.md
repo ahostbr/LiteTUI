@@ -481,6 +481,22 @@ Anything addressed elsewhere is left in `new/` exactly as found — unread,
 unmoved, unclaimed. Expired messages (past `ttl_minutes`) are cleared without
 delivery; the agent's own echo is skipped.
 
+### Approval replies and explicit authority changes
+
+A pending RPC approval widget also accepts an addressed inbox line
+`APPROVE appr-<id>` or `DENY appr-<id>` from the spawner recorded when that request
+started. It resolves once, never remembers permission; a wrong sender, addressee,
+unknown/expired id or duplicate cannot grant approval. The RPC host's own answer
+path is unchanged. Ordinary mail is still delivered as a turn.
+
+Spawner authority is captured from the launch identity envelope at process startup,
+not read back from registry metadata. Editing `spawned_by` in a presence row or
+re-registering a running seat does **not** grant another leader approval authority.
+After a leader restart, changing that authority is an explicit security action:
+use the supported `liteharness spawn --resume <id> --kill-old --spawned-by <newleader>`
+flow to start the resumed seat with the new launcher identity. There is no automatic
+parent-lineage redirect, registry takeover or fallback to a different approver.
+
 ## Tests
 
 ```bash

@@ -365,3 +365,30 @@ def test_the_relay_timeout_is_a_controlled_setting_read_by_the_relay():
     a = _seat()
     a.settings.relay_approval_timeout_s = 42
     assert approval_relay.timeout_s(a) == 42.0
+
+
+@pytest.mark.asyncio
+async def test_T0210_explicit_resumed_startup_changes_authority_not_old_process(monkeypatch):
+    from litetui import tool_approval
+    old_leader, new_leader = "old-launcher", "new-launcher"
+    _clear(monkeypatch)
+    monkeypatch.setenv("LITETUI_SPAWN_IDENTITY", "1")
+    monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", old_leader)
+    old = m.LiteTUI()
+    old._rpc_emit = lambda *_: None
+    old._deliver_inbox = lambda *_: None
+    decision = tool_policy.PolicyDecision(tool_policy.CONFIRM, INTERACTIVE, frozenset(), "fixture")
+    waiting = asyncio.create_task(tool_approval.approve_over_rpc(old, "fixture", {}, decision, timeout=0.2))
+    await asyncio.sleep(0)
+    ident = next(iter(old._approval_waiters))
+    # Model only the new process's supported launcher envelope, never launch a seat.
+    monkeypatch.setenv("LITETUI_SPAWN_IDENTITY", "1")
+    monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", new_leader)
+    resumed = m.LiteTUI()
+    assert old._spawner_id == old_leader and resumed._spawner_id == new_leader
+    assert resumed.seat.spawned_by == new_leader
+    assert "LITEHARNESS_SPAWNED_BY" not in os.environ
+    old._receive_mail({"to": old.seat.agent_id, "from": new_leader, "body": f"APPROVE {ident}"})
+    assert not waiting.done()
+    old._receive_mail({"to": old.seat.agent_id, "from": old_leader, "body": f"DENY {ident}"})
+    assert await waiting is tool_approval.DENIED

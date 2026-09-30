@@ -253,3 +253,89 @@ def test_no_host_and_by_user_are_different_refusals() -> None:
     assert textfmt.tool_denied("no-host", name="x") != textfmt.tool_denied(
         "by-user", name="x"
     )
+
+
+# T0210: native addressed mail can answer only the recorded spawner's RPC waiter.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb,want", [("APPROVE", tool_approval.ONCE), ("DENY", tool_approval.DENIED)])
+@pytest.mark.parametrize("payload", [False, True])
+async def test_T0210_addressed_spawner_reply_resolves_rpc_once(monkeypatch, tmp_path, verb, want, payload):
+    import json
+    from litetui import harness
+
+    a = make_app(rpc=True)
+    a._spawner_id = "recorded-leader"
+    delivered = []
+    a._deliver_inbox = delivered.append
+    new, done = tmp_path / "new", tmp_path / "done"
+    new.mkdir()
+    monkeypatch.setattr(harness, "NEW", new)
+    monkeypatch.setattr(harness, "DONE", done)
+    monkeypatch.setattr(harness, "harness_disabled", lambda: False)
+    task = asyncio.create_task(tool_approval.approve_over_rpc(a, "shell", {}, DECISION, timeout=0.2))
+    await asyncio.sleep(0)
+    ident = a.emitted[-1]["id"]
+    msg = {"to": a.seat.agent_id, "from": "recorded-leader"}
+    msg["payload" if payload else "body"] = {"text": f"{verb} {ident}\n"} if payload else f"{verb} {ident}\n"
+    (new / "answer.json").write_text(json.dumps(msg), encoding="utf-8")
+    for incoming in a.seat.poll():
+        a._receive_mail(incoming)
+    assert await task is want
+    assert delivered == []
+    assert a.seat.poll() == []
+    a._receive_mail(msg)
+    assert delivered == [msg], "a duplicate/late answer must not resolve a future twice"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["sender", "id", "addressee", "broadcast", "missing-to", "no-spawner", "expired"])
+async def test_T0210_wrong_or_expired_rpc_reply_never_grants_permission(kind):
+    a = make_app(rpc=True)
+    a._spawner_id = None if kind == "no-spawner" else "recorded-leader"
+    delivered = []
+    a._deliver_inbox = delivered.append
+    task = asyncio.create_task(tool_approval.approve_over_rpc(a, "shell", {}, DECISION, timeout=0.02))
+    await asyncio.sleep(0)
+    ident = a.emitted[-1]["id"]
+    msg = {"to": a.seat.agent_id, "from": "recorded-leader", "body": f"APPROVE {ident}"}
+    if kind == "sender":
+        msg["from"] = "another-leader"
+    elif kind == "id":
+        msg["body"] = "APPROVE appr-000000000000"
+    elif kind == "addressee":
+        msg["to"] = "another-seat"
+    elif kind == "broadcast":
+        msg["to"] = "broadcast"
+    elif kind == "missing-to":
+        msg.pop("to")
+    elif kind == "expired":
+        msg.update(timestamp="2000-01-01T00:00:00+00:00", ttl_minutes=1)
+    a._receive_mail(msg)
+    assert await task is None
+    assert delivered == [msg]
+    assert not tool_approval.resolve_over_rpc(a, ident, True)
+
+
+@pytest.mark.asyncio
+async def test_T0210_registry_edit_does_not_change_pending_rpc_authority(monkeypatch, tmp_path):
+    import json
+    from litetui import harness
+
+    a = make_app(rpc=True)
+    a._spawner_id = "recorded-leader"
+    a.seat.spawned_by = "recorded-leader"
+    monkeypatch.setattr(harness, "AGENTS_DIR", tmp_path)
+    task = asyncio.create_task(tool_approval.approve_over_rpc(a, "shell", {}, DECISION, timeout=0.2))
+    await asyncio.sleep(0)
+    ident = a.emitted[-1]["id"]
+    (tmp_path / f"{a.seat.agent_id}.json").write_text(json.dumps({
+        "agent_id": a.seat.agent_id, "spawned_by": "replacement-leader"}), encoding="utf-8")
+    a.seat.spawned_by = "replacement-leader"  # registration metadata is not process authority
+    delivered = []
+    a._deliver_inbox = delivered.append
+    wrong = {"to": a.seat.agent_id, "from": "replacement-leader", "body": f"APPROVE {ident}"}
+    a._receive_mail(wrong)
+    assert delivered == [wrong] and not task.done()
+    a._receive_mail({"to": a.seat.agent_id, "from": "recorded-leader", "body": f"DENY {ident}"})
+    assert await task is tool_approval.DENIED
+    assert a._spawner_id == "recorded-leader"

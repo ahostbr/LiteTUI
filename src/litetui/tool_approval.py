@@ -328,6 +328,27 @@ def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False)
     return True
 
 
+def take_spawner_answer(app, msg: dict) -> bool:
+    """Consume only addressed, unexpired mail from this RPC request's spawner.
+
+    Registration/presence edits cannot change an already pending permission.
+    The ordinary RPC host answer path remains separate and unchanged.
+    """
+    from litetui import approval_relay, harness
+
+    seat_id = getattr(getattr(app, "seat", None), "agent_id", None)
+    if not seat_id or msg.get("to") != seat_id or harness._expired(msg):
+        return False
+    text = msg.get("body") or (msg.get("payload") or {}).get("text") or ""
+    match = approval_relay._ANSWER.fullmatch(str(text).strip())
+    if match is None:
+        return False
+    spawner = getattr(app, "_rpc_approval_spawners", {}).get(match.group(2))
+    if not spawner or msg.get("from") != spawner:
+        return False
+    return resolve_over_rpc(app, match.group(2), match.group(1) == "APPROVE")
+
+
 async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
                            *, timeout: float | None = None):
     """Ask the HOST to approve one tool call. None when nobody answered.
@@ -357,6 +378,10 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     approval_id = "appr-" + uuid4().hex[:12]
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
     _approval_registry(app)[approval_id] = fut
+    spawners = getattr(app, "_rpc_approval_spawners", None)
+    if spawners is None:
+        spawners = app._rpc_approval_spawners = {}
+    spawners[approval_id] = getattr(app, "_spawner_id", None)
     try:
         app._rpc_emit({
             "type": "tool_approval_requested",
@@ -373,3 +398,4 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             return None
     finally:
         _approval_registry(app).pop(approval_id, None)
+        spawners.pop(approval_id, None)
