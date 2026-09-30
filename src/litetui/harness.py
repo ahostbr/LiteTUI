@@ -779,6 +779,36 @@ def discover() -> str:
         return f"[error] discover: {type(e).__name__}: {e}"
 
 
+def _dead_name_holder_hint(seat: Seat) -> str | None:
+    """Read-only retry advice; unknown ownership is not proof of a dead holder."""
+    if harness_disabled() or not AGENTS_DIR.is_dir():
+        return None
+    dead_holder = False
+    for path in AGENTS_DIR.glob("*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None  # an unreadable row could be another live name holder
+        if not isinstance(row, dict):
+            return None
+        if str(row.get("name") or "").casefold() != seat.name.casefold():
+            continue
+        if (row.get("agent_id") or path.stem) == seat.agent_id:
+            return None  # this seat already holds the name
+        pid = row.get("session_pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return None
+        if router_record.pid_is_live(pid):
+            return None
+        dead_holder = True
+    if not dead_holder:
+        return None
+    import shlex
+    # Render only: the normal register/heartbeat argv NEVER gains --takeover.
+    command = shlex.join(["liteharness", *seat._presence_argv(), "--takeover"])
+    return f"Manual dead-holder retry: {command}"
+
+
 def run(seat, args: dict) -> str:
     """Dispatch the `harness` tool. Never raises — every path returns text."""
     # str() first: a model can emit a number or null here, and .strip() on a
@@ -796,6 +826,9 @@ def run(seat, args: dict) -> str:
         ]
         if seat.error:
             lines.append(f"error      : {seat.error}")
+        hint = _dead_name_holder_hint(seat)
+        if hint:
+            lines.append(hint)
         return "\n".join(lines)
 
     if action == "discover":
