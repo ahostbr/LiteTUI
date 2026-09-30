@@ -2646,8 +2646,10 @@ class LiteTUI(App):
 
     def _receive_mail(self, msg: dict) -> None:
         """T1049-B: an answer to a pending [APPROVAL] resumes its turn and is not
-        delivered (approval_relay.take_answer); anything else is ordinary mail."""
-        if not approval_relay.take_answer(self, msg):
+        delivered. T0210 also admits addressed answers to pending RPC widgets
+        from their recorded spawner; anything else is ordinary mail."""
+        if not (approval_relay.take_answer(self, msg)
+                or tool_approval.take_spawner_answer(self, msg)):
             self._deliver_inbox(msg)
 
     def _deliver_inbox(self, msg: dict) -> None:
