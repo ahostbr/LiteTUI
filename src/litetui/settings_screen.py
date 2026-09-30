@@ -1402,6 +1402,10 @@ class SettingsBody(Widget):
                             "Real CPU, RAM, GPU/VRAM, disk and network meters in the footer. "
                             "The footer switch also controls sampling.",
                         )
+                        yield from self._switch_row(
+                            "footer_show_key_hints", "Keyboard shortcut hints",
+                            "The ^G view / ^B select / ^E open hints and the key-binding row in the footer.",
+                        )
                         yield from self._text_row(
                             "footer_order", "Footer order (left to right)",
                             "Comma-separated ids. Use authority, plan, seat, think, "

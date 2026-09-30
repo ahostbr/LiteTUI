@@ -505,6 +505,10 @@ class Settings:
     #: light UI though. Uh, make a setting to toggle that"); /settings and the meters:on/off click
     #: turn it on.
     footer_task_manager: bool = False
+    #: Keyboard-shortcut hints in the footer (^G view · ^B select · ^E open, and the
+    #: binding row). OFF by default (Ryan 2026-09-30: "stop showing these keyboard
+    #: shortcuts by default make it a toggle and set it off for now").
+    footer_show_key_hints: bool = False
     #: Footer item ids in left-to-right order. Visibility remains controlled by
     #: the switches above; omitted/unknown ids are repaired on load/save.
     footer_order: list[str] = field(

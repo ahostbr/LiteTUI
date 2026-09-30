@@ -199,6 +199,7 @@ FIELD_DESCRIPTIONS = {
     "footer_show_tps": "Display last turn's generation speed in tokens per second.",
     "footer_show_cache": "Display prompt-cache warmth and hit rate, where the backend supplies them.",
     "footer_task_manager": "Show live CPU, memory, GPU, disk, and network meters in the footer.",
+    "footer_show_key_hints": "Show keyboard-shortcut hints in the footer.",
     "footer_order": "Arrange visible footer facts left to right by their IDs.",
     "backend_chosen": "Remember that the engine was explicitly picked rather than inferred by default.",
     "claude_executable": "Executable used when LiteTUI launches the Claude backend.",
@@ -452,7 +453,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "interface", "Interface", "interface-footer", "Footer telemetry",
         "Choose which runtime facts stay in the footer, then arrange them left to right.",
-        ("footer_show_seat", "footer_show_thinking", "footer_show_bg", "footer_show_subagents", "footer_show_convo", "footer_show_context", "footer_show_context_pct", "footer_show_tps", "footer_show_cache", "footer_task_manager", "footer_order"), scope="app", keywords=("footer", "telemetry", "left to right", "ordering", "status"), field_keywords={"footer_order": ("ordering", "left to right", "position",)}, default_expanded=True,
+        ("footer_show_seat", "footer_show_thinking", "footer_show_bg", "footer_show_subagents", "footer_show_convo", "footer_show_context", "footer_show_context_pct", "footer_show_tps", "footer_show_cache", "footer_task_manager", "footer_show_key_hints", "footer_order"), scope="app", keywords=("footer", "telemetry", "left to right", "ordering", "status"), field_keywords={"footer_order": ("ordering", "left to right", "position",)}, default_expanded=True,
     ),
 )
 

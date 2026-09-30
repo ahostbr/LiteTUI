@@ -956,6 +956,7 @@ class LiteTUI(App):
     .compact-profile .compact-footer-hints { display: block; }
     .footer-hints { width: 1fr; height: 1; overflow: hidden; }
     .compact-profile .footer-hints { display: none; }
+    .hide-key-hints .compact-footer-hints, .hide-key-hints .footer-hints { display: none; }
     .permission-label {
         dock: none;
         width: auto;
@@ -2135,6 +2136,7 @@ class LiteTUI(App):
             return False
 
     def on_mount(self) -> None:
+        self.set_class(not self.settings.footer_show_key_hints, "hide-key-hints")
         self.call_after_refresh(self._apply_compact_profile)
         # The fast elapsed loop retires after one idle second; board assignment
         # can change with no turn or keypress. Read the board at its slow cadence.
@@ -9951,6 +9953,9 @@ class LiteTUI(App):
         old = self.settings
         self._settings_persist_error = None
         self.settings = new
+        if new.footer_show_key_hints != old.footer_show_key_hints:
+            self.set_class(not new.footer_show_key_hints, "hide-key-hints")
+            self.query_one(ContextFooter)._on_resize_for_compact()
         if new.footer_task_manager != old.footer_task_manager:
             self._sync_footer_sampler()
             for control in self.query(".task-manager-toggle"):
