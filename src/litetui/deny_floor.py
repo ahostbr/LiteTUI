@@ -27,9 +27,10 @@ Three rules, all about what the command TARGETS, never about how it is spelled:
                           git repository root (a `.git` DIRECTORY; a worktree's
                           `.git` file is not one), or a folder containing the
                           workspace (the workspace itself only when it is a repo).
-  owner-launcher          running LiteTUI's run.bat: a `run.bat` (or `run`, which
-                          cmd.exe completes through PATHEXT) whose folder holds
-                          `src/litetui`, i.e. any LiteTUI checkout or worktree. It
+  owner-launcher          executing the existing owner `C:/Projects/LiteTUI/run.bat`
+                          by resolved path identity, including command-position
+                          `run` completed through PATHEXT. Arguments, nonexistent
+                          paths and other checkouts are not the owner launcher. It
                           sets LITETUI_OWNER=1, the user's floor exemption, and is
                           guarded only by CLAUDECODE / LITETUI_AGENT_SHELL, which a
                           Codex seat or a plain subprocess does not carry (T1054;
@@ -55,10 +56,9 @@ run.bat itself, a renamed copy in the same folder (run.bat opens with
 `cd /d "%~dp0"`), a reader's own exec feature (a git `!` alias,
 -c core.pager/core.editor, rebase -x; sed's `e`; vim/less `!`) that runs a
 path the reader rule excuses, or a spelling that does not resolve here (an admin share
-`\\\\host\\C$\\...`, an 8.3 short name) is not seen. Known over-blocks, fail-safe
-and only inside a LiteTUI checkout: a bare `run` in an `if` segment
-(`if exist package.json bun run dev`), or after a `do` / `else` word in a
-non-reader command (`python x.py "please do run it"`).
+`\\\\host\\C$\\...`, an 8.3 short name) is not seen. Command-position recognition
+is intentionally limited to direct launches and the shell wrappers below;
+arguments and quoted prose are not treated as executable paths.
 """
 from __future__ import annotations
 
@@ -73,6 +73,8 @@ HOME_VARIABLES = frozenset({
     "%userprofile%", "%home%", "%homedrive%%homepath%",
 })
 HARNESS_DIRS = (".claude", ".codex", ".liteharness", ".litesuite")
+#: The user's actual launcher, not any folder with a LiteTUI-shaped tree.
+_OWNER_LAUNCHER = Path("C:/Projects/LiteTUI/run.bat")
 
 #: A delete verb at a word boundary. `find` counts only with -delete / -exec rm.
 _VERB = re.compile(
@@ -141,17 +143,6 @@ _MSYS = re.compile(r"^/([a-z])(/.*)?$", re.IGNORECASE)
 _LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)])")
 #: The path in front of it: the longest run of path characters.
 _PATH_TAIL = re.compile(r"[\w.~$%{}:\\/-]*\Z")
-#: A bare `run` is a launch where cmd.exe takes a command next: after /c, /k,
-#: call, start, do, else, or OPENING a segment (`cd /d X && run`), with any
-#: @, ^ or redirection in between (`&& @run`, `&& 2>nul run`). cmd searches the
-#: current folder first whenever NoDefaultCurrentDirectoryInExePath is unset,
-#: which is the default (Dijkstra B1, measured against an echo-only run.bat).
-#: This lists where `run` IS a command, so it fails OPEN for any cmd syntax not
-#: listed; N1 (9ba69cb1) was five such spellings. Keep the `^` before
-#: call/start: `call run` opening the command has no character before `call`.
-_BARE_RUN_CONTEXT = re.compile(
-    r"(?i)(?:^|[;&|\n(]|(?:^|[\s\"'])(?:/c|/k|call|start|do|else))"
-    r"(?:\s*(?:[@^]|\d?[<>]{1,2}&?[^\s<>&|]*))*\s*\Z")
 #: Words that pass a command on rather than being it (`cmd /d /c type x`).
 _WRAPPERS = frozenset({
     "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call", "start",
@@ -231,6 +222,7 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
     names something else, is only read, or cannot be resolved."""
     start = match.start()
     prefix = _PATH_TAIL.search(command[:start]).group(0)
+    prefix_length = len(prefix)
     if prefix.startswith("-"):   # -FilePath:.\run.bat names the path after the colon
         if ":" not in prefix:
             return None
@@ -244,20 +236,49 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
     segment = re.split(r"[;&|\n()`]", command[:start])[-1]
     words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
     head = next((w for w in words if w not in _WRAPPERS), None)
-    # An `if` condition is free-form, so no prefix regex can bound it: a bare
-    # `run` anywhere in an `if` segment is taken as its command (N1).
-    if not prefix and match.group(0).lower() == "run" and not (
-            _BARE_RUN_CONTEXT.search(command[:start].rstrip(" \t\"'"))
-            or (head or "").lstrip("@") == "if"):
-        return None   # `bun run`, "don't run it": not a command name here
-    target = _resolve(prefix + match.group(0), base, home)
-    if target is None or target.name.lower() not in ("run", "run.bat"):
-        return None
-    if not (target.parent / "src" / "litetui").is_dir():
-        return None   # another project's run.bat (LiteSuite's, ...)
     if head in _READERS:
         return None   # `type run.bat`, `git diff run.bat`: read, not run
-    return target
+    # A function call / argument array is not a shell command group. Otherwise
+    # ProcessStartInfo arguments such as @('run', ...) look like argv0.
+    boundary = max((command.rfind(c, 0, start) for c in ";&|\n()`"), default=-1)
+    if boundary >= 0 and command[boundary] == "(" and boundary > 0 and (
+            command[boundary - 1].isalnum() or command[boundary - 1] in "_@."):
+        return None
+    before = segment[:-prefix_length] if prefix_length else segment
+    before = before.strip(" \t\"'")
+    before = re.sub(r"\d?[<>]{1,2}&?[^\s<>&|]+", "", before)
+    position = re.findall(r"[^\s\"'`]+", before.lower())
+    position = [w.lstrip("@^") for w in position if w.lstrip("@^")]
+    # Narrow command positions: wrappers, direct invocations and cmd's bounded
+    # if conditions. Do not turn a later subcommand/argument into argv0.
+    while position and position[0] in _WRAPPERS:
+        position.pop(0)
+    if position and position[0] in ("&", "do", "else"):
+        position.pop(0)
+    if position[:1] == ["if"]:
+        condition = position[1:]
+        if condition[:1] == ["not"]:
+            condition = condition[1:]
+        if ((len(condition) == 2 and condition[0] in ("exist", "defined", "errorlevel"))
+                or (len(condition) == 1 and "==" in condition[0])):
+            position = []
+    if position and not (
+            position[0] in ("start-process", "invoke-item", "ii")
+            and position[1:] in ([], ["-filepath"])):
+        return None
+    target = _resolve(prefix + match.group(0), base, home)
+    if target is None:
+        return None
+    if target.name.lower() == "run":
+        # cmd searches PATHEXT in order; a preceding run.exe is not run.bat.
+        extensions = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
+        target = next((candidate for ext in extensions if ext
+                       for candidate in [target.with_suffix(ext.lower())]
+                       if candidate.is_file()), None)
+    owner = _OWNER_LAUNCHER.resolve()
+    if target is None or not target.is_file() or not owner.is_file():
+        return None
+    return target if os.path.normcase(str(target.resolve())) == os.path.normcase(str(owner)) else None
 
 
 def _unquote(word: str) -> str:

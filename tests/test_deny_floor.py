@@ -37,6 +37,58 @@ INCIDENT = (r"$home='C:\Projects\LiteTUI\temp-working-dir\t1018-main-red-home'; 
             r"Remove-Item $home -Recurse -Force -ErrorAction SilentlyContinue")
 
 
+@pytest.mark.parametrize("command, refused", [
+    ("lst.exe run tasks action=list", False),
+    ("python x.py 'please do run it'", False),
+    ("if exist package.json bun run dev", False),
+    ("Invoke-Headless lst.exe @('run','tasks','action=list')", False),
+    ("$p.ArgumentList.Add('run')", False),
+    ("run.bat", True),
+    ("{owner}", True),
+    ("'{owner}'", True),
+    ("cmd /c '{owner}'", True),
+    ("Start-Process -FilePath:{owner}", True),
+    ("Start-Process -FilePath '{owner}'", True),
+    ("Invoke-Item '{owner}'", True),
+    ("cd {dir} && run", True),
+    ("cmd /c run", True),
+    ("run", True),
+    ("call run", True),
+    ("cmd /c @run", True),
+    ("cmd /c ^run", True),
+    ("cmd /c 2>nul run", True),
+    ("if 1==1 run", True),
+    ("if exist src run", True),
+    ("if defined X run", True),
+    ("for %i in (1) do run", True),
+    ("if 1==2 (echo a) else run", True),
+    ("for /f %i in ('echo') do run", True),
+    ("Get-Content '{owner}'", False),
+    ("python x.py '{owner}'", False),
+    ("{other}", False),
+    ("{missing}", False),
+])
+def test_owner_launcher_requires_executable_position_and_resolved_identity(
+        tmp_path, monkeypatch, command, refused):
+    """T0206: judge strings only, never execute the inert owner launcher."""
+    owner = tmp_path / "owner" / "run.bat"
+    (owner.parent / "src" / "litetui").mkdir(parents=True)
+    owner.write_text("@echo off\n", encoding="utf-8")
+    other = tmp_path / "other" / "run.bat"
+    (other.parent / "src" / "litetui").mkdir(parents=True)
+    other.write_text("@echo off\n", encoding="utf-8")
+    missing = tmp_path / "missing" / "run.bat"
+    (missing.parent / "src" / "litetui").mkdir(parents=True)
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    reason = deny_floor.refusal(command.format(owner=owner, other=other, missing=missing, dir=owner.parent),
+                                owner.parent)
+    assert bool(reason) is refused, reason
+    if refused:
+        assert "[owner-launcher]" in reason
+        assert str(owner.resolve()) in reason
+
+
 # ── the gate: every profile, every standing rule ────────────────────────────
 
 @pytest.mark.parametrize("profile", [*tp.PROFILE_NAMES, "no-such-profile"])
