@@ -104,6 +104,39 @@ def load_image_file(app, path: Path) -> str | None:
     except Exception:
         return None
 
+#: Marks an already-injected project index inside the system message; detected
+#: by marker (not a flag) for the same reason as STORE_HEADER: /resume.
+INDEX_HEADER = "## Project index (AGENT_INDEX.md), snapshot at the start of this conversation"
+
+
+def index_block(app, cwd=None) -> str:
+    """The cwd repo's AGENT_INDEX.md as a prompt section, or '' when it has none.
+
+    A SNAPSHOT, deliberately: taken once when the conversation (or Claude
+    segment) starts and never refreshed on resume -- the prompt prefix stays
+    byte-stable (cache) and the record shows what the agent was told. The text
+    says so and names the path, so a stale copy is one `read` away from current.
+    Over INDEX_CAP chars it is cut, the cut names the file, and the user is told.
+    """
+    import os
+    from litetui.project_index import INDEX_CAP, INDEX_NAME, read_index
+    found = read_index(cwd if cwd is not None else os.getcwd())
+    if found is None:
+        return ''
+    path, text, total = found
+    where = str(path).replace('\\', '/')
+    if total > INDEX_CAP:
+        text += (f'\n\n[... {INDEX_NAME} truncated at {INDEX_CAP} of {total} chars: {where} -- '
+                 'read the file for the rest, and trim it so the whole index fits.]')
+        notify = getattr(app, '_system', None)
+        if notify is not None:
+            notify(f'warning: {INDEX_NAME} is {total} chars and was truncated at {INDEX_CAP} '
+                   f'in the system prompt ({where}). Trim it.')
+    return (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it lists. Source: {where}. '
+            'It is NOT re-sent each turn and is not refreshed on resume; read the file for its '
+            f'current contents.\n\n{text}\n')
+
+
 def store_block(app, live: bool=False) -> str:
     # memory.md is capped hardest ON PURPOSE: it is an index, and an index
     # that needs more than this has stopped being one.
