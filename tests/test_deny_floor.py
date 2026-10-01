@@ -912,3 +912,81 @@ def test_owner_scriptblock_closures_data_f1(tmp_path, monkeypatch, shell, comman
 def test_owner_numeric_label_and_keyword_data_f1(tmp_path, monkeypatch, shell, command):
     owner = _gap_owner_t0291a(tmp_path, monkeypatch)
     assert deny_floor.refusal(command, owner.parent, shell=shell) is None
+
+
+NESTED_GROUPS_T0291A = [
+    "&{({run}).Invoke()}", "try{({run}).Invoke()}catch{}", "if(1){({run})}",
+    "&{&({run})}", "1 | ?({run})", "foreach($x in 1){({run}).Invoke()}",
+]
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", NESTED_GROUPS_T0291A)
+def test_owner_nested_group_scriptblock_f1(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    reason = deny_floor.refusal(command, owner.parent, shell=shell)
+    assert reason and "[owner-launcher]" in reason
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", NESTED_GROUPS_T0291A)
+def test_owner_nested_group_identity_f1(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
+    assert deny_floor.refusal(command, other, shell=shell) is None
+    owner.unlink()
+    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", ['foo({run: 1})', 'console.log({run})', 'foo]({run})', 'foo()({run})'])
+def test_owner_nested_group_call_data_f1(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    assert deny_floor.refusal(command, owner.parent, shell=shell) is None
+
+
+SWITCH_LABELS_T0291A = [
+    'switch(10){10{run}}', "switch(1){'1'{run}}", 'switch(1){"1"{run}}',
+    'switch(1){default{run}}', 'switch(1){{$_ -gt 0}{run}}',
+]
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", SWITCH_LABELS_T0291A)
+def test_owner_switch_labels_f1(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    reason = deny_floor.refusal(command, owner.parent, shell=shell)
+    assert reason and "[owner-launcher]" in reason
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", SWITCH_LABELS_T0291A)
+def test_owner_switch_labels_identity_f1(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
+    assert deny_floor.refusal(command, other, shell=shell) is None
+    owner.unlink()
+    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", ["foo{10{run}", "a'1'{run}", "${1}{run}", "foo{default{run}"])
+def test_owner_switch_labels_data_f1(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    assert deny_floor.refusal(command, owner.parent, shell=shell) is None
+
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", [
+    r"&{({.\run.bat}).Invoke()}", r"try{({.\run.bat}).Invoke()}catch{}",
+    r"switch(10){10{.\run.bat}}", r"switch(1){'1'{.\run.bat}}",
+    r'switch(1){"1"{.\run.bat}}', r"switch(1){default{.\run.bat}}",
+    r"switch(1){{$_ -gt 0}{.\run.bat}}",
+])
+def test_owner_f1_nested_and_label_paths(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    assert deny_floor.refusal(command, owner.parent, shell=shell)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
+    assert deny_floor.refusal(command, other, shell=shell) is None
+    owner.unlink()
+    assert deny_floor.refusal(command, tmp_path, shell=shell) is None

@@ -345,18 +345,20 @@ def _launcher_quoted_argument(command: str, start: int) -> bool:
     return shape.start('token') < start < shape.end('token') - 1
 
 
-#: F1: brace openings in bounded scriptblock positions: separators, nesting,
-#: closing/grouping parens, fixed block keywords/declarations, and a one-digit
-#: label directly inside an already recognized brace boundary (switch labels).
-#: Numeric labels are the ONLY accepted word-char predecessor. Call-paren
-#: objects remain data, as do
-#: ${variables}, quoted braces, path words and general word+brace spellings.
-#: Keyword arms consume a prefix; the boundary is always the LAST character.
+#: F1: bounded block positions, including grouping parens nested after { or ?.
+#: Call-paren objects, ${variables}, quoted braces, paths and general word+brace
+#: spellings remain data. Prefix-consuming arms always end AT the boundary.
 _OWNER_BOUNDARY = re.compile(
     r"[;&|\r\n()`]|^\{|(?<=[\s&.|%;)?{])\{|(?<=^\()\{|"
-    r"(?<=[\s&.|%;(]\()\{|(?<={\d)\{|"
+    r"(?<=[\s&.|%;({?]\()\{|"
     r"(?<![\w.$/\\-])(?:try|do|else|finally|catch|begin|process|end|trap)\{|"
     r"(?<![\w.$/\\-])(?:function|filter)[ \t]+[A-Za-z_][\w-]*\{",
+    re.IGNORECASE)
+#: Narrow switch-label shapes directly inside an ALREADY accepted brace: digits,
+#: quoted strings, default, or a brace-free scriptblock label. No quote/block
+#: scanner. These labels are the only accepted word/quote/} brace predecessors.
+_SWITCH_LABEL_BOUNDARY = re.compile(
+    r"\{(?:\d+|'[^'{}\r\n]*'|\"[^\"{}\r\n]*\"|default|\{[^{}\r\n]*\})\{",
     re.IGNORECASE)
 _EXECUTION_SINKS = frozenset({
     "start-process", "saps", "start", "invoke-item", "ii", "invoke-expression", "iex",
@@ -388,13 +390,14 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
     # echo `run.bat`), so it starts a segment too. A `)` ends one: in
     # `if 1==2 (echo a) else run.bat` the command is `else`'s, not echo's (P1).
     boundaries = []
-    for opening in _OWNER_BOUNDARY.finditer(command[:start]):
-        boundary = opening.end() - 1
-        if command[boundary] == "{" and boundary >= 2 and command[boundary - 2] == "{" and command[boundary - 1].isdigit():
-            # A digit+brace is a switch-label arm only when its enclosing brace
-            # was itself accepted, never in a path/data word such as foo{1{run}.
-            if boundary - 2 not in boundaries:
-                continue
+    openings = [*((m.end() - 1, None) for m in _OWNER_BOUNDARY.finditer(command[:start])),
+                *((m.end() - 1, m.start()) for m in _SWITCH_LABEL_BOUNDARY.finditer(command[:start]))]
+    for boundary, enclosing in sorted(openings, key=lambda opening: opening[0]):
+        # Label candidates are syntax-only shapes, not authoritative shell
+        # parsing. Require their enclosing brace to have been accepted already;
+        # foo{10{run}, a'1'{run} and ${1}{run} must not gain a boundary.
+        if enclosing is not None and enclosing not in boundaries:
+            continue
         boundaries.append(boundary)
     boundary = boundaries[-1] if boundaries else -1
     segment = command[boundary + 1:start]
