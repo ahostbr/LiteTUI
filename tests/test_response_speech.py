@@ -43,6 +43,44 @@ async def test_each_response_speaks_own_text_and_stops(monkeypatch):
     assert not active
 
 
+@pytest.mark.asyncio
+async def test_recap_only_and_summary_only_responses_have_working_speak_buttons(monkeypatch):
+    spoken = []
+    monkeypatch.setattr(voice_backend, 'is_playing', lambda owner: False)
+    monkeypatch.setattr(voice_backend, 'stop', lambda owner=None: None)
+    monkeypatch.setattr(voice_backend, 'speak', lambda text, **kw: spoken.append(text) or True)
+
+    class Host(App):
+        settings = SimpleNamespace(tts_enabled=True, tts_engine='edge',
+                                   tts_edge_voice='voice', tts_voice='', tts_timeout=30)
+
+        def compose(self):
+            recap_card = AssistantMessage()
+            recap_card.recap = 'Did work / Tests green'
+            recap_card.set_summary(recap_card.recap)
+            yield recap_card
+            summary_card = AssistantMessage()
+            summary_card.set_summary('A generated summary')
+            yield summary_card
+            empty_card = AssistantMessage()
+            yield empty_card
+            answer_card = AssistantMessage()
+            answer_card.set_answer('Full answer')
+            answer_card.recap = 'Short recap'
+            answer_card.set_summary(answer_card.recap)
+            yield answer_card
+
+    async with Host().run_test() as pilot:
+        buttons = list(pilot.app.query(ResponseSpeakButton))
+        for button in buttons:
+            button.refresh_playback()
+        assert [button.display for button in buttons] == [True, True, False, True]
+        assert not spoken  # no automatic playback
+        for button in buttons:
+            await pilot.click(button)
+        assert spoken == ['Did work / Tests green', 'A generated summary', 'Full answer']
+
+
 def test_prompt_has_no_speak_toggle():
     import inspect
 
