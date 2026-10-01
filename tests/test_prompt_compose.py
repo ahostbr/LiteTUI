@@ -91,7 +91,12 @@ def _reference(a) -> str:
         # "offered with no instructions" state this file's fold exists to
         # notice. The skills index stays off with the tools, as before.
         base = (base + m.TOOLS_DISABLED_PROMPT).strip()
-    return base
+    # T1124's required final recap is appended after every composed section.
+    # Independent literal: sharing the app's value would hide a missing suffix.
+    return base + (
+        "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, "
+        "about 40 tokens</recap>. Do not put this tag in interim tool calls."
+    )
 
 
 def _fake_skills():
@@ -155,3 +160,12 @@ def test_memory_prompt_distinguishes_storage_id_from_inbox_sender(tmp_path):
     assert "It is NOT your inbox identity" in text
     assert "never use it as from/--from or as a reply address" in text
     assert str(tmp_path).replace("\\", "/") in text
+
+
+def test_composed_prompt_ends_with_required_final_recap_instruction():
+    expected = (
+        "End each FINAL answer with <recap>two short lines: what you did and result, "
+        "about 40 tokens</recap>. Do not put this tag in interim tool calls."
+    )
+    a = m.LiteTUI()
+    assert a._system_prompt_text().endswith("\n\n" + expected)
