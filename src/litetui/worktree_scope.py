@@ -32,6 +32,14 @@ What "confined" means (a command is confined to ONE root, all of it):
 CEILING (deliberate): an interpreter fed a heredoc or `-c` string is judged by the
 path LITERALS it contains, exactly as `python script.py` is already unjudged by the
 danger table. Code that computes a path at run time is not seen.
+
+ACCEPTED, same class: a package runner (`npm exec`, `npx`, `bunx`, `pnpm dlx`, `yarn dlx`)
+runs an arbitrary package exactly as `npm run <script>` and `python script.py` already run
+arbitrary code without a prompt. The exemption proves a command's PATHS and VERBS (see
+scope_verbs); it does not read the code of a program it is allowed to run. Pinned in
+tests/test_worktree_scope.py so it stays a decision. What IS refused: git subcommands and
+text-tool programs whose whole purpose is to run a command (`git rebase -x`, `bisect run`,
+`submodule foreach`, `difftool`, awk `system`/pipes, sed `e`).
 """
 from __future__ import annotations
 

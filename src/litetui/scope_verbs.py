@@ -165,7 +165,41 @@ def _refuse_git_config(args: list[str]) -> None:
         elif w.startswith("-"):
             i += 1
         else:
+            _refuse_git_exec_subcommand(low, [a.lower() for a in args[i + 1:]])
             return
+
+
+#: git subcommands whose job is to RUN a command or a program of the user's choosing.
+_GIT_EXEC_SUBCOMMANDS = frozenset({"difftool", "mergetool", "filter-repo", "filter-branch",
+                                   "daemon", "instaweb"})
+
+
+def _refuse_git_exec_subcommand(sub: str, rest: list[str]) -> None:
+    if sub in _GIT_EXEC_SUBCOMMANDS:
+        raise VerbRefused(f"`git {sub}` runs a program")
+    if sub == "rebase" and any(w == "--exec" or w.startswith("--exec=")
+                               or (w.startswith("-") and not w.startswith("--") and "x" in w)
+                               for w in rest):
+        raise VerbRefused("`git rebase -x/--exec` runs a command")
+    if sub == "bisect" and "run" in rest:
+        raise VerbRefused("`git bisect run` runs a command")
+    if sub == "submodule" and "foreach" in rest:
+        raise VerbRefused("`git submodule foreach` runs a command")
+
+
+#: awk programs that run or pipe to a command (`system(...)`, `print | "cmd"`, `"cmd" | getline`).
+_AWK_EXEC = re.compile(r"(?i)system|getline|\|")
+#: sed's `e` flag (`s/x/y/e`) and `e` command (`e`, `1e cmd`, `$!e`, after `;`/`{`): both run a command.
+_SED_EXEC_FLAG = re.compile(r"\bs(?P<d>[^\s\\a-zA-Z0-9]).*?(?P=d).*?(?P=d)[a-zA-Z0-9]*e")
+_SED_EXEC_COMMAND = re.compile(r"(?:^|[;{}\n])\s*(?:\d+|\$)?(?:,\s*(?:\d+|\$))?\s*!?\s*e(?:\s|;|}|$)")
+
+
+def _refuse_embedded_execution(verb: str, rest: list[str]) -> None:
+    if verb in ("awk", "gawk", "mawk", "nawk") and any(_AWK_EXEC.search(w) for w in rest):
+        raise VerbRefused("an awk program with system/getline/a pipe runs a command")
+    if verb in ("sed", "gsed") and any(_SED_EXEC_FLAG.search(w) or _SED_EXEC_COMMAND.search(w)
+                                       for w in rest):
+        raise VerbRefused("a sed `e` command or flag runs a command")
 
 
 def require_in_tree_verb(words: list[str]) -> None:
@@ -184,6 +218,7 @@ def require_in_tree_verb(words: list[str]) -> None:
         if "push" in low or "config" in low:
             raise VerbRefused("a `git push`/`git config` acts beyond the tree")
         _refuse_git_config(rest)
+    _refuse_embedded_execution(verb, rest)
     if verb in ("find", "xargs", "fd"):
         for flag in ("-exec", "-execdir", "-ok", "-okdir", "-x", "--exec"):
             if flag in low:

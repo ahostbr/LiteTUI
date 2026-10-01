@@ -586,3 +586,59 @@ def test_ordinary_in_tree_work_stays_exempt_next_to_a_scoped_row(trees, tail):
     cmd = f"{FIRST.format(wt=fwd(trees['wt']))} && {tail}"
     d = decide(cmd, trees["main"])
     assert d.action == tp.ALLOW, (cmd, d.reason)
+
+
+# ── residuals 1+2 of GuardTuring's APPROVE on 72e5149f ───────────────────────
+
+
+@pytest.mark.parametrize("tail", [
+    # (1) git subcommands that EXECUTE a command
+    "git rebase -x 'kill -9 1' main", "git rebase --exec 'kill -9 1' main", "git rebase -i -x x main",
+    "git bisect run kill -9 1", "git bisect run ./check.sh", "git submodule foreach kill -9 1",
+    "git submodule foreach --recursive git clean -fdx", "git difftool -x kill", "git mergetool",
+    "git filter-repo --path x", "git -C packages/x rebase -x x main", "git --no-pager bisect run x",
+    "git daemon --base-path=.",
+    # (2) awk / sed programs with embedded execution
+    "awk 'BEGIN{system(\"kill -9 1\")}'", "awk 'BEGIN { system(\"x\") }' a.txt",
+    "awk '{print | \"sh\"}' a.txt", "awk '{ \"date\" | getline d }' a.txt",
+    "awk -f prog.awk 'BEGIN{system(1)}'", "gawk 'BEGIN{system(\"x\")}'",
+    "sed 's/x/kill -9 1/e' a.txt", "sed -e 's/a/b/ge' a.txt", "sed -n 's|a|b|e;p' a.txt",
+    "sed '1e kill -9 1' a.txt", "sed -e 'e kill -9 1' a.txt", "sed 's/a/b/;e' a.txt", "sed '$!e' a.txt",
+    "sed --expression='s/x/y/e' a.txt",
+])
+def test_git_and_text_tools_that_run_a_command_are_not_exempt(trees, tail):
+    wt = fwd(trees["wt"])
+    for cmd in (f"{FIRST.format(wt=wt)} && {tail}", f"{FIRST.format(wt=wt)}\n  {tail}"):
+        assert decide(cmd, trees["main"]).action == tp.CONFIRM, cmd
+
+
+@pytest.mark.parametrize("tail", [
+    "git rebase main", "git rebase --continue", "git bisect start", "git bisect good", "git submodule update",
+    "git log --oneline", "git diff --stat", "git grep -n foo",
+    "awk '{print $1}' a.txt", "awk -F, '{ s += $2 } END { print s }' a.txt",
+    "sed -n 1,5p a.txt", "sed 's/a/b/g' a.txt", "sed -i 's/error/ok/' a.txt", "sed '3,5d' a.txt",
+    "sed 's/x/y/' a.txt", "sed -e '3d' a.txt",
+])
+def test_the_same_tools_without_embedded_execution_stay_exempt(trees, tail):
+    cmd = f"{FIRST.format(wt=fwd(trees['wt']))} && {tail}"
+    d = decide(cmd, trees["main"])
+    # awk/sed programs with `$` are refused by the shell-syntax reader (a variable could
+    # expand): only the ones the reader can follow are asserted ALLOW
+    if "$" in tail and d.action == tp.CONFIRM:
+        return
+    assert d.action == tp.ALLOW, (cmd, d.reason)
+
+
+@pytest.mark.parametrize("tail", [
+    "npm exec -- vitest run", "npm exec cowsay hi", "npx cowsay hi", "npx -y tsc --noEmit",
+    "bunx vitest run", "pnpm dlx create-vite app", "yarn dlx x", "npm run anything", "python script.py",
+])
+def test_package_runners_and_scripts_are_the_documented_interpreter_class_ceiling(trees, tail):
+    """ACCEPTED, and pinned so it stays a decision rather than an accident: `npm exec` /
+    `npx` / `bunx` / `pnpm dlx` run an arbitrary package exactly as `npm run <script>` and
+    `python script.py` already run arbitrary code without a prompt. The exemption proves a
+    command's PATHS and VERBS; it does not read the code of a program it is allowed to run
+    (see the CEILING paragraph in worktree_scope's docstring)."""
+    cmd = f"{FIRST.format(wt=fwd(trees['wt']))} && {tail}"
+    d = decide(cmd, trees["main"])
+    assert d.action == tp.ALLOW, (cmd, d.reason)
