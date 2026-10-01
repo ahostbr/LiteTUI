@@ -146,3 +146,12 @@ def test_unknown_placeholder_fails_the_composed_prompt_gate(tmp_path, monkeypatc
     monkeypatch.setattr(paths, "SYSTEM_PROMPT_FILE", authored)
     with pytest.raises(ValueError, match="UNKNOWN_PROMPT_PATH"):
         m.LiteTUI()
+
+
+def test_memory_prompt_distinguishes_storage_id_from_inbox_sender(tmp_path):
+    text = m.memory_prompt("storage-convo-id", tmp_path)
+    assert "You are conversation" not in text
+    assert "Your conversation id (storage only) is `storage-convo-id`" in text
+    assert "It is NOT your inbox identity" in text
+    assert "never use it as from/--from or as a reply address" in text
+    assert str(tmp_path).replace("\\", "/") in text
