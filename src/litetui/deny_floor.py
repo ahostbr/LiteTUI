@@ -146,9 +146,9 @@ _GLOB = re.compile(r"[*?]")
 _MSYS = re.compile(r"^/([a-z])(/.*)?$", re.IGNORECASE)
 
 #: The last segment of LiteTUI's launcher as a shell word ends it.
-_LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)])")
+_LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)}])")
 #: The path in front of it: the longest run of path characters.
-_PATH_TAIL = re.compile(r"[\w.~$%{}:\\/-]*\Z")
+_PATH_TAIL = re.compile(r"[\w.~$%:\\/-]*\Z")
 #: Words that pass a command on rather than being it (`cmd /d /c type x`).
 _WRAPPERS = frozenset({
     "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call", "start",
@@ -291,10 +291,40 @@ def _say(rule: str, what: str,
             f"rewording can run this; do not retry it in another form. {instead}")
 
 
+def _launcher_quoted_argument(command: str, start: int) -> bool:
+    """Narrow cost guard: readers and Python/Node code strings are arguments.
+
+    No shell/interpreter inference: PowerShell/cmd/bash wrappers are excluded.
+    Only simple balanced single-line ASCII quotes are understood. Nested quotes,
+    escapes, substitutions and ambiguous quoted prefixes retain the full scan.
+    This is not a parser for Python, Node or a shell's expression language.
+    """
+    if any(quote in command for quote in "\u2018\u2019\u201a\u201b"):
+        return False
+    for quoted in re.finditer(r"\"[^\"\r\n]*\"|'[^'\r\n]*'", command):
+        if not quoted.start() < start < quoted.end():
+            continue
+        text = quoted.group()
+        if any(ch in text[1:-1] for ch in "\"'\\`$"):
+            return False  # nested / escaped quotes or substitutions: full scan
+        prefix = command[:quoted.start()]
+        if any(ch in prefix for ch in "\"'\\`$"):
+            return False  # ambiguous prefix quotes / escapes: no exemption
+        before = re.split(r"[;&|\r\n(){}`]", prefix)[-1]
+        words = before.lower().split()
+        if not words:
+            return False
+        return words[0] in _READERS or words in (["python", "-c"], ["python.exe", "-c"],
+                                                ["node", "-e"], ["node.exe", "-e"])
+    return False
+
+
 def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) -> Path | None:
     """The LiteTUI run.bat this `run` / `run.bat` word runs, or None when it
     names something else, is only read, or cannot be resolved."""
     start = match.start()
+    if _launcher_quoted_argument(command, start):
+        return None
     prefix = _PATH_TAIL.search(command[:start]).group(0)
     prefix_length = len(prefix)
     if prefix.startswith("-"):   # -FilePath:.\run.bat names the path after the colon
@@ -307,16 +337,18 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
     # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
     # echo `run.bat`), so it starts a segment too. A `)` ends one: in
     # `if 1==2 (echo a) else run.bat` the command is `else`'s, not echo's (P1).
-    segment = re.split(r"[;&|\n()`]", command[:start])[-1]
+    segment = re.split(r"[;&|\r\n(){}`]", command[:start])[-1]
     words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
     head = next((w for w in words if w not in _WRAPPERS), None)
     if head in _READERS:
         return None   # `type run.bat`, `git diff run.bat`: read, not run
-    # A function call / argument array is not a shell command group. Otherwise
-    # ProcessStartInfo arguments such as @('run', ...) look like argv0.
-    boundary = max((command.rfind(c, 0, start) for c in ";&|\n()`"), default=-1)
+    # A clearly quoted function / array argument is data, not argv0. Bare
+    # words after an identifier+( remain ambiguous and are scanned fail-closed.
+    boundary = max((command.rfind(c, 0, start) for c in ";&|\r\n(){}`"), default=-1)
     if boundary >= 0 and command[boundary] == "(" and boundary > 0 and (
-            command[boundary - 1].isalnum() or command[boundary - 1] in "_@."):
+            command[boundary - 1].isalnum() or command[boundary - 1] in "_@.") and (
+            re.fullmatch(r"[ \t]*[\"']", command[boundary + 1:start])) and (
+            command[start:].startswith(match.group() + command[start - 1])):
         return None
     before = segment[:-prefix_length] if prefix_length else segment
     before = before.strip(" \t\"'")

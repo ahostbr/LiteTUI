@@ -443,3 +443,94 @@ def test_here_string_unusual_syntax_is_conservative(tmp_path, monkeypatch, comma
         assert deny_floor.refusal(command, tmp_path, shell="powershell") is None
     else:
         assert deny_floor.refusal(command, tmp_path, shell="powershell") == deny_floor.refusal(command, tmp_path)
+
+
+GAP_COMMANDS_T0291A = [
+    "Get-Date\rrun", "Get-Date\r\r\nrun",
+    "& { run }", "1 | % {run}", "1 | ForEach-Object { run }",
+    "& { & { run } }", "1 | % { & {run} }",
+    "Get-Date(run", "Get-Date(run)", "Write-Output $(run)",
+    "Get-Date($(run))", "Get-Date(1 | % {run})",
+]
+
+COST_COMMANDS_T0291A = [
+    'python -c "print(run)"', 'python -c "print({run})"',
+    'python -c "print( run )"', 'python -c "print({ run })"',
+    'node -e "console.log(run)"', 'node -e "console.log({run})"',
+    'node -e "console.log({ run })"',
+    'git commit -m "fix(run): keep {run} as data"',
+    "Get-Date(1)", "Format-Value($value)", "Invoke-Headless lst.exe @('run','tasks')",
+    "$p.ArgumentList.Add('run')", "python x.py 'please do run it'",
+    "Get-Content run.bat", "rg 'run(' tests", "rg '{run}' tests",
+]
+
+HERE_COST_COMMANDS_T0291A = [
+    "@'\nrun = () => ({ run });\nfunction test() { run(); }\n'@ | Add-Content tests.ts",
+    "@'\ndef run():\n    return {run}\nprint( run )\n'@ | Set-Content test.py",
+    "@'\r\nrun = () => ({run});\r\n'@ | Add-Content tests.ts",
+]
+
+
+def _gap_owner_t0291a(tmp_path, monkeypatch):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    return owner
+
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", GAP_COMMANDS_T0291A)
+def test_older_owner_command_position_gaps(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    reason = deny_floor.refusal(command, owner.parent, shell=shell)
+    assert reason and "[owner-launcher]" in reason
+
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", COST_COMMANDS_T0291A)
+def test_owner_position_cost_corpus(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    assert deny_floor.refusal(command, owner.parent, shell=shell) is None
+
+
+@pytest.mark.parametrize("command", HERE_COST_COMMANDS_T0291A)
+def test_owner_position_here_string_cost(tmp_path, monkeypatch, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    assert deny_floor.refusal(command, owner.parent, shell="powershell") is None
+
+
+QUOTE_GUARD_COMMANDS_T0291A = [
+    'python -c "print(run)"; run', 'node -e "console.log(run)" & run',
+    'python -c "print(run)"\nrun', 'python -c "print(run)"\rrun',
+    'node -e "console.log(run)" | run',
+    'python -c "print(run)"; & {run}', 'node -e "console.log(run)"; Get-Date(run)',
+    'run; python -c "print(run)"', 'run | node -e "console.log(run)"',
+    'python -c "print({ run })', 'node -e "console.log({ run })',
+    'python -c "print(\'{ run }\')"',
+    r'python -c "print(\"{ run }\")"',
+    'python -c "print(\n{ run }\n)"', 'node -e "console.log(\r{ run }\r)"',
+    'python -c "print($(run))"', 'node -e "console.log(`run`)"',
+    'unknown -c "print({run})"', 'python -x "print({ run })"',
+    'python -c other "print({ run })"', 'node -e other "console.log({ run })"',
+]
+
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", QUOTE_GUARD_COMMANDS_T0291A)
+def test_owner_position_quote_guard_fails_closed(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    reason = deny_floor.refusal(command, owner.parent, shell=shell)
+    assert reason and "[owner-launcher]" in reason
+
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", [
+    'unknown "prefix; python -c "print({ run })"',
+    '$p.ArgumentList.Add(\'run)', "Invoke-Headless @('run)",
+    r'python -c \"print({ run })"',
+])
+def test_owner_position_ambiguous_quote_context(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    reason = deny_floor.refusal(command, owner.parent, shell=shell)
+    assert reason and "[owner-launcher]" in reason
