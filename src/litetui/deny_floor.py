@@ -60,7 +60,9 @@ path the reader rule excuses, or a spelling that does not resolve here (an admin
 is intentionally limited to direct launches and the shell wrappers below;
 arguments and quoted prose are not treated as executable paths. Complete literal
 PowerShell here-strings in standalone output / terminal Add-Content, Set-Content
-or Out-File expressions are data for the launcher rule only. Expandable strings,
+or Out-File expressions are data for the launcher rule only when the caller
+proves the interpreter with shell="powershell". Unknown / other shells retain
+full scanning; syntax or a command's shell argument is not proof. Expandable strings,
 execution sinks and ambiguous expression contexts remain scanned; this is a
 small conservative allowlist, not a shell parser or a general quotation filter.
 """
@@ -219,14 +221,18 @@ def _literal_here_data(command: str) -> list[tuple[int, int]]:
     return spans
 
 
-def refusal(command, workspace, home=None) -> str | None:
-    """The sentence that refuses `command`, or None when the floor allows it."""
+def refusal(command, workspace, home=None, *, shell: str | None = None) -> str | None:
+    """Refusal sentence, or None. Only a trusted runtime may prove `shell`.
+
+    Omitted / unknown shell retains the original full scan. Never infer this
+    context from command syntax or an agent-supplied argument.
+    """
     if not isinstance(command, str):
         command = " ".join(map(str, command or ()))
     workspace = Path(workspace)
     home = Path(home) if home is not None else Path.home()
     base: Path | None = workspace   # where relative targets resolve; None = unknown
-    literal_data = _literal_here_data(command)
+    literal_data = _literal_here_data(command) if shell == "powershell" else []
     launcher_base: Path | None = workspace  # data cd text must not move a real launch
     steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
                     *((m.start(), m) for m in _VERB.finditer(command)),

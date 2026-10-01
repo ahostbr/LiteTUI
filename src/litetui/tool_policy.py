@@ -381,7 +381,10 @@ def evaluate(
     # RPC) reaches its tools through this function, so the floor holds
     # whichever profile string the turn carries (T1027: an inbox turn and a
     # typed turn can disagree on it) and adds no prompt: it only refuses.
-    if floor := _floor(args, workspace):
+    # Only the core PowerShell command route proves its interpreter. An MCP
+    # name / agent-supplied shell field must never gain this exemption.
+    floor_shell = "powershell" if tool_name == "powershell" and policy is SHELL_POLICY else None
+    if floor := _floor(args, workspace, shell=floor_shell):
         return PolicyDecision(DENY, profile_name, capabilities, floor, danger=DELETION)
     if profile is None:
         return PolicyDecision(
@@ -1084,7 +1087,8 @@ def _command_text(args: Mapping[str, object] | None) -> str:
     return command if isinstance(command, str) else " ".join(map(str, command))
 
 
-def _floor(args: Mapping[str, object] | None, workspace: Path) -> str | None:
+def _floor(args: Mapping[str, object] | None, workspace: Path, *,
+           shell: str | None = None) -> str | None:
     """deny_floor's refusal for any call that carries a `command`, or None.
 
     ANY POLICY, NOT ONLY SHELL_POLICY (review 2198d4ab F2): an MCP shell such
@@ -1106,7 +1110,9 @@ def _floor(args: Mapping[str, object] | None, workspace: Path) -> str | None:
     if isinstance(tool_cwd, str) and tool_cwd:
         bases.append(Path(workspace) / tool_cwd)   # an absolute cwd replaces workspace
     for base in dict.fromkeys(b.resolve() for b in bases):
-        if reason := deny_floor.refusal(text, base):
+        # core_tools.tool_powershell accepts a string and calls a PowerShell
+        # executable with -Command, shell=False. An argv-list is not that route.
+        if reason := deny_floor.refusal(text, base, shell=shell if isinstance(command, str) else None):
             return reason
     return None
 

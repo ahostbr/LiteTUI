@@ -126,7 +126,7 @@ def test_owner_launcher_literal_here_string_data_only(tmp_path, monkeypatch, com
     owner.write_text("@echo off\n", encoding="utf-8")
     monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-    reason = deny_floor.refusal(command.format(owner=owner), owner.parent)
+    reason = deny_floor.refusal(command.format(owner=owner), owner.parent, shell="powershell")
     assert bool(reason) is refused, reason
     if refused:
         assert "[owner-launcher]" in reason
@@ -138,7 +138,7 @@ def test_original_t0291_command_is_literal_test_data(tmp_path, monkeypatch):
     monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     command = (Path(__file__).parent / "fixtures" / "T0291-here-string.txt").read_text(encoding="utf-8")
-    assert deny_floor.refusal(command, owner.parent) is None
+    assert deny_floor.refusal(command, owner.parent, shell="powershell") is None
 
 
 
@@ -368,3 +368,43 @@ def test_the_floor_works_with_liteharness_not_importable(tmp_path):
                           cwd=tmp_path, env={**os.environ, "PYTHONPATH": src}, timeout=120)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.startswith("deny DENY FLOOR [home-variable-delete]"), proc.stdout
+
+
+@pytest.mark.parametrize("shell", [None, "cmd", "bash", "powershell"])
+@pytest.mark.parametrize("original", [False, True])
+def test_here_string_exemption_requires_proven_shell(tmp_path, monkeypatch, shell, original):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    command = "@'\nrun\n'@"
+    if original:
+        command = (Path(__file__).parent / "fixtures/T0291-here-string.txt").read_text(encoding="utf-8")
+    kwargs = {} if shell is None else {"shell": shell}
+    reason = deny_floor.refusal(command, tmp_path, **kwargs)
+    assert bool(reason) is (shell != "powershell"), reason
+
+
+@pytest.mark.parametrize("tool_name, policy, command_list, refused", [
+    ("powershell", tp.SHELL_POLICY, False, False),
+    ("bash", tp.SHELL_POLICY, False, True),
+    ("cmd", tp.SHELL_POLICY, False, True),
+    ("", tp.SHELL_POLICY, False, True),
+    ("mcp__litesuite-tools__shell", tp.MCP_UNKNOWN_POLICY, False, True),
+    ("powershell", tp.MCP_UNKNOWN_POLICY, False, True),
+    ("powershell", tp.SHELL_POLICY, True, True),
+])
+@pytest.mark.parametrize("original", [False, True])
+def test_floor_here_string_shell_route(tmp_path, monkeypatch, tool_name, policy, command_list, refused, original):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.chdir(tmp_path)
+    command = "@'\nrun\n'@"
+    if original:
+        command = (Path(__file__).parent / "fixtures/T0291-here-string.txt").read_text(encoding="utf-8")
+    decision = tp.evaluate(tp.AUTONOMOUS, policy,
+                           {"command": [command] if command_list else command, "shell": "powershell"},
+                           tmp_path, tool_name=tool_name)
+    assert ("[owner-launcher]" in decision.reason) is refused, decision.reason
