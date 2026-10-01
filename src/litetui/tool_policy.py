@@ -21,7 +21,7 @@ from typing import Callable, Iterable, Mapping
 # import time, and the store is REDIRECTED by many tests (and could be by any
 # future caller) — a snapshot would silently classify against a directory that
 # is no longer the store. Same late-binding trap as the profile choices.
-from litetui import deny_floor, paths, trusted_executables
+from litetui import deny_floor, paths, trusted_executables, worktree_scope
 
 
 # The required vocabulary.  A tool may carry more than one capability: shell
@@ -346,6 +346,7 @@ def evaluate(
     always_allow: frozenset[str] = frozenset(),
     deny: frozenset[str] = frozenset(),
     shell: str | None = None,
+    seat_name: str | None = None,
 ) -> PolicyDecision:
     """Return the host action for one proposed tool call.
 
@@ -421,6 +422,16 @@ def evaluate(
                 profile.name,
                 capabilities,
                 f"allowed by a standing rule for {key}",
+            )
+        # T0246: a shell command confined to the seat's OWN worktree needs no human on
+        # `interactive` (Ryan: "cmds inside its worktree that arent removal of the
+        # tree... it should never need approval"). After the floor and the standing
+        # rules above, so neither can be bypassed by it; and interactive only.
+        if (profile.name == INTERACTIVE and policy.classify_args is classify_shell
+                and _own_worktree_allows(args or {}, Path(workspace).resolve(), seat_name, shell)):
+            return PolicyDecision(
+                ALLOW, profile.name, capabilities,
+                "allowed: confined to the seat's own worktree",
             )
         what = _danger_of(policy, args or {}, Path(workspace).resolve(), shell=shell)
         return PolicyDecision(
@@ -983,18 +994,88 @@ def _command_view(command: str, shell: str | None = None) -> str:
     return scan(0)[0]
 
 
-def danger(command: str, workspace: Path, *, shell: str | None = None) -> str | None:
-    """The danger CLASS of a shell command, or None when it is ordinary."""
+def _iter_danger(command: str, workspace: Path, shell: str | None):
+    """Every danger a command hits, in table order: (class, DANGER_TABLE index), then
+    (FOREIGN_PROCESS, -1) for a path launch (the one hit with no table row)."""
     view = _command_view(command, shell)
     unwrapped = _unwrap_command_verbs(view)
-    for label, pattern in _DANGER:
+    for index, (label, pattern) in enumerate(_DANGER):
         if pattern.search(view) or (unwrapped != view and pattern.search(unwrapped)):
-            return label
+            yield label, index
     for match in _PATH_RUN.finditer(view):
         if _foreign_path_launch(match.group("quoted") or match.group("bare"), workspace):
             if not _read_only_inspection(command, shell):
-                return FOREIGN_PROCESS
-    return None
+                yield FOREIGN_PROCESS, -1
+                return
+
+
+def danger(command: str, workspace: Path, *, shell: str | None = None) -> str | None:
+    """The danger CLASS of a shell command, or None when it is ordinary."""
+    return next((label for label, _ in _iter_danger(command, workspace, shell)), None)
+
+
+#: T0246: which DANGER_TABLE rows a command CONFINED to the seat's own worktree may
+#: run without a prompt. An ALLOWLIST by row, so a row added later is NOT exempt
+#: until someone decides it is (pinned in tests/test_worktree_scope.py). Deleting,
+#: extracting and the explicit launch verbs are about the tree the command runs in;
+#: the git history/working-tree rows are about that tree too. NOT here, because
+#: confinement to a path says nothing about them: the system rows (registry,
+#: shutdown, kill, firewall, scheduled tasks, services, policy), force-push, and
+#: msiexec/regsvr32/runas-style launches.
+_WORKTREE_SCOPED_ANCHORS: dict[str, tuple[str, ...] | None] = {
+    DELETION: None,
+    ARCHIVE: None,
+    FOREIGN_PROCESS: ("start-process", "saps|ii|start", "cmd(?:"),
+    DANGEROUS: (r"git\s+(?:reset", r"git\s+restore", "(?:chmod|chown)"),
+}
+_WORKTREE_SCOPED_ROWS = frozenset(
+    index for index, (label, pattern) in enumerate(DANGER_TABLE)
+    if label in _WORKTREE_SCOPED_ANCHORS
+    and (_WORKTREE_SCOPED_ANCHORS[label] is None
+         or any(anchor in pattern for anchor in _WORKTREE_SCOPED_ANCHORS[label]))
+)
+
+#: Matches that share a scoped row (or the git history row) but act on the SHARED
+#: repository, not on this tree: removing/pruning/moving a worktree (the tree
+#: itself, or someone else's), deleting a branch, rewriting history or refs.
+_NEVER_SCOPED = re.compile(
+    r"(?ix)\bgit\b[^;&|]*\b(?:worktree\s+(?:remove|prune|move)|filter-(?:branch|repo)"
+    r"|reflog\s+expire|update-ref|stash\s+(?:drop|clear))\b"
+    r"|\bgit\b[^;&|]*\bbranch\b[^;&|]*(?:\s-[a-z]*d[a-z]*\b|--delete\b)"
+)
+
+
+def _own_worktree_allows(args: Mapping[str, object], workspace: Path, seat_name: str | None,
+                         shell: str | None) -> bool:
+    """True when every danger this shell command hits is a scoped row AND the whole
+    command is confined to a worktree this seat owns (see worktree_scope)."""
+    command = str(args.get("command") or "")
+    hits = list(_iter_danger(command, workspace, shell))
+    if not hits:
+        return False
+    # The table's command-position anchor has no multiline flag, so scanning the text
+    # whole misses a command that starts a LINE. The exemption widens what is allowed,
+    # so it also judges every line on its own (heredoc bodies are data, not lines):
+    # a system row on line 2 must not ride on a scoped row on line 1. Card T0251 fixes
+    # the table itself; this stays as the exemption's own guarantee.
+    lines = worktree_scope.command_lines(command)
+    if lines is None:
+        return False
+    for line in lines:
+        hits.extend(_iter_danger(line.strip(), workspace, shell))
+    if any(index != -1 and index not in _WORKTREE_SCOPED_ROWS for _, index in hits):
+        return False
+    if _NEVER_SCOPED.search(_command_view(command, shell)):
+        return False
+    roots = worktree_scope.own_roots(workspace, seat_name)
+    if not roots:
+        return False
+    start = workspace
+    tool_cwd = args.get("cwd")
+    if isinstance(tool_cwd, str) and tool_cwd:
+        start = workspace / tool_cwd          # an absolute cwd replaces the workspace
+    return worktree_scope.confined(command, roots, start,
+                                   deleting=any(label == DELETION for label, _ in hits))
 
 
 def _command_text(args: Mapping[str, object] | None) -> str:

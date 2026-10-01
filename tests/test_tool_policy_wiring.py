@@ -145,13 +145,19 @@ async def test_interactive_non_destructive_shell_call_needs_no_host_decision():
 
 
 @pytest.mark.asyncio
-async def test_interactive_destructive_shell_call_still_requires_one_host_decision():
+async def test_interactive_destructive_shell_call_still_requires_one_host_decision(monkeypatch, tmp_path):
     """The INTERACTIVE escape hatch: a DESTRUCTIVE-arg call still confirms,
     even though ordinary shell is allowed. classify_shell matches the
     destructive pattern and returns destructive_irreversible, which IS in
     INTERACTIVE's confirm set — so one approval of `git status` never
     authorises `rm -rf`.
+
+    T0246: the host's workspace is paths.ROOT, and a seat sitting in a linked
+    worktree OWNS that tree (its commands there no longer prompt). This test pins
+    the prompt for a workspace that is NOT the seat's worktree, so it must not
+    depend on where the repository happens to be checked out.
     """
+    monkeypatch.setattr(app_mod.paths, "ROOT", tmp_path)
     calls = []
     host, screens = _host(
         SHELL_POLICY,
@@ -168,14 +174,18 @@ async def test_interactive_destructive_shell_call_still_requires_one_host_decisi
 
 
 @pytest.mark.asyncio
-async def test_denied_modal_and_unattended_confirm_never_execute(tmp_path):
+async def test_denied_modal_and_unattended_confirm_never_execute(monkeypatch, tmp_path):
     """Was `..._and_scheduled_profile_never_execute`. The `scheduled` read-only
     floor is gone (the user 2026-09-24: "remove scheduled completely it makes no
     sense to me ... make interactive ask only for dangerous cmds any deletions
     or zip expansions weird procc runs that arent its tools and dangerous cmds
     threw PS and bash"). Its replacement is asserted here: an unattended turn
     KEEPS interactive -- ordinary calls run -- and only a CONFIRM, which nobody
-    can answer, is refused in words, with no modal."""
+    can answer, is refused in words, with no modal.
+
+    T0246: judged against a workspace that is not the seat's own worktree (see
+    the sibling test), so a checkout inside a linked worktree cannot change it."""
+    monkeypatch.setattr(app_mod.paths, "ROOT", tmp_path)
     called = []
     host, screens = _host(
         WRITE_POLICY,
@@ -369,3 +379,30 @@ def test_midturn_queue_adopts_the_delivered_items_profile():
     assert app_mod.LiteTUI._deliver_queued_input(host)
     assert host._active_tool_profile == STRICT
     assert appended == [{"role": "user", "content": "scheduled"}]
+
+
+@pytest.mark.asyncio
+async def test_a_seat_s_own_worktree_command_runs_without_a_modal_but_a_stranger_s_does_not(monkeypatch, tmp_path):
+    """T0246 end to end through `_authorize_action`: the host's seat NAME is what
+    names which `.worktrees/<Seat>-*` tree is the seat's own."""
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    wt = main / ".worktrees" / "Seat-T1"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/Seat-T1\n", encoding="utf-8")
+    monkeypatch.setattr(app_mod.paths, "ROOT", main)
+    command = f"cd {str(wt).replace(chr(92), '/')} && rm -rf dist"
+
+    calls = []
+    host, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
+                          profile=INTERACTIVE, approve=DENIED)
+    host.seat = SimpleNamespace(name="Seat")
+    result, ok = await app_mod.LiteTUI._execute_tool(host, "bash", {"command": command})
+    assert ok and screens == [] and calls == [{"command": command}]
+
+    calls.clear()
+    stranger, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
+                              profile=INTERACTIVE, approve=DENIED)
+    stranger.seat = SimpleNamespace(name="Someone")
+    result, ok = await app_mod.LiteTUI._execute_tool(stranger, "bash", {"command": command})
+    assert not ok and len(screens) == 1 and calls == []

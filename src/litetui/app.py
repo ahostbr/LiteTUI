@@ -2992,6 +2992,7 @@ class LiteTUI(App):
             active_conversation=getattr(self, 'convo_dir', None),
             always_allow=frozenset(self.settings.tool_always_allow or ()),
             deny=frozenset(self.settings.tool_deny or ()),
+            seat_name=getattr(getattr(self, "seat", None), "name", None),
         )
         if decision.action == tool_policy.DENY:
             return tool_denied("profile", name=name, reason=decision.reason), False
