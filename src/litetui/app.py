@@ -6281,13 +6281,16 @@ class LiteTUI(App):
     #: duplicated. Anchored on both ends: a bare "id <uuid>" would also match
     #: ids quoted inside the conversation.
     _FLEET_LINE_RE = re.compile(
-        r"You are registered in the LiteHarness fleet as [^(]*\(id [0-9a-fA-F-]{36}, tier [a-z]+\)\. ",
+        r"You are registered in the LiteHarness fleet as [^(]*\("
+        r"(?:id |your inbox/sender id \(use it for any from=/--from\): )"
+        r"[0-9a-fA-F-]{36}, tier [a-z]+\)\. ",
     )
 
     def _fleet_identity_sentence(self) -> str:
         return (
             f"You are registered in the LiteHarness fleet as "
-            f"{self.seat.name} (id {self.seat.agent_id}, tier {self.seat.tier}). "
+            f"{self.seat.name} (your inbox/sender id (use it for any from=/--from): "
+            f"{self.seat.agent_id}, tier {self.seat.tier}). "
         )
 
     def _sync_fleet_identity(self) -> bool:

@@ -93,7 +93,8 @@ def test_it_preserves_everything_else_in_the_prompt():
 def test_CONTROL_an_already_correct_prompt_is_left_alone():
     # Without this, "make it match" is satisfied by rewriting on every call,
     # which would mark the conversation dirty and rewrite the store forever.
-    a = _app(prompt=PROMPT.replace(OLD, NEW))
+    a = _app()
+    a.conversation[0]["content"] = a._fleet_identity_sentence() + "Keep my own edit."
     assert a._sync_fleet_identity() is False
 
 
@@ -112,7 +113,8 @@ def test_it_survives_a_different_name_and_tier():
     a = _app(seat=_Seat(agent_id=NEW, name="CyanWedge", tier="leader"))
     assert a._sync_fleet_identity() is True
     body = a.conversation[0]["content"]
-    assert f"CyanWedge (id {NEW}, tier leader)" in body
+    assert "CyanWedge" in body
+    assert NEW in body and "tier leader" in body
     assert OLD not in body
 
 
@@ -236,3 +238,34 @@ def test_registration_replaces_rather_than_appending_a_second_line():
     assert "_sync_fleet_identity()" in reg, (
         "registration can still append a second identity line onto a resumed prompt"
     )
+
+
+def test_fleet_sentence_labels_the_registered_id_as_inbox_sender():
+    sentence = _app()._fleet_identity_sentence()
+    assert NEW in sentence
+    assert "your inbox/sender id (use it for any from=/--from)" in sentence
+
+
+def test_harness_guidance_distinguishes_automatic_and_external_senders():
+    guidance = app_mod.load_prompt("harness-capabilities")
+    assert "sender is set automatically" in guidance
+    assert "external" in guidance
+    assert "registered agent id" in guidance
+    assert "conversation id" in guidance
+
+
+def test_resume_migrates_legacy_label_even_when_agent_id_is_current():
+    a = _app(prompt=PROMPT.replace(OLD, NEW))
+    assert a._sync_fleet_identity() is True
+    assert a._fleet_identity_sentence() in a.conversation[0]["content"]
+    assert "your inbox/sender id" in a.conversation[0]["content"]
+
+
+def test_resume_updates_new_sender_label_without_leaving_the_old_id():
+    a = _app(seat=_Seat(agent_id=OLD))
+    a.conversation[0]["content"] = a._fleet_identity_sentence() + "Keep my own edit."
+    a.seat = _Seat()
+    assert a._sync_fleet_identity() is True
+    assert OLD not in a.conversation[0]["content"]
+    assert a._fleet_identity_sentence() in a.conversation[0]["content"]
+    assert a.conversation[0]["content"].endswith("Keep my own edit.")
