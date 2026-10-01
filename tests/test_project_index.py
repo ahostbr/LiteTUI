@@ -138,3 +138,13 @@ def test_claude_segment_prompt_carries_the_index_and_stays_fixed(tmp_path, monke
     (repo / INDEX_NAME).write_text("CHANGED-LATER\n", encoding="utf-8")
     again = system_prompt_for(app, ledger.segment(segment["id"]))
     assert again == prompt, "a resume carries the segment's recorded prefix"
+
+def test_cap_counts_raw_characters_so_a_crlf_file_is_over_the_cap_like_index_check(tmp_path, monkeypatch):
+    # 4,500 CRLF lines = 13,500 raw chars (9,000 if each CRLF were folded to one char).
+    repo = make_repo(tmp_path / "repo", text=None)
+    (repo / INDEX_NAME).write_bytes((b"a" + bytes([13, 10])) * 4_500)
+    app = make_app(monkeypatch, repo)
+    notices = []
+    app._system = notices.append
+    content = app._request_messages()[0]["content"]
+    assert "truncated" in content and any("13498" in n for n in notices)
