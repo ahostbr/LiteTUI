@@ -39,72 +39,44 @@ import os
 import re
 from pathlib import Path
 
+from litetui import scope_verbs
+
 _CD_VERBS = frozenset({"cd", "chdir", "pushd", "set-location", "sl"})
+#: A word after one of these is a command line, not an argument: `bash -c "..."`,
+#: `powershell -Command "..."`, `cmd /c "..."`, `node -e "..."`.
+_PAYLOAD_FLAGS = frozenset({"-c", "-command", "-e", "-ec", "-encodedcommand", "/c", "/k",
+                            "--command", "--eval"})
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd", "xargs", "env"})
-#: Verbs that act on the SYSTEM or on shared state, never on a path. Confinement says
-#: nothing about them, so a segment whose EFFECTIVE verb is one of these (wrappers
-#: peeled) takes the whole command off the exemption. A POSITIVE check: the exemption
-#: must not depend on the danger table managing to see the verb (its anchors miss an
-#: indented line, a heredoc fed to a shell, `env kill`, `then kill`; card T0251).
-_SYSTEM_VERBS = frozenset({
-    "kill", "pkill", "killall", "taskkill", "tskill", "stop-process", "reg", "regedit",
-    "sc", "schtasks", "register-scheduledtask", "shutdown", "restart-computer",
-    "stop-computer", "netsh", "diskpart", "bcdedit", "format", "mkfs", "dd", "vssadmin",
-    "cipher", "wevtutil", "clear-eventlog", "set-executionpolicy", "icacls", "takeown",
-    "iex", "invoke-expression", "set-mppreference", "add-mppreference", "msiexec",
-    "regsvr32", "rundll32", "runas", "psexec", "psexec64", "wscript", "cscript", "mshta",
-    "set-itemproperty", "new-itemproperty", "remove-itemproperty", "chown",
-})
-#: Programs whose arguments (after their own options) are another command line.
-_LAUNCHERS = frozenset({"cmd", "bash", "sh", "zsh", "dash", "pwsh", "powershell", "start",
-                        "start-process", "saps", "invoke-item", "ii", "wsl"})
-#: Words that run what follows them: peeled before the verb is read.
-_WRAPPERS = frozenset({"env", "nohup", "time", "command", "exec", "sudo", "doas", "xargs",
-                       "nice", "ionice", "timeout", "stdbuf", "builtin", "busybox", "then",
-                       "do", "else", "elif", "if", "while", "until", "!", "{"})
 
 
-def _effective_verb(words: list[str]) -> tuple[str, list[str]]:
-    """(verb, its arguments) once leading VAR=x assignments, wrapper words and the
-    options/durations that belong to a wrapper are peeled. The verb is a lower-case
-    basename without `.exe`."""
-    i = 0
-    while i < len(words):
-        word = words[i]
-        if word.lower() in _WRAPPERS:
-            i += 1
-            while i < len(words) and (words[i].startswith("-") or "=" in words[i]
-                                      or re.fullmatch(r"\d+[smhd]?", words[i])):
-                i += 1
-            continue
-        if re.fullmatch(r"[A-Za-z_]\w*=.*", word):
-            i += 1
-            continue
-        break
-    if i >= len(words):
-        return "", []
-    verb = re.split(r"[\\/]", words[i])[-1].lower()
-    if verb.endswith(".exe"):
-        verb = verb[:-4]
-    return verb, words[i + 1:]
+def _require_verb(words: list[str]) -> None:
+    """scope_verbs' allowlist, as this module's refusal."""
+    try:
+        scope_verbs.require_in_tree_verb(words)
+    except scope_verbs.VerbRefused as why:
+        raise _Refuse(str(why)) from None
 
 
-def _refuse_system_verb(words: list[str]) -> None:
-    verb, rest = _effective_verb(words)
-    if (verb in _SYSTEM_VERBS or re.match(r"^[a-z]+-netfirewall", verb)
-            or (verb == "git" and any(w.lower() == "push" for w in rest))):
-        raise _Refuse(f"a system action ({verb}) is not scoped by a path")
-    if verb in _LAUNCHERS:
-        # `cmd /c taskkill ...`, `powershell -Command kill 1`, `Start-Process kill`:
-        # what follows the launcher's own options is a command line again.
-        while rest and (rest[0].startswith("-") or re.fullmatch(r"/[A-Za-z]+", rest[0])):
-            rest = rest[1:]
-        if rest:
-            _refuse_system_verb(rest)
+def _effective(words: list[str]) -> str:
+    try:
+        return scope_verbs.effective_verb(words)[0]
+    except scope_verbs.VerbRefused as why:
+        raise _Refuse(str(why)) from None
+
+
 _ABS = re.compile(r"^(?:[A-Za-z]:)?[\\/]")
 _DRIVE_ABS = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
 _SWITCH = re.compile(r"^/[A-Za-z]$")            # `rd /s`, `cmd /c`: a switch, not a path
 _DOTDOT = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
+#: A PowerShell PROVIDER path (`HKLM:\SOFTWARE\x`, `Env:\PATH`, `Cert:\...`, `Function:\x`):
+#: `Remove-Item` on it deletes a registry key, an environment variable, a certificate,
+#: not a file in the tree. Placed under the cwd it would look inside, so any word whose
+#: `name:` prefix is longer than a drive letter is refused. In data text (a heredoc body,
+#: where `https://x` is common) only the PowerShell provider names are.
+_PROVIDER = re.compile(r"^[A-Za-z][A-Za-z0-9_]+:")
+_PS_PROVIDER = re.compile(
+    r"(?i)^(?:hk[a-z]{1,3}|hkey_[a-z_]+|env|cert|function|variable|alias|wsman|registry|"
+    r"certificate|temp):")
 _PIECE = re.compile(r"[^\s'\"`,;()<>|&]+")
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(?:'([A-Za-z_]\w*)'|\"([A-Za-z_]\w*)\"|([A-Za-z_]\w*))")
 _MARK = "\x00H\x00"
@@ -339,7 +311,9 @@ def _option_tails(option: str) -> list[str]:
     for sep in ("=", ":"):
         if sep in option:
             tails.append(option.split(sep, 1)[1])
-    short = re.match(r"^-[A-Za-z](.+)$", option)
+    # `-C../x`, `-I/usr/include`: a flag letter then a PATH-shaped value. A flag letter then
+    # more letters (`-Force`, `-Path:x`) is a long name, not an attached value.
+    short = re.match(r"^-[A-Za-z]([^A-Za-z].*)$", option)
     if short:
         tails.append(short.group(1))
     return [t for t in tails if t]
@@ -371,6 +345,8 @@ class _Scope:
             raise _Refuse("a network path")
         if re.match(r"^[A-Za-z]:(?![\\/])", value):
             raise _Refuse("a drive-relative path")
+        if _PROVIDER.match(value):
+            raise _Refuse(f"{value!r} is a provider or URL path, not a file in the tree")
         # EVERY word is placed and resolved, not only absolute / `..` ones: a plain
         # relative word can cross a junction or symlink inside the tree that points
         # out of it (`link/x`), and only the resolved path shows that.
@@ -380,12 +356,12 @@ class _Scope:
         if self.deleting and placed in (self.root, self.git_link):
             raise _Refuse(f"{value!r} is the worktree itself")
 
-    def check_nested(self, text: str, *, strict: bool) -> None:
+    def check_nested(self, text: str, *, strict: bool, commands: bool = False) -> None:
         """Text that is not tokens of THIS command: a quoted string with spaces, or a
         heredoc body. `strict` = it may be COMMANDS (a `-c` payload, a heredoc fed to a
         shell), so a nested cd or any `..` is refused outright; otherwise it is
         data/code judged by its path literals."""
-        if strict:
+        if commands:
             self.check_commands(text)
         for piece in _PIECE.findall(text):
             low = piece.lower()
@@ -393,6 +369,8 @@ class _Scope:
                 raise _Refuse("a cd inside a quoted command")
             if strict and _DOTDOT.search(piece):
                 raise _Refuse("a `..` path inside a quoted command")
+            if _PS_PROVIDER.match(piece):
+                raise _Refuse(f"{piece!r} is a PowerShell provider path")
             m = _DRIVE_ABS.search(piece)
             if m:
                 self.check_value(piece[m.start():])
@@ -408,13 +386,16 @@ class _Scope:
         segment is read as a command line of its own, and a system verb refuses. The
         text may not be tokenisable here (`$x`, subshells): that refuses too."""
         for tokens, _sep in _tokenize(text):
-            _refuse_system_verb([t[0] for t in tokens])
+            _require_verb([t[0] for t in tokens])
 
-    def check_token(self, text: str, quoted: bool) -> None:
+    def check_token(self, text: str, quoted: bool, payload: bool = False) -> None:
+        """`payload`: this quoted word follows -c / -Command / /c, so it RUNS as a command
+        line. Any other quoted word with spaces (a commit message) is an argument: its
+        path literals are judged, but its words are not read as commands."""
         if _SWITCH.match(text):
             return
         if quoted and re.search(r"[\s;&|<>()]", text):
-            self.check_nested(text, strict=True)
+            self.check_nested(text, strict=True, commands=payload)
             return
         if text.startswith("-"):
             for tail in _option_tails(text):
@@ -477,20 +458,23 @@ def violation(command: str, root: Path, start_cwd: Path, *, deleting: bool) -> s
             if verb == "popd":
                 return "a popd"
             words = [t[0] for t in tokens if t[0] != _MARK]
-            effective, _rest = _effective_verb(words)
+            effective = _effective(words)
             if effective in _CD_VERBS or effective == "popd":
                 return "a cd under a wrapper or condition cannot be followed"
-            _refuse_system_verb(words)
+            _require_verb(words)
             consumes = any(t[0] == _MARK for t in tokens)
             # judged per SEGMENT: a deletion on any line protects the root, whether or
             # not the danger table recognised it
             scope.deleting = deleting_overall or any(t[0].lower() in _DELETE_WORDS for t in tokens)
+            previous = ""
             for text, quoted in tokens:
                 if text != _MARK:
-                    scope.check_token(text, quoted)
+                    scope.check_token(text, quoted, payload=previous in _PAYLOAD_FLAGS)
+                previous = text.lower()
             if consumes:
                 _, body = next(bodies)
-                scope.check_nested(body, strict=effective in _SHELLS or verb in _SHELLS)
+                runs_commands = effective in _SHELLS or verb in _SHELLS
+                scope.check_nested(body, strict=runs_commands, commands=runs_commands)
         # `cd X; rm y` / a newline: if the cd FAILS the rest still runs where the seat
         # started (the main checkout). Fine only when every cd target exists right now.
         if started_outside and not scope.cds_exist and any(

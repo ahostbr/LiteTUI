@@ -508,3 +508,80 @@ def test_words_that_merely_look_like_system_verbs_do_not_cost_the_exemption(tree
         assert decide(cmd, trees["main"]).action == tp.ALLOW, cmd
     assert decide(f"{FIRST.format(wt=fwd(trees['wt']))} && git push --help",
                   trees["main"]).action == tp.CONFIRM
+
+
+# ── GuardTuring on d69cd0ce: provider paths, wrapper option values, the denylist ──
+
+
+@pytest.mark.parametrize("provider", [
+    "HKLM:\\SOFTWARE\\Foo", "HKCU:\\Software\\Foo", "HKLM:/SOFTWARE/Foo", "Env:\\PATH", "Env:PATH",
+    "Cert:\\CurrentUser\\My\\ABC", "Function:\\x", "Variable:\\x", "Alias:\\x", "WSMan:\\localhost",
+    "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Foo",
+])
+@pytest.mark.parametrize("form", ["Remove-Item -Recurse -Force {p}", "Remove-Item -Path:{p} -Recurse",
+                                  "ri {p}", "Remove-Item -LiteralPath {p}"])
+def test_powershell_provider_paths_are_not_files_in_the_tree(trees, provider, form):
+    """`HKLM:\\SOFTWARE\\Foo` placed under the cwd looks like a path inside the tree; it is
+    a registry key (or an environment variable, a certificate, a function)."""
+    wt = trees["wt"]
+    cmd = form.format(p=provider)
+    assert decide(cmd, wt, shell="powershell").action == tp.CONFIRM, cmd
+    assert decide(f"cd {wt} ; {cmd}", trees["main"], shell="powershell").action == tp.CONFIRM, cmd
+    # data text that merely mentions a provider name is judged too (a body is code a
+    # seat wrote), and a URL in a body is NOT a provider path
+    body = f"cd {fwd(wt)} && python - <<'EOF'\nprint('{provider}')\nEOF"
+    assert decide(body, trees["main"]).action in (tp.ALLOW, tp.CONFIRM)
+    assert decide(f"cd {fwd(wt)} && rm -rf dist && python - <<'EOF'\nu='https://x.test/a'\nEOF",
+                  trees["main"]).action == tp.ALLOW
+
+
+@pytest.mark.parametrize("wrapper", [
+    "sudo -u root", "sudo -n -u root", "env -u VAR", "env -C sub", "env -S x", "nice -n 5 -x",
+    "ionice -c 3", "ionice -c 2 -n 0", "timeout --foreground 5", "stdbuf -o0",
+    "xargs -I{}", "xargs -n 1", "xargs -P 4", "command -p", "exec -a x", "nohup --x",
+    "time -f x", "env -u rm",
+])
+def test_a_wrapper_option_that_takes_a_value_is_never_read_as_the_verb(trees, wrapper):
+    """`sudo -u root kill 1` read `root` as the verb. A wrapper option this reader cannot
+    classify refuses the exemption outright instead of being guessed at."""
+    wt = fwd(trees["wt"])
+    for action in ("kill -9 1", "taskkill /f /im x.exe", "echo hi"):
+        cmd = f"{FIRST.format(wt=wt)} && {wrapper} {action}"
+        assert decide(cmd, trees["main"]).action == tp.CONFIRM, cmd
+
+
+@pytest.mark.parametrize("action", [
+    "net stop spooler", "net user x y /add", "wmic process call create calc", "powercfg /h off",
+    "Stop-Service Spooler", "Start-Service x", "Restart-Service x",
+    "Set-Service Spooler -StartupType Disabled", "Disable-WindowsOptionalFeature -Online -FeatureName x",
+    "Enable-PSRemoting", "Set-NetFirewallRule -Name x", "New-NetFirewallRule -Name x",
+    "git -c alias.p=push p", "git -calias.p=push p", "git --config-env=alias.p=X p",
+    "git -C . -c core.pager=x log", "git config --global user.name x",
+    "systemctl stop x", "launchctl unload x", "crontab -r", "frobnicate --now",
+    "env net stop spooler", "bash -c 'net stop spooler'", "cmd /c net stop spooler",
+    "find . -exec kill {} +", "find build -exec taskkill /f {} ;",
+    "tar -xf a.tar --to-command=kill", "tar --checkpoint=1 --checkpoint-action=exec=x -xf a.tar",
+])
+def test_a_verb_that_is_not_on_the_in_tree_list_never_rides_on_a_scoped_row(trees, action):
+    """The check is an ALLOWLIST: the next system verb nobody thought of prompts, as it did
+    before the exemption existed, instead of being a hole."""
+    cmd = f"{FIRST.format(wt=fwd(trees['wt']))} && {action}"
+    assert decide(cmd, trees["main"]).action == tp.CONFIRM, cmd
+    assert decide(f"{FIRST.format(wt=fwd(trees['wt']))}\n  {action}", trees["main"]).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("tail", [
+    "node scripts/build.js", "npm run build", "npx vitest run", "bun test", "pnpm -r build",
+    "python -m pytest -q tests", "uv run pytest", "pip install -e .", "cargo test", "make clean",
+    "go test ./...", "dotnet build", "./node_modules/.bin/vitest run", "git status && git add -A",
+    "git -C packages/x status", "git commit -m 'fix: thing'", "grep -rn TODO src", "sed -n 1,5p a.ts",
+    "find . -name '*.pyc' -delete", "find build -type f -exec rm {} ;", "ls -la && cat a.txt",
+    "mkdir -p out && cp a.txt out/", "tar -czf out.tgz src", "unzip -o a.zip -d out",
+    "echo done", "env FOO=1 node x.js", "timeout 30 npm test", "nice -n 5 make", "xargs -0 rm",
+    "bash scripts/run.sh", "pwsh -File scripts/run.ps1", "powershell -NoProfile -Command ls",
+    "cmd /c dir", "Start-Process ./tools/x.exe", "Get-ChildItem -Recurse | Remove-Item -Force",
+])
+def test_ordinary_in_tree_work_stays_exempt_next_to_a_scoped_row(trees, tail):
+    cmd = f"{FIRST.format(wt=fwd(trees['wt']))} && {tail}"
+    d = decide(cmd, trees["main"])
+    assert d.action == tp.ALLOW, (cmd, d.reason)
