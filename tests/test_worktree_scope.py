@@ -259,3 +259,64 @@ def test_the_scoped_rows_are_the_deliberate_ones():
                 if i not in tp._WORKTREE_SCOPED_ROWS]
     for must_stay in ("taskkill", "shutdown", "schtasks", "reg(?:", "netsh", "diskpart"):
         assert any(must_stay in p for p in unscoped), must_stay
+
+
+# ── GuardTuring's two reproduced bypasses (57c84868) ─────────────────────────
+
+
+@pytest.mark.parametrize("option", ["-Path:", "-LiteralPath:", "-path:", "-Destination:"])
+def test_powershell_colon_bound_parameters_are_path_checked(trees, option):
+    """`Remove-Item -Recurse -Force -Path:<elsewhere>`: the colon form carries its
+    path INSIDE the word, so a check that only looks at plain tokens never sees it."""
+    outside = f"{trees['main']}/src"
+    wt = trees["wt"]
+    for cmd, where in ((f"Remove-Item -Recurse -Force {option}{outside}", wt),
+                       (f"cd {wt} ; Remove-Item -Recurse -Force {option}{outside}", trees["main"]),
+                       (f"cd {wt} ; Remove-Item -Recurse -Force {option}..\\..\\src", trees["main"])):
+        assert decide(cmd, where, shell="powershell").action == tp.CONFIRM, cmd
+    inside = decide(f"Remove-Item -Recurse -Force {option}dist", wt, shell="powershell")
+    assert inside.action == tp.ALLOW, inside.reason
+    # and the colon form naming the worktree itself is the tree's own removal
+    root = decide(f"Remove-Item -Recurse -Force {option}{wt}", trees["main"], shell="powershell")
+    assert root.action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("template", [
+    "rm -rf --one-file-system=/ x",
+    "rm -rf --target-directory={main}/src",
+    "rm -rf -C../../src",
+])
+def test_options_that_carry_a_path_in_the_same_word_are_judged(trees, template):
+    cmd = template.format(main=fwd(trees["main"]))
+    assert decide(cmd, trees["wt"]).action == tp.CONFIRM, cmd
+
+
+def _link_out_of_the_tree(trees):
+    victim = trees["main"] / "precious"
+    victim.mkdir()
+    (victim / "x").write_text("keep", encoding="utf-8")
+    link = trees["wt"] / "link"
+    try:
+        link.symlink_to(victim, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted here")
+    return link
+
+
+@pytest.mark.parametrize("template", [
+    "rm -rf link/x",
+    "rm -rf link",
+    "rm -rf link/*",
+    "rm -rf ./link/x",
+    "cd link && rm -rf x",
+    "git restore link/x",
+])
+def test_a_relative_path_through_a_link_out_of_the_tree_is_not_inside(trees, template):
+    """A plain relative word crosses a junction/symlink in the tree only once it is
+    RESOLVED; judging just absolute and `..` words let `link/x` through."""
+    _link_out_of_the_tree(trees)
+    for where, cmd in ((trees["wt"], template),
+                       (trees["main"], f"cd {fwd(trees['wt'])} && {template}")):
+        assert decide(cmd, where).action == tp.CONFIRM, (where, cmd)
+    # control: the same shape without the link is exempt
+    assert decide("rm -rf real/x", trees["wt"]).action == tp.ALLOW

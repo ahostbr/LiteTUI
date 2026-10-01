@@ -253,6 +253,21 @@ def _tokenize(text: str):
 # ── the check ────────────────────────────────────────────────────────────────
 
 
+def _option_tails(option: str) -> list[str]:
+    """The values an option token can carry INSIDE the same word, each to be judged as a
+    path: `--git-dir=X`, PowerShell's `-Path:X` / `-LiteralPath:X`, and a short flag with
+    its value attached (`-C../x`, `-I/usr/include`). Doubt is cheap: a tail that is not a
+    path is placed under the cwd and passes."""
+    tails: list[str] = []
+    for sep in ("=", ":"):
+        if sep in option:
+            tails.append(option.split(sep, 1)[1])
+    short = re.match(r"^-[A-Za-z](.+)$", option)
+    if short:
+        tails.append(short.group(1))
+    return [t for t in tails if t]
+
+
 class _Scope:
     def __init__(self, root: Path, start: Path, deleting: bool):
         self.root = _real(root)
@@ -279,13 +294,14 @@ class _Scope:
             raise _Refuse("a network path")
         if re.match(r"^[A-Za-z]:(?![\\/])", value):
             raise _Refuse("a drive-relative path")
-        if _ABS.match(value) or _DOTDOT.search(value):
-            if self.outside(value):
-                raise _Refuse(f"{value!r} resolves outside the worktree")
-        if self.deleting:
-            placed = _real(self._place(value))
-            if placed in (self.root, self.git_link):
-                raise _Refuse(f"{value!r} is the worktree itself")
+        # EVERY word is placed and resolved, not only absolute / `..` ones: a plain
+        # relative word can cross a junction or symlink inside the tree that points
+        # out of it (`link/x`), and only the resolved path shows that.
+        placed = _real(self._place(value))
+        if not _inside(placed, self.root):
+            raise _Refuse(f"{value!r} resolves outside the worktree")
+        if self.deleting and placed in (self.root, self.git_link):
+            raise _Refuse(f"{value!r} is the worktree itself")
 
     def check_nested(self, text: str, *, strict: bool) -> None:
         """Text that is not tokens of THIS command: a quoted string with spaces, or a
@@ -314,10 +330,9 @@ class _Scope:
         if quoted and re.search(r"[\s;&|<>()]", text):
             self.check_nested(text, strict=True)
             return
-        if text.startswith("-") and "=" in text:
-            self.check_value(text.split("=", 1)[1])
-            return
         if text.startswith("-"):
+            for tail in _option_tails(text):
+                self.check_value(tail)
             return
         self.check_value(text)
 
