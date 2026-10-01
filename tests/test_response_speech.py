@@ -4,6 +4,7 @@ import pytest
 from textual.app import App
 
 from litetui import voice_backend
+from litetui.recap import split_recap
 from litetui.response_speech import ResponseSpeakButton
 from litetui.widgets import AssistantMessage
 
@@ -44,41 +45,92 @@ async def test_each_response_speaks_own_text_and_stops(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_recap_only_and_summary_only_responses_have_working_speak_buttons(monkeypatch):
+@pytest.mark.parametrize(('answer', 'recap', 'summary', 'expected'), [
+    pytest.param('', 'Did work / Tests green', None, 'Did work / Tests green',
+                 id='recap-only'),
+    pytest.param(' \n\t', 'Did work / Tests green', None, 'Did work / Tests green',
+                 id='blank-answer'),
+    pytest.param('', None, 'A generated summary', 'A generated summary',
+                 id='summary-only'),
+    pytest.param(' \t', ' \n', 'A generated summary', 'A generated summary',
+                 id='blank-recap'),
+    pytest.param('Full answer', 'Short recap', 'Short summary', 'Full answer',
+                 id='answer-wins'),
+    pytest.param('', 'Completed the requested change. ' * 4, None,
+                 'Completed the requested change. ' * 4, id='unclipped-recap'),
+    pytest.param('', None, None, '', id='empty'),
+    pytest.param(' \n', ' \t', ' \n', '', id='all-blank'),
+])
+async def test_speech_text_fallback_and_visibility(monkeypatch, answer, recap, summary, expected):
+    spoken = []
+    monkeypatch.setattr(voice_backend, 'is_playing', lambda owner: False)
+    monkeypatch.setattr(voice_backend, 'stop', lambda owner=None: None)
+    monkeypatch.setattr(voice_backend, 'speak',
+                        lambda text, **kw: spoken.append((text, kw)) or True)
+
+    class Host(App):
+        CSS = 'AssistantMessage { height: auto; }'
+        settings = SimpleNamespace(tts_enabled=True, tts_engine='edge',
+                                   tts_edge_voice='voice', tts_voice='', tts_timeout=30)
+
+        def compose(self):
+            card = AssistantMessage()
+            card.set_answer(answer)
+            card.recap = recap
+            card.set_summary(summary if summary is not None else recap)
+            yield card
+
+    async with Host().run_test() as pilot:
+        button = pilot.app.query_one(ResponseSpeakButton)
+        button.refresh_playback()
+        assert button.display is bool(expected)
+        assert not spoken  # rendering never auto-speaks
+        if expected:
+            assert await pilot.click(button)
+            assert spoken == [(expected, {
+                'engine': 'edge', 'voice': 'voice', 'timeout': 30, 'owner': button,
+            })]
+        else:
+            # A stale/queued click must not try to speak a blank response.
+            button.on_click(SimpleNamespace(stop=lambda: None))
+            assert not spoken
+        pilot.app.settings.tts_enabled = False
+        button.refresh_playback()
+        assert not button.display
+        pilot.app.settings.tts_enabled = True
+        button.refresh_playback()
+        assert button.display is bool(expected)
+
+
+@pytest.mark.asyncio
+async def test_recap_only_reply_projection_has_a_working_speak_button(monkeypatch):
     spoken = []
     monkeypatch.setattr(voice_backend, 'is_playing', lambda owner: False)
     monkeypatch.setattr(voice_backend, 'stop', lambda owner=None: None)
     monkeypatch.setattr(voice_backend, 'speak', lambda text, **kw: spoken.append(text) or True)
 
     class Host(App):
+        CSS = 'AssistantMessage { height: auto; }'
         settings = SimpleNamespace(tts_enabled=True, tts_engine='edge',
                                    tts_edge_voice='voice', tts_voice='', tts_timeout=30)
 
         def compose(self):
-            recap_card = AssistantMessage()
-            recap_card.recap = 'Did work / Tests green'
-            recap_card.set_summary(recap_card.recap)
-            yield recap_card
-            summary_card = AssistantMessage()
-            summary_card.set_summary('A generated summary')
-            yield summary_card
-            empty_card = AssistantMessage()
-            yield empty_card
-            answer_card = AssistantMessage()
-            answer_card.set_answer('Full answer')
-            answer_card.recap = 'Short recap'
-            answer_card.set_summary(answer_card.recap)
-            yield answer_card
+            answer, recap = split_recap('<recap>Did work\nTests green</recap>', final=True)
+            card = AssistantMessage()
+            card.set_answer(answer)
+            card.recap = recap
+            card.set_summary(recap)
+            yield card
 
     async with Host().run_test() as pilot:
-        buttons = list(pilot.app.query(ResponseSpeakButton))
-        for button in buttons:
-            button.refresh_playback()
-        assert [button.display for button in buttons] == [True, True, False, True]
-        assert not spoken  # no automatic playback
-        for button in buttons:
-            await pilot.click(button)
-        assert spoken == ['Did work / Tests green', 'A generated summary', 'Full answer']
+        card = pilot.app.query_one(AssistantMessage)
+        assert card.answer_text == ''
+        button = card.query_one(ResponseSpeakButton)
+        button.refresh_playback()
+        assert button.display
+        assert not spoken
+        assert await pilot.click(button)
+        assert spoken == ['Did work / Tests green']
 
 
 def test_prompt_has_no_speak_toggle():

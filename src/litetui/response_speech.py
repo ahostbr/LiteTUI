@@ -18,11 +18,13 @@ class ResponseSpeakButton(Static):
     def on_mount(self):
         self.set_interval(0.25, self.refresh_playback)
 
-    def _speech_text(self):
-        """Speak the answer when present, otherwise the recap or card summary."""
-        for text in (self.response.answer_text,
-                     getattr(self.response, 'recap', None),
-                     getattr(self.response, 'summary', None)):
+    def _speech_text(self) -> str:
+        """Prefer the answer, then the full recap over the clipped card summary."""
+        for text in (
+            self.response.answer_text,
+            getattr(self.response, 'recap', None),
+            getattr(self.response, 'summary', None),
+        ):
             if text and text.strip():
                 return text
         return ''
