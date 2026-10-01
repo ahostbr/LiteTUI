@@ -71,6 +71,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 HOME_VARIABLES = frozenset({
@@ -292,31 +293,21 @@ def _say(rule: str, what: str,
 
 
 def _launcher_quoted_argument(command: str, start: int) -> bool:
-    """Narrow cost guard: readers and Python/Node code strings are arguments.
+    """Only an anchored, unambiguous whole command can be quoted data.
 
-    No shell/interpreter inference: PowerShell/cmd/bash wrappers are excluded.
-    Only simple balanced single-line ASCII quotes are understood. Nested quotes,
-    escapes, substitutions and ambiguous quoted prefixes retain the full scan.
-    This is not a parser for Python, Node or a shell's expression language.
+    No partial spans, compound commands, single quotes or executing reader
+    options. Unknown syntax restores normal matching; this is not a parser.
     """
-    if any(quote in command for quote in "\u2018\u2019\u201a\u201b"):
+    forbidden = "^`$\\!%\r\n'" + "\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f" + "\u00ab\u00bb\u2039\u203a\uff02\uff07"
+    if any(ch in forbidden or (ch != "\t" and unicodedata.category(ch) in ("Pi", "Pf", "Cc", "Cf"))
+           for ch in command):
         return False
-    for quoted in re.finditer(r"\"[^\"\r\n]*\"|'[^'\r\n]*'", command):
-        if not quoted.start() < start < quoted.end():
-            continue
-        text = quoted.group()
-        if any(ch in text[1:-1] for ch in "\"'\\`$"):
-            return False  # nested / escaped quotes or substitutions: full scan
-        prefix = command[:quoted.start()]
-        if any(ch in prefix for ch in "\"'\\`$"):
-            return False  # ambiguous prefix quotes / escapes: no exemption
-        before = re.split(r"[;&|\r\n(){}`]", prefix)[-1]
-        words = before.lower().split()
-        if not words:
-            return False
-        return words[0] in _READERS or words in (["python", "-c"], ["python.exe", "-c"],
-                                                ["node", "-e"], ["node.exe", "-e"])
-    return False
+    shape = re.fullmatch(
+        r'[ \t]*(?:python(?:\.exe)?[ \t]+-c|node(?:\.exe)?[ \t]+-e|'
+        r'git[ \t]+(?:commit|tag)[ \t]+(?:-m|--message)|'
+        r'echo|printf|Write-Output|Write-Host)[ \t]+"[^"\'\t]*"[ \t]*',
+        command, re.IGNORECASE)
+    return shape is not None and command.index('"') < start < command.rindex('"')
 
 
 def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) -> Path | None:
