@@ -877,8 +877,9 @@ class AssistantMessage(Vertical):
     make that unlike the ThinkingBlock next door:
 
     * The header is the widget's own ``border_title``, not a child row, so it
-      survives when every child is hidden. A child header would disappear
-      together with the body it exists to re-open.
+      survives when every child is hidden. Its folded Speak/Stop segment routes
+      to the same response-owned button as the expanded card. A child header
+      would disappear together with the body it exists to re-open.
     * Folding is driven by a POSITIVE ``collapsed`` class. Textual 8.0.2 has no
       ``:not()`` pseudo-class - it raises TokenError naming the nine it does
       accept - so the ``.thinking-block.expanded .thinking-body`` shape cannot
@@ -891,6 +892,8 @@ class AssistantMessage(Vertical):
 
     def __init__(self) -> None:
         super().__init__(classes="assistant-msg")
+        from litetui.response_speech import ResponseSpeakButton
+        self.speak_button = ResponseSpeakButton(self)
         self.thinking: ThinkingBlock | None = None
         self.body = AnswerBody("...", id="answer-body")
         self.stop_line = Static("", classes="turn-stop-line")
@@ -906,12 +909,11 @@ class AssistantMessage(Vertical):
         self.summary_done: bool = False   # asked once, whatever came back
 
     def compose(self) -> ComposeResult:
-        from litetui.response_speech import ResponseSpeakButton
         if self.thinking is not None:
             yield self.thinking   # set before this card composed; see set_thinking
         yield self.body
         yield self.stop_line
-        yield ResponseSpeakButton(self)
+        yield self.speak_button
 
     def set_thinking(self, block: "ThinkingBlock") -> None:
         """Put `block` above the answer, replacing any trace already shown.
@@ -953,7 +955,26 @@ class AssistantMessage(Vertical):
         return f"{marker} {label}"
 
     def refresh_header(self) -> None:
-        self.border_title = self._header_text()
+        if self.speak_button.is_mounted:
+            self.speak_button.refresh_playback()
+        header = Content(self._header_text())
+        if self.collapsed and self.speak_button.header_label:
+            # Put the control before the summary so truncation cannot hide it.
+            # Literal Content keeps model-supplied markup out of the click span.
+            marker, label = self._header_text().split(' ', 1)
+            header = Content.assemble(
+                marker + ' ',
+                (self.speak_button.header_label,
+                 Style(underline=True) + Style.from_meta({'response_speak': True})),
+                ' · ' + label,
+            )
+        if self.border_title != header.markup:
+            self.border_title = header
+
+    def on_response_speak_button_state_changed(self, event) -> None:
+        event.stop()
+        if self.collapsed:
+            self.refresh_header()
 
     def set_model_name(self, name: str | None) -> None:
         self.model_name = (name or "").strip()
@@ -1006,7 +1027,11 @@ class AssistantMessage(Vertical):
         # the card's content, where a click means "select text", not "fold".
         if event.y == 0:
             event.stop()
-            self.set_collapsed(not self.collapsed)
+            if self.collapsed and event.style.meta.get('response_speak'):
+                self.speak_button.toggle_playback()
+                self.refresh_header()
+            else:
+                self.set_collapsed(not self.collapsed)
 
     def set_stop_line(self, text: str | None) -> None:
         """Settle the bubble without putting display text in answer markdown."""

@@ -190,3 +190,188 @@ async def test_idle_speech_button_emits_nothing_but_state_changes_render(monkeyp
         app.response.answer_text = 'new answer'
         await pilot.pause(.3)
         assert button.display
+
+
+@pytest.fixture
+def folded_speech_host(monkeypatch):
+    from litetui.app import LiteTUI
+    from litetui import themes
+
+    active, spoken = set(), []
+    monkeypatch.setattr(voice_backend, 'is_playing', lambda owner: owner in active)
+
+    def stop(owner=None):
+        active.clear() if owner is None else active.discard(owner)
+
+    def speak(text, **kwargs):
+        spoken.append((text, kwargs['owner']))
+        active.add(kwargs['owner'])
+        return True
+
+    monkeypatch.setattr(voice_backend, 'stop', stop)
+    monkeypatch.setattr(voice_backend, 'speak', speak)
+
+    class Host(App):
+        CSS = LiteTUI.CSS
+
+        def __init__(self, *cards, **kwargs):
+            super().__init__(**kwargs)
+            self.cards = cards
+            self.settings = SimpleNamespace(tts_enabled=True, tts_engine='edge',
+                                            tts_edge_voice='voice', tts_voice='', tts_timeout=30)
+
+        def get_css_variables(self):
+            variables = super().get_css_variables()
+            for key, value in themes.extra_defaults(
+                primary=variables['primary'], bone=variables['foreground'],
+            ).items():
+                variables.setdefault(key, value)
+            return variables
+
+        def compose(self):
+            yield from self.cards
+
+    return Host, active, spoken
+
+
+def _header_row(card):
+    from textual.geometry import Region
+
+    return card.render_lines(Region(0, 0, card.region.width, 1))[0].text
+
+
+async def _click_header(pilot, card, label):
+    from rich.cells import cell_len
+
+    row = _header_row(card)
+    assert label in row
+    # Click rendered text, not private event handlers or guessed coordinates.
+    x = cell_len(row[:row.index(label)])
+    assert await pilot.click(card, offset=(x, 0))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('answer', 'recap', 'summary', 'expected'), [
+    ('', 'Completed the requested work. ' * 5, None, 'Completed the requested work. ' * 5),
+    ('', None, 'Summary only', 'Summary only'),
+    ('Full answer', 'Recap', 'Summary', 'Full answer'),
+])
+async def test_folded_header_speaks_and_stops_without_unfolding(
+    folded_speech_host, answer, recap, summary, expected,
+):
+    Host, active, spoken = folded_speech_host
+    card = AssistantMessage()
+    card.recap = recap
+    card.set_summary(summary if summary is not None else recap)
+    card.set_model_name('model')
+    card.set_collapsed(True)
+    async with Host(card).run_test(size=(55, 20)) as pilot:
+        card.set_answer(answer)
+        await pilot.pause(.3)
+        row = _header_row(card)
+        assert '♫ Speak' in row  # survives a long/truncated summary
+        assert row.index('Speak') < row.index(card.summary[:7])
+        button = card.query_one(ResponseSpeakButton)
+        assert not card.body.display
+        assert not button.display  # no duplicate body control in folded layout
+        assert not spoken
+        await _click_header(pilot, card, 'Speak')
+        assert spoken == [(expected, button)]
+        assert active == {button}
+        assert card.collapsed
+        assert '■ Stop' in _header_row(card)
+        await _click_header(pilot, card, 'Stop')
+        assert not active
+        assert card.collapsed
+        assert len(spoken) == 1
+        # The rest of the header still unfolds rather than speaking.
+        await _click_header(pilot, card, card.MARK_SHUT)
+        assert not card.collapsed
+        assert button.display
+        assert 'Speak' not in _header_row(card)
+        assert await pilot.click(button)
+        assert active == {button}
+        # Fold while playing: the header controls the same playback owner.
+        await _click_header(pilot, card, card.MARK_OPEN)
+        assert card.collapsed
+        assert '■ Stop' in _header_row(card)
+    assert not active  # removing the card stops its speech
+
+
+@pytest.mark.asyncio
+async def test_folded_header_tracks_tts_blank_and_external_playback(folded_speech_host):
+    Host, active, spoken = folded_speech_host
+    card = AssistantMessage()
+    card.set_collapsed(True)
+    app = Host(card)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause(.3)
+        assert 'Speak' not in _header_row(card)
+        card.set_summary('Generated summary')
+        await pilot.pause(.3)
+        assert 'Speak' in _header_row(card)
+        app.settings.tts_enabled = False
+        await pilot.pause(.3)
+        assert 'Speak' not in _header_row(card)
+        app.settings.tts_enabled = True
+        await pilot.pause(.3)
+        assert 'Speak' in _header_row(card)
+        assert not spoken
+        await _click_header(pilot, card, 'Speak')
+        assert 'Stop' in _header_row(card)
+        active.clear()  # completion outside either control
+        await pilot.pause(.3)
+        assert 'Speak' in _header_row(card)
+        card.set_summary(None)
+        await pilot.pause(.3)
+        assert 'Speak' not in _header_row(card)
+        assert not card.query_one(ResponseSpeakButton).display
+        assert len(spoken) == 1
+
+
+@pytest.mark.asyncio
+async def test_folded_headers_keep_distinct_playback_owners(folded_speech_host):
+    Host, active, spoken = folded_speech_host
+    cards = [AssistantMessage(), AssistantMessage()]
+    for index, card in enumerate(cards):
+        card.set_summary(f'Summary {index}')
+        card.set_collapsed(True)
+    async with Host(*cards).run_test(size=(80, 20)) as pilot:
+        await pilot.pause(.3)
+        await _click_header(pilot, cards[0], 'Speak')
+        first = cards[0].query_one(ResponseSpeakButton)
+        assert active == {first}
+        await _click_header(pilot, cards[1], 'Speak')
+        second = cards[1].query_one(ResponseSpeakButton)
+        assert active == {second}
+        assert spoken == [('Summary 0', first), ('Summary 1', second)]
+        await pilot.pause(.3)
+        assert 'Speak' in _header_row(cards[0])
+        assert 'Stop' in _header_row(cards[1])
+
+
+@pytest.mark.asyncio
+async def test_idle_folded_header_does_not_repaint(folded_speech_host):
+    from textual.drivers.headless_driver import HeadlessDriver
+
+    Host, _, spoken = folded_speech_host
+    writes = []
+
+    class CaptureDriver(HeadlessDriver):
+        @property
+        def is_headless(self):
+            return False
+
+        def write(self, data):
+            writes.append(data)
+
+    card = AssistantMessage()
+    card.set_summary('Ready')
+    card.set_collapsed(True)
+    async with Host(card, driver_class=CaptureDriver).run_test(headless=False) as pilot:
+        await pilot.pause(.3)
+        assert 'Speak' in _header_row(card)
+        writes.clear()
+        await pilot.pause(.6)
+        assert not writes
+        assert not spoken
