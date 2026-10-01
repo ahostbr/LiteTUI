@@ -431,3 +431,30 @@ async def test_a_session_opened_before_the_seat_registers_waits_for_it(monkeypat
     prompt = await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
     await task
     assert app.seat.agent_id in prompt, "the late seat still made it into the fixed prompt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound", ["session_id", "system_prompt"])
+async def test_a_resumed_session_waits_for_the_seat_too(monkeypatch, bound):
+    """T0249: a relaunch resumes a segment that already has a native session id (and a recorded
+    system prompt). The session's tool inventory is read at open, and the harness tool is gated on
+    the seat having registered, so a resumed session that skipped the wait opened WITHOUT the
+    harness tool for its whole life. The wait is about the inventory, not only the new prompt."""
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    app = _identity_app(monkeypatch)
+    app._seat_started = False
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    if bound == "session_id":
+        ledger.bind_session(segment["id"], "native-session-1")
+    else:
+        ledger.fix_system_prompt(segment["id"], "PROMPT FIXED BEFORE THE SEAT REGISTERED")
+    async def register_late():
+        await asyncio.sleep(0.3)
+        app._seat_started = True
+    task = asyncio.ensure_future(register_late())
+    await prompt_for_new_session(app, ledger.segment(segment["id"]))
+    registered_when_opened = app._seat_started  # read BEFORE the late registration is awaited
+    await task
+    assert registered_when_opened, "the session opened before the seat finished registering"
