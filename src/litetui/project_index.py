@@ -49,7 +49,8 @@ def read_index(start: str | os.PathLike) -> tuple[Path, str, int] | None:
     if path is None:
         return None
     try:
-        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        # raw decode, no newline folding: the length matches `liteharness index --check`
+        text = path.read_bytes().decode("utf-8", errors="replace").strip()
     except OSError:
         return None
     if not text:
