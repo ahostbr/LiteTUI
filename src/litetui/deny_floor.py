@@ -58,7 +58,11 @@ run.bat itself, a renamed copy in the same folder (run.bat opens with
 path the reader rule excuses, or a spelling that does not resolve here (an admin share
 `\\\\host\\C$\\...`, an 8.3 short name) is not seen. Command-position recognition
 is intentionally limited to direct launches and the shell wrappers below;
-arguments and quoted prose are not treated as executable paths.
+arguments and quoted prose are not treated as executable paths. Complete literal
+PowerShell here-strings in standalone output / terminal Add-Content, Set-Content
+or Out-File expressions are data for the launcher rule only. Expandable strings,
+execution sinks and ambiguous expression contexts remain scanned; this is a
+small conservative allowlist, not a shell parser or a general quotation filter.
 """
 from __future__ import annotations
 
@@ -164,6 +168,57 @@ _READERS = frozenset({
 })
 
 
+#: Recognize complete PowerShell here-strings, including expandable ones so
+#: literal-looking text inside an expandable body cannot gain an exemption.
+_HERE_STRING = re.compile(r"@(['\"])[ \t]*\r?\n.*?^\1@", re.MULTILINE | re.DOTALL)
+#: Deliberately small grammar for terminal writer arguments: no expressions,
+#: substitutions, redirects, continuation backticks or further pipelines.
+_DATA_WRITER = re.compile(
+    r"\|[ \t]*(?:Add-Content|Set-Content|Out-File)"
+    r"(?:[ \t]+(?:[\w./:\\-]+|'[^'\r\n]*'|\"[^\"$`\r\n]*\"))*[ \t]*",
+    re.IGNORECASE)
+
+
+def _literal_here_data(command: str) -> list[tuple[int, int]]:
+    """Owner-launcher-only exemption for provably inert literal expressions.
+
+    This is not a PowerShell parser. Fail closed outside standalone expressions
+    and the three terminal writers. Prefixes containing expression/quote/shell
+    syntax remain scanned, including scriptblock/interpreter arguments. Earlier
+    accepted data expressions are masked only for this prefix check; deletion
+    and cd matching still see the original command, as before.
+    """
+    spans = []
+    prefix_view = command
+    for match in _HERE_STRING.finditer(command):
+        if match.group(1) != "'":
+            continue
+        prefix = prefix_view[:match.start()]
+        # Restrict preceding code to simple top-level statements, never an
+        # enclosing expression or a continuation from an invocation.
+        if not re.fullmatch(r"[\w\s./:\\;-]*", prefix):
+            continue
+        if re.split(r"[;\n]", prefix)[-1].strip():
+            continue
+        end = match.end()
+        boundary = re.search(r"[;\r\n]", command[end:])
+        stop = end + boundary.start() if boundary else len(command)
+        suffix = command[end:stop].strip(" \t")
+        if suffix and not _DATA_WRITER.fullmatch(suffix):
+            continue
+        # PowerShell may continue a pipeline on the following line. A newline
+        # alone therefore does not prove the string's value remains inert.
+        if stop < len(command) and command[stop] != ";":
+            following = command[stop:].lstrip()
+            # Comments can hide a continued pipeline. Do not try to parse
+            # comments (especially block comments); leave the body scanned.
+            if following.startswith(("|", "#", "<#")):
+                continue
+        spans.append((match.start(), end))
+        prefix_view = prefix_view[:match.start()] + " " * (stop - match.start()) + prefix_view[stop:]
+    return spans
+
+
 def refusal(command, workspace, home=None) -> str | None:
     """The sentence that refuses `command`, or None when the floor allows it."""
     if not isinstance(command, str):
@@ -171,16 +226,23 @@ def refusal(command, workspace, home=None) -> str | None:
     workspace = Path(workspace)
     home = Path(home) if home is not None else Path.home()
     base: Path | None = workspace   # where relative targets resolve; None = unknown
+    literal_data = _literal_here_data(command)
+    launcher_base: Path | None = workspace  # data cd text must not move a real launch
     steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
                     *((m.start(), m) for m in _VERB.finditer(command)),
                     *((m.start(), m) for m in _LAUNCH.finditer(command))],
                    key=lambda step: step[0])
     for _, match in steps:
+        in_data = any(start <= match.start() < end for start, end in literal_data)
         if match.re is _CD:
             base = _cd_target(command[match.end():], base, home)
+            if not in_data:
+                launcher_base = _cd_target(command[match.end():], launcher_base, home)
             continue
         if match.re is _LAUNCH:
-            launcher = _owner_launch(command, match, base, home)
+            if in_data:
+                continue
+            launcher = _owner_launch(command, match, launcher_base, home)
             if launcher:
                 return _say("owner-launcher",
                             f"it runs {launcher}, LiteTUI's owner launcher, which marks "

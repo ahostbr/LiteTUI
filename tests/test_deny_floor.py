@@ -88,6 +88,59 @@ def test_owner_launcher_requires_executable_position_and_resolved_identity(
         assert "[owner-launcher]" in reason
         assert str(owner.resolve()) in reason
 
+@pytest.mark.parametrize("command, refused", [
+    ("@'\nrun = vi.fn();\n'@ | Add-Content tests.ts", False),
+    ("@'\nrun\n'@", False),
+    ("@'\nrun\n'@ | Set-Content 'test cases.ts'", False),
+    ("@'\nrun\n'@ | Out-File tests.ts", False),
+    ("@'\nrun\n'@ | Add-Content tests.ts; Write-Output ok", False),
+    ("@'\r\nrun\r\n'@ | Add-Content tests.ts", False),
+    ("@'\nrun\n'@ | powershell -", True),
+    ("@'\nrun\n'@ | pwsh -c -", True),
+    ("@'\nrun\n'@ | cmd", True),
+    ("@'\nrun\n'@ | iex", True),
+    ("@'\nrun\n'@ | Invoke-Expression", True),
+    ("iex @'\nrun\n'@", True),
+    ("Invoke-Expression @'\nrun\n'@", True),
+    ("& ([scriptblock]::Create(@'\nrun\n'@))", True),
+    ("python -c @'\nrun\n'@", True),
+    ("node -e @'\nrun\n'@", True),
+    ("@'\nrun\n'@ | unknown-sink", True),
+    ("@'\nrun\n'@ | Add-Content tests.ts | iex", True),
+    ("@'\nrun\n'@\n | iex", True),
+    ('@"\n$(run)\n"@ | Add-Content tests.ts', True),
+    ("@'\nrun\n", True),
+    ("run; @'\ntext\n'@ | Add-Content tests.ts", True),
+    ("@'\ntext\n'@ | Add-Content tests.ts; run", True),
+    ("@'\ntext\n'@\nrun", True),
+    ("@'\nrun\n'@\n# continuation comment\n | iex", True),
+    ("@'\ncd missing-folder\n'@ | Add-Content tests.ts; run", True),
+    ("@'\ncd missing-folder\n'@ | Add-Content tests.ts\nrun", True),
+    ("& '{owner}'", True),
+    ("cmd /c '{owner}'", True),
+    ("Start-Process -FilePath '{owner}'", True),
+])
+def test_owner_launcher_literal_here_string_data_only(tmp_path, monkeypatch, command, refused):
+    """T0291: classify strings only; every launcher file is inert test data."""
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    reason = deny_floor.refusal(command.format(owner=owner), owner.parent)
+    assert bool(reason) is refused, reason
+    if refused:
+        assert "[owner-launcher]" in reason
+
+
+def test_original_t0291_command_is_literal_test_data(tmp_path, monkeypatch):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    command = (Path(__file__).parent / "fixtures" / "T0291-here-string.txt").read_text(encoding="utf-8")
+    assert deny_floor.refusal(command, owner.parent) is None
+
+
 
 # ── the gate: every profile, every standing rule ────────────────────────────
 
