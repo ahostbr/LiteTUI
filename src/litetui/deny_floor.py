@@ -345,9 +345,19 @@ def _launcher_quoted_argument(command: str, start: int) -> bool:
     return shape.start('token') < start < shape.end('token') - 1
 
 
-#: Group openings are command boundaries only in command-like positions.
-#: A brace in quoted data, ${variable}, or a sed/path word is not one.
-_OWNER_BOUNDARY = re.compile(r"[;&|\r\n()`]|(?<=[\s&.|%;])\{")
+#: F1: brace openings in bounded scriptblock positions: separators, nesting,
+#: closing/grouping parens, fixed block keywords/declarations, and a one-digit
+#: label directly inside an already recognized brace boundary (switch labels).
+#: Numeric labels are the ONLY accepted word-char predecessor. Call-paren
+#: objects remain data, as do
+#: ${variables}, quoted braces, path words and general word+brace spellings.
+#: Keyword arms consume a prefix; the boundary is always the LAST character.
+_OWNER_BOUNDARY = re.compile(
+    r"[;&|\r\n()`]|^\{|(?<=[\s&.|%;)?{])\{|(?<=^\()\{|"
+    r"(?<=[\s&.|%;(]\()\{|(?<={\d)\{|"
+    r"(?<![\w.$/\\-])(?:try|do|else|finally|catch|begin|process|end|trap)\{|"
+    r"(?<![\w.$/\\-])(?:function|filter)[ \t]+[A-Za-z_][\w-]*\{",
+    re.IGNORECASE)
 _EXECUTION_SINKS = frozenset({
     "start-process", "saps", "start", "invoke-item", "ii", "invoke-expression", "iex",
     "invoke-command", "icm", "start-job", "sajb", "start-threadjob", "call", "cmd",
@@ -377,8 +387,16 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
     # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
     # echo `run.bat`), so it starts a segment too. A `)` ends one: in
     # `if 1==2 (echo a) else run.bat` the command is `else`'s, not echo's (P1).
-    boundaries = list(_OWNER_BOUNDARY.finditer(command[:start]))
-    boundary = boundaries[-1].start() if boundaries else -1
+    boundaries = []
+    for opening in _OWNER_BOUNDARY.finditer(command[:start]):
+        boundary = opening.end() - 1
+        if command[boundary] == "{" and boundary >= 2 and command[boundary - 2] == "{" and command[boundary - 1].isdigit():
+            # A digit+brace is a switch-label arm only when its enclosing brace
+            # was itself accepted, never in a path/data word such as foo{1{run}.
+            if boundary - 2 not in boundaries:
+                continue
+        boundaries.append(boundary)
+    boundary = boundaries[-1] if boundaries else -1
     segment = command[boundary + 1:start]
     words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
     head = next((w for w in words if w not in _WRAPPERS), None)
