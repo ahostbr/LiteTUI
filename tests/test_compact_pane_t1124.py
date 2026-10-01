@@ -25,6 +25,7 @@ def app_for_pilot():
     app.convo_id = "test"
     app.seat = SimpleNamespace(name="Carmack", agent_id="test-agent", registered=True, register=lambda: False)
     app.ctx_used, app.ctx_max, app.ctx_loaded = 22824, 258400, True
+    app.settings.footer_show_key_hints = True  # T0247 made them opt-in; these tests measure their layout
     return app
 
 
