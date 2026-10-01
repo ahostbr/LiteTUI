@@ -354,3 +354,122 @@ def _bump_mtime(p: Path) -> None:
     st = p.stat()
     future = (st.st_mtime_ns // 100) * 100 + 2_000_000  # +2s in 100ns units
     os.utime(p, ns=(future, future))
+
+
+# T0278: incoming text must not manufacture mixed endings on either tool path.
+@pytest.mark.parametrize("ending", [b"\r\n", b"\n"])
+@pytest.mark.parametrize("old", ["two", "one\r\ntwo"])
+def test_edit_replacement_adopts_existing_ending(tmp_path, ending, old):
+    from litetui import file_tools
+    p = tmp_path / "ending.txt"
+    p.write_bytes(ending.join([b"one", b"two", b"three", b""]))
+    file_state.record_read(p)
+    if ending == b"\n" and "\r\n" in old:
+        old = "one\ntwo"
+    # Both incoming spellings must become the target's ending, including exact matches.
+    out = file_tools.tool_edit({"path": str(p), "old_string": old,
+                                "new_string": "TWO\ninserted\r\nlast"})
+    assert out.startswith("Edited"), out
+    expected = [b"one"] if old == "two" else []
+    expected += [b"TWO", b"inserted", b"last", b"three", b""]
+    assert p.read_bytes() == ending.join(expected)
+
+
+def test_edit_mixed_file_refuses_newline_insertion_with_remedy(tmp_path):
+    from litetui import file_tools
+    p = tmp_path / "mixed.txt"
+    before = b"one\r\ntwo\nthree\r\n"
+    p.write_bytes(before)
+    file_state.record_read(p)
+    out = file_tools.tool_edit({"path": str(p), "old_string": "two",
+                                "new_string": "TWO\nextra"})
+    assert out.startswith("[error]") and "MIXED" in out, out
+    assert "normalize" in out and "LF or CRLF" in out, out
+    assert p.read_bytes() == before
+
+
+def test_edit_mixed_file_keeps_safe_exact_substring_edit(tmp_path):
+    from litetui import file_tools
+    p = tmp_path / "mixed.txt"
+    p.write_bytes(b"one\r\ntwo\n")
+    file_state.record_read(p)
+    out = file_tools.tool_edit({"path": str(p), "old_string": "two", "new_string": "TWO"})
+    assert out.startswith("Edited"), out
+    assert p.read_bytes() == b"one\r\nTWO\n"
+
+
+@pytest.mark.parametrize("ending", [b"\r\n", b"\n"])
+def test_write_overwrite_keeps_existing_ending(tmp_path, ending):
+    from litetui.plugins import core_tools as ct
+    p = tmp_path / "existing.txt"
+    p.write_bytes(b"old" + ending + b"tail" + ending)
+    out = ct.tool_write({"path": str(p), "content": "new\nbody\r\nlast\n"})
+    assert out.startswith("Wrote"), out
+    assert p.read_bytes() == ending.join([b"new", b"body", b"last", b""])
+
+
+def _ending_git(tmp_path):
+    import subprocess
+    # No inherited Git state or user attributes/config may steer these temp repos.
+    import os
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], env=env, check=True)
+    return env
+
+
+@pytest.mark.parametrize("ending", ["lf", "crlf"])
+def test_write_new_file_honors_nested_git_attribute(tmp_path, monkeypatch, ending):
+    import subprocess
+    from litetui.plugins import core_tools as ct
+    env = _ending_git(tmp_path)
+    for k, v in env.items():
+        if k.startswith("GIT_"):
+            monkeypatch.setenv(k, v)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"], env=env, check=True)
+    (tmp_path / ".gitattributes").write_bytes(b"*.txt text eol=crlf\n")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / ".gitattributes").write_bytes(f"*.txt text eol={ending}\n".encode())
+    p = nested / "deeper" / "new.txt"
+    out = ct.tool_write({"path": str(p), "content": "one\nsecond\r\n"})
+    assert out.startswith("Wrote"), out
+    nl = b"\n" if ending == "lf" else b"\r\n"
+    assert p.read_bytes() == nl.join([b"one", b"second", b""])
+
+
+@pytest.mark.parametrize("autocrlf,eol,ending", [
+    ("true", "lf", b"\r\n"), ("input", "crlf", b"\n"),
+    ("false", "crlf", b"\r\n"), ("false", "lf", b"\n"),
+])
+def test_write_new_file_honors_git_checkout_config(tmp_path, monkeypatch, autocrlf, eol, ending):
+    import subprocess
+    from litetui.plugins import core_tools as ct
+    env = _ending_git(tmp_path)
+    for k, v in env.items():
+        if k.startswith("GIT_"):
+            monkeypatch.setenv(k, v)
+    for key, value in [("core.autocrlf", autocrlf), ("core.eol", eol)]:
+        subprocess.run(["git", "-C", str(tmp_path), "config", key, value], env=env, check=True)
+    p = tmp_path / "new.txt"
+    out = ct.tool_write({"path": str(p), "content": "one\nsecond\r\n"})
+    assert out.startswith("Wrote"), out
+    assert p.read_bytes() == ending.join([b"one", b"second", b""])
+
+
+@pytest.mark.parametrize("ending", [b"\r\n", b"\n"])
+def test_write_new_file_uses_sibling_endings_without_git(tmp_path, ending):
+    from litetui.plugins import core_tools as ct
+    (tmp_path / "sibling.txt").write_bytes(ending.join([b"one", b"two", b""]))
+    p = tmp_path / "new.txt"
+    out = ct.tool_write({"path": str(p), "content": "new\nbody\r\n"})
+    assert out.startswith("Wrote"), out
+    assert p.read_bytes() == ending.join([b"new", b"body", b""])
+
+
+def test_write_new_file_defaults_to_lf_without_a_convention(tmp_path):
+    from litetui.plugins import core_tools as ct
+    p = tmp_path / "new.txt"
+    out = ct.tool_write({"path": str(p), "content": "new\nbody\r\n"})
+    assert out.startswith("Wrote"), out
+    assert p.read_bytes() == b"new\nbody\n"

@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from litetui import file_state, tool_schemas, ttyguard
+from litetui import file_endings, file_state, tool_schemas, ttyguard
 
 GREP_TOOL_SPEC = tool_schemas.load("grep")
 EDIT_TOOL_SPEC = tool_schemas.load("edit")
@@ -167,7 +167,8 @@ def _edit_locked(args: dict) -> str:
 
     count = text.count(old)
     normalized = False
-    bare_lf = 0
+    crlf = text.count("\r\n")
+    bare_lf = text.count("\n") - crlf
     if count == 0 and "\r\n" in text:
         # \U0001F534 THE MODEL TYPES WHAT `read` SHOWS IT — LF ENDINGS. A CRLF file therefore
         # never exact-matches an old_string the model composed from what it was shown (T147,
@@ -176,7 +177,6 @@ def _edit_locked(args: dict) -> str:
         # match in normalized LF space; the write-back below restores the file's own ending.
         base = text.replace("\r\n", "\n")
         old_s, new_s = old.replace("\r\n", "\n"), new.replace("\r\n", "\n")
-        bare_lf = text.replace("\r\n", "").count("\n")
         normalized = True
     else:
         base, old_s, new_s = text, old, new
@@ -188,17 +188,20 @@ def _edit_locked(args: dict) -> str:
         return (f"[error] old_string occurs {count} times in {p.name} — "
                 "make it unique (include surrounding lines) or pass replace_all=true")
 
-    new_text = base.replace(old_s, new_s) if replace_all else base.replace(old_s, new_s, 1)
-    # Write back in the file's own ending. The normalized path only exists for CRLF files:
-    # a uniformly-CRLF one (no bare LF anywhere) converts the whole result to CRLF; MIXED
-    # endings are refused with both counts — converting would re-encode every bare-LF line
-    # the edit did not touch, a silent history rewrite no one asked for. Exact-match edits
-    # never reach this: their bytes pass through as-is.
-    if normalized and bare_lf:
+    # No uniform ending can be inferred for mixed files. Exact substring edits
+    # without newlines remain safe; normalization or line insertion must refuse.
+    mixed = bool(crlf and bare_lf)
+    if mixed and (normalized or "\n" in old or "\n" in new):
         return (f"[error] {p.name} has MIXED line endings "
-                f"({text.count(chr(13) + chr(10))} CRLF, {bare_lf} bare LF) — edit will not "
-                "re-encode lines the edit did not touch; normalize the file to one ending first")
-    out_bytes = (new_text.replace("\n", "\r\n") if normalized else new_text).encode("utf-8")
+                f"({crlf} CRLF, {bare_lf} bare LF) — edit will not "
+                "re-encode lines the edit did not touch; normalize the whole file "
+                "to LF or CRLF first (for example, rewrite it with `write`), then retry")
+    # Exact matches need this too: single-line old_string used to insert bare
+    # LF into CRLF files because only the fallback path normalized new_string.
+    ending = "\r\n" if crlf and not bare_lf else "\n"
+    new_s = file_endings.normalize(new_s, "\n" if normalized else ending)
+    new_text = base.replace(old_s, new_s) if replace_all else base.replace(old_s, new_s, 1)
+    out_bytes = (file_endings.normalize(new_text, ending) if normalized else new_text).encode("utf-8")
 
     # Atomic: write a sibling temp file then os.replace over the target. A
     # crash mid-write leaves either the old or the new content, never a tear.
