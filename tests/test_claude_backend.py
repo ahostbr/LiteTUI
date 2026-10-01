@@ -431,3 +431,76 @@ async def test_a_session_opened_before_the_seat_registers_waits_for_it(monkeypat
     prompt = await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
     await task
     assert app.seat.agent_id in prompt, "the late seat still made it into the fixed prompt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound", ["session_id", "system_prompt"])
+async def test_a_resumed_session_waits_for_the_seat_too(monkeypatch, bound):
+    """T0249: a relaunch resumes a segment that already has a native session id (and a recorded
+    system prompt). The session's tool inventory is read at open, and the harness tool is gated on
+    the seat having registered, so a resumed session that skipped the wait opened WITHOUT the
+    harness tool for its whole life. The wait is about the inventory, not only the new prompt."""
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    app = _identity_app(monkeypatch)
+    app._seat_started = False
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    if bound == "session_id":
+        ledger.bind_session(segment["id"], "native-session-1")
+    else:
+        ledger.fix_system_prompt(segment["id"], "PROMPT FIXED BEFORE THE SEAT REGISTERED")
+    async def register_late():
+        await asyncio.sleep(0.3)
+        app._seat_started = True
+    task = asyncio.ensure_future(register_late())
+    await prompt_for_new_session(app, ledger.segment(segment["id"]))
+    registered_when_opened = app._seat_started  # read BEFORE the late registration is awaited
+    await task
+    assert registered_when_opened, "the session opened before the seat finished registering"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["disabled", "failed at activate: RuntimeError: boom"])
+async def test_a_session_does_not_wait_for_a_seat_whose_plugin_never_runs(monkeypatch, status):
+    """T0249 review (GuardTuring): _seat_started is only ever set by the inbox monitor, which only the
+    harness plugin starts. With that plugin skipped or failed, waiting would stall every session
+    open for the full bound for a seat that can never register."""
+    import time
+    from litetui import claude_turn
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    monkeypatch.setattr(claude_turn, "SEAT_WAIT_S", 3.0)  # a regression fails in 3 s, not 45
+    app = _identity_app(monkeypatch)
+    app._seat_started = False
+    app.plugins.status["harness"] = status
+    started = time.monotonic()
+    await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
+    assert time.monotonic() - started < 5, "waited for a seat whose plugin is not running"
+
+
+@pytest.mark.asyncio
+async def test_a_long_seat_wait_says_so_once(monkeypatch):
+    """T0249: a session that waits past the notice threshold shows ONE system line, so a long
+    wait is visible rather than a silent hang; a short wait shows none."""
+    from litetui import claude_turn
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    monkeypatch.setattr(claude_turn, "SEAT_NOTICE_S", 0.2)
+    app = _identity_app(monkeypatch)
+    lines = []
+    monkeypatch.setattr(app, "_system", lambda text, *a, **k: lines.append(text))
+
+    async def wait_with(register_after):
+        app._seat_started = False
+        async def register():
+            await asyncio.sleep(register_after)
+            app._seat_started = True
+        task = asyncio.ensure_future(register())
+        await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
+        await task
+
+    await wait_with(0.05)
+    assert lines == [], "a quick registration should not announce a wait"
+    await wait_with(0.7)
+    assert len(lines) == 1 and "harness seat" in lines[0], lines

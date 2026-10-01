@@ -102,25 +102,46 @@ def after_turn(app, reason, failure, crossed):
         app.call_after_refresh(app._maybe_autocompact)
 
 
-#: How long a new session waits for the harness seat's first register attempt
-#: (app._inbox_monitor: a 2 s settle, then a registry write).
-SEAT_WAIT_S = 15.0
+#: How long a session waits for the harness seat's first register attempt
+#: (app._inbox_monitor: a 2 s settle, up to a launch option's timeout + 5 s, then a
+#: registry write). It ends the wait whether the register succeeded or failed.
+SEAT_WAIT_S = 45.0
+#: A wait that lasts this long is announced once, so it does not read as a hung session.
+SEAT_NOTICE_S = 2.0
+
+
+def _seat_pending(app):
+    """The seat has not finished its first register attempt AND something will still make it.
+
+    Only the harness plugin starts the inbox monitor that sets `_seat_started`; with the
+    plugin disabled or failed at activate, nothing ever will, so waiting would only stall.
+    """
+    if getattr(app, "_seat_started", True):
+        return False
+    status = getattr(getattr(app, "plugins", None), "status", None)
+    return not isinstance(status, dict) or status.get("harness") == "active"
 
 
 async def prompt_for_new_session(app, segment):
     """system_prompt_for, after the harness seat's first register attempt has ended.
 
-    The prompt is fixed for the segment's life, and so is the session's tool inventory.
-    A session opened in the first seconds after launch, before the seat registered,
-    would carry neither the harness identity nor the harness tool for as long as it
-    lives. The host re-syncs its own system message when the seat lands late; a fixed
-    Claude prompt cannot, so a NEW segment waits for it (bounded) instead.
+    The session's tool inventory is fixed when it opens, and the harness tool is only
+    offered once the seat registered. A session opened in the first seconds after
+    launch would therefore lack the harness tool for as long as it lives, and a NEW
+    segment's prompt would also lack the harness identity. The host re-syncs its own
+    system message when the seat lands late; a fixed Claude session cannot, so EVERY
+    open waits for it (bounded) - a RESUMED segment too (T0249): it is the relaunch
+    case, where the session id and the recorded prompt already exist, that raced the
+    seat and lost its harness tool.
     """
-    fresh = ledger_for(app).segment(segment["id"]) or segment
-    if not fresh.get("system_prompt") and not fresh.get("session_id"):
-        deadline = time.monotonic() + SEAT_WAIT_S
-        while not getattr(app, "_seat_started", True) and time.monotonic() < deadline:
-            await asyncio.sleep(0.1)
+    began = time.monotonic()
+    deadline = began + SEAT_WAIT_S
+    announced = False
+    while _seat_pending(app) and time.monotonic() < deadline:
+        if not announced and time.monotonic() - began >= SEAT_NOTICE_S:
+            announced = True
+            app._system("waiting for the harness seat to register…")
+        await asyncio.sleep(0.1)
     return system_prompt_for(app, segment)
 
 
