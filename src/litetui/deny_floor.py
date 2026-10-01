@@ -190,6 +190,12 @@ def _literal_here_data(command: str) -> list[tuple[int, int]]:
     accepted data expressions are masked only for this prefix check; deletion
     and cd matching still see the original command, as before.
     """
+    # PowerShell recognizes smart single quotes and bare CR line breaks. Our
+    # ASCII / LF grammar could swallow an earlier real terminator and commands
+    # after it. Do not widen the grammar: any such syntax anywhere restores
+    # the original full scan, including when it occurs outside a here-string.
+    if any(quote in command for quote in "\u2018\u2019\u201a\u201b") or re.search(r"\r(?!\n)", command):
+        return []
     spans = []
     prefix_view = command
     for match in _HERE_STRING.finditer(command):

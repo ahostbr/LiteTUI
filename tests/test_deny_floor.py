@@ -408,3 +408,38 @@ def test_floor_here_string_shell_route(tmp_path, monkeypatch, tool_name, policy,
                            {"command": [command] if command_list else command, "shell": "powershell"},
                            tmp_path, tool_name=tool_name)
     assert ("[owner-launcher]" in decision.reason) is refused, decision.reason
+
+
+@pytest.mark.parametrize("closer", ["\u2018", "\u2019", "\u201a", "\u201b", "\r'"])
+@pytest.mark.parametrize("separator", ["; ", "\n"])
+def test_here_string_ambiguous_terminator_falls_back(tmp_path, monkeypatch, closer, separator):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    command = "@'\nfoo\n" + closer + "@" + separator + "run\n'@ | Add-Content x\n'"
+    if closer == "\r'":
+        command = "@'\nfoo" + closer + "@" + separator + "run\n'@ | Add-Content x\n'"
+    default = deny_floor.refusal(command, tmp_path)
+    assert default and "[owner-launcher]" in default
+    assert deny_floor.refusal(command, tmp_path, shell="powershell") == default
+
+
+@pytest.mark.parametrize("command", [
+    "@'\r\nrun\r\n'@ | Add-Content tests.ts",
+    "Write-Output \u2019; run",
+    "Write-Output ok\rrun",
+    "Write-Output \u2019",
+    "Write-Output ok\rWrite-Output done",
+    "Write-Output \u2019; @'\nrun\n'@ | Add-Content x",
+    "Write-Output ok\r\n@'\nrun\n'@ | Add-Content x\r",
+])
+def test_here_string_unusual_syntax_is_conservative(tmp_path, monkeypatch, command):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    if "\u2019" not in command and "\r" not in command.replace("\r\n", ""):
+        assert deny_floor.refusal(command, tmp_path, shell="powershell") is None
+    else:
+        assert deny_floor.refusal(command, tmp_path, shell="powershell") == deny_floor.refusal(command, tmp_path)
