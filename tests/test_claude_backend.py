@@ -467,11 +467,40 @@ async def test_a_session_does_not_wait_for_a_seat_whose_plugin_never_runs(monkey
     harness plugin starts. With that plugin skipped or failed, waiting would stall every session
     open for the full bound for a seat that can never register."""
     import time
+    from litetui import claude_turn
     from litetui.claude_turn import ledger_for, prompt_for_new_session
 
+    monkeypatch.setattr(claude_turn, "SEAT_WAIT_S", 3.0)  # a regression fails in 3 s, not 45
     app = _identity_app(monkeypatch)
     app._seat_started = False
     app.plugins.status["harness"] = status
     started = time.monotonic()
     await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
     assert time.monotonic() - started < 5, "waited for a seat whose plugin is not running"
+
+
+@pytest.mark.asyncio
+async def test_a_long_seat_wait_says_so_once(monkeypatch):
+    """T0249: a session that waits past the notice threshold shows ONE system line, so a long
+    wait is visible rather than a silent hang; a short wait shows none."""
+    from litetui import claude_turn
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    monkeypatch.setattr(claude_turn, "SEAT_NOTICE_S", 0.2)
+    app = _identity_app(monkeypatch)
+    lines = []
+    monkeypatch.setattr(app, "_system", lambda text, *a, **k: lines.append(text))
+
+    async def wait_with(register_after):
+        app._seat_started = False
+        async def register():
+            await asyncio.sleep(register_after)
+            app._seat_started = True
+        task = asyncio.ensure_future(register())
+        await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
+        await task
+
+    await wait_with(0.05)
+    assert lines == [], "a quick registration should not announce a wait"
+    await wait_with(0.7)
+    assert len(lines) == 1 and "harness seat" in lines[0], lines

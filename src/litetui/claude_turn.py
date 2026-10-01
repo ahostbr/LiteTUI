@@ -106,6 +106,8 @@ def after_turn(app, reason, failure, crossed):
 #: (app._inbox_monitor: a 2 s settle, up to a launch option's timeout + 5 s, then a
 #: registry write). It ends the wait whether the register succeeded or failed.
 SEAT_WAIT_S = 45.0
+#: A wait that lasts this long is announced once, so it does not read as a hung session.
+SEAT_NOTICE_S = 2.0
 
 
 def _seat_pending(app):
@@ -132,8 +134,13 @@ async def prompt_for_new_session(app, segment):
     case, where the session id and the recorded prompt already exist, that raced the
     seat and lost its harness tool.
     """
-    deadline = time.monotonic() + SEAT_WAIT_S
+    began = time.monotonic()
+    deadline = began + SEAT_WAIT_S
+    announced = False
     while _seat_pending(app) and time.monotonic() < deadline:
+        if not announced and time.monotonic() - began >= SEAT_NOTICE_S:
+            announced = True
+            app._system("waiting for the harness seat to register…")
         await asyncio.sleep(0.1)
     return system_prompt_for(app, segment)
 
