@@ -320,3 +320,128 @@ def test_a_relative_path_through_a_link_out_of_the_tree_is_not_inside(trees, tem
         assert decide(cmd, where).action == tp.CONFIRM, (where, cmd)
     # control: the same shape without the link is exempt
     assert decide("rm -rf real/x", trees["wt"]).action == tp.ALLOW
+
+
+# ── every LINE and every SEGMENT is judged on its own (Sentinel, T0251 finding) ──
+#
+# The danger table does not recognise a command that starts a NEW LINE (its
+# command-position anchor has no multiline flag; card T0251 fixes the table). The
+# exemption WIDENS what is allowed, so it must not inherit that blind spot: a first
+# line that is a scoped danger row must not launder what the later lines do.
+#
+# HEREDOC BODIES ARE DATA, NOT COMMAND LINES: the parser lifts them out before it
+# splits lines, so a body is never read as `cd`/`rm`. What it does with a body is
+# judge its PATH LITERALS (an absolute, `~` or `..` path outside the tree refuses),
+# and a body fed to a SHELL (`bash <<EOF`) is read strictly, as commands.
+
+FIRST = "cd {wt}/packages/x && rm -rf dist"
+
+
+def _multi(trees, *lines, where="main"):
+    cmd = "\n".join(lines).format(wt=fwd(trees["wt"]), main=fwd(trees["main"]),
+                                  other=fwd(trees["other"]))
+    return cmd, decide(cmd, trees[where])
+
+
+@pytest.mark.parametrize("later", [
+    "cd {main}",                          # (1) line 2 leaves the tree by cd
+    "cd {main}\nrm -rf src",
+    "cd {other} && git restore x",
+    "cd ..\ncd ..\ncd ..\nrm -rf x",      # packages/x -> packages -> tree root -> .worktrees
+])
+def test_a_later_line_that_cds_outside_the_tree_is_not_exempt(trees, later):
+    cmd, d = _multi(trees, FIRST, later)
+    assert d.action == tp.CONFIRM, (cmd, d.reason)
+
+
+@pytest.mark.parametrize("later", [
+    "rm -rf {main}/src",                  # (2) line 2 names an outside absolute path
+    "rm -rf {other}/x",
+    "git restore {main}/src/x.py",
+    "Remove-Item -Recurse -Path:{main}/src",
+    "rm -rf ../../../../elsewhere",
+    "git -C{main} reset --hard",
+])
+def test_a_later_line_that_names_an_outside_path_is_not_exempt(trees, later):
+    cmd, d = _multi(trees, FIRST, later)
+    assert d.action == tp.CONFIRM, (cmd, d.reason)
+
+
+@pytest.mark.parametrize("later", [
+    "rm -rf .",                           # (3) a later line removes the tree itself
+    "rm -rf {wt}",
+    "rm -rf ..",
+    "rm -rf .git",
+    "rm -rf {main}/.worktrees",
+    "git worktree remove .",
+    "git worktree remove {wt}",
+])
+def test_a_later_line_that_removes_the_tree_is_not_exempt(trees, later):
+    # line 1 is a scoped NON-delete row, so only the per-segment verb check can see
+    # that the later `rm` is a deletion of the root.
+    # (the deny floor may refuse the parent-of-the-workspace spellings outright: a
+    # DENY is as good as a CONFIRM here; what must never happen is an ALLOW)
+    for first in ("cd {wt} && rm -rf dist", "cd {wt} && git reset --hard"):
+        cmd, d = _multi(trees, first, later)
+        assert d.action in (tp.CONFIRM, tp.DENY), (cmd, d.reason)
+    cmd, d = _multi(trees, "git reset --hard", later, where="wt")
+    assert d.action in (tp.CONFIRM, tp.DENY), (cmd, d.reason)
+
+
+@pytest.mark.parametrize("later", [
+    "taskkill /f /im app.exe",            # a SYSTEM row on line 2 that the table does not see
+    "shutdown -h now",
+    "kill -9 123",                        # none of these three is seen by the table on line 2
+    "pkill python",
+    "reg add HKCU\\Software\\X /v a",
+    "sc delete svc",
+    "git push --force",
+    "git branch -D topic",
+])
+def test_a_later_line_with_a_system_row_is_not_exempt(trees, later):
+    cmd, d = _multi(trees, FIRST, later)
+    assert d.action == tp.CONFIRM, (cmd, d.reason)
+
+
+def test_heredoc_bodies_are_data_judged_by_their_path_literals(trees):
+    wt = fwd(trees["wt"])
+    main = fwd(trees["main"])
+    # (4a) code in a body that names an outside absolute path: refused
+    out = f"cd {wt} && python - <<'EOF'\nimport shutil\nshutil.rmtree('{main}/src')\nEOF"
+    assert decide(out, trees["main"]).action == tp.CONFIRM
+    # (4b) ...but the same body without an outside path is data, not a `cd` line
+    prose = (f"cd {wt} && python - <<'EOF'\n# cd would be wrong; rm -rf is just text here\n"
+             "print('start')\nEOF")
+    assert decide(prose, trees["main"]).action == tp.ALLOW
+    # (4c) a body is NOT a command line: `cd /` inside it is not tracked as a cd
+    cdish = f"cd {wt} && cat > notes.txt <<'EOF'\ncd ..\nstart\nEOF"
+    assert decide(cdish, trees["main"]).action == tp.ALLOW
+    # (4d) a body fed to a SHELL is commands and is read strictly
+    shell_body = f"cd {wt} && rm -rf dist && bash <<'EOF'\ncd ..\nrm -rf x\nEOF"
+    assert decide(shell_body, trees["main"]).action == tp.CONFIRM
+
+
+def test_a_multi_line_command_fully_inside_the_tree_stays_allowed(trees):
+    """(5) control: nothing on any line leaves the tree or removes it."""
+    cmd, d = _multi(trees, FIRST, "git reset --hard", "rm -rf build node_modules/.cache",
+                    "cd {wt}/packages", "git restore x.ts", "unzip a.zip -d out")
+    assert d.action == tp.ALLOW, (cmd, d.reason)
+    assert "own worktree" in d.reason
+    cmd, d = _multi(trees, "rm -rf dist", "git clean -fdx", "git restore src", where="wt")
+    assert d.action == tp.ALLOW, (cmd, d.reason)
+
+
+def test_git_dash_C_outside_the_tree_is_never_exempt(trees):
+    """GuardTuring's note on 0d725647: `git -C<outside> reset --hard` is not a
+    DANGER_TABLE hit in that spelling (today, before this card), so the table alone
+    would let it through. The exemption must not be what lets a destructive command
+    in another tree look confined: judged on its own it is a violation, and next to
+    a scoped row it takes the whole command off the exemption."""
+    from litetui import worktree_scope as ws
+    main, wt = fwd(trees["main"]), trees["wt"]
+    for spelling in (f"git -C{main} reset --hard", f"git -C {main} reset --hard",
+                     "git -C../../.. reset --hard"):
+        assert ws.violation(spelling, wt, wt, deleting=False) is not None, spelling
+        assert not tp._own_worktree_allows({"command": spelling}, wt, SEAT, "bash"), spelling
+        cmd = f"cd {fwd(wt)} && rm -rf dist && {spelling}"
+        assert decide(cmd, trees["main"]).action == tp.CONFIRM, cmd

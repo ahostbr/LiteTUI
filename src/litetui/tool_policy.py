@@ -1051,7 +1051,19 @@ def _own_worktree_allows(args: Mapping[str, object], workspace: Path, seat_name:
     command is confined to a worktree this seat owns (see worktree_scope)."""
     command = str(args.get("command") or "")
     hits = list(_iter_danger(command, workspace, shell))
-    if not hits or any(index != -1 and index not in _WORKTREE_SCOPED_ROWS for _, index in hits):
+    if not hits:
+        return False
+    # The table's command-position anchor has no multiline flag, so scanning the text
+    # whole misses a command that starts a LINE. The exemption widens what is allowed,
+    # so it also judges every line on its own (heredoc bodies are data, not lines):
+    # a system row on line 2 must not ride on a scoped row on line 1. Card T0251 fixes
+    # the table itself; this stays as the exemption's own guarantee.
+    lines = worktree_scope.command_lines(command)
+    if lines is None:
+        return False
+    for line in lines:
+        hits.extend(_iter_danger(line, workspace, shell))
+    if any(index != -1 and index not in _WORKTREE_SCOPED_ROWS for _, index in hits):
         return False
     if _NEVER_SCOPED.search(_command_view(command, shell)):
         return False

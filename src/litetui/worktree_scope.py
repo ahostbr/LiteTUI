@@ -48,6 +48,11 @@ _DOTDOT = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
 _PIECE = re.compile(r"[^\s'\"`,;()<>|&]+")
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(?:'([A-Za-z_]\w*)'|\"([A-Za-z_]\w*)\"|([A-Za-z_]\w*))")
 _MARK = "\x00H\x00"
+#: A segment that contains any of these words is a DELETION for the root-protection
+#: check, whatever the danger table made of the command: the table does not see a
+#: command that starts a new line, so "is this a deletion" is decided here per segment.
+_DELETE_WORDS = frozenset({"rm", "del", "erase", "rmdir", "rd", "ri", "unlink", "shred",
+                           "remove-item", "rimraf", "truncate", "find", "clean", "worktree"})
 
 
 # ── roots ────────────────────────────────────────────────────────────────────
@@ -164,6 +169,18 @@ def _split_heredocs(command: str) -> tuple[str, list[tuple[str, str]]] | None:
     if pending:
         return None
     return "\n".join(out), [("", "\n".join(b)) for b in bodies]
+
+
+def command_lines(command: str) -> list[str] | None:
+    """The command's own lines with heredoc BODIES lifted out (a body is data, not a
+    command line), or None when a heredoc is never closed. tool_policy runs the
+    danger table on each line separately: its command-position anchor has no
+    multiline flag, so a command that starts a new line is invisible to it when the
+    whole text is scanned at once."""
+    split = _split_heredocs(command)
+    if split is None:
+        return None
+    return [line.replace(_MARK, " ") for line in split[0].splitlines()]
 
 
 # ── tokenizer ────────────────────────────────────────────────────────────────
@@ -371,6 +388,7 @@ def violation(command: str, root: Path, start_cwd: Path, *, deleting: bool) -> s
         skeleton, heredocs = split
         segments = _tokenize(skeleton)
         scope = _Scope(root, start_cwd, deleting)
+        deleting_overall = deleting
         started_outside = not _inside(_real(start_cwd), scope.root)
         if started_outside:
             first = segments[0][0] if segments else []
@@ -390,6 +408,9 @@ def violation(command: str, root: Path, start_cwd: Path, *, deleting: bool) -> s
             if verb == "popd":
                 return "a popd"
             consumes = any(t[0] == _MARK for t in tokens)
+            # judged per SEGMENT: a deletion on any line protects the root, whether or
+            # not the danger table recognised it
+            scope.deleting = deleting_overall or any(t[0].lower() in _DELETE_WORDS for t in tokens)
             for text, quoted in tokens:
                 if text != _MARK:
                     scope.check_token(text, quoted)
