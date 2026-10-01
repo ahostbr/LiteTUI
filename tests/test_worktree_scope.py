@@ -453,7 +453,9 @@ def test_git_dash_C_outside_the_tree_is_never_exempt(trees):
 # The check is POSITIVE: a segment whose effective verb (wrappers peeled) is a known
 # system verb refuses the exemption, however the table reads the line.
 
-SYSTEM_ACTIONS = ["kill -9 1234", "pkill python", "reg add HKCU\\Software\\X /v a",
+SYSTEM_ACTIONS = ["Set-NetFirewallProfile -Enabled False", "Disable-NetFirewallRule -Name x",
+                  "New-NetFirewallRule -DisplayName x", "Restart-Computer", "Stop-Process -Id 4",
+                  "kill -9 1234", "pkill python", "reg add HKCU\\Software\\X /v a",
                   "sc delete svc", "taskkill /f /im app.exe", "schtasks /create /tn x /tr y",
                   "shutdown -h now", "git push --force", "git push origin main"]
 
@@ -465,6 +467,12 @@ SYSTEM_ACTIONS = ["kill -9 1234", "pkill python", "reg add HKCU\\Software\\X /v 
     "{first}\n   \t {action}",
     "{first}\nbash <<'EOF'\n{action}\nEOF",         # (2) a heredoc body fed to a shell
     "{first}\nsh <<EOF\n  {action}\nEOF",
+    "{first}\nzsh <<-EOF\n\t{action}\nEOF",           # <<-EOF, tab-indented body and terminator
+    "{first}\npwsh <<'EOF'\n{action}\nEOF",
+    "{first}\npowershell <<EOF\n{action}\nEOF",
+    "{first}\ncmd <<EOF\n{action}\nEOF",
+    "{first}\nsudo bash <<'EOF'\n{action}\nEOF",
+    "{first} && start /b {action}",
     "{first} && env {action}",                      # (3) wrappers the table does not unwrap
     "{first} && nohup {action}",
     "{first} && time {action}",

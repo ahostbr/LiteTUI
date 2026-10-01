@@ -91,7 +91,8 @@ def _effective_verb(words: list[str]) -> tuple[str, list[str]]:
 
 def _refuse_system_verb(words: list[str]) -> None:
     verb, rest = _effective_verb(words)
-    if verb in _SYSTEM_VERBS or (verb == "git" and any(w.lower() == "push" for w in rest)):
+    if (verb in _SYSTEM_VERBS or re.match(r"^[a-z]+-netfirewall", verb)
+            or (verb == "git" and any(w.lower() == "push" for w in rest))):
         raise _Refuse(f"a system action ({verb}) is not scoped by a path")
     if verb in _LAUNCHERS:
         # `cmd /c taskkill ...`, `powershell -Command kill 1`, `Start-Process kill`:
