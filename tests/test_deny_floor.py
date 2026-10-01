@@ -88,6 +88,59 @@ def test_owner_launcher_requires_executable_position_and_resolved_identity(
         assert "[owner-launcher]" in reason
         assert str(owner.resolve()) in reason
 
+@pytest.mark.parametrize("command, refused", [
+    ("@'\nrun = vi.fn();\n'@ | Add-Content tests.ts", False),
+    ("@'\nrun\n'@", False),
+    ("@'\nrun\n'@ | Set-Content 'test cases.ts'", False),
+    ("@'\nrun\n'@ | Out-File tests.ts", False),
+    ("@'\nrun\n'@ | Add-Content tests.ts; Write-Output ok", False),
+    ("@'\r\nrun\r\n'@ | Add-Content tests.ts", False),
+    ("@'\nrun\n'@ | powershell -", True),
+    ("@'\nrun\n'@ | pwsh -c -", True),
+    ("@'\nrun\n'@ | cmd", True),
+    ("@'\nrun\n'@ | iex", True),
+    ("@'\nrun\n'@ | Invoke-Expression", True),
+    ("iex @'\nrun\n'@", True),
+    ("Invoke-Expression @'\nrun\n'@", True),
+    ("& ([scriptblock]::Create(@'\nrun\n'@))", True),
+    ("python -c @'\nrun\n'@", True),
+    ("node -e @'\nrun\n'@", True),
+    ("@'\nrun\n'@ | unknown-sink", True),
+    ("@'\nrun\n'@ | Add-Content tests.ts | iex", True),
+    ("@'\nrun\n'@\n | iex", True),
+    ('@"\n$(run)\n"@ | Add-Content tests.ts', True),
+    ("@'\nrun\n", True),
+    ("run; @'\ntext\n'@ | Add-Content tests.ts", True),
+    ("@'\ntext\n'@ | Add-Content tests.ts; run", True),
+    ("@'\ntext\n'@\nrun", True),
+    ("@'\nrun\n'@\n# continuation comment\n | iex", True),
+    ("@'\ncd missing-folder\n'@ | Add-Content tests.ts; run", True),
+    ("@'\ncd missing-folder\n'@ | Add-Content tests.ts\nrun", True),
+    ("& '{owner}'", True),
+    ("cmd /c '{owner}'", True),
+    ("Start-Process -FilePath '{owner}'", True),
+])
+def test_owner_launcher_literal_here_string_data_only(tmp_path, monkeypatch, command, refused):
+    """T0291: classify strings only; every launcher file is inert test data."""
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    reason = deny_floor.refusal(command.format(owner=owner), owner.parent, shell="powershell")
+    assert bool(reason) is refused, reason
+    if refused:
+        assert "[owner-launcher]" in reason
+
+
+def test_original_t0291_command_is_literal_test_data(tmp_path, monkeypatch):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    command = (Path(__file__).parent / "fixtures" / "T0291-here-string.txt").read_text(encoding="utf-8")
+    assert deny_floor.refusal(command, owner.parent, shell="powershell") is None
+
+
 
 # ── the gate: every profile, every standing rule ────────────────────────────
 
@@ -315,3 +368,78 @@ def test_the_floor_works_with_liteharness_not_importable(tmp_path):
                           cwd=tmp_path, env={**os.environ, "PYTHONPATH": src}, timeout=120)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.startswith("deny DENY FLOOR [home-variable-delete]"), proc.stdout
+
+
+@pytest.mark.parametrize("shell", [None, "cmd", "bash", "powershell"])
+@pytest.mark.parametrize("original", [False, True])
+def test_here_string_exemption_requires_proven_shell(tmp_path, monkeypatch, shell, original):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    command = "@'\nrun\n'@"
+    if original:
+        command = (Path(__file__).parent / "fixtures/T0291-here-string.txt").read_text(encoding="utf-8")
+    kwargs = {} if shell is None else {"shell": shell}
+    reason = deny_floor.refusal(command, tmp_path, **kwargs)
+    assert bool(reason) is (shell != "powershell"), reason
+
+
+@pytest.mark.parametrize("tool_name, policy, command_list, refused", [
+    ("powershell", tp.SHELL_POLICY, False, False),
+    ("bash", tp.SHELL_POLICY, False, True),
+    ("cmd", tp.SHELL_POLICY, False, True),
+    ("", tp.SHELL_POLICY, False, True),
+    ("mcp__litesuite-tools__shell", tp.MCP_UNKNOWN_POLICY, False, True),
+    ("powershell", tp.MCP_UNKNOWN_POLICY, False, True),
+    ("powershell", tp.SHELL_POLICY, True, True),
+])
+@pytest.mark.parametrize("original", [False, True])
+def test_floor_here_string_shell_route(tmp_path, monkeypatch, tool_name, policy, command_list, refused, original):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.chdir(tmp_path)
+    command = "@'\nrun\n'@"
+    if original:
+        command = (Path(__file__).parent / "fixtures/T0291-here-string.txt").read_text(encoding="utf-8")
+    decision = tp.evaluate(tp.AUTONOMOUS, policy,
+                           {"command": [command] if command_list else command, "shell": "powershell"},
+                           tmp_path, tool_name=tool_name)
+    assert ("[owner-launcher]" in decision.reason) is refused, decision.reason
+
+
+@pytest.mark.parametrize("closer", ["\u2018", "\u2019", "\u201a", "\u201b", "\r'"])
+@pytest.mark.parametrize("separator", ["; ", "\n"])
+def test_here_string_ambiguous_terminator_falls_back(tmp_path, monkeypatch, closer, separator):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    command = "@'\nfoo\n" + closer + "@" + separator + "run\n'@ | Add-Content x\n'"
+    if closer == "\r'":
+        command = "@'\nfoo" + closer + "@" + separator + "run\n'@ | Add-Content x\n'"
+    default = deny_floor.refusal(command, tmp_path)
+    assert default and "[owner-launcher]" in default
+    assert deny_floor.refusal(command, tmp_path, shell="powershell") == default
+
+
+@pytest.mark.parametrize("command", [
+    "@'\r\nrun\r\n'@ | Add-Content tests.ts",
+    "Write-Output \u2019; run",
+    "Write-Output ok\rrun",
+    "Write-Output \u2019",
+    "Write-Output ok\rWrite-Output done",
+    "Write-Output \u2019; @'\nrun\n'@ | Add-Content x",
+    "Write-Output ok\r\n@'\nrun\n'@ | Add-Content x\r",
+])
+def test_here_string_unusual_syntax_is_conservative(tmp_path, monkeypatch, command):
+    owner = tmp_path / "run.bat"
+    owner.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    if "\u2019" not in command and "\r" not in command.replace("\r\n", ""):
+        assert deny_floor.refusal(command, tmp_path, shell="powershell") is None
+    else:
+        assert deny_floor.refusal(command, tmp_path, shell="powershell") == deny_floor.refusal(command, tmp_path)
