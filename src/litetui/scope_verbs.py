@@ -47,7 +47,7 @@ IN_TREE_VERBS = frozenset({
     "git",
     # languages, package managers, builds, tests
     "node", "npm", "npx", "bun", "bunx", "pnpm", "yarn", "deno", "tsc", "vitest", "jest",
-    "eslint", "prettier", "vite", "esbuild", "electron-vite", "python", "python3", "py", "pytest",
+    "eslint", "prettier", "vite", "esbuild", "electron-vite", "playwright", "python", "python3", "py", "pytest",
     "uv", "uvx", "pip", "pip3", "ruff", "mypy", "black", "cargo", "rustc", "rustfmt", "make",
     "cmake", "ninja", "go", "dotnet", "msbuild", "gradle", "mvn", "java", "javac", "pwsh-script",
     "liteharness", "lst", "litetui",

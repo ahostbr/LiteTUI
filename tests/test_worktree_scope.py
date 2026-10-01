@@ -557,7 +557,7 @@ def test_a_wrapper_option_that_takes_a_value_is_never_read_as_the_verb(trees, wr
     "Enable-PSRemoting", "Set-NetFirewallRule -Name x", "New-NetFirewallRule -Name x",
     "git -c alias.p=push p", "git -calias.p=push p", "git --config-env=alias.p=X p",
     "git -C . -c core.pager=x log", "git config --global user.name x",
-    "systemctl stop x", "launchctl unload x", "crontab -r", "frobnicate --now",
+    "systemctl stop x", "launchctl unload x", "crontab -r", "frobnicate --now", "foo-tool --x",
     "env net stop spooler", "bash -c 'net stop spooler'", "cmd /c net stop spooler",
     "find . -exec kill {} +", "find build -exec taskkill /f {} ;",
     "tar -xf a.tar --to-command=kill", "tar --checkpoint=1 --checkpoint-action=exec=x -xf a.tar",
@@ -572,6 +572,7 @@ def test_a_verb_that_is_not_on_the_in_tree_list_never_rides_on_a_scoped_row(tree
 
 @pytest.mark.parametrize("tail", [
     "node scripts/build.js", "npm run build", "npx vitest run", "bun test", "pnpm -r build",
+    "playwright test --reporter=line", "npm run format", "grep -n kill notes.txt", "echo kill the build",
     "python -m pytest -q tests", "uv run pytest", "pip install -e .", "cargo test", "make clean",
     "go test ./...", "dotnet build", "./node_modules/.bin/vitest run", "git status && git add -A",
     "git -C packages/x status", "git commit -m 'fix: thing'", "grep -rn TODO src", "sed -n 1,5p a.ts",
