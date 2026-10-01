@@ -364,7 +364,11 @@ def tool_write(args: dict) -> str:
     try:
         if p.parent and not p.parent.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        from litetui.file_endings import normalize, write_ending
+        rendered = normalize(content, write_ending(p))
+        # Explicit raw text IO: Windows must not translate LF a second time.
+        with p.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(rendered)
     except Exception as e:
         return f"[error] write failed: {type(e).__name__}: {e}"
     file_state.record_read(p)  # feed edit's guard: the model just wrote every byte
