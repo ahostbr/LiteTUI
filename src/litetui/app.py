@@ -3634,8 +3634,30 @@ class LiteTUI(App):
         if not self._convo_loading:
             self._edit(0, "store injected once")
 
+    def _inject_index_once(self) -> None:
+        """Merge the cwd repo's AGENT_INDEX.md into the system message, once.
+
+        Detected by INDEX_HEADER in message 0, not by a flag, so a resumed convo
+        keeps the snapshot it was given (never refreshed) and /clear's fresh
+        system message gets its own. Independent of the store latch on purpose:
+        an empty store must not stop the index, and the index must not stop a
+        later memory write from being picked up.
+        """
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            return
+        current = self.conversation[0].get("content", "")
+        if not isinstance(current, str) or appsvc.INDEX_HEADER in current:
+            return
+        block = appsvc.index_block(self)
+        if not block:
+            return
+        self.conversation[0] = {**self.conversation[0], "content": current + block}
+        if not self._convo_loading:
+            self._edit(0, "project index injected once")
+
     def _request_messages(self) -> list[dict]:
-        """The conversation as sent. The store rides in message 0, injected once."""
+        """The conversation as sent. The index and store ride in message 0, injected once."""
+        self._inject_index_once()
         self._inject_store_once()
         return list(self.conversation)
 
