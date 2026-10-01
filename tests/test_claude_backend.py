@@ -458,3 +458,20 @@ async def test_a_resumed_session_waits_for_the_seat_too(monkeypatch, bound):
     registered_when_opened = app._seat_started  # read BEFORE the late registration is awaited
     await task
     assert registered_when_opened, "the session opened before the seat finished registering"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["disabled", "failed at activate: RuntimeError: boom"])
+async def test_a_session_does_not_wait_for_a_seat_whose_plugin_never_runs(monkeypatch, status):
+    """T0249 review (GuardTuring): _seat_started is only ever set by the inbox monitor, which only the
+    harness plugin starts. With that plugin skipped or failed, waiting would stall every session
+    open for the full bound for a seat that can never register."""
+    import time
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    app = _identity_app(monkeypatch)
+    app._seat_started = False
+    app.plugins.status["harness"] = status
+    started = time.monotonic()
+    await prompt_for_new_session(app, ledger_for(app).select_segment("ws"))
+    assert time.monotonic() - started < 5, "waited for a seat whose plugin is not running"

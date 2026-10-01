@@ -108,6 +108,18 @@ def after_turn(app, reason, failure, crossed):
 SEAT_WAIT_S = 45.0
 
 
+def _seat_pending(app):
+    """The seat has not finished its first register attempt AND something will still make it.
+
+    Only the harness plugin starts the inbox monitor that sets `_seat_started`; with the
+    plugin disabled or failed at activate, nothing ever will, so waiting would only stall.
+    """
+    if getattr(app, "_seat_started", True):
+        return False
+    status = getattr(getattr(app, "plugins", None), "status", None)
+    return not isinstance(status, dict) or status.get("harness") == "active"
+
+
 async def prompt_for_new_session(app, segment):
     """system_prompt_for, after the harness seat's first register attempt has ended.
 
@@ -121,7 +133,7 @@ async def prompt_for_new_session(app, segment):
     seat and lost its harness tool.
     """
     deadline = time.monotonic() + SEAT_WAIT_S
-    while not getattr(app, "_seat_started", True) and time.monotonic() < deadline:
+    while _seat_pending(app) and time.monotonic() < deadline:
         await asyncio.sleep(0.1)
     return system_prompt_for(app, segment)
 
