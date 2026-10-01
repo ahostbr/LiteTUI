@@ -1062,7 +1062,7 @@ def _own_worktree_allows(args: Mapping[str, object], workspace: Path, seat_name:
     if lines is None:
         return False
     for line in lines:
-        hits.extend(_iter_danger(line, workspace, shell))
+        hits.extend(_iter_danger(line.strip(), workspace, shell))
     if any(index != -1 and index not in _WORKTREE_SCOPED_ROWS for _, index in hits):
         return False
     if _NEVER_SCOPED.search(_command_view(command, shell)):

@@ -445,3 +445,58 @@ def test_git_dash_C_outside_the_tree_is_never_exempt(trees):
         assert not tp._own_worktree_allows({"command": spelling}, wt, SEAT, "bash"), spelling
         cmd = f"cd {fwd(wt)} && rm -rf dist && {spelling}"
         assert decide(cmd, trees["main"]).action == tp.CONFIRM, cmd
+
+
+# ── the exemption must not depend on the table SEEING a system action ─────────
+# (GuardTuring, 70ec2ff9: every command below is a scoped delete PLUS a system action
+# the table's anchors miss; before T0246 each was CONFIRM because the delete hit.)
+# The check is POSITIVE: a segment whose effective verb (wrappers peeled) is a known
+# system verb refuses the exemption, however the table reads the line.
+
+SYSTEM_ACTIONS = ["kill -9 1234", "pkill python", "reg add HKCU\\Software\\X /v a",
+                  "sc delete svc", "taskkill /f /im app.exe", "schtasks /create /tn x /tr y",
+                  "shutdown -h now", "git push --force", "git push origin main"]
+
+
+@pytest.mark.parametrize("action", SYSTEM_ACTIONS)
+@pytest.mark.parametrize("shape", [
+    "{first}\n  {action}",                          # (1) indented later line
+    "{first}\n\t{action}",                          #     tab-indented
+    "{first}\n   \t {action}",
+    "{first}\nbash <<'EOF'\n{action}\nEOF",         # (2) a heredoc body fed to a shell
+    "{first}\nsh <<EOF\n  {action}\nEOF",
+    "{first} && env {action}",                      # (3) wrappers the table does not unwrap
+    "{first} && nohup {action}",
+    "{first} && time {action}",
+    "{first} && sudo -n {action}",
+    "{first} && command {action}",
+    "{first} && exec {action}",
+    "{first}; if true; then {action}; fi",
+    "{first}\nif true; then\n  {action}\nfi",
+    "{first} && echo 1 | xargs {action}",
+    "{first} && FOO=1 {action}",
+    "{first} && bash -c '{action}'",
+    "{first} && timeout 5 {action}",
+    "{first} && cmd /c {action}",                   # a launcher's own command line
+    "{first} && powershell -NoProfile -Command {action}",
+    "{first} && Start-Process {action}",
+    "{first}\nif true; then cd ..; fi\n{action}",    # a cd the reader cannot follow
+])
+def test_a_system_action_the_table_cannot_see_still_takes_the_exemption_away(trees, shape, action):
+    cmd = shape.format(first=FIRST, action=action).format(
+        wt=fwd(trees["wt"]), main=fwd(trees["main"]), other=fwd(trees["other"]))
+    d = decide(cmd, trees["main"])
+    assert d.action == tp.CONFIRM, (cmd, d.reason)
+
+
+def test_words_that_merely_look_like_system_verbs_do_not_cost_the_exemption(trees):
+    """The check is by verb position, so ordinary uses stay exempt."""
+    for tail in ("npm run format", "echo kill the build", "grep -n kill notes.txt",
+                 "git log --grep=reg", "python tools/sc.py", "cat reg.txt",
+                 "git push --help", "sed -n 1p dd.txt"):
+        cmd = f"{FIRST.format(wt=fwd(trees['wt']))} && {tail}"
+        if tail == "git push --help":
+            continue      # `git push` anywhere is conservatively a system verb; pinned below
+        assert decide(cmd, trees["main"]).action == tp.ALLOW, cmd
+    assert decide(f"{FIRST.format(wt=fwd(trees['wt']))} && git push --help",
+                  trees["main"]).action == tp.CONFIRM

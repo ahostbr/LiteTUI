@@ -41,6 +41,65 @@ from pathlib import Path
 
 _CD_VERBS = frozenset({"cd", "chdir", "pushd", "set-location", "sl"})
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd", "xargs", "env"})
+#: Verbs that act on the SYSTEM or on shared state, never on a path. Confinement says
+#: nothing about them, so a segment whose EFFECTIVE verb is one of these (wrappers
+#: peeled) takes the whole command off the exemption. A POSITIVE check: the exemption
+#: must not depend on the danger table managing to see the verb (its anchors miss an
+#: indented line, a heredoc fed to a shell, `env kill`, `then kill`; card T0251).
+_SYSTEM_VERBS = frozenset({
+    "kill", "pkill", "killall", "taskkill", "tskill", "stop-process", "reg", "regedit",
+    "sc", "schtasks", "register-scheduledtask", "shutdown", "restart-computer",
+    "stop-computer", "netsh", "diskpart", "bcdedit", "format", "mkfs", "dd", "vssadmin",
+    "cipher", "wevtutil", "clear-eventlog", "set-executionpolicy", "icacls", "takeown",
+    "iex", "invoke-expression", "set-mppreference", "add-mppreference", "msiexec",
+    "regsvr32", "rundll32", "runas", "psexec", "psexec64", "wscript", "cscript", "mshta",
+    "set-itemproperty", "new-itemproperty", "remove-itemproperty", "chown",
+})
+#: Programs whose arguments (after their own options) are another command line.
+_LAUNCHERS = frozenset({"cmd", "bash", "sh", "zsh", "dash", "pwsh", "powershell", "start",
+                        "start-process", "saps", "invoke-item", "ii", "wsl"})
+#: Words that run what follows them: peeled before the verb is read.
+_WRAPPERS = frozenset({"env", "nohup", "time", "command", "exec", "sudo", "doas", "xargs",
+                       "nice", "ionice", "timeout", "stdbuf", "builtin", "busybox", "then",
+                       "do", "else", "elif", "if", "while", "until", "!", "{"})
+
+
+def _effective_verb(words: list[str]) -> tuple[str, list[str]]:
+    """(verb, its arguments) once leading VAR=x assignments, wrapper words and the
+    options/durations that belong to a wrapper are peeled. The verb is a lower-case
+    basename without `.exe`."""
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word.lower() in _WRAPPERS:
+            i += 1
+            while i < len(words) and (words[i].startswith("-") or "=" in words[i]
+                                      or re.fullmatch(r"\d+[smhd]?", words[i])):
+                i += 1
+            continue
+        if re.fullmatch(r"[A-Za-z_]\w*=.*", word):
+            i += 1
+            continue
+        break
+    if i >= len(words):
+        return "", []
+    verb = re.split(r"[\\/]", words[i])[-1].lower()
+    if verb.endswith(".exe"):
+        verb = verb[:-4]
+    return verb, words[i + 1:]
+
+
+def _refuse_system_verb(words: list[str]) -> None:
+    verb, rest = _effective_verb(words)
+    if verb in _SYSTEM_VERBS or (verb == "git" and any(w.lower() == "push" for w in rest)):
+        raise _Refuse(f"a system action ({verb}) is not scoped by a path")
+    if verb in _LAUNCHERS:
+        # `cmd /c taskkill ...`, `powershell -Command kill 1`, `Start-Process kill`:
+        # what follows the launcher's own options is a command line again.
+        while rest and (rest[0].startswith("-") or re.fullmatch(r"/[A-Za-z]+", rest[0])):
+            rest = rest[1:]
+        if rest:
+            _refuse_system_verb(rest)
 _ABS = re.compile(r"^(?:[A-Za-z]:)?[\\/]")
 _DRIVE_ABS = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
 _SWITCH = re.compile(r"^/[A-Za-z]$")            # `rd /s`, `cmd /c`: a switch, not a path
@@ -325,6 +384,8 @@ class _Scope:
         heredoc body. `strict` = it may be COMMANDS (a `-c` payload, a heredoc fed to a
         shell), so a nested cd or any `..` is refused outright; otherwise it is
         data/code judged by its path literals."""
+        if strict:
+            self.check_commands(text)
         for piece in _PIECE.findall(text):
             low = piece.lower()
             if strict and (low in _CD_VERBS or low == "popd"):
@@ -340,6 +401,13 @@ class _Scope:
                 self.check_value(piece)
             elif _DOTDOT.search(piece):
                 self.check_value(piece)
+
+    def check_commands(self, text: str) -> None:
+        """Text that RUNS as commands (a `-c` payload, a heredoc fed to a shell): every
+        segment is read as a command line of its own, and a system verb refuses. The
+        text may not be tokenisable here (`$x`, subshells): that refuses too."""
+        for tokens, _sep in _tokenize(text):
+            _refuse_system_verb([t[0] for t in tokens])
 
     def check_token(self, text: str, quoted: bool) -> None:
         if _SWITCH.match(text):
@@ -407,6 +475,11 @@ def violation(command: str, root: Path, start_cwd: Path, *, deleting: bool) -> s
                 continue
             if verb == "popd":
                 return "a popd"
+            words = [t[0] for t in tokens if t[0] != _MARK]
+            effective, _rest = _effective_verb(words)
+            if effective in _CD_VERBS or effective == "popd":
+                return "a cd under a wrapper or condition cannot be followed"
+            _refuse_system_verb(words)
             consumes = any(t[0] == _MARK for t in tokens)
             # judged per SEGMENT: a deletion on any line protects the root, whether or
             # not the danger table recognised it
@@ -416,7 +489,7 @@ def violation(command: str, root: Path, start_cwd: Path, *, deleting: bool) -> s
                     scope.check_token(text, quoted)
             if consumes:
                 _, body = next(bodies)
-                scope.check_nested(body, strict=verb in _SHELLS)
+                scope.check_nested(body, strict=effective in _SHELLS or verb in _SHELLS)
         # `cd X; rm y` / a newline: if the cd FAILS the rest still runs where the seat
         # started (the main checkout). Fine only when every cd target exists right now.
         if started_outside and not scope.cds_exist and any(
