@@ -90,15 +90,19 @@ def _idle(app):
         raise ValueError("A management operation is active; wait for it before changing this resource")
 
 
-def _session_path(session_id):
+def _session_path(session_id, app=None):
+    session = getattr(app, "_agent_session", None)
+    if session is not None:
+        from litetui.storage_catalog import owned_transcript
+        return owned_transcript(session, session_id)
     if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
         raise ValueError("Invalid session_id")
     return paths.CONVO_DIR / session_id / "convo.jsonl"
 
 
-def _read_session(session_id):
+def _read_session(session_id, app=None):
     from litetui.conversation import ConversationRepository
-    path = _session_path(session_id)
+    path = _session_path(session_id, app)
     meta, messages = ConversationRepository.read(path)
     return {"session_id": session_id, "meta": meta, "messages": messages}
 
@@ -195,20 +199,33 @@ def _validate_model_fields(values, rows):
 def _conversations(app, action, cmd):
     from litetui.conversation import ConversationRepository
     if action == "list":
+        session = getattr(app, '_agent_session', None)
+        if session is not None:
+            from litetui.storage_catalog import conversations
+            rows = conversations(session.store.data_root, agent_id=session.authority.agent_id)
+            result = []
+            for location in rows:
+                meta, msgs = ConversationRepository.read(location.transcript)
+                result.append({"session_id": location.conversation_id,
+                    "agent_id": location.agent_id, "agent_name": location.agent_name,
+                    "title": ConversationRepository.label(meta, msgs), "meta": meta,
+                    "message_count": len(msgs), "updated_at": location.transcript.stat().st_mtime})
+            return result
         return [{"session_id": meta.get("id") or path.parent.name,
                  "title": ConversationRepository.label(meta, msgs), "meta": meta,
                  "message_count": len(msgs), "updated_at": path.stat().st_mtime}
                 for path, meta, msgs in ConversationRepository.list_all()]
     session_id = cmd.get("session_id") or getattr(app, "convo_id", "")
     if action == "read":
-        if session_id == getattr(app, "convo_id", "") and not _session_path(session_id).exists():
+        if session_id == getattr(app, "convo_id", "") and not _session_path(session_id, app).exists():
             result = {"session_id": session_id, "meta": {"id": session_id}, "messages": copy.deepcopy(app.conversation)}
         else:
-            result = _read_session(session_id)
+            result = _read_session(session_id, app)
         result["read_only"] = False
-        if session_id != getattr(app, "convo_id", ""):
+        if (getattr(app, '_agent_session', None) is None
+                and session_id != getattr(app, "convo_id", "")):
             try:
-                with Lease(_session_path(session_id).parent / ".session.lease"):
+                with Lease(_session_path(session_id, app).parent / ".session.lease"):
                     pass
             except OwnershipError:
                 result["read_only"] = True
@@ -218,15 +235,15 @@ def _conversations(app, action, cmd):
     if action == "create":
         app._handle_command("/new")
         app._materialise_convo()
-        return _read_session(app.convo_id)
+        return _read_session(app.convo_id, app)
     if action == "open":
-        path = _session_path(session_id)
+        path = _session_path(session_id, app)
         if not path.is_file():
             raise ValueError("Conversation does not exist")
         app._resume(path)
         if app.convo_id != session_id:
             raise ValueError("Conversation could not be resumed")
-        return _read_session(session_id)
+        return _read_session(session_id, app)
     if session_id != app.convo_id:
         raise ValueError("Open this conversation before editing it")
     app.store.acquire()
@@ -256,7 +273,7 @@ def _conversations(app, action, cmd):
         raise ValueError(f"Unsupported conversation action: {action}")
     if app.store.persist_error:
         raise OSError(app.store.persist_error)
-    return _read_session(session_id)
+    return _read_session(session_id, app)
 
 
 def _jobs(app, action, cmd):
@@ -322,8 +339,70 @@ def _jobs(app, action, cmd):
     return [asdict(job) for job in app.jobs]
 
 
+def _owned_memory_path(session, name):
+    from litetui.agent_store import MEMORY_FILES, StoreError, _unlinked, valid_name
+    if not isinstance(name, str):
+        raise ValueError("name must identify an agent memory, soul, or handoff file")
+    if name not in MEMORY_FILES:
+        parts = name.split('/')
+        if len(parts) < 2 or parts[0] != 'memories' or not parts[-1].endswith('.md'):
+            raise ValueError("name must identify an agent memory, soul, or handoff file")
+        for part in parts[1:]:
+            valid_name(part)
+        if any(part in ('.', '..') for part in parts):
+            raise StoreError('Memory path escapes the selected agent')
+    # Check original path and ancestors, never resolve away link evidence.
+    return _unlinked(session.memory_root / name)
+
+
+def _owned_memory(app, session, action, cmd):
+    from litetui.agent_store import MEMORY_FILES, _unlinked
+    _session_path(cmd.get("session_id") or app.convo_id, app)
+    directory = session.memory_root
+    if action == "list":
+        candidates = [_unlinked(directory / name) for name in sorted(MEMORY_FILES)]
+        memories = _unlinked(directory / 'memories')
+        if memories.exists():
+            # Never traverse reparse points. This also checks empty directories,
+            # which a file-only glob would otherwise silently skip.
+            for root, dirs, files in os.walk(memories, followlinks=False):
+                for name in dirs:
+                    _unlinked(Path(root) / name)
+                for name in files:
+                    path = _unlinked(Path(root) / name)
+                    if name.endswith('.md'):
+                        candidates.append(_owned_memory_path(session, path.relative_to(directory).as_posix()))
+        return [{"name": path.relative_to(directory).as_posix(), "bytes": path.stat().st_size}
+                for path in candidates if path.is_file()]
+    name = cmd.get("name")
+    path = _owned_memory_path(session, name)
+    if action == "read":
+        return {"name": name, "text": path.read_text(encoding="utf-8") if path.exists() else ""}
+    if action != "write":
+        raise ValueError("Unsupported memory action")
+    _idle(app)
+    text = cmd.get("text")
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    session.authority
+    path = _owned_memory_path(session, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _unlinked(path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp"))
+    with temporary.open('x', encoding='utf-8') as handle:
+        handle.write(text)
+    session.authority
+    _owned_memory_path(session, name)
+    _unlinked(temporary).replace(path)
+    return {"name": name, "text": text}
+
+
 def _memory(app, action, cmd):
-    directory = _session_path(cmd.get("session_id") or app.convo_id).parent
+    session = getattr(app, '_agent_session', None)
+    if session is not None:
+        return _owned_memory(app, session, action, cmd)
+    requested = cmd.get("session_id") or app.convo_id
+    selected = _session_path(requested, app).parent
+    directory = session.memory_root if session is not None else selected
     if action == "list":
         return [{"name": str(p.relative_to(directory)).replace("\\", "/"), "bytes": p.stat().st_size}
                 for p in directory.rglob("*.md")]
@@ -336,9 +415,14 @@ def _memory(app, action, cmd):
     if action == "read":
         return {"name": name, "text": path.read_text(encoding="utf-8") if path.exists() else ""}
     _idle(app)
-    if directory != app.convo_dir:
+    if session is None and directory != app.convo_dir:
         raise ValueError("Open this conversation before changing its memory")
-    app.store.acquire()
+    if session is not None:
+        session.authority
+        from litetui.agent_store import _unlinked
+        _unlinked(path)
+    else:
+        app.store.acquire()
     text = cmd.get("text")
     if not isinstance(text, str):
         raise TypeError("text must be a string")
