@@ -97,6 +97,10 @@ class Agent:
 
 
 def read_agent(directory: Path) -> Agent:
+    return _read_agent_metadata(directory)
+
+
+def _read_agent_metadata(directory: Path, *, inactive_catalog: bool = False) -> Agent:
     directory = _unlinked(Path(directory))
     name = valid_name(directory.name)
     marker = _unlinked(directory / INITIALIZING_NAME)
@@ -107,7 +111,8 @@ def read_agent(directory: Path) -> Agent:
     except OSError as exc:
         raise StoreError("Agent initialization cannot be inspected") from exc
     else:
-        raise StoreError("Agent initialization is incomplete")
+        if not inactive_catalog:
+            raise StoreError("Agent initialization is incomplete")
     settings_path = _unlinked(directory / SETTINGS_NAME)
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -157,13 +162,19 @@ class AgentStore:
             _unlinked(directory)
             if not directory.is_dir():
                 continue
-            agent = read_agent(directory)
+            # Inactive copies reserve their identity/name even though they
+            # cannot be launched. Parse the SAME strict metadata contract and
+            # check collisions before excluding them from the ready catalog;
+            # malformed inactive metadata still blocks, never silently skipped.
+            inactive = _unlinked(directory / INITIALIZING_NAME).exists()
+            agent = _read_agent_metadata(directory, inactive_catalog=inactive)
             key = name_key(agent.name)
             if key in names or agent.agent_id in identities:
                 raise StoreError("Agent name or identity is ambiguous")
             names.add(key)
             identities.add(agent.agent_id)
-            agents.append(agent)
+            if not inactive:
+                agents.append(agent)
         return agents
 
     def find_agent(self, *, name: str | None = None, agent_id: str | None = None) -> Agent:
