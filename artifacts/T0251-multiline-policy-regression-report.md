@@ -48,7 +48,9 @@ inputs only: no deletion, extraction, or system command is executed.
 | Final `python -m pytest tests/test_tool_policy_multiline.py -q` | **166 passed** in 4.36s |
 | `python -m pytest tests/test_tool_policy_multiline.py tests/test_danger_table.py tests/test_destructive_floor.py tests/test_worktree_scope.py tests/test_interpreter_policy.py -q` | **1493 passed** in 39.27s |
 | `python -m pytest tests/test_tool_policy.py tests/test_tool_policy_wiring.py tests/test_destructive_floor.py tests/test_worktree_scope.py tests/test_interpreter_policy.py -q` | **845 passed, 2 failed** in 34.69s; unrelated existing contract failures below |
-| Exact two failing node IDs rerun independently | **2 failed** on unchanged tracked files |
+| Exact two failing node IDs rerun independently before review scope expansion | **2 failed** on unchanged tracked files |
+| After review correction: `python -m pytest tests/test_tool_policy.py::test_argument_sensitive_desktop_and_harness_actions tests/test_tool_policy_multiline.py -q` | **167 passed** in 11.09s |
+| After review correction: `python -m pytest tests/test_tool_policy.py tests/test_tool_policy_wiring.py tests/test_tool_policy_multiline.py tests/test_danger_table.py tests/test_destructive_floor.py tests/test_worktree_scope.py tests/test_interpreter_policy.py -q` | **1509 passed, 1 failed** in 75.66s; only the T0251-A fixture failure remains |
 | AST parse of the new test file | **PASS** |
 | `git diff 8a42387 HEAD --check` after line-ending normalization | **PASS** |
 | `python -m ruff --version`; `python -m mypy --version` | **Unavailable**: neither module installed in current interpreter; no installation/download attempted |
@@ -57,24 +59,29 @@ No full suite was run. Logs:
 
 - `C:/Projects/LiteTUI/output/tasks/t-8ee4e2a0d8fe4b20a80eb7788d0789ce.log`: baseline 497 passes. Its subsequent standalone Python probe initially failed to import `litetui`; rerunning with `PYTHONPATH=src` resolved the probe environment, without changing code.
 - `C:/Projects/LiteTUI/output/tasks/t-4ab886822d564fc69de2b9d1ce2ccea1.log`: combined 1493 passes and ancestry exit 0.
-- `C:/Projects/LiteTUI/output/tasks/t-7a0cee432b0b4711b17c0012258bb337.log`: broader 845 passes / 2 failures.
+- `C:/Projects/LiteTUI/output/tasks/t-7a0cee432b0b4711b17c0012258bb337.log`: initial broader 845 passes / 2 failures.
+- `C:/Projects/LiteTUI/output/tasks/t-de8d8ba43e1f47fb96daf66636b6cbfc.log`: after scope correction, touched expectation + multiline 167 passes; complete focused affected set 1509 passes / 1 remaining fixture failure.
 
-## Discovered work: T0251-A (not implemented)
+## Review-requested scope correction and remaining T0251-A
 
-Both failures were reproduced while all tracked production and existing test
-files matched the base; only the new multiline regression file was untracked.
+Both initial failures were reproduced while all tracked production and existing
+test files matched the base; only the new multiline regression file was untracked.
+Sentinel subsequently expanded T0251 narrowly to fix the stale launch expectation.
 
-1. `tests/test_tool_policy.py::test_argument_sensitive_desktop_and_harness_actions`:
-   expects pccontrol launch CONFIRM, while T0116 intentionally allows ordinary
-   launches. Follow-up should align assertion/docstring with the existing
-   destructive-only intent, not restore an executable-identity approval gate.
-2. `tests/test_tool_policy_wiring.py::test_a_seat_s_own_worktree_command_runs_without_a_modal_but_a_stranger_s_does_not`:
-   `SimpleNamespace(name=...)` fixture lacks `current_spawner()`, required by
-   `approval_relay.py:124`. Follow-up should use a contract-compatible seat
-   fixture returning no spawner, preserving stranger confirmation coverage.
+- **Corrected within T0251:**
+  `tests/test_tool_policy.py::test_argument_sensitive_desktop_and_harness_actions`
+  now expects ordinary pccontrol launch **ALLOW** without a destructive
+  capability, updates its stale docstring, and explicitly retains strict launch
+  **CONFIRM**. This aligns tests with T0116; production behavior is untouched.
+- **Remaining follow-up only:**
+  `tests/test_tool_policy_wiring.py::test_a_seat_s_own_worktree_command_runs_without_a_modal_but_a_stranger_s_does_not`:
+  `SimpleNamespace(name=...)` fixture lacks `current_spawner()`, required by
+  `approval_relay.py:124`. Follow-up should use a contract-compatible seat
+  fixture returning no spawner, preserving stranger confirmation coverage.
 
-Filed together as linked card **T0251-A**, queued, tier/thinking unset with a
-needs-decision note. Ryan must choose both settings. No follow-up code changed.
+Linked card **T0251-A** was updated to cover only the fixture failure, queued,
+tier/thinking unset with a needs-decision note. Ryan must choose both settings.
+No follow-up fixture implementation or production code changed.
 
 ## Scope and verification limits
 
