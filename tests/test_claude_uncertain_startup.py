@@ -360,12 +360,21 @@ async def test_real_local_tool_loop_holds_claude_head_then_allows_explicit_recov
         command(app, "continue")
         await pilot.pause()
         for _ in range(3):
+            command(app, "resolve")
             command(app, "continue")
             app._flush_pending_input()
             await pilot.pause()
+            assert app.backend.name == "claude" and app.convo_id == original_convo
+            assert app._pending_input == [] and len(recovered) == 1
+            assert sum(row.get("content") == "PRIVATE HELD CLAUDE INPUT"
+                       for row in app.conversation) == 1
         delivered = [row for row in app.conversation if row.get("content") == "PRIVATE HELD CLAUDE INPUT"]
         assert len(delivered) == 1 and delivered[0]["claude_delivery"]["state"] == "prepared"
         assert len(recovered) == 1 and app._pending_input == []
+        assert recovered[0] != item["_claude_entry"]["id"], "recovery prepares a fresh ID, never replays the old send"
+        entries = ledger.segment(item["_claude_segment"])["entries"]
+        assert [entry["id"] for entry in entries] == [item["_claude_entry"]["id"], recovered[0]]
+        assert all(entry["state"] == "terminal" for entry in entries)
         assert ledger.pending(item["_claude_segment"]) == []
         assert hook_calls == (["prompt hook"] if hooks_enabled else [])
 
