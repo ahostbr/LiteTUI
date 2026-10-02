@@ -169,4 +169,3 @@ def test_installed_codex_project_process_inputs_win_over_global(tmp_path):
     assert actual["env"]["VALUE"] == source["env"]["VALUE"]
     assert actual["env"]["EXTRA_GLOBAL"] == "retained"  # recursive overlay, not replacement
     assert native["startup_timeout_sec"] == 120
-
