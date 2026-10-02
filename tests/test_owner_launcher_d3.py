@@ -30,3 +30,22 @@ def test_d3_does_not_restore_foreign_process_approvals(tmp_path, command):
     decision = tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY, {'command': command}, tmp_path,
                            tool_name='powershell')
     assert decision.action == tp.ALLOW
+
+
+@pytest.mark.parametrize('command, refused', [
+    ('X=run', False), ('env X=run cat file', False),
+    ('env X=./run.bat cat file', False), ('env X=run Y=./run.bat cat file', False),
+    ('env X="run.bat" cat file', False), ('X=run Y=./run.bat', False),
+    ('X=1 run', True), ('env X=1 run', True),
+    ('env X=run Y=./run.bat run', True), ('X=run; ./run.bat', True),
+])
+def test_d3_bash_assignment_value_policy(tmp_path, monkeypatch, command, refused):
+    owner = tmp_path / 'run.bat'
+    owner.write_text('@echo off\n', encoding='utf-8')
+    monkeypatch.setattr(deny_floor, '_OWNER_LAUNCHER', owner)
+    monkeypatch.setenv('PATHEXT', '.COM;.EXE;.BAT;.CMD')
+    decision = tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY, {'command': command}, tmp_path,
+                           tool_name='bash')
+    assert (decision.action == tp.DENY) is refused
+    if refused:
+        assert '[owner-launcher]' in decision.reason

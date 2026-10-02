@@ -1041,6 +1041,19 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
         boundaries.append(boundary)
     boundary = boundaries[-1] if boundaries else -1
     segment = command[boundary + 1:start]
+    # Judge the whole source token, not the truncated prefix before `run`.
+    # X=run is an assignment value; X=run run has a distinct argv0 token.
+    # Unlike $x=run in PowerShell, this unprefixed NAME=word never executes
+    # its RHS as a command in any supported shell. Substitutions retain their
+    # own boundary and are still scanned separately.
+    tokens = list(re.finditer(r"(?:[^\s\"'`;&|]+|\"[^\"]*\"|'[^']*')+",
+                              command[boundary + 1:]))
+    token_index = next((i for i, token in enumerate(tokens)
+                        if token.start() <= start - boundary - 1 < token.end()), None)
+    if token_index is not None and re.match(r"[A-Za-z_][\w]*=", tokens[token_index].group()):
+        preceding = [_unquote(token.group()).lower() for token in tokens[:token_index]]
+        if not _owner_command_position(preceding):
+            return None
     # A clearly quoted function / array argument is data, not argv0. Bare
     # words after an identifier+( remain ambiguous and are scanned fail-closed.
     function_head = re.search(r"[\w.-]+\Z", command[:boundary]) if boundary > 0 else None
