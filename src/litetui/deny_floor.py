@@ -356,19 +356,36 @@ def jobs_git_refusal(command, workspace, home=None) -> str | None:
     non-pure-read commands may operate outside the shell cwd, so uncertain ones
     fail closed even without a jobs pathspec. This can refuse ordinary relocated
     worktree edits: use a normal cwd and literal non-schedule paths instead.
+    Explicit set/export/$env:/VAR= assignments and inherited Git environment
+    paths are covered; variable indirection, scripts, aliases and eval are not.
     """
     if not isinstance(command, str):
         command = " ".join(map(str, command or ()))
     home = Path(home) if home is not None else Path.home()
     base = Path(workspace)
+    # A shell assignment can affect a later Git segment. This submission-wide
+    # taint intentionally refuses writers even when the assignment names a
+    # nonprotected path; only the finite pure-read proof below is exempt.
+    env_assignment = re.search(
+        r'(?im)(?:^|[;&|\r\n])\s*(?:(?:set|export)\s+["\']?)?'
+        r'(?:\$env:)?(?:GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)\s*=', command)
+    inherited_relocation = False
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        value = os.environ.get(name)
+        target = _resolve(value, base, home) if value else None
+        if target is not None and any(is_jobs_file(folder / "jobs.json")
+                                      for folder in (target, *target.parents)):
+            inherited_relocation = True
+            break
     for segment in re.split(r"[;&|\n]", command):
         git = re.search(r"(?i)(?<![\w./\\-])git(?:\.exe)?(?=\s)", segment)
         if not git:
             continue
         args = [_unquote(word) for word in _TOKEN.findall(segment[git.end():])]
-        relocating = (any(word == "-C" or word.startswith(("--git-dir", "--work-tree"))
-                          for word in args)
-                      or re.search(r"(?i)core\.worktree|GIT_DIR|GIT_WORK_TREE", segment))
+        relocating = (bool(env_assignment) or inherited_relocation
+                      or any(word == "-C" or word.startswith(("--git-dir", "--work-tree"))
+                             for word in args)
+                      or re.search(r"(?i)core\.worktree|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE", segment))
         # No Git exemption for a protected schedule argument, including native
         # --output= paths or revision:path spellings. Quoted argv stays a word.
         for word in args:

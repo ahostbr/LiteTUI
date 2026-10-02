@@ -153,7 +153,7 @@ async def test_git_explicit_schedule_writers_are_refused(tmp_path, monkeypatch, 
     target = "jobs.json" if verb.startswith("-C") else f"{tmp_path}/jobs.json"
     args = {"command": f"git {verb} {target} backup.json"}
     denied = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
-    assert denied and "T1085" in denied[0]
+    assert denied and "[jobs-file]" in denied[0]
     assert sent == []
     assert a._active_tool_profile == AUTONOMOUS
     assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
@@ -204,3 +204,56 @@ async def test_final_git_guard_cross_root_witnesses(tmp_path, monkeypatch, templ
 def test_normal_worktree_git_friction_controls(tmp_path, monkeypatch, command):
     a, _ = _agent(tmp_path, monkeypatch)
     assert seat_authority.jobs_file_refusal(a, {"command": command}, tmp_path) is None
+
+
+GIT_ENV_NAMES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]
+GIT_ENV_ASSIGNMENTS = ["set {name}={root} &&", "export {name}={root};",
+                       "$env:{name}='{root}';", "{name}={root}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", GIT_ENV_NAMES)
+@pytest.mark.parametrize("assignment", GIT_ENV_ASSIGNMENTS)
+@pytest.mark.parametrize("writer", ["git clean -fx -- jobs.json", "git add notes.md"])
+async def test_git_env_assignment_taints_submission(tmp_path, monkeypatch, name, assignment, writer):
+    a, sent = _agent(tmp_path, monkeypatch)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    (protected / ".litetui-data.json").write_text("{}")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    args = {"command": assignment.format(name=name, root=protected) + " " + writer}
+    denied = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=plain)
+    assert denied and "[jobs-file]" in denied[0]
+    assert sent == []
+    assert a._active_tool_profile == AUTONOMOUS
+    assert seat_authority.jobs_file_refusal(_ryans(a), args, plain) is None
+
+
+@pytest.mark.parametrize("name", GIT_ENV_NAMES)
+def test_git_env_inherited_protected_root_is_relocation(tmp_path, monkeypatch, name):
+    a, _ = _agent(tmp_path, monkeypatch)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    (protected / ".litetui-data.json").write_text("{}")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    target = protected / (".git/index" if name == "GIT_INDEX_FILE" else ".git")
+    monkeypatch.setenv(name, str(target))
+    args = {"command": "git clean -fx -- jobs.json"}
+    assert seat_authority.jobs_file_refusal(a, args, plain) is not None
+    assert seat_authority.jobs_file_refusal(a, {"command": "git add notes.md"}, plain) is not None
+    assert seat_authority.jobs_file_refusal(a, {"command": "git status"}, plain) is None
+    assert seat_authority.jobs_file_refusal(_ryans(a), args, plain) is None
+    monkeypatch.setenv(name, str(plain / ".git"))
+    assert seat_authority.jobs_file_refusal(a, {"command": "git add notes.md"}, plain) is None
+
+
+@pytest.mark.parametrize("name", GIT_ENV_NAMES)
+def test_git_env_submission_wide_taint_and_read_control(tmp_path, monkeypatch, name):
+    a, _ = _agent(tmp_path, monkeypatch)
+    assignment = f"set {name}={tmp_path}"
+    assert seat_authority.jobs_file_refusal(a, {"command": f"git add notes.md; {assignment}"}, tmp_path) is not None
+    assert seat_authority.jobs_file_refusal(a, {"command": f"{assignment}; git status"}, tmp_path) is None
