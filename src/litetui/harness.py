@@ -173,7 +173,7 @@ def _liteharness_exe() -> str | None:
     return None
 
 
-def _cli(args: list[str], *, timeout: int):
+def _cli(args: list[str], *, timeout: float):
     """THE ONE DOOR to the liteharness CLI. Every subprocess in this module
     goes through here, so the disabled-path check lives in ONE place.
 
@@ -606,7 +606,8 @@ class Seat:
                 out.append(msg)
         return out
 
-    def send(self, to: str, body: str, *, approval_request: tuple[str, str] | None = None) -> bool:
+    def send(self, to: str, body: str, *, approval_request: tuple[str, str] | None = None,
+             deadline: float | None = None) -> bool:
         """Reply into the fleet. Uses --body-file: an inline double-quoted
         message runs backticks as shell commands and still reports success.
 
@@ -636,12 +637,15 @@ class Seat:
                 # NO --priority flag: this CLI has no such option, and unknown tokens
                 # fall through into the message body — combined with --body-file that
                 # is "both given" -> exit 1. Every send would fail for it.
+                budget = 30.0 if deadline is None else min(30.0, deadline - time.monotonic())
+                if budget <= 0:
+                    return False
                 r = _cli(
                     ["send", to,
                      "--body-file", str(tmp), "--from", self.agent_id, *flags],
-                    timeout=30,
+                    timeout=budget,
                 )
-                return r.returncode == 0
+                return r.returncode == 0 and (deadline is None or time.monotonic() < deadline)
             finally:
                 try:
                     tmp.unlink()

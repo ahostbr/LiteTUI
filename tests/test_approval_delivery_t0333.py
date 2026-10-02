@@ -90,7 +90,7 @@ def test_notification_validates_exact_registered_lineage(tmp_path):
     (GRANDPARENT, False, "escalation_failed"), (None, True, "escalation_absent")])
 async def test_unanswered_escalates_once_without_changing_reply_authority(
         tmp_path, monkeypatch, recipient, send_ok, expected):
-    monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.01)
+    monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.3)
     if recipient:
         (tmp_path / f"{APPROVER}.json").write_text(json.dumps(
             {"agent_id": APPROVER, "spawned_by": recipient}), encoding="utf-8")
@@ -98,7 +98,8 @@ async def test_unanswered_escalates_once_without_changing_reply_authority(
     monkeypatch.setattr(delivery, "stage", lambda ident, state: stages.append(state))
     future = asyncio.get_running_loop().create_future()
     def send(to, body, **metadata):
-        assert metadata == {"approval_request": (IDENT, APPROVER)}
+        assert metadata["approval_request"] == (IDENT, APPROVER)
+        assert isinstance(metadata["deadline"], float)
         sends.append((to, body))
         return send_ok
     saved = []
@@ -107,8 +108,8 @@ async def test_unanswered_escalates_once_without_changing_reply_authority(
                           _edit=lambda *args: saved.append(args),
                           _system=said.append, _relay_pending={IDENT: (future, APPROVER)})
     waiting = asyncio.create_task(delivery.wait_for_answer(app, future, approver=APPROVER,
-        ident=IDENT, message=request_body(), timeout=0.15))
-    for _ in range(100):
+        ident=IDENT, message=request_body(), timeout=1.0))
+    for _ in range(300):
         if expected in stages:
             break
         await asyncio.sleep(0.002)
@@ -199,6 +200,18 @@ def test_structured_cli_roundtrip_uses_authoritative_writer_in_sandbox(tmp_path,
     monkeypatch.setattr(harness, "harness_disabled", lambda: True)
     assert not seat.send(APPROVER, "test", approval_request=(IDENT, APPROVER))
     assert len(argvs) == 2
+    monkeypatch.setattr(harness, "harness_disabled", lambda: False)
+    def delayed_cli(argv, *, timeout):
+        return subprocess.run([str(interpreter), str(runner), str(home),
+            "--sandbox-delay", "0.4", *argv], capture_output=True, text=True,
+            timeout=timeout, check=False)
+    monkeypatch.setattr(harness, "_cli", delayed_cli)
+    import time
+
+    assert not seat.send(APPROVER, "must not arrive late", approval_request=(IDENT, APPROVER),
+                         deadline=time.monotonic() + 0.08)
+    time.sleep(0.45)
+    assert len(list((home / ".liteharness" / "inbox" / "new").glob("*.json"))) == 2
 
 
 @pytest.mark.asyncio
@@ -237,3 +250,96 @@ async def test_approval_priority_preserves_held_owner_and_merged_before_pop_gate
     assert held["_claude_segment"] == ledger.selected["id"]
     assert held["_claude_conversation"] == app.convo_id
     assert ledger.file.read_bytes() == evidence
+
+
+def test_startup_queue_binding_also_remains_priority_barrier(tmp_path):
+    from test_claude_turn import app_for
+
+    from litetui.claude_turn import prepare_input, queue_ready
+
+    app = app_for(tmp_path)
+    app.backend.owns_native_turns = True
+    app.settings = Settings()
+    original = prepare_input(app, "old", "strict", "harness")
+    ledger = app._claude_ledger
+    ledger.update_delivery(original["_claude_entry"]["id"], "submitted")
+    ledger.update_delivery(original["_claude_entry"]["id"], "uncertain")
+    startup = {"content": "startup ordinary mail", "source": "harness"}
+    app._pending_input.append(startup)
+    assert queue_ready(app, startup) is False
+    assert startup["_claude_segment"] == ledger.selected["id"]
+    assert "_claude_entry" not in startup
+    app._chat_running = lambda: True
+    app._user_bubble = lambda *args, **kwargs: None
+    LiteTUI._deliver_inbox(app, request())
+    assert app._pending_input[0] is startup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("short_timeout", [0.01, 0.03])
+async def test_original_timeout_under_sixty_does_not_send_after_expiry(monkeypatch, short_timeout):
+    monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.05)
+    future = asyncio.get_running_loop().create_future()
+    app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER,
+        send=lambda *args, **kwargs: pytest.fail("expired request escalated")))
+    with pytest.raises(TimeoutError):
+        await delivery.wait_for_answer(app, future, approver=APPROVER,
+            ident=IDENT, message=request_body(), timeout=short_timeout)
+    assert app._relay_answer_deadlines == {}
+    assert not future.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delay,expected", [(0.005, "escalation_sent"), (0.2, "escalation_failed")])
+async def test_transport_and_durable_state_fit_inside_escalation_deadline(
+        tmp_path, monkeypatch, delay, expected):
+    import time
+
+    monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.6)
+    (tmp_path / f"{APPROVER}.json").write_text(json.dumps(
+        {"agent_id": APPROVER, "spawned_by": GRANDPARENT}), encoding="utf-8")
+    writes, saved = [], []
+    started = time.monotonic()
+    def send(to, body, **kwargs):
+        budget = kwargs["deadline"] - time.monotonic()
+        assert 0 < budget <= 0.101
+        if delay > budget:
+            time.sleep(budget)
+            return False
+        time.sleep(delay)
+        if time.monotonic() >= kwargs["deadline"]:
+            return False
+        writes.append(time.monotonic())
+        return True
+    future = asyncio.get_running_loop().create_future()
+    app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER, send=send),
+        conversation=[{"role": "user", "content": "input"}], _system=lambda text: None,
+        _edit=lambda *args: saved.append(time.monotonic()))
+    with pytest.raises(TimeoutError):
+        await delivery.wait_for_answer(app, future, approver=APPROVER,
+            ident=IDENT, message=request_body(), timeout=0.8)
+    assert app.conversation[0]["approval_delivery"][IDENT]["state"] == expected
+    assert saved[0] - started < 0.65
+    assert len(writes) == (1 if expected == "escalation_sent" else 0)
+
+
+@pytest.mark.asyncio
+async def test_expired_reply_cannot_set_pending_future_or_human_override():
+    import time
+
+    future = asyncio.get_running_loop().create_future()
+    app = SimpleNamespace(_relay_pending={IDENT: (future, APPROVER)},
+        _relay_answer_deadlines={IDENT: time.monotonic() - 1})
+    assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {IDENT}"})
+    assert not approval_relay.take_human_answer(app, IDENT, True)
+    assert not future.done()
+
+
+@pytest.mark.asyncio
+async def test_future_completed_after_original_deadline_is_never_approved():
+    import time
+
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(True)
+    with pytest.raises(TimeoutError):
+        await delivery._answer_before(future, time.monotonic() - 1)

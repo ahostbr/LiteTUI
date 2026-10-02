@@ -77,7 +77,8 @@ class HumanApproval(Static):
 def take_human_answer(app, ident: str, allow: bool) -> bool:
     """Only this local UI call resolves the exact pending request, once."""
     entry = _pending(app).get(ident)
-    if entry is None or entry[0].done() or not isinstance(allow, bool):
+    from litetui.approval_delivery import answer_open
+    if entry is None or entry[0].done() or not isinstance(allow, bool) or not answer_open(app, ident):
         return False
     entry[0].set_result(allow)
     return True
@@ -187,7 +188,9 @@ def take_answer(app, msg: dict) -> bool:
     if match is None:
         return False
     entry = _pending(app).get(match.group(2))
-    if entry is None or msg.get("from") != entry[1] or entry[0].done():
+    from litetui.approval_delivery import answer_open
+    if (entry is None or msg.get("from") != entry[1] or entry[0].done()
+            or not answer_open(app, match.group(2))):
         return False
     entry[0].set_result(match.group(1) == "APPROVE")
     from litetui import approval_delivery

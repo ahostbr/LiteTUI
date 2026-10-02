@@ -80,33 +80,76 @@ def visible_state(app, ident: str, status: str, text: str) -> None:
     app._system(text)
 
 
+def answer_open(app, ident: str) -> bool:
+    deadline = getattr(app, "_relay_answer_deadlines", {}).get(ident)
+    return deadline is None or time.monotonic() < deadline
+
+
+async def _answer_before(future, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    result = await asyncio.wait_for(asyncio.shield(future), remaining)
+    if time.monotonic() >= deadline:
+        raise TimeoutError
+    return result
+
+
 async def wait_for_answer(app, future, *, approver: str, ident: str,
                           message: str, timeout: float) -> bool:
-    """Escalate once, keeping the original future and frozen reply authority."""
-    deadline = time.monotonic() + timeout
+    """Reserve transport/state budget INSIDE 60s; never extend answer expiry.
+
+    Production: begin at49s, bounded CLI up to10s, leave1s to save/show state.
+    Shorter configured answer waits expire normally, without a post-expiry send.
+    A blocked filesystem/thread may finish late; no receipt is inferred or retried.
+    """
+    started = time.monotonic()
+    answer_deadline = started + timeout
+    deadlines = getattr(app, "_relay_answer_deadlines", None)
+    if deadlines is None:
+        deadlines = app._relay_answer_deadlines = {}
+    deadlines[ident] = answer_deadline
     try:
-        return await asyncio.wait_for(asyncio.shield(future), min(ESCALATE_AFTER_S, timeout))
-    except TimeoutError:
-        pass
-    if future.done():
-        return future.result()
-    target = harness.registered_spawner(approver)
-    if target in (approver, getattr(app.seat, "agent_id", None)):
-        target = None
-    if target is None:
-        visible_state(app, ident, "escalation_absent",
-                      f"Approval delivery failure ({ident}): approver has no registered spawner; "
-                      "no escalation recipient or new reply authority. Request remains gated.")
-    else:
-        notification = (message + f"\n[ESCALATION: unanswered approval after {ESCALATE_AFTER_S:.0f}s] "
-                        f"Notification only to approver {approver}'s registered spawner. "
-                        "Reply authority remains with the original approver; "
-                        "mailbox delivery does not prove model receipt.")
-        sent = await asyncio.to_thread(app.seat.send, target, notification,
-                                       approval_request=(ident, approver))
-        visible_state(app, ident, "escalation_sent" if sent else "escalation_failed",
-                      f"Approval {ident}: escalation notification "
-                      + (f"sent to {target[:8]} (transport only; model receipt unconfirmed)."
-                         if sent else "failed delivery; request remains gated."))
-    remaining = max(0.0, deadline - time.monotonic())
-    return await asyncio.wait_for(asyncio.shield(future), remaining)
+        if timeout < ESCALATE_AFTER_S:
+            return await _answer_before(future, answer_deadline)
+        transport_budget = min(10.0, ESCALATE_AFTER_S / 6)
+        state_budget = min(1.0, ESCALATE_AFTER_S / 60)
+        transport_deadline = min(answer_deadline, started + ESCALATE_AFTER_S - state_budget)
+        dispatch_at = transport_deadline - transport_budget
+        try:
+            return await _answer_before(future, dispatch_at)
+        except TimeoutError:
+            pass
+        if time.monotonic() >= answer_deadline:
+            raise TimeoutError
+        if future.done():
+            return future.result()
+        target = harness.registered_spawner(approver)
+        if target in (approver, getattr(app.seat, "agent_id", None)):
+            target = None
+        if target is None:
+            visible_state(app, ident, "escalation_absent",
+                          f"Approval delivery failure ({ident}): approver has no registered spawner; "
+                          "no escalation recipient or new reply authority. Request remains gated.")
+        else:
+            notification = (message + f"\n[ESCALATION: unanswered approval; delivery deadline {ESCALATE_AFTER_S:.0f}s] "
+                            f"Notification only to approver {approver}'s registered spawner. "
+                            "Reply authority remains with the original approver; "
+                            "mailbox delivery does not prove model receipt.")
+            sent = False
+            remaining = transport_deadline - time.monotonic()
+            if remaining > 0:
+                try:
+                    sent = await asyncio.wait_for(asyncio.to_thread(
+                        app.seat.send, target, notification, approval_request=(ident, approver),
+                        deadline=transport_deadline), remaining)
+                except (TimeoutError, OSError):
+                    pass
+            sent = sent and time.monotonic() < transport_deadline
+            visible_state(app, ident, "escalation_sent" if sent else "escalation_failed",
+                          f"Approval {ident}: escalation notification "
+                          + (f"sent to {target[:8]} (transport only; model receipt unconfirmed)."
+                             if sent else "delivery failed or unconfirmed at deadline; request remains gated."))
+        return await _answer_before(future, answer_deadline)
+    finally:
+        deadlines.pop(ident, None)
