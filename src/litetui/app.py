@@ -1688,6 +1688,7 @@ class LiteTUI(App):
         # cleared at the START of the next turn and is about the turn in
         # flight; this outlives the turn so the ping can read it.
         self._turn_abandoned = False
+        self._interrupted_compact_resume: tuple | None = None
         # Elapsed-time display while a turn is in flight (pre-token) and while
         # tool calls run. The repaint is a task on the worker's own event loop
         # (interleaves with the stream); the display string is render_progress.
@@ -8515,6 +8516,7 @@ class LiteTUI(App):
         # rather than where the ping reads it: a mark that only ever latched
         # would kill loop mode for the rest of the session after one Esc.
         self._turn_abandoned = False
+        self._interrupted_compact_resume = None
         self.self_compaction.pending = None
         if (self.conversation and self.conversation[-1].get("role") == "user"
                 and self.conversation[-1].get("content") != WAKE_AFTER_COMPACT):
@@ -8591,8 +8593,8 @@ class LiteTUI(App):
                 # We only TEST here. Starting the compaction from inside
                 # this worker would cancel this worker: _compact is
                 # exclusive in the same "chat" group as _stream. So break
-                # and schedule it for after we exit; wake_after_compact
-                # then resumes the task.
+                # and schedule it for after we exit; its one-shot
+                # continuation then resumes this interrupted task.
                 #
                 # `_iteration and` skips iteration 0 deliberately: nothing
                 # has been spent yet on this turn, and a turn STARTED by
@@ -9210,6 +9212,7 @@ class LiteTUI(App):
                 else "[pausing to compact between tool iterations]"
             )
             self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            self._interrupted_compact_resume = (self.backend, self.convo_id, self._active_turn_started_at)
             self.call_after_refresh(self._maybe_autocompact)
             return
 
@@ -9485,6 +9488,17 @@ class LiteTUI(App):
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             self.call_after_refresh(self._flush_pending_input)
 
+    def _continue_interrupted_compact(self, continuation: tuple | None) -> None:
+        """One-shot maintenance continuation, scoped to the interrupted turn."""
+        if continuation is None or self._interrupted_compact_resume is not continuation:
+            return
+        backend, convo, started = continuation
+        self._interrupted_compact_resume = None
+        if (self.backend is not backend or self.convo_id != convo
+                or self._active_turn_started_at != started or self._stop_requested):
+            return
+        self._wake_after_compact()  # existing stop, queued-input, busy and authority guards
+
     def _wake_after_compact(self) -> None:
         """The post-compaction ping: one user message that says "resume the
         in-flight task, or say standing by", then a normal turn.
@@ -9587,6 +9601,9 @@ class LiteTUI(App):
         self._stop_requested = False
         self._stop_reason = None
         self._stop_cause = None
+        continuation = getattr(self, "_interrupted_compact_resume", None)
+        # Consume on failure/refusal; successful maintenance re-arms its callback.
+        self._interrupted_compact_resume = None
         # Read-and-clear FIRST: the early returns below must also consume
         # the flag, or an aborted autocompact marks the next MANUAL one auto.
         auto = getattr(self, "_compact_is_auto", False)
@@ -9993,7 +10010,10 @@ class LiteTUI(App):
             )
             self._clear_screen(note=summary_note)
 
-        if self.settings.wake_after_compact or handoff is not None:
+        if continuation is not None:
+            self._interrupted_compact_resume = continuation
+            self.call_after_refresh(self._continue_interrupted_compact, continuation)
+        elif self.settings.wake_after_compact or handoff is not None:
             # SCHEDULED, never called: see _wake_after_compact for why a
             # direct self._stream() here would cancel this very compact.
             # Success path only - a failed compact produced no summary, and
