@@ -20,6 +20,7 @@ AGENTS_DIR = ".agents"
 LEGACY_DIR = ".convos"
 CONVERSATIONS_DIR = "conversations"
 SETTINGS_NAME = "settings.json"
+INITIALIZING_NAME = ".agent.initializing"
 TRANSCRIPT_NAME = "convo.jsonl"
 MEMORY_FILES = frozenset({"memory.md", "soul.md", "handoff.md"})
 MEMORIES_DIR = "memories"
@@ -98,6 +99,15 @@ class Agent:
 def read_agent(directory: Path) -> Agent:
     directory = _unlinked(Path(directory))
     name = valid_name(directory.name)
+    marker = _unlinked(directory / INITIALIZING_NAME)
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise StoreError("Agent initialization cannot be inspected") from exc
+    else:
+        raise StoreError("Agent initialization is incomplete")
     settings_path = _unlinked(directory / SETTINGS_NAME)
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
