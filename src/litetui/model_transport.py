@@ -276,10 +276,28 @@ def codex_request(kwargs: dict) -> dict:
                     "arguments": call["function"]["arguments"],
                 }
             )
+    # A process can end after persisting a tool call but before its result.
+    # Resume (and compaction) must not replay that dangling call to Responses:
+    # it rejects the whole request, even when later user turns follow the call.
+    # Repair only the outgoing items; keep the durable transcript unchanged and
+    # never imply the tool did not run or retry a potentially side-effecting call.
+    output_ids = {item["call_id"] for item in items
+                  if item.get("type") == "function_call_output"}
+    paired_items = []
+    for item in items:
+        paired_items.append(item)
+        if item.get("type") == "function_call" and item["call_id"] not in output_ids:
+            paired_items.append({
+                "type": "function_call_output",
+                "call_id": item["call_id"],
+                "output": "Interrupted: no tool result was saved before the seat process "
+                          "ended. The execution outcome is unknown; verify any side "
+                          "effects before retrying.",
+            })
     body = {
         "model": model,
         "instructions": "\n\n".join(instructions),
-        "input": items,
+        "input": paired_items,
         "store": False,
         "stream": True,
         "include": ["reasoning.encrypted_content"],

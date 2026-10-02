@@ -109,6 +109,56 @@ def test_codex_history_conversion_does_not_mutate():
 
 
 @pytest.mark.asyncio
+async def test_resumed_interrupted_tool_call_request_is_accepted(tmp_path):
+    from litetui.conversation import ConversationRepository
+
+    messages = [
+        {"role": "system", "content": "Resume diagnostic"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_done", "function": {"name": "read", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_done", "content": "saved result"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_interrupted", "function": {"name": "write", "arguments": "{}"}},
+        ], "provider_metadata": {
+            "provider": "codex", "model": "gpt-test",
+            "items": [{"type": "reasoning", "id": "rs_saved",
+                       "encrypted_content": "opaque", "summary": []}],
+        }},
+        {"role": "user", "content": "Inbox arrived after the process vanished"},
+    ]
+    transcript = tmp_path / "convo.jsonl"
+    transcript.write_text(json.dumps({"type": "snapshot", "messages": messages}) + "\n")
+    _, resumed = ConversationRepository.read(transcript)
+    before = json.dumps(resumed)
+
+    def handle(request):
+        items = json.loads(request.content)["input"]
+        calls = {i["call_id"] for i in items if i.get("type") == "function_call"}
+        outputs = {i["call_id"]: i["output"] for i in items
+                   if i.get("type") == "function_call_output"}
+        if calls - outputs.keys():
+            return httpx.Response(400, json={"error": {"message": "No tool output found"}})
+        assert outputs["call_done"] == "saved result"
+        assert "interrupted" in outputs["call_interrupted"].lower()
+        assert "unknown" in outputs["call_interrupted"].lower()
+        interrupted = next(n for n, i in enumerate(items)
+                           if i.get("call_id") == "call_interrupted")
+        assert items[interrupted + 1]["type"] == "function_call_output"
+        assert any(i.get("id") == "rs_saved" for i in items)
+        return httpx.Response(200, text='data: {"type":"response.completed",'
+                              '"response":{"output":[]}}\n\n')
+
+    transport = mt.OAuthTransport(
+        "codex", credential_path=auth_file(tmp_path),
+        http_transport=httpx.MockTransport(handle),
+    )
+    await transport.create(model="gpt-test", messages=resumed, stream=False)
+    assert json.dumps(resumed) == before
+    assert ConversationRepository.read(transcript)[1] == messages
+
+
+@pytest.mark.asyncio
 async def test_codex_stream_tool_and_usage(tmp_path):
     events = [
         {
