@@ -676,19 +676,47 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
 
 def _git_read_words(args: list[str], redirects=()) -> bool:
     """Finite literal Git readers; an output option/redirect defeats the waiver."""
-    if redirects or any(word.startswith(("--out", "-o")) for word in args):
+    if redirects or any(re.search(r"[$`()<>]", word) for word in args):
         return False
     i = 0
     while i < len(args):
         if args[i] == "--no-pager":
             i += 1
-        elif args[i] == "-C" and i + 1 < len(args):
+        elif args[i] in {"-C", "--git-dir", "--work-tree"}:
+            if i + 1 >= len(args) or not args[i + 1] or args[i + 1].startswith("-"):
+                return False
             i += 2
+        elif (args[i].startswith("-C") and len(args[i]) > 2
+              or any(args[i].startswith(option + "=") and args[i] != option + "="
+                     for option in ("--git-dir", "--work-tree"))):
+            i += 1
         else:
             break
-    return i < len(args) and args[i] in {
+    if i == len(args):
+        return False
+    verb, operands = args[i], args[i + 1:]
+    # These options can execute configured helpers rather than just read Git
+    # objects. Global config/pager/exec-path switches never pass the finite
+    # prefix grammar above; reject their operand-position spellings as well.
+    if any(word.startswith(("--out", "-o")) or word.partition("=")[0] in {
+        "--ext-diff", "--textconv", "--config", "--config-env", "--exec-path",
+        "--paginate", "--pager", "--difftool", "--gui", "--extcmd"
+    } for word in operands):
+        return False
+    if verb == "worktree":
+        return (operands[:1] == ["list"]
+                and all(word in {"--porcelain", "-z", "-v", "--verbose"}
+                        for word in operands[1:]))
+    if verb == "branch":
+        # --list is required. Other branch operations write refs/config even
+        # when mixed with it; do not infer a read from one option in argv.
+        return ("--list" in operands and all(
+            not word.startswith("-") or word in {
+                "--list", "-l", "--all", "-a", "--remotes", "-r", "--verbose", "-v", "-vv"
+            } for word in operands))
+    return verb in {
         "show", "diff", "status", "log", "blame", "ls-files", "ls-tree", "rev-parse", "check-ignore"
-    } and not any(re.search(r"[$`()<>]", word) for word in args)
+    }
 
 
 def jobs_git_refusal(command, workspace, home=None, *, shell=None) -> str | None:

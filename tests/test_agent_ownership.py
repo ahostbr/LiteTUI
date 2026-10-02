@@ -35,7 +35,12 @@ def child_code(root, identity=AID, *, fresh=None):
     else:
         acquire = (f"AgentSession.create_fresh(AgentStore({str(root)!r}), name={fresh!r}, "
                    f"agent_id={identity!r}, backend='codex', model='fixture', thinking_level='high')")
-    return (f"from {PACKAGE}.agent_ownership import AgentSession\n"
+    # The stdlib child runs from a temporary data root under the real interpreter,
+    # not pytest's import context. Bind its source to the module actually tested.
+    package_root = str(Path(runtime.__file__).resolve().parents[1])
+    return ("import sys\n"
+            f"sys.path.insert(0, {package_root!r})\n"
+            f"from {PACKAGE}.agent_ownership import AgentSession\n"
             f"from {PACKAGE}.agent_store import AgentStore\n"
             "import sys, os\n"
             "sys.stdin.readline()\n"
