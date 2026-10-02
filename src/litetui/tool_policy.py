@@ -1072,6 +1072,17 @@ def _powershell_output_allows(args: Mapping[str, object], workspace: Path,
             variables[part["ps_assignment"][0].lower()] = ""
         assignment = _PS_ASSIGNMENT.fullmatch(part["raw"])
         if assignment:
+            # Runtime automatic/read-only variables are not ordinary storage:
+            # an assignment may fail or be overwritten by the next command.
+            if assignment[1].lower() in {
+                    "$home", "$pid", "$pshome", "$pwd", "$error", "$args", "$_", "$input",
+                    "$this", "$null", "$true", "$false", "$lastexitcode", "$psitem",
+                    "$pscommandpath", "$psscriptroot", "$myinvocation", "$psboundparameters",
+                    "$executioncontext", "$host", "$matches", "$nestedpromptlevel",
+                    "$stacktrace", "$ofs", "$shellid", "$profile", "$psversiontable",
+                    "$psculture", "$psuiculture", "$psdebugcontext", "$pscmdlet",
+                    "$iswindows", "$islinux", "$ismacos", "$iscoreclr", "$enabledexperimentalfeatures"}:
+                return False
             literal = deny_floor.shell_commands(assignment[2], "powershell")
             words = literal[0]["words"] if len(literal) == 1 else []
             # Single quotes are literal, so do not expand their dollar signs.
@@ -1079,12 +1090,19 @@ def _powershell_output_allows(args: Mapping[str, object], workspace: Path,
             variables[assignment[1].lower()] = value if "$" not in value else ""
         argv = [word[0] for word in part["words"]]
         head = argv[0].lower() if argv else ""
+        if "\\" in head:
+            return False  # module-qualified state changes are not represented
+        # Common parameters can replace literal variables without assignment
+        # syntax. Do not speculate about cmdlet binding/abbreviations here.
+        if any(re.match(r"(?i)^-(?:outv\w*|ov|pipelinev\w*|pv|errorv\w*|ev|warningv\w*|wv|informationv\w*|iv)(?:[:=]|$)", arg)
+               for arg in argv[1:]):
+            return False
         if (part["shell"] != "powershell" or head in {
                 "popd", "pop-location", "set-variable", "sv", "new-variable", "nv",
                 "set-item", "si", "new-item", "ni", "set-itemproperty", "sp",
                 "pwsh", "powershell", "cmd", "bash", "sh"}):
             return False  # unrepresented location/environment or child-shell state
-        if head in {"cd", "chdir", "set-location", "sl", "pushd"}:
+        if head in {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}:
             operands = argv[1:]
             if operands and operands[0].lower() in {"-path", "-literalpath"}:
                 operands = operands[1:]
@@ -1106,6 +1124,7 @@ def _powershell_output_allows(args: Mapping[str, object], workspace: Path,
             if operands and operands[0].lower() in {"-variable", "-v"}:
                 if len(operands) != 2:
                     return False
+                variables.pop("$" + operands[1].lower(), None)
                 continue
             if operands and operands[0].lower() in {"-filepath", "-literalpath"}:
                 operands = operands[1:]

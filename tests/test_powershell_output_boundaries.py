@@ -60,6 +60,37 @@ def test_literal_path_assignment_can_be_proved(paths):
     assert decide(command, root).action == tp.ALLOW
 
 
+@pytest.mark.parametrize('template', [
+    "$HOME='{root}'; git status > $HOME/log",
+    "$PID='{root}'; git status > $PID/log",
+    "$log='{root}/log'; Get-Content config | Tee-Object -Variable log; git status > $log",
+    "$log='{root}/log'; Get-Content config -OutVariable log; git status > $log",
+    "$log='{root}/log'; Get-Content config -ov log; git status > $log",
+    "$log='{root}/log'; Get-Content config -OutVariable:log; git status > $log",
+    "$log='{root}/log'; Get-Content config -OV +log; git status > $log",
+    "$log='{root}/log'; Get-Content config -PipelineVariable log; git status > $log",
+    "$LASTEXITCODE='{root}/log'; git status > $LASTEXITCODE",
+    'Microsoft.PowerShell.Utility\\Tee-Object -Variable log; git status > $env:TEMP/log',
+    'Push-Location "{foreign}"; git status > log',
+    'Microsoft.PowerShell.Management\\Set-Location "{foreign}"; git status > log',
+    'Microsoft.PowerShell.Management\\Push-Location "{foreign}"; git status > log',
+])
+def test_review_unrepresented_state_never_proves_output(paths, template):
+    root, _, foreign = paths
+    command = template.format(root=root.as_posix(), foreign=foreign.as_posix())
+    d = decide(command, root)
+    assert d.action == tp.CONFIRM and d.danger == tp.OVERWRITE
+
+
+@pytest.mark.parametrize('template', [
+    "$log='{root}/log'; Get-Content config | Tee-Object -Variable other; git status > $log",
+    'Push-Location "{root}"; git status > log',
+])
+def test_review_safe_state_controls(paths, template):
+    root, _, _ = paths
+    assert decide(template.format(root=root.as_posix()), root).action == tp.ALLOW
+
+
 def test_cd_tracks_output_location(paths):
     root, temp, foreign = paths
     assert decide(f'Set-Location "{temp.as_posix()}"; git status > log', root).action == tp.ALLOW
