@@ -78,7 +78,14 @@ run.bat itself, a renamed copy in the same folder (run.bat opens with
 path the reader rule excuses, or a spelling that does not resolve here (an admin share
 `\\\\host\\C$\\...`, an 8.3 short name) is not seen. Command-position recognition
 is intentionally limited to direct launches and the shell wrappers below;
-arguments and quoted prose are not treated as executable paths. Complete literal
+arguments and quoted prose are not treated as executable paths. D3 additionally
+recognizes leading complete non-nested PowerShell block comments, simple literal
+assignment/return command positions, Start-Process/saps with -Wait/-NoNewWindow/
+-PassThru/-FilePath, and finite nohup/time/timeout/exec/command/env wrapper forms
+(including literal environment assignments and cmd /v:on|off /e:on|off). Unknown
+options, sudo, non-leading/nested block comments and computed values remain
+outside this grammar; command -v/-V and option operands are not launches.
+Complete literal
 PowerShell here-strings in standalone output / terminal Add-Content, Set-Content
 or Out-File expressions are data for the launcher rule only when the caller
 proves the interpreter with shell="powershell". Unknown / other shells retain
@@ -845,7 +852,7 @@ def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = Non
         if match.re in (_LAUNCH, _CODE_LAUNCH):
             if in_data:
                 continue
-            launcher = _owner_launch(command, match, launcher_base, home)
+            launcher = _owner_launch(command, match, launcher_base, home, shell=shell)
             if launcher:
                 return _say("owner-launcher",
                             f"it runs {launcher}, LiteTUI's owner launcher, which marks "
@@ -954,12 +961,58 @@ _EXECUTION_SINKS = frozenset({
 })
 
 
-def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) -> Path | None:
+def _owner_command_position(words: list[str]) -> list[str]:
+    """Peel only literal, finite launcher wrappers; unknown operands stay put.
+
+    In particular command -v/-V inspect names, env -u consumes a name, and
+    timeout consumes a duration. None may turn an option operand into argv0.
+    """
+    while words:
+        head = words[0]
+        if (head in _WRAPPERS or head in {"nohup", "exec"}
+                or re.fullmatch(r"[a-z_][\w]*=[^$`]*", head)):
+            words = words[1:]
+        elif head == "command":
+            if words[1:2] in (["-v"], ["-V"]):
+                return words
+            words = words[2:] if words[1:2] == ["--"] else words[1:]
+        elif head == "time":
+            words = words[2:] if words[1:2] == ["-p"] else words[1:]
+        elif head == "env":
+            words = words[1:]
+            while words and (words[0] in {"-i", "--ignore-environment", "--"}
+                             or re.fullmatch(r"[a-z_][\w]*=[^$`]*", words[0])):
+                words = words[1:]
+        elif head == "timeout":
+            rest = words[1:]
+            if rest and re.fullmatch(r"--signal=[a-z0-9]+", rest[0]):
+                rest = rest[1:]
+            if not rest or not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", rest[0]):
+                return words
+            words = rest[1:]
+        else:
+            return words
+        if head in {"cmd", "cmd.exe"}:
+            while words and re.fullmatch(r"/[ve]:(?:on|off)", words[0]):
+                words = words[1:]
+    return words
+
+
+def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
+                  *, shell: str | None = None) -> Path | None:
     """The LiteTUI run.bat this `run` / `run.bat` word runs, or None when it
     names something else, is only read, or cannot be resolved."""
     start = match.start()
     if _launcher_quoted_argument(command, start):
         return None
+    # Leading non-nested comments can precede argv0. Only a trusted PowerShell
+    # context may excuse a match IN the comment; unknown shells keep scanning.
+    comments = re.match(r"[ \t]*(?:<#(?:(?!<#|#>).)*#>[ \t]*)+", command, re.DOTALL)
+    if comments:
+        if start < comments.end() and shell == "powershell":
+            return None
+        if start >= comments.end():
+            command = " " * comments.end() + command[comments.end():]
     prefix = _PATH_TAIL.search(command[:start]).group(0)
     prefix_length = len(prefix)
     if prefix.startswith("-"):   # -FilePath:.\run.bat names the path after the colon
@@ -988,10 +1041,6 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
         boundaries.append(boundary)
     boundary = boundaries[-1] if boundaries else -1
     segment = command[boundary + 1:start]
-    words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
-    head = next((w for w in words if w not in _WRAPPERS), None)
-    if head in _READERS:
-        return None   # `type run.bat`, `git diff run.bat`: read, not run
     # A clearly quoted function / array argument is data, not argv0. Bare
     # words after an identifier+( remain ambiguous and are scanned fail-closed.
     function_head = re.search(r"[\w.-]+\Z", command[:boundary]) if boundary > 0 else None
@@ -1002,14 +1051,22 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
             command[start:].startswith(match.group() + command[start - 1])):
         return None
     before = segment[:-prefix_length] if prefix_length else segment
+    expression = re.match(r"[ \t]*(?:\$[A-Za-z_][\w]*[ \t]*=[ \t]*|return[ \t]+)", before, re.IGNORECASE)
+    if expression:
+        before = before[expression.end():]
+        if before.lstrip().startswith(("'", '"')):
+            return None   # assignment/return of a string is not a command
     before = before.strip(" \t\"'")
     before = re.sub(r"\d?[<>]{1,2}&?[^\s<>&|]+", "", before)
     position = re.findall(r"[^\s\"'`]+", before.lower())
+    if position[-1:] == ["-filepath:"]:
+        position[-1] = "-filepath"
     position = [w.lstrip("@^") for w in position if w.lstrip("@^")]
-    # Narrow command positions: wrappers, direct invocations and cmd's bounded
-    # if conditions. Do not turn a later subcommand/argument into argv0.
-    while position and position[0] in _WRAPPERS:
-        position.pop(0)
+    position = _owner_command_position(position)
+    if position[:1] and position[0] in _READERS:
+        return None
+    # Narrow command positions: direct invocations and cmd's bounded if
+    # conditions. Do not turn a later subcommand/argument into argv0.
     if position and position[0] in ("&", "do", "else"):
         position.pop(0)
     if position[:1] == ["if"]:
@@ -1020,8 +1077,11 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
                 or (len(condition) == 1 and "==" in condition[0])):
             position = []
     if position and not (
-            position[0] in ("start-process", "invoke-item", "ii")
-            and position[1:] in ([], ["-filepath"])):
+            (position[0] in ("start-process", "saps")
+             and all(w in {"-wait", "-nonewwindow", "-passthru", "-filepath"}
+                     for w in position[1:])
+             and ("-filepath" not in position[1:] or position[-1] == "-filepath"))
+            or (position[0] in ("invoke-item", "ii") and not position[1:])):
         return None
     return _existing_owner_launcher(prefix + match.group(0), base, home)
 
