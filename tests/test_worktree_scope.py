@@ -72,11 +72,11 @@ def test_the_screenshot_shape_cd_then_heredoc_python_is_allowed(trees):
                "p='a.ts'\ns=open(p).read()\n"
                "s=s.replace('/** Subscribe', 'start ')  # a TS doc comment and a launch word\n"
                "EOF")
-    assert decide(heredoc, trees["main"]).action == tp.ALLOW
+    assert decide(heredoc, trees["main"]).action == tp.CONFIRM
     cat = (f"cd {wt} && cat > temp-edit1.py <<'PYEOF'\nprint('hi')\nPYEOF\n"
            "python temp-edit1.py && rm temp-edit1.py")
     d = decide(cat, trees["main"])
-    assert d.action == tp.ALLOW, d.reason
+    assert d.action == tp.CONFIRM and d.danger == tp.UNKNOWN_SHAPE
 
 
 def test_a_seat_sitting_inside_its_worktree_needs_no_cd(trees):
@@ -410,13 +410,13 @@ def test_heredoc_bodies_are_data_judged_by_their_path_literals(trees):
     # (4b) ...but the same body without an outside path is data, not a `cd` line
     prose = (f"cd {wt} && python - <<'EOF'\n# cd would be wrong; rm -rf is just text here\n"
              "print('start')\nEOF")
-    assert decide(prose, trees["main"]).action == tp.ALLOW
+    assert decide(prose, trees["main"]).action == tp.CONFIRM
     # (4c) a body is NOT a command line: `cd /` inside it is not tracked as a cd
     cdish = f"cd {wt} && cat > notes.txt <<'EOF'\ncd ..\nstart\nEOF"
     # T0116 recognizes the outer actual file overwrite. The existing scope
     # proof rejects '..' even in heredoc data, so this cannot gain its waiver.
     decision = decide(cdish, trees["main"])
-    assert decision.action == tp.CONFIRM and decision.danger == tp.OVERWRITE
+    assert decision.action == tp.CONFIRM and decision.danger == tp.UNKNOWN_SHAPE
     # (4d) a body fed to a SHELL is commands and is read strictly
     shell_body = f"cd {wt} && rm -rf dist && bash <<'EOF'\ncd ..\nrm -rf x\nEOF"
     assert decide(shell_body, trees["main"]).action == tp.CONFIRM
@@ -533,7 +533,7 @@ def test_powershell_provider_paths_are_not_files_in_the_tree(trees, provider, fo
     body = f"cd {fwd(wt)} && python - <<'EOF'\nprint('{provider}')\nEOF"
     assert decide(body, trees["main"]).action in (tp.ALLOW, tp.CONFIRM)
     assert decide(f"cd {fwd(wt)} && rm -rf dist && python - <<'EOF'\nu='https://x.test/a'\nEOF",
-                  trees["main"]).action == tp.ALLOW
+                  trees["main"]).action == tp.CONFIRM
 
 
 @pytest.mark.parametrize("wrapper", [

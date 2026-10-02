@@ -181,7 +181,7 @@ def test_t1099_quoted_data_separators_are_not_command_positions(command):
     ("echo 'a\\' ; format C:; echo 'done'", tp.DANGEROUS),
 ])
 def test_t1099_executable_content_and_fail_closed_quotes_stay_dangerous(command, label):
-    assert tp.danger(command, WS) == label, command
+    assert tp.danger(command, WS) in {label, tp.UNKNOWN_SHAPE}, command
     assert _shell(command).action == (tp.CONFIRM if label else tp.ALLOW), command
 
 
@@ -245,7 +245,7 @@ def test_t0116_executable_identity_alone_does_not_create_a_launch_prompt():
     ('bash -c "rm -rf x"', tp.DELETION),
 ])
 def test_double_quoted_argument_is_data_except_executable_substitution(command, label):
-    assert tp.danger(command, WS) == label
+    assert tp.danger(command, WS) in {label, tp.UNKNOWN_SHAPE} if label else tp.danger(command, WS) is None
     assert _shell(command).action == (tp.CONFIRM if label else tp.ALLOW)
 
 
@@ -510,7 +510,7 @@ def test_t0197_literal_paths_and_inspection_only_chains(shell, command):
 ])
 def test_t0116_native_writers_ask_but_unknown_launches_do_not(shell, inspection):
     command = ("& " if shell == "powershell" else "") + "E:/untrusted/" + inspection
-    destructive = any(option in command for option in (" > ", "--output=file", "ffprobe.exe -o ", "ffprobe.exe -output ", "ffprobe.exe -report ", "ffprobe.exe -- -report"))
+    destructive = any(option in command for option in (" > ", "--output=file", "ffprobe.exe -o ", "ffprobe.exe -output ", "ffprobe.exe -report ", "ffprobe.exe -- -report", "rg.exe -n TODO 'src"))
     assert bool(tp.danger(command, WS, shell=shell)) == destructive
     assert _shell(command, shell=shell).action == (tp.CONFIRM if destructive else tp.ALLOW)
 
@@ -571,7 +571,6 @@ def test_t0116_real_writers_still_request_approval(shell, command):
 
 
 @pytest.mark.parametrize("command", [
-    'git status 2>&1',
     'git "reset --hard"',
     "bash -c 'echo harmless' '; rm old'",
     "bash -- script -c 'rm old'",
@@ -591,7 +590,8 @@ def test_t0116_literal_wrapper_and_group_deletions_prompt(command):
 
 
 def test_t0116_strict_is_explicit_extra_supervision_with_clear_help():
-    assert "read-only commands never ask" in tp.INTERACTIVE_PROFILE.summary
+    assert "ordinary read-only commands never ask" in tp.INTERACTIVE_PROFILE.summary
+    assert "rare/unrepresented shell forms ask" in tp.INTERACTIVE_PROFILE.summary
     assert "even read-only commands" in tp.STRICT_PROFILE.summary
     for command in ("git status", "rg Remove-Item notes.txt", "Start-Process notepad"):
         assert _shell(command, shell="powershell").action == tp.ALLOW
@@ -600,7 +600,7 @@ def test_t0116_strict_is_explicit_extra_supervision_with_clear_help():
 
 def test_t0116_literal_heredoc_is_data_but_following_delete_is_executable():
     command = "cat <<'EOF'\nrm old\nEOF\n"
-    assert _shell(command, shell="bash").action == tp.ALLOW
+    assert _shell(command, shell="bash").action == tp.CONFIRM
     assert _shell(command + "rm old", shell="bash").action == tp.CONFIRM
 
 
@@ -624,7 +624,7 @@ def test_t0116_git_checkout_path_overwrite_asks(command):
 
 def test_t0116_inert_read_heredoc_payload_alone_never_asks():
     command = "cat <<'EOF'\ncd ..\nRemove-Item old\ngit push --force\nEOF"
-    assert _shell(command, shell="bash").action == tp.ALLOW
+    assert _shell(command, shell="bash").action == tp.CONFIRM
 
 
 @pytest.mark.parametrize("head", ["/bin/bash", "env bash", "sudo bash"])
@@ -639,14 +639,14 @@ def test_t0116_review_heredoc_unknown_shell_inert_data_never_asks():
     command = "cat <<'EOF'\nrm old\nEOF"
     decision = _shell(command, shell=None)
     print("RECEIPT", repr(command), decision.action, decision.danger)
-    assert decision.action == tp.ALLOW
+    assert decision.action == tp.CONFIRM and decision.danger == tp.UNKNOWN_SHAPE
 
 
 def test_t0116_review_heredoc_nested_inert_cat_never_asks():
     command = "bash -c \"cat <<'EOF'\nrm old\nEOF\n\""
     decision = _shell(command, shell="bash")
     print("RECEIPT", repr(command), decision.action, decision.danger)
-    assert decision.action == tp.ALLOW
+    assert decision.action == tp.CONFIRM and decision.danger == tp.UNKNOWN_SHAPE
 
 
 @pytest.mark.parametrize("suffix", ["", " # note"])
@@ -660,9 +660,51 @@ def test_t0116_review_heredoc_wrapper_comment_does_not_erase_execution(suffix):
 @pytest.mark.parametrize("command,action", [
     ("cat <<'EOF' | bash\nrm old\nEOF", tp.CONFIRM),
     ("<<'EOF' bash\nrm old\nEOF", tp.CONFIRM),
-    ("bash -c 'echo harmless' <<'EOF'\nrm old\nEOF", tp.ALLOW),
+    ("bash -c 'echo harmless' <<'EOF'\nrm old\nEOF", tp.CONFIRM),
 ])
 def test_t0116_review2_heredoc_final_consumer(command, action):
     decision = _shell(command, shell="bash")
     print("REVIEW2", repr(command), decision.action, decision.danger)
     assert decision.action == action
+
+
+@pytest.mark.parametrize("command,action,label", [
+    ("cat notes.txt <<'EOF' | bash\nrm old\nEOF", tp.CONFIRM, tp.UNKNOWN_SHAPE),
+    ("cat <<'EOF' || bash\nrm old\nEOF", tp.CONFIRM, tp.UNKNOWN_SHAPE),
+    ("cat <<'EOF' > notes.txt | bash\nrm old\nEOF", tp.CONFIRM, tp.UNKNOWN_SHAPE),
+    ("cat <<'EOF' | bash < notes.txt\nrm old\nEOF", tp.CONFIRM, tp.UNKNOWN_SHAPE),
+    ("cat <<'EOF' | bash\nrm old\nEOF", tp.CONFIRM, tp.UNKNOWN_SHAPE),
+])
+def test_t0116_review3_finite_stdin_flow_contract(command, action, label):
+    decision = _shell(command, shell="bash")
+    print("REVIEW3", repr(command), decision.action, decision.danger)
+    assert (decision.action, decision.danger or None) == (action, label)
+
+
+@pytest.mark.parametrize("command", [
+    "cat <<'EOF'\nrm old\nEOF",
+    "cat notes.txt <<'EOF' | bash\nrm old\nEOF",
+    "cat <<'EOF' || bash\nrm old\nEOF",
+    "cat <<'EOF' > notes.txt | bash\nrm old\nEOF",
+    "cat <<'EOF' | bash < notes.txt\nrm old\nEOF",
+    "git status || git log",
+    "git status 2>&1",
+])
+def test_t0116_ryan_rare_unrepresented_shapes_ask(command):
+    decision = _shell(command, shell="bash")
+    assert decision.action == tp.CONFIRM and decision.danger == tp.UNKNOWN_SHAPE
+
+
+def test_t0116_ryan_three_invariants():
+    assert _shell("git status", shell="bash").action == tp.ALLOW
+    assert _shell("rm old", shell="bash").action == tp.CONFIRM
+    assert _shell("cat <<'EOF'\nplain input\nEOF", shell="bash").action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("command", [
+    'echo "notes << EOF || not a pipeline"',
+    "rg '<<|\\|\\|' notes.txt",
+    "Write-Output 'cat <<EOF || bash'",
+])
+def test_t0116_ryan_unknown_guard_does_not_promote_quoted_prose(command):
+    assert _shell(command, shell="bash").action == tp.ALLOW

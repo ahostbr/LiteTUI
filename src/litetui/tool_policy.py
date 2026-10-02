@@ -129,14 +129,15 @@ class PolicyDecision:
 
 
 # T0116: default/interactive asks only for destructive shell actions. Read-only
-# commands and ordinary program launches never ask merely because of their
+# ordinary commands and program launches never ask merely because of their
 # executable's location. Undeclared MCP effects retain their separate gate.
+# Rare/unrepresented shell forms ask (Ryan: "Ship, rare shapes ask").
 # Explicit human-selected strict supervision is deliberately MORE asking.
 INTERACTIVE_PROFILE = ToolProfile(
     INTERACTIVE,
     allow=frozenset(CAPABILITIES - {DESTRUCTIVE_IRREVERSIBLE}),
     confirm=frozenset({DESTRUCTIVE_IRREVERSIBLE}),
-    summary="read-only commands never ask; asks before destructive actions (delete, overwrite, extract, Git push/reset)",
+    summary="ordinary read-only commands never ask; destructive actions and rare/unrepresented shell forms ask",
 )
 
 # Strict supervision confirms every sensitive action, including ordinary
@@ -612,6 +613,7 @@ _C = _CMD_POSITION
 #: ordinary command (the `format` lesson above).
 DELETION = "deletion"
 ARCHIVE = "archive expansion"
+UNKNOWN_SHAPE = "an unrepresented shell construct"
 OVERWRITE = "file overwrite"
 DANGEROUS = "a dangerous system command"
 UNDECLARED = "a tool whose effects aren't declared"
@@ -791,9 +793,15 @@ def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_inter
     parts = deny_floor.shell_commands(command, shell or "bash")
     if shell is None and not any(part.get("heredoc") for part in parts):
         parts += deny_floor.shell_commands(command, "powershell")
-    # A complete literal <<'delimiter' input form is Bash syntax, invalid PS
-    # syntax. Do not invent PS commands from its data when interpreter unknown.
-    # The mandatory floor keeps its separate conservative dialect union.
+    # Ryan: "Ship, rare shapes ask". ONE explicit fail-closed prompt guard;
+    # no claim that incomplete stream/operator representation proves inert data.
+    # The mandatory jobs floor still runs separately and before this policy.
+    view = _command_view(command, shell)
+    if (any(part.get("heredoc") or not part["complete"]
+            or any(op.startswith("<<") for op, _ in part["redirects"]) for part in parts)
+            or re.search(r"<<|\|\||\|&|[<>]&", view)):
+        yield UNKNOWN_SHAPE, -5
+        return
     if (any([w[0].lower() for w in part["words"][:1]] in (["sh"], ["bash"], ["iex"], ["invoke-expression"])
             for part in parts) and "|" in command
             and re.search(r"(?i)\b(?:curl|wget|iwr|invoke-webrequest)\b", command)):
