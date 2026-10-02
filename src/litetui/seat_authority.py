@@ -153,7 +153,7 @@ def withheld(app, level: str) -> str | None:
 
 
 #: The file headers of a Codex patch: every path it adds, updates, deletes or moves to.
-_PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$", re.M)
+_PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$", re.MULTILINE)
 _PATH_KEYS = ("path", "file_path", "notebook_path")
 
 
