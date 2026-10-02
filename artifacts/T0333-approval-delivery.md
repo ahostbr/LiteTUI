@@ -1,0 +1,39 @@
+# T0333 approval delivery — candidate evidence (2026-10-02)
+
+## Scope and causal synthesis
+
+Purpose: repair approval-delivery latency without weakening gates; trunk: reliable visible coordination.
+Turing principle: “Understanding a process = the ability to formalize it into a machine that reproduces it.”
+
+Original lost-native-send diagnosis is RETRACTED. Three native APPROVE timestamps match actual maildir replies. Requests first entered Ember's transcript after the 600s deadline; response latency after injection was 6–12s. Source: `C:/Projects/.scratch/ember-lane/T0333-delivery-evidence.md` and `C:/Projects/LiteTUI/.convos/f4c6dadd-27e7-49da-9b90-048e13bffa44/convo.jsonl`.
+
+Safe native TEST (one authorized send to Ember, no approvals): mailbox file `C:/Users/Ryan/.liteharness/inbox/done/20261002_182535__normal__c57ec793a44a.json`, id `0e44e937-4502-4185-9e47-f12842e30ba5`, timestamp `18:25:35.240320Z`; leader measured USER injection `18:29:40.251Z`: **245.01068s mailbox→transcript**. Self-mail and fabricated recipient attempts refused before delivery as designed; neither is a send defect.
+
+Readonly extraction shows ordinary messages injected after successive tool results while requests lagged, plus a ~320s compaction stall. No steering journal on affected incoming messages: FIFO backlog+compaction is supported; uncertain native steering is not established as the historical cause.
+
+Reproducer: 80 routine messages then an approval request through real `_deliver_inbox`/`_deliver_queued_input`; initial safe boundary consumed `progress0` instead of approval (red). Candidate prioritizes the request at the next safe boundary.
+
+## Contract implemented
+
+- Ordinary body text never grants priority, even a complete copied APPROVAL envelope.
+- Relay `Seat.send` uses existing authoritative CLI/body-file writer with supported `--type QUESTION`, `--thread-id` containing bounded JSON `{kind: approval-request, id, requester, approver}`. No new mailbox writer, dependency, sys.path hack or OSS edits.
+- Only exact typed kind/schema, nonce, actual sender and addressee/frozen approver (or its current registered spawner for notification) receive priority. Local mailbox provenance is still forgeable; priority does not grant approval authority.
+- Priority remains stable within urgent/routine classes. Claude-owned/native-journaled/interrupt entries remain barriers. No cancellation, ownership transfer or uncertain-send retry.
+- After 60s unanswered, notification to approver's own registered spawner by exact id/launch lineage; no names/hardcoded UUID. Same structured priority and original approver metadata. Original future and reply authority stay frozen.
+- Notification sent/absent/failed state saved in request conversation metadata, visible system notice, bounded runtime stage. No autoapprove. Normal timeout unchanged.
+- Runtime stages distinguish `sent`, `received`, `queued`, `injected`, `responded`, and escalation transport state. Injected means host input admission, NOT proof of provider processing. Maildir write means transport, NOT model receipt.
+
+## Verification
+
+- `python -m pytest tests/test_approval_delivery_t0333.py tests/test_message_queue.py tests/test_approval_relay_t1049b.py tests/test_approval_relay_t1049b2.py tests/test_codex_steering.py tests/test_harness_takeover_hint.py -q`: 117 passed.
+- New focused file: 20 passing tests, including actual installed CLI parser/writer sandbox roundtrip and same-metadata escalation; all sandbox HOME/presence/mailbox isolated. Requires installed CLI on base interpreter; clean machines without it fail this explicit integration proof, rather than pretending it passed.
+- `python -X utf8 tests/test_harness_tool.py`: 30/30 passed (UTF-8 required on Windows console).
+- New module/test/helper Ruff and new-module mypy `--follow-imports=skip`: passed. Existing touched-module Ruff has baseline import/broad-exception/timezone findings; no unrelated cleanup.
+- Legacy `test_human_relay_override_t0183.py`: 3 failures (no registered parent fixture, no send). Same failures with committed156f7b8 harness+relay dynamically substituted. This is **module-substitution comparison**, not archived-tree validation; do not claim full baseline suite.
+- `temp-working-dir/t0333_verify_diff.py`: app prefix/suffix byte-identical; original 10 bare-LF lines preserved. `git -c core.whitespace=cr-at-eol diff --check` clean. No whole-file normalization.
+
+## Held boundaries / next owner
+
+NOT DONE. No merge/push/restart/live destructive probes. Ryan end inspection outstanding.
+Leader/Sentinel must land T0245+T0250, then authorize T0333 rebase and independent combined-queue review. Current base156f7b8 intentionally lacks those pending recovery queue checks; do not merge standalone or weaken owner-blocked head handling.
+Seconds cannot be guaranteed while native provider/compaction is blocked. Sentinel defined this card's fallback as durable spawner-inbox transport notification plus visible saved state, NOT out-of-band UI interruption or guaranteed model receipt. Slow real-use follow-up remains outside this card.

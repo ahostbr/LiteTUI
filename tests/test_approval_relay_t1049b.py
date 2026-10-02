@@ -73,7 +73,7 @@ def wire(monkeypatch):
     def arm(a, *, send_ok=True, registered=True):
         a.seat.registered = registered
 
-        def send(to, body):
+        def send(to, body, **metadata):
             state["sent"].append((to, body))
             return send_ok
 

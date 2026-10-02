@@ -97,7 +97,7 @@ def record(app, status: str, name: str, source: str | None, ident: str = "none")
                        id=ident, status=status)
 
 
-def _message(app, ident: str, name: str, args, decision, source, timeout: float) -> str:
+def _message(app, ident: str, name: str, args, decision, source, timeout: float, *, approver: str) -> str:
     seat = app.seat
     try:
         shown = json.dumps(args, ensure_ascii=False, default=str)
@@ -110,6 +110,7 @@ def _message(app, ident: str, name: str, args, decision, source, timeout: float)
             f"during a {source or 'unlabelled'} turn\n"
             f"Danger: {danger}; why: {decision.reason}\n"
             f"Input: {shown}\n"
+            f"[DELIVERY requester={seat.agent_id} approver={approver}]\n"
             f"Answer by inbox with exactly one line: APPROVE {ident}  or  DENY {ident}\n"
             f"No answer within {timeout:.0f} s = the turn stops and this is logged.")
 
@@ -141,12 +142,16 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
         seat = getattr(app, "seat", None)
         # Unregistered means no inbox poller, so no answer could ever arrive. The
         # registry refusing the id (`send` exit != 0) is the "absent" signal.
+        message = (_message(app, ident, name, args, decision, source, timeout, approver=spawner)
+                   if spawner else "")
         sent = (spawner is not None and seat is not None and getattr(seat, "registered", False)
-                and await asyncio.to_thread(seat.send, spawner,
-                                            _message(app, ident, name, args, decision, source, timeout)))
+                and await asyncio.to_thread(seat.send, spawner, message,
+                                            approval_request=(ident, spawner)))
         if not sent:
             status = "absent"
         else:
+            from litetui import approval_delivery
+            approval_delivery.stage(ident, "sent")
             app._system(f"asked {(spawner or 'unavailable')[:8]} (the spawning agent) to approve {name} "
                         f"({ident}); waiting up to {timeout:.0f} s")
             try:
@@ -157,7 +162,9 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
                 control = HumanApproval(ident, name)
                 await log.mount(control)
             try:
-                status = "approved" if await asyncio.wait_for(future, timeout) else "denied"
+                answer = await approval_delivery.wait_for_answer(
+                    app, future, approver=spawner, ident=ident, message=message, timeout=timeout)
+                status = "approved" if answer else "denied"
             except TimeoutError:
                 status = "timeout"
     finally:
@@ -183,6 +190,8 @@ def take_answer(app, msg: dict) -> bool:
     if entry is None or msg.get("from") != entry[1] or entry[0].done():
         return False
     entry[0].set_result(match.group(1) == "APPROVE")
+    from litetui import approval_delivery
+    approval_delivery.stage(match.group(2), "responded")
     return True
 
 
