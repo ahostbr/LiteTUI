@@ -187,6 +187,28 @@ def inline_images(app, content, saved=None):
     return "\n\n".join([t for t in texts if t] + notes), paths_
 
 
+class UncertainDelivery(ValueError):
+    """Admission is held until the user settles a previous Claude delivery."""
+
+
+def _hold_notice(app, item, text):
+    if item.get("_claude_hold_notice") != text:
+        item["_claude_hold_notice"] = text
+        app._system(text)
+
+
+def hold_input(app, item, refusal):
+    """Keep unsent input in memory, bound to its original conversation/segment.
+
+    No durable entry is prepared and no delivery evidence is changed. The idle
+    queue gate keeps this item held until explicit recovery; it cannot migrate.
+    """
+    segment = ledger_for(app).selected
+    held = {**item, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
+    app._pending_input.append(held)
+    _hold_notice(app, held, f"Queued Claude input is held; nothing was sent. {refusal}")
+
+
 def prepare_input(app, content, profile, source, operation_id=None):
     if not isinstance(content, str):
         raise TypeError("Claude image attachments are not enabled yet; send text instead.")
@@ -203,7 +225,7 @@ def prepare_input(app, content, profile, source, operation_id=None):
         # The same gate as below, on the segment being LEFT: once another is selected,
         # /claude status and resolve can no longer reach its uncertain entries.
         if any(e["state"] != "prepared" for e in ledger.pending(segment["id"])):
-            raise ValueError(f"The Claude session in {previous} has an uncertain delivery, so a new one in "
+            raise UncertainDelivery(f"The Claude session in {previous} has an uncertain delivery, so a new one in "
                              f"{here} was not started. Relaunch from {previous} and use /claude resolve "
                              "(or /claude continue) to settle it first; nothing was sent.")
         segment = ledger.select_segment(here)
@@ -211,33 +233,44 @@ def prepare_input(app, content, profile, source, operation_id=None):
     active = getattr(app, "_claude_active_input", {}).get("_claude_entry", {}).get("id") if app._chat_running() else None
     unresolved = [e for e in ledger.pending(segment["id"]) if e["state"] != "prepared" and e["id"] != active]
     if unresolved:
-        raise ValueError("Claude delivery is uncertain. Inspect saved history, then /claude resolve to settle it without replay, /claude continue to send what is still only prepared, or /claude new for a fresh session; no input is replayed automatically.")
+        raise UncertainDelivery("Claude delivery is uncertain. Inspect saved history, then /claude resolve to settle it without replay, /claude continue to send what is still only prepared, or /claude new for a fresh session; no input is replayed automatically.")
     entry = ledger.prepare(segment["id"], content, profile, source, operation_id=operation_id)
     return {"_claude_entry": entry, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
 
 
 def queue_ready(app, item):
-    if not item.get("_claude_entry"):
-        return True
+    if not item.get("_claude_segment"):
+        if not getattr(getattr(app, "backend", None), "owns_native_turns", False):
+            return True
+        selected = ledger_for(app).selected
+        if selected is None:
+            return True
+        # Unlabelled startup mail can already be queued before Claude admission.
+        # Bind/check it BEFORE the idle flush pops it, preserving FIFO on hold.
+        item.update(_claude_segment=selected["id"], _claude_conversation=app.convo_id)
     if (app.backend.name != "claude" or item.get("_claude_conversation") != app.convo_id):
-        app._system("Queued Claude input is held for its original conversation/session.")
+        _hold_notice(app, item, "Queued Claude input is held for its original conversation/session.")
         return False
     selected = ledger_for(app).selected
     if not selected or item["_claude_segment"] != selected["id"]:
-        app._system("Queued Claude input is held for its original session segment.")
+        _hold_notice(app, item, "Queued Claude input is held for its original session segment.")
+        return False
+    if not item.get("_claude_entry") and selected["workspace"] != launch_workspace(app):
+        _hold_notice(app, item, "Queued Claude input is held for its original workspace; relaunch there to continue.")
         return False
     if any(e["state"] != "prepared" for e in ledger_for(app).pending(selected["id"])):
-        app._system("Queued Claude input is held: an earlier delivery is uncertain; /claude status.")
+        _hold_notice(app, item, "Queued Claude input is held: an earlier delivery is uncertain; inspect /claude status, then /claude resolve and /claude continue. Nothing was sent or replayed.")
         return False
     if getattr(app.backend, "session", None) is not None and app.backend.session.lifecycle.failure:
-        app._system("Claude session failed; queued input is held, not replayed.")
+        _hold_notice(app, item, "Claude session failed; queued input is held, not replayed.")
         return False
+    item.pop("_claude_hold_notice", None)
     return True
 
 
 def accept_input(app, item):
     metadata = {key: value for key, value in item.items() if key.startswith("_claude_")}
-    if not metadata:
+    if not metadata.get("_claude_entry"):
         # T1043: an unlabelled item is recorded "unlabelled", never as an
         # attended "queued" that a later replay would inherit.
         metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source") or "unlabelled", item.get("operation_id"))

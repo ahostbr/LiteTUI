@@ -163,7 +163,7 @@ def refuse_below_floor(app, item) -> bool:
 
 
 def accept_prompt(app, item, *, native_accepted=False) -> bool:
-    """Start this item's turn. False when the fleet floor refused it (T1043).
+    """Start this item's turn. False when refused by the floor or held by Claude.
 
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
     the Codex app-server already holds: it was checked at HostSteering.admit, and
@@ -188,8 +188,12 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
         materialise()
     message = {"role": "user", "content": item["content"]}
     if getattr(getattr(app, "backend", None), "owns_native_turns", False):
-        from litetui.claude_turn import accept_input
-        message["claude_delivery"] = accept_input(app, item)
+        from litetui.claude_turn import UncertainDelivery, accept_input, hold_input
+        try:
+            message["claude_delivery"] = accept_input(app, item)
+        except UncertainDelivery as exc:
+            hold_input(app, item, exc)
+            return False
     entry = item.get("_codex_entry")
     if entry:
         message["codex_delivery"] = {"id": entry["id"], "threadId": entry["threadId"],

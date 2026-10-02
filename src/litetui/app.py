@@ -8042,7 +8042,12 @@ class LiteTUI(App):
         profile = seat_authority.seat_profile(self)
         claude_metadata = {}
         if getattr(self.backend, "owns_native_turns", False):
-            from litetui.claude_turn import inline_images, prepare_input
+            from litetui.claude_turn import (
+                UncertainDelivery,
+                hold_input,
+                inline_images,
+                prepare_input,
+            )
             try:
                 content, saved = inline_images(self, content, image_path)
                 if saved:
@@ -8051,6 +8056,13 @@ class LiteTUI(App):
                         self._system("Claude sees an attached image only by opening its file, and tools are off; turn them on to let it look.")
                 claude_metadata = prepare_input(self, content, profile, source,
                     getattr(self, "_gui_next_operation_id", None) if source == "rpc" else None)
+            except UncertainDelivery as exc:
+                hold_input(self, {"content": content, "text": text, "tool_profile": profile,
+                    "source": source, "operation_id": getattr(self, "_gui_next_operation_id", None)
+                    if source == "rpc" else None}, exc)
+                self.pending_image = None
+                self._refuse_submit("claude_admission", str(exc))
+                return
             except (ValueError, TypeError, OSError, RuntimeError) as exc:
                 self._system(str(exc))
                 self._refuse_submit("claude_admission", str(exc))
