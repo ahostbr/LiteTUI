@@ -69,11 +69,54 @@ def _cmd_compact(app, name: str, arg: str) -> None:
     app._compact(arg)
 
 
-def _open_convos_picker(app) -> None:
-    """The conversation picker modal, shared by /convos and /resume so
-    the two commands show one UI instead of one modal and one wall of
-    chat text. Selecting a row opens it; Esc closes it."""
-    rows = ConversationRepository.list_all()
+def _open_convos_picker(app, agent_id=None) -> None:
+    """Pick an authoritative agent first, then one of its conversations."""
+    from litetui.agent_store import AgentStore, StoreError
+    from litetui.storage_catalog import conversations
+    session = getattr(app, '_agent_session', None)
+    root = session.store.data_root if session is not None else paths.data_root()
+    store = AgentStore(root)
+    try:
+        if agent_id is None:
+            agents = store.list_agents()
+            if not agents:
+                app.system_message('No ready owned agents. Legacy conversations are read-only archives; use catalog/export.')
+                return
+            pick(app, 'Choose an agent', [(a.agent_id, a.name) for a in agents],
+                 lambda selected: _open_convos_picker(app, selected) if selected else None,
+                 current=session.authority.agent_id if session is not None else None)
+            return
+        agent = store.find_agent(agent_id=agent_id)
+        locations = conversations(root, agent_id=agent.agent_id)
+        rows = [(row.transcript, *ConversationRepository.read(row.transcript)) for row in locations]
+        rows.sort(key=lambda row: row[0].stat().st_mtime, reverse=True)
+    except (StoreError, OSError) as exc:
+        app.system_message(f'Agent catalog blocked: {exc}')
+        return
+    if session is None or session.authority.agent_id != agent.agent_id:
+        # Selecting another agent is an explicit process boundary, never a hot
+        # identity switch in this seat. The single action launches via harness.
+        items = [(row[0].parent.name, ConversationRepository.label(row[1], row[2])) for row in rows]
+        if not items:
+            items = [('new', 'Start a new conversation')]
+        def choose(selected):
+            if not selected:
+                return
+            def opened(action):
+                if action != 'open':
+                    return
+                async def launch():
+                    from litetui.agent_seat_launch import open_seat
+                    try:
+                        result = await open_seat(app, agent.agent_id, None if selected == 'new' else selected)
+                        app.system_message(result)
+                    except (StoreError, OSError, TimeoutError) as exc:
+                        app.system_message(f'Own-seat launch blocked: {exc}')
+                app.run_worker(launch(), name='open-owned-agent', group='open-owned-agent', exclusive=True)
+            pick(app, f'{agent.name}: separate agent seat',
+                 [('open', f'Open {agent.name} in its own seat')], opened)
+        pick(app, f'{agent.name}: choose a conversation', items, choose)
+        return
     if not rows:
         app.system_message("Nothing to resume.")
         return
@@ -151,9 +194,20 @@ def _cmd_rename(app, name: str, arg: str) -> None:
 
 
 def _cmd_resume(app, name: str, arg: str) -> None:
-    rows = ConversationRepository.list_all()
-    if not rows:
-        app.system_message("Nothing to resume.")
+    if not arg:
+        _open_convos_picker(app)
+        return
+    from litetui.storage_catalog import conversations
+    session = getattr(app, '_agent_session', None)
+    if session is None:
+        app.system_message('Choose an owned agent first with /resume; archives are read-only.')
+        return
+    try:
+        rows = [(row.transcript, *ConversationRepository.read(row.transcript))
+                for row in conversations(session.store.data_root, agent_id=session.authority.agent_id)]
+        rows.sort(key=lambda row: row[0].stat().st_mtime, reverse=True)
+    except (OSError, ValueError) as exc:
+        app.system_message(f'Agent conversations blocked: {exc}')
         return
     target = None
     if arg.isdigit():

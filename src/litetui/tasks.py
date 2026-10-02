@@ -452,8 +452,13 @@ class StoreNotBorn(Exception):
     """
 
 
-def convo_store_dir(convo_id: str) -> Path:
-    """The directory holding one conversation's store. It must already exist."""
+def convo_store_dir(convo_id: str, *, agent_session=None) -> Path:
+    """Resolve writable task store through owned capability, never its archive twin."""
+    if agent_session is not None:
+        d = agent_session.conversation_directory(convo_id)
+        if not d.is_dir():
+            raise StoreNotBorn(f'owned conversation {convo_id} has no directory yet')
+        return d
     if not convo_id or convo_id in (".", "..") or Path(convo_id).name != convo_id:
         raise StoreNotBorn(f"no task store for conversation id {convo_id!r}")
     d = Path(paths.CONVO_DIR) / convo_id
@@ -462,7 +467,7 @@ def convo_store_dir(convo_id: str) -> Path:
     return d
 
 
-def save_by_convo(tasks) -> None:
+def save_by_convo(tasks, *, agent_session=None) -> None:
     """Persist each row into the store of the conversation that STARTED it.
 
     A row's `convo_id` never changes, and a task can finish long after the user
@@ -476,7 +481,7 @@ def save_by_convo(tasks) -> None:
     failures: list[Exception] = []
     for convo_id, rows in groups.items():
         try:
-            save(rows, convo_store_dir(convo_id))
+            save(rows, convo_store_dir(convo_id, agent_session=agent_session))
         except (StoreNotBorn, OSError) as e:
             failures.append(e)
     if failures:
@@ -544,7 +549,8 @@ def topup(convo_dir: Path | str, legacy_root: Path | str) -> int:
     return copied
 
 
-def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str) -> None:
+def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str, *,
+         agent_session=None) -> None:
     """Bring one conversation's rows into `held`: top up, load, merge.
 
     Rows of other conversations already in `held` are untouched (a task started
@@ -561,7 +567,13 @@ def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str) 
     resumed here, which the pre-T0132 boot-time load did show. `/tasks` and the
     rpc `tasks.list` filter to the current conversation (`host_tasks_for_app`).
     """
-    topup(convo_dir, legacy_root)
+    if agent_session is None:
+        topup(convo_dir, legacy_root)
+    else:
+        expected = agent_session.conversation_directory(Path(convo_dir).name)
+        if Path(convo_dir) != expected:
+            raise ValueError('Task bind lies outside selected owned agent')
+        # Copy-only migration is an explicit operator action, never on owned read.
     for task_id, task in load(convo_dir).items():
         ours = held.get(task_id)
         if ours is not None and ours.owner_instance == _INSTANCE_ID:

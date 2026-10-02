@@ -19,8 +19,10 @@ import os
 from pathlib import Path
 import sys
 from typing import BinaryIO, Callable, TypeVar
+from uuid import uuid4
 
 from .agent_store import (
+    AGENT_SEED_FILES, CONVERSATIONS_DIR, MEMORIES_DIR,
     Agent, AgentStore, INITIALIZING_NAME, SCHEMA_VERSION, SETTINGS_NAME, StoreError, _unlinked,
     name_key, valid_id, valid_name,
 )
@@ -119,6 +121,7 @@ class AgentSession:
         self._agent = agent
         self._lease = lease
         self._authority = AgentAuthority.from_agent(agent)
+        self.initial_conversation_id: str | None = None
 
     @classmethod
     def acquire_existing(cls, store: AgentStore, *, name: str | None = None,
@@ -177,7 +180,20 @@ class AgentSession:
                     handle.write("\n")
                     handle.flush()
                     os.fsync(handle.fileno())
+                # Seed only this reserved home, before removing the blocking marker.
+                # Interrupted initialization is never activated or repaired on read.
+                _unlinked(directory / MEMORIES_DIR).mkdir()
+                conversation_id = str(uuid4())
+                conversations = _unlinked(directory / CONVERSATIONS_DIR)
+                conversations.mkdir()
+                _unlinked(conversations / conversation_id).mkdir()
+                for filename, seed in AGENT_SEED_FILES.items():
+                    with _unlinked(directory / filename).open("x", encoding="utf-8") as handle:
+                        handle.write(seed)
+                        handle.flush()
+                        os.fsync(handle.fileno())
                 session = cls(store, Agent(name, agent_id, directory, settings), lease)
+                session.initial_conversation_id = conversation_id
                 published = _unlinked(directory / SETTINGS_NAME)
                 os.link(initial, published)  # fails if any destination already exists
                 if not initial.samefile(published):

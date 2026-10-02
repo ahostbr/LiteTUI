@@ -22,54 +22,7 @@ from litetui import paths, runtime_log
 
 TRANSCRIPT_NAME = "convo.jsonl"
 
-CONVO_SEED_FILES = {
-    "memory.md": (
-        "# Memory Index\n\n"
-        "One line per memory, NEWEST AT THE TOP. Bodies live in "
-        f"`{paths.MEMORIES_DIR}/`.\n\n"
-        "`- [short title](memories/slug.md) — the hook`\n\n"
-        "POINTERS ONLY. ~50 tokens (about 200 chars) per line, hard. Enough to\n"
-        "decide whether to open the file, nothing more. If you are explaining\n"
-        "the thing here, it belongs in the topic file instead.\n\n"
-        "This file is injected into the system prompt ONCE, at the start of the\n"
-        "conversation, so a long line permanently crowds out other entries.\n\n"
-        "Append and edit only — never rewrite it to make it shorter. A line\n"
-        "removed here orphans a file that nothing will ever open again.\n\n"
-        "---\n\n"
-    ),
-    "soul.md": (
-        "# Soul\n\n"
-        "Who I am in this conversation. I write this for myself; it survives\n"
-        "/resume and /compact when the transcript does not.\n\n"
-        "## How the user works\n"
-        "_Preferences, tone, what they want more or less of._\n\n"
-        "## Standing corrections\n"
-        "_Things I got wrong and was corrected on. The correction, and WHY —\n"
-        "a rule without its reason gets re-litigated or misapplied._\n\n"
-        "## How I work here\n"
-        "_Habits that have proven useful in this conversation specifically._\n"
-    ),
-    "handoff.md": (
-        "# Handoff\n\n"
-        "Written so the next session can ACT without re-deriving anything.\n\n"
-        "> Every row must be CHECKABLE: name the file, the command, or the\n"
-        "> identifier. A query can be re-run; a bare claim can only be believed.\n"
-        "> State when each row was last MEASURED — not when it was assumed.\n\n"
-        "## 1. In flight\n"
-        "_What is running or half-done right now. 'Nothing' is a valid and\n"
-        "useful answer — say it explicitly rather than leaving the section out._\n\n"
-        "## 2. Owed — split by owner\n"
-        "_Mine / theirs / the user's. An unowned item is one nobody does._\n\n"
-        "## 3. Absent by decision\n"
-        "_What is deliberately NOT being done, and what defends that choice.\n"
-        "Without this, the next session rediscovers it and redoes it._\n\n"
-        "## 4. Caveats riding the green lines\n"
-        "_What 'it works' does NOT cover. The limits of every pass claim._\n\n"
-        "## 5. My corrections and retractions\n"
-        "_What I claimed and later found wrong. Carry these forward: a\n"
-        "retracted claim that is not written down comes back as fact._\n"
-    ),
-}
+from litetui.agent_store import AGENT_SEED_FILES as CONVO_SEED_FILES
 
 
 class ConversationRepository:

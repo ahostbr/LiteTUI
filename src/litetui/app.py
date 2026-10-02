@@ -3564,7 +3564,7 @@ class LiteTUI(App):
         waits sees a stale chip for as long as it waits.
         """
         try:
-            tasks_mod.save_by_convo(self.bg_tasks.values())
+            tasks_mod.save_by_convo(self.bg_tasks.values(), agent_session=getattr(self, '_agent_session', None))
         except (tasks_mod.StoreNotBorn, OSError) as e:
             # The task must keep running, so this does not raise - but it is
             # never silent: an accepted row that cannot be kept is the failure
@@ -3609,7 +3609,7 @@ class LiteTUI(App):
         if d is None or not d.is_dir():
             return
         try:
-            tasks_mod.bind(self.bg_tasks, d, paths.data_root())
+            tasks_mod.bind(self.bg_tasks, d, paths.data_root(), agent_session=getattr(self, '_agent_session', None))
         except OSError as e:
             self._report_task_store_error(e)
 
@@ -3825,7 +3825,11 @@ class LiteTUI(App):
             from litetui.claude_backend import close_native
             close_native(self, previous)
         hook_host.leave_conversation(self)
-        self.store.stage(str(uuid.uuid4()))
+        session = getattr(self, '_agent_session', None)
+        initial = getattr(session, 'initial_conversation_id', None)
+        self.store.stage(initial or str(uuid.uuid4()))
+        if initial:
+            session.initial_conversation_id = None
         self._resumed_seat_name = None
         self._refresh_ctx_label()   # the footer names the conversation
         self._sync_seat_identity()

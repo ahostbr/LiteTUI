@@ -33,6 +33,13 @@ def acquire(root: Path, name: str, *, conversation_id: str | None = None,
         raise
 
 
+def create(root: Path, name: str, *, agent_id: str, backend: str,
+           model: str, thinking_level: str) -> AgentSession:
+    """Child-only fresh creation; never adopt an existing or partial home."""
+    return AgentSession.create_fresh(AgentStore(root), name=name, agent_id=agent_id,
+                                    backend=backend, model=model, thinking_level=thinking_level)
+
+
 def apply_settings(session: AgentSession, settings) -> None:
     authority = session.authority
     settings.backend = authority.backend
