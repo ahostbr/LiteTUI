@@ -71,6 +71,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 HOME_VARIABLES = frozenset({
@@ -146,9 +147,9 @@ _GLOB = re.compile(r"[*?]")
 _MSYS = re.compile(r"^/([a-z])(/.*)?$", re.IGNORECASE)
 
 #: The last segment of LiteTUI's launcher as a shell word ends it.
-_LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)])")
+_LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)}])")
 #: The path in front of it: the longest run of path characters.
-_PATH_TAIL = re.compile(r"[\w.~$%{}:\\/-]*\Z")
+_PATH_TAIL = re.compile(r"[\w.~$%:\\/-]*\Z")
 #: Words that pass a command on rather than being it (`cmd /d /c type x`).
 _WRAPPERS = frozenset({
     "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call", "start",
@@ -240,9 +241,14 @@ def refusal(command, workspace, home=None, *, shell: str | None = None) -> str |
     base: Path | None = workspace   # where relative targets resolve; None = unknown
     literal_data = _literal_here_data(command) if shell == "powershell" else []
     launcher_base: Path | None = workspace  # data cd text must not move a real launch
+    # D1's fail-closed branch is confined to a whole interpreter/code shape.
+    # Broader expressions still use the ordinary bounded command-position scan.
+    code = _INTERPRETER_CODE.fullmatch(command)
+    code_launches = _CODE_LAUNCH.finditer(command, code.start('token'), code.end('token')) if code else []
     steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
                     *((m.start(), m) for m in _VERB.finditer(command)),
-                    *((m.start(), m) for m in _LAUNCH.finditer(command))],
+                    *((m.start(), m) for m in _LAUNCH.finditer(command)),
+                    *((m.start(), m) for m in code_launches)],
                    key=lambda step: step[0])
     for _, match in steps:
         in_data = any(start <= match.start() < end for start, end in literal_data)
@@ -251,7 +257,7 @@ def refusal(command, workspace, home=None, *, shell: str | None = None) -> str |
             if not in_data:
                 launcher_base = _cd_target(command[match.end():], launcher_base, home)
             continue
-        if match.re is _LAUNCH:
+        if match.re in (_LAUNCH, _CODE_LAUNCH):
             if in_data:
                 continue
             launcher = _owner_launch(command, match, launcher_base, home)
@@ -291,10 +297,84 @@ def _say(rule: str, what: str,
             f"rewording can run this; do not retry it in another form. {instead}")
 
 
+#: Anchored argv shape, not a quote scanner: exactly one quoted code token.
+_INTERPRETER_CODE = re.compile(
+    r'[ \t]*(?P<head>python(?:\.exe)?[ \t]+-c|node(?:\.exe)?[ \t]+-e)'
+    r'[ \t]+(?P<token>"[^"\r\n]*"|\'[^\'\r\n]*\')[ \t]*', re.IGNORECASE)
+#: Only this anchored code context also recognizes indexing/call adjacency.
+_CODE_LAUNCH = re.compile(r'(?i)(?<![\w])run(?:\.bat)?(?![\w])')
+
+
+def _launcher_quoted_argument(command: str, start: int) -> bool:
+    """Only an anchored, unambiguous whole command can be quoted data.
+
+    No partial spans, compound commands or executing reader options. Single
+    quotes are not quoting in cmd, so their bodies exclude every operator and
+    expansion even when ASCII double quotes toggle cmd's quote state. Unknown
+    syntax restores matching; this is not a parser or general quote filter.
+    """
+    forbidden = "^`$\\!%\r\n" + "\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f" + "\u00ab\u00bb\u2039\u203a\uff02\uff07"
+    if any(ch in forbidden or (ch != "\t" and unicodedata.category(ch) in ("Pi", "Pf", "Cc", "Cf"))
+           for ch in command):
+        return False
+    code = _INTERPRETER_CODE.fullmatch(command)
+    shape = code or re.fullmatch(
+        r'[ \t]*(?:git[ \t]+(?:commit[ \t]+(?:(?:-a|--amend)[ \t]+)*(?:-m|-am|--message)|'
+        r'tag[ \t]+(?:-m|--message))|echo|printf|Write-Output|Write-Host)'
+        r'[ \t]+(?P<token>"[^"\'\t]*"|\'[^\'\t]*\')[ \t]*',
+        command, re.IGNORECASE)
+    if shape is None:
+        return False
+    token = shape.group('token')
+    body = token[1:-1]
+    if token[0] == '"' and "'" in body:
+        return False
+    if token[0] == "'" and any(ch in body for ch in '&|<>'):
+        return False
+    if code:
+        # D1: this is the one place CODE is let through: exactly one print /
+        # console.log call, no nested call, indexing, assignment, concatenation
+        # or statement separator can turn a bare identifier into execution.
+        # Anything richer mentioning the launcher is refused, not excused as
+        # data. Function names are case-sensitive; executable heads are not.
+        if any(ch in body for ch in ';=+[]'):
+            return False
+        function = r'print' if code.group('head').lower().startswith('python') else r'console\.log'
+        if not re.fullmatch(function + r'[ \t]*\([^()]*\)', body):
+            return False
+    return shape.start('token') < start < shape.end('token') - 1
+
+
+#: F1: bounded block positions, including grouping parens nested after { or ?.
+#: Call-paren objects, ${variables}, quoted braces, paths and general word+brace
+#: spellings remain data. Prefix-consuming arms always end AT the boundary.
+_OWNER_BOUNDARY = re.compile(
+    r"[;&|\r\n()`]|^\{|(?<=[\s&.|%;)?{])\{|(?<=^\()\{|"
+    r"(?<=[\s&.|%;({?]\()\{|"
+    r"(?<![\w.$/\\-])(?:try|do|else|finally|catch|begin|process|end|trap)\{|"
+    r"(?<![\w.$/\\-])(?:function|filter)[ \t]+[A-Za-z_][\w-]*\{",
+    re.IGNORECASE)
+#: Narrow switch-label shapes directly inside an ALREADY accepted brace: digits,
+#: quoted strings (quote doubling), default, or a brace-free scriptblock label,
+#: with leading whitespace/CRLF. No scanner: sibling clauses, escaped quotes,
+#: variable/expression/here-string labels and comments remain outside grammar.
+#: These labels are the only accepted word/quote/} brace predecessors.
+_SWITCH_LABEL_BOUNDARY = re.compile(
+    r"\{\s*(?:\d+|'(?:[^'{}\r\n]|'')*'|\"(?:[^\"{}\r\n]|\"\")*\"|default|\{[^{}\r\n]*\})\{",
+    re.IGNORECASE)
+_EXECUTION_SINKS = frozenset({
+    "start-process", "saps", "start", "invoke-item", "ii", "invoke-expression", "iex",
+    "invoke-command", "icm", "start-job", "sajb", "start-threadjob", "call", "cmd",
+    "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "bash", "sh",
+})
+
+
 def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) -> Path | None:
     """The LiteTUI run.bat this `run` / `run.bat` word runs, or None when it
     names something else, is only read, or cannot be resolved."""
     start = match.start()
+    if _launcher_quoted_argument(command, start):
+        return None
     prefix = _PATH_TAIL.search(command[:start]).group(0)
     prefix_length = len(prefix)
     if prefix.startswith("-"):   # -FilePath:.\run.bat names the path after the colon
@@ -303,20 +383,38 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
         prefix = prefix.partition(":")[2]
     if prefix and prefix[-1] not in "\\/":
         return None   # `rerun`, `myrun.bat`: another name
+    if match.re is _CODE_LAUNCH:
+        # No new general brace boundary: only anchored richer interpreter CODE
+        # mentioning the launcher takes this D1 branch, with normal identity.
+        return _existing_owner_launcher(prefix + match.group(0), base, home)
     # The head is judged PER SEGMENT: `echo x & run.bat` runs run.bat. A `(`
     # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
     # echo `run.bat`), so it starts a segment too. A `)` ends one: in
     # `if 1==2 (echo a) else run.bat` the command is `else`'s, not echo's (P1).
-    segment = re.split(r"[;&|\n()`]", command[:start])[-1]
+    boundaries = []
+    openings = [*((m.end() - 1, None) for m in _OWNER_BOUNDARY.finditer(command[:start])),
+                *((m.end() - 1, m.start()) for m in _SWITCH_LABEL_BOUNDARY.finditer(command[:start]))]
+    for boundary, enclosing in sorted(openings, key=lambda opening: opening[0]):
+        # Label candidates are syntax-only shapes, not authoritative shell
+        # parsing. Require their enclosing brace to have been accepted already;
+        # foo{10{run}, a'1'{run} and ${1}{run} must not gain a boundary.
+        if enclosing is not None and enclosing not in boundaries:
+            continue
+        boundaries.append(boundary)
+    boundary = boundaries[-1] if boundaries else -1
+    segment = command[boundary + 1:start]
     words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
     head = next((w for w in words if w not in _WRAPPERS), None)
     if head in _READERS:
         return None   # `type run.bat`, `git diff run.bat`: read, not run
-    # A function call / argument array is not a shell command group. Otherwise
-    # ProcessStartInfo arguments such as @('run', ...) look like argv0.
-    boundary = max((command.rfind(c, 0, start) for c in ";&|\n()`"), default=-1)
-    if boundary >= 0 and command[boundary] == "(" and boundary > 0 and (
-            command[boundary - 1].isalnum() or command[boundary - 1] in "_@."):
+    # A clearly quoted function / array argument is data, not argv0. Bare
+    # words after an identifier+( remain ambiguous and are scanned fail-closed.
+    function_head = re.search(r"[\w.-]+\Z", command[:boundary]) if boundary > 0 else None
+    execution_sink = function_head is not None and function_head.group().lower() in _EXECUTION_SINKS
+    if not execution_sink and boundary >= 0 and command[boundary] == "(" and boundary > 0 and (
+            command[boundary - 1].isalnum() or command[boundary - 1] in "_@.") and (
+            re.fullmatch(r"[ \t]*[\"']", command[boundary + 1:start])) and (
+            command[start:].startswith(match.group() + command[start - 1])):
         return None
     before = segment[:-prefix_length] if prefix_length else segment
     before = before.strip(" \t\"'")
@@ -340,7 +438,12 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path) 
             position[0] in ("start-process", "invoke-item", "ii")
             and position[1:] in ([], ["-filepath"])):
         return None
-    target = _resolve(prefix + match.group(0), base, home)
+    return _existing_owner_launcher(prefix + match.group(0), base, home)
+
+
+def _existing_owner_launcher(raw: str, base: Path | None, home: Path) -> Path | None:
+    """Resolve the same literal identity for normal command and D1 code arms."""
+    target = _resolve(raw, base, home)
     if target is None:
         return None
     if target.name.lower() == "run":
