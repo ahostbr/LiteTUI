@@ -423,7 +423,13 @@ def test_interruption_at_every_publication_boundary_blocks_authority(tmp_path, m
             runtime.AgentSession.create_fresh(resolver, name='QuietHelm', agent_id=AID,
                                              backend='codex', model='fixture', thinking_level='high')
     assert directory.exists()
-    for lookup in (lambda: store.read_agent(directory), resolver.list_agents,
+    if boundary in {'link_after', 'alias_unlink', 'marker_unlink'}:
+        # Published valid metadata remains reserved, but never ready.
+        assert resolver.list_agents() == []
+    else:
+        with pytest.raises(store.StoreError):
+            resolver.list_agents()
+    for lookup in (lambda: store.read_agent(directory),
                    lambda: resolver.find_agent(agent_id=AID),
                    lambda: runtime.AgentSession.acquire_existing(resolver, agent_id=AID)):
         with pytest.raises(store.StoreError):
@@ -474,7 +480,13 @@ def test_initializing_marker_blocks_all_folder_authority_and_registration(tmp_pa
         return info
     monkeypatch.setattr(Path, 'lstat', inspected)
     try:
-        for lookup in (lambda: store.read_agent(directory), resolver.list_agents,
+        if kind in {'unreadable', 'reparse'}:
+            with pytest.raises(store.StoreError):
+                resolver.list_agents()
+        else:
+            # Valid inactive metadata reserves identity but is not launchable.
+            assert resolver.list_agents() == []
+        for lookup in (lambda: store.read_agent(directory),
                        lambda: resolver.find_agent(agent_id=AID),
                        lambda: session.authority, lambda: session.memory_root,
                        lambda: session.conversation_directory(CID),
