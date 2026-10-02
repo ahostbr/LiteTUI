@@ -260,3 +260,103 @@ async def test_local_round_boundary_never_consumes_wrong_owner_claude_input(tmp_
     assert [row["content"] for row in app.appended] == [held["content"]]
     assert app._pending_input == [later]
     assert calls == (["hook"] if hooks_enabled else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hooks_enabled", [False, True])
+async def test_real_local_tool_loop_holds_claude_head_then_allows_explicit_recovery(tmp_path, monkeypatch, hooks_enabled):
+    import copy
+
+    from test_self_compact import Stream, call
+
+    from litetui import app as app_mod
+    from litetui.claude_turn import hold_input, ledger_for, prepare_input
+
+    app = LiteTUI()
+    app._connect = lambda: None
+    app._fetch_ctx_window = lambda: None
+    app._resync_ctx_if_stale = lambda: None
+    app._maybe_autocompact = lambda: None
+    app._autocompact_due = lambda: None
+    app._kick_card_summary = lambda *args: None
+    app.jobs[:] = []
+    app.model_id = "fixture"
+    app.available_models = ["fixture"]
+    app.settings.tool_iterations = 3
+    app.settings.tool_auto_background_s = 0
+    requests, executed, hook_calls = [], [], []
+
+    async def ready(**kwargs):
+        return True
+
+    app._ensure_chat_ready = ready
+
+    async def execute(name, args):
+        executed.append(name)
+        return "probe result", True
+
+    app._execute_tool = execute
+
+    async def invoke(*args, **kwargs):
+        from litetui.lifecycle_hooks import HookResult
+        hook_calls.append("prompt hook")
+        return HookResult(True)
+
+    monkeypatch.setattr(hook_host, "invoke", invoke)
+
+    async def create(**kwargs):
+        requests.append(copy.deepcopy(kwargs["messages"]))
+        if len(requests) % 2:
+            return Stream(calls=[call(0, "probe", {})])
+        return Stream("local answer")
+
+    monkeypatch.setattr(app_mod.model_transport, "for_app", lambda app: SimpleNamespace(create=create))
+    async with app.run_test(size=(110, 40)) as pilot:
+        app._materialise_convo()
+        original_convo = app.convo_id
+        item = prepare_input(app, "previous send", "strict", "harness")
+        ledger = ledger_for(app)
+        ledger.update_delivery(item["_claude_entry"]["id"], "submitted")
+        ledger.update_delivery(item["_claude_entry"]["id"], "uncertain")
+        hold_input(app, {"content": "PRIVATE HELD CLAUDE INPUT", "source": "harness"}, "uncertain")
+        held = app._pending_input[0]
+        later = {"content": "ordinary local queued input", "source": "typed"}
+        app._pending_input.append(later)
+        evidence = ledger.file.read_bytes()
+        app._append({"role": "user", "content": "run local probe"})
+        if hooks_enabled:
+            state = Snapshot(hooks=(Hook("observe", ("prompt_before",), "unused"),))
+            monkeypatch.setattr(hook_host, "snapshot", lambda app: state)
+        await app._stream().wait()
+        await pilot.pause()
+        assert executed == ["probe"] and len(requests) == 2
+        assert app._pending_input == [held, later]
+        assert hook_calls == []
+        assert "PRIVATE HELD CLAUDE INPUT" not in str(app.conversation)
+        assert "PRIVATE HELD CLAUDE INPUT" not in str(requests)
+        assert "ordinary local queued input" not in str(requests)
+        assert any(row.get("role") == "tool" and row.get("content") == "probe result"
+                   for row in requests[1]), "the real tool-result boundary was reached"
+        assert ledger.file.read_bytes() == evidence
+
+        # Restore the original owner; only explicit recovery releases its head.
+        local_backend = app.backend
+        app._backend = SimpleNamespace(name="claude", owns_native_turns=True, session=None)
+        assert app.convo_id == original_convo
+        command(app, "resolve")
+        assert await hook_host.queued_prompt(app)
+        delivered = [row for row in app.conversation if row.get("content") == "PRIVATE HELD CLAUDE INPUT"]
+        assert len(delivered) == 1 and delivered[0]["claude_delivery"]["state"] == "prepared"
+        assert app._pending_input == [later]
+        assert hook_calls == (["prompt hook"] if hooks_enabled else [])
+
+        # An ordinary local queue still joins the next tool round normally.
+        app._backend = local_backend
+        app.conversation[:] = [row for row in app.conversation if row not in delivered]
+        await app._stream().wait()
+        await pilot.pause()
+        assert executed == ["probe", "probe"] and len(requests) == 4
+        assert app._pending_input == []
+        assert sum(row.get("content") == later["content"] for row in requests[3]) == 1
+        assert "PRIVATE HELD CLAUDE INPUT" not in str(requests)
+        assert hook_calls == (["prompt hook", "prompt hook"] if hooks_enabled else [])
