@@ -60,7 +60,8 @@ def enqueue(queue: list, item: dict, ident: str | None) -> None:
     index = 0
     for position, pending in enumerate(queue):
         if (pending.get("approval_request_id") or pending.get("_claude_entry")
-                or pending.get("_codex_entry") or pending.get("source") == "interrupted"):
+                or pending.get("_claude_segment") or pending.get("_codex_entry")
+                or pending.get("source") == "interrupted"):
             index = position + 1
     queue.insert(index, item)
     stage(ident, "queued")

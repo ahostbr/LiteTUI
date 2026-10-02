@@ -199,3 +199,41 @@ def test_structured_cli_roundtrip_uses_authoritative_writer_in_sandbox(tmp_path,
     monkeypatch.setattr(harness, "harness_disabled", lambda: True)
     assert not seat.send(APPROVER, "test", approval_request=(IDENT, APPROVER))
     assert len(argvs) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hooks_enabled", [False, True])
+async def test_approval_priority_preserves_held_owner_and_merged_before_pop_gate(
+        tmp_path, monkeypatch, hooks_enabled):
+    from test_claude_turn import app_for
+
+    from litetui.claude_turn import hold_input, prepare_input
+
+    app = app_for(tmp_path)
+    app.settings = Settings()
+    app.backend.owns_native_turns = True
+    app._stop_requested = False
+    original = prepare_input(app, "previous delivery", "strict", "harness")
+    ledger = app._claude_ledger
+    ledger.update_delivery(original["_claude_entry"]["id"], "submitted")
+    ledger.update_delivery(original["_claude_entry"]["id"], "uncertain")
+    hold_input(app, {"content": "held original owner", "source": "harness"}, "uncertain")
+    held = app._pending_input[0]
+    evidence = ledger.file.read_bytes()
+    app._chat_running = lambda: True
+    app._user_bubble = lambda *args, **kwargs: None
+    LiteTUI._deliver_inbox(app, request())
+    urgent = next(item for item in app._pending_input if item.get("approval_request_id") == IDENT)
+    assert app._pending_input[0] is held, "priority overtook a held Claude owner"
+    assert app._pending_input[1] is urgent
+
+    app.backend.name = "codex"
+    if hooks_enabled:
+        monkeypatch.setattr(hook_host, "snapshot", lambda app: SimpleNamespace(hooks=[object()], error=None))
+        assert await hook_host.queued_prompt(app) is False
+    else:
+        assert LiteTUI._deliver_queued_input(app) is False
+    assert app._pending_input == [held, urgent]
+    assert held["_claude_segment"] == ledger.selected["id"]
+    assert held["_claude_conversation"] == app.convo_id
+    assert ledger.file.read_bytes() == evidence

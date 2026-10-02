@@ -35,5 +35,16 @@ Reproducer: 80 routine messages then an approval request through real `_deliver_
 ## Held boundaries / next owner
 
 NOT DONE. No merge/push/restart/live destructive probes. Ryan end inspection outstanding.
-Leader/Sentinel must land T0245+T0250, then authorize T0333 rebase and independent combined-queue review. Current base156f7b8 intentionally lacks those pending recovery queue checks; do not merge standalone or weaken owner-blocked head handling.
+Initial hold required T0245+T0250 to land before authorized rebase and combined review. This prerequisite is now met as recorded below; independent combined review and Ryan inspection remain outstanding.
 Seconds cannot be guaranteed while native provider/compaction is blocked. Sentinel defined this card's fallback as durable spawner-inbox transport notification plus visible saved state, NOT out-of-band UI interruption or guaranteed model receipt. Slow real-use follow-up remains outside this card.
+
+## Authorized rebase / combined verification (2026-10-02)
+
+- Verified `main` exact `72706a4118abddbe6228ac6abc27d9092279db02` and original156f7b8 ancestor. Rebased d269e0e cleanly, no conflicts, to `cb2b4110aa38707e374bed9c569198fdbca01a15`.
+- Combined regression exposed a semantic collision: T0250 `hold_input` retains ownership via `_claude_segment`/`_claude_conversation` **without** `_claude_entry`. Initial T0333 priority barrier overlooked this shape. Two actual hold-input/approval regressions failed before the minimal fix: recognize `_claude_segment` as a priority barrier. Recovery files and gate logic are not edited.
+- Hooks-enabled and hooks-disabled paths now retain held owner at head, urgent request behind it, with ledger bytes/segment/conversation unchanged after a backend switch. Both exercise the real merged before-pop gates.
+- Project runner: `$env:PYTHONPATH="$PWD/src"; C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest tests/test_approval_delivery_t0333.py tests/test_message_queue.py tests/test_approval_relay_t1049b.py tests/test_approval_relay_t1049b2.py tests/test_codex_steering.py tests/test_harness_takeover_hint.py tests/test_recovery_composition.py tests/test_claude_uncertain_startup.py tests/test_compaction_busy_input.py tests/test_compaction_recovery.py tests/test_claude_compact.py -q` → **200 passed**, 19.84s. Focused T0333 file includes22 tests now.
+- System interpreter combined invocation initially failed collection (`tests.test_card_summary` shadowed by unrelated installed tests package); project venv runner resolves it without source/sys.path changes. Sandbox CLI subprocess still explicitly uses base interpreter with installed CLI.
+- Ruff on new module/test/helper PASS; mypy new module `--follow-imports=skip` PASS; harness script UTF8 **30/30 PASS**. CR-at-eol diffcheck PASS.
+- `temp-working-dir/t0333_rebased_bytes.py` confirms Claude turn/compact sources byte-identical to72706a4, and all app/hook bytes outside original T0333 insertions unchanged. `queue_ready` remains before pop in both app boundaries and hooks-enabled queued prompt.
+- No main merge, push, product restart, download, deletion, new card or scope expansion. Candidate awaits one independent combined-queue reviewer and Ryan end inspection; worker retires while waiting under Rule11e, same named seat resumable.
