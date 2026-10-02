@@ -74,7 +74,8 @@ def main() -> None:
         choices=["normal", "plan"],
         help="plan: load ls-plan-w-quizmaster and ask through ask_user_question (T558)",
     )
-    parser.add_argument("--convo", type=str, default=None, help="resume a conversation by id")
+    parser.add_argument("--agent", type=str, default=None, help="select authoritative named agent folder")
+    parser.add_argument("--convo", type=str, default=None, help="resume a conversation within the selected agent")
     parser.add_argument("--export-conversation", type=str, help="export a saved convo.jsonl without starting the app")
     parser.add_argument("--export-output", type=str, help="new Markdown file for --export-conversation")
 
@@ -105,63 +106,86 @@ def main() -> None:
         return
 
     from litetui.paths import data_root
-    from litetui.shared_state import check_data_version
+    agent_session = None
+    app = None
     try:
-        check_data_version(data_root())
-    except (ValueError, OSError) as exc:
-        parser.error(str(exc))
-
-    from litetui.app import LiteTUI, wants_ansi_fallback
-
-    app_kwargs: dict = {}
-    if not args.rpc:
-        app_kwargs["ansi_color"] = wants_ansi_fallback()
-
-    if args.system_prompt and args.system_prompt_file:
-        parser.error("--system-prompt and --system-prompt-file are mutually exclusive")
-    system_prompt = args.system_prompt
-    if args.system_prompt_file:
+        if args.agent:
+            from litetui.agent_launch_context import acquire
+            try:
+                agent_session = acquire(data_root(), args.agent, conversation_id=args.convo,
+                                        backend=args.backend, model=args.model,
+                                        thinking_level=args.reasoning_effort or args.thinking_level)
+                authority = agent_session.authority
+                args.backend, args.model = authority.backend, authority.model
+                args.thinking_level, args.reasoning_effort = authority.thinking_level, None
+            except (ValueError, OSError) as exc:
+                parser.error(str(exc))
+        from litetui.shared_state import check_data_version
         try:
-            system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
-        except OSError as exc:
-            parser.error(f"cannot read --system-prompt-file: {exc}")
-    if args.cognitive_file:
-        try:
-            architecture = Path(args.cognitive_file).read_text(encoding="utf-8")
-        except OSError as exc:
-            parser.error(f"cannot read --cognitive-file: {exc}")
-        system_prompt = (system_prompt + "\n\n" if system_prompt else "") + architecture
+            check_data_version(data_root())
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
 
-    app = LiteTUI(
-        rpc=args.rpc,
-        first_prompt=args.prompt,
-        system_prompt=system_prompt,
-        initial_model=args.model,
-        initial_backend=args.backend,
-        initial_thinking=args.reasoning_effort or args.thinking_level,
-        launch_options=launch_options,
-        tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
-        plan_mode=args.mode == "plan",
-        convo_id=args.convo,
-        **app_kwargs,
-    )
+        from litetui.app import LiteTUI, wants_ansi_fallback
 
-    from litetui.image_viewer import init_image_backend
+        app_kwargs: dict = {}
+        if not args.rpc:
+            app_kwargs["ansi_color"] = wants_ansi_fallback()
 
-    # Pre-run, before the fd-1 redirect below: the image backend bind +
-    # cell-size seed must happen while we still own the tty (their terminal
-    # replies would otherwise be read by Textual and leak into the Input).
-    init_image_backend()
+        if args.system_prompt and args.system_prompt_file:
+            parser.error("--system-prompt and --system-prompt-file are mutually exclusive")
+        system_prompt = args.system_prompt
+        if args.system_prompt_file:
+            try:
+                system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                parser.error(f"cannot read --system-prompt-file: {exc}")
+        if args.cognitive_file:
+            try:
+                architecture = Path(args.cognitive_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                parser.error(f"cannot read --cognitive-file: {exc}")
+            system_prompt = (system_prompt + "\n\n" if system_prompt else "") + architecture
 
-    if args.rpc:
-        # Import rpc first so it captures the real fd 1 via os.dup(1), then
-        # redirect the original fd 1 to stderr — Textual's escape codes go
-        # there, and only rpc_emit's duped fd carries JSONL.
-        import litetui.rpc  # noqa: F401 — side effect: captures fd 1
-        os.dup2(sys.stderr.fileno(), 1)
-        app.run(headless=True)
-    else:
-        app.run()
+        app = LiteTUI(
+            rpc=args.rpc,
+            first_prompt=args.prompt,
+            system_prompt=system_prompt,
+            initial_model=args.model,
+            initial_backend=args.backend,
+            initial_thinking=args.reasoning_effort or args.thinking_level,
+            launch_options=launch_options,
+            tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
+            plan_mode=args.mode == "plan",
+            convo_id=args.convo,
+            agent_session=agent_session,
+            **app_kwargs,
+        )
+
+        from litetui.image_viewer import init_image_backend
+
+        # Pre-run, before the fd-1 redirect below: the image backend bind +
+        # cell-size seed must happen while we still own the tty (their terminal
+        # replies would otherwise be read by Textual and leak into the Input).
+        init_image_backend()
+
+        if args.rpc:
+            # Import rpc first so it captures the real fd 1 via os.dup(1), then
+            # redirect the original fd 1 to stderr — Textual's escape codes go
+            # there, and only rpc_emit's duped fd carries JSONL.
+            import litetui.rpc  # noqa: F401 — side effect: captures fd 1
+            os.dup2(sys.stderr.fileno(), 1)
+            app.run(headless=True)
+        else:
+            app.run()
+    finally:
+        if agent_session is not None:
+            try:
+                store = getattr(app, 'store', None)
+                if store is not None:
+                    store.release()
+            finally:
+                agent_session.release()
 
 
 if __name__ == "__main__":
