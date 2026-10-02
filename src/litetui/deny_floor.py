@@ -212,13 +212,17 @@ _REDIRECT_ONTO = re.compile(r"(?<![<>=-])>{1,2}\s*[\"']?\Z")
 #: no redirect lands on the file, which is checked first.
 _JOBS_READERS = frozenset({
     "cat", "type", "gc", "get-content", "more", "less", "head", "tail", "bat",
-    "grep", "egrep", "rg", "findstr", "select-string", "sls", "wc", "git",
+    "grep", "egrep", "rg", "findstr", "select-string", "sls", "wc",
     "diff", "fc", "ls", "dir", "get-item", "gi", "get-childitem", "gci", "test-path",
     "stat", "file", "xxd", "od", "sha256sum", "get-filehash",
     "echo", "write-output", "write-host", "printf",
 })
 #: Copies read their SOURCE: only a copy whose destination is the file writes it.
 _JOBS_COPIES = frozenset({"cp", "copy", "copy-item", "cpi", "xcopy"})
+#: Git's command head does not prove a read: restore/checkout/rm/mv write paths.
+#: Unknown subcommands/options stay refused when they explicitly name the file.
+_JOBS_GIT_READERS = frozenset({"show", "diff", "status", "log", "ls-files", "ls-tree",
+                              "cat-file", "grep", "blame", "rev-parse", "check-ignore"})
 
 #: Recognize complete PowerShell here-strings, including expandable ones so
 #: literal-looking text inside an expandable body cannot gain an exemption.
@@ -392,6 +396,13 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
         onto = (param.lower().startswith("-d") or (words and words[-1].startswith("-d"))
                 or not rest)
         return target if onto else None
+    if head in {"git", "git.exe"}:
+        # Skip only the bounded cwd option; -c aliases/execution options and
+        # unrecognized forms are not evidence that a protected target is read.
+        args = re.findall(r"[^\s\"'`]+", segment)[words.index(head) + 1:]
+        while len(args) >= 2 and args[0] == "-C":
+            args = args[2:]
+        return None if args and args[0] in _JOBS_GIT_READERS else target
     if head in _JOBS_READERS:
         return None
     return target   # a move, rename, delete, editor, interpreter ...: fail closed
