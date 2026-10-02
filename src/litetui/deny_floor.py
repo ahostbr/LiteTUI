@@ -695,7 +695,13 @@ def _git_read_words(args: list[str], redirects=()) -> bool:
     if i == len(args):
         return False
     verb, operands = args[i], args[i + 1:]
-    if any(word.startswith(("--out", "-o")) for word in operands):
+    # These options can execute configured helpers rather than just read Git
+    # objects. Global config/pager/exec-path switches never pass the finite
+    # prefix grammar above; reject their operand-position spellings as well.
+    if any(word.startswith(("--out", "-o")) or word.partition("=")[0] in {
+        "--ext-diff", "--textconv", "--config", "--config-env", "--exec-path",
+        "--paginate", "--pager", "--difftool", "--gui", "--extcmd"
+    } for word in operands):
         return False
     if verb == "worktree":
         return (operands[:1] == ["list"]

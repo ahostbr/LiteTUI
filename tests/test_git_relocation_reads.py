@@ -16,6 +16,11 @@ from litetui import tool_policy as tp
     ('worktree add other', True), ('worktree remove other', True),
     ('config user.name someone', True), ('push', True),
     ('branch --list -D old', True), ('worktree list > {root}/jobs.json', True),
+    ('diff --ext-diff', True), ('diff --textconv', True),
+    ('show --ext-diff HEAD', True), ('log --textconv -p', True),
+    ('-c diff.external=program diff', True), ('--config=diff.external=program diff', True),
+    ('--exec-path=program diff', True), ('--paginate diff', True), ('difftool', True),
+    ('diff --no-ext-diff --no-textconv', False),
 ])
 def test_relocated_git_reader_and_writer_policy(tmp_path, relocation, verb, refused, tool_name):
     protected = tmp_path / 'protected'
