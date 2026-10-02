@@ -213,8 +213,8 @@ raw history stays on disk behind the marker.
 |---|---|
 | `/new` `/clear` | start a new conversation (new folder on disk) |
 | `/system <text>` | set the system prompt |
-| `/model [n]` | show or switch model |
-| `/backend` | switch engine — LM Studio or llama.cpp. The conversation survives |
+| `/model [n\|name]` | show or switch this conversation's model; startup defaults stay unchanged |
+| `/backend [--default] [name]` | switch this conversation's backend; only `--default` also changes the startup default |
 | `/load` `/unload` | put a model into memory, or free it |
 | `/modelcfg` | per-model Info / Load / Inference screen (see below) |
 | `/think [level]` | `off · minimal · low · medium · high · xhigh · unset` |
