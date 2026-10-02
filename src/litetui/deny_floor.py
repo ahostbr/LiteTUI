@@ -349,11 +349,28 @@ def write_refusal(path, workspace, home=None) -> str | None:
     return _jobs_say(target) if is_jobs_file(target) else None
 
 
+def _pure_git_read(args: str) -> bool:
+    """Finite read-only Git shape shared by both jobs guards, never head-only.
+
+    Redirects and native output flags make a nominal reader write-capable.
+    This is a bounded literal proof, not a shell or general Git option parser.
+    """
+    if re.search(r"[<>`$()]", args):
+        return False
+    words = [_unquote(word) for word in _TOKEN.findall(args)]
+    if any(word.startswith(("--out", "-o")) for word in words):
+        return False
+    return bool(re.fullmatch(
+        r"(?:--no-pager\s+|-C\s+(?:[^\s\"']+|'[^']*'|\"[^\"]*\")\s+)*"
+        r"(?:show|diff|status|log|blame|ls-files|ls-tree|rev-parse|check-ignore)"
+        r"(?:\s+[^;&|\n]*)?", args.strip()))
+
+
 def jobs_git_refusal(command, workspace, home=None) -> str | None:
     """Conservative Git schedule guard, not a shell/Git parser or a sandbox.
 
-    Git reads of a protected schedule are intentionally refused too. Relocated
-    non-pure-read commands may operate outside the shell cwd, so uncertain ones
+    Pure Git reads of a protected schedule are allowed (Ryan: destructive only).
+    Relocated non-pure-read commands may operate outside the shell cwd, so uncertain ones
     fail closed even without a jobs pathspec. This can refuse ordinary relocated
     worktree edits: use a normal cwd and literal non-schedule paths instead.
     Explicit set/export/$env:/VAR= assignments and inherited Git environment
@@ -381,6 +398,8 @@ def jobs_git_refusal(command, workspace, home=None) -> str | None:
         git = re.search(r"(?i)(?<![\w./\\-])git(?:\.exe)?(?=\s)", segment)
         if not git:
             continue
+        if _pure_git_read(segment[git.end():]):
+            continue
         args = [_unquote(word) for word in _TOKEN.findall(segment[git.end():])]
         relocating = (bool(env_assignment) or inherited_relocation
                       or any(word == "-C" or word.startswith(("--git-dir", "--work-tree"))
@@ -401,14 +420,6 @@ def jobs_git_refusal(command, workspace, home=None) -> str | None:
             if reason := write_refusal(path, base, home):
                 return reason
         if not relocating:
-            continue
-        # This is only a small positive proof for read-only commands, not a
-        # parser that rescues arbitrary global options. Unknown forms deny.
-        pure = re.fullmatch(
-            r"(?:--no-pager\s+|-C\s+(?:[^\s\"']+|'[^']*'|\"[^\"]*\")\s+)*"
-            r"(?:show|diff|status|log|ls-files|ls-tree|rev-parse|check-ignore)"
-            r"(?:\s+(?![^\s]*--out)[^;&|\n]*)?", segment[git.end():].strip())
-        if pure and not any(word.startswith("--out") for word in args):
             continue
         return _say("jobs-file", "a repo-relocating Git write may change a LiteTUI "
                     "schedule outside the shell cwd; its target is not proven safe",
@@ -437,6 +448,11 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
     """The jobs.json this mention WRITES, or None when it is another file, is
     only read, or cannot be resolved."""
     start = match.start()
+    whole_segment = (re.split(r"[;&|\n]", command[:start])[-1]
+                     + re.split(r"[;&|\n]", command[start:])[0])
+    git = re.search(r"(?i)(?<![\w./\\-])git(?:\.exe)?(?=\s)", whole_segment)
+    if git and _pure_git_read(whole_segment[git.end():]):
+        return None
     prefix = _PATH_TAIL.search(command[:start]).group(0)
     param = ""
     if prefix.startswith("-"):   # -Path:x\jobs.json, -Destination:x\jobs.json
@@ -475,8 +491,8 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
                 or not rest)
         return target if onto else None
     if head in {"git", "git.exe"}:
-        # Final T0116 ruling: even Git reads naming the protected schedule are
-        # refused. Read it with a file-read tool; no option-specific exemption.
+        # Only the shared finite proof above exempts Git reads. A reader with
+        # output/redirects and every other Git shape still meets the write rule.
         return target
     if head in _JOBS_READERS:
         return None

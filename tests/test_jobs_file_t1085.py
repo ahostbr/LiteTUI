@@ -159,13 +159,18 @@ async def test_git_explicit_schedule_writers_are_refused(tmp_path, monkeypatch, 
     assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
 
 
-@pytest.mark.parametrize("verb", ["show HEAD:", "diff -- ", "status -- ", "-C {root} diff -- "])
-def test_git_schedule_reads_are_intentionally_refused(tmp_path, monkeypatch, verb):
-    a, _ = _agent(tmp_path, monkeypatch)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["show HEAD:", "diff -- ", "status -- ", "-C {root} diff -- ",
+                                      "log -- ", "blame -- ", "ls-files -- "])
+async def test_git_schedule_reads_are_allowed(tmp_path, monkeypatch, verb):
+    a, sent = _agent(tmp_path, monkeypatch)
     verb = verb.format(root=tmp_path)
     target = "jobs.json" if verb.startswith("-C") else f"{tmp_path}/jobs.json"
     args = {"command": f"git {verb}{target}"}
-    assert seat_authority.jobs_file_refusal(a, args, tmp_path) is not None
+    assert seat_authority.jobs_file_refusal(a, args, tmp_path) is None
+    assert await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path) is None
+    assert sent == []
+    assert a._active_tool_profile == AUTONOMOUS
 
 
 FINAL_GIT_WITNESSES = [
@@ -177,8 +182,11 @@ FINAL_GIT_WITNESSES = [
     "git -C {root} clean -fx -- notes.md",  # accepted relocation friction
     "git diff --output={root}/jobs.json HEAD",
     "git log --output={root}/jobs.json",
-    "git show HEAD:{root}/jobs.json",
-    "git --no-pager -C {root} diff -- jobs.json",
+    "git show HEAD:{root}/jobs.json > {root}/jobs.json",
+    "git --no-pager -C {root} diff -- jobs.json > {root}/jobs.json",
+    "git log -o {root}/jobs.json",
+    "git log --output {root}/jobs.json",
+    "git diff --output={root}/jobs.json -- jobs.json",
 ]
 
 @pytest.mark.asyncio
@@ -197,6 +205,23 @@ async def test_final_git_guard_cross_root_witnesses(tmp_path, monkeypatch, templ
     assert sent == []
     assert seat_authority.jobs_file_refusal(_ryans(a), args, plain) is None
     assert a._active_tool_profile == AUTONOMOUS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("template", ["git show HEAD:{root}/jobs.json",
+                                      "git --no-pager -C {root} diff -- jobs.json"])
+async def test_git_cross_root_schedule_reads_are_allowed(tmp_path, monkeypatch, template):
+    a, sent = _agent(tmp_path, monkeypatch)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    (protected / ".litetui-data.json").write_text("{}")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    args = {"command": template.format(root=protected)}
+    assert seat_authority.jobs_file_refusal(a, args, plain) is None
+    assert await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=plain) is None
+    assert sent == []
 
 
 @pytest.mark.parametrize("command", ["git status", "git diff -- notes.md", "git add notes.md",
@@ -257,3 +282,42 @@ def test_git_env_submission_wide_taint_and_read_control(tmp_path, monkeypatch, n
     assignment = f"set {name}={tmp_path}"
     assert seat_authority.jobs_file_refusal(a, {"command": f"git add notes.md; {assignment}"}, tmp_path) is not None
     assert seat_authority.jobs_file_refusal(a, {"command": f"{assignment}; git status"}, tmp_path) is None
+
+
+@pytest.mark.asyncio
+async def test_ryans_manual_autonomy_choice_is_not_capped(tmp_path, monkeypatch):
+    a, sent = _agent(tmp_path, monkeypatch)
+    _ryans(a)
+    a.available_models = ["a-model"]
+    a.model_id = "a-model"
+    a._connect = lambda: None
+    a._fetch_ctx_window = lambda: None
+    a.settings.tool_policy_profile = tool_policy.STRICT
+    a._active_tool_profile = tool_policy.STRICT
+    saved = []
+    monkeypatch.setattr(m.settings_runtime, "persist_or_raise",
+                        lambda app, settings: saved.append(settings.tool_policy_profile))
+    async with a.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await pilot.press("shift+tab")
+        await pilot.pause()
+        assert a.settings.tool_policy_profile == AUTONOMOUS
+        assert a._active_tool_profile == AUTONOMOUS
+    assert saved == [AUTONOMOUS]
+    assert sent == []
+
+
+def test_ryans_scheduler_save_and_edit_remain_untouched(tmp_path, monkeypatch):
+    a, sent = _agent(tmp_path, monkeypatch)
+    _ryans(a)
+    job = scheduler.Job(prompt="first", schedule="@daily", tool_profile=AUTONOMOUS)
+    scheduler.save([job], tmp_path)
+    rows = scheduler.load(tmp_path)
+    assert rows[0].prompt == "first"
+    rows[0].prompt = "edited"
+    scheduler.save(rows, tmp_path)
+    edited = scheduler.load(tmp_path)
+    assert edited[0].prompt == "edited"
+    assert edited[0].tool_profile == AUTONOMOUS
+    assert a._active_tool_profile == AUTONOMOUS
+    assert sent == []
