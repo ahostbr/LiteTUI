@@ -118,6 +118,14 @@ def main() -> None:
     agent_session = None
     app = None
     try:
+        if args.convo and not args.agent:
+            from litetui.agent_store import AgentStore, StoreError
+            try:
+                store = AgentStore(data_root())
+                directory = store.locate_conversation(args.convo)
+                args.agent = store.find_agent(name=directory.parent.parent.name).name
+            except (StoreError, OSError) as exc:
+                parser.error(f'Owned conversation lookup refused: {exc}; pass --agent <Name>. Legacy archives are read-only.')
         if args.agent or args.create_agent:
             from litetui.agent_launch_context import acquire, create
             try:
