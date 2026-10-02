@@ -5,7 +5,10 @@ import pytest
 
 from litetui import agent_launch_context, agent_ownership, hook_host, voice_backend
 from litetui.app import LiteTUI
-from test_agent_launch_context import AID, owned, registration_host
+from test_agent_launch_context import AID, owned as owned_fixture, registration_host, root as root_fixture
+
+root = root_fixture
+owned = owned_fixture
 
 
 @pytest.mark.asyncio
