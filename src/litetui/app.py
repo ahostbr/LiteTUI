@@ -3006,6 +3006,10 @@ class LiteTUI(App):
             tool_name=name,
             shell=name.lower() if name.lower() in ("powershell", "bash") else None,
             active_conversation=getattr(self, 'convo_dir', None),
+            # Opt-in only: launcher lifecycle binding is a separate stage.
+            # AgentSession verifies ownership; never read this root from args.
+            active_agent_memory_root=(self._agent_session.memory_root
+                                      if getattr(self, '_agent_session', None) is not None else None),
             always_allow=frozenset(self.settings.tool_always_allow or ()),
             deny=frozenset(self.settings.tool_deny or ()),
             trusted_interpreters=getattr(self.settings, "tool_trusted_interpreters", ()),

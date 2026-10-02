@@ -339,6 +339,7 @@ def evaluate(
     *,
     tool_name: str = "",
     active_conversation: Path | None = None,
+    active_agent_memory_root: Path | None = None,
     always_allow: frozenset[str] = frozenset(),
     deny: frozenset[str] = frozenset(),
     shell: str | None = None,
@@ -372,7 +373,9 @@ def evaluate(
     capabilities = policy.classify(args or {}, Path(workspace).resolve(), shell=shell,
                                    trusted_interpreters=trusted_interpreters)
     if policy.classify_args is classify_write:
-        capabilities = frozenset(policy.capabilities) | frozenset(classify_write(args or {}, Path(workspace).resolve(), active_conversation=active_conversation))
+        capabilities = frozenset(policy.capabilities) | frozenset(classify_write(
+            args or {}, Path(workspace).resolve(), active_conversation=active_conversation,
+            active_agent_memory_root=active_agent_memory_root))
     names = ", ".join(sorted(capabilities))
     # 🔴 THE DENY FLOOR RUNS FIRST: before the profile, before any standing
     # rule, for every turn source. Every turn (typed, inbox, cron, goal loop,
@@ -502,24 +505,37 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def classify_write(args: Mapping[str, object], workspace: Path, *, active_conversation: Path | None = None) -> Iterable[str]:
-    """Three answers, not two: the agent's own store, the workspace, elsewhere.
+def classify_write(args: Mapping[str, object], workspace: Path, *,
+                   active_conversation: Path | None = None,
+                   active_agent_memory_root: Path | None = None) -> Iterable[str]:
+    """Narrow host-owned memory permission, never authority from tool args.
 
-    🔴 THE SELF-STORE CHECK MUST COME FIRST, because `.convos` lives INSIDE the
-    workspace — asking "is it in the workspace?" first would answer yes for
-    every self-store write and the third case would be unreachable.
-
-    The host supplies the active conversation directory. Only its memory index,
-    soul, handoff, and memories subtree qualify; unknown context grants no
-    self-store exception. Configuration and transcript remain ordinary writes.
-
-    Escapes are handled by `_resolve_path`, which resolves before either test:
-    `.convos/<id>/../../src/x.py` resolves out of the store and is classified
-    as the workspace write it actually is.
+    An agent memory root comes only from the host's validated owned AgentSession.
+    When supplied it REPLACES legacy conversation memory permission; transcripts,
+    settings, catalog and sibling conversations never become SELF_STORE. Absent
+    agent context preserves the existing legacy conversation behavior.
+    Linked/reparse agent memory paths fail closed, including ancestors. Resolution
+    and ownership checks are not a TOCTOU filesystem sandbox.
     """
     target = _resolve_path(args.get("path"), workspace)
-    if active_conversation is not None:
+    if active_agent_memory_root is not None:
+        from litetui.agent_store import StoreError, _unlinked
+        try:
+            own = _unlinked(Path(active_agent_memory_root)).resolve()
+            raw = Path(str(args.get("path") or "")).expanduser()
+            checked = _unlinked(raw if raw.is_absolute() else workspace / raw)
+            try:
+                if checked.lstat().st_nlink > 1:
+                    raise StoreError("Hardlinked agent memory is not self-store")
+            except FileNotFoundError:
+                pass
+        except (OSError, StoreError):
+            return (WORKSPACE_WRITE,) if _inside(target, workspace) else (EXTERNAL_WRITE,)
+    elif active_conversation is not None:
         own = Path(active_conversation).resolve()
+    else:
+        own = None
+    if own is not None:
         if target in {own / name for name in ('memory.md', 'soul.md', 'handoff.md')} or _inside(target, own / 'memories'):
             return (SELF_STORE,)
     return (WORKSPACE_WRITE,) if _inside(target, workspace) else (EXTERNAL_WRITE,)
