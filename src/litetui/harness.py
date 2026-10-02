@@ -334,7 +334,14 @@ class Seat:
 
     def __init__(self, agent_id: str, name: str, model: str,
                  tier: str = DEFAULT_TIER, cli: str = DEFAULT_CLI,
-                 canvas_session: str | None = None, leaf_id: str | None = None):
+                 canvas_session: str | None = None, leaf_id: str | None = None,
+                 agent_session=None):
+        self._agent_session = agent_session
+        if agent_session is not None:
+            authority = agent_session.authority  # child lease before any registration
+            if (agent_id, name) != (authority.agent_id, authority.name):
+                raise ValueError("Seat identity disagrees with owned agent")
+            model = authority.model
         self.agent_id = agent_id
         self.name = name
         self.model = model or "unknown"
@@ -364,7 +371,15 @@ class Seat:
         invisible: a heartbeat that omitted --session-pid would refresh the
         timestamp while quietly clearing the field that decides ghost-vs-live.
         """
-        return ["register",
+        strict = []
+        if self._agent_session is not None:
+            authority = self._agent_session.authority
+            if (self.agent_id, self.name) != (authority.agent_id, authority.name):
+                raise ValueError("Owned seat identity changed")
+            self.model, self.backend = authority.model, authority.backend
+            self.thinking_level = authority.thinking_level
+            strict = ["--strict-identity"]
+        return ["register", *strict,
                 "--agent-id", self.agent_id,
                 "--cli", self.cli,
                 "--model", self.model,
@@ -397,7 +412,9 @@ class Seat:
         return registered_spawner(self.agent_id)
 
     def registry_name(self, root: Path | None = None) -> str | None:
-        """Name held by this seat's agent id, independent of conversation metadata."""
+        """Owned folder truth, or legacy registry name without agent context."""
+        if self._agent_session is not None:
+            return self._agent_session.authority.name
         if harness_disabled():
             return None
         path = (root or Path.home() / ".liteharness") / "agents" / f"{self.agent_id}.json"
@@ -427,6 +444,8 @@ class Seat:
         must be the one the fleet accepted, not just the one we requested.
         """
         name = name.strip()
+        if self._agent_session is not None:
+            return name == self._agent_session.authority.name and self.registered
         if not name or not self.registered or harness_disabled():
             return False
         try:
@@ -440,7 +459,7 @@ class Seat:
         self.name = got
         return True
 
-    def _register_as(self, base: str):
+    def _register_as(self, base: str, *, include_spawner: bool = True):
         """Register under `base`, or `base-2` .. `base-9` while a LIVE agent holds it.
 
         🔴 NO --takeover (T1027). Its liveness bar is last_seen < 600 s, so it
@@ -455,7 +474,27 @@ class Seat:
 
         Returns (last CLI result, the name the registry assigned).
         """
-        argv = self._presence_argv()
+        argv = self._presence_argv(include_spawner=include_spawner)
+        if self._agent_session is not None:
+            if base != self._agent_session.authority.name:
+                raise ValueError("Owned agent cannot be renamed by registration")
+            result = self._agent_session.register_presence(lambda _: _cli(argv, timeout=30))
+            if result.returncode == 0:
+                authority = self._agent_session.authority
+                expected = {'agent_id': authority.agent_id, 'name': authority.name,
+                            'backend': authority.backend, 'model': authority.model,
+                            'thinking_level': authority.thinking_level, 'session_pid': os.getpid()}
+                receipts = [line.removeprefix('Folder-owned identity: ')
+                            for line in (result.stdout or '').splitlines()
+                            if line.startswith('Folder-owned identity: ')]
+                if len(receipts) != 1:
+                    raise ValueError("Registry did not confirm one exact owned identity")
+                receipt = json.loads(receipts[0])
+                if (not isinstance(receipt, dict) or receipt != expected
+                        or any(type(receipt.get(key)) is not type(value)
+                               for key, value in expected.items())):
+                    raise ValueError("Registry owned identity receipt disagrees with folder")
+            return result, base
         at = argv.index("--name") + 1
         got = base
         for candidate in [base] + [f"{base}-{n}" for n in range(2, 10)]:
@@ -487,23 +526,34 @@ class Seat:
 
         Failure is silent by design: a heartbeat is not news, and a poll-loop
         that reported every miss would paint the transcript. `registered` is
-        left alone -- a missed beat is not a deregistration.
+        left alone in legacy mode -- a missed beat is not a deregistration.
+        Owned mode clears stale success on failure/disable and must reestablish
+        exact folder identity before readiness can be reported again.
         """
         if not self.registered or harness_disabled():
+            if self._agent_session is not None:
+                self.registered = False
             return False
         # The monitor refreshes identity before each poll; keep this guard for
         # standalone callers so a heartbeat cannot overwrite an external rename.
-        self.refresh_name()
         try:
+            self.refresh_name()
             # Registration may have adopted a new parent since launch. An
             # omitted flag preserves that edge in cmd_register; a cached flag
             # would silently undo the adoption on every heartbeat.
-            r = _cli(self._presence_argv(include_spawner=False), timeout=30)
+            if self._agent_session is not None:
+                r, _ = self._register_as(self._agent_session.authority.name,
+                                         include_spawner=False)
+            else:
+                r = _cli(self._presence_argv(include_spawner=False), timeout=30)
             if r.returncode == 0:
-                self.name = _resolved_name(r.stdout) or self.name
+                if self._agent_session is None:
+                    self.name = _resolved_name(r.stdout) or self.name
                 return True
         except Exception:
             pass
+        if self._agent_session is not None:
+            self.registered = False  # owned mode must reestablish exact transport identity
         return False
 
     def register(self) -> bool:
@@ -518,6 +568,8 @@ class Seat:
         is TRUE. A guard that fakes registration would hide the very state it
         was added to produce.
         """
+        if self._agent_session is not None:
+            self.registered = False  # stale transport success cannot hide a failed rebind
         if harness_disabled():
             self.error = f"disabled by {NO_HARNESS_ENV}"
             return False
@@ -540,6 +592,7 @@ class Seat:
             self.registered = r.returncode == 0
             if self.registered:
                 self.name = got
+                self.error = None
             else:
                 self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
             return self.registered

@@ -215,7 +215,9 @@ class AgentSession:
 
     def register_presence(self, register: Callable[[AgentAuthority], T]) -> T:
         self._require_owned()
-        return register(self._authority)
+        result = register(self._authority)
+        self._require_owned()  # transport success cannot mask lost/changed authority
+        return result
 
     def release(self) -> None:
         self._lease.release()
