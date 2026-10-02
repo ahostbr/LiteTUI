@@ -73,9 +73,25 @@ def test_python_path_data_is_not_a_launch(shell, payload):
     ('python -c "print(1)"; C:/foreign/program.exe', tp.FOREIGN_PROCESS),
     ('python -c "print(1)"; format C:', tp.DANGEROUS),
 ])
-def test_payload_mask_never_masks_dangers_or_real_shell_launches(command, label):
+def test_payload_mask_never_masks_dangers_or_real_shell_launches(command, label, tmp_path, monkeypatch):
+    # Generic danger labels must not depend on a developer cwd containing the
+    # owner launcher. The floor also judges Path.cwd(), not only workspace.
+    monkeypatch.chdir(tmp_path)
     assert tp.danger(command, Path('E:/other'), shell='bash') == label
     assert decision(command, Path('E:/other')).action == tp.CONFIRM
+
+
+def test_opaque_python_run_at_existing_owner_cwd_preserves_deny_floor(monkeypatch):
+    from litetui import deny_floor
+    owner = deny_floor._OWNER_LAUNCHER
+    if not owner.is_file():
+        pytest.skip('actual owner launcher is absent on this host')
+    monkeypatch.chdir(owner.parent)
+    command = 'python -c "from subprocess import run; run(cmd)"'
+    assert tp.danger(command, Path('E:/other'), shell='bash') == tp.FOREIGN_PROCESS
+    result = decision(command, Path('E:/other'))
+    assert result.action == tp.DENY
+    assert 'DENY FLOOR [owner-launcher]' in result.reason
 
 
 @pytest.fixture
