@@ -343,15 +343,36 @@ async def test_real_local_tool_loop_holds_claude_head_then_allows_explicit_recov
         local_backend = app.backend
         app._backend = SimpleNamespace(name="claude", owns_native_turns=True, session=None)
         assert app.convo_id == original_convo
+        # Park the unrelated local tail while explicitly recovering Claude;
+        # the earlier assertions already prove the blocked head preserved FIFO.
+        assert app._pending_input.pop() is later
+        local_stream = app._stream
+        recovered = []
+
+        def complete_native_turn():
+            entry_id = app._claude_active_input["_claude_entry"]["id"]
+            recovered.append(entry_id)
+            ledger.update_delivery(entry_id, "submitted")
+            ledger.update_delivery(entry_id, "terminal", stop_reason="stop")
+
+        app._stream = complete_native_turn  # substitute only Claude execution
         command(app, "resolve")
-        assert await hook_host.queued_prompt(app)
+        command(app, "continue")
+        await pilot.pause()
+        for _ in range(3):
+            command(app, "continue")
+            app._flush_pending_input()
+            await pilot.pause()
         delivered = [row for row in app.conversation if row.get("content") == "PRIVATE HELD CLAUDE INPUT"]
         assert len(delivered) == 1 and delivered[0]["claude_delivery"]["state"] == "prepared"
-        assert app._pending_input == [later]
+        assert len(recovered) == 1 and app._pending_input == []
+        assert ledger.pending(item["_claude_segment"]) == []
         assert hook_calls == (["prompt hook"] if hooks_enabled else [])
 
         # An ordinary local queue still joins the next tool round normally.
         app._backend = local_backend
+        app._stream = local_stream
+        app._pending_input.append(later)
         app.conversation[:] = [row for row in app.conversation if row not in delivered]
         await app._stream().wait()
         await pilot.pause()
