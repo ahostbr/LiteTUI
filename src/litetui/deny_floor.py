@@ -365,26 +365,8 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
         # Keep an opaque, incomplete span at the bound; never erase commands.
         return [{"words": [("__opaque__", 0, 0), (command, 0, len(command))], "redirects": [],
                  "raw": command, "shell": shell, "complete": False}]
-    # Complete quoted Bash heredocs have inert bodies. Preserve source offsets
-    # while removing only literal input text, never executable outer commands.
-    executable_here = []
-    if shell == "bash":
-        original = command
-        for m in re.finditer(r"<<(-?)[ \t]*(['\"])([A-Za-z_][A-Za-z_0-9]*)\2[^\n]*\n", original):
-            ending = re.search(r"(?m)^" + (r"\t*" if m.group(1) else "") + re.escape(m.group(3)) + r"(?:\r?$)", original[m.end():])
-            if ending:
-                stop = m.end() + ending.end()
-                prefix = re.split(r"[;&|\n]", original[:m.start()])[-1].strip()
-                argv = prefix.split()
-                if argv and argv[0] in {"bash", "sh", "python", "python3", "node"}:
-                    body = original[m.end():m.end() + ending.start()]
-                    if argv[0] in {"bash", "sh"}:
-                        executable_here.extend(shell_commands(body, "bash", _depth=_depth + 1))
-                    else:
-                        executable_here.append({"words": [(argv[0], 0, 0), ("-e" if argv[0] == "node" else "-c", 0, 0), (body, 0, 0)],
-                                                "redirects": [], "raw": body, "shell": shell, "complete": True})
-                command = command[:m.end()] + " " * (stop - m.end()) + command[stop:]
-    result = executable_here
+    result = []
+    heredoc = False
     words = []
     redirects = []
     extras = []
@@ -411,7 +393,7 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
         if words or redirects:
             result.append({"words": words, "redirects": redirects,
                            "raw": command[segment_start:stop], "shell": shell,
-                           "complete": not quote and pending is None})
+                           "complete": not quote and pending is None, "heredoc": heredoc})
         result.extend(extras)
         words, redirects, extras, pending = [], [], [], None
         segment_start = stop + 1
@@ -518,7 +500,7 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
             finish(i)
             newline = command.find("\n", i)
             if newline < 0:
-                return result
+                break
             i = newline + 1
             segment_start = i
             continue
@@ -563,6 +545,37 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
                 i += 1
             segment_start = i
             continue
+        if not quote and shell == "bash" and command[i:i + 2] == "<<":
+            # Recognize the operator in the current lexical context, never a
+            # quoted outer -c payload. The actual argv here identifies its sink.
+            match = re.match(r"<<(-?)[ \t]*(['\"])([A-Za-z_][A-Za-z_0-9]*)\2", command[i:])
+            newline = command.find("\n", i)
+            if match and newline >= 0:
+                ending = re.search(r"(?m)^" + (r"\t*" if match.group(1) else "") + re.escape(match.group(3)) + r"(?:\r?$)", command[newline + 1:])
+                if ending:
+                    flush(i)
+                    argv = [word[0] for word in words]
+                    while argv and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", argv[0]):
+                        argv = argv[1:]
+                    while argv and argv[0].lower() in {"env", "sudo", "command"}:
+                        argv = argv[1:]
+                        while argv and (argv[0].startswith("-") or "=" in argv[0]):
+                            takes_value = argv[0] in {"-u", "-g", "--user", "--group", "--unset"}
+                            argv = argv[2:] if takes_value else argv[1:]
+                    head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe") if argv else ""
+                    body_start = newline + 1
+                    body_stop = body_start + ending.start()
+                    stop = body_start + ending.end()
+                    body = command[body_start:body_stop]
+                    if head in {"bash", "sh"}:
+                        extras.extend(shell_commands(body, "bash", _depth=_depth + 1))
+                    elif head in {"python", "python3", "node"}:
+                        extras.append({"words": [(head, 0, 0), ("-e" if head == "node" else "-c", 0, 0), (body, 0, 0)],
+                                       "redirects": [], "raw": body, "shell": shell, "complete": True})
+                    heredoc = True
+                    command = command[:body_start] + " " * (stop - body_start) + command[stop:]
+                    i += len(match.group(0))
+                    continue
         if not quote and ch in "<>":
             # A numeric file descriptor adjacent to > is not an argv operand.
             if start is not None and token.isdecimal() and command[start:i] == token:

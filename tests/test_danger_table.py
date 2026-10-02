@@ -625,3 +625,33 @@ def test_t0116_git_checkout_path_overwrite_asks(command):
 def test_t0116_inert_read_heredoc_payload_alone_never_asks():
     command = "cat <<'EOF'\ncd ..\nRemove-Item old\ngit push --force\nEOF"
     assert _shell(command, shell="bash").action == tp.ALLOW
+
+
+@pytest.mark.parametrize("head", ["/bin/bash", "env bash", "sudo bash"])
+def test_t0116_review_heredoc_executable_head_requests_confirmation(head):
+    command = head + " <<'EOF'\nrm old\nEOF"
+    decision = _shell(command, shell="bash")
+    print("RECEIPT", repr(command), decision.action, decision.danger)
+    assert decision.action == tp.CONFIRM
+
+
+def test_t0116_review_heredoc_unknown_shell_inert_data_never_asks():
+    command = "cat <<'EOF'\nrm old\nEOF"
+    decision = _shell(command, shell=None)
+    print("RECEIPT", repr(command), decision.action, decision.danger)
+    assert decision.action == tp.ALLOW
+
+
+def test_t0116_review_heredoc_nested_inert_cat_never_asks():
+    command = "bash -c \"cat <<'EOF'\nrm old\nEOF\n\""
+    decision = _shell(command, shell="bash")
+    print("RECEIPT", repr(command), decision.action, decision.danger)
+    assert decision.action == tp.ALLOW
+
+
+@pytest.mark.parametrize("suffix", ["", " # note"])
+def test_t0116_review_heredoc_wrapper_comment_does_not_erase_execution(suffix):
+    command = "bash -c 'rm old'" + suffix
+    decision = _shell(command, shell="bash")
+    print("RECEIPT", repr(command), decision.action, decision.danger)
+    assert decision.action == tp.CONFIRM

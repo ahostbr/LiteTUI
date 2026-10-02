@@ -404,3 +404,15 @@ async def test_t0116_jobs_small_nested_shell_shipped_host(tmp_path, monkeypatch)
     assert await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
     assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
     assert sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("head", ["/bin/bash", "env bash", "sudo bash"])
+async def test_t0116_review_heredoc_protected_writer_actual_host(tmp_path, monkeypatch, head):
+    a, sent = _agent(tmp_path, monkeypatch)
+    command = head + " <<'EOF'\nrm " + tmp_path.as_posix() + "/jobs.json\nEOF"
+    args = {"command": command}
+    result = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
+    print("RECEIPT HOST", repr(command), repr(result))
+    assert result, "protected writer allowed"
+    assert sent == []

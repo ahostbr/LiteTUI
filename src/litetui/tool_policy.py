@@ -788,8 +788,12 @@ def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_inter
     """
     # Core shell tools are Bash/PowerShell. cmd grammar is selected only by
     # an explicit cmd wrapper or proven cmd caller, not by single-quoted prose.
-    parts = deny_floor.shell_commands(command, shell) if shell else [
-        part for dialect in ("bash", "powershell") for part in deny_floor.shell_commands(command, dialect)]
+    parts = deny_floor.shell_commands(command, shell or "bash")
+    if shell is None and not any(part.get("heredoc") for part in parts):
+        parts += deny_floor.shell_commands(command, "powershell")
+    # A complete literal <<'delimiter' input form is Bash syntax, invalid PS
+    # syntax. Do not invent PS commands from its data when interpreter unknown.
+    # The mandatory floor keeps its separate conservative dialect union.
     if (any([w[0].lower() for w in part["words"][:1]] in (["sh"], ["bash"], ["iex"], ["invoke-expression"])
             for part in parts) and "|" in command
             and re.search(r"(?i)\b(?:curl|wget|iwr|invoke-webrequest)\b", command)):
