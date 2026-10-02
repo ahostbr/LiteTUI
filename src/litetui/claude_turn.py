@@ -94,7 +94,48 @@ OVERFLOW = re.compile(r"prompt is too long|context limit reached|exceed context 
 OVERFLOW_SENTENCE = ("Claude's context window is full, so this turn could not finish. LiteTUI is compacting "
                      "the conversation now; send your message again once it is done. If the compaction "
                      "itself fails, /claude new starts a fresh session.")
-MIDTURN_SENTENCE = "Context passed LiteTUI's compaction threshold mid-turn; LiteTUI compacts when this turn ends."
+MIDTURN_SENTENCE = "Context passed LiteTUI's compaction threshold mid-turn; pausing to compact, then resume."
+
+
+class ContextUnavailable(RuntimeError):
+    """Metadata read failed, not the healthy session or its unsent delivery."""
+
+
+async def measure_context(app, session):
+    """Read the serving window after model selection, before spending its budget.
+
+    Result modelUsage can include other models (subagents or a previous model).
+    Its largest window is not the window this request will run in. If this
+    read fails, refuse the send rather than retain yesterday's larger window.
+    """
+    app.ctx_max, app.ctx_loaded = None, False
+    try:
+        usage = await session.get_context_usage()
+    except Exception as exc:
+        raise ContextUnavailable(f"Claude context usage unavailable; input is held for /claude continue: {exc}") from exc
+    window = usage.get("maxTokens") if isinstance(usage, dict) else None
+    if type(window) is not int or window <= 0:
+        raise ContextUnavailable("Claude context usage omitted the effective window; input is held for /claude continue.")
+    app.ctx_max, app.ctx_loaded = window, True
+    used = usage.get("totalTokens")
+    if type(used) is int and used >= 0:
+        app.ctx_used = used
+    else:
+        app.ctx_used = None
+    app._refresh_ctx_label()
+
+
+def resume_current(app, resume):
+    """Only the interrupted input may authorize its maintenance continuation."""
+    backend, convo, segment_id, item, _ = resume
+    if app.backend is not backend or app.convo_id != convo:
+        return False
+    selected = ledger_for(app).selected
+    return (selected is not None and selected["id"] == segment_id
+            and getattr(app, "_claude_active_input", None) is item
+            and not getattr(app, "_turn_abandoned", False)
+            and not getattr(app, "_stop_requested", False)
+            and not getattr(app, "_pending_input", []))
 
 
 def after_turn(app, reason, failure, crossed):
@@ -105,7 +146,16 @@ def after_turn(app, reason, failure, crossed):
     """
     if not hasattr(app, "call_after_refresh"):
         return
-    if failure and OVERFLOW.search(failure):
+    resume = getattr(app, "_claude_compact_resume", None)
+    if resume is not None:
+        def compact_interrupted():
+            if resume_current(app, resume) and not app._chat_running():
+                app._compact_is_auto = True
+                app._handle_command("/compact")
+            else:
+                app._claude_compact_resume = None
+        app.call_after_refresh(compact_interrupted)
+    elif failure and OVERFLOW.search(failure):
         app._system(OVERFLOW_SENTENCE)
 
         def force():
@@ -187,6 +237,28 @@ def inline_images(app, content, saved=None):
     return "\n\n".join([t for t in texts if t] + notes), paths_
 
 
+class UncertainDelivery(ValueError):
+    """Admission is held until the user settles a previous Claude delivery."""
+
+
+def _hold_notice(app, item, text):
+    if item.get("_claude_hold_notice") != text:
+        item["_claude_hold_notice"] = text
+        app._system(text)
+
+
+def hold_input(app, item, refusal):
+    """Keep unsent input in memory, bound to its original conversation/segment.
+
+    No durable entry is prepared and no delivery evidence is changed. The idle
+    queue gate keeps this item held until explicit recovery; it cannot migrate.
+    """
+    segment = ledger_for(app).selected
+    held = {**item, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
+    app._pending_input.append(held)
+    _hold_notice(app, held, f"Queued Claude input is held; nothing was sent. {refusal}")
+
+
 def prepare_input(app, content, profile, source, operation_id=None):
     if not isinstance(content, str):
         raise TypeError("Claude image attachments are not enabled yet; send text instead.")
@@ -203,7 +275,7 @@ def prepare_input(app, content, profile, source, operation_id=None):
         # The same gate as below, on the segment being LEFT: once another is selected,
         # /claude status and resolve can no longer reach its uncertain entries.
         if any(e["state"] != "prepared" for e in ledger.pending(segment["id"])):
-            raise ValueError(f"The Claude session in {previous} has an uncertain delivery, so a new one in "
+            raise UncertainDelivery(f"The Claude session in {previous} has an uncertain delivery, so a new one in "
                              f"{here} was not started. Relaunch from {previous} and use /claude resolve "
                              "(or /claude continue) to settle it first; nothing was sent.")
         segment = ledger.select_segment(here)
@@ -211,33 +283,44 @@ def prepare_input(app, content, profile, source, operation_id=None):
     active = getattr(app, "_claude_active_input", {}).get("_claude_entry", {}).get("id") if app._chat_running() else None
     unresolved = [e for e in ledger.pending(segment["id"]) if e["state"] != "prepared" and e["id"] != active]
     if unresolved:
-        raise ValueError("Claude delivery is uncertain. Inspect saved history, then /claude resolve to settle it without replay, /claude continue to send what is still only prepared, or /claude new for a fresh session; no input is replayed automatically.")
+        raise UncertainDelivery("Claude delivery is uncertain. Inspect saved history, then /claude resolve to settle it without replay, /claude continue to send what is still only prepared, or /claude new for a fresh session; no input is replayed automatically.")
     entry = ledger.prepare(segment["id"], content, profile, source, operation_id=operation_id)
     return {"_claude_entry": entry, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
 
 
 def queue_ready(app, item):
-    if not item.get("_claude_entry"):
-        return True
+    if not item.get("_claude_segment"):
+        if not getattr(getattr(app, "backend", None), "owns_native_turns", False):
+            return True
+        selected = ledger_for(app).selected
+        if selected is None:
+            return True
+        # Unlabelled startup mail can already be queued before Claude admission.
+        # Bind/check it BEFORE the idle flush pops it, preserving FIFO on hold.
+        item.update(_claude_segment=selected["id"], _claude_conversation=app.convo_id)
     if (app.backend.name != "claude" or item.get("_claude_conversation") != app.convo_id):
-        app._system("Queued Claude input is held for its original conversation/session.")
+        _hold_notice(app, item, "Queued Claude input is held for its original conversation/session.")
         return False
     selected = ledger_for(app).selected
     if not selected or item["_claude_segment"] != selected["id"]:
-        app._system("Queued Claude input is held for its original session segment.")
+        _hold_notice(app, item, "Queued Claude input is held for its original session segment.")
+        return False
+    if not item.get("_claude_entry") and selected["workspace"] != launch_workspace(app):
+        _hold_notice(app, item, "Queued Claude input is held for its original workspace; relaunch there to continue.")
         return False
     if any(e["state"] != "prepared" for e in ledger_for(app).pending(selected["id"])):
-        app._system("Queued Claude input is held: an earlier delivery is uncertain; /claude status.")
+        _hold_notice(app, item, "Queued Claude input is held: an earlier delivery is uncertain; inspect /claude status, then /claude resolve and /claude continue. Nothing was sent or replayed.")
         return False
     if getattr(app.backend, "session", None) is not None and app.backend.session.lifecycle.failure:
-        app._system("Claude session failed; queued input is held, not replayed.")
+        _hold_notice(app, item, "Claude session failed; queued input is held, not replayed.")
         return False
+    item.pop("_claude_hold_notice", None)
     return True
 
 
 def accept_input(app, item):
     metadata = {key: value for key, value in item.items() if key.startswith("_claude_")}
-    if not metadata:
+    if not metadata.get("_claude_entry"):
         # T1043: an unlabelled item is recorded "unlabelled", never as an
         # attended "queued" that a later replay would inherit.
         metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source") or "unlabelled", item.get("operation_id"))
@@ -422,6 +505,8 @@ async def stream_turn(app):
     thinking = None
     thinking_text = ""
     crossed = False   # LiteTUI's compaction threshold, seen on a usage frame this turn
+    app._claude_compact_resume = None
+    interrupted_for_compact = False
     terminal = False
     submitted = False
     monitor = None
@@ -446,6 +531,21 @@ async def stream_turn(app):
         effort = effort_for(app)
         session, bridge, normalizer = await session_for(app, backend, segment, effort)
         require_current_segment()  # Startup/model control awaited; ownership may have changed.
+        await measure_context(app, session)
+        require_current_segment()
+        if getattr(app, "_autocompact_due", lambda: None)() is not None:
+            # The input never reached Claude. Keep it prepared until a summary
+            # succeeds, so a failed compact leaves /claude continue recoverable.
+            terminal = True
+            reason = "cancelled"
+            if item["_claude_entry"].get("operation_id") is not None:
+                app._system("Claude input is held unsent: context needs compaction, but this RPC operation "
+                            "cannot transfer across sessions. Inspect /claude status, then /claude new and resend "
+                            "as a NEW RPC operation_id. The old input stays saved without replay; "
+                            "/claude continue cannot reduce this session's full context.")
+            else:
+                app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, item["content"])
+            return
         ledger.update_delivery(entry_id, "submitted")
         submitted = True
         await session.query(entry_id, item["content"])
@@ -614,26 +714,17 @@ async def stream_turn(app):
                         ledger.note_cache(segment["id"], clock.used_at, app.model_id)
                         claude_cache.ensure_ticker(app)
                         app._refresh_ctx_label()
-                    if event.usage and event.usage.max_context_tokens:
-                        # WINDOW FIRST. `ctx_used` is a reactive and
-                        # `watch_ctx_used` reads `ctx_max` to render
-                        # "used/total" — assigning it first fired the watcher
-                        # against the previous window (None on the first
-                        # observation, so the footer said "unknown"), and a
-                        # reactive does not re-fire for an unchanged value.
-                        # 🔴 The window rides on the RESULT frame
-                        # (modelUsage.contextWindow); message frames carry
-                        # none. Reading it only from message frames set None
-                        # on every turn: the footer said "ctx 11,264 / ?"
-                        # (live, 2026-09-24) and LiteTUI's autocompact, which
-                        # needs a window, could never fire. Kept once known.
-                        app.ctx_max = event.usage.max_context_tokens
-                        app.ctx_loaded = True
+                    # The preflight serving window is authoritative, not
+                    # cumulative result modelUsage across unrelated models.
                     if event.usage and event.usage.source == "message":
                         app.ctx_used = event.usage.context_tokens
                         if not crossed and getattr(app, "_autocompact_due", lambda: None)() is not None:
                             crossed = True
                             app._system(MIDTURN_SENTENCE)
+                            if not app._stop_requested:
+                                interrupted_for_compact = True
+                                bridge.stop()
+                                await session.interrupt()
                     if event.usage and (event.usage.source == "message" or event.usage.max_context_tokens):
                         app._refresh_ctx_label()
                     app._rpc_emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
@@ -654,7 +745,7 @@ async def stream_turn(app):
                     terminal = True
                     reason = "error" if event.is_error or failure else (
                         ("approval" if getattr(app, "_stop_cause", None) == "approval" else "cancelled")
-                        if app._stop_requested else "stop")
+                        if app._stop_requested or interrupted_for_compact else "stop")
                     if reason == "approval":  # T1049-B2: the host reads why (Dijkstra 79e113ce (3))
                         failure = app._stop_reason
                     ledger.update_delivery(entry_id, "terminal", stop_reason=reason)
@@ -662,6 +753,9 @@ async def stream_turn(app):
                         failure = event.detail or event.text or failure or "Claude turn failed"
         if not terminal:
             raise RuntimeError("Claude ended without a terminal result; delivery is uncertain")
+    except ContextUnavailable as exc:
+        failure = str(exc)
+        reason = "error"
     except BaseException as exc:
         failure = str(exc) or type(exc).__name__
         reason = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
@@ -740,6 +834,9 @@ async def stream_turn(app):
         widget.settled = True
         app._settle_turn_stop_line(widget, started_at=started, final_tps=None, stopped=reason != "stop")
         app._emit_turn_end(reason, None, error=failure)
+        if (interrupted_for_compact and terminal and not failure
+                and not app._stop_requested and not app._turn_abandoned):
+            app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, None)
         after_turn(app, reason, failure, crossed)
 
 

@@ -104,7 +104,7 @@ need no Claude extra. Anthropic's permission requirements for offering subscript
 login in third-party products remain a separate distribution gate; a local smoke
 test is not distribution approval.
 
-**Claude owns its agent loop, tools, native context and automatic compaction.**
+**Claude owns its agent loop, tools and native context; LiteTUI owns compaction.**
 LiteTUI renders text/thinking and native activity, persists session references and
 input delivery, and supplies guarded host services through in-process MCP.
 Native calls pass mandatory `PreToolUse` policy checks; host calls pass the existing
@@ -118,8 +118,29 @@ LiteTUI dispatcher. Questions and approvals work in TUI and JSONL RPC.
 - Returning to Claude resumes the selected Claude segment. Other-provider history
   is **not** imported. Busy prompts are durably queued for their original segment.
 
+LiteTUI reads Claude's effective session window before sending, rather than treating
+all model IDs as 1M or using another model's cumulative usage. It pauses native tool
+turns at the configured auto-compaction threshold, drains the interrupted turn,
+summarises, and admits one continuation in the fresh session. Existing local-backend
+tool-loop pauses also resume once. User stop, newer input, and changed owners win;
+failed or uncertain turns are never automatically replayed. This interrupted-turn
+recovery does not enable the optional `wake_after_compact` preference: ordinary
+manual compaction still follows that preference.
+
+A failed window measurement holds the input unsent and keeps the session alive;
+`/claude continue` retries once the metadata service recovers. A preflight-held,
+non-RPC input remains prepared if summarising fails. On success, its original
+content, profile and source become a fresh prepared input, recoverable through
+`/claude continue` even if the automatic continuation is cancelled. Already delivered
+work receives a resume instruction, not a replay of the original prompt or tools.
+An RPC input with an `operation_id` is not transferred between sessions: when already
+above threshold, inspect `/claude status`, run `/claude new`, then resend as a **new**
+RPC operation ID. The old held input remains saved without replay; `/claude continue`
+cannot shrink that full session. A session already beyond its hard limit may also
+refuse the summary request; no success or automatic recovery is claimed in that case.
+
 Native agents/background launches, image attachments, host goal-loop followups,
-legacy subagent/summary calls, manual `/compact`, raw native slash passthrough and
+legacy subagent/summary calls, raw native slash passthrough and
 local loading/context/sampling controls are not enabled. Unsupported calls are
 refused rather than sent through an OpenAI fallback. Unknown context/usage remains
 unknown; cumulative cost is not described as per-turn cost.
