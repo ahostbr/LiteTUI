@@ -2399,6 +2399,9 @@ class LiteTUI(App):
         await super()._shutdown()
 
     async def on_unmount(self) -> None:
+        local_rpc = getattr(self, '_local_rpc', None)
+        if local_rpc is not None:
+            await local_rpc.close()
         self._stop_footer_sampler()
         from litetui import voice_backend
         voice_backend.stop()
@@ -2537,6 +2540,12 @@ class LiteTUI(App):
                 await asyncio.to_thread(self.seat.claim_name, self._resumed_seat_name)
             self._refresh_ctx_label()
         if ok:
+            from litetui.local_rpc import LocalRpc
+            self._local_rpc = LocalRpc(self)
+            try:
+                await self._local_rpc.start()
+            except Exception as exc:
+                self._system(f'Local CLI attachment unavailable: {type(exc).__name__}')
             self._system(
                 f"harness seat online · {self.seat.name} · {self.seat.agent_id[:8]}"
             )

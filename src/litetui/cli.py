@@ -28,6 +28,11 @@ def main() -> None:
         print(f"litetui {__version__}")
         return
 
+    if sys.argv[1:2] == ["--capabilities"]:
+        from litetui.model_capabilities import main as capabilities_main
+        capabilities_main(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(
         prog="litetui",
         description="LiteTUI — a terminal interface for local LLMs",
