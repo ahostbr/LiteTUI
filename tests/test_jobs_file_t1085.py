@@ -323,6 +323,18 @@ def test_ryans_scheduler_save_and_edit_remain_untouched(tmp_path, monkeypatch):
     assert sent == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["Set-Content", "Add-Content"])
+async def test_quoted_separator_writer_is_refused_by_shipped_gate(tmp_path, monkeypatch, verb):
+    a, sent = _agent(tmp_path, monkeypatch)
+    args = {"command": f'{verb} -Value "x;git status --porcelain" -Path {tmp_path}/jobs.json'}
+    denied = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
+    assert denied, "writer was allowed"
+    assert sent == []
+    assert a._active_tool_profile == AUTONOMOUS
+    assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
+
+
 GIT_PAYLOAD_WRITERS = [
     'Set-Content {root}/jobs.json "git status --porcelain"',
     'Add-Content {root}/jobs.json "git status --porcelain"',
@@ -344,3 +356,51 @@ async def test_writer_payload_cannot_acquire_git_reader_exemption(tmp_path, monk
     assert sent == []
     assert a._active_tool_profile == AUTONOMOUS
     assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
+
+
+T0116_LITERAL_WRITERS = [
+    'cd . > {root}/jobs.json',
+    'echo x >& {root}/jobs.json',
+    '(rm {root}/jobs.json)',
+    'echo x > >(tee {root}/jobs.json)',
+    'cat <(rm {root}/jobs.json)',
+    "rm $'{root}/jobs.json'",
+    'git -C{root} reset --hard',
+    'bash -c "rm {root}/jobs.json"',
+]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("template", T0116_LITERAL_WRITERS)
+async def test_t0116_literal_boundary_writers_shipped_gate(tmp_path, monkeypatch, template):
+    a, sent = _agent(tmp_path, monkeypatch)
+    args = {"command": template.format(root=tmp_path.as_posix())}
+    denied = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
+    assert denied, "literal writer was allowed"
+    assert sent == []
+    assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
+
+
+@pytest.mark.asyncio
+async def test_t0116_named_copy_read_write_owner_matrix(tmp_path, monkeypatch):
+    a, sent = _agent(tmp_path, monkeypatch)
+    read = {"command": "Copy-Item -Destination backup.json -Path jobs.json"}
+    assert await a._authorize_action("powershell", read, tool_policy.SHELL_POLICY, workspace=tmp_path) is None
+    write = {"command": "Copy-Item -Path backup.json -Destination jobs.json"}
+    refused = await a._authorize_action("powershell", write, tool_policy.SHELL_POLICY, workspace=tmp_path)
+    assert refused and "T1085" in refused[0]
+    assert seat_authority.jobs_file_refusal(_ryans(a), write, tmp_path) is None
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_t0116_jobs_small_nested_shell_shipped_host(tmp_path, monkeypatch):
+    import shlex
+    a, sent = _agent(tmp_path, monkeypatch)
+    command = f"rm {tmp_path.as_posix()}/jobs.json"
+    for _ in range(3):
+        command = "bash -c " + shlex.quote(command)
+    assert len(command) < 4096
+    args = {"command": command}
+    assert await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
+    assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
+    assert sent == []

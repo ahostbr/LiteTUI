@@ -53,9 +53,8 @@ Four rules, all about what the command TARGETS, never about how it is spelled:
                           is not. `write_refusal` judges a Write/Edit tool's path
                           by this rule ALONE. LiteTUI passes `jobs=False`: there the
                           rule is seat-dependent (its seat_authority), because the
-                          user's own seat may write its schedule. Windows
-                          Git invocations naming the protected schedule are refused
-                          even for reads; use a file-read tool. Relocated Git writers
+                          user's own seat may write its schedule. Literal Git reads of the protected schedule are allowed;
+                          redirects and native output options defeat that exemption. Relocated Git writers
                           with uncertain targets are refused conservatively. Windows
                           aliases of the name (`jobs.json::$DATA`, `:x`, a trailing
                           dot or space) are the same file (canonical_name, A1).
@@ -88,8 +87,7 @@ execution sinks and ambiguous expression contexts remain scanned; this is a
 small conservative allowlist, not a shell parser or a general quotation filter.
 The jobs-file ceiling is the same shape: a path in a variable, a write from
 inside a script file or through a reader's own exec feature, an 8.3 short name,
-an admin share or a \\\\?\\ prefix, a quoted path containing spaces (the path
-tail stops at the space, as for the launcher), a link made to jobs.json BEFORE this rule was
+an admin share or a \\\\?\\ prefix, a link made to jobs.json BEFORE this rule was
 live, a data root known only to another process's environment, and writers that
 are neither hooked agents nor LiteTUI seats (a Codex CLI seat, a plain
 subprocess). A data root whose LiteTUI never ran carries no marker, and no
@@ -349,43 +347,318 @@ def write_refusal(path, workspace, home=None) -> str | None:
     return _jobs_say(target) if is_jobs_file(target) else None
 
 
-def _pure_git_read(args: str) -> bool:
-    """Finite read-only Git shape shared by both jobs guards, never head-only.
+def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -> list[dict]:
+    """Bounded literal argv/control view, shared by the floor and prompt policy.
 
-    Redirects and native output flags make a nominal reader write-capable.
-    This is a bounded literal proof, not a shell or general Git option parser.
+    Quotes protect separators, not executable substitutions. Bash backslashes,
+    PowerShell backticks/doubled single quotes and cmd carets are distinct. An
+    unknown interpreter is the conservative union of those interpretations.
+    This does not resolve variables, aliases, scripts or eval into runtime effects.
+    Each token retains its source span; redirections are separate from argv.
     """
-    if re.search(r"[<>`$()]", args):
+    if shell not in {"bash", "powershell", "cmd"}:
+        result = []
+        for dialect in ("bash", "powershell", "cmd"):
+            result.extend(shell_commands(command, dialect, _depth=_depth))
+        return result
+    if _depth >= 16:
+        # Keep an opaque, incomplete span at the bound; never erase commands.
+        return [{"words": [("__opaque__", 0, 0), (command, 0, len(command))], "redirects": [],
+                 "raw": command, "shell": shell, "complete": False}]
+    # Complete quoted Bash heredocs have inert bodies. Preserve source offsets
+    # while removing only literal input text, never executable outer commands.
+    executable_here = []
+    if shell == "bash":
+        original = command
+        for m in re.finditer(r"<<(-?)[ \t]*(['\"])([A-Za-z_][A-Za-z_0-9]*)\2[^\n]*\n", original):
+            ending = re.search(r"(?m)^" + (r"\t*" if m.group(1) else "") + re.escape(m.group(3)) + r"(?:\r?$)", original[m.end():])
+            if ending:
+                stop = m.end() + ending.end()
+                prefix = re.split(r"[;&|\n]", original[:m.start()])[-1].strip()
+                argv = prefix.split()
+                if argv and argv[0] in {"bash", "sh", "python", "python3", "node"}:
+                    body = original[m.end():m.end() + ending.start()]
+                    if argv[0] in {"bash", "sh"}:
+                        executable_here.extend(shell_commands(body, "bash", _depth=_depth + 1))
+                    else:
+                        executable_here.append({"words": [(argv[0], 0, 0), ("-e" if argv[0] == "node" else "-c", 0, 0), (body, 0, 0)],
+                                                "redirects": [], "raw": body, "shell": shell, "complete": True})
+                command = command[:m.end()] + " " * (stop - m.end()) + command[stop:]
+    result = executable_here
+    words = []
+    redirects = []
+    extras = []
+    token = ""
+    start = None
+    quote = ""
+    pending = None
+    segment_start = 0
+
+    def flush(stop):
+        nonlocal token, start, pending
+        if start is not None:
+            word = (token, start, stop)
+            if pending is not None:
+                redirects.append((pending, word))
+                pending = None
+            else:
+                words.append(word)
+        token, start = "", None
+
+    def finish(stop):
+        nonlocal words, redirects, extras, segment_start, pending
+        flush(stop)
+        if words or redirects:
+            result.append({"words": words, "redirects": redirects,
+                           "raw": command[segment_start:stop], "shell": shell,
+                           "complete": not quote and pending is None})
+        result.extend(extras)
+        words, redirects, extras, pending = [], [], [], None
+        segment_start = stop + 1
+
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        # Single quotes are ordinary characters in cmd.exe.
+        if quote == "'":
+            if ch == "'":
+                if shell == "powershell" and command[i:i + 2] == "''":
+                    token += "'"
+                    i += 2
+                    continue
+                quote = ""
+            else:
+                token += ch
+            i += 1
+            continue
+        escape = (shell == "bash" and ch == "\\" and
+                  (not quote or (i + 1 < len(command) and command[i + 1] in '$`"\\\n')))
+        escape |= shell == "powershell" and ch == "`"
+        escape |= shell == "cmd" and ch == "^" and not quote
+        if escape and i + 1 < len(command):
+            if start is None:
+                start = i
+            if command[i + 1] != "\n":
+                token += command[i + 1]
+            i += 2
+            continue
+        # Bash ANSI-C quotes are literal decoded strings, not variables.
+        if shell == "bash" and command[i:i + 2] == "$'" and not quote:
+            if start is None:
+                start = i
+            j = i + 2
+            value = ""
+            while j < len(command) and command[j] != "'":
+                if command[j] == "\\" and j + 1 < len(command):
+                    m = re.match(r"\\(?:x[0-9a-fA-F]{1,2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})", command[j:])
+                    if m:
+                        digits = m.group(0)[2:] if m.group(0)[1] in "xuU" else m.group(0)[1:]
+                        try:
+                            value += chr(int(digits, 16 if m.group(0)[1] in "xuU" else 8))
+                        except ValueError:
+                            value += m.group(0)
+                        j += len(m.group(0))
+                        continue
+                    value += {"n": "\n", "r": "\r", "t": "\t"}.get(command[j + 1], command[j + 1])
+                    j += 2
+                    continue
+                value += command[j]
+                j += 1
+            token += value
+            if j == len(command):
+                quote = "'"
+            i = min(j + 1, len(command))
+            continue
+        if ch == '"' or (ch == "'" and shell != "cmd"):
+            if start is None:
+                start = i
+            if not quote:
+                quote = ch
+            elif quote == ch:
+                quote = ""
+            else:
+                token += ch
+            i += 1
+            continue
+        # Executable substitutions, including inside double quotes. Find their
+        # matching boundary with this dialect's quotes/escapes, not raw split.
+        process_substitution = shell == "bash" and not quote and command[i:i + 2] in {"<(", ">("}
+        substitution = (command[i:i + 2] == "$(" and shell != "cmd") or process_substitution
+        backtick = ch == "`" and shell == "bash"
+        if substitution or backtick:
+            begin = i + (2 if substitution else 1)
+            j, level, inner_quote = begin, 1, ""
+            while j < len(command):
+                c = command[j]
+                if ((shell == "bash" and c == "\\" and inner_quote != "'")
+                        or (shell == "powershell" and c == "`")):
+                    j += 2
+                    continue
+                if inner_quote:
+                    if c == inner_quote:
+                        inner_quote = ""
+                elif c in "\"'":
+                    inner_quote = c
+                elif backtick and c == "`":
+                    break
+                elif substitution and c == "(":
+                    level += 1
+                elif substitution and c == ")":
+                    level -= 1
+                    if level == 0:
+                        break
+                j += 1
+            extras.extend(shell_commands(command[begin:j], shell, _depth=_depth + 1))
+            if start is None:
+                start = i
+            token += command[i:min(j + 1, len(command))]
+            i = min(j + 1, len(command))
+            continue
+        if not quote and ch == "#" and shell != "cmd" and start is None:
+            finish(i)
+            newline = command.find("\n", i)
+            if newline < 0:
+                return result
+            i = newline + 1
+            segment_start = i
+            continue
+        if not quote and shell == "powershell" and ch == "{" and re.fullmatch(r"\s*&\s*", command[segment_start:i]):
+            # Literal invoked scriptblock. Data scriptblocks passed to an output
+            # command do not gain executable meaning from their spelling.
+            level, j = 1, i + 1
+            inner_quote = ""
+            while j < len(command):
+                c = command[j]
+                if c == "`":
+                    j += 2
+                    continue
+                if inner_quote:
+                    if c == inner_quote:
+                        inner_quote = ""
+                elif c in "\"'":
+                    inner_quote = c
+                elif c == "{":
+                    level += 1
+                elif c == "}":
+                    level -= 1
+                    if not level:
+                        break
+                j += 1
+            extras.extend(shell_commands(command[i + 1:j], shell, _depth=_depth + 1))
+            i = min(j + 1, len(command))
+            continue
+        if not quote and ch in "(){}" and (shell != "powershell" or ch in "()"):
+            finish(i)
+            i += 1
+            segment_start = i
+            continue
+        if not quote and ch in ("|&\n\r" if shell == "cmd" else ";|&\n\r"):
+            # PowerShell's invocation operator is not a separator.
+            if ch == "&" and shell == "powershell" and not words and start is None:
+                i += 1
+                continue
+            finish(i)
+            i += 1
+            while i < len(command) and command[i] == ch and ch in "|&":
+                i += 1
+            segment_start = i
+            continue
+        if not quote and ch in "<>":
+            # A numeric file descriptor adjacent to > is not an argv operand.
+            if start is not None and token.isdecimal() and command[start:i] == token:
+                token, start = "", None
+            flush(i)
+            j = i + 1
+            while j < len(command) and command[j] == ch:
+                j += 1
+            # Descriptor duplication does not open a file. Bash >&file does.
+            op = command[i:j]
+            if j < len(command) and command[j] == "&":
+                j += 1
+                m = re.match(r"(?:[0-9]+|-)(?=$|[\s;&|])", command[j:])
+                if m:
+                    i = j + len(m.group(0))
+                    continue
+                op += "&"
+            pending = op
+            i = j
+            continue
+        if not quote and ch.isspace():
+            flush(i)
+        else:
+            if start is None:
+                start = i
+            token += ch
+        i += 1
+    finish(len(command))
+    # Only actual shell heads may give -c/-Command//c executable meaning.
+    expanded = []
+    for part in result:
+        argv = [word[0] for word in part["words"]]
+        if not argv:
+            expanded.append(part)
+            continue
+        head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        dialect = {"bash": "bash", "sh": "bash", "pwsh": "powershell",
+                   "powershell": "powershell", "cmd": "cmd"}.get(head)
+        option = None
+        if dialect:
+            n = 1
+            while n < len(argv):
+                word = argv[n].lower()
+                wanted = {"bash": {"-c"}, "powershell": {"-c", "-command"}, "cmd": {"/c", "/k"}}[dialect]
+                if word in wanted:
+                    option = n
+                    break
+                if word == "--" or not word.startswith("/" if dialect == "cmd" else "-"):
+                    break
+                if dialect == "powershell" and word in {"-file", "-f", "-encodedcommand", "-enc"}:
+                    break
+                if dialect == "powershell" and word in {"-executionpolicy", "-ep", "-workingdirectory"}:
+                    n += 1
+                n += 1
+        if dialect and option is not None and option + 1 < len(argv):
+            payload = argv[option + 1] if dialect == "bash" else " ".join(argv[option + 1:])
+            expanded.extend(shell_commands(payload, dialect, _depth=_depth + 1))
+            # Outer redirection still writes in the caller's cwd.
+            if part["redirects"]:
+                expanded.append({**part, "words": []})
+        else:
+            expanded.append(part)
+    return expanded
+
+
+def _git_read_words(args: list[str], redirects=()) -> bool:
+    """Finite literal Git readers; an output option/redirect defeats the waiver."""
+    if redirects or any(word.startswith(("--out", "-o")) for word in args):
         return False
-    words = [_unquote(word) for word in _TOKEN.findall(args)]
-    if any(word.startswith(("--out", "-o")) for word in words):
-        return False
-    return bool(re.fullmatch(
-        r"(?:--no-pager\s+|-C\s+(?:[^\s\"']+|'[^']*'|\"[^\"]*\")\s+)*"
-        r"(?:show|diff|status|log|blame|ls-files|ls-tree|rev-parse|check-ignore)"
-        r"(?:\s+[^;&|\n]*)?", args.strip()))
+    i = 0
+    while i < len(args):
+        if args[i] == "--no-pager":
+            i += 1
+        elif args[i] == "-C" and i + 1 < len(args):
+            i += 2
+        else:
+            break
+    return i < len(args) and args[i] in {
+        "show", "diff", "status", "log", "blame", "ls-files", "ls-tree", "rev-parse", "check-ignore"
+    } and not any(re.search(r"[$`()<>]", word) for word in args)
 
 
-def jobs_git_refusal(command, workspace, home=None) -> str | None:
-    """Conservative Git schedule guard, not a shell/Git parser or a sandbox.
+def jobs_git_refusal(command, workspace, home=None, *, shell=None) -> str | None:
+    """Protected schedule Git writes; actual command heads alone get read waivers.
 
-    Pure Git reads of a protected schedule are allowed (Ryan: destructive only).
-    Relocated non-pure-read commands may operate outside the shell cwd, so uncertain ones
-    fail closed even without a jobs pathspec. This can refuse ordinary relocated
-    worktree edits: use a normal cwd and literal non-schedule paths instead.
-    Explicit set/export/$env:/VAR= assignments and inherited Git environment
-    paths are covered; variable indirection, scripts, aliases and eval are not.
+    Relocated writes retain the conservative guard. This is literal syntax
+    classification, not proof about aliases, variables or a script's effects.
     """
     if not isinstance(command, str):
         command = " ".join(map(str, command or ()))
     home = Path(home) if home is not None else Path.home()
     base = Path(workspace)
-    # A shell assignment can affect a later Git segment. This submission-wide
-    # taint intentionally refuses writers even when the assignment names a
-    # nonprotected path; only the finite pure-read proof below is exempt.
-    env_assignment = re.search(
-        r'(?im)(?:^|[;&|\r\n])\s*(?:(?:set|export)\s+["\']?)?'
-        r'(?:\$env:)?(?:GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)\s*=', command)
+    parts = shell_commands(command, shell)
+    env_assignment = any(re.match(
+        r'(?i)^(?:(?:set|export)\s+)?(?:\$env:)?(?:GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)\s*=',
+        " ".join(w[0] for w in part["words"])) for part in parts)
     inherited_relocation = False
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
         value = os.environ.get(name)
@@ -394,116 +667,107 @@ def jobs_git_refusal(command, workspace, home=None) -> str | None:
                                       for folder in (target, *target.parents)):
             inherited_relocation = True
             break
-    for segment in re.split(r"[;&|\n]", command):
-        git = re.match(r"(?i)^\s*git(?:\.exe)?(?=\s)", segment)
-        command_head = git is not None
-        if not git:
-            # An explicit Git environment prefix remains write-tainted, but
-            # cannot acquire a command-head reader exemption.
-            git = re.match(
-                r"(?i)^\s*(?:(?:GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)="
-                r"(?:[^\s\"']+|'[^']*'|\"[^\"]*\")\s+)+git(?:\.exe)?(?=\s)", segment)
-        if not git:
+    for part in parts:
+        words = [w[0] for w in part["words"]]
+        while words and re.match(r"(?i)^(?:GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)=", words[0]):
+            words = words[1:]
+        if not words or words[0].replace("\\", "/").rsplit("/", 1)[-1].lower() not in {"git", "git.exe"}:
             continue
-        if command_head and _pure_git_read(segment[git.end():]):
+        args = words[1:]
+        if part["complete"] and _git_read_words(args, part["redirects"]):
             continue
-        args = [_unquote(word) for word in _TOKEN.findall(segment[git.end():])]
-        relocating = (bool(env_assignment) or inherited_relocation
-                      or any(word == "-C" or word.startswith(("--git-dir", "--work-tree"))
+        relocating = (env_assignment or inherited_relocation
+                      or any(word.startswith(("-C", "--git-dir", "--work-tree"))
                              for word in args)
-                      or re.search(r"(?i)core\.worktree|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE", segment))
-        # No Git exemption for a protected schedule argument, including native
-        # --output= paths or revision:path spellings. Quoted argv stays a word.
-        for word in args:
+                      or any(re.search(r"(?i)core\.worktree|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE", word)
+                             for word in args))
+        # Shell redirects are NOT Git operands. Non-Git reason routing stays
+        # with jobs_write_target/T1085, even when the payload happens to say git.
+        targets = args + [word[0] for op, word in part["redirects"] if op.startswith(">")]
+        for word in targets:
             path = word.partition("=")[2] if "=" in word else word
             if not _JOBS.search(path):
                 continue
             if relocating:
-                return _say("jobs-file", "a relocated Git invocation names jobs.json; "
+                return _say("jobs-file", "a relocated Git write names jobs.json; "
                             "its schedule target cannot be proven outside a data root",
                             "Read schedules with a file-read tool instead.")
             if ":" in path and not re.match(r"^[A-Za-z]:", path):
-                path = path.partition(":")[2]  # revision:path
+                path = path.partition(":")[2]
             if reason := write_refusal(path, base, home):
                 return reason
-        if not relocating:
-            continue
-        return _say("jobs-file", "a repo-relocating Git write may change a LiteTUI "
-                    "schedule outside the shell cwd; its target is not proven safe",
-                    "Use a normal working directory and literal non-schedule paths instead.")
+        if relocating:
+            return _say("jobs-file", "a repo-relocating Git write may change a LiteTUI "
+                        "schedule outside the shell cwd; its target is not proven safe",
+                        "Use a normal working directory and literal non-schedule paths instead.")
     return None
 
 
-def jobs_write_target(command, workspace, home=None) -> Path | None:
-    """The protected jobs.json a shell command writes, or None (T1085)."""
+def jobs_write_target(command, workspace, home=None, *, shell=None) -> Path | None:
+    """Protected schedule write target, using real argv and control boundaries."""
     if not isinstance(command, str):
         command = " ".join(map(str, command or ()))
     home = Path(home) if home is not None else Path.home()
-    base: Path | None = Path(workspace)
-    steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
-                    *((m.start(), m) for m in _JOBS.finditer(command))],
-                   key=lambda step: step[0])
-    for _, match in steps:
-        if match.re is _CD:
-            base = _cd_target(command[match.end():], base, home)
-        elif target := _jobs_write(command, match, base, home):
-            return target
+    # Unknown shells are independent interpretations, not three consecutive cwd changes.
+    dialects = (shell,) if shell in {"bash", "powershell", "cmd"} else ("bash", "powershell", "cmd")
+    for dialect in dialects:
+        base = Path(workspace)
+        for part in shell_commands(command, dialect):
+            words = [w[0] for w in part["words"]]
+            head = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower() if words else ""
+            for op, word in part["redirects"]:
+                if op.startswith(">"):
+                    target = _resolve(dealias(word[0]), base, home)
+                    if is_jobs_file(target):
+                        return target
+            if head in {"cd", "chdir", "pushd", "set-location", "sl", "push-location"}:
+                args = [word for word in words[1:] if word.lower() not in {"/d", "-path", "-literalpath"}]
+                if args:
+                    base = _resolve(args[0], base, home)
+                continue
+            if not words or head in _JOBS_READERS:
+                continue
+            args = words[1:]
+            target_base = base
+            if head in {"git", "git.exe"}:
+                if part["complete"] and _git_read_words(args, part["redirects"]):
+                    continue
+                for n, word in enumerate(args[:-1]):
+                    if word == "-C":
+                        target_base = _resolve(args[n + 1], target_base, home)
+                    elif word.startswith("-C") and len(word) > 2:
+                        target_base = _resolve(word[2:], target_base, home)
+            for n, word in enumerate(args):
+                path = word
+                param = ""
+                if word.startswith("-") and ":" in word:
+                    param, _, path = word.partition(":")
+                elif word.startswith("-") and "=" in word:
+                    _, _, path = word.partition("=")
+                # Literal paths retain spaces. Embedded interpreter code keeps
+                # the historical finite path scan (no inner-language execution).
+                matches = list(_JOBS.finditer(path))
+                for match in matches:
+                    if match.end() == len(path) and match.start() >= 0:
+                        raw = path
+                    else:
+                        prefix = _PATH_TAIL.search(path[:match.start()]).group(0)
+                        if prefix and prefix[-1] not in "\\/":
+                            continue
+                        raw = prefix + "jobs.json"
+                    target = _resolve(dealias(raw), target_base, home)
+                    if not is_jobs_file(target):
+                        continue
+                    if head in _JOBS_COPIES:
+                        previous = args[n - 1].lower() if n else ""
+                        named_source = param.lower() in {"-path", "-literalpath"} or previous in {"-path", "-literalpath"}
+                        named_dest = param.lower().startswith("-d") or previous.startswith("-d")
+                        has_named_dest = any(a.lower().startswith("-destination") for a in args)
+                        destination = named_dest or (not named_source and not has_named_dest and n == len(args) - 1)
+                        if not destination:
+                            continue
+                    return target
     return None
-
-
-def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) -> Path | None:
-    """The jobs.json this mention WRITES, or None when it is another file, is
-    only read, or cannot be resolved."""
-    start = match.start()
-    whole_segment = (re.split(r"[;&|\n]", command[:start])[-1]
-                     + re.split(r"[;&|\n]", command[start:])[0])
-    prefix = _PATH_TAIL.search(command[:start]).group(0)
-    param = ""
-    if prefix.startswith("-"):   # -Path:x\jobs.json, -Destination:x\jobs.json
-        if ":" not in prefix:
-            return None
-        param, _, prefix = prefix.partition(":")
-    if prefix and prefix[-1] not in "\\/":
-        return None   # `myjobs.json`: another name
-    before = command[:start - len(prefix)]
-    if param:
-        before = before[:-(len(param) + 1)]
-    redirect = _REDIRECT_ONTO.search(before)
-    segment = re.split(r"[;&|\n()`]", before)[-1]
-    tokens = [_unquote(word) for word in _TOKEN.findall(segment)]
-    words = [word.lower() for word in tokens]
-    head = next((word for word in words if word not in _WRAPPERS), None)
-    git_args = []
-    target_base = base
-    if head in {"git", "git.exe"} and not redirect:
-        git_args = tokens[words.index(head) + 1:]
-        # Git applies each literal -C relative to the previous one, not the
-        # shell cwd. Shell redirection remains relative to the shell cwd.
-        while len(git_args) >= 2 and git_args[0] == "-C":
-            if git_args[1]:
-                target_base = _resolve(git_args[1], target_base, home)
-            git_args = git_args[2:]
-    target = _resolve(prefix + "jobs.json", target_base, home)  # any alias: same file
-    if not is_jobs_file(target):
-        return None
-    if redirect:
-        return target
-    if head in _JOBS_COPIES:
-        after = re.split(r"[;&|\n()`]", command[match.end():])[0]
-        rest = [w for w in re.findall(r"[^\s\"'`]+", after) if not w.startswith(("-", "/"))]
-        onto = (param.lower().startswith("-d") or (words and words[-1].startswith("-d"))
-                or not rest)
-        return target if onto else None
-    if head in {"git", "git.exe"}:
-        # Writer/redirect recognition above wins. Only an actual Git command
-        # head, never an argument or payload, may use the shared reader proof.
-        git = re.match(r"(?i)^\s*git(?:\.exe)?(?=\s)", whole_segment)
-        if git and _pure_git_read(whole_segment[git.end():]):
-            return None
-        return target
-    if head in _JOBS_READERS:
-        return None
-    return target   # a move, rename, delete, editor, interpreter ...: fail closed
 
 
 def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = None) -> str | None:
@@ -516,9 +780,9 @@ def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = Non
         command = " ".join(map(str, command or ()))
     workspace = Path(workspace)
     home = Path(home) if home is not None else Path.home()
-    if jobs and (reason := jobs_git_refusal(command, workspace, home)):
+    if jobs and (reason := jobs_git_refusal(command, workspace, home, shell=shell)):
         return reason
-    if jobs and (target := jobs_write_target(command, workspace, home)):
+    if jobs and (target := jobs_write_target(command, workspace, home, shell=shell)):
         return _jobs_say(target)
     base: Path | None = workspace   # where relative targets resolve; None = unknown
     literal_data = _literal_here_data(command) if shell == "powershell" else []

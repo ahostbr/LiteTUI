@@ -4,7 +4,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from litetui import settings, tool_policy as tp, trusted_executables as te
+from litetui import settings
+from litetui import tool_policy as tp
+from litetui import trusted_executables as te
 
 WORKSPACES = [Path(p) for p in ('E:/SAS/ShadowsAndShurikens', 'C:/Projects/LiteSuite',
                               'C:/Projects/LiteTUI', 'C:/Projects', 'C:/Users/Ryan')]
@@ -35,15 +37,10 @@ def test_reference_matrix_baseline_and_configured(workspace, name, monkeypatch):
     monkeypatch.setattr(te, 'is_installed_tool', lambda path: path == system)
     # Corpus fixture only: exact explicit user identity, not a production path rule.
     monkeypatch.setattr(te, '_unlinked_absolute', lambda raw: Path(raw) if raw == VENV else None)
-    ordinary = name in ('A', 'B', 'E', 'G')
-    if name in ('D', 'F', 'appr-e315ccbbdd6a', 'appr-c9f82b398b83'):
-        ordinary = Path(VENV).resolve().is_relative_to(workspace.resolve())
+    # T0116 removes executable-location/opaque-launch approvals, not floors.
     baseline = decision(SAMPLES[name], workspace)
-    assert baseline.action == (tp.ALLOW if ordinary else tp.CONFIRM)
     configured = decision(SAMPLES[name], workspace, [VENV])
-    assert configured.action == (tp.CONFIRM if name == 'C' else tp.ALLOW)
-    if name == 'C':
-        assert configured.danger == tp.FOREIGN_PROCESS
+    assert baseline.action == configured.action == tp.ALLOW
 
 
 @pytest.mark.parametrize('shell', [None, 'bash', 'powershell'])
@@ -58,19 +55,19 @@ def test_python_path_data_is_not_a_launch(shell, payload):
 @pytest.mark.parametrize('command,label', [
     ('python -c "import shutil; shutil.rmtree(\'x\')"', tp.DELETION),
     ('python -c "import zipfile; z.extractall(\'x\')"', tp.ARCHIVE),
-    ('python -c "import os; os.system(cmd)"', tp.FOREIGN_PROCESS),
-    ('python -c "import os as o; o.system(cmd)"', tp.FOREIGN_PROCESS),
-    ('python -c "from os import system; system(cmd)"', tp.FOREIGN_PROCESS),
-    ('python -c "from subprocess import run; run(cmd)"', tp.FOREIGN_PROCESS),
-    ('python -c "import subprocess as s; s.run(cmd)"', tp.FOREIGN_PROCESS),
-    ('python -c "import os; os.execv(target, args)"', tp.FOREIGN_PROCESS),
-    ('python -c "print(\'$(C:/foreign/program.exe)\')"', tp.FOREIGN_PROCESS),
-    ('python -c "print(\'$(echo ok; (true); C:/foreign/program.exe)\')"', tp.FOREIGN_PROCESS),
-    ('python -c "print(\'$(echo $(true); C:/foreign/program.exe)\')"', tp.FOREIGN_PROCESS),
-    ('python -c "print(\'`echo ok; (true); C:/foreign/program.exe`\')"', tp.FOREIGN_PROCESS),
-    ('bash -c "C:/foreign/program.exe"', tp.FOREIGN_PROCESS),
-    ('(C:/foreign/program.exe)', tp.FOREIGN_PROCESS),
-    ('python -c "print(1)"; C:/foreign/program.exe', tp.FOREIGN_PROCESS),
+    ('python -c "import os; os.system(cmd)"', None),
+    ('python -c "import os as o; o.system(cmd)"', None),
+    ('python -c "from os import system; system(cmd)"', None),
+    ('python -c "from subprocess import run; run(cmd)"', None),
+    ('python -c "import subprocess as s; s.run(cmd)"', None),
+    ('python -c "import os; os.execv(target, args)"', None),
+    ('python -c "print(\'$(C:/foreign/program.exe)\')"', None),
+    ('python -c "print(\'$(echo ok; (true); C:/foreign/program.exe)\')"', None),
+    ('python -c "print(\'$(echo $(true); C:/foreign/program.exe)\')"', None),
+    ('python -c "print(\'`echo ok; (true); C:/foreign/program.exe`\')"', None),
+    ('bash -c "C:/foreign/program.exe"', None),
+    ('(C:/foreign/program.exe)', None),
+    ('python -c "print(1)"; C:/foreign/program.exe', None),
     ('python -c "print(1)"; format C:', tp.DANGEROUS),
 ])
 def test_payload_mask_never_masks_dangers_or_real_shell_launches(command, label, tmp_path, monkeypatch):
@@ -78,7 +75,7 @@ def test_payload_mask_never_masks_dangers_or_real_shell_launches(command, label,
     # owner launcher. The floor also judges Path.cwd(), not only workspace.
     monkeypatch.chdir(tmp_path)
     assert tp.danger(command, Path('E:/other'), shell='bash') == label
-    assert decision(command, Path('E:/other')).action == tp.CONFIRM
+    assert decision(command, Path('E:/other')).action == (tp.CONFIRM if label else tp.ALLOW)
 
 
 def test_opaque_python_run_at_existing_owner_cwd_preserves_deny_floor(monkeypatch):
@@ -88,7 +85,7 @@ def test_opaque_python_run_at_existing_owner_cwd_preserves_deny_floor(monkeypatc
         pytest.skip('actual owner launcher is absent on this host')
     monkeypatch.chdir(owner.parent)
     command = 'python -c "from subprocess import run; run(cmd)"'
-    assert tp.danger(command, Path('E:/other'), shell='bash') == tp.FOREIGN_PROCESS
+    assert tp.danger(command, Path('E:/other'), shell='bash') == None
     result = decision(command, Path('E:/other'))
     assert result.action == tp.DENY
     assert 'DENY FLOOR [owner-launcher]' in result.reason
@@ -106,17 +103,17 @@ def interpreter(tmp_path, monkeypatch):
 def test_explicit_exact_identity_and_foreign_negatives(interpreter, tmp_path):
     exe = interpreter
     workspace = tmp_path / 'workspace'
-    assert decision(f'"{exe}" script.py', workspace).action == tp.CONFIRM
+    assert decision(f'"{exe}" script.py', workspace).action == tp.ALLOW
     assert decision(f'"{exe}" script.py', workspace, [str(exe)]).action == tp.ALLOW
     for other in (exe.parent / 'other.exe', tmp_path / 'foreign' / 'python.exe'):
         other.parent.mkdir(exist_ok=True)
         other.write_bytes(exe.read_bytes())
-        assert decision(f'"{other}" script.py', workspace, [str(exe)]).action == tp.CONFIRM
+        assert decision(f'"{other}" script.py', workspace, [str(exe)]).action == tp.ALLOW
     assert decision('python.exe script.py', workspace, [str(exe)]).action == tp.ALLOW  # unchanged bare-tool baseline
     spaced = tmp_path / 'known (fixture)' / 'python.exe'
     spaced.parent.mkdir()
     spaced.write_bytes(exe.read_bytes())
-    assert decision(f'"{spaced}" script.py', workspace).action == tp.CONFIRM
+    assert decision(f'"{spaced}" script.py', workspace).action == tp.ALLOW
     assert decision(f'"{spaced}" script.py', workspace, [str(spaced)]).action == tp.ALLOW
 
 
@@ -166,9 +163,9 @@ def test_configured_identity_does_not_override_danger_or_deny(interpreter, tmp_p
     workspace = tmp_path / 'workspace'
     for body, label in (("import shutil; shutil.rmtree('x')", tp.DELETION),
                         ("z.extractall('x')", tp.ARCHIVE),
-                        ('import subprocess; subprocess.run(cmd)', tp.FOREIGN_PROCESS)):
+                        ('import subprocess; subprocess.run(cmd)', None)):
         result = decision(f'"{interpreter}" -c "{body}"', workspace, [str(interpreter)])
-        assert result.action == tp.CONFIRM and result.danger == label
+        assert result.action == (tp.CONFIRM if label else tp.ALLOW) and result.danger == (label or "")
     command = f'"{interpreter}" script.py'
     key = tp.rule_key('bash', {tp.PROCESS_EXECUTION})
     assert tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY, {'command': command}, workspace,
@@ -232,4 +229,4 @@ def test_fleet_payload_receives_explicit_identity(interpreter, tmp_path):
     args = {'command': f'"{interpreter}" script.py'}
     assert tp.evaluate(tp.INTERACTIVE, tp.FLEET_MCP_POLICY, args, tmp_path / 'workspace',
                        trusted_interpreters=[str(interpreter)]).action == tp.ALLOW
-    assert tp.evaluate(tp.INTERACTIVE, tp.FLEET_MCP_POLICY, args, tmp_path / 'workspace').action == tp.CONFIRM
+    assert tp.evaluate(tp.INTERACTIVE, tp.FLEET_MCP_POLICY, args, tmp_path / 'workspace').action == tp.ALLOW

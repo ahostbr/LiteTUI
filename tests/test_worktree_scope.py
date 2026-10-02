@@ -233,7 +233,7 @@ def test_an_ordinary_command_is_unchanged_and_other_tools_never_reach_it(trees):
     assert decide("git status", trees["main"]).action == tp.ALLOW
     d = tp.evaluate(tp.INTERACTIVE, tp.PCCONTROL_POLICY, {"action": "launch", "path": "x.exe"},
                     trees["wt"], tool_name="pccontrol", seat_name=SEAT)
-    assert d.action == tp.CONFIRM
+    assert d.action == tp.ALLOW
 
 
 def test_always_allow_and_deny_rules_keep_their_precedence(trees):
@@ -248,16 +248,14 @@ def test_the_scoped_rows_are_the_deliberate_ones():
     """The exemption is an ALLOWLIST of DANGER_TABLE rows, so a row added later
     is NOT exempt until someone decides it is."""
     scoped = {tp.DANGER_TABLE[i][0] for i in tp._WORKTREE_SCOPED_ROWS}
-    assert scoped <= {tp.DELETION, tp.ARCHIVE, tp.FOREIGN_PROCESS, tp.DANGEROUS}
+    assert scoped <= {tp.DELETION, tp.ARCHIVE, tp.OVERWRITE, tp.DANGEROUS}
     for i in tp._WORKTREE_SCOPED_ROWS:
         label, pattern = tp.DANGER_TABLE[i]
         if label == tp.DANGEROUS:
             assert any(word in pattern for word in ("git\\s+(?:reset", "git\\s+restore", "chmod")), pattern
-        if label == tp.FOREIGN_PROCESS:
-            assert any(word in pattern for word in ("start-process", "saps|ii|start", "cmd(?:")), pattern
     unscoped = [tp.DANGER_TABLE[i][1] for i in range(len(tp.DANGER_TABLE))
                 if i not in tp._WORKTREE_SCOPED_ROWS]
-    for must_stay in ("taskkill", "shutdown", "schtasks", "reg(?:", "netsh", "diskpart"):
+    for must_stay in ("taskkill", "shutdown", "reg(?:", "netsh", "diskpart"):
         assert any(must_stay in p for p in unscoped), must_stay
 
 
@@ -415,7 +413,10 @@ def test_heredoc_bodies_are_data_judged_by_their_path_literals(trees):
     assert decide(prose, trees["main"]).action == tp.ALLOW
     # (4c) a body is NOT a command line: `cd /` inside it is not tracked as a cd
     cdish = f"cd {wt} && cat > notes.txt <<'EOF'\ncd ..\nstart\nEOF"
-    assert decide(cdish, trees["main"]).action == tp.ALLOW
+    # T0116 recognizes the outer actual file overwrite. The existing scope
+    # proof rejects '..' even in heredoc data, so this cannot gain its waiver.
+    decision = decide(cdish, trees["main"])
+    assert decision.action == tp.CONFIRM and decision.danger == tp.OVERWRITE
     # (4d) a body fed to a SHELL is commands and is read strictly
     shell_body = f"cd {wt} && rm -rf dist && bash <<'EOF'\ncd ..\nrm -rf x\nEOF"
     assert decide(shell_body, trees["main"]).action == tp.CONFIRM

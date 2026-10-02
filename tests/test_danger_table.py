@@ -38,13 +38,6 @@ ASK = {
                  "gunzip a.gz", "gzip -d a.gz", "unrar x a.rar", "python -c \"import zipfile; zipfile.ZipFile('a').extractall()\""],
         "powershell": ["Expand-Archive a.zip -DestinationPath out", "expand a.cab -F:* out", "7z e a.zip"],
     },
-    tp.FOREIGN_PROCESS: {
-        "bash": ["start chrome", "cmd /c build.bat"],
-        "powershell": ["Start-Process notepad", "saps calc", "start chrome", "ii report.pdf",
-                       "Invoke-Item x.exe", "cmd /c build.bat", "& \"C:\\Program Files\\x\\y.exe\"",
-                       "C:\\Windows\\notepad.exe", "msiexec /i x.msi",
-                       "rundll32 x.dll,Run", "schtasks /create /tn x /tr y"],
-    },
     tp.DANGEROUS: {
         "bash": ["format C:", "format.com C:", "'format' C:", '"format" C:',
                  "'format.com' C:", 'echo ok; "format.com" C:', "mkfs.ext4 /dev/sdb",
@@ -62,7 +55,7 @@ ASK = {
 }
 
 ORDINARY = {
-    "bash": ["git status", "git log --format=%h", "git diff", "git push", "git push origin main", "git reset HEAD x",
+    "bash": ["git status", "git log --format=%h", "git diff",
              "git restore --staged x.py", "git rm --cached x.py", "git branch -a", "git checkout -b topic",
              "ls -la", "cat rmdir_notes.txt", "grep -r delete src", "npm run format", "npm start", "pnpm test",
              "python -m pytest tests", "python -c \"print(1)\"", "python scripts/build.py", "bash ./run_tests.sh",
@@ -119,8 +112,8 @@ def test_interactive_allows_read_only_powershell_formatters():
     (tp.ARCHIVE, "unzip a.zip"), (tp.ARCHIVE, "tar -xf a.tar"),
     (tp.ARCHIVE, "7z x a.7z"), (tp.ARCHIVE, "gunzip a.gz"),
     (tp.ARCHIVE, "gzip -d a.gz"), (tp.ARCHIVE, "expand a.cab -F:* out"),
-    (tp.FOREIGN_PROCESS, "start chrome"), (tp.FOREIGN_PROCESS, "cmd /c build.bat"),
-    (tp.FOREIGN_PROCESS, "wscript x.vbs"),
+    (None, "start chrome"), (None, "cmd /c build.bat"),
+    (None, "wscript x.vbs"),
     (tp.DANGEROUS, "format C:"), (tp.DANGEROUS, "format.com C:"),
     (tp.DANGEROUS, "dd if=/dev/zero of=/dev/sda"),
     (tp.DANGEROUS, "reg delete HKLM\\X"),
@@ -132,7 +125,7 @@ def test_quoted_command_position_keeps_danger(label, verb_and_args, quote):
     verb, args = verb_and_args.split(" ", 1)
     command = f"{quote}{verb}{quote} {args}"
     assert tp.danger(command, WS) == label, command
-    assert _shell(command).action == tp.CONFIRM, command
+    assert _shell(command).action == (tp.CONFIRM if label else tp.ALLOW), command
 
 
 @pytest.mark.parametrize("command,label", [
@@ -181,15 +174,15 @@ def test_t1099_quoted_data_separators_are_not_command_positions(command):
     ("bash -c 'echo ok; rm -rf build'", tp.DELETION),
     ("sh -c 'echo ok; format C:'", tp.DANGEROUS),
     ("powershell -Command 'echo ok; format C:'", tp.DANGEROUS),
-    ('cmd /c "echo ok; format C:"', tp.FOREIGN_PROCESS),
-    ("cmd /c 'echo ok; format C:'", tp.FOREIGN_PROCESS),
+    ('cmd /c "echo ok & format C:"', tp.DANGEROUS),
+    ("cmd /c echo ok & format C:", tp.DANGEROUS),
     ("$'rm' -rf build", tp.DELETION),
     ("echo 'a\\' ; rm -rf build; echo 'done'", tp.DELETION),
     ("echo 'a\\' ; format C:; echo 'done'", tp.DANGEROUS),
 ])
 def test_t1099_executable_content_and_fail_closed_quotes_stay_dangerous(command, label):
     assert tp.danger(command, WS) == label, command
-    assert _shell(command).action == tp.CONFIRM, command
+    assert _shell(command).action == (tp.CONFIRM if label else tp.ALLOW), command
 
 
 def test_powershell_call_operator_on_quoted_executable_still_prompts():
@@ -206,15 +199,15 @@ def test_scripts_and_path_runs_are_ordinary_but_chained_deletion_still_asks():
         assert tp.danger("python C:/elsewhere/foreign.py", workspace) is None
         assert tp.danger("powershell -File C:/elsewhere/read.ps1", workspace) is None
         assert tp.danger(lookup + "; rm -rf C:/tmp/x", workspace) == tp.DELETION
-    assert tp.danger("Start-Process C:/elsewhere/foreign.py", WS) == tp.FOREIGN_PROCESS
-    assert tp.danger("& 'C:/Projects/LiteSuite/run.bat'", Path("C:/Projects/LiteTUI")) == tp.FOREIGN_PROCESS
+    assert tp.danger("Start-Process C:/elsewhere/foreign.py", WS) == None
+    assert tp.danger("& 'C:/Projects/LiteSuite/run.bat'", Path("C:/Projects/LiteTUI")) == None
     assert tp.danger("& 'C:/Projects/LiteSuite/run.bat'", Path("C:/Projects/LiteSuite")) is None
     assert tp.danger("& 'C:/Projects/LiteTUI/dist/litetui-sidecar.exe'",
-                     Path("E:/SAS/ShadowsAndShurikens")) == tp.FOREIGN_PROCESS
+                     Path("E:/SAS/ShadowsAndShurikens")) == None
     workspace = Path("C:/Projects/LiteTUI")
-    assert tp.danger("& ../foreign.exe", workspace) == tp.FOREIGN_PROCESS
+    assert tp.danger("& ../foreign.exe", workspace) == None
     assert tp.danger(r".\tools\x.exe", workspace) is None
-    assert tp.danger(r"..\tools\x.exe", Path("C:/Projects/LiteTUI")) == tp.FOREIGN_PROCESS
+    assert tp.danger(r"..\tools\x.exe", Path("C:/Projects/LiteTUI")) == None
     for workspace in (Path("C:/Projects/LiteSuite"), Path("E:/SAS/ShadowsAndShurikens")):
         for exe, args in (("python.exe", "-m pytest tests -q"), ("ruff.exe", "check x")):
             cmd = f"& 'C:/Projects/LiteTUI/.venv/Scripts/{exe}' {args}"
@@ -226,22 +219,17 @@ def test_scripts_and_path_runs_are_ordinary_but_chained_deletion_still_asks():
 def test_executable_basename_cannot_spoof_project_tools(exe):
     workspace = Path("C:/Projects/LiteTUI")
     for command in (f"& 'E:/untrusted/{exe}' --version", f"E:/untrusted/{exe} --version"):
-        assert tp.danger(command, workspace) == tp.FOREIGN_PROCESS
+        assert tp.danger(command, workspace) == None
         assert tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY,
-                           {"command": command}, workspace).action == tp.CONFIRM
+                           {"command": command}, workspace).action == tp.ALLOW
 
 
-def test_only_resolved_runtime_venv_or_path_executable_is_trusted(monkeypatch):
+def test_t0116_executable_identity_alone_does_not_create_a_launch_prompt():
     workspace = Path("C:/Projects/LiteTUI")
-    runtime = Path("C:/Projects/LiteTUI/.venv")
-    monkeypatch.setattr(tp.trusted_executables.sys, "prefix", str(runtime))
-    monkeypatch.setattr(tp.trusted_executables.sys, "executable", str(runtime / "Scripts/python.exe"))
-    monkeypatch.setattr(tp.trusted_executables.shutil, "which",
-                        lambda name: "C:/trusted/bin/ruff.exe" if name == "ruff.exe" else None)
     assert tp.danger("& 'C:/Projects/LiteTUI/.venv/Scripts/python.exe' -m pytest", WS) is None
     assert tp.danger("& 'C:/trusted/bin/ruff.exe' check .", workspace) is None
-    assert tp.danger("& 'E:/untrusted/.venv/Scripts/python.exe' -m pytest", workspace) == tp.FOREIGN_PROCESS
-    assert tp.danger("& 'E:/untrusted/.venv/Scripts/ruff.exe' check .", workspace) == tp.FOREIGN_PROCESS
+    assert tp.danger("& 'E:/untrusted/.venv/Scripts/python.exe' -m pytest", workspace) == None
+    assert tp.danger("& 'E:/untrusted/.venv/Scripts/ruff.exe' check .", workspace) == None
 
 
 @pytest.mark.parametrize("command,label", [
@@ -287,7 +275,7 @@ def test_shell_escape_does_not_hide_executable_commands(shell, command):
 
 def test_fleet_mcp_executable_payloads_not_inbox_quotations():
     cases = (
-        ("mcp__litesuite-tools__pccontrol", {"action": "launch"}, tp.CONFIRM, tp.FOREIGN_PROCESS),
+        ("mcp__litesuite-tools__pccontrol", {"action": "launch"}, tp.ALLOW, ""),
         ("mcp__VibeUE__execute_python_code", {"code": "import shutil; shutil.rmtree('x')"}, tp.CONFIRM, tp.DELETION),
         ("mcp__litesuite-tools__inbox", {"action": "send", "message": "quote: rm -rf x"}, tp.ALLOW, ""),
         ("mcp__litesuite-tools__shell", {"command": "rm -rf x"}, tp.CONFIRM, tp.DELETION),
@@ -317,7 +305,7 @@ def test_interactive_asks_only_for_the_danger_table():
         assert tp.evaluate(tp.INTERACTIVE, tp.WRITE_POLICY, {"path": path}, WS).action == tp.ALLOW
     assert tp.evaluate(tp.INTERACTIVE, tp.PCCONTROL_POLICY, {"action": "click"}, WS).action == tp.ALLOW
     launch = tp.evaluate(tp.INTERACTIVE, tp.PCCONTROL_POLICY, {"action": "launch"}, WS)
-    assert launch.action == tp.CONFIRM and launch.danger == tp.FOREIGN_PROCESS
+    assert launch.action == tp.ALLOW and launch.danger == ""
     mcp = tp.evaluate(tp.INTERACTIVE, tp.MCP_UNKNOWN_POLICY, {}, WS)
     assert mcp.action == tp.CONFIRM and mcp.danger == tp.UNDECLARED
 
@@ -437,22 +425,22 @@ def test_t0197_read_only_liteharness_cli_forms(shell, args):
 ])
 def test_t0197_lst_writes_and_ambiguous_dispatch_stay_gated(shell, args):
     command = ("& " if shell == "powershell" else "") + "E:/untrusted/lst.exe " + args
-    assert _shell(command, shell=shell).action == tp.CONFIRM
+    assert _shell(command, shell=shell).action == (tp.CONFIRM if " > " in command else tp.ALLOW)
 
 
 @pytest.mark.parametrize("shell", ["bash", "powershell"])
 @pytest.mark.parametrize("args", ["send agent hello", "register --agent-id agent", "record-pattern --task new"])
-def test_t0197_liteharness_writes_stay_gated(shell, args):
+def test_t0116_liteharness_launch_is_not_a_danger_class(shell, args):
     command = ("& " if shell == "powershell" else "") + "E:/untrusted/liteharness.exe " + args
-    assert _shell(command, shell=shell).action == tp.CONFIRM
+    assert _shell(command, shell=shell).action == tp.ALLOW
 
 
 @pytest.mark.parametrize("shell", ["bash", "powershell"])
 @pytest.mark.parametrize("executable", ["lst.cmd", "lst.exe.ps1", "lst-other.exe", "other.exe"])
-def test_t0197_harness_cli_names_do_not_trust_the_python_scripts_directory(shell, executable):
+def test_t0116_harness_cli_names_do_not_create_launch_prompts(shell, executable):
     path = "C:/Users/Ryan/AppData/Local/Programs/Python/Python311/Scripts/" + executable
     command = ("& " if shell == "powershell" else "") + path + " run tasks action=help"
-    assert _shell(command, shell=shell).action == tp.CONFIRM
+    assert _shell(command, shell=shell).action == tp.ALLOW
 
 
 @pytest.mark.parametrize("shell", ["bash", "powershell"])
@@ -520,10 +508,11 @@ def test_t0197_literal_paths_and_inspection_only_chains(shell, command):
     "rg.exe -n TODO src | unknown-writer", "unknown.exe --version",
     "rg.exe -n TODO 'src",  # unmatched quote cannot gain an exception
 ])
-def test_t0197_unknown_mutating_and_launch_options_remain_foreign(shell, inspection):
+def test_t0116_native_writers_ask_but_unknown_launches_do_not(shell, inspection):
     command = ("& " if shell == "powershell" else "") + "E:/untrusted/" + inspection
-    assert tp.danger(command, WS, shell=shell) == tp.FOREIGN_PROCESS
-    assert _shell(command, shell=shell).action == tp.CONFIRM
+    destructive = any(option in command for option in (" > ", "--output=file", "ffprobe.exe -o ", "ffprobe.exe -output ", "ffprobe.exe -report ", "ffprobe.exe -- -report"))
+    assert bool(tp.danger(command, WS, shell=shell)) == destructive
+    assert _shell(command, shell=shell).action == (tp.CONFIRM if destructive else tp.ALLOW)
 
 
 @pytest.mark.parametrize("shell,suffix,label", [
@@ -531,8 +520,8 @@ def test_t0197_unknown_mutating_and_launch_options_remain_foreign(shell, inspect
     ("powershell", "; Remove-Item old -Recurse", tp.DELETION),
     ("bash", "; tar -xf archive.tar", tp.ARCHIVE),
     ("powershell", "; Expand-Archive archive.zip out", tp.ARCHIVE),
-    ("bash", "; start chrome", tp.FOREIGN_PROCESS),
-    ("powershell", "; Start-Process chrome", tp.FOREIGN_PROCESS),
+    ("bash", "; start chrome", None),
+    ("powershell", "; Start-Process chrome", None),
     ("bash", "; git reset --hard", tp.DANGEROUS),
     ("powershell", "; Stop-Process -Id 42", tp.DANGEROUS),
     ("bash", ' "$(rm -rf old)"', tp.DELETION),
@@ -541,7 +530,7 @@ def test_t0197_unknown_mutating_and_launch_options_remain_foreign(shell, inspect
 def test_t0197_full_command_danger_wins_over_inspection(shell, suffix, label):
     command = ("& " if shell == "powershell" else "") + "E:/untrusted/ffprobe.exe -show_format clip.mp4" + suffix
     assert tp.danger(command, WS, shell=shell) == label
-    assert _shell(command, shell=shell).action == tp.CONFIRM
+    assert _shell(command, shell=shell).action == (tp.CONFIRM if label else tp.ALLOW)
 
 
 def test_autonomous_inbox_mail_gets_no_rule_it_does_not_need():
@@ -555,3 +544,84 @@ def test_autonomous_inbox_mail_gets_no_rule_it_does_not_need():
                           _user_bubble=lambda *a, **k: None)
     LiteTUI._deliver_inbox(app, {"from": "sentinel", "body": "hello", "id": "m1", "type": "TASK"})
     assert tp.INBOX_TURN_RULE not in queued[0]["content"]
+
+@pytest.mark.parametrize("shell,command", [
+    ("bash", 'rg "Remove-Item" notes.txt'),
+    ("bash", 'rg Remove-Item notes.txt'),
+    ("powershell", "Get-Content notes.txt | Select-String -Pattern 'git push'"),
+    ("bash", 'echo "git reset --hard; rm -rf old"'),
+    ("bash", "C:/untrusted/unknown.exe --version"),
+    ("powershell", "Start-Process notepad"),
+    ("powershell", "cmd /c build.bat"),
+])
+def test_t0116_read_and_launch_do_not_request_approval(shell, command):
+    assert tp.danger(command, WS, shell=shell) is None
+    assert _shell(command, shell=shell).action == tp.ALLOW
+
+
+@pytest.mark.parametrize("shell,command", [
+    ("bash", "git push origin main"),
+    ("bash", "git reset HEAD notes.txt"),
+    ("powershell", "Set-Content notes.txt -Value 'replacement'"),
+    ("bash", "echo replacement > notes.txt"),
+    ("bash", "cat notes.txt | tee output.txt"),
+])
+def test_t0116_real_writers_still_request_approval(shell, command):
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("command", [
+    'git status 2>&1',
+    'git "reset --hard"',
+    "bash -c 'echo harmless' '; rm old'",
+    "bash -- script -c 'rm old'",
+])
+def test_t0116_literal_argv_and_descriptor_reads_do_not_prompt(command):
+    assert _shell(command, shell="bash").action == tp.ALLOW
+
+
+@pytest.mark.parametrize("command", [
+    'sudo -u root rm old',
+    'env -u NAME rm old',
+    '(rm old)',
+    'cat <(rm old)',
+])
+def test_t0116_literal_wrapper_and_group_deletions_prompt(command):
+    assert _shell(command, shell="bash").action == tp.CONFIRM
+
+
+def test_t0116_strict_is_explicit_extra_supervision_with_clear_help():
+    assert "read-only commands never ask" in tp.INTERACTIVE_PROFILE.summary
+    assert "even read-only commands" in tp.STRICT_PROFILE.summary
+    for command in ("git status", "rg Remove-Item notes.txt", "Start-Process notepad"):
+        assert _shell(command, shell="powershell").action == tp.ALLOW
+        assert _shell(command, tp.STRICT, shell="powershell").action == tp.CONFIRM
+
+
+def test_t0116_literal_heredoc_is_data_but_following_delete_is_executable():
+    command = "cat <<'EOF'\nrm old\nEOF\n"
+    assert _shell(command, shell="bash").action == tp.ALLOW
+    assert _shell(command + "rm old", shell="bash").action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("shell,command", [
+    ("bash", "A=1 rm old"),
+    ("powershell", "& { Remove-Item old }"),
+    ("bash", "ffprobe.exe -o report.json clip.mp4"),
+])
+def test_t0116_review_literal_destructive_controls(shell, command):
+    assert _shell(command, shell=shell).action == tp.CONFIRM
+
+
+def test_t0116_scriptblock_prose_stays_data():
+    assert _shell("Write-Output 'Remove-Item old'", shell="powershell").action == tp.ALLOW
+
+
+@pytest.mark.parametrize("command", ["git checkout HEAD -- notes.txt", "git checkout -f HEAD -- notes.txt"])
+def test_t0116_git_checkout_path_overwrite_asks(command):
+    assert _shell(command, shell="bash").action == tp.CONFIRM
+
+
+def test_t0116_inert_read_heredoc_payload_alone_never_asks():
+    command = "cat <<'EOF'\ncd ..\nRemove-Item old\ngit push --force\nEOF"
+    assert _shell(command, shell="bash").action == tp.ALLOW
