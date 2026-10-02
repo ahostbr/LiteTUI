@@ -1,7 +1,8 @@
 """D3 policy integration; canonical OSS owns the complete literal corpus."""
 import pytest
 
-from litetui import deny_floor, tool_policy as tp
+from litetui import deny_floor
+from litetui import tool_policy as tp
 
 
 @pytest.mark.parametrize('profile', [tp.STRICT, tp.INTERACTIVE, tp.AUTONOMOUS])
