@@ -1,5 +1,34 @@
 # LiteTUI
 
+## Agent-local CLI control
+
+A registered seat from this build can advertise an authenticated loopback
+JSONL endpoint using the existing GUI management dispatcher. Interactive and
+`--rpc` seats share these operations; existing stdio clients are unchanged.
+This code half adds the server and capability reader only. The corresponding
+LiteHarness CLI adapter and live attachment proof are separate work; do not
+assume the installed CLI exposes these verbs. No spawn, resume, replacement,
+or reparenting operation is added to this endpoint.
+
+The per-seat token is kept under the seat's data root in an owner-only file
+(0600 on POSIX, protected user-only DACL on Windows). Presence advertises only
+its path and runtime identity, never the token. If protection or ownership
+cannot be established, attachment is unavailable rather than unauthenticated.
+This is **OS-user-local control**, not protection from another process running
+as the same user. No remote listener, automatic replacement or authority
+reparenting is provided. A timeout after dispatch has an ambiguous outcome:
+inspect state and do not automatically retry a mutating command.
+
+`litetui --capabilities --backend B --model M` reads only LiteTUI's existing
+pinned Claude catalogue or Codex model cache (no app, network, refresh or model
+startup). Unknown offline capability fails loudly; Haiku does not support
+`high`. Connected capability requests use the backend's catalogue and refuse
+unknown models rather than guessing. There is no second CLI-owned model list.
+Model load/context and engine start use their existing backend owners and VRAM
+guards; local attachment does not bypass them. Unsupported remote load/context
+or non-NInfer engine operations are errors, not successful no-ops. Positive
+model/engine operations require separate runtime authorization and validation.
+
 A terminal chat client and agent harness for **local** LLMs. Textual TUI,
 streaming, tool use, vision, per-conversation memory, and compaction.
 

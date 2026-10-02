@@ -50,6 +50,8 @@ OPERATIONS = (
     "models.load", "models.unload", "models.config", "models.configure",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
+    "thinking.set", "context.set", "backend.set", "models.capabilities",
+    "engine.start", "engine.stop", "engine.status",
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
@@ -374,6 +376,30 @@ def dispatch(app, cmd):
                 "pending_approvals": [getattr(app, "_gui_approval_details", {}).get(key, {"id": key}) for key, future in getattr(app, "_approval_waiters", {}).items() if not future.done()],
                 "pending_questions": [{"type": "user_input_requested", "id": key, "questions": [s.to_dict() for s in value[2]]} for key, value in getattr(app, "_rpc_pending_asks", {}).items() if not value[0].is_set()],
                 "pending_model_loads": [{"request_id": key, **value["details"]} for key, value in getattr(app, "_gui_model_pending", {}).items()]}
+    if operation == "thinking.set":
+        _idle(app)
+        from litetui.thinking_capabilities import set_thinking, thinking_capabilities
+        set_thinking(app, cmd.get("level"))
+        return {"level": app.thinking_level, "capabilities": thinking_capabilities(app)}
+    if operation == "models.capabilities":
+        from litetui.thinking_capabilities import thinking_capabilities
+        backend = cmd.get("backend") or app.backend.name
+        model = cmd.get("model") or app.model_id
+        if backend == "claude" and backend != app.backend.name:
+            from litetui.model_capabilities import offline_capabilities
+            return offline_capabilities(backend, model)
+        if backend != app.backend.name:
+            raise ValueError("Requested backend catalogue is not connected; capability unavailable")
+        if model == app.model_id:
+            thinking = thinking_capabilities(app)
+        else:
+            reader = getattr(app.backend, "reasoning_levels", None)
+            if not callable(reader) or model not in getattr(app.backend, "models", {}):
+                raise ValueError("Requested model capability is unavailable in the connected catalogue")
+            levels = reader(model)
+            thinking = {"levels": ["default", *("off" if x == "none" else x for x in levels)],
+                        "source": "connected backend model metadata"}
+        return {"backend": backend, "model": model, "thinking": thinking}
     domain, action = operation.split(".", 1)
     if domain == "prompt":
         message, behavior = cmd.get("message"), cmd.get("behavior", "normal")
@@ -596,7 +622,7 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    blocking = operation in {"gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -614,6 +640,46 @@ async def async_dispatch(app, cmd):
 
 async def _async_dispatch(app, cmd):
     operation = cmd["type"]
+    if operation == "gui.backend.set":
+        _idle(app)
+        candidate = _validate(app, {"backend": cmd.get("name")})
+        settings_runtime.persist_or_raise(app, candidate)
+        app.settings = candidate
+        return await _async_dispatch(app, {"type": "gui.models.reconnect"})
+    if operation == "gui.context.set":
+        _idle(app)
+        value = cmd.get("context")
+        if type(value) is not int or value < 1:
+            raise ValueError("context must be a positive integer")
+        if getattr(app.backend, "remote", False):
+            raise ValueError("The remote backend owns its context window")
+        if not app.model_id:
+            raise ValueError("Select a model before setting context")
+        # Same backend.load owner as apply_context_length; do not swallow load failure.
+        await app.backend.load(app.model_id, ctx=value)
+        app._fetch_ctx_window()
+        return {"requested": value, "model": app._rpc_model_state(), "completed": True}
+    if operation.startswith("gui.engine."):
+        _idle(app)
+        backend = app.backend
+        if backend.name != "ninfer":
+            raise ValueError("engine operations require the NInfer backend")
+        action = operation.rsplit(".", 1)[1]
+        if action == "status":
+            return {"status": backend.engine_status()}
+        if action == "start":
+            result = await backend.start_engine()
+            return {"result": result, "status": backend.engine_status()}
+        if action == "stop":
+            from litetui import agent_preparation
+            if not backend.begin_stop():
+                raise ValueError("NInfer engine start/stop is already active")
+            try:
+                result = await agent_preparation.await_preparation(backend.stop_engine)
+                return {"result": result, "status": backend.engine_status()}
+            finally:
+                backend.end_stop()
+        raise ValueError("Unsupported engine operation")
     if operation == "gui.conversations.open":
         result = dispatch(app, cmd)
         conversation = app.conversation
@@ -687,7 +753,10 @@ async def _async_dispatch(app, cmd):
                 await app.backend.apply_load_settings(key, load)
             return {"slug": key, "saved": True, "load_applied": bool(cmd.get("apply_load", False)),
                     "load": load, "inference": inference}
-        await getattr(app.backend, action)(key)
+        ctx = cmd.get("ctx")
+        if ctx is not None and (action != "load" or type(ctx) is not int or ctx < 1):
+            raise ValueError("ctx is supported only for load and must be a positive integer")
+        await getattr(app.backend, action)(key, **({"ctx": ctx} if ctx is not None else {}))
         app.connect()
         return {"slug": key, "action": action, "completed": True}
     if operation == "gui.tools.execute":
