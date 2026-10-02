@@ -10,19 +10,31 @@ the reason. Dijkstra K1 (8bef1317): the Claude bridge's relay stops, is not cut 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from types import SimpleNamespace
 
 import pytest
 
 from litetui import app as m
-from litetui import approval_relay, runtime_log, seat_authority, tool_approval, tool_policy
+from litetui import approval_relay, harness, runtime_log, seat_authority, tool_approval, tool_policy
 from litetui.agent_launcher import LaunchBlocked, validate_request
 from litetui.agent_supervisor import AgentProcess, child_process_env
 from litetui.tool_policy import INTERACTIVE
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 DESTRUCTIVE = {"command": "rm -rf ./build"}
+
+
+@pytest.fixture(autouse=True)
+def disposable_presence(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "AGENTS_DIR", tmp_path)
+
+
+def _registered_parent(a, parent):
+    a.seat.registered = True
+    (harness.AGENTS_DIR / f"{a.seat.agent_id}.json").write_text(
+        json.dumps({"agent_id": a.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
 
 
 def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
@@ -32,6 +44,7 @@ def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
     a._spawned_seat = bool(spawner)
     a._owner_seat = False
     a._spawner_id = spawner
+    _registered_parent(a, spawner)
     a._agent_launched = agent_launched
     a._rpc = rpc
     a._approval_host = host

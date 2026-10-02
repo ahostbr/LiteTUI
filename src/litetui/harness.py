@@ -357,7 +357,7 @@ class Seat:
         self.error: str | None = None
 
     # ── registration ────────────────────────────────────────────────────────
-    def _presence_argv(self) -> list[str]:
+    def _presence_argv(self, *, include_spawner: bool = True) -> list[str]:
         """Everything both register() and heartbeat() send.
 
         ONE list, because two copies of one argv will drift — and the drift is
@@ -381,10 +381,31 @@ class Seat:
                 # as an opt-in flag; requires liteharness with --session-pid.
                 "--session-pid", str(os.getpid())] + [
                     arg for flag, value in (("--backend", self.backend),
-                                            ("--spawned-by", self.spawned_by),
+                                            ("--spawned-by", self.spawned_by if include_spawner else None),
                                             ("--canvas-session", self.canvas_session),
                                             ("--leaf-id", self.leaf_id))
                     if value for arg in (flag, value)]
+
+    def current_spawner(self) -> str | None:
+        """Current own registration, never launch metadata or a salvaged cache.
+
+        Missing/corrupt/invalid presence means no inbox approval authority. The
+        registry's send command still decides whether this destination exists.
+        """
+        if not self.registered:
+            return None
+        try:
+            row = json.loads((AGENTS_DIR / f"{self.agent_id}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(row, dict) or row.get("agent_id") != self.agent_id:
+            return None
+        parent = row.get("spawned_by")
+        if (not isinstance(parent, str) or not parent or parent != parent.strip()
+                or parent == self.agent_id or parent.startswith("-")
+                or any(char.isspace() or char in "/\\\\:" for char in parent)):
+            return None
+        return parent
 
     def registry_name(self, root: Path | None = None) -> str | None:
         """Name held by this seat's agent id, independent of conversation metadata."""
@@ -485,7 +506,10 @@ class Seat:
         # standalone callers so a heartbeat cannot overwrite an external rename.
         self.refresh_name()
         try:
-            r = _cli(self._presence_argv(), timeout=30)
+            # Registration may have adopted a new parent since launch. An
+            # omitted flag preserves that edge in cmd_register; a cached flag
+            # would silently undo the adoption on every heartbeat.
+            r = _cli(self._presence_argv(include_spawner=False), timeout=30)
             if r.returncode == 0:
                 self.name = _resolved_name(r.stdout) or self.name
                 return True
