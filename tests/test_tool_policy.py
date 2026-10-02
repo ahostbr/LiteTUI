@@ -81,9 +81,8 @@ def test_shell_is_confirmed_and_destructive_commands_are_named(tmp_path):
 
 
 def test_argument_sensitive_desktop_and_harness_actions(tmp_path):
-    """Interactive runs its own desktop/harness/studio tools without asking
-    (the user 2026-09-24); only a pccontrol LAUNCH -- "weird procc runs that
-    arent its tools" -- still confirms. Strict confirms all of them."""
+    """T0116: interactive allows ordinary desktop/harness/studio actions,
+    including launches; strict retains human-selected supervision."""
     screenshot = decide(
         INTERACTIVE, PCCONTROL_POLICY, {"action": "screenshot"}, tmp_path
     )
@@ -92,8 +91,9 @@ def test_argument_sensitive_desktop_and_harness_actions(tmp_path):
     assert click.action == ALLOW
     assert decide(STRICT, PCCONTROL_POLICY, {"action": "click"}, tmp_path).action == CONFIRM
     launch = decide(INTERACTIVE, PCCONTROL_POLICY, {"action": "launch"}, tmp_path)
-    assert launch.action == CONFIRM
-    assert DESTRUCTIVE_IRREVERSIBLE in launch.capabilities
+    assert launch.action == ALLOW
+    assert DESTRUCTIVE_IRREVERSIBLE not in launch.capabilities
+    assert decide(STRICT, PCCONTROL_POLICY, {"action": "launch"}, tmp_path).action == CONFIRM
 
     who = decide(INTERACTIVE, HARNESS_POLICY, {"action": "whoami"}, tmp_path)
     assert who.action == ALLOW
