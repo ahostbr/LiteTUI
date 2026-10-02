@@ -2,6 +2,12 @@
 
 Status: implemented and focused-test verified in `ember/T0245`; awaiting independent review, integration sequencing, merge/intent gates and Ryan inspection. NOT running-product verified. No restart, rebuild, public push, merge, live model query, or full suite performed.
 
+## Rebased integration verification
+
+Rebased cleanly onto main `156f7b88d4961c2efd7a26feca1494002b5555e1` after T0251 `a16293b` and T0253 identity landed. `git merge-base --is-ancestor 156f7b8 HEAD` succeeded. Rebased implementation: `f1e1280`; rebased original report: `8188b15`. Identity matcher, registered-only refresh and persistence remain unchanged by the T0245 diff.
+
+Actual rebased-tree run, with no concurrent tracked edits: **309 passed in 51.51s**. Command is the 231-test run below plus `tests/test_claude_backend.py tests/test_claude_persistence.py` (78 additional identity/admission contracts). Evidence: `C:/Projects/LiteTUI/output/tasks/t-53ad8f14582d446d8e41d5b10b676d1a.log`. Focused Ruff for three Claude modules and four touched/new test files passed again; three Claude modules' focused mypy passed; `git -c core.whitespace=cr-at-eol diff 156f7b8..HEAD --check` passed. An initial invocation named nonexistent `tests/test_seat_shutdown.py` and collected zero tests; corrected command produced the 309-pass result, not a claimed shutdown gate. No production code edits required by the rebase. Independent T0250/T0245 overlap review and Ryan inspection remain pending.
+
 ## Approved semantics
 
 - Read Claude's effective serving window with pinned SDK `get_context_usage()` on the existing SDK owner task, after model selection and before sending. Use `maxTokens`, not a static 1M guess or the largest cumulative result `modelUsage.contextWindow`.
@@ -43,7 +49,7 @@ Final command evidence: `C:/Projects/LiteTUI/output/tasks/t-5d11ea5dd20b4f76a7ec
 - No live SDK/model integration or Ryan running-product inspection performed. Actual SDK call path is tested with fake external client boundary on the real session owner; not an authenticated CLI probe.
 - RPC correlated-input cross-segment transfer deliberately excluded; separate policy/persistence follow-up needed if automatic transfer is desired.
 - Continuation intent is process-local, not a crash/restart replay permission. Uncertain-ledger policy is T0250, identity is T0253.
-- Existing `tests/test_self_compact.py` integration cases success/failure/stop fail BEFORE the first request because fixture deepcopies a bound callback containing an asyncio Task. Same three failures reproduced against HEAD app and current app; six other tests pass. Not silently fixed. Baseline evidence retained at `temp-working-dir/self_compact_baseline.log`; report to leader for separate fixture repair.
+- Existing `tests/test_self_compact.py` integration cases success/failure/stop fail BEFORE the first request because fixture deepcopies a bound callback containing an asyncio Task. Same three failures reproduced using a narrow HEAD `app.py` substitution through a temporary pytest plugin (other worktree modules retained), and current app; six other tests pass. This is NOT a full archived-checkout proof. Not silently fixed. Baseline evidence retained at `temp-working-dir/self_compact_baseline.log`; report to leader for separate fixture repair.
 - One intermediate 231-pass run had root-write teardown error because README was edited while tests were running. Corrected workflow and reran without edits: final 231-pass result above is clean.
 
 ## Inspection path for Ryan (after approved integration)
