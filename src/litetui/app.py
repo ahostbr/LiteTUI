@@ -6633,8 +6633,13 @@ class LiteTUI(App):
                 self.system_message(gpu_gate.why_not())
                 return
         from dataclasses import replace
-        s = replace(self.settings, backend=choice, backend_chosen=True)
-        settings_runtime.persist_or_raise(self, s)
+        s = replace(self.settings, backend=choice)
+        # Switching this seat is not choosing startup defaults. backend_chosen
+        # belongs to globals; only /backend --default may publish that intent.
+        # Before a conversation exists, keep the choice in memory instead of
+        # letting the persistence adapter fall back to the global file.
+        if getattr(self, 'convo_dir', None) is not None:
+            settings_runtime.persist_or_raise(self, s, baseline=self.settings)
         self.settings = s
         # Deliberately NOT shutting the old engine down: a mid-session flip that
         # evicted the resident model would make flipping back cost a full reload.
