@@ -17,7 +17,8 @@ class NowCard(Static):
     """
 
     def __init__(self, **kwargs):
-        super().__init__("", **kwargs)
+        # Task titles and command summaries are literal data, never Textual markup.
+        super().__init__("", markup=False, **kwargs)
         self.card_label = "no card claimed"
         self.last = "—"
         self._waits: dict[object, tuple[str, str, float]] = {}
