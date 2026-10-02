@@ -48,8 +48,9 @@ def system_prompt_for(app, segment):
     and the LiteTUI note that makes a compaction request trusted.
 
     Built ONCE per segment and recorded (ledger.fix_system_prompt): a resume carries
-    the same prefix. A segment already bound to a native session before this existed
-    returns None and keeps the preset it was created with.
+    the same prefix except its harness identity, refreshed for the registered seat.
+    A segment already bound to a native session before this existed returns None
+    and keeps the preset it was created with.
     """
     from litetui import appsvc
     from litetui.claude_backend import APPEND, seeded_append
@@ -58,6 +59,9 @@ def system_prompt_for(app, segment):
 
     segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
     if segment.get("system_prompt"):
+        if getattr(getattr(app, "seat", None), "registered", False):
+            return ledger_for(app).refresh_system_prompt_identity(
+                segment["id"], app._fleet_identity_sentence(), app._FLEET_LINE_RE)
         return segment["system_prompt"]
     if segment.get("session_id"):
         return None
