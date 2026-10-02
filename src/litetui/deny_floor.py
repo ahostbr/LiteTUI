@@ -355,10 +355,12 @@ _OWNER_BOUNDARY = re.compile(
     r"(?<![\w.$/\\-])(?:function|filter)[ \t]+[A-Za-z_][\w-]*\{",
     re.IGNORECASE)
 #: Narrow switch-label shapes directly inside an ALREADY accepted brace: digits,
-#: quoted strings, default, or a brace-free scriptblock label. No quote/block
-#: scanner. These labels are the only accepted word/quote/} brace predecessors.
+#: quoted strings (quote doubling), default, or a brace-free scriptblock label,
+#: with leading whitespace/CRLF. No scanner: sibling clauses, escaped quotes,
+#: variable/expression/here-string labels and comments remain outside grammar.
+#: These labels are the only accepted word/quote/} brace predecessors.
 _SWITCH_LABEL_BOUNDARY = re.compile(
-    r"\{(?:\d+|'[^'{}\r\n]*'|\"[^\"{}\r\n]*\"|default|\{[^{}\r\n]*\})\{",
+    r"\{\s*(?:\d+|'(?:[^'{}\r\n]|'')*'|\"(?:[^\"{}\r\n]|\"\")*\"|default|\{[^{}\r\n]*\})\{",
     re.IGNORECASE)
 _EXECUTION_SINKS = frozenset({
     "start-process", "saps", "start", "invoke-item", "ii", "invoke-expression", "iex",

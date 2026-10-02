@@ -990,3 +990,33 @@ def test_owner_f1_nested_and_label_paths(tmp_path, monkeypatch, shell, command):
     assert deny_floor.refusal(command, other, shell=shell) is None
     owner.unlink()
     assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+
+
+SWITCH_LABEL_QUOTING_T0291A = [
+    "switch(\"it's\"){'it''s'{run}}", 'switch(1){"a""b"{run}}',
+    "switch(1){ '1'{run}}", 'switch(10){\r\n10{run}}',
+]
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", SWITCH_LABEL_QUOTING_T0291A)
+def test_owner_switch_label_quoting_spacing(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    reason = deny_floor.refusal(command, owner.parent, shell=shell)
+    assert reason and "[owner-launcher]" in reason
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", SWITCH_LABEL_QUOTING_T0291A)
+def test_owner_switch_label_quoting_spacing_identity(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
+    assert deny_floor.refusal(command, other, shell=shell) is None
+    owner.unlink()
+    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+
+@pytest.mark.parametrize("shell", [None, "powershell"])
+@pytest.mark.parametrize("command", ["foo{10{run}", "a'1'{run}", "${1}{run}", "foo({run:1})", "foo{ '1'{run}"])
+def test_owner_switch_label_quoting_spacing_data(tmp_path, monkeypatch, shell, command):
+    owner = _gap_owner_t0291a(tmp_path, monkeypatch)
+    assert deny_floor.refusal(command, owner.parent, shell=shell) is None
