@@ -73,6 +73,7 @@ def test_actual_resume_restores_before_render_and_defers_native_history(tmp_path
     calls = []
     app.store = SimpleNamespace(acquire=lambda directory: calls.append('acquire'))
     app._pending_input = []
+    app._bind_task_store = lambda: None
     app._sync_seat_identity = lambda: None
     app._sync_fleet_identity = lambda: None
     app.seat = SimpleNamespace(name='TestSeat', registry_name=lambda: None)

@@ -1558,8 +1558,14 @@ class LiteTUI(App):
         tool_profile: str | None = None,
         plan_mode: bool = False,
         convo_id: str | None = None,
+        agent_session=None,
         **app_kwargs,
     ):
+        self._agent_session = agent_session
+        self._owned_registration_lock = asyncio.Lock()
+        self._owned_launch_error = None
+        if agent_session is not None:
+            agent_session.authority  # child owns agent before mutable startup
         super().__init__(**app_kwargs)
         self._rpc = rpc
         self.last_recap = None
@@ -1602,6 +1608,15 @@ class LiteTUI(App):
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
+        if agent_session is not None:
+            from litetui.agent_launch_context import apply_settings
+            apply_settings(agent_session, self.settings)
+            authority = agent_session.authority
+            initial_backend, initial_model = authority.backend, authority.model
+            initial_thinking = authority.thinking_level
+            self._cli_initial_backend = initial_backend
+            self._cli_initial_model = initial_model
+            self._cli_thinking_level = initial_thinking
         self._invocation_saved_values = {}
         self._launch_overrides = {}
         if launch_options is not None:
@@ -1662,7 +1677,8 @@ class LiteTUI(App):
         # The STORE owns where this conversation lives and how it is written.
         # The properties below keep `self.convo_id` and friends resolving, so
         # nothing that reads them had to change.
-        self.store = ConversationRepository(on_error=self._report_persist_error)
+        self.store = ConversationRepository(on_error=self._report_persist_error,
+                                            agent_session=agent_session)
         # Staged-but-not-created. See _new_convo / _materialise_convo.
         self.last_usage: dict | None = None
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
@@ -1833,6 +1849,8 @@ class LiteTUI(App):
         seat_id, seat_name, seat_tier = harness_mod.spawned_seat_identity(
             (self.settings.seat_name or "").strip() or "LiteTUI"
         )
+        if agent_session is not None:
+            seat_id, seat_name = agent_session.authority.agent_id, agent_session.authority.name
         self.seat = harness_mod.Seat(
             agent_id=seat_id,
             name=seat_name,
@@ -1840,6 +1858,7 @@ class LiteTUI(App):
             tier=seat_tier,
             canvas_session=os.environ.get("LITESUITE_CANVAS_SESSION") if self._spawned_marker else None,
             leaf_id=os.environ.get("LITESUITE_LEAF_ID") if self._spawned_marker else None,
+            agent_session=agent_session,
         )
         self.seat.spawned_by = self._spawner_id
         self._spawner_errors = spawner_errors.SpawnerErrorReporter()
@@ -1876,7 +1895,8 @@ class LiteTUI(App):
         )
         self.plugins.add_prompt_section(
             "host", _ord["MEMORY"],
-            lambda: memory_prompt(self.convo_id, self.convo_dir),
+            lambda: memory_prompt(self.convo_id, self._agent_session.memory_root
+                                  if self._agent_session is not None else self.convo_dir),
             enabled=lambda: self.convo_dir is not None,
         )
         self.plugins.add_prompt_section(
@@ -2354,63 +2374,97 @@ class LiteTUI(App):
         reorders `_shutdown`, that arm goes red rather than this silently
         becoming a no-op.
         """
-        self._gui_quitting = True
-        # Block NEW model loads on every retained backend admission session BEFORE any
-        # await below can yield the loop — a load dispatched during async teardown
-        # would reserve capacity we are about to stop tracking. begin_close ONLY: no
-        # release, no unload (that needs confirmed quiescence, a separate slice). The
-        # returned report is retained for a shutdown diagnostic, never a cleanup claim.
-        from litetui import resource_session_lifecycle
-        self._shutdown_admission_report = resource_session_lifecycle.begin_shutdown(self)
-        delivery = getattr(self, '_child_delivery_timer', None)
-        if delivery is not None:
-            delivery.stop()
-        operations = getattr(self, '_agent_operations', None)
-        if operations is not None:
-            await operations.close()
-        await self._settle_before_teardown()
-        from litetui.launch_options import stop_custom
-        await asyncio.to_thread(stop_custom, self)
-        sidecar = getattr(self, "_sidecar_preview", None)
-        if sidecar is not None:
-            await asyncio.to_thread(sidecar.close)
-        backend = getattr(self, "backend", None)
-        native = getattr(backend, "owns_native_turns", False)
-        # 🔴 THIS BRANCH USED TO SIT INSIDE `if backend.name == "codex"`, WHICH
-        # NO CLAUDE BACKEND CAN EVER SATISFY (ClaudeBackend.name is "claude").
-        # It read as the exit path for native runtimes and was dead code, so a
-        # normal app exit never closed the owned claude.exe at all.
-        if backend is not None and not native and getattr(backend, "name", None) == "codex":
-            if hasattr(backend, "app_server"):
-                await backend.app_server.close()
-            else:
-                backend.shutdown()
-        # Owned cleanup outlives the backend that started it: switching away
-        # from Claude leaves its close task on the app, so exit settles the
-        # accumulated handles whether or not Claude is still selected.
-        if native or getattr(self, "_claude_closing", None):
-            from litetui.claude_backend import close_native, settle_close
-            close_native(self, backend)
-            for failure in await settle_close(self):
-                # Straight to the sink, not to chat: the widget tree is being
-                # pruned around this call, so a _system line can raise or land
-                # on a screen nobody will see again — and a cleanup failure is
-                # exactly the thing that must outlive the window.
-                runtime_log.record_error("claude_cleanup_failed", detail=failure)
-        await super()._shutdown()
+        try:
+            self._gui_quitting = True
+            # Block NEW model loads on every retained backend admission session BEFORE any
+            # await below can yield the loop — a load dispatched during async teardown
+            # would reserve capacity we are about to stop tracking. begin_close ONLY: no
+            # release, no unload (that needs confirmed quiescence, a separate slice). The
+            # returned report is retained for a shutdown diagnostic, never a cleanup claim.
+            from litetui import resource_session_lifecycle
+            self._shutdown_admission_report = resource_session_lifecycle.begin_shutdown(self)
+            delivery = getattr(self, '_child_delivery_timer', None)
+            if delivery is not None:
+                delivery.stop()
+            operations = getattr(self, '_agent_operations', None)
+            if operations is not None:
+                await operations.close()
+            await self._settle_before_teardown()
+            from litetui.launch_options import stop_custom
+            await asyncio.to_thread(stop_custom, self)
+            sidecar = getattr(self, "_sidecar_preview", None)
+            if sidecar is not None:
+                await asyncio.to_thread(sidecar.close)
+            backend = getattr(self, "backend", None)
+            native = getattr(backend, "owns_native_turns", False)
+            # 🔴 THIS BRANCH USED TO SIT INSIDE `if backend.name == "codex"`, WHICH
+            # NO CLAUDE BACKEND CAN EVER SATISFY (ClaudeBackend.name is "claude").
+            # It read as the exit path for native runtimes and was dead code, so a
+            # normal app exit never closed the owned claude.exe at all.
+            if backend is not None and not native and getattr(backend, "name", None) == "codex":
+                if hasattr(backend, "app_server"):
+                    await backend.app_server.close()
+                else:
+                    backend.shutdown()
+            # Owned cleanup outlives the backend that started it: switching away
+            # from Claude leaves its close task on the app, so exit settles the
+            # accumulated handles whether or not Claude is still selected.
+            if native or getattr(self, "_claude_closing", None):
+                from litetui.claude_backend import close_native, settle_close
+                close_native(self, backend)
+                for failure in await settle_close(self):
+                    # Straight to the sink, not to chat: the widget tree is being
+                    # pruned around this call, so a _system line can raise or land
+                    # on a screen nobody will see again — and a cleanup failure is
+                    # exactly the thing that must outlive the window.
+                    runtime_log.record_error("claude_cleanup_failed", detail=failure)
+            await super()._shutdown()
+        finally:
+            await self._release_owned_storage()
+
+    async def _release_owned_storage(self) -> None:
+        session = getattr(self, '_agent_session', None)
+        if session is None:
+            self.store.release()
+            return
+        async def cleanup():
+            # Registration retains this lock until its thread joins.
+            async with self._owned_registration_lock:
+                try:
+                    self.store.release()
+                finally:
+                    session.release()
+        operation = getattr(self, '_owned_cleanup_task', None)
+        if operation is None:
+            operation = self._owned_cleanup_task = asyncio.create_task(cleanup())
+        cancelled = False
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            try:
+                operation.result()
+            except Exception:
+                pass
+            raise asyncio.CancelledError
+        operation.result()
 
     async def on_unmount(self) -> None:
-        local_rpc = getattr(self, '_local_rpc', None)
-        if local_rpc is not None:
-            await local_rpc.close()
-        self._stop_footer_sampler()
-        from litetui import voice_backend
-        voice_backend.stop()
-        self._hook_shutting_down = True
-        hook_host.leave_conversation(self)
-        hook_host.queue_lifecycle(self, "app_shutdown")
-        await hook_host.drain_lifecycle(self)
-        self.store.release()
+        try:
+            local_rpc = getattr(self, '_local_rpc', None)
+            if local_rpc is not None:
+                await local_rpc.close()
+            self._stop_footer_sampler()
+            from litetui import voice_backend
+            voice_backend.stop()
+            self._hook_shutting_down = True
+            hook_host.leave_conversation(self)
+            hook_host.queue_lifecycle(self, "app_shutdown")
+            await hook_host.drain_lifecycle(self)
+        finally:
+            await self._release_owned_storage()
 
     @work(exclusive=True, group="mcp")
     async def _mcp_connect(self) -> None:
@@ -2514,6 +2568,49 @@ class LiteTUI(App):
                 f"[!] mcp {name}: started but listed no tools after "
                 f"{len(MCP_RETRY_DELAYS)} retries; /mcp to reconnect")
 
+    async def _register_owned_startup(self) -> bool:
+        """One strict receipt before a ready event or launch prompt, never races."""
+        session = getattr(self, '_agent_session', None)
+        if session is None:
+            return True
+        async with self._owned_registration_lock:
+            if self._owned_launch_error:
+                self._cli_launch_error = self._owned_launch_error
+                return False
+            try:
+                session.authority
+                if not self.seat.registered:
+                    operation = asyncio.create_task(asyncio.to_thread(self.seat.register))
+                    cancelled = False
+                    # Cancellation never abandons the thread or unlocks authority.
+                    # Repeated cancel requests still join the one operation.
+                    while not operation.done():
+                        try:
+                            await asyncio.shield(operation)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                    if cancelled:
+                        # Consume any exception before propagating cancellation.
+                        try:
+                            operation.result()
+                        except Exception:
+                            pass
+                        raise asyncio.CancelledError
+                    if not operation.result():
+                        raise OSError(str(self.seat.error))
+                session.authority
+                return True
+            except (ValueError, OSError) as exc:
+                self._owned_launch_error = 'Owned agent registration blocked: ' + str(exc)
+                self._cli_launch_error = self._owned_launch_error
+                # A failed child does not retain the agent indefinitely. Drop
+                # conversation capability first; every later owned writer refuses.
+                try:
+                    self.store.release()
+                finally:
+                    session.release()
+                return False
+
     @work(exclusive=True, group="inbox")
     async def _inbox_monitor(self) -> None:
         """Register the seat, then wake this agent when its own mail lands.
@@ -2534,7 +2631,9 @@ class LiteTUI(App):
             except TimeoutError:
                 pass
         _sync_seat_resolution(self)
-        ok = await asyncio.to_thread(self.seat.register)
+        ok = (await self._register_owned_startup()
+              if getattr(self, '_agent_session', None) is not None
+              else await asyncio.to_thread(self.seat.register))
         self._seat_started = True
         if ok and self._resumed_seat_name and self.seat.name != self._resumed_seat_name:
             async with self._seat_claim_lock:
@@ -3608,11 +3707,13 @@ class LiteTUI(App):
     # per exchange.
 
     def _read_store_file(self, name: str, cap: int) -> str:
-        # A staged conversation has no directory yet, so there is nothing to
-        # read. Deliberately does NOT materialise: reading must not create.
-        if self.convo_dir is None or getattr(self, "_convo_pending", False):
+        # New conversations borrow existing agent memory before first turn.
+        # Legacy staged conversations have no memory yet. Reads never materialise.
+        session = getattr(self, "_agent_session", None)
+        if session is None and (self.convo_dir is None or getattr(self, "_convo_pending", False)):
             return ""
-        p = self.convo_dir / name
+        root = session.memory_root if session is not None else self.convo_dir
+        p = root / name
         try:
             # errors="replace" ON PURPOSE: a store file that carries a stray
             # non-UTF-8 byte (e.g. a cp1252 em dash, 0x97, written by an
@@ -4004,8 +4105,10 @@ class LiteTUI(App):
             if (not isinstance(requested, str) or requested in ('.', '..')
                     or any(c in requested for c in '/\\:')):
                 raise ValueError('Expected a conversation ID, not a path')
-            root = paths.CONVO_DIR.resolve()
-            target = (root / requested / 'convo.jsonl').resolve()
+            session = getattr(self, '_agent_session', None)
+            root = (session.memory_root / 'conversations' if session is not None else paths.CONVO_DIR).resolve()
+            target = (session.conversation_directory(requested) / 'convo.jsonl'
+                      if session is not None else (root / requested / 'convo.jsonl').resolve())
             if target.parent.parent != root or not target.is_file():
                 raise ValueError('Conversation does not exist in this data root')
             if not self._resume(target, startup=True):
@@ -4019,6 +4122,14 @@ class LiteTUI(App):
         return True
 
     def _resume(self, path: Path, *, startup: bool = False) -> bool:
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                expected = self._agent_session.conversation_directory(path.parent.name) / 'convo.jsonl'
+                if path != expected:
+                    raise ValueError('Resume target is outside the selected agent')
+            except (ValueError, OSError) as exc:
+                self._system(str(exc))
+                return False
         try:
             meta, msgs = ConversationRepository.read(path)
         except OSError as e:
@@ -4035,6 +4146,10 @@ class LiteTUI(App):
             self._system(f"{path.name} holds no messages — not resuming.")
             return False
 
+        if (getattr(self, '_agent_session', None) is not None
+                and meta.get('id') not in (None, path.parent.name)):
+            self._system('Transcript identity disagrees with its owned conversation folder')
+            return False
         try:
             self.store.acquire(path.parent)
         except OSError as exc:
@@ -4060,8 +4175,10 @@ class LiteTUI(App):
         self._bind_task_store()
         saved_name = meta.get("agent_name")
         saved_name = saved_name.strip() if isinstance(saved_name, str) else ""
-        registry_name = self.seat.registry_name()
-        self._resumed_seat_name = self._launch_seat_name or registry_name or saved_name or None
+        owned = getattr(self, '_agent_session', None)
+        registry_name = owned.authority.name if owned is not None else self.seat.registry_name()
+        self._resumed_seat_name = (registry_name if owned is not None else
+                                  self._launch_seat_name or registry_name or saved_name or None)
         if registry_name and not self._launch_seat_name and registry_name != self.seat.name:
             self.seat.name = registry_name  # footer reflects the existing claim immediately
         if self._resumed_seat_name and self._resumed_seat_name != registry_name:
@@ -4094,7 +4211,9 @@ class LiteTUI(App):
         # it verbatim tells the model to answer mail as an id nothing can
         # deliver to. Rewrite that one sentence; leave the rest alone.
         self._sync_fleet_identity()
-        (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
+        memory_root = (self._agent_session.memory_root
+                       if getattr(self, '_agent_session', None) is not None else self.convo_dir)
+        (memory_root / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
         self._render_resumed(path)
         self._native_history_worker = None
@@ -4196,10 +4315,12 @@ class LiteTUI(App):
         note = f", {tools} tool result(s) restored to context but not redrawn" if tools else ""
         if native_tools:
             note += f", {native_tools} Codex tool card(s) restored"
-        mem_dir = self.convo_dir / paths.MEMORIES_DIR
+        memory_root = (self._agent_session.memory_root
+                       if getattr(self, '_agent_session', None) is not None else self.convo_dir)
+        mem_dir = memory_root / paths.MEMORIES_DIR
         n_mem = len(list(mem_dir.glob("*.md"))) if mem_dir.exists() else 0
         store = ", ".join(
-            f for f in CONVO_SEED_FILES if (self.convo_dir / f).exists()
+            f for f in CONVO_SEED_FILES if (memory_root / f).exists()
         ) or "none"
         self._system(
             f"Resumed {self.convo_id}\n"
@@ -4837,6 +4958,15 @@ class LiteTUI(App):
             return
 
         cs = convo_settings_mod.load(self.convo_dir)
+        if getattr(self, '_agent_session', None) is not None:
+            from litetui.agent_launch_context import apply_settings
+            apply_settings(self._agent_session, self.settings)
+            authority = self._agent_session.authority
+            cs.backend, cs.model = authority.backend, authority.model
+            cs.thinking_level = authority.thinking_level
+            cs.reasoning_effort = authority.thinking_level if authority.backend == 'codex' else None
+            cs.execution = {**cs.execution, 'backend': authority.backend,
+                            'default_model': authority.model, 'thinking_level': authority.thinking_level}
         self._convo_settings = cs
         # T1043 S1: a conversation born in a spawned seat stays one when it is
         # relaunched without the marker. Ryan resuming a fleet conversation
@@ -4855,12 +4985,18 @@ class LiteTUI(App):
         for key, env in settings_mod.ENV_OVERRIDES.items():
             if os.environ.get(env):
                 setattr(self.settings, key, settings_mod._coerce(key, os.environ[env], getattr(self.settings, key)))
+        if getattr(self, '_agent_session', None) is not None:
+            # Environment and legacy conversation snapshots cannot replace the
+            # selected agent's backend/model/thinking authority.
+            apply_settings(self._agent_session, self.settings)
         for diagnostic in getattr(cs, '_diagnostics', ()):
             self._system(f'Conversation settings warning: {diagnostic}')
         for key, value in getattr(self, '_launch_overrides', {}).items():
             if key in self._invocation_saved_values:
                 self._invocation_saved_values[key] = deepcopy(getattr(self.settings, key))
                 setattr(self.settings, key, deepcopy(value))
+        if getattr(self, '_agent_session', None) is not None:
+            apply_settings(self._agent_session, self.settings)
         current_backend = getattr(self, '_backend', None)
         if current_backend is not None and hasattr(current_backend, 'set_settings'):
             current_backend.set_settings(self.settings)
@@ -4872,6 +5008,10 @@ class LiteTUI(App):
             env = settings_mod.ENV_OVERRIDES.get(key)
             if env and os.environ.get(env):
                 setattr(effective_cs, own, getattr(self.settings, key))
+        if getattr(self, '_agent_session', None) is not None:
+            effective_cs.backend, effective_cs.model = authority.backend, authority.model
+            effective_cs.thinking_level = authority.thinking_level
+            effective_cs.reasoning_effort = cs.reasoning_effort
         if getattr(self, '_cli_initial_backend', None):
             saved = getattr(self, '_invocation_saved_values', {})
             saved['backend'] = cs.backend or cs.execution.get('backend', saved.get('backend', self.settings.backend))
@@ -4902,7 +5042,8 @@ class LiteTUI(App):
         if recorded_model and model and model != recorded_model:
             self._system(
                 f"⚠ This conversation ran on {recorded_model}; this launch switches it to {model}.")
-        if not cli_model and model and self.available_models and model not in self.available_models:
+        if (getattr(self, '_agent_session', None) is None and not cli_model
+                and model and self.available_models and model not in self.available_models):
             # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
             # the server no longer has — it was uninstalled, or this is another
             # machine. Falling back silently would answer in a different model's
@@ -5460,6 +5601,8 @@ class LiteTUI(App):
                 await asyncio.wait_for(done.wait(), getattr(getattr(self, '_launch_options', None), 'timeout', 30) + 5)
             except TimeoutError:
                 self._cli_launch_error = 'Launch configuration did not settle in time'
+        if getattr(self, '_agent_session', None) is not None:
+            await self._register_owned_startup()
         from litetui.version import __version__
 
         # T594: resolve BEFORE announcing, so `ready` names the model that
@@ -5467,11 +5610,13 @@ class LiteTUI(App):
         note = ""
         if getattr(self, "_rpc", False):   # doubles predate this seam
             action, model, why = self._headless_model_decision()
-            if action == "substitute" and model:
+            if action == "substitute" and model and getattr(self, '_agent_session', None) is None:
                 self._model_id = model
                 note = why
-            elif action == "refuse":
+            elif action == "refuse" or (action == "substitute" and getattr(self, "_agent_session", None) is not None):
                 note = why
+                if getattr(self, "_agent_session", None) is not None:
+                    self._cli_launch_error = "Selected agent model is not ready; no identity fallback is permitted"
         from litetui.task_supervisor import process_creation_identity
         from litetui.gui_rpc import OPERATIONS
         self._rpc_emit({
@@ -5587,7 +5732,9 @@ class LiteTUI(App):
                 await asyncio.sleep(0.5)
             if getattr(self, '_launch_options', None) is not None:
                 await asyncio.wait_for(self._connect_done.wait(), self._launch_options.timeout + 5)
-            self._cli_launch_error = None
+            self._cli_launch_error = getattr(self, '_owned_launch_error', None)
+            if self._cli_launch_error:
+                return
             if getattr(self, '_launch_options', None) is not None and not self._gui_connection_success:
                 self._cli_launch_error = 'Backend connection/startup failed; launch prompt blocked'
                 return
@@ -5645,6 +5792,9 @@ class LiteTUI(App):
                 if not info or not info[2] or not info[0] or info[0] < requested_ctx:
                     raise llm_backend.BackendError(f'Requested {requested_ctx} context tokens, but the backend did not confirm that capacity')
                 self.ctx_max, _model_type, self.ctx_loaded = info
+            if (getattr(self, '_agent_session', None) is not None
+                    and not await self._register_owned_startup()):
+                return
             if self._cli_system_prompt:
                 self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
             if self._first_prompt:
@@ -8244,16 +8394,28 @@ class LiteTUI(App):
         a missing capability must mean "no opinion", never AttributeError
         mid-turn.
         """
+        if getattr(self, '_agent_session', None) is not None:
+            if not await self._register_owned_startup():
+                raise llm_backend.BackendError(self._owned_launch_error)
         if getattr(self, "_startup_resume_error", None):
             raise llm_backend.BackendError(self._startup_resume_error)
         if getattr(self, "_resume_backend_error", None):
             raise llm_backend.BackendError(self._resume_backend_error)
         if getattr(self, "_resume_connection_error", None):
             raise llm_backend.BackendError(self._resume_connection_error)
+        if getattr(self, '_agent_session', None) is not None:
+            authority = self._agent_session.authority
+            if self.model_id != authority.model:
+                raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
+            loaded = {r.key for r in getattr(self, 'model_rows', {}).values() if r.loaded}
+            if loaded and authority.model not in loaded:
+                raise llm_backend.BackendError('Selected agent model is not loaded; no identity fallback is permitted')
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam
             action, model, why = self._headless_model_decision()
+            if (action == "substitute" and getattr(self, '_agent_session', None) is not None):
+                action, model, why = 'refuse', None, 'Selected agent model is not loaded; no identity fallback is permitted'
             if action == "refuse":
                 self._rpc_emit({"type": "error", "kind": "model_not_loaded",
                                 "message": why})
