@@ -262,6 +262,9 @@ async def queued_prompt(app):
         return app._deliver_queued_input()
     if not app._pending_input or app._stop_requested:
         return False
+    from litetui.claude_turn import queue_ready
+    if not queue_ready(app, app._pending_input[0]):
+        return False
     return await admit_prompt(app, {**app._pending_input.pop(0), "_gui_in_turn": True})
 
 

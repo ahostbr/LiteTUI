@@ -211,3 +211,52 @@ async def test_real_textual_seat_survives_startup_inbox_uncertainty(tmp_path):
         await pilot.press("x")
         assert app.query_one("#message-input").value.endswith("x"), "input remains responsive"
         app._backend = None  # fake runtime has no shutdown surface
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hooks_enabled", [False, True])
+@pytest.mark.parametrize("switch", ["backend", "conversation", "segment"])
+async def test_local_round_boundary_never_consumes_wrong_owner_claude_input(tmp_path, monkeypatch, hooks_enabled, switch):
+    app, _, before = resumed_host(tmp_path, "submitted")
+    hook_host.start_prompt(app, {"content": "held startup mail", "source": "harness"})
+    held = app._pending_input[0]
+    later = {"content": "later local input", "source": "typed"}
+    app._pending_input.append(later)
+    if switch == "backend":
+        app.backend = SimpleNamespace(name="lmstudio", owns_native_turns=False)
+    elif switch == "conversation":
+        app.convo_id = "other"
+    else:
+        app._claude_ledger.select_segment(str(tmp_path.resolve()), new=True)
+    app._deliver_queued_input = lambda: LiteTUI._deliver_queued_input(app)
+    calls = []
+
+    async def invoke(*args, **kwargs):
+        from litetui.lifecycle_hooks import HookResult
+        calls.append("hook")
+        return HookResult(True)
+
+    monkeypatch.setattr(hook_host, "invoke", invoke)
+    if hooks_enabled:
+        state = Snapshot(hooks=(Hook("observe", ("prompt_before",), "unused"),))
+        monkeypatch.setattr(hook_host, "snapshot", lambda app: state)
+    assert not await hook_host.queued_prompt(app)
+    assert app._pending_input == [held, later], "wrong-owner head must block, not rotate FIFO"
+    assert app.appended == [] and app.streams == []
+    assert calls == [], "ownership refusal must happen before dispatching prompt hooks"
+    notice_count = len(app.notices)
+    for _ in range(5):
+        assert not await hook_host.queued_prompt(app)
+    assert len(app.notices) == notice_count
+    assert app._pending_input == [held, later]
+    if switch != "segment":
+        assert app._claude_ledger.file.read_bytes() == before
+    app.convo_id = "saved"
+    app.backend = SimpleNamespace(name="claude", owns_native_turns=True, session=None)
+    if switch == "segment":
+        return  # A new segment never inherits the old queue.
+    command(app, "resolve")
+    assert await hook_host.queued_prompt(app)
+    assert [row["content"] for row in app.appended] == [held["content"]]
+    assert app._pending_input == [later]
+    assert calls == (["hook"] if hooks_enabled else [])

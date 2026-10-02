@@ -9316,6 +9316,9 @@ class LiteTUI(App):
             return False
         if self._pending_input[0].get("_codex_entry"):
             return False  # Native delivery is reconciled by the idle queue path.
+        from litetui.claude_turn import queue_ready
+        if not queue_ready(self, self._pending_input[0]):
+            return False
         # ONE per boundary, FIFO -- never the whole queue. Consecutive role:user
         # turns are a chat-template gamble and qwen's template 500s on some
         # shapes, which is exactly why _flush_pending_input has always sent one
