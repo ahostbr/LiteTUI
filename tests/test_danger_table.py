@@ -655,3 +655,14 @@ def test_t0116_review_heredoc_wrapper_comment_does_not_erase_execution(suffix):
     decision = _shell(command, shell="bash")
     print("RECEIPT", repr(command), decision.action, decision.danger)
     assert decision.action == tp.CONFIRM
+
+
+@pytest.mark.parametrize("command,action", [
+    ("cat <<'EOF' | bash\nrm old\nEOF", tp.CONFIRM),
+    ("<<'EOF' bash\nrm old\nEOF", tp.CONFIRM),
+    ("bash -c 'echo harmless' <<'EOF'\nrm old\nEOF", tp.ALLOW),
+])
+def test_t0116_review2_heredoc_final_consumer(command, action):
+    decision = _shell(command, shell="bash")
+    print("REVIEW2", repr(command), decision.action, decision.danger)
+    assert decision.action == action

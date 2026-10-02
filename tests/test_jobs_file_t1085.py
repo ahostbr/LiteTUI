@@ -416,3 +416,14 @@ async def test_t0116_review_heredoc_protected_writer_actual_host(tmp_path, monke
     print("RECEIPT HOST", repr(command), repr(result))
     assert result, "protected writer allowed"
     assert sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("depth", [3, 18])
+async def test_t0116_review2_jobs_linear_depth_actual_host(tmp_path, monkeypatch, depth):
+    a, sent = _agent(tmp_path, monkeypatch)
+    command = "echo " + "$(" * depth + "rm " + tmp_path.as_posix() + "/jobs.json" + ")" * depth
+    assert len(command) < 4096
+    out = await a._authorize_action("bash", {"command": command}, tool_policy.SHELL_POLICY, workspace=tmp_path)
+    print("REVIEW2 HOST DEPTH", depth, repr(out))
+    assert out and sent == []

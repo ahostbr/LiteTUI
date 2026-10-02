@@ -367,6 +367,7 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
                  "raw": command, "shell": shell, "complete": False}]
     result = []
     heredoc = False
+    here_inputs = []
     words = []
     redirects = []
     extras = []
@@ -388,14 +389,15 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
         token, start = "", None
 
     def finish(stop):
-        nonlocal words, redirects, extras, segment_start, pending
+        nonlocal words, redirects, extras, segment_start, pending, here_inputs
         flush(stop)
         if words or redirects:
             result.append({"words": words, "redirects": redirects,
                            "raw": command[segment_start:stop], "shell": shell,
-                           "complete": not quote and pending is None, "heredoc": heredoc})
+                           "complete": not quote and pending is None, "heredoc": heredoc,
+                           "here_inputs": here_inputs, "separator": command[stop:stop + 1]})
         result.extend(extras)
-        words, redirects, extras, pending = [], [], [], None
+        words, redirects, extras, pending, here_inputs = [], [], [], None, []
         segment_start = stop + 1
 
     i = 0
@@ -554,24 +556,10 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
                 ending = re.search(r"(?m)^" + (r"\t*" if match.group(1) else "") + re.escape(match.group(3)) + r"(?:\r?$)", command[newline + 1:])
                 if ending:
                     flush(i)
-                    argv = [word[0] for word in words]
-                    while argv and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", argv[0]):
-                        argv = argv[1:]
-                    while argv and argv[0].lower() in {"env", "sudo", "command"}:
-                        argv = argv[1:]
-                        while argv and (argv[0].startswith("-") or "=" in argv[0]):
-                            takes_value = argv[0] in {"-u", "-g", "--user", "--group", "--unset"}
-                            argv = argv[2:] if takes_value else argv[1:]
-                    head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe") if argv else ""
                     body_start = newline + 1
                     body_stop = body_start + ending.start()
                     stop = body_start + ending.end()
-                    body = command[body_start:body_stop]
-                    if head in {"bash", "sh"}:
-                        extras.extend(shell_commands(body, "bash", _depth=_depth + 1))
-                    elif head in {"python", "python3", "node"}:
-                        extras.append({"words": [(head, 0, 0), ("-e" if head == "node" else "-c", 0, 0), (body, 0, 0)],
-                                       "redirects": [], "raw": body, "shell": shell, "complete": True})
+                    here_inputs.append(command[body_start:body_stop])
                     heredoc = True
                     command = command[:body_start] + " " * (stop - body_start) + command[stop:]
                     i += len(match.group(0))
@@ -604,6 +592,44 @@ def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -
             token += ch
         i += 1
     finish(len(command))
+    # Input redirections can precede argv and a pipe consumer can occur AFTER
+    # the << operator. Resolve literal stdin execution only after full parsing.
+    def stdin_head(part):
+        argv = [word[0] for word in part["words"]]
+        while argv and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", argv[0]):
+            argv = argv[1:]
+        while argv and argv[0].lower() in {"env", "sudo", "command"}:
+            argv = argv[1:]
+            while argv and (argv[0].startswith("-") or "=" in argv[0]):
+                takes_value = argv[0] in {"-u", "-g", "--user", "--group", "--unset"}
+                argv = argv[2:] if takes_value else argv[1:]
+        head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe") if argv else ""
+        # A literal command/script argument takes precedence over stdin code.
+        args = argv[1:]
+        consumes = head in {"bash", "sh", "python", "python3", "node"}
+        if any(arg in {"-c", "-e", "-m", "--command", "--eval"} for arg in args):
+            consumes = False
+        if any(not arg.startswith("-") for arg in args if arg != "-"):
+            consumes = False
+        return head, consumes
+
+    here_commands = []
+    for n, part in enumerate(result):
+        for body in part.get("here_inputs", []):
+            consumer = part
+            head, consumes = stdin_head(consumer)
+            # Only literal cat passthrough is proved here, not arbitrary pipeline
+            # transformations. A following literal interpreter is the code sink.
+            if head == "cat" and part.get("separator") == "|" and n + 1 < len(result):
+                consumer = result[n + 1]
+                head, consumes = stdin_head(consumer)
+            if consumes:
+                if head in {"bash", "sh"}:
+                    here_commands.extend(shell_commands(body, "bash", _depth=_depth + 1))
+                else:
+                    here_commands.append({"words": [(head, 0, 0), ("-e" if head == "node" else "-c", 0, 0), (body, 0, 0)],
+                                          "redirects": [], "raw": body, "shell": shell, "complete": True})
+    result.extend(here_commands)
     # Only actual shell heads may give -c/-Command//c executable meaning.
     expanded = []
     for part in result:
