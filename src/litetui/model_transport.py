@@ -230,6 +230,12 @@ def _metadata(message: dict, provider: str, model: str) -> list:
     return []
 
 
+_CODEX_MISSING_TOOL_OUTPUT = (
+    "[litetui transport] no tool output was recorded for this call; "
+    "outcome UNKNOWN. Verify any side effects before retrying."
+)
+
+
 def codex_request(kwargs: dict) -> dict:
     model = kwargs["model"]
     items, instructions = [], []
@@ -276,10 +282,27 @@ def codex_request(kwargs: dict) -> dict:
                     "arguments": call["function"]["arguments"],
                 }
             )
+    # Saved calls can lack outputs after a user stop or a process interruption.
+    # The missing result alone establishes neither the cause nor the outcome.
+    # Resume (and compaction) must not replay that dangling call to Responses:
+    # it rejects the whole request, even when later user turns follow the call.
+    # Repair only the outgoing items; keep the durable transcript unchanged and
+    # never imply the tool did not run or retry a potentially side-effecting call.
+    output_ids = {item["call_id"] for item in items
+                  if item.get("type") == "function_call_output"}
+    paired_items = []
+    for item in items:
+        paired_items.append(item)
+        if item.get("type") == "function_call" and item["call_id"] not in output_ids:
+            paired_items.append({
+                "type": "function_call_output",
+                "call_id": item["call_id"],
+                "output": _CODEX_MISSING_TOOL_OUTPUT,
+            })
     body = {
         "model": model,
         "instructions": "\n\n".join(instructions),
-        "input": items,
+        "input": paired_items,
         "store": False,
         "stream": True,
         "include": ["reasoning.encrypted_content"],
