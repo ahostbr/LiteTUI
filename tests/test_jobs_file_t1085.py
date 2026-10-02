@@ -160,9 +160,47 @@ async def test_git_explicit_schedule_writers_are_refused(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("verb", ["show HEAD:", "diff -- ", "status -- ", "-C {root} diff -- "])
-def test_git_schedule_readers_still_pass(tmp_path, monkeypatch, verb):
+def test_git_schedule_reads_are_intentionally_refused(tmp_path, monkeypatch, verb):
     a, _ = _agent(tmp_path, monkeypatch)
     verb = verb.format(root=tmp_path)
     target = "jobs.json" if verb.startswith("-C") else f"{tmp_path}/jobs.json"
     args = {"command": f"git {verb}{target}"}
-    assert seat_authority.jobs_file_refusal(a, args, tmp_path) is None
+    assert seat_authority.jobs_file_refusal(a, args, tmp_path) is not None
+
+
+FINAL_GIT_WITNESSES = [
+    "git --no-pager -C {root} clean -fx -- jobs.json",
+    "git --no-pager -C {root} restore -- jobs.json",
+    "git --git-dir={root}/.git --work-tree={root} clean -fx -- jobs.json",
+    "git -c core.worktree={root} clean -fx -- jobs.json",
+    "GIT_WORK_TREE={root} git clean -fx -- jobs.json",
+    "git -C {root} clean -fx -- notes.md",  # accepted relocation friction
+    "git diff --output={root}/jobs.json HEAD",
+    "git log --output={root}/jobs.json",
+    "git show HEAD:{root}/jobs.json",
+    "git --no-pager -C {root} diff -- jobs.json",
+]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("template", FINAL_GIT_WITNESSES)
+async def test_final_git_guard_cross_root_witnesses(tmp_path, monkeypatch, template):
+    a, sent = _agent(tmp_path, monkeypatch)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    (protected / ".litetui-data.json").write_text("{}")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    args = {"command": template.format(root=protected)}
+    denied = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=plain)
+    assert denied and "[jobs-file]" in denied[0]
+    assert sent == []
+    assert seat_authority.jobs_file_refusal(_ryans(a), args, plain) is None
+    assert a._active_tool_profile == AUTONOMOUS
+
+
+@pytest.mark.parametrize("command", ["git status", "git diff -- notes.md", "git add notes.md",
+                                      "git restore -- notes.md", "git show HEAD:notes.md"])
+def test_normal_worktree_git_friction_controls(tmp_path, monkeypatch, command):
+    a, _ = _agent(tmp_path, monkeypatch)
+    assert seat_authority.jobs_file_refusal(a, {"command": command}, tmp_path) is None

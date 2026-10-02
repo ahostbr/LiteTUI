@@ -209,6 +209,9 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
     _written(args, paths, commands)
     if not paths and not commands:
         return None
+    for command in commands:
+        if reason := deny_floor.jobs_git_refusal(command, workspace):
+            return None if is_ryans_own(app, recheck=True) else reason
     bases = [Path(workspace), Path.cwd()]
     if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
         bases.append(Path(workspace) / args["cwd"])

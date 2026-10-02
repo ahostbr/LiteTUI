@@ -49,11 +49,14 @@ Four rules, all about what the command TARGETS, never about how it is spelled:
                           tee / Out-File / Set-Content / Add-Content / New-Item, a
                           copy ONTO it, any move or rename of it, a delete, an
                           editor, sed -i or `python -c` are writes; a pure reader
-                          (cat, type, Get-Content, rg, git, a copy FROM it, ...)
+                          (cat, type, Get-Content, rg, a copy FROM it, ...)
                           is not. `write_refusal` judges a Write/Edit tool's path
                           by this rule ALONE. LiteTUI passes `jobs=False`: there the
                           rule is seat-dependent (its seat_authority), because the
                           user's own seat may write its schedule. Windows
+                          Git invocations naming the protected schedule are refused
+                          even for reads; use a file-read tool. Relocated Git writers
+                          with uncertain targets are refused conservatively. Windows
                           aliases of the name (`jobs.json::$DATA`, `:x`, a trailing
                           dot or space) are the same file (canonical_name, A1).
 
@@ -219,10 +222,6 @@ _JOBS_READERS = frozenset({
 })
 #: Copies read their SOURCE: only a copy whose destination is the file writes it.
 _JOBS_COPIES = frozenset({"cp", "copy", "copy-item", "cpi", "xcopy"})
-#: Git's command head does not prove a read: restore/checkout/rm/mv write paths.
-#: Unknown subcommands/options stay refused when they explicitly name the file.
-_JOBS_GIT_READERS = frozenset({"show", "diff", "status", "log", "ls-files", "ls-tree",
-                              "cat-file", "grep", "blame", "rev-parse", "check-ignore"})
 
 #: Recognize complete PowerShell here-strings, including expandable ones so
 #: literal-looking text inside an expandable body cannot gain an exemption.
@@ -350,6 +349,56 @@ def write_refusal(path, workspace, home=None) -> str | None:
     return _jobs_say(target) if is_jobs_file(target) else None
 
 
+def jobs_git_refusal(command, workspace, home=None) -> str | None:
+    """Conservative Git schedule guard, not a shell/Git parser or a sandbox.
+
+    Git reads of a protected schedule are intentionally refused too. Relocated
+    non-pure-read commands may operate outside the shell cwd, so uncertain ones
+    fail closed even without a jobs pathspec. This can refuse ordinary relocated
+    worktree edits: use a normal cwd and literal non-schedule paths instead.
+    """
+    if not isinstance(command, str):
+        command = " ".join(map(str, command or ()))
+    home = Path(home) if home is not None else Path.home()
+    base = Path(workspace)
+    for segment in re.split(r"[;&|\n]", command):
+        git = re.search(r"(?i)(?<![\w./\\-])git(?:\.exe)?(?=\s)", segment)
+        if not git:
+            continue
+        args = [_unquote(word) for word in _TOKEN.findall(segment[git.end():])]
+        relocating = (any(word == "-C" or word.startswith(("--git-dir", "--work-tree"))
+                          for word in args)
+                      or re.search(r"(?i)core\.worktree|GIT_DIR|GIT_WORK_TREE", segment))
+        # No Git exemption for a protected schedule argument, including native
+        # --output= paths or revision:path spellings. Quoted argv stays a word.
+        for word in args:
+            path = word.partition("=")[2] if "=" in word else word
+            if not _JOBS.search(path):
+                continue
+            if relocating:
+                return _say("jobs-file", "a relocated Git invocation names jobs.json; "
+                            "its schedule target cannot be proven outside a data root",
+                            "Read schedules with a file-read tool instead.")
+            if ":" in path and not re.match(r"^[A-Za-z]:", path):
+                path = path.partition(":")[2]  # revision:path
+            if reason := write_refusal(path, base, home):
+                return reason
+        if not relocating:
+            continue
+        # This is only a small positive proof for read-only commands, not a
+        # parser that rescues arbitrary global options. Unknown forms deny.
+        pure = re.fullmatch(
+            r"(?:--no-pager\s+|-C\s+(?:[^\s\"']+|'[^']*'|\"[^\"]*\")\s+)*"
+            r"(?:show|diff|status|log|ls-files|ls-tree|rev-parse|check-ignore)"
+            r"(?:\s+(?![^\s]*--out)[^;&|\n]*)?", segment[git.end():].strip())
+        if pure and not any(word.startswith("--out") for word in args):
+            continue
+        return _say("jobs-file", "a repo-relocating Git write may change a LiteTUI "
+                    "schedule outside the shell cwd; its target is not proven safe",
+                    "Use a normal working directory and literal non-schedule paths instead.")
+    return None
+
+
 def jobs_write_target(command, workspace, home=None) -> Path | None:
     """The protected jobs.json a shell command writes, or None (T1085)."""
     if not isinstance(command, str):
@@ -409,9 +458,9 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
                 or not rest)
         return target if onto else None
     if head in {"git", "git.exe"}:
-        # Unknown subcommands/global options never gain a reader exemption.
-        # Reader execution features remain the documented non-sandbox ceiling.
-        return None if git_args and git_args[0] in _JOBS_GIT_READERS else target
+        # Final T0116 ruling: even Git reads naming the protected schedule are
+        # refused. Read it with a file-read tool; no option-specific exemption.
+        return target
     if head in _JOBS_READERS:
         return None
     return target   # a move, rename, delete, editor, interpreter ...: fail closed
@@ -427,6 +476,8 @@ def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = Non
         command = " ".join(map(str, command or ()))
     workspace = Path(workspace)
     home = Path(home) if home is not None else Path.home()
+    if jobs and (reason := jobs_git_refusal(command, workspace, home)):
+        return reason
     if jobs and (target := jobs_write_target(command, workspace, home)):
         return _jobs_say(target)
     base: Path | None = workspace   # where relative targets resolve; None = unknown
