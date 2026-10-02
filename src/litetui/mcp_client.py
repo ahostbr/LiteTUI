@@ -35,11 +35,13 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from litetui import runtime_log, ttyguard
 from pathlib import Path
 
@@ -538,6 +540,17 @@ class HTTPMCPServer:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         headers.update(self.headers)
+        # Suite-only attribution: never leak seat identity to an unrelated MCP host.
+        endpoint = urlparse(self.url)
+        if (self.name == "litesuite-tools" and endpoint.scheme == "http"
+                and endpoint.hostname in {"localhost", "127.0.0.1", "::1"}
+                and endpoint.path.rstrip("/") == "/mcp"):
+            agent_id = next((os.environ[k] for k in (
+                "LITEHARNESS_AGENT_ID", "LITESUITE_AGENT_ID", "CLAUDE_CODE_SESSION_ID",
+                "CODEX_COMPANION_SESSION_ID") if os.environ.get(k)), None)
+            if agent_id and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", agent_id):
+                headers["X-LiteSuite-Agent-Id"] = agent_id
+            # No name/tier assertions: Suite resolves them from its local registry.
         req = urllib.request.Request(self.url, data=data, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
