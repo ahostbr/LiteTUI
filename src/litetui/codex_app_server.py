@@ -24,6 +24,7 @@ from litetui.model_transport import ProviderError, _chunk, collect
 class AppServer:
     def __init__(self, *, config_overrides=()):
         self.config_overrides = tuple(config_overrides)
+        self.execution_workspace = None
         self.environment = {}
         self.native_bridge = None
         self.async_questions = None
@@ -78,7 +79,10 @@ class AppServer:
                     if len(vendors) == 1
                     else [node, str(entry), "app-server"]
                 )
-            for override in self.config_overrides:
+            from litetui.codex_mcp import config_overrides
+            # Workspace-scoped registrations must win over the shared global
+            # config and earlier caller overrides. No shared file is modified.
+            for override in (*self.config_overrides, *config_overrides(self.execution_workspace or workspace())):
                 args.extend(["-c", override])
             self.events = asyncio.Queue()
             self.runtime_activity = RuntimeActivity()
@@ -650,6 +654,8 @@ class AppServerTransport:
 
     async def _stream(self, kwargs):
         async with self.lock:
+            if isinstance(self.server, AppServer):
+                self.server.execution_workspace = workspace(self.app)
             if isinstance(self.server, AppServer) and self.server.native_bridge is None:
                 from litetui.codex_hook_bridge import NativeHookBridge
 
