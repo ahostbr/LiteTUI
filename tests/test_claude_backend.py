@@ -378,10 +378,134 @@ def test_the_prompt_is_fixed_for_the_life_of_the_segment(monkeypatch):
     assert "CHANGED-LATER" in system_prompt_for(app, fresh), "a new session sees the new store"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identities", ["missing", "stale", "stale-modern", "duplicate"])
+async def test_resume_refreshes_only_the_recorded_fleet_identity(monkeypatch, identities):
+    """T0253: late registration must repair the saved prompt, not recompose it."""
+    from litetui.claude_persistence import ClaudeLedger
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    app = _identity_app(monkeypatch)
+    app.seat.registered = False
+    app._seat_started = False
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws", seed="SAVED-SEED")
+    ledger.bind_session(segment["id"], "native-resumed")
+    stale = ("You are registered in the LiteHarness fleet as PreviousSeat "
+             "(id 11111111-1111-1111-1111-111111111111, tier worker). ")
+    prefix = ("USER-EDITED SYSTEM PROMPT\n"
+              f'Quoted example: "{stale}"\n'
+              "You are registered in the LiteHarness fleet as documented below\n\n")
+    suffix = "TOOL-INVENTORY-MARKER\nSAVED STORE SNAPSHOT\nTRUSTED COMPACTION NOTE"
+    modern = stale.replace("(id ", "(your inbox/sender id (use it for any from=/--from): ")
+    old = {"missing": "", "stale": stale, "stale-modern": modern,
+           "duplicate": app._fleet_identity_sentence() + stale}[identities]
+    recorded = ledger.fix_system_prompt(segment["id"], prefix + old + suffix)
+    before = ledger.segment(segment["id"])
+    inventory = []
+    (app.convo_dir / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
+
+    async def register_late():
+        await asyncio.sleep(0.1)
+        app.seat.registered = True
+        app._seat_started = True
+        inventory.extend(app._all_tools())
+
+    task = asyncio.create_task(register_late())
+    try:
+        prompt = await prompt_for_new_session(app, segment)
+    finally:
+        await task
+    want = app._fleet_identity_sentence()
+    expected = prefix + want + suffix if old else recorded + "\n\n" + want
+    assert prompt == expected, "only the identity sentence may change"
+    assert prompt.count(want) == 1
+    assert prompt.startswith(prefix), "quoted and incomplete user-authored identity text stays intact"
+    assert app._all_tools() == inventory, "repair must not change the tool inventory"
+    after = ClaudeLedger(app.convo_dir).segment(segment["id"])
+    assert after == {**before, "system_prompt": expected}, "repair survives another resume"
+    saved_bytes = ledger.file.read_bytes()
+    assert await prompt_for_new_session(app, segment) == expected, "stale caller copies are harmless"
+    assert ledger.file.read_bytes() == saved_bytes, "repeat opens are idempotent"
+
+
+@pytest.mark.asyncio
+async def test_persisted_identity_repair_reaches_the_resumed_sdk_options(monkeypatch):
+    import sys
+
+    from litetui import claude_backend as cb
+    from litetui.claude_turn import ledger_for, session_for
+
+    # Substitute only the external SDK; use the real session-open adapter and tool bridge.
+    options = []
+    sdk = SimpleNamespace(
+        ClaudeAgentOptions=lambda **kw: options.append(kw) or kw,
+        HookMatcher=lambda **kw: kw,
+        tool=lambda name, *a: lambda fn: name,
+        create_sdk_mcp_server=lambda **kw: kw,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(cb, "sdk_module", lambda: sdk)
+
+    class FakeSession:
+        def __init__(self, opts):
+            self.options = opts
+            self.lifecycle = SimpleNamespace(cleanup_errors=[])
+
+        async def start(self):
+            return {}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(cb, "ClaudeSession", FakeSession)
+    app = _identity_app(monkeypatch)
+    app.seat.registered = True
+    app._seat_started = True
+    monkeypatch.setattr(app, "_system", lambda *a, **kw: None)
+    app.model_id = "sonnet"
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    ledger.bind_session(segment["id"], "native-resumed")
+    original = "USER EDITS\nSAVED TOOL TEXT"
+    ledger.fix_system_prompt(segment["id"], original)
+    # Simulate a relaunch: read the bound segment and prompt from disk, not that ledger.
+    del app._claude_ledger
+    backend = cb.ClaudeBackend(Settings(backend="claude"))
+    backend.models = {"sonnet": {"value": "sonnet"}}
+    app.backend = backend
+    expected = original + "\n\n" + app._fleet_identity_sentence()
+    for _ in range(2):
+        await session_for(app, backend, ledger_for(app).selected, None)
+        assert options[-1]["system_prompt"] == expected
+        assert options[-1]["resume"] == "native-resumed"
+        assert ledger_for(app).selected["system_prompt"] == expected
+        assert "harness" in options[-1]["mcp_servers"]["litetui"]["tools"]
+        await backend.close()
+    assert options[0]["tools"] == options[1]["tools"]
+    assert options[0]["mcp_servers"] == options[1]["mcp_servers"], "inventory stays unchanged"
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_add_an_identity_when_registration_fails(monkeypatch):
+    from litetui.claude_turn import ledger_for, prompt_for_new_session
+
+    app = _identity_app(monkeypatch)
+    app.seat.registered = False
+    app._seat_started = True  # first attempt ended, but it did not register
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    ledger.bind_session(segment["id"], "native-resumed")
+    recorded = ledger.fix_system_prompt(segment["id"], "SAVED USER PROMPT AND TOOL TEXT")
+    assert await prompt_for_new_session(app, segment) == recorded
+    assert ledger.segment(segment["id"])["system_prompt"] == recorded
+
+
 def test_a_segment_already_bound_under_the_preset_keeps_it(monkeypatch):
     from litetui.claude_turn import ledger_for, system_prompt_for
 
     app = _identity_app(monkeypatch)
+    app.seat.registered = True
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
     ledger.bind_session(segment["id"], "native-legacy")

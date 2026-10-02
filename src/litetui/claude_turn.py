@@ -38,6 +38,17 @@ def ledger_for(app):
 CLAUDE_TOOLS_OFF = "\nTools are off in LiteTUI, so you have none this session. Only the user can turn them on (Ctrl+T).\n"
 
 
+#: Claude writes identity at a paragraph's start. Match only complete single-line
+#: sentences there (including adjacent duplicates), never inline quoted examples
+#: or incomplete user prose that runs into an identity in the next paragraph.
+CLAUDE_FLEET_LINE_RE = re.compile(
+    r"^(?:You are registered in the LiteHarness fleet as [^(\r\n]+\("
+    r"(?:id |your inbox/sender id \(use it for any from=/--from\): )"
+    r"[0-9a-fA-F-]{36}, tier [a-z]+\)\. )+",
+    re.MULTILINE,
+)
+
+
 def system_prompt_for(app, segment):
     """The system prompt a Claude session of `segment` runs under: LiteTUI's, not Claude Code's.
 
@@ -48,8 +59,9 @@ def system_prompt_for(app, segment):
     and the LiteTUI note that makes a compaction request trusted.
 
     Built ONCE per segment and recorded (ledger.fix_system_prompt): a resume carries
-    the same prefix. A segment already bound to a native session before this existed
-    returns None and keeps the preset it was created with.
+    the same prefix except its harness identity, refreshed for the registered seat.
+    A segment already bound to a native session before this existed returns None
+    and keeps the preset it was created with.
     """
     from litetui import appsvc
     from litetui.claude_backend import APPEND, seeded_append
@@ -58,6 +70,9 @@ def system_prompt_for(app, segment):
 
     segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
     if segment.get("system_prompt"):
+        if getattr(getattr(app, "seat", None), "registered", False):
+            return ledger_for(app).refresh_system_prompt_identity(
+                segment["id"], app._fleet_identity_sentence(), CLAUDE_FLEET_LINE_RE)
         return segment["system_prompt"]
     if segment.get("session_id"):
         return None
