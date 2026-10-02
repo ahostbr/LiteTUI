@@ -1,12 +1,10 @@
 """Fresh child homes use real fixture files/leases; no provider or live host."""
-import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from litetui import agent_launch_context as launch, agent_ownership as ownership
-from litetui.agent_store import AgentStore, AGENT_SEED_FILES, StoreError
+from litetui.agent_store import AGENT_SEED_FILES, StoreError
 from litetui.conversation import ConversationRepository
 
 AID = '11111111-1111-4111-8111-111111111111'

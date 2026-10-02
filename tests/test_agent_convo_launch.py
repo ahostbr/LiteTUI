@@ -1,12 +1,10 @@
 """UUID-only CLI resume resolves owned home; no archive guess or live host."""
-import json
 import sys
 
 import pytest
 
 from litetui import cli, paths, settings, shared_state, image_viewer
 from litetui.agent_launch_context import create, acquire
-from litetui.agent_store import StoreError
 
 AID = '11111111-1111-4111-8111-111111111111'
 BID = '22222222-2222-4222-8222-222222222222'
