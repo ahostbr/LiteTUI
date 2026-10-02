@@ -1092,7 +1092,7 @@ class ModelConfigBody(Widget):
                 yield Input(value=shown, placeholder=placeholder or "unset",
                             id=wid, disabled=disabled, classes="set-input")
             if note:
-                yield Static(note, classes="set-help")
+                yield Static(note, classes="set-help", markup=False)
 
     # -- state carry across a live host swap --------------------------------
 

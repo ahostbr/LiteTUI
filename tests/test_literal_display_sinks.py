@@ -169,3 +169,23 @@ async def test_app_user_bubble_header_is_literal(monkeypatch):
         message = app._user_bubble("text", False, header=PAYLOAD)
         await pilot.pause()
         assert PAYLOAD in message._border_title.plain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["installed-build", "projector-filenames"])
+async def test_model_field_help_external_details_are_literal(monkeypatch, origin):
+    from litetui import llm_backend
+    from litetui.plugins.model_switch import ModelConfigBody, ModelConfigScreen
+    app = make_app(monkeypatch)
+    app.backend = SimpleNamespace(name="llamacpp", request_overrides=lambda _key: {})
+    monkeypatch.setattr(llm_backend, "configured_flags", lambda _settings:
+        frozenset({"unrelated-flag"}) if origin == "installed-build" else frozenset())
+    monkeypatch.setattr(llm_backend, "configured_build", lambda _settings: PAYLOAD)
+    monkeypatch.setattr(ModelConfigBody, "_sibling_projector", lambda _self:
+        (None, [PAYLOAD + ".gguf", "other.gguf"]) if origin == "projector-filenames" else (None, []))
+    async with app.run_test(size=(120, 50)) as pilot:
+        app.push_screen(ModelConfigScreen("model"))
+        await pilot.pause()
+        help_lines = [widget.render().plain for widget in app.screen.query(".set-help")]
+        expected = PAYLOAD if origin == "installed-build" else Path(PAYLOAD + ".gguf").name
+        assert any(expected in text for text in help_lines)
