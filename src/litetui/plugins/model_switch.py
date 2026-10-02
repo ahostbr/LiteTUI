@@ -172,9 +172,9 @@ def _pick_ninfer_artifact(app) -> None:
             app.settings = candidate
         else:
             app._on_settings_saved(candidate)
-        result = getattr(app, '_settings_save_result', None)
-        if result is not None and any(not p.saved for p in result.persistence):
-            return
+            result = getattr(app, '_settings_save_result', None)
+            if result is not None and any(not p.saved for p in result.persistence):
+                return
         app.system_message(
             f"NInfer artifact set to {Path(choice).stem} — /engine start to serve it."
         )

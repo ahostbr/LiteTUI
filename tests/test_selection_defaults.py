@@ -164,6 +164,27 @@ def test_ninfer_model_picker_persists_only_conversation_artifact(monkeypatch):
     assert st.settings_path().read_bytes() == before
 
 
+def test_ninfer_pick_without_conversation_ignores_previous_save_failure(monkeypatch):
+    from litetui.settings_apply import PersistenceDestinationResult, SettingsSaveResult
+
+    st.save(st.Settings())
+    a = instance(SettingsService(paths.data_root()), "a")
+    a.convo_dir = None
+    a._convo_settings = None
+    a._settings_save_result = SettingsSaveResult((PersistenceDestinationResult(
+        "previous-save", "conversation", False, error="previous failure"),))
+    messages = []
+    a.system_message = messages.append
+    before = st.settings_path().read_bytes()
+    choice = str(paths.data_root() / "chosen.ninfer")
+    monkeypatch.setattr(model_switch, "_ninfer_artifact_rows", lambda app: [(choice, "chosen")])
+    monkeypatch.setattr(model_switch, "pick", lambda app, title, rows, callback, **kw: callback(choice))
+    model_switch._pick_ninfer_artifact(a)
+    assert a.settings.ninfer_artifact == choice
+    assert messages == ["NInfer artifact set to chosen — /engine start to serve it."]
+    assert st.settings_path().read_bytes() == before
+
+
 def test_commands_before_conversation_exists_do_not_fall_back_to_globals(monkeypatch):
     monkeypatch.delenv("LITETUI_BACKEND", raising=False)
     st.save(st.Settings(backend="lmstudio", default_model="alpha"))
