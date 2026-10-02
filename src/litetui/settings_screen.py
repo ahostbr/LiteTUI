@@ -75,6 +75,7 @@ from litetui.settings_ui_model import (
     SettingsSectionSpec,
     search_settings,
 )
+from litetui.literal_display import literal_options
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 THINKING_CHOICES = [
@@ -657,7 +658,7 @@ class SettingsBody(Widget):
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
-                choices,
+                literal_options(choices),
                 value=getattr(self._start, name),
                 id=f"f-{name}",
                 allow_blank=False,
@@ -679,7 +680,7 @@ class SettingsBody(Widget):
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
-                choices,
+                literal_options(choices),
                 value=current or "",
                 id=f"f-{name}",
                 allow_blank=False,
@@ -725,7 +726,7 @@ class SettingsBody(Widget):
                         with Vertical(classes="set-row"):
                             yield Label("Default model", classes="set-label")
                             yield Select(
-                                model_choices,
+                                literal_options(model_choices),
                                 value=self._start.default_model or "",
                                 id="f-default_model",
                                 allow_blank=False,
@@ -984,7 +985,7 @@ class SettingsBody(Widget):
                                 "it. Applies on save.", classes="set-help")
                         with Vertical(classes="set-row"):
                             yield Button("Download voice-in model", id="voice-dl-stt")
-                            yield Static("", id="voice-status", classes="set-help")
+                            yield Static("", id="voice-status", classes="set-help", markup=False)
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
 
@@ -1441,7 +1442,7 @@ class SettingsBody(Widget):
             # "#set-error" meant action_save()'s query_one() always found the
             # DOM-first one (buried in the Interface tab), so a save error
             # raised while on any OTHER tab wrote to a Static nobody could see.
-            yield Static("", id="set-error")
+            yield Static("", id="set-error", markup=False)
             with Horizontal(id="set-buttons"):
                 yield Button("Save", variant="primary", id="set-save")
                 yield Button("Cancel", id="set-cancel")

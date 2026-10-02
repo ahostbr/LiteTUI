@@ -57,7 +57,7 @@ class HumanApproval(Static):
         self.tool_name = name
 
     def compose(self):
-        yield Static(f"{self.tool_name} ({self.ident}) — human override")
+        yield Static(f"{self.tool_name} ({self.ident}) — human override", markup=False)
         with Horizontal():
             yield Button("Deny", variant="error", classes="human-approval-deny")
             yield Button("Approve", variant="warning", classes="human-approval-allow")

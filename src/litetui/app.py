@@ -6516,10 +6516,10 @@ class LiteTUI(App):
             r"\b(error|failed|failure|crash|could not|cannot|refused|unable to)\b", text, re.I
         ))
 
-    def notify(self, message, *, severity="information", **kwargs):
+    def notify(self, message, *, severity="information", markup=False, **kwargs):
         if severity == "error":
             self._report_spawner_error(str(message), "notification")
-        return super().notify(message, severity=severity, **kwargs)
+        return super().notify(message, severity=severity, markup=markup, **kwargs)
 
     def system_message(self, text: str) -> None:
         """Post a system line into the chat log — **the supported way for a
@@ -6575,7 +6575,7 @@ class LiteTUI(App):
         w = UserMessage("\n".join(parts), queued=queued, image_path=image_path, header=header)
         # A message that silently waits is indistinguishable from one that was
         # dropped — the title is the visibility.
-        w.border_title = header or ("You · queued" if queued else "You")
+        w.border_title = Text(header or ("You · queued" if queued else "You"))
         log.mount(w)
         self._scroll_down()
         return w

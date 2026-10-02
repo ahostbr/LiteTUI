@@ -99,13 +99,13 @@ class PickerBody(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
-            yield Static(self._title, id="picker-title")
+            yield Static(self._title, id="picker-title", markup=False)
             yield OptionList(
-                *[Option(label, id=oid) for oid, label in self._rows], id="picker-list"
+                *[Option(label, id=oid) for oid, label in self._rows], id="picker-list", markup=False
             )
             if self._extra_factory is not None:
                 yield from self._extra_factory()
-            yield Static(self._hint, id="picker-hint")
+            yield Static(self._hint, id="picker-hint", markup=False)
             # Swap host without answering. Styles itself (SwapButton owns
             # its own DEFAULT_CSS), so this needs no rule in picker CSS.
             yield SwapButton()
