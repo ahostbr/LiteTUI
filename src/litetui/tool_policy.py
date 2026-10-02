@@ -1094,9 +1094,15 @@ def _powershell_output_allows(args: Mapping[str, object], workspace: Path,
             return False  # module-qualified state changes are not represented
         # Common parameters can replace literal variables without assignment
         # syntax. Do not speculate about cmdlet binding/abbreviations here.
-        if any(re.match(r"(?i)^-(?:outv\w*|ov|pipelinev\w*|pv|errorv\w*|ev|warningv\w*|wv|informationv\w*|iv)(?:[:=]|$)", arg)
-               for arg in argv[1:]):
-            return False
+        variable_parameters = {
+            "outvariable", "pipelinevariable", "errorvariable", "warningvariable", "informationvariable",
+        }
+        for arg in argv[1:]:
+            parameter = re.split(r"[:=]", arg.lower().removeprefix("-"), maxsplit=1)[0]
+            if (arg.startswith("-") and parameter
+                    and (parameter in {"ov", "pv", "ev", "wv", "iv"}
+                         or any(name.startswith(parameter) for name in variable_parameters))):
+                return False
         if (part["shell"] != "powershell" or head in {
                 "popd", "pop-location", "set-variable", "sv", "new-variable", "nv",
                 "set-item", "si", "new-item", "ni", "set-itemproperty", "sp",
@@ -1122,8 +1128,8 @@ def _powershell_output_allows(args: Mapping[str, object], workspace: Path,
         if head in {"tee", "tee-object"}:
             operands = argv[1:]
             if operands and operands[0].lower() in {"-variable", "-v"}:
-                if len(operands) != 2:
-                    return False
+                if len(operands) != 2 or not re.fullmatch(r"[A-Za-z_]\w*", operands[1]):
+                    return False  # scoped/unsupported names may alias another variable
                 variables.pop("$" + operands[1].lower(), None)
                 continue
             if operands and operands[0].lower() in {"-filepath", "-literalpath"}:

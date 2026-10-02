@@ -69,6 +69,11 @@ def test_literal_path_assignment_can_be_proved(paths):
     "$log='{root}/log'; Get-Content config -OutVariable:log; git status > $log",
     "$log='{root}/log'; Get-Content config -OV +log; git status > $log",
     "$log='{root}/log'; Get-Content config -PipelineVariable log; git status > $log",
+    "$log='{root}/log'; Get-Content config -Pip log; git status > $log",
+    "$log='{root}/log'; Get-Content config -Pipeline log; git status > $log",
+    "$log='{root}/log'; Get-Content config | Tee-Object -Variable local:log; git status > $log",
+    "$log='{root}/log'; Get-Content config | Tee-Object -Variable script:log; git status > $log",
+    "$log='{root}/log'; Get-Content config | Tee-Object -Variable global:log; git status > $log",
     "$LASTEXITCODE='{root}/log'; git status > $LASTEXITCODE",
     'Microsoft.PowerShell.Utility\\Tee-Object -Variable log; git status > $env:TEMP/log',
     'Push-Location "{foreign}"; git status > log',
@@ -85,6 +90,7 @@ def test_review_unrepresented_state_never_proves_output(paths, template):
 @pytest.mark.parametrize('template', [
     "$log='{root}/log'; Get-Content config | Tee-Object -Variable other; git status > $log",
     'Push-Location "{root}"; git status > log',
+    "$log='{root}/log'; Get-Content config -ReadCount 5; git status > $log",
 ])
 def test_review_safe_state_controls(paths, template):
     root, _, _ = paths
