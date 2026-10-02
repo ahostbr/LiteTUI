@@ -2427,29 +2427,26 @@ class LiteTUI(App):
         if session is None:
             self.store.release()
             return
-        async def cleanup():
-            # Registration retains this lock until its thread joins.
-            async with self._owned_registration_lock:
+        # No child task can be cancelled before its first step. The caller is
+        # the durable rendezvous, ignoring cancellation only until ordered release.
+        cancelled = False
+        while True:
+            try:
+                await self._owned_registration_lock.acquire()
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+        try:
+            if not getattr(self, '_owned_storage_released', False):
+                self._owned_storage_released = True
                 try:
                     self.store.release()
                 finally:
                     session.release()
-        operation = getattr(self, '_owned_cleanup_task', None)
-        if operation is None:
-            operation = self._owned_cleanup_task = asyncio.create_task(cleanup())
-        cancelled = False
-        while not operation.done():
-            try:
-                await asyncio.shield(operation)
-            except asyncio.CancelledError:
-                cancelled = True
+        finally:
+            self._owned_registration_lock.release()
         if cancelled:
-            try:
-                operation.result()
-            except Exception:
-                pass
             raise asyncio.CancelledError
-        operation.result()
 
     async def on_unmount(self) -> None:
         try:
@@ -2580,23 +2577,32 @@ class LiteTUI(App):
             try:
                 session.authority
                 if not self.seat.registered:
-                    operation = asyncio.create_task(asyncio.to_thread(self.seat.register))
-                    cancelled = False
-                    # Cancellation never abandons the thread or unlocks authority.
-                    # Repeated cancel requests still join the one operation.
-                    while not operation.done():
+                    import threading
+                    finished = threading.Event()
+                    outcome = []
+                    def register_thread():
                         try:
-                            await asyncio.shield(operation)
+                            outcome.append((True, self.seat.register()))
+                        except BaseException as exc:
+                            outcome.append((False, exc))
+                        finally:
+                            finished.set()
+                    # No cancellable asyncio wrapper can declare this thread done.
+                    thread = threading.Thread(target=register_thread, daemon=True)
+                    thread.start()
+                    cancelled = False
+                    while not finished.is_set():
+                        try:
+                            await asyncio.sleep(0.01)
                         except asyncio.CancelledError:
                             cancelled = True
+                    thread.join()
                     if cancelled:
-                        # Consume any exception before propagating cancellation.
-                        try:
-                            operation.result()
-                        except Exception:
-                            pass
                         raise asyncio.CancelledError
-                    if not operation.result():
+                    succeeded, value = outcome[0]
+                    if not succeeded:
+                        raise value
+                    if not value:
                         raise OSError(str(self.seat.error))
                 session.authority
                 return True
@@ -8366,6 +8372,32 @@ class LiteTUI(App):
         return ("refuse", None, why)
 
 
+    def _validate_owned_execution(self) -> None:
+        if getattr(self, '_agent_session', None) is not None:
+            authority = self._agent_session.authority
+            if getattr(self.backend, 'name', None) != authority.backend:
+                raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
+            builder = getattr(self, '_effective_request_overrides', None)
+            overrides = builder() if builder is not None else {}
+            effective_level = overrides.get('reasoning_effort') or getattr(self, '_thinking_level', None)
+            from litetui.turn_engine import TurnEngine
+            graded = getattr(getattr(self, 'settings', None), 'lmstudio_graded_thinking_models', ())
+            expected_wire = TurnEngine.resolve_reasoning_effort(authority.thinking_level,
+                authority.backend, authority.model, graded)
+            actual_wire = TurnEngine.resolve_reasoning_effort(effective_level,
+                authority.backend, authority.model, graded)
+            if authority.backend == 'claude':
+                from litetui.claude_turn import effort_for
+                from types import SimpleNamespace
+                expected = SimpleNamespace(backend=self.backend, model_id=authority.model,
+                    thinking_level=authority.thinking_level,
+                    settings=SimpleNamespace(model_infer_overrides={}))
+                expected_wire, actual_wire = effort_for(expected), effort_for(self)
+            if actual_wire != expected_wire:
+                raise llm_backend.BackendError('Effective request effort disagrees with owned agent authority')
+            if self.model_id != authority.model:
+                raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
+
     async def _ensure_chat_ready(self, *, timeout: float | None = None) -> None:
         """Ask, in plain words, whether model_id can serve a turn RIGHT NOW.
 
@@ -8404,11 +8436,9 @@ class LiteTUI(App):
         if getattr(self, "_resume_connection_error", None):
             raise llm_backend.BackendError(self._resume_connection_error)
         if getattr(self, '_agent_session', None) is not None:
-            authority = self._agent_session.authority
-            if self.model_id != authority.model:
-                raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
+            LiteTUI._validate_owned_execution(self)
             loaded = {r.key for r in getattr(self, 'model_rows', {}).values() if r.loaded}
-            if loaded and authority.model not in loaded:
+            if loaded and self._agent_session.authority.model not in loaded:
                 raise llm_backend.BackendError('Selected agent model is not loaded; no identity fallback is permitted')
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
@@ -8668,6 +8698,12 @@ class LiteTUI(App):
             await self._await_mcp_maintenance()
         except TurnDeferred:
             return STREAM_DEFERRED
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                LiteTUI._validate_owned_execution(self)
+            except (ValueError, OSError, llm_backend.BackendError) as exc:
+                self._system(str(exc))
+                return
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import stream_turn
             await stream_turn(self)
@@ -9748,6 +9784,12 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                LiteTUI._validate_owned_execution(self)
+            except (ValueError, OSError, llm_backend.BackendError) as exc:
+                self._system(str(exc))
+                return
         if getattr(self.backend, "owns_native_turns", False):
             # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.
