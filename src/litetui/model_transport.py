@@ -230,6 +230,12 @@ def _metadata(message: dict, provider: str, model: str) -> list:
     return []
 
 
+_CODEX_MISSING_TOOL_OUTPUT = (
+    "[litetui transport] no tool output was recorded for this call; "
+    "outcome UNKNOWN. Verify any side effects before retrying."
+)
+
+
 def codex_request(kwargs: dict) -> dict:
     model = kwargs["model"]
     items, instructions = [], []
@@ -276,7 +282,8 @@ def codex_request(kwargs: dict) -> dict:
                     "arguments": call["function"]["arguments"],
                 }
             )
-    # A process can end after persisting a tool call but before its result.
+    # Saved calls can lack outputs after a user stop or a process interruption.
+    # The missing result alone establishes neither the cause nor the outcome.
     # Resume (and compaction) must not replay that dangling call to Responses:
     # it rejects the whole request, even when later user turns follow the call.
     # Repair only the outgoing items; keep the durable transcript unchanged and
@@ -290,9 +297,7 @@ def codex_request(kwargs: dict) -> dict:
             paired_items.append({
                 "type": "function_call_output",
                 "call_id": item["call_id"],
-                "output": "Interrupted: no tool result was saved before the seat process "
-                          "ended. The execution outcome is unknown; verify any side "
-                          "effects before retrying.",
+                "output": _CODEX_MISSING_TOOL_OUTPUT,
             })
     body = {
         "model": model,

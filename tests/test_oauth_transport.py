@@ -109,7 +109,8 @@ def test_codex_history_conversion_does_not_mutate():
 
 
 @pytest.mark.asyncio
-async def test_resumed_interrupted_tool_call_request_is_accepted(tmp_path):
+@pytest.mark.parametrize("history_shape", ["later-user-turn", "user-stop"])
+async def test_resumed_missing_tool_output_request_is_accepted(tmp_path, history_shape):
     from litetui.conversation import ConversationRepository
 
     messages = [
@@ -125,8 +126,11 @@ async def test_resumed_interrupted_tool_call_request_is_accepted(tmp_path):
             "items": [{"type": "reasoning", "id": "rs_saved",
                        "encrypted_content": "opaque", "summary": []}],
         }},
-        {"role": "user", "content": "Inbox arrived after the process vanished"},
     ]
+    if history_shape == "later-user-turn":
+        messages.append({"role": "user", "content": "Inbox arrived after the saved call"})
+    # A user stop returns after persisting the call, leaving no output and no
+    # later message. Resume must repair that shape without claiming a crash.
     transcript = tmp_path / "convo.jsonl"
     transcript.write_text(json.dumps({"type": "snapshot", "messages": messages}) + "\n")
     _, resumed = ConversationRepository.read(transcript)
@@ -140,8 +144,13 @@ async def test_resumed_interrupted_tool_call_request_is_accepted(tmp_path):
         if calls - outputs.keys():
             return httpx.Response(400, json={"error": {"message": "No tool output found"}})
         assert outputs["call_done"] == "saved result"
-        assert "interrupted" in outputs["call_interrupted"].lower()
-        assert "unknown" in outputs["call_interrupted"].lower()
+        annotation = outputs["call_interrupted"]
+        assert annotation == (
+            "[litetui transport] no tool output was recorded for this call; "
+            "outcome UNKNOWN. Verify any side effects before retrying."
+        )
+        assert not any(cause in annotation.lower()
+                       for cause in ("ended", "died", "crash", "killed"))
         interrupted = next(n for n, i in enumerate(items)
                            if i.get("call_id") == "call_interrupted")
         assert items[interrupted + 1]["type"] == "function_call_output"
