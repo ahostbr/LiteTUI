@@ -95,6 +95,13 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         app._emit_compaction("failed", tokens_before=app.ctx_used,
                              tokens_before_exact=app.ctx_used is not None)
         return
+    def held_for_original_segment():
+        # Only the proven-unsent preflight input may transfer. Every other
+        # admission (including RPC) must retain its original selected owner.
+        transferable = (resume[3]["_claude_entry"]["id"]
+                        if resume is not None and resume[4] is not None else None)
+        return any(entry["id"] != transferable for entry in ledger.pending(segment["id"]))
+
     if not auto:
         # The same gate as a model or effort switch (claude_cache.confirm_cold).
         clock = claude_cache.clock_for(app, segment["id"])
@@ -189,6 +196,8 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         if (app.backend is not backend or app.convo_id != conversation_id
                 or not selected or selected["id"] != segment["id"]):
             failure = "conversation/session changed during compaction"
+        if held_for_original_segment():
+            failure = "New or held Claude input takes priority; its original session remains selected."
         if app._stop_requested:
             failure = "stopped"
     except Exception as exc:  # noqa: BLE001 - a failed compaction changes nothing
@@ -214,6 +223,14 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     if (app.backend is not backend or app.convo_id != conversation_id
             or not selected or selected["id"] != segment["id"]):
         app._system("Compaction owner changed during cleanup; no new session or continuation was selected.")
+        app._emit_compaction("failed", tokens_before=tokens_before,
+                             tokens_before_exact=tokens_before is not None)
+        return
+    if held_for_original_segment():
+        app._autocompact_failed_at = app.ctx_used
+        card.fail("deferred — original input/session retained")
+        app._system("Compaction deferred: new or held input arrived during cleanup. Its original session "
+                    "remains selected; idle delivery or /claude continue can resume it without transfer.")
         app._emit_compaction("failed", tokens_before=tokens_before,
                              tokens_before_exact=tokens_before is not None)
         return

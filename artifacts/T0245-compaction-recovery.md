@@ -8,6 +8,16 @@ Rebased cleanly onto main `156f7b88d4961c2efd7a26feca1494002b5555e1` after T0251
 
 Actual rebased-tree run, with no concurrent tracked edits: **309 passed in 51.51s**. Command is the 231-test run below plus `tests/test_claude_backend.py tests/test_claude_persistence.py` (78 additional identity/admission contracts). Evidence: `C:/Projects/LiteTUI/output/tasks/t-53ad8f14582d446d8e41d5b10b676d1a.log`. Focused Ruff for three Claude modules and four touched/new test files passed again; three Claude modules' focused mypy passed; `git -c core.whitespace=cr-at-eol diff 156f7b8..HEAD --check` passed. An initial invocation named nonexistent `tests/test_seat_shutdown.py` and collected zero tests; corrected command produced the 309-pass result, not a claimed shutdown gate. No production code edits required by the rebase. Independent T0250/T0245 overlap review and Ryan inspection remain pending.
 
+## Scoped review fix — input ownership during summary
+
+Independent review found that suppressing a synthetic wake was insufficient: a real busy-submit during summary is already admitted to the OLD segment, so selecting a new segment stranded that queue and made selected-segment `/claude continue` unable to recover it. Reproduced RED on `d7b552b5` for both real typed and correlated RPC submissions using `LiteTUI._submit_text`.
+
+Fix: inspect the original segment's durable pending deliveries before close/transition, excluding ONLY the proven-unsent preflight original that this compaction may transfer. If any other input owns that segment, defer compaction, leave its owner selected, and consume the synthetic continuation. Recheck after awaited cleanup because admission can occur during close too. No RPC operation ID transfer, and no changes to T0250 queue admission/uncertainty guards or T0253 identity.
+
+`tests/test_compaction_busy_input.py` drives real busy submit, successful provider summary, selected owner, `queue_ready`, idle `LiteTUI._flush_pending_input`, and `/claude continue`. All four combinations (typed/RPC × arrival during summary/cleanup) retain a deliverable original segment and preserve correlated operation ID. External dispatch alone is substituted to collect admitted items; assertion covers actual recovered prompt content, not merely absence of a synthetic wake. Before-close deferral retains the live session; cleanup-race deferral retains selected native session reference for reopen.
+
+Final scoped round: **313 passed in 44.12s**, command = rebased 309-test run above plus `tests/test_compaction_busy_input.py`, no concurrent tracked edits. Evidence: `C:/Projects/LiteTUI/output/tasks/t-dba044af575149338937907522fb21c8.log`. Focused Ruff and `claude_compact.py` mypy pass; CRLF-aware diff check passes. Independent review verdict and running-product verification remain pending.
+
 ## Approved semantics
 
 - Read Claude's effective serving window with pinned SDK `get_context_usage()` on the existing SDK owner task, after model selection and before sending. Use `maxTokens`, not a static 1M guess or the largest cumulative result `modelUsage.contextWindow`.
