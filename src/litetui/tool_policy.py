@@ -84,10 +84,12 @@ class ToolPolicy:
     classify_args: Classifier | None = None
     confirm_always: bool = False
 
-    def classify(self, args: Mapping[str, object], workspace: Path, *, shell: str | None = None) -> frozenset[str]:
+    def classify(self, args: Mapping[str, object], workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> frozenset[str]:
         caps = set(self.capabilities)
         if self.classify_args is classify_shell:
-            caps.update(classify_shell(args, workspace, shell=shell))
+            caps.update(classify_shell(args, workspace, shell=shell, trusted_interpreters=trusted_interpreters))
+        elif self.classify_args is classify_fleet_mcp:
+            caps.update(classify_fleet_mcp(args, workspace, trusted_interpreters=trusted_interpreters))
         elif self.classify_args is not None:
             caps.update(self.classify_args(args, workspace))
         unknown = caps - CAPABILITIES
@@ -347,6 +349,7 @@ def evaluate(
     deny: frozenset[str] = frozenset(),
     shell: str | None = None,
     seat_name: str | None = None,
+    trusted_interpreters: object = (),
 ) -> PolicyDecision:
     """Return the host action for one proposed tool call.
 
@@ -372,7 +375,8 @@ def evaluate(
     That is the fail-safe direction.
     """
     profile = PROFILES.get(profile_name)
-    capabilities = policy.classify(args or {}, Path(workspace).resolve(), shell=shell)
+    capabilities = policy.classify(args or {}, Path(workspace).resolve(), shell=shell,
+                                   trusted_interpreters=trusted_interpreters)
     if policy.classify_args is classify_write:
         capabilities = frozenset(policy.capabilities) | frozenset(classify_write(args or {}, Path(workspace).resolve(), active_conversation=active_conversation))
     names = ", ".join(sorted(capabilities))
@@ -436,7 +440,8 @@ def evaluate(
                 ALLOW, profile.name, capabilities,
                 "allowed: confined to the seat's own worktree",
             )
-        what = _danger_of(policy, args or {}, Path(workspace).resolve(), shell=shell)
+        what = _danger_of(policy, args or {}, Path(workspace).resolve(), shell=shell,
+                          trusted_interpreters=trusted_interpreters)
         return PolicyDecision(
             CONFIRM,
             profile.name,
@@ -447,10 +452,11 @@ def evaluate(
     return PolicyDecision(ALLOW, profile.name, capabilities, f"allowed: {names}")
 
 
-def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path, *, shell: str | None = None) -> str:
+def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> str:
     """Which DANGER_TABLE class a confirm is for, in words a person reads."""
     if policy.classify_args is classify_shell:
-        return danger(str(args.get("command") or ""), workspace, shell=shell) or ""
+        return danger(str(args.get("command") or ""), workspace, shell=shell,
+                      trusted_interpreters=trusted_interpreters) or ""
     if policy.classify_args is classify_pccontrol:
         return FOREIGN_PROCESS
     if policy.classify_args is classify_fleet_mcp:
@@ -458,7 +464,7 @@ def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path, 
             return FOREIGN_PROCESS
         for key in ("command", "cmd", "script", "code"):
             text = args.get(key)
-            if isinstance(text, str) and (what := danger(text, workspace)):
+            if isinstance(text, str) and (what := danger(text, workspace, trusted_interpreters=trusted_interpreters)):
                 return what
     if policy.confirm_always:
         return UNDECLARED
@@ -681,13 +687,13 @@ _DANGER = tuple((label, re.compile(r"(?ix)" + pattern)) for label, pattern in DA
 _PATH_RUN = re.compile(
     r"(?ix)" + _CMD_POSITION
     + r"(?:&\s*)?(?:[\"'](?P<quoted>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\"']+)[\"']"
-    + r"|(?P<bare>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\s;&|\"']+))"
+    + r"|(?P<bare>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\s;&|()\"']+))"
 )
 _TOOL_EXECUTABLES = frozenset({"python", "python3", "py", "node", "bun", "deno",
                                "pwsh", "powershell", "git", "uv", "ruff", "pytest", "npx", "pnpm"})
 
 
-def _foreign_path_launch(raw: str, workspace: Path) -> bool:
+def _foreign_path_launch(raw: str, workspace: Path, trusted_interpreters: object = ()) -> bool:
     path = _resolve_path(raw, workspace)
     if path.suffix.lower() not in {"", ".exe", ".com", ".bat", ".cmd"}:
         # A second suffix must not turn an inspection-name impostor into a non-launch.
@@ -698,6 +704,8 @@ def _foreign_path_launch(raw: str, workspace: Path) -> bool:
     roots = (workspace, home / ".claude" / "skills",
              home / ".claude" / "plugins" / "cache" / "liteharness")
     if any(_inside(path, root.resolve()) for root in roots):
+        return False
+    if trusted_executables.is_configured_interpreter(raw, trusted_interpreters):
         return False
     if path.stem.lower() in _TOOL_EXECUTABLES and trusted_executables.is_installed_tool(path):
         return False
@@ -914,7 +922,22 @@ _REAL_COMMAND = re.compile(
 _COMMAND_PAYLOAD = re.compile(r"(?i)(?:^|\s)(?:-c|-command|/c)\s+$")
 
 
-def _command_view(command: str, shell: str | None = None) -> str:
+# Only a literal Python -c argument gets a separate path-launch view. This
+# recognizes the outer argv spelling, not Python syntax or inner launch targets.
+_PYTHON_PAYLOAD = re.compile(
+    r"(?ix)(?:^|[;&|(]\s*)(?:&\s*)?"
+    r"(?:[\"'][^\"']*[/\\]python(?:3(?:\.\d+)?)?(?:\.exe)?[\"']"
+    r"|(?:[^\s\"';&|]*[/\\])?python(?:3(?:\.\d+)?)?(?:\.exe)?)"
+    r"\s+(?:(?:-X\s+[^\s]+|-W\s+[^\s]+|-[bBEsSuUqIO]+)\s+)*-c\s+$"
+)
+# No inner-language parser: process APIs/aliases remain conservative confirms.
+_PYTHON_PROCESS = re.compile(
+    r"\bsubprocess\b|\bos\s*\.\s*(?:system|popen|spawn\w*|exec\w*|startfile)\b"
+    r"|\bimport\s+os\s+as\b|\bfrom\s+os\s+import\b"
+)
+
+
+def _command_view(command: str, shell: str | None = None, *, path_launch: bool = False) -> str:
     def scan(start: int, end: str = "", double: bool = False, depth: int = 0) -> tuple[str, int, bool]:
         # Beyond this bound, stop masking: unknown nesting is command text,
         # never a reason to silently allow a dangerous word in an argument.
@@ -953,7 +976,10 @@ def _command_view(command: str, shell: str | None = None) -> str:
                 if j == len(command):
                     return "".join(out) + command[i:], len(command), False
                 quoted = command[i:j + 1]
-                if payload:
+                if payload and path_launch and _PYTHON_PAYLOAD.search("".join(out)):
+                    # Single-quoted shell payload has no executable substitutions.
+                    out.append(" " * len(quoted))
+                elif payload:
                     out.append('"' + command[i + 1:j] + '"')  # quoted -c / -Command is executable code
                 elif bash_ansi_command:
                     out.append(";" + command[i + 1:j])  # bash $'rm' can name a command
@@ -966,7 +992,8 @@ def _command_view(command: str, shell: str | None = None) -> str:
             if ch == '"':
                 prefix = "".join(out)
                 executable = bool(_COMMAND_PAYLOAD.search(prefix) or _REAL_COMMAND.search(prefix))
-                inner, after, closed = scan(i + 1, '"', not executable, depth + 1)
+                python_data = path_launch and bool(_PYTHON_PAYLOAD.search(prefix))
+                inner, after, closed = scan(i + 1, '"', python_data or not executable, depth + 1)
                 if not closed:
                     return "".join(out) + command[i:], len(command), False
                 # An inert quoted argument contributes no command verbs. Keep
@@ -997,24 +1024,29 @@ def _command_view(command: str, shell: str | None = None) -> str:
     return scan(0)[0]
 
 
-def _iter_danger(command: str, workspace: Path, shell: str | None):
+def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_interpreters: object = ()):
     """Every danger a command hits, in table order: (class, DANGER_TABLE index), then
-    (FOREIGN_PROCESS, -1) for a path launch (the one hit with no table row)."""
+    (FOREIGN_PROCESS, -1) for a path launch or -2 for an opaque Python launch.
+    The -2 hit is deliberately not eligible for the worktree-scoped exception."""
     view = _command_view(command, shell)
     unwrapped = _unwrap_command_verbs(view)
     for index, (label, pattern) in enumerate(_DANGER):
         if pattern.search(view) or (unwrapped != view and pattern.search(unwrapped)):
             yield label, index
-    for match in _PATH_RUN.finditer(view):
-        if _foreign_path_launch(match.group("quoted") or match.group("bare"), workspace):
+    path_view = _command_view(command, shell, path_launch=True)
+    if path_view != view and (_PYTHON_PROCESS.search(view) or "$(" in command or "`" in command):
+        # Non-table hit must not acquire the worktree-scoped exception.
+        yield FOREIGN_PROCESS, -2
+    for match in _PATH_RUN.finditer(path_view):
+        if _foreign_path_launch(match.group("quoted") or match.group("bare"), workspace, trusted_interpreters):
             if not _read_only_inspection(command, shell):
                 yield FOREIGN_PROCESS, -1
                 return
 
 
-def danger(command: str, workspace: Path, *, shell: str | None = None) -> str | None:
+def danger(command: str, workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> str | None:
     """The danger CLASS of a shell command, or None when it is ordinary."""
-    return next((label for label, _ in _iter_danger(command, workspace, shell)), None)
+    return next((label for label, _ in _iter_danger(command, workspace, shell, trusted_interpreters)), None)
 
 
 #: T0246: which DANGER_TABLE rows a command CONFINED to the seat's own worktree may
@@ -1117,8 +1149,8 @@ def _floor(args: Mapping[str, object] | None, workspace: Path, *,
     return None
 
 
-def classify_shell(args: Mapping[str, object], workspace: Path, *, shell: str | None = None) -> Iterable[str]:
-    if danger(str(args.get("command") or ""), workspace, shell=shell):
+def classify_shell(args: Mapping[str, object], workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> Iterable[str]:
+    if danger(str(args.get("command") or ""), workspace, shell=shell, trusted_interpreters=trusted_interpreters):
         return (DESTRUCTIVE_IRREVERSIBLE,)
     return ()
 
@@ -1220,11 +1252,11 @@ USER_QUESTION_POLICY = ToolPolicy(
 FLEET_MCP_SERVERS = frozenset({"litesuite-tools", "VibeUE", "SOTS_MCP_CORE", "SOTS_BPGEN"})
 
 
-def classify_fleet_mcp(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
+def classify_fleet_mcp(args: Mapping[str, object], workspace: Path, *, trusted_interpreters: object = ()) -> Iterable[str]:
     """Inspect executable payload fields, not quoted data in inbox messages."""
     if str(args.get("action") or "").lower() == "launch":
         return (DESTRUCTIVE_IRREVERSIBLE,)
-    if any(isinstance(args.get(key), str) and danger(args[key], workspace)
+    if any(isinstance(args.get(key), str) and danger(args[key], workspace, trusted_interpreters=trusted_interpreters)
            for key in ("command", "cmd", "script", "code")):
         return (DESTRUCTIVE_IRREVERSIBLE,)
     return ()

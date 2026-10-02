@@ -406,3 +406,18 @@ async def test_a_seat_s_own_worktree_command_runs_without_a_modal_but_a_stranger
     stranger.seat = SimpleNamespace(name="Someone")
     result, ok = await app_mod.LiteTUI._execute_tool(stranger, "bash", {"command": command})
     assert not ok and len(screens) == 1 and calls == []
+
+
+@pytest.mark.asyncio
+async def test_configured_identity_reaches_backend_tool_door(tmp_path, monkeypatch):
+    from litetui import trusted_executables
+    exe = tmp_path / 'known' / 'python.exe'
+    exe.parent.mkdir()
+    exe.write_bytes(b'fixture, never executed')
+    monkeypatch.setattr(trusted_executables, 'is_installed_tool', lambda path: False)
+    calls = []
+    host, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or 'mocked')
+    host.settings.tool_trusted_interpreters = [str(exe)]
+    result, ok = await app_mod.LiteTUI._execute_tool(host, 'bash', {'command': f'"{exe}" script.py'})
+    assert (result, ok) == ('mocked', True)
+    assert len(calls) == 1 and screens == []
