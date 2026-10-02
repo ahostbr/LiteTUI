@@ -381,7 +381,9 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     spawners = getattr(app, "_rpc_approval_spawners", None)
     if spawners is None:
         spawners = app._rpc_approval_spawners = {}
-    spawners[approval_id] = getattr(app, "_spawner_id", None)
+    from litetui import approval_relay
+
+    spawners[approval_id] = approval_relay.current_spawner(app)
     try:
         app._rpc_emit({
             "type": "tool_approval_requested",

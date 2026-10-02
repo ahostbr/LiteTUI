@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from litetui import fleet_policy, tool_policy
+from litetui import approval_relay, fleet_policy, tool_policy
 
 #: Turn sources that carry a profile to be narrowed against the seat.
 NARROWING_SOURCES = frozenset({"harness", "child-result", "goal", "goal-ryan"})
@@ -90,7 +90,10 @@ def confirm_route(app) -> str:
         return "own"
     if getattr(app, "_rpc", False) and getattr(app, "_approval_host", False):
         return "host"
-    if getattr(app, "_spawner_id", None):
+    # A recorded launch parent keeps a broken registry on the fail-closed
+    # relay path. It is provenance, never a fallback destination. A current
+    # parent also permits explicit adoption of a previously parentless seat.
+    if getattr(app, "_spawner_id", None) or approval_relay.current_spawner(app):
         return "spawner"
     if getattr(app, "_agent_launched", True):  # unknown: the fail-safe answer
         return "refuse"
@@ -157,7 +160,7 @@ def schedule_note(app, level: str) -> str:
         return "runs autonomous: no action asks for approval"
     route = confirm_route(app)
     who = {
-        "spawner": f"go to the launching agent {str(getattr(app, '_spawner_id', ''))[:8]}",
+        "spawner": f"go to the current registered parent {(approval_relay.current_spawner(app) or 'unavailable')[:8]}",
         "host": "go to this LiteTUI's host",
         "refuse": "are refused and logged (no launching agent is recorded)",
     }.get(route, "are refused, because nobody is at the keyboard when it fires")

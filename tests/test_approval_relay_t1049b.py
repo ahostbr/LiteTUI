@@ -13,6 +13,7 @@ stubbed (the harness is disabled in the suite); answers arrive through
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from pathlib import Path
@@ -20,11 +21,22 @@ from pathlib import Path
 import pytest
 
 from litetui import app as m
-from litetui import approval_relay, runtime_log, seat_authority, tool_policy
+from litetui import approval_relay, harness, runtime_log, seat_authority, tool_policy
 from litetui.tool_policy import INTERACTIVE
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 DESTRUCTIVE = {"command": "rm -rf ./build"}
+
+
+@pytest.fixture(autouse=True)
+def disposable_presence(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "AGENTS_DIR", tmp_path)
+
+
+def _registered_parent(a, parent):
+    a.seat.registered = True
+    (harness.AGENTS_DIR / f"{a.seat.agent_id}.json").write_text(
+        json.dumps({"agent_id": a.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
 
 
 def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
@@ -34,6 +46,7 @@ def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
     a._spawned_seat = bool(spawner)
     a._owner_seat = False
     a._spawner_id = spawner
+    _registered_parent(a, spawner)
     a._agent_launched = agent_launched
     a._rpc = rpc
     a._approval_host = host
@@ -131,7 +144,7 @@ async def test_RELAY_a_spawner_DENY_stops_the_turn(wire, tmp_path):
     text, ok = await _door(a, tmp_path, "scheduled")
     await answering
     assert ok is False and a._stop_requested
-    assert a._stop_reason.startswith(f"[stopped — {SPAWNER[:8]} (the spawning agent) denied bash")
+    assert a._stop_reason == "[stopped — the request's spawning agent denied bash]"
     assert _relay_log(state)[0]["status"] == "denied"
 
 
@@ -375,6 +388,7 @@ async def test_T0210_explicit_resumed_startup_changes_authority_not_old_process(
     monkeypatch.setenv("LITETUI_SPAWN_IDENTITY", "1")
     monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", old_leader)
     old = m.LiteTUI()
+    _registered_parent(old, old_leader)
     old._rpc_emit = lambda *_: None
     old._deliver_inbox = lambda *_: None
     decision = tool_policy.PolicyDecision(tool_policy.CONFIRM, INTERACTIVE, frozenset(), "fixture")

@@ -20,6 +20,7 @@ human refusal.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -28,7 +29,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import app as m  # noqa: E402
-from litetui import textfmt, tool_approval, tool_policy  # noqa: E402
+from litetui import harness, textfmt, tool_approval, tool_policy  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def disposable_presence(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "AGENTS_DIR", tmp_path)
+
+
+def _registered_parent(a, parent):
+    a.seat.registered = True
+    (harness.AGENTS_DIR / f"{a.seat.agent_id}.json").write_text(
+        json.dumps({"agent_id": a.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
 
 
 def make_app(rpc: bool = False):
@@ -260,11 +272,10 @@ def test_no_host_and_by_user_are_different_refusals() -> None:
 @pytest.mark.parametrize("verb,want", [("APPROVE", tool_approval.ONCE), ("DENY", tool_approval.DENIED)])
 @pytest.mark.parametrize("payload", [False, True])
 async def test_T0210_addressed_spawner_reply_resolves_rpc_once(monkeypatch, tmp_path, verb, want, payload):
-    import json
-    from litetui import harness
 
     a = make_app(rpc=True)
     a._spawner_id = "recorded-leader"
+    _registered_parent(a, "recorded-leader")
     delivered = []
     a._deliver_inbox = delivered.append
     new, done = tmp_path / "new", tmp_path / "done"
@@ -292,6 +303,7 @@ async def test_T0210_addressed_spawner_reply_resolves_rpc_once(monkeypatch, tmp_
 async def test_T0210_wrong_or_expired_rpc_reply_never_grants_permission(kind):
     a = make_app(rpc=True)
     a._spawner_id = None if kind == "no-spawner" else "recorded-leader"
+    _registered_parent(a, a._spawner_id)
     delivered = []
     a._deliver_inbox = delivered.append
     task = asyncio.create_task(tool_approval.approve_over_rpc(a, "shell", {}, DECISION, timeout=0.02))
@@ -318,11 +330,10 @@ async def test_T0210_wrong_or_expired_rpc_reply_never_grants_permission(kind):
 
 @pytest.mark.asyncio
 async def test_T0210_registry_edit_does_not_change_pending_rpc_authority(monkeypatch, tmp_path):
-    import json
-    from litetui import harness
 
     a = make_app(rpc=True)
     a._spawner_id = "recorded-leader"
+    _registered_parent(a, "recorded-leader")
     a.seat.spawned_by = "recorded-leader"
     monkeypatch.setattr(harness, "AGENTS_DIR", tmp_path)
     task = asyncio.create_task(tool_approval.approve_over_rpc(a, "shell", {}, DECISION, timeout=0.2))
@@ -330,7 +341,7 @@ async def test_T0210_registry_edit_does_not_change_pending_rpc_authority(monkeyp
     ident = a.emitted[-1]["id"]
     (tmp_path / f"{a.seat.agent_id}.json").write_text(json.dumps({
         "agent_id": a.seat.agent_id, "spawned_by": "replacement-leader"}), encoding="utf-8")
-    a.seat.spawned_by = "replacement-leader"  # registration metadata is not process authority
+    a.seat.spawned_by = "replacement-leader"  # presence changes future requests, not this pending one
     delivered = []
     a._deliver_inbox = delivered.append
     wrong = {"to": a.seat.agent_id, "from": "replacement-leader", "body": f"APPROVE {ident}"}

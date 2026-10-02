@@ -5,10 +5,13 @@ Ryan (04169351): "whatever agent spawned the light qi instance should be babysit
 Ryan (6e280dd4): a typed CONFIRM in an agent-launched seat -> "The launching agent";
 an agent-launched LiteGUI's CONFIRM -> "No, launching agent".
 
-The spawner is recorded at startup ONLY from the marker envelope
+Initial ancestry is recorded ONLY from the marker envelope
 (LITETUI_SPAWN_IDENTITY=1 + LITEHARNESS_SPAWNED_BY), never from an inherited env
-(Dijkstra M1). ⚠️ FORGEABLE, stated (B4): the spawner is whatever the LAUNCHER wrote,
-so the envelope is only as trustworthy as that launcher; `send --from` is not
+(Dijkstra M1). Each new request resolves the registered seat's current spawned_by;
+its pending reply authority is frozen to that destination, so re-registration
+changes future requests only. Missing/invalid presence never uses cached ancestry.
+⚠️ FORGEABLE, stated (B4): local presence is only as trustworthy as its writer;
+`send --from` is not
 validated and every local agent can read ~/.liteharness, so the from + nonce check
 below stops accidents (a stray or late reply), not a malicious local agent.
 
@@ -115,9 +118,15 @@ def timeout_s(app) -> float:
     return float(getattr(getattr(app, "settings", None), "relay_approval_timeout_s", 600) or 600)
 
 
+def current_spawner(app) -> str | None:
+    """Only current own presence can grant inbox reply authority."""
+    seat = getattr(app, "seat", None)
+    return seat.current_spawner() if seat is not None else None
+
+
 async def ask_spawner(app, name: str, args, decision, source) -> str:
     """approved | denied | timeout | absent. Logged either way."""
-    spawner = app._spawner_id
+    spawner = current_spawner(app)
     timeout = timeout_s(app)
     ident = "appr-" + uuid.uuid4().hex[:12]
     future = asyncio.get_running_loop().create_future()
@@ -127,18 +136,18 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     # the Claude bridge's deadline still leaves its line ("cancelled").
     status = "cancelled"
     control = None
-    wait_token = app._begin_wait(spawner[:8], "approval")
+    wait_token = app._begin_wait((spawner or 'unavailable')[:8], "approval")
     try:
         seat = getattr(app, "seat", None)
         # Unregistered means no inbox poller, so no answer could ever arrive. The
         # registry refusing the id (`send` exit != 0) is the "absent" signal.
-        sent = (seat is not None and getattr(seat, "registered", False)
+        sent = (spawner is not None and seat is not None and getattr(seat, "registered", False)
                 and await asyncio.to_thread(seat.send, spawner,
                                             _message(app, ident, name, args, decision, source, timeout)))
         if not sent:
             status = "absent"
         else:
-            app._system(f"asked {spawner[:8]} (the spawning agent) to approve {name} "
+            app._system(f"asked {(spawner or 'unavailable')[:8]} (the spawning agent) to approve {name} "
                         f"({ident}); waiting up to {timeout:.0f} s")
             try:
                 log = app.query_one("#chat-log")
@@ -178,12 +187,13 @@ def take_answer(app, msg: dict) -> bool:
 
 
 def stop_line(app, name: str, status: str) -> str:
-    who = (getattr(app, "_spawner_id", None) or "")[:8]
+    # The launch id (or a fresh presence read) may differ from the destination
+    # of the request that just finished. Do not attribute its outcome to either.
     return {
-        "denied": f"[stopped — {who} (the spawning agent) denied {name}]",
-        "timeout": (f"[stopped — {who} (the spawning agent) did not answer the approval "
+        "denied": f"[stopped — the request's spawning agent denied {name}]",
+        "timeout": (f"[stopped — the request's spawning agent did not answer the approval "
                     f"for {name} within {timeout_s(app):.0f}s; refused and logged]"),
-        "absent": (f"[stopped — the spawning agent {who} is not reachable (not registered, "
+        "absent": (f"[stopped — the current spawning agent is not reachable (invalid presence, not registered, "
                    f"or the harness is off); {name} was not run; refused and logged]"),
         "no_spawner": (f"[stopped — an agent launched this LiteTUI without naming itself "
                        f"(LITETUI_SPAWN_IDENTITY=1 + {SPAWNED_BY_ENV}), so nobody can approve "
