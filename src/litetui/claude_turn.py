@@ -38,6 +38,17 @@ def ledger_for(app):
 CLAUDE_TOOLS_OFF = "\nTools are off in LiteTUI, so you have none this session. Only the user can turn them on (Ctrl+T).\n"
 
 
+#: Claude writes identity at a paragraph's start. Match only complete single-line
+#: sentences there (including adjacent duplicates), never inline quoted examples
+#: or incomplete user prose that runs into an identity in the next paragraph.
+CLAUDE_FLEET_LINE_RE = re.compile(
+    r"^(?:You are registered in the LiteHarness fleet as [^(\r\n]+\("
+    r"(?:id |your inbox/sender id \(use it for any from=/--from\): )"
+    r"[0-9a-fA-F-]{36}, tier [a-z]+\)\. )+",
+    re.MULTILINE,
+)
+
+
 def system_prompt_for(app, segment):
     """The system prompt a Claude session of `segment` runs under: LiteTUI's, not Claude Code's.
 
@@ -61,7 +72,7 @@ def system_prompt_for(app, segment):
     if segment.get("system_prompt"):
         if getattr(getattr(app, "seat", None), "registered", False):
             return ledger_for(app).refresh_system_prompt_identity(
-                segment["id"], app._fleet_identity_sentence(), app._FLEET_LINE_RE)
+                segment["id"], app._fleet_identity_sentence(), CLAUDE_FLEET_LINE_RE)
         return segment["system_prompt"]
     if segment.get("session_id"):
         return None

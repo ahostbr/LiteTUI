@@ -393,7 +393,9 @@ async def test_resume_refreshes_only_the_recorded_fleet_identity(monkeypatch, id
     ledger.bind_session(segment["id"], "native-resumed")
     stale = ("You are registered in the LiteHarness fleet as PreviousSeat "
              "(id 11111111-1111-1111-1111-111111111111, tier worker). ")
-    prefix = "USER-EDITED SYSTEM PROMPT\n\n"
+    prefix = ("USER-EDITED SYSTEM PROMPT\n"
+              f'Quoted example: "{stale}"\n'
+              "You are registered in the LiteHarness fleet as documented below\n\n")
     suffix = "TOOL-INVENTORY-MARKER\nSAVED STORE SNAPSHOT\nTRUSTED COMPACTION NOTE"
     modern = stale.replace("(id ", "(your inbox/sender id (use it for any from=/--from): ")
     old = {"missing": "", "stale": stale, "stale-modern": modern,
@@ -417,7 +419,8 @@ async def test_resume_refreshes_only_the_recorded_fleet_identity(monkeypatch, id
     want = app._fleet_identity_sentence()
     expected = prefix + want + suffix if old else recorded + "\n\n" + want
     assert prompt == expected, "only the identity sentence may change"
-    assert prompt.count("You are registered in the LiteHarness fleet as ") == 1
+    assert prompt.count(want) == 1
+    assert prompt.startswith(prefix), "quoted and incomplete user-authored identity text stays intact"
     assert app._all_tools() == inventory, "repair must not change the tool inventory"
     after = ClaudeLedger(app.convo_dir).segment(segment["id"])
     assert after == {**before, "system_prompt": expected}, "repair survives another resume"
