@@ -314,7 +314,7 @@ class UserMessage(Vertical):
         marker = "▸" if self.collapsed else "▾"
         label = self.message_header or ("You · queued" if self.queued else "You")
         preview = f" · {self.preview}" if self.collapsed and self.preview else ""
-        self.border_title = f"{marker} {label}{preview}"
+        self.border_title = Text(f"{marker} {label}{preview}")
 
     def set_collapsed(self, value: bool) -> None:
         self.set_class(value, "collapsed")

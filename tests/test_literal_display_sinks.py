@@ -146,3 +146,26 @@ async def test_help_command_arguments_remain_literal():
     reference = "/skills [name] /model [n] /think [level] /compact [hint]"
     async with SinkApp(HelpBody(reference)).run_test() as pilot:
         assert pilot.app.query_one("#help-body", Static).render().plain == reference
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("part", ["header", "collapsed-preview"])
+async def test_user_message_border_title_is_literal(part):
+    from litetui.widgets import UserMessage
+    message = UserMessage(PAYLOAD, header=PAYLOAD if part == "header" else None)
+    async with SinkApp(message).run_test() as pilot:
+        if part == "collapsed-preview":
+            message.set_collapsed(True)
+        await pilot.pause()
+        assert PAYLOAD in message._border_title.plain
+        message.mark_delivered()
+        assert PAYLOAD in message._border_title.plain
+
+
+@pytest.mark.asyncio
+async def test_app_user_bubble_header_is_literal(monkeypatch):
+    app = make_app(monkeypatch)
+    async with app.run_test() as pilot:
+        message = app._user_bubble("text", False, header=PAYLOAD)
+        await pilot.pause()
+        assert PAYLOAD in message._border_title.plain
