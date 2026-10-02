@@ -39,6 +39,7 @@ from litetui import paths  # noqa: F401 — path anchors come from ONE home (plu
 from litetui import settings as settings_mod
 from litetui.picker import pick
 from litetui.plugins import PluginManifest
+from litetui.literal_display import literal_options
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 
@@ -1043,7 +1044,7 @@ class ModelConfigBody(Widget):
                         yield Label("Presets", classes="set-label")
                         preset_names = sorted(app.settings.llama_presets)
                         yield Select(
-                            [("(apply a saved preset…)", "")] + [(n, n) for n in preset_names],
+                            literal_options([("(apply a saved preset…)", "")] + [(n, n) for n in preset_names]),
                             value="",
                             id="mc-preset-apply",
                             allow_blank=False,
@@ -1074,16 +1075,16 @@ class ModelConfigBody(Widget):
             if kind == "tri":
                 choices = [(blank_label, ""), ("on", "true"), ("off", "false")]
                 value = "" if current is None else ("true" if current else "false")
-                yield Select(choices, value=value, id=wid,
+                yield Select(literal_options(choices), value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "spec-select":
                 choices = [("unset (legacy / server default)", ""), *extra]
-                yield Select(choices, value=current or "", id=wid,
+                yield Select(literal_options(choices), value=current or "", id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "select":
                 choices = [(blank_label, "")] + [(c, c) for c in extra]
                 value = current if current in (extra or []) else ""
-                yield Select(choices, value=value, id=wid,
+                yield Select(literal_options(choices), value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             else:
                 shown = "" if current is None else str(current)

@@ -75,6 +75,7 @@ from litetui.settings_ui_model import (
     SettingsSectionSpec,
     search_settings,
 )
+from litetui.literal_display import literal_options
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 THINKING_CHOICES = [
@@ -657,7 +658,7 @@ class SettingsBody(Widget):
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
-                choices,
+                literal_options(choices),
                 value=getattr(self._start, name),
                 id=f"f-{name}",
                 allow_blank=False,
@@ -679,7 +680,7 @@ class SettingsBody(Widget):
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
-                choices,
+                literal_options(choices),
                 value=current or "",
                 id=f"f-{name}",
                 allow_blank=False,
@@ -725,7 +726,7 @@ class SettingsBody(Widget):
                         with Vertical(classes="set-row"):
                             yield Label("Default model", classes="set-label")
                             yield Select(
-                                model_choices,
+                                literal_options(model_choices),
                                 value=self._start.default_model or "",
                                 id="f-default_model",
                                 allow_blank=False,
