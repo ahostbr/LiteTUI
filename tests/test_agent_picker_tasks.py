@@ -110,5 +110,5 @@ def test_owned_task_save_never_uses_archive_twin_or_legacy_topup(tmp_path, monke
         held = {}
         tasks.bind(held, directory, tmp_path, agent_session=session)
         assert task.id in held
-        with pytest.raises(ValueError, match='outside'):
+        with pytest.raises(tasks.StoreNotBorn, match='outside'):
             tasks.bind(held, archive, tmp_path, agent_session=session)

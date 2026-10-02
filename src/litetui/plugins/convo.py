@@ -82,7 +82,10 @@ def _open_convos_picker(app, agent_id=None) -> None:
             if not agents:
                 app.system_message('No ready owned agents. Legacy conversations are read-only archives; use catalog/export.')
                 return
-            pick(app, 'Choose an agent', [(a.agent_id, a.name) for a in agents],
+            title = 'Choose an agent'
+            if app.store.persist_error:
+                title += '  [!] SAVING IS BROKEN'
+            pick(app, title, [(a.agent_id, a.name) for a in agents],
                  lambda selected: _open_convos_picker(app, selected) if selected else None,
                  current=session.authority.agent_id if session is not None else None)
             return

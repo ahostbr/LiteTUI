@@ -29,6 +29,7 @@ def _store_in_tmp(tmp_path, monkeypatch):
     store on command, and a test must never touch the live store.
     CONVO_DIR is a module constant, so patch IT, not ROOT."""
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
+    monkeypatch.setattr(paths, "data_root", lambda: tmp_path)
 
 
 def make_app() -> "m.LiteTUI":
@@ -40,8 +41,14 @@ def make_app() -> "m.LiteTUI":
     return a
 
 
-def seed_convo(uid: str = "cafe0001") -> Path:
-    d = paths.CONVO_DIR / uid
+def seed_convo(uid: str = "33333333-3333-4333-8333-333333333333") -> Path:
+    home = paths.data_root() / '.agents' / 'QuietHelm'
+    home.mkdir(parents=True)
+    (home / 'settings.json').write_text(json.dumps({
+        'schema_version': 1, 'name': 'QuietHelm',
+        'agent_id': '11111111-1111-4111-8111-111111111111',
+        'execution': {'backend': 'codex', 'model': 'fixture', 'thinking_level': 'high'}}))
+    d = home / 'conversations' / uid
     d.mkdir(parents=True)
     p = d / "convo.jsonl"
     with p.open("w", encoding="utf-8") as f:
@@ -65,7 +72,7 @@ async def test_convos_opens_the_picker_modal(tmp_path) -> None:
         assert isinstance(a.screen, PickerScreen), (
             "/convos must open the picker modal, not print rows into the chat"
         )
-        assert a.screen._title == "Resume a conversation"
+        assert a.screen._title == "Choose an agent"
         assert len(a.screen.query_one(OptionList).options) == 1, (
             "the seeded conversation must be one selectable row"
         )
@@ -85,7 +92,7 @@ async def test_resume_with_no_arg_opens_the_same_picker(tmp_path) -> None:
         assert isinstance(a.screen, PickerScreen), (
             "no-arg /resume must open the same picker, not print text"
         )
-        assert a.screen._title == "Resume a conversation"
+        assert a.screen._title == "Choose an agent"
 
 
 @pytest.mark.asyncio

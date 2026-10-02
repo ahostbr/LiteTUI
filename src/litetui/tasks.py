@@ -455,7 +455,10 @@ class StoreNotBorn(Exception):
 def convo_store_dir(convo_id: str, *, agent_session=None) -> Path:
     """Resolve writable task store through owned capability, never its archive twin."""
     if agent_session is not None:
-        d = agent_session.conversation_directory(convo_id)
+        try:
+            d = agent_session.conversation_directory(convo_id)
+        except ValueError as exc:
+            raise StoreNotBorn(f'owned task store authority refused: {exc}') from exc
         if not d.is_dir():
             raise StoreNotBorn(f'owned conversation {convo_id} has no directory yet')
         return d
@@ -570,9 +573,12 @@ def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str, 
     if agent_session is None:
         topup(convo_dir, legacy_root)
     else:
-        expected = agent_session.conversation_directory(Path(convo_dir).name)
+        try:
+            expected = agent_session.conversation_directory(Path(convo_dir).name)
+        except ValueError as exc:
+            raise StoreNotBorn(f'owned task bind authority refused: {exc}') from exc
         if Path(convo_dir) != expected:
-            raise ValueError('Task bind lies outside selected owned agent')
+            raise StoreNotBorn('Task bind lies outside selected owned agent')
         # Copy-only migration is an explicit operator action, never on owned read.
     for task_id, task in load(convo_dir).items():
         ours = held.get(task_id)
