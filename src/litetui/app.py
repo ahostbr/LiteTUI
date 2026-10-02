@@ -6511,10 +6511,10 @@ class LiteTUI(App):
             r"\b(error|failed|failure|crash|could not|cannot|refused|unable to)\b", text, re.I
         ))
 
-    def notify(self, message, *, severity="information", **kwargs):
+    def notify(self, message, *, severity="information", markup=False, **kwargs):
         if severity == "error":
             self._report_spawner_error(str(message), "notification")
-        return super().notify(message, severity=severity, **kwargs)
+        return super().notify(message, severity=severity, markup=markup, **kwargs)
 
     def system_message(self, text: str) -> None:
         """Post a system line into the chat log — **the supported way for a

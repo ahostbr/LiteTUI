@@ -866,7 +866,7 @@ class ModelConfigBody(Widget):
 
         with Vertical(id="set-box"):
             engine = engine_label
-            yield Static(f"Model: {self._key}  ·  {engine}", id="set-title")
+            yield Static(f"Model: {self._key}  ·  {engine}", id="set-title", markup=False)
             yield Static(
                 "Esc cancels · Ctrl+S applies (a loaded model reloads — "
                 "evicts resident weights)",
@@ -876,11 +876,11 @@ class ModelConfigBody(Widget):
                 with TabPane("Info", id="mc-info"):
                     with VerticalScroll(classes="set-scroll"):
                         if row is not None:
-                            yield Static(f"Source: {row.source}", classes="set-help")
+                            yield Static(f"Source: {row.source}", classes="set-help", markup=False)
                             if row.path:
-                                yield Static(f"Path: {row.path}", classes="set-help")
+                                yield Static(f"Path: {row.path}", classes="set-help", markup=False)
                             for extra_path in row.extra_paths:
-                                yield Static(f"Also at: {extra_path}", classes="set-help")
+                                yield Static(f"Also at: {extra_path}", classes="set-help", markup=False)
                             if row.modalities:
                                 mods = ", ".join(row.modalities)
                                 # 🔴 DECLARED vs EFFECTIVE. `row.modalities` is
@@ -893,7 +893,7 @@ class ModelConfigBody(Widget):
                                         load_cfg.get("mmproj")):
                                     mods += "  ->  text only (projector: none)"
                                 yield Static(f"Modalities: {mods}",
-                                             classes="set-help")
+                                             classes="set-help", markup=False)
                             yield Static(
                                 "Loaded" if row.loaded else "Not loaded (its ctx "
                                 "number, if shown, is a ceiling — not a window)",
@@ -979,7 +979,7 @@ class ModelConfigBody(Widget):
                                 note=note,
                             )
                         for label, why in _NA_ON_LLAMA:
-                            yield Static(f"{label}: {why}", classes="set-help")
+                            yield Static(f"{label}: {why}", classes="set-help", markup=False)
 
                 with TabPane("Inference", id="mc-infer"):
                     with VerticalScroll(classes="set-scroll"):
@@ -1059,7 +1059,7 @@ class ModelConfigBody(Widget):
             # (`#set-error` in settings_screen.py:605 carries a comment about
             # being yielded unconditionally so `query_one` always finds it —
             # same reason here.)
-            yield Static("", id="mc-error")
+            yield Static("", id="mc-error", markup=False)
             # Outside the tabs, on its own line: this dialog has no button row
             # to sit in, and a control inside one TabPane would vanish when the
             # user changed tab — visible on Info, gone on Load.

@@ -689,7 +689,7 @@ class _FoldHeader(Static):
     """Clickable header for a FoldBlock."""
 
     def __init__(self, label: str) -> None:
-        super().__init__(f"\u25b8 {label}", classes="thinking-header")
+        super().__init__(f"\u25b8 {label}", classes="thinking-header", markup=False)
         self.label = label
 
     def focus_on_click(self) -> bool:
@@ -780,7 +780,7 @@ class CompactionCard(Vertical):
         # so a backend that never streams progress (Codex) shows the plain clock.
         self._prefill: tuple[float, int, int] | None = None
         self._title = Static(self._title_text(), classes="compaction-title")
-        self._plan = Static(plan, classes="compaction-plan")
+        self._plan = Static(plan, classes="compaction-plan", markup=False)
         self.prompt_fold = FoldBlock("Compaction prompt", prompt_text)
         self.body = AnswerBody("")
         self.status = Static("", classes="compaction-status")

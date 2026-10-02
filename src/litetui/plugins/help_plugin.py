@@ -56,7 +56,7 @@ class HelpBody(Widget):
         with Vertical(id="help-box"):
             yield Static("Commands & keys", id="help-title")
             with VerticalScroll(id="help-scroll"):
-                yield Static(self._body, id="help-body")
+                yield Static(self._body, id="help-body", markup=False)
             with Horizontal(id="help-buttons"):
                 yield Button("Close", variant="primary", id="help-close")
                 # `.inline` because it shares a row with Close -- SwapButton's

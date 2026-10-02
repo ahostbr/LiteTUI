@@ -984,7 +984,7 @@ class SettingsBody(Widget):
                                 "it. Applies on save.", classes="set-help")
                         with Vertical(classes="set-row"):
                             yield Button("Download voice-in model", id="voice-dl-stt")
-                            yield Static("", id="voice-status", classes="set-help")
+                            yield Static("", id="voice-status", classes="set-help", markup=False)
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
 
@@ -1441,7 +1441,7 @@ class SettingsBody(Widget):
             # "#set-error" meant action_save()'s query_one() always found the
             # DOM-first one (buried in the Interface tab), so a save error
             # raised while on any OTHER tab wrote to a Static nobody could see.
-            yield Static("", id="set-error")
+            yield Static("", id="set-error", markup=False)
             with Horizontal(id="set-buttons"):
                 yield Button("Save", variant="primary", id="set-save")
                 yield Button("Cancel", id="set-cancel")

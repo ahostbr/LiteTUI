@@ -50,7 +50,7 @@ class HooksEditor(VerticalScroll):
         self._broken_bytes = None
 
     def compose(self):
-        yield Static("", id="hook-status")
+        yield Static("", id="hook-status", markup=False)
         yield Label("Edit scope — project IDs override global IDs, including disabled entries")
         yield Select([("Project", "project"), ("Global", "global")], value="project", allow_blank=False, id="hook-scope")
         yield Select([], prompt="Choose a hook", id="hook-select")
@@ -69,7 +69,7 @@ class HooksEditor(VerticalScroll):
         for name, label, default in HOOK_FIELDS:
             yield Label(label)
             yield Input(default, id=f"hook-field-{name}")
-        yield Static("", id="hook-error")
+        yield Static("", id="hook-error", markup=False)
         yield TextArea("", id="hook-repair-json")
         yield Button("Save repaired file JSON", id="hook-repair")
         with Horizontal():
@@ -78,7 +78,7 @@ class HooksEditor(VerticalScroll):
         yield Label("Test event JSON — Test executes this script with the normal approval policy")
         yield TextArea(json.dumps({"event": "tool_before", "source": "typed", "data": {"tool": "read", "args": {}}}, indent=2), id="hook-sample")
         yield Button("Test script", variant="warning", id="hook-test")
-        yield Static("", id="hook-result")
+        yield Static("", id="hook-result", markup=False)
         yield Label("Rejected prompts remain in the transcript and here until this app exits")
         yield Select([], prompt="Rejected prompt", id="hook-rejected")
         yield Button("Resubmit selected prompt", id="hook-resubmit")
