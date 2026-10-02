@@ -334,6 +334,10 @@ class Settings:
     #: before any allow rule: a refusal the human wrote down wins over
     #: everything. No UI writes this yet -- settings.json only, by hand.
     tool_deny: list[str] = field(default_factory=list)
+    #: Human-configured exact absolute interpreter paths; conversation-scoped.
+    #: Empty by default. No basename/directory trust and no linked paths. Stored
+    #: in the conversation execution settings; never inferred from venv metadata.
+    tool_trusted_interpreters: list[str] = field(default_factory=list)
     #: Per-tool denylist by tool NAME — the boxes unticked in `/tools`.
     #: A DENYLIST and not an allowlist, mirroring `mcp_disabled_servers`: with
     #: an allowlist a newly registered tool is INVISIBLE until someone notices
@@ -584,6 +588,9 @@ def _coerce(name: str, raw: Any, current: Any) -> Any:
         return current
     if name == "tool_policy_profile" and raw == "scheduled":
         return _selectable_profile(raw)  # removed 2026-09-24; migrates on every read
+    if name == "tool_trusted_interpreters":
+        # Unlike ordinary string lists, never coerce malformed input into trust.
+        return raw.copy() if isinstance(raw, list) and all(isinstance(x, str) for x in raw) else []
     t = str(ftype)
     try:
         if raw is None:

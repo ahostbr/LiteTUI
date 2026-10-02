@@ -46,6 +46,7 @@ from textual.widgets import (
     Switch,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 
 # THE MODULE, not the names. `from ... import PROFILES` binds at import
@@ -1114,6 +1115,20 @@ class SettingsBody(Widget):
                             "overridden by allowing the same thing.",
                             placeholder="none",
                         )
+                        with Vertical(classes="set-row"):
+                            yield Label("Trusted interpreter paths", classes="set-label")
+                            yield TextArea(
+                                "\n".join(self._start.tool_trusted_interpreters),
+                                id="f-tool_trusted_interpreters",
+                                classes="set-input",
+                            )
+                            yield Static(
+                                "One exact absolute path per line, for this conversation only. "
+                                "Empty means no additional trust. Skips foreign-program "
+                                "confirmation for these identities only, not danger or deny "
+                                "rules. Linked paths and invalid entries grant no trust.",
+                                classes="set-help",
+                            )
                         yield from self._text_row(
                             "relay_approval_timeout_s", "Spawner approval wait (seconds)",
                             "A LiteTUI launched by an agent asks THAT agent, by inbox, "
@@ -1553,6 +1568,11 @@ class SettingsBody(Widget):
                     setattr(out, name, val)
                 continue
 
+            if name == "tool_trusted_interpreters" and isinstance(widget, TextArea):
+                # One path per line; spaces, backslashes and commas are data.
+                # Preserve malformed nonempty lines so the classifier fails closed.
+                setattr(out, name, widget.text.splitlines() if widget.text else [])
+                continue
             raw = str(widget.value)
             try:
                 if "list[str]" in t:
@@ -1668,6 +1688,9 @@ class SettingsBody(Widget):
         for w in list(self.query(Input)) + list(self.query(Select)) + list(self.query(Switch)):
             if w.id and not w.id.startswith("hook-"):
                 out[w.id] = w.value
+        for w in self.query(TextArea):
+            if w.id == "f-tool_trusted_interpreters":
+                out[w.id] = w.text
         out["_hooks_editor"] = self.query_one(HooksEditor).get_state()
         return out
 
@@ -1680,7 +1703,11 @@ class SettingsBody(Widget):
             if not found:
                 continue          # a control this host does not render
             try:
-                found.first().value = value
+                widget = found.first()
+                if isinstance(widget, TextArea):
+                    widget.load_text(value)
+                else:
+                    widget.value = value
             except Exception:
                 continue          # a Select whose options no longer hold it
 
@@ -1723,7 +1750,10 @@ class SettingsBody(Widget):
             if value is None and isinstance(widget, Select):
                 value = ""
             try:
-                widget.value = value
+                if isinstance(widget, TextArea):
+                    widget.load_text("\n".join(value))
+                else:
+                    widget.value = value
             except (AttributeError, TypeError, ValueError):
                 # A host-specific choice list may not expose a factory value;
                 # persistence still receives the explicit target patch.

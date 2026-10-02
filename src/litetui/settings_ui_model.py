@@ -69,6 +69,7 @@ FIELD_LABELS = {
     "tools_enabled": "Let the agent use tools", "tool_iterations": "Maximum tool steps",
     "tool_policy_profile": "Approval level", "tool_always_allow": "Actions always allowed",
     "tool_deny": "Actions never allowed", "tools_disabled": "Hidden tools",
+    "tool_trusted_interpreters": "Trusted interpreter paths",
     "autocompact_enabled": "Keep long conversations going", "autocompact_at_percent": "When to shorten context",
     "wake_after_compact": "Resume after shortening", "mcp_enabled": "Connect external tools",
     "skills_enabled": "Enable skills", "footer_order": "Footer item order",
@@ -162,6 +163,7 @@ FIELD_DESCRIPTIONS = {
     "tool_policy_profile": "Host-enforced tool permissions for typed turns, inbox work, and scheduled jobs.",
     "tool_always_allow": "Tool:authority approvals that skip future prompts at that authority; use sparingly.",
     "tool_deny": "Tool:authority refusals checked before any allow rule or profile.",
+    "tool_trusted_interpreters": "One exact absolute path per line for this conversation. Empty adds no trust. Skips only foreign-program confirmation, not danger or deny rules; linked or invalid paths grant no trust.",
     "relay_approval_timeout_s": "Seconds an agent-launched seat waits for its spawner's approval before refusing.",
     "tools_disabled": "Tool names withheld from the model and refused if called anyway.",
     "tool_context_mode": "Put raw, masked, or summarized tool output in context without deleting the original.",
@@ -358,7 +360,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "agent", "Agent loop", "agent-authority", "Authority & approvals",
         "The host-enforced safety profile and standing decisions.",
-        ("tool_policy_profile", "tool_always_allow", "tool_deny", "relay_approval_timeout_s"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
+        ("tool_policy_profile", "tool_always_allow", "tool_deny", "tool_trusted_interpreters", "relay_approval_timeout_s"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
     ),
     _section(
         "agent", "Agent loop", "agent-tools", "Tool surface",
