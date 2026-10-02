@@ -2984,10 +2984,10 @@ class LiteTUI(App):
 
     async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False):
         """Shared policy and approval door for tools and hook processes."""
-        # T1085: FIRST, before evaluate, the floor, the relay and the modal. A locked
-        # seat may not write a data root's jobs.json by any tool; the rule is Ryan's,
-        # not a spawner's to APPROVE, so it never reaches confirm_route.
-        if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT):
+        # T1085: FIRST, before evaluate, the floor, the relay and the modal. Only
+        # Ryan's own seat may directly write a data root's jobs.json; ownership is
+        # not a profile cap or a spawner's to APPROVE (T1133 caps stay removed).
+        if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy):
             return tool_denied("profile", name=name, reason=why), False
         decision = tool_policy.evaluate(
             # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority

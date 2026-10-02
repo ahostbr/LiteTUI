@@ -1,14 +1,8 @@
-"""T1085 — jobs.json is Ryan's: a LOCKED seat may not write it by any tool.
+"""T1085 — jobs.json is Ryan's: only Ryan's own seat may directly write it.
 
-Why (Dijkstra f0ae21c1 P1; Sentinel abb3bd01): since T1082 a job's recorded
-tool_profile IS its authority, and jobs.json is the file Ryan's own LiteTUI fires
-them from. A row written by an agent's tool is authority that agent does not have.
-The API doors were closed by T1082; these arms close the file, in every backend,
-at the one door they all pass (`LiteTUI._authorize_action`).
-
-conftest points LITETUI_DATA_ROOT at tmp_path, so tmp_path/jobs.json IS the data
-root's schedule file here, and conftest clears the owner mark, so a LiteTUI built
-here is LOCKED unless an arm marks it Ryan's own.
+T1133 removed profile locks and schedule API caps. These arms protect only direct
+file writes, at the shared _authorize_action door, without restoring those caps.
+The original alias bug was measured by Dijkstra (69c7c209 A1).
 """
 from __future__ import annotations
 
@@ -16,17 +10,16 @@ import pytest
 
 from litetui import app as m
 from litetui import claude_tools, scheduler, seat_authority, tool_policy
-from litetui.tool_policy import INTERACTIVE
+from litetui.tool_policy import AUTONOMOUS
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 
 
-def _locked(tmp_path, monkeypatch):
-    """A spawned, locked seat whose every human door is booby-trapped and whose
-    relay records what it would send (Dijkstra: nothing may be sent)."""
+def _agent(tmp_path, monkeypatch):
+    """An autonomous agent seat; the file guard must not narrow its profile."""
     a = m.LiteTUI()
-    a.settings.tool_policy_profile = INTERACTIVE
-    a._active_tool_profile = INTERACTIVE
+    a.settings.tool_policy_profile = AUTONOMOUS
+    a._active_tool_profile = AUTONOMOUS
     a._spawned_seat = True
     a._owner_seat = False
     a._spawner_id = SPAWNER
@@ -54,8 +47,8 @@ def _ryans(a):
 
 def _calls(jobs):
     """Every backend's spelling of a write to the schedule file."""
-    native_policy, native_args = claude_tools.native_policy("Write", {"file_path": str(jobs),
-                                                                      "content": "[]"})
+    native_policy, native_args = claude_tools.native_policy(
+        "Write", {"file_path": str(jobs), "content": "[]"})
     patch = f"*** Begin Patch\n*** Update File: {jobs}\n@@\n-[]\n+[1]\n*** End Patch\n"
     return [
         ("write", {"path": str(jobs), "content": "[]"}, tool_policy.WRITE_POLICY),
@@ -69,10 +62,11 @@ def _calls(jobs):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("index", range(5))
-async def test_a_locked_seat_may_not_write_jobs_json_by_any_backend(tmp_path, monkeypatch, index):
-    a, sent = _locked(tmp_path, monkeypatch)
+async def test_an_agent_seat_may_not_write_jobs_json_by_any_backend(tmp_path, monkeypatch, index):
+    a, sent = _agent(tmp_path, monkeypatch)
     name, args, policy = _calls(tmp_path / "jobs.json")[index]
     result = await a._authorize_action(name, args, policy, workspace=tmp_path)
+    assert a._active_tool_profile == AUTONOMOUS, "the file guard must not cap profiles"
     assert result, (name, "the write was allowed")
     text = result[0]
     assert "may not write" in text and "jobs.json" in text and "T1085" in text, text
@@ -82,9 +76,7 @@ async def test_a_locked_seat_may_not_write_jobs_json_by_any_backend(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_the_refusal_comes_before_the_relay(tmp_path, monkeypatch):
-    """Dijkstra 0fd0f2d0: a locked spawner-route seat's `echo > jobs.json` is
-    refused with NO [APPROVAL] sent; the rule is Ryan's, not the spawner's."""
-    a, sent = _locked(tmp_path, monkeypatch)
+    a, sent = _agent(tmp_path, monkeypatch)
     assert seat_authority.confirm_route(a) == "spawner"
     result = await a._authorize_action("bash", {"command": "echo [] > jobs.json"},
                                        tool_policy.SHELL_POLICY, workspace=tmp_path)
@@ -93,22 +85,18 @@ async def test_the_refusal_comes_before_the_relay(tmp_path, monkeypatch):
 
 
 def test_ryans_own_seat_may_write_its_schedule(tmp_path):
-    """The exemption: Ryan's own seat is not refused by this rule, by any backend."""
     a = _ryans(m.LiteTUI())
-    for _name, args, _policy in _calls(tmp_path / "jobs.json"):
-        assert seat_authority.jobs_file_refusal(a, args, tmp_path) is None, args
+    for _name, args, policy in _calls(tmp_path / "jobs.json"):
+        assert seat_authority.jobs_file_refusal(a, args, tmp_path, policy) is None, args
 
 
 def test_the_litetui_floor_leaves_jobs_to_the_seat(tmp_path):
-    """LiteTUI's floor passes jobs=False, so a jobs.json write is not floor-denied
-    in Ryan's seat. The floor still refuses its other rules (control)."""
     assert tool_policy._floor({"command": f"echo [] > {tmp_path / 'jobs.json'}"}, tmp_path) is None
     assert "[home-variable-delete]" in tool_policy._floor({"command": "rm -rf ~"}, tmp_path)
 
 
-def test_scheduler_save_is_untouched_in_a_locked_seat(tmp_path, monkeypatch):
-    """The scheduler's own save is in-process Python, never a tool call."""
-    _locked(tmp_path, monkeypatch)
+def test_scheduler_save_is_untouched_in_an_agent_seat(tmp_path, monkeypatch):
+    _agent(tmp_path, monkeypatch)
     scheduler.save([], tmp_path)
     assert (tmp_path / "jobs.json").is_file()
 
@@ -119,13 +107,13 @@ def test_scheduler_save_is_untouched_in_a_locked_seat(tmp_path, monkeypatch):
     {"command": "copy jobs.json backup.json"},
     {"path": "myjobs.json", "content": "x"},
 ])
-def test_other_files_and_reads_pass_in_a_locked_seat(tmp_path, monkeypatch, args):
-    a, _ = _locked(tmp_path, monkeypatch)
+def test_other_files_and_reads_pass_in_an_agent_seat(tmp_path, monkeypatch, args):
+    a, _ = _agent(tmp_path, monkeypatch)
     assert seat_authority.jobs_file_refusal(a, args, tmp_path) is None, args
 
 
 def test_another_folders_jobs_json_passes(tmp_path, monkeypatch):
-    a, _ = _locked(tmp_path, monkeypatch)
+    a, _ = _agent(tmp_path, monkeypatch)
     other = tmp_path / "elsewhere"
     other.mkdir()
     assert seat_authority.jobs_file_refusal(a, {"path": str(other / "jobs.json")}, tmp_path) is None
@@ -133,7 +121,25 @@ def test_another_folders_jobs_json_passes(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("alias", ["jobs.json::$DATA", "jobs.json.", "jobs.json ", "jobs.json:x"])
 def test_a_windows_alias_of_jobs_json_is_refused_too(tmp_path, monkeypatch, alias):
-    """Dijkstra 69c7c209 A1: each alias opens the same jobs.json (measured with open())."""
-    a, _ = _locked(tmp_path, monkeypatch)
+    a, _ = _agent(tmp_path, monkeypatch)
     why = seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / "x")[:-1] + alias}, tmp_path)
     assert why and "T1085" in why, alias
+
+
+@pytest.mark.asyncio
+async def test_a_read_tool_path_is_not_a_write(tmp_path, monkeypatch):
+    """The original argument-only guard mistook read(path=jobs.json) for a write."""
+    a, _ = _agent(tmp_path, monkeypatch)
+    assert await a._authorize_action("read", {"path": str(tmp_path / "jobs.json")},
+                                     tool_policy.READ_POLICY, workspace=tmp_path) is None
+
+
+@pytest.mark.parametrize("clean", [True, False])
+def test_protected_write_rechecks_owner_taint(tmp_path, monkeypatch, clean):
+    """A cached owner mark must not exempt a bridge-tainted write mid-turn."""
+    a = _ryans(m.LiteTUI())
+    a._pty_term = "owner-terminal"
+    monkeypatch.setattr(seat_authority, "pty_taint_clean", lambda term: clean)
+    why = seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / "jobs.json")}, tmp_path)
+    assert (why is None) is clean
+    assert a._owner_seat is clean
