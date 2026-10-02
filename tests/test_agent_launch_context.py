@@ -184,6 +184,8 @@ async def test_owned_headless_turn_refuses_model_substitution(owned):
     app._register_owned_startup = lambda: LiteTUI._register_owned_startup(app)
     app._rpc = True
     app.model_id = 'fixture'
+    app._thinking_level = 'high'
+    app.backend = SimpleNamespace(name='codex')
     app._headless_model_decision = lambda: ('substitute', 'wrong-model', 'legacy default substitution')
     events = []
     app._rpc_emit = events.append
@@ -334,6 +336,8 @@ async def test_owned_interactive_model_not_loaded_refuses_before_provider(owned)
     app._register_owned_startup = lambda: LiteTUI._register_owned_startup(app)
     app._rpc = False
     app.model_id = 'fixture'
+    app._thinking_level = 'high'
+    app.backend = SimpleNamespace(name='codex')
     app.model_rows = {'wrong': SimpleNamespace(key='wrong', loaded=True)}
     with pytest.raises(BackendError, match='no identity fallback'):
         await LiteTUI._ensure_chat_ready(app)
@@ -384,3 +388,130 @@ async def test_repeated_cancel_shutdown_joins_one_cleanup_after_registration(own
     assert calls == ['register', 'conversation-release']
     with agent_launch_context.acquire(owned.store.data_root, 'QuietHelm') as recovered:
         assert recovered.authority.agent_id == AID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['backend', 'effort-override', 'thinking', 'model'])
+async def test_actual_owned_provider_readiness_rejects_effective_authority_change(owned, change):
+    from litetui.llm_backend import BackendError
+    app, calls = registration_host(owned, succeeds=True)
+    provider_calls = []
+    async def ask(model):
+        provider_calls.append(model)
+    app._register_owned_startup = lambda: LiteTUI._register_owned_startup(app)
+    app._rpc = False
+    app.model_id = 'fixture'
+    app._thinking_level = 'high'
+    app.backend = SimpleNamespace(name='codex', ensure_chat_ready=ask)
+    app._effective_request_overrides = lambda: {'reasoning_effort': 'low'} if change == 'effort-override' else {}
+    if change == 'backend':
+        app.backend.name = 'claude'
+    elif change == 'thinking':
+        app._thinking_level = 'low'
+    elif change == 'model':
+        app.model_id = 'wrong'
+    with pytest.raises(BackendError, match='authority'):
+        await LiteTUI._ensure_chat_ready(app)
+    assert provider_calls == []
+    assert calls == ['register']
+
+
+@pytest.mark.asyncio
+async def test_global_task_sweep_waits_for_actual_registration_thread_and_cleanup(owned):
+    import threading
+    entered, finish = threading.Event(), threading.Event()
+    app, calls = registration_host(owned, succeeds=True)
+    original = app.seat.register
+    def blocking():
+        entered.set()
+        finish.wait(5)
+        assert owned.authority.agent_id == AID
+        return original()
+    app.seat.register = blocking
+    registration = asyncio.create_task(LiteTUI._register_owned_startup(app))
+    assert await asyncio.to_thread(entered.wait, 2)
+    cleanup = asyncio.create_task(LiteTUI._release_owned_storage(app))
+    await asyncio.sleep(0)
+    async def finish_later():
+        await asyncio.sleep(0.03)
+        assert owned.authority.agent_id == AID and calls == []
+        assert app._owned_registration_lock.locked()
+        finish.set()
+    driver = asyncio.current_task()
+    victims = [task for task in asyncio.all_tasks() if task is not driver]
+    for task in victims:
+        task.cancel()
+    # This controlled signal is created AFTER the simulated asyncio.run sweep.
+    finisher = asyncio.create_task(finish_later())
+    try:
+        await asyncio.wait_for(asyncio.gather(*victims, return_exceptions=True), 3)
+        await finisher
+    finally:
+        finish.set()
+    assert registration.cancelled()
+    assert cleanup.cancelled()
+    assert calls == ['register', 'conversation-release']
+    with agent_launch_context.acquire(owned.store.data_root, 'QuietHelm') as recovered:
+        assert recovered.authority.agent_id == AID
+
+
+@pytest.mark.asyncio
+async def test_real_effective_overrides_and_turnengine_effort_rejected_before_provider(owned):
+    from litetui.llm_backend import BackendError
+    from litetui.turn_engine import TurnEngine
+    app, calls = registration_host(owned, succeeds=True)
+    provider_calls = []
+    async def ask(model):
+        provider_calls.append(model)
+    app._register_owned_startup = lambda: LiteTUI._register_owned_startup(app)
+    app._rpc = False
+    app.model_id = 'fixture'
+    app._thinking_level = 'high'
+    app.backend = SimpleNamespace(name='codex', ensure_chat_ready=ask,
+        request_overrides=lambda model: {'reasoning_effort': 'low'})
+    app._effective_request_overrides = lambda: LiteTUI._effective_request_overrides(app)
+    kwargs = TurnEngine.chat_request(model_id=app.model_id, messages=[], tools_enabled=False,
+        max_tokens_tools=100, max_tokens_chat=100,
+        request_overrides=app._effective_request_overrides(), thinking_level=app._thinking_level,
+        backend_name='codex')
+    assert kwargs['extra_body']['reasoning_effort'] == 'low'
+    with pytest.raises(BackendError, match='Effective request effort'):
+        await LiteTUI._ensure_chat_ready(app)
+    assert provider_calls == [] and calls == ['register']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['stream-claude', 'compact-claude', 'compact-codex'])
+@pytest.mark.parametrize('change', ['backend', 'effort'])
+async def test_actual_native_entry_refuses_authority_before_provider(owned, monkeypatch, route, change):
+    from litetui import claude_turn, claude_compact, model_transport
+    calls, said = [], []
+    backend_name = 'claude' if route.endswith('claude') else 'codex'
+    authority = SimpleNamespace(backend=backend_name, model='fixture', thinking_level='high')
+    # A shim only changes backend authority to exercise Claude's actual mapper;
+    # real owned lease remains held to prove no user/provider/registry mutation.
+    app = SimpleNamespace(_agent_session=SimpleNamespace(authority=authority), model_id='fixture',
+        _thinking_level='high', thinking_level='high', _system=said.append,
+        settings=SimpleNamespace(model_infer_overrides={}, lmstudio_graded_thinking_models=()),
+        backend=SimpleNamespace(name=backend_name, owns_native_turns=backend_name == 'claude',
+                               reasoning_levels=lambda _: ['low', 'high']))
+    app._effective_request_overrides = lambda: {'reasoning_effort': 'low'} if change == 'effort' else {}
+    async def maintenance():
+        pass
+    app._await_mcp_maintenance = maintenance
+    async def provider(*a, **k):
+        calls.append('provider')
+    monkeypatch.setattr(claude_turn, 'stream_turn', provider)
+    monkeypatch.setattr(claude_compact, 'compact', provider)
+    monkeypatch.setattr(model_transport, 'for_app', lambda *_: SimpleNamespace(compact=provider))
+    if route == 'compact-codex':
+        app.backend.app_server = object()
+    if change == 'backend':
+        app.backend.name = 'wrong-backend'
+    elif backend_name == 'claude':
+        app.settings.model_infer_overrides = {'fixture': {'reasoning_effort': 'low'}}
+    operation = LiteTUI._stream.__wrapped__(app) if route.startswith('stream') else LiteTUI._compact.__wrapped__(app)
+    await operation
+    assert calls == []
+    assert len(said) == 1 and 'authority' in said[0]
+    assert owned.authority.agent_id == AID
