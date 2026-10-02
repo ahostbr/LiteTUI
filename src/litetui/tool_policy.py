@@ -429,6 +429,12 @@ def evaluate(
         # tree... it should never need approval"). After the floor and the standing
         # rules above, so neither can be bypassed by it; and interactive only.
         if (profile.name == INTERACTIVE and policy.classify_args is classify_shell
+                and _powershell_output_allows(args or {}, Path(workspace).resolve(), seat_name, shell)):
+            return PolicyDecision(
+                ALLOW, profile.name, capabilities,
+                "allowed: output confined to the seat's own worktree/card scratch or system TEMP",
+            )
+        if (profile.name == INTERACTIVE and policy.classify_args is classify_shell
                 and _own_worktree_allows(args or {}, Path(workspace).resolve(), seat_name, shell)):
             return PolicyDecision(
                 ALLOW, profile.name, capabilities,
@@ -781,6 +787,110 @@ def _command_view(command: str, shell: str | None = None, *, path_launch: bool =
     return scan(0)[0]
 
 
+def _powershell_shape(command: str) -> tuple[str, bool]:
+    """Approval-only view of literal PS operators; never changes the floor's input.
+
+    Mask only represented stream merges and the all-stream prefix. Quotes and
+    escapes protect operator-looking data. Expressions/control blocks remain
+    opaque: representing argv is not permission to evaluate PowerShell.
+    """
+    chars = list(command)
+    quote = ""
+    unknown = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if command[i:i + 2] == "''":
+                i += 2
+                continue
+            if ch == "'":
+                quote = ""
+            i += 1
+            continue
+        if ch == "`":
+            if i + 1 == len(command):
+                unknown = True
+            i += 2
+            continue
+        if ch == '"':
+            quote = "" if quote == '"' else '"'
+            i += 1
+            continue
+        if quote:
+            if command[i:i + 2] == "$(":
+                unknown = True
+            i += 1
+            continue
+        if ch == "'":
+            if i and command[i - 1] == "@":
+                unknown = True  # here-string, not an ordinary quoted token
+            quote = ch
+            i += 1
+            continue
+        if command[i:i + 2] == '@"':
+            unknown = True
+        if ch in "(){}[]" or command[i:i + 2] in {"||", "|&", "<<"}:
+            unknown = True
+        # PS merges only streams 2..6 (or all) into success stream 1.
+        merge = re.match(r"(?:[2-6]|\*)>&1(?=$|[\s;|])", command[i:])
+        if merge and (i == 0 or command[i - 1].isspace()):
+            chars[i:i + len(merge[0])] = " " * len(merge[0])
+            i += len(merge[0])
+            continue
+        if ch == ">":
+            if command[i:i + 2] == ">&":
+                unknown = True
+            if i and command[i - 1] == "*":
+                chars[i - 1] = " "
+            elif (i and command[i - 1].isdigit()
+                  and (command[i - 1] not in "123456" or (i > 1 and command[i - 2].isdigit()))):
+                unknown = True
+        if ch == "<":
+            unknown = True  # PS has no shell input redirect
+        i += 1
+    return "".join(chars), unknown or bool(quote)
+
+
+_PS_ASSIGNMENT = re.compile(r"^\s*(\$(?:env:)?[A-Za-z_]\w*)\s*=\s*(.*)$", re.IGNORECASE | re.DOTALL)
+_PS_SCALAR = re.compile(r"(?:\$[A-Za-z_]\w*|\$env:[A-Za-z_]\w*|[-+]?\d+(?:\.\d+)?|'(?:[^']|'')*'|\"(?:[^\"`]|`.)*\")", re.DOTALL)
+
+
+def _powershell_parts(command: str) -> tuple[list[dict], bool]:
+    normalized, unknown = _powershell_shape(command)
+    parts = deny_floor.shell_commands(normalized, "powershell")
+    result: list[dict] = []
+    for part in parts:
+        assignment = _PS_ASSIGNMENT.fullmatch(part["raw"])
+        if assignment:
+            rhs = assignment[2].strip()
+            if _PS_SCALAR.fullmatch(rhs):
+                # Scalar assignment has no command verb. It still contributes
+                # redirects, and path exemptions separately track its value.
+                part = {**part, "words": []}
+            else:
+                rhs_parts = deny_floor.shell_commands(rhs, "powershell")
+                if not rhs_parts:
+                    unknown = True
+                result.extend({**rhs_part, "ps_assignment": (assignment[1], "")} for rhs_part in rhs_parts)
+                continue
+        elif part["words"] and part["words"][0][0].startswith("$"):
+            unknown = True
+        if part["words"]:
+            head = part["words"][0][0]
+            if head.startswith(("$", "@")) or "::" in head:
+                unknown = True
+            if head.lower() == "exit" and any(not re.fullmatch(r"\$[A-Za-z_]\w*|\d+", w[0]) for w in part["words"][1:]):
+                unknown = True
+        result.append(part)
+    for part in result:
+        if part["shell"] == "powershell" and part["words"]:
+            head = part["words"][0][0]
+            if head.startswith(("$", "@")) or head == "." or "::" in head:
+                unknown = True
+    return result, unknown
+
+
 def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_interpreters: object = ()):
     """Classify actual executable argv/redirections, never prose arguments.
 
@@ -790,16 +900,27 @@ def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_inter
     """
     # Core shell tools are Bash/PowerShell. cmd grammar is selected only by
     # an explicit cmd wrapper or proven cmd caller, not by single-quoted prose.
-    parts = deny_floor.shell_commands(command, shell or "bash")
-    if shell is None and not any(part.get("heredoc") for part in parts):
-        parts += deny_floor.shell_commands(command, "powershell")
+    ps_unknown = False
+    if shell == "powershell":
+        parts, ps_unknown = _powershell_parts(command)
+    else:
+        parts = deny_floor.shell_commands(command, shell or "bash")
+        if shell is None and not any(part.get("heredoc") for part in parts):
+            parts += deny_floor.shell_commands(command, "powershell")
     # Ryan: "Ship, rare shapes ask". ONE explicit fail-closed prompt guard;
     # no claim that incomplete stream/operator representation proves inert data.
     # The mandatory jobs floor still runs separately and before this policy.
-    view = _command_view(command, shell)
-    if (any(part.get("heredoc") or not part["complete"]
+    view = _command_view(_powershell_shape(command)[0] if shell == "powershell" else command, shell)
+    if (ps_unknown or any(part.get("heredoc") or not part["complete"]
             or any(op.startswith("<<") for op, _ in part["redirects"]) for part in parts)
             or re.search(r"<<|\|\||\|&|[<>]&", view)):
+        if ps_unknown:
+            # Preserve known executable substitutions' danger label; unknown
+            # grammar still prevents any worktree/output exemption below.
+            for label, pattern in _DANGER:
+                if pattern.search(view):
+                    yield label, -5
+                    return
         yield UNKNOWN_SHAPE, -5
         return
     if (any([w[0].lower() for w in part["words"][:1]] in (["sh"], ["bash"], ["iex"], ["invoke-expression"])
@@ -835,8 +956,13 @@ def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_inter
                 else:
                     break
             args = args[i:]
+        if head in {"tee-object", "tee"} and part["shell"] == "powershell":
+            variable_only = (len(args) == 2 and args[0].lower() in {"-variable", "-v"}
+                             and re.fullmatch(r"[A-Za-z_]\w*", args[1]))
+            if not variable_only:
+                yield OVERWRITE, -6
         if head in {"git", "ffprobe"} and any(a in {"-o", "--output", "-output", "-report"} or a.startswith("--output=") for a in args):
-            yield OVERWRITE, -3
+            yield OVERWRITE, -7  # not a shell output target we can prove
         # Operand separators cannot manufacture command positions for regexes.
         view = " ".join([head, *(re.sub(r"[;&|\s]", "_", arg) for arg in args)])
         for index, (label, pattern) in enumerate(_DANGER):
@@ -894,6 +1020,127 @@ _NEVER_SCOPED = re.compile(
 )
 
 
+def _powershell_output_allows(args: Mapping[str, object], workspace: Path,
+                              seat_name: str | None, shell: str | None) -> bool:
+    """Prove output destinations only; never exempt another destructive effect.
+
+    Trusted roots come from linked-worktree identity, its own card scratch
+    parent, and the host TEMP. Variables are not evaluated: only literal scalar
+    assignments and TEMP/TMP expansions are tracked in statement order.
+    """
+    if shell != "powershell":
+        return False
+    command = str(args.get("command") or "")
+    hits = list(_iter_danger(command, workspace, shell))
+    if not hits or any(label != OVERWRITE or index not in {-3, -6} for label, index in hits):
+        return False
+    roots, variables = worktree_scope.output_context(workspace, seat_name)
+    if not roots:
+        return False
+    cwd = _resolve_path(args.get("cwd") or workspace, workspace)
+    parts, unknown = _powershell_parts(command)
+    if unknown:
+        return False
+
+    def path_value(raw: str) -> Path | None:
+        # Tokens are decoded by the literal lexer. Unknown interpolation, PS
+        # providers, wildcards, drive-relative paths and ADS stay unproved.
+        def expand(match):
+            return variables.get(match[0].lower(), match[0])
+        raw = re.sub(r"\$env:[A-Za-z_]\w*|\$[A-Za-z_]\w*", expand, raw)
+        if (not raw or any(ch in raw for ch in "$`*?[]{}\x00")
+                or re.match(r"^[A-Za-z]:[^/\\]", raw)
+                or ":" in raw[2:] or re.match(r"^[A-Za-z]{2,}:", raw)):
+            return None
+        try:
+            return _resolve_path(raw, cwd)
+        except (OSError, ValueError):
+            return None
+
+    def safe(raw: str) -> bool:
+        target = path_value(raw)
+        return target is not None and any(_inside(target, root.resolve()) for root in roots)
+
+    found = False
+    for part in parts:
+        # Decoding erases whether $ was quoted/escaped. Without full runtime
+        # expansion semantics such targets must not gain the TEMP exception.
+        if ("`" in part["raw"] or ("$" in part["raw"] and "'" in part["raw"]
+                                   and not _PS_ASSIGNMENT.fullmatch(part["raw"]))):
+            return False
+        if part.get("ps_assignment"):
+            variables[part["ps_assignment"][0].lower()] = ""
+        assignment = _PS_ASSIGNMENT.fullmatch(part["raw"])
+        if assignment:
+            # Runtime automatic/read-only variables are not ordinary storage:
+            # an assignment may fail or be overwritten by the next command.
+            if assignment[1].lower() in {
+                    "$home", "$pid", "$pshome", "$pwd", "$error", "$args", "$_", "$input",
+                    "$this", "$null", "$true", "$false", "$lastexitcode", "$psitem",
+                    "$pscommandpath", "$psscriptroot", "$myinvocation", "$psboundparameters",
+                    "$executioncontext", "$host", "$matches", "$nestedpromptlevel",
+                    "$stacktrace", "$ofs", "$shellid", "$profile", "$psversiontable",
+                    "$psculture", "$psuiculture", "$psdebugcontext", "$pscmdlet",
+                    "$iswindows", "$islinux", "$ismacos", "$iscoreclr", "$enabledexperimentalfeatures"}:
+                return False
+            literal = deny_floor.shell_commands(assignment[2], "powershell")
+            words = literal[0]["words"] if len(literal) == 1 else []
+            # Single quotes are literal, so do not expand their dollar signs.
+            value = words[0][0] if len(words) == 1 else ""
+            variables[assignment[1].lower()] = value if "$" not in value else ""
+        argv = [word[0] for word in part["words"]]
+        head = argv[0].lower() if argv else ""
+        if "\\" in head:
+            return False  # module-qualified state changes are not represented
+        # Common parameters can replace literal variables without assignment
+        # syntax. Do not speculate about cmdlet binding/abbreviations here.
+        variable_parameters = {
+            "outvariable", "pipelinevariable", "errorvariable", "warningvariable", "informationvariable",
+        }
+        for arg in argv[1:]:
+            parameter = re.split(r"[:=]", arg.lower().removeprefix("-"), maxsplit=1)[0]
+            if (arg.startswith("-") and parameter
+                    and (parameter in {"ov", "pv", "ev", "wv", "iv"}
+                         or any(name.startswith(parameter) for name in variable_parameters))):
+                return False
+        if (part["shell"] != "powershell" or head in {
+                "popd", "pop-location", "set-variable", "sv", "new-variable", "nv",
+                "set-item", "si", "new-item", "ni", "set-itemproperty", "sp",
+                "pwsh", "powershell", "cmd", "bash", "sh"}):
+            return False  # unrepresented location/environment or child-shell state
+        if head in {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}:
+            operands = argv[1:]
+            if operands and operands[0].lower() in {"-path", "-literalpath"}:
+                operands = operands[1:]
+            target = path_value(operands[0]) if len(operands) == 1 else None
+            if target is None or not target.is_dir():
+                return False  # failed cd would leave relative writes elsewhere
+            cwd = target
+        for op, word in part["redirects"]:
+            if op.startswith(">"):
+                # A single quoted $env:TEMP is a literal filename, not TEMP.
+                spelling = part["raw"]  # token offsets may belong to an RHS
+                if "$" in word[0] and ("'" in spelling):
+                    return False
+                if not safe(word[0]):
+                    return False
+                found = True
+        if head in {"tee", "tee-object"}:
+            operands = argv[1:]
+            if operands and operands[0].lower() in {"-variable", "-v"}:
+                if len(operands) != 2 or not re.fullmatch(r"[A-Za-z_]\w*", operands[1]):
+                    return False  # scoped/unsupported names may alias another variable
+                variables.pop("$" + operands[1].lower(), None)
+                continue
+            if operands and operands[0].lower() in {"-filepath", "-literalpath"}:
+                operands = operands[1:]
+            operands = [v for v in operands if v.lower() != "-append"]
+            if len(operands) != 1 or not safe(operands[0]):
+                return False
+            found = True
+    return found
+
+
 def _own_worktree_allows(args: Mapping[str, object], workspace: Path, seat_name: str | None,
                          shell: str | None) -> bool:
     """True when every danger this shell command hits is a scoped row AND the whole
@@ -901,6 +1148,10 @@ def _own_worktree_allows(args: Mapping[str, object], workspace: Path, seat_name:
     command = str(args.get("command") or "")
     hits = list(_iter_danger(command, workspace, shell))
     if not hits:
+        return False
+    if shell == "powershell" and any(index in {-3, -6} for _, index in hits):
+        # The dedicated output proof has already failed. The older broad
+        # path scanner must not turn unproved output variables/cd into ALLOW.
         return False
     # The table's command-position anchor has no multiline flag, so scanning the text
     # whole misses a command that starts a LINE. The exemption widens what is allowed,

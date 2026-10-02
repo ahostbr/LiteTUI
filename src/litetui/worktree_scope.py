@@ -164,6 +164,28 @@ def own_roots(workspace: Path, seat_name: str | None) -> list[Path]:
     return roots
 
 
+def output_context(workspace: Path, seat_name: str | None) -> tuple[list[Path], dict[str, str]]:
+    """T0331 output roots: own tree/card scratch and host TEMP, not foreign cards.
+
+    This is path context only. The approval policy must still prove each target
+    and every other effect; these roots grant no executable/destructive authority.
+    """
+    roots = own_roots(workspace, seat_name)
+    for root in list(roots):
+        parent = root.parent
+        if re.fullmatch(r"T\d+(?:-[A-Za-z0-9]+)*", parent.name, re.IGNORECASE):
+            base = parent.parent.as_posix().lower()
+            if base in {"c:/projects/.scratch", "e:/sas/shadowsandshurikens/.worktrees/_scratch"}:
+                roots.append(parent.resolve())
+    variables = {}
+    for name in ("TEMP", "TMP"):
+        raw = os.environ.get(name, "")
+        variables["$env:" + name.lower()] = raw
+        if raw and Path(raw).is_absolute():
+            roots.append(Path(raw).resolve())
+    return roots, variables
+
+
 # ── heredocs ─────────────────────────────────────────────────────────────────
 
 
