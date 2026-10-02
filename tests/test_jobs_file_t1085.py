@@ -321,3 +321,26 @@ def test_ryans_scheduler_save_and_edit_remain_untouched(tmp_path, monkeypatch):
     assert edited[0].tool_profile == AUTONOMOUS
     assert a._active_tool_profile == AUTONOMOUS
     assert sent == []
+
+
+GIT_PAYLOAD_WRITERS = [
+    'Set-Content {root}/jobs.json "git status --porcelain"',
+    'Add-Content {root}/jobs.json "git status --porcelain"',
+    '"git status --porcelain" | Out-File {root}/jobs.json',
+    'echo "git status --porcelain" > {root}/jobs.json',
+    'echo "git status --porcelain" >> {root}/jobs.json',
+    'echo "git status --porcelain" | tee {root}/jobs.json',
+    'printf "%s" "git status --porcelain" > {root}/jobs.json',
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("template", GIT_PAYLOAD_WRITERS)
+async def test_writer_payload_cannot_acquire_git_reader_exemption(tmp_path, monkeypatch, template):
+    a, sent = _agent(tmp_path, monkeypatch)
+    args = {"command": template.format(root=tmp_path)}
+    denied = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
+    assert denied and "T1085" in denied[0], "non-Git writer keeps its original seat refusal reason"
+    assert sent == []
+    assert a._active_tool_profile == AUTONOMOUS
+    assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None

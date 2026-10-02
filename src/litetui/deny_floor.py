@@ -395,10 +395,17 @@ def jobs_git_refusal(command, workspace, home=None) -> str | None:
             inherited_relocation = True
             break
     for segment in re.split(r"[;&|\n]", command):
-        git = re.search(r"(?i)(?<![\w./\\-])git(?:\.exe)?(?=\s)", segment)
+        git = re.match(r"(?i)^\s*git(?:\.exe)?(?=\s)", segment)
+        command_head = git is not None
+        if not git:
+            # An explicit Git environment prefix remains write-tainted, but
+            # cannot acquire a command-head reader exemption.
+            git = re.match(
+                r"(?i)^\s*(?:(?:GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)="
+                r"(?:[^\s\"']+|'[^']*'|\"[^\"]*\")\s+)+git(?:\.exe)?(?=\s)", segment)
         if not git:
             continue
-        if _pure_git_read(segment[git.end():]):
+        if command_head and _pure_git_read(segment[git.end():]):
             continue
         args = [_unquote(word) for word in _TOKEN.findall(segment[git.end():])]
         relocating = (bool(env_assignment) or inherited_relocation
@@ -450,9 +457,6 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
     start = match.start()
     whole_segment = (re.split(r"[;&|\n]", command[:start])[-1]
                      + re.split(r"[;&|\n]", command[start:])[0])
-    git = re.search(r"(?i)(?<![\w./\\-])git(?:\.exe)?(?=\s)", whole_segment)
-    if git and _pure_git_read(whole_segment[git.end():]):
-        return None
     prefix = _PATH_TAIL.search(command[:start]).group(0)
     param = ""
     if prefix.startswith("-"):   # -Path:x\jobs.json, -Destination:x\jobs.json
@@ -491,8 +495,11 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
                 or not rest)
         return target if onto else None
     if head in {"git", "git.exe"}:
-        # Only the shared finite proof above exempts Git reads. A reader with
-        # output/redirects and every other Git shape still meets the write rule.
+        # Writer/redirect recognition above wins. Only an actual Git command
+        # head, never an argument or payload, may use the shared reader proof.
+        git = re.match(r"(?i)^\s*git(?:\.exe)?(?=\s)", whole_segment)
+        if git and _pure_git_read(whole_segment[git.end():]):
+            return None
         return target
     if head in _JOBS_READERS:
         return None
