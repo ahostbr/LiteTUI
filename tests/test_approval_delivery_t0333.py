@@ -301,8 +301,11 @@ async def test_transport_and_durable_state_fit_inside_escalation_deadline(
     writes, saved = [], []
     started = time.monotonic()
     def send(to, body, **kwargs):
+        assert kwargs["deadline"] == started + 0.6 - 0.01
         budget = kwargs["deadline"] - time.monotonic()
-        assert 0 < budget <= 0.101
+        # Windows GetTickCount64 has 15.625ms resolution: an asyncio timer
+        # may wake one tick early. The absolute completion deadline is fixed.
+        assert 0 < budget <= 0.1 + time.get_clock_info("monotonic").resolution + 0.001
         if delay > budget:
             time.sleep(budget)
             return False
@@ -317,7 +320,7 @@ async def test_transport_and_durable_state_fit_inside_escalation_deadline(
         _edit=lambda *args: saved.append(time.monotonic()))
     with pytest.raises(TimeoutError):
         await delivery.wait_for_answer(app, future, approver=APPROVER,
-            ident=IDENT, message=request_body(), timeout=0.8)
+            ident=IDENT, message=request_body(), timeout=0.8, created_at=started)
     assert app.conversation[0]["approval_delivery"][IDENT]["state"] == expected
     assert saved[0] - started < 0.65
     assert len(writes) == (1 if expected == "escalation_sent" else 0)
@@ -343,3 +346,123 @@ async def test_future_completed_after_original_deadline_is_never_approved():
     future.set_result(True)
     with pytest.raises(TimeoutError):
         await delivery._answer_before(future, time.monotonic() - 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stall", ["initial_transport", "ui_mount"])
+async def test_creation_clock_escalates_while_initial_setup_stalls(tmp_path, monkeypatch, stall):
+    import threading
+    import time
+
+    from textual.css.query import NoMatches
+
+    monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.6)
+    (tmp_path / f"{APPROVER}.json").write_text(json.dumps(
+        {"agent_id": APPROVER, "spawned_by": GRANDPARENT}), encoding="utf-8")
+    release = threading.Event()
+    escalated = asyncio.Event()
+    mounted = asyncio.Event()
+    writes, persisted = [], []
+    loop = asyncio.get_running_loop()
+    def send(to, body, **kwargs):
+        if to == APPROVER and stall == "initial_transport":
+            release.wait(1.0)
+        if time.monotonic() >= kwargs["deadline"]:
+            return False
+        writes.append((to, time.monotonic()))
+        if to == GRANDPARENT:
+            loop.call_soon_threadsafe(escalated.set)
+        return True
+    class Log:
+        async def mount(self, control):
+            mounted.set()
+            await asyncio.Event().wait()
+    def query(selector):
+        if stall == "ui_mount":
+            return Log()
+        raise NoMatches(selector)
+    started = time.monotonic()
+    app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER, name="Worker",
+        registered=True, current_spawner=lambda: APPROVER, send=send),
+        settings=SimpleNamespace(relay_approval_timeout_s=0.9),
+        conversation=[{"role": "user", "content": "test"}], query_one=query,
+        _system=lambda text: None, _begin_wait=lambda *args: None, _end_wait=lambda token: None,
+        _edit=lambda *args: persisted.append(time.monotonic()))
+    decision = SimpleNamespace(danger="test", capabilities=set(), reason="test only")
+    task = asyncio.create_task(approval_relay.ask_spawner(app, "test_tool", {}, decision, "harness"))
+    try:
+        await asyncio.wait_for(escalated.wait(), 0.8)
+        if stall == "ui_mount":
+            assert mounted.is_set()
+        assert next(ts for target, ts in writes if target == GRANDPARENT) - started < 0.65
+        for _ in range(30):
+            if persisted:
+                break
+            await asyncio.sleep(0.002)
+        assert persisted and persisted[0] - started < 0.65
+        ident = next(iter(app._relay_pending))
+        assert approval_relay.take_answer(app, {"from": APPROVER, "body": f"DENY {ident}"})
+        assert await task == "denied"
+        assert not app._relay_pending and not app._relay_answer_deadlines
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
+async def test_creation_expiry_and_cancellation_clear_pending_setup(monkeypatch, outcome):
+    import threading
+    import time
+
+    monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.6)
+    entered = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    loop = asyncio.get_running_loop()
+    deadlines, notices, outcomes = [], [], []
+    def send(to, body, **kwargs):
+        assert to == APPROVER, "short original deadline must not escalate"
+        deadlines.append(kwargs["deadline"])
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            release.wait(1)
+            return False
+        finally:
+            finished.set()
+    app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER, name="Worker",
+        registered=True, current_spawner=lambda: APPROVER, send=send),
+        settings=SimpleNamespace(relay_approval_timeout_s=0.08),
+        _system=notices.append, _begin_wait=lambda *args: None, _end_wait=lambda token: None)
+    decision = SimpleNamespace(danger="test", capabilities=set(), reason="test only")
+    monkeypatch.setattr(approval_relay, "record", lambda app, status, *args: outcomes.append(status))
+    started = time.monotonic()
+    task = asyncio.create_task(approval_relay.ask_spawner(app, "test_tool", {}, decision, "harness"))
+    try:
+        await asyncio.wait_for(entered.wait(), 0.5)
+        ident = next(iter(app._relay_pending))
+        original_deadline = app._relay_answer_deadlines[ident]
+        assert deadlines == [original_deadline]
+        assert started <= original_deadline - 0.08 <= time.monotonic()
+        if outcome == "cancelled":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            assert await asyncio.wait_for(task, 0.3) == "timeout"
+            assert time.monotonic() - started < 0.2, "setup delay inflated original expiry"
+        assert outcomes == [outcome]
+        assert not app._relay_pending and not app._relay_answer_deadlines
+        assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {ident}"})
+        assert not approval_relay.take_human_answer(app, ident, True)
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 0.5)
+        await asyncio.sleep(0)
+        assert not notices and not app._relay_pending and not app._relay_answer_deadlines
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

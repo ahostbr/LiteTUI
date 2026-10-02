@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 
 from textual.containers import Horizontal
@@ -128,6 +129,7 @@ def current_spawner(app) -> str | None:
 
 async def ask_spawner(app, name: str, args, decision, source) -> str:
     """approved | denied | timeout | absent. Logged either way."""
+    created_at = time.monotonic()
     spawner = current_spawner(app)
     timeout = timeout_s(app)
     ident = "appr-" + uuid.uuid4().hex[:12]
@@ -145,29 +147,60 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
         # registry refusing the id (`send` exit != 0) is the "absent" signal.
         message = (_message(app, ident, name, args, decision, source, timeout, approver=spawner)
                    if spawner else "")
-        sent = (spawner is not None and seat is not None and getattr(seat, "registered", False)
-                and await asyncio.to_thread(seat.send, spawner, message,
-                                            approval_request=(ident, spawner)))
-        if not sent:
+        if not (spawner and seat and getattr(seat, "registered", False)):
             status = "absent"
         else:
             from litetui import approval_delivery
-            approval_delivery.stage(ident, "sent")
-            app._system(f"asked {(spawner or 'unavailable')[:8]} (the spawning agent) to approve {name} "
-                        f"({ident}); waiting up to {timeout:.0f} s")
-            try:
-                log = app.query_one("#chat-log")
-            except (AttributeError, NoMatches, ScreenStackError):
-                pass  # Headless/unmounted tests still use the spawner inbox.
-            else:
+            answer_deadline = created_at + timeout
+            app._relay_answer_deadlines = getattr(app, "_relay_answer_deadlines", {})
+            app._relay_answer_deadlines[ident] = answer_deadline
+            # Deadline processing runs BEFORE and independently of transport/UI.
+            waiting = asyncio.create_task(approval_delivery.wait_for_answer(
+                app, future, approver=spawner, ident=ident, message=message,
+                timeout=timeout, created_at=created_at))
+
+            async def setup():
+                nonlocal control
+                initial_deadline = min(answer_deadline, created_at + 30.0)
+                remaining = initial_deadline - time.monotonic()
+                sent = False
+                if remaining > 0:
+                    try:
+                        sent = await asyncio.wait_for(asyncio.to_thread(
+                            seat.send, spawner, message, approval_request=(ident, spawner),
+                            deadline=initial_deadline), remaining)
+                    except (TimeoutError, OSError):
+                        pass
+                if not sent:
+                    # Preserve immediate transport refusal, but not a late setup
+                    # outcome that would overwrite a settled/expired request.
+                    if time.monotonic() < initial_deadline and not future.done():
+                        future.set_result("absent")
+                    return
+                approval_delivery.stage(ident, "sent")
+                if future.done() or time.monotonic() >= answer_deadline:
+                    return
+                app._system(f"asked {spawner[:8]} (the spawning agent) to approve {name} "
+                            f"({ident}); original deadline is {timeout:.0f}s from creation")
+                try:
+                    log = app.query_one("#chat-log")
+                except (AttributeError, NoMatches, ScreenStackError):
+                    return
                 control = HumanApproval(ident, name)
                 await log.mount(control)
+
+            setup_task = asyncio.create_task(setup())
             try:
-                answer = await approval_delivery.wait_for_answer(
-                    app, future, approver=spawner, ident=ident, message=message, timeout=timeout)
-                status = "approved" if answer else "denied"
+                answer = await waiting
+                status = "absent" if answer == "absent" else "approved" if answer else "denied"
             except TimeoutError:
                 status = "timeout"
+            finally:
+                for task in (setup_task, waiting):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(setup_task, waiting, return_exceptions=True)
+                app._relay_answer_deadlines.pop(ident, None)
     finally:
         app._end_wait(wait_token)
         pending.pop(ident, None)

@@ -96,14 +96,14 @@ async def _answer_before(future, deadline):
 
 
 async def wait_for_answer(app, future, *, approver: str, ident: str,
-                          message: str, timeout: float) -> bool:
+                          message: str, timeout: float, created_at: float | None = None) -> bool:
     """Reserve transport/state budget INSIDE 60s; never extend answer expiry.
 
     Production: begin at49s, bounded CLI up to10s, leave1s to save/show state.
     Shorter configured answer waits expire normally, without a post-expiry send.
     A blocked filesystem/thread may finish late; no receipt is inferred or retried.
     """
-    started = time.monotonic()
+    started = time.monotonic() if created_at is None else created_at
     answer_deadline = started + timeout
     deadlines = getattr(app, "_relay_answer_deadlines", None)
     if deadlines is None:
