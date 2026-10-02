@@ -146,10 +146,12 @@ def test_protected_write_rechecks_owner_taint(tmp_path, monkeypatch, clean):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("verb", ["restore --", "checkout HEAD --", "rm --", "mv --", "clean -fx --"])
+@pytest.mark.parametrize("verb", ["restore --", "checkout HEAD --", "rm --", "mv --", "clean -fx --", "-C {root} restore --", "-C {root} clean -fx --"])
 async def test_git_explicit_schedule_writers_are_refused(tmp_path, monkeypatch, verb):
     a, sent = _agent(tmp_path, monkeypatch)
-    args = {"command": f"git {verb} {tmp_path}/jobs.json backup.json"}
+    verb = verb.format(root=tmp_path)
+    target = "jobs.json" if verb.startswith("-C") else f"{tmp_path}/jobs.json"
+    args = {"command": f"git {verb} {target} backup.json"}
     denied = await a._authorize_action("bash", args, tool_policy.SHELL_POLICY, workspace=tmp_path)
     assert denied and "T1085" in denied[0]
     assert sent == []
@@ -157,8 +159,10 @@ async def test_git_explicit_schedule_writers_are_refused(tmp_path, monkeypatch, 
     assert seat_authority.jobs_file_refusal(_ryans(a), args, tmp_path) is None
 
 
-@pytest.mark.parametrize("verb", ["show HEAD:", "diff -- ", "status -- "])
+@pytest.mark.parametrize("verb", ["show HEAD:", "diff -- ", "status -- ", "-C {root} diff -- "])
 def test_git_schedule_readers_still_pass(tmp_path, monkeypatch, verb):
     a, _ = _agent(tmp_path, monkeypatch)
-    args = {"command": f"git {verb}{tmp_path}/jobs.json"}
+    verb = verb.format(root=tmp_path)
+    target = "jobs.json" if verb.startswith("-C") else f"{tmp_path}/jobs.json"
+    args = {"command": f"git {verb}{target}"}
     assert seat_authority.jobs_file_refusal(a, args, tmp_path) is None

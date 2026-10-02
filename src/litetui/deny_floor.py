@@ -379,17 +379,29 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
         param, _, prefix = prefix.partition(":")
     if prefix and prefix[-1] not in "\\/":
         return None   # `myjobs.json`: another name
-    target = _resolve(prefix + "jobs.json", base, home)   # any alias: the same file (A1)
-    if not is_jobs_file(target):
-        return None
     before = command[:start - len(prefix)]
     if param:
         before = before[:-(len(param) + 1)]
-    if _REDIRECT_ONTO.search(before):
-        return target
+    redirect = _REDIRECT_ONTO.search(before)
     segment = re.split(r"[;&|\n()`]", before)[-1]
-    words = [w.lower() for w in re.findall(r"[^\s\"'`]+", segment)]
-    head = next((w for w in words if w not in _WRAPPERS), None)
+    tokens = [_unquote(word) for word in _TOKEN.findall(segment)]
+    words = [word.lower() for word in tokens]
+    head = next((word for word in words if word not in _WRAPPERS), None)
+    git_args = []
+    target_base = base
+    if head in {"git", "git.exe"} and not redirect:
+        git_args = tokens[words.index(head) + 1:]
+        # Git applies each literal -C relative to the previous one, not the
+        # shell cwd. Shell redirection remains relative to the shell cwd.
+        while len(git_args) >= 2 and git_args[0] == "-C":
+            if git_args[1]:
+                target_base = _resolve(git_args[1], target_base, home)
+            git_args = git_args[2:]
+    target = _resolve(prefix + "jobs.json", target_base, home)  # any alias: same file
+    if not is_jobs_file(target):
+        return None
+    if redirect:
+        return target
     if head in _JOBS_COPIES:
         after = re.split(r"[;&|\n()`]", command[match.end():])[0]
         rest = [w for w in re.findall(r"[^\s\"'`]+", after) if not w.startswith(("-", "/"))]
@@ -397,12 +409,9 @@ def _jobs_write(command: str, match: re.Match, base: Path | None, home: Path) ->
                 or not rest)
         return target if onto else None
     if head in {"git", "git.exe"}:
-        # Skip only the bounded cwd option; -c aliases/execution options and
-        # unrecognized forms are not evidence that a protected target is read.
-        args = re.findall(r"[^\s\"'`]+", segment)[words.index(head) + 1:]
-        while len(args) >= 2 and args[0] == "-C":
-            args = args[2:]
-        return None if args and args[0] in _JOBS_GIT_READERS else target
+        # Unknown subcommands/global options never gain a reader exemption.
+        # Reader execution features remain the documented non-sandbox ceiling.
+        return None if git_args and git_args[0] in _JOBS_GIT_READERS else target
     if head in _JOBS_READERS:
         return None
     return target   # a move, rename, delete, editor, interpreter ...: fail closed
