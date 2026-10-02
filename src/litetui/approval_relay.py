@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 
 from textual.containers import Horizontal
@@ -77,7 +78,8 @@ class HumanApproval(Static):
 def take_human_answer(app, ident: str, allow: bool) -> bool:
     """Only this local UI call resolves the exact pending request, once."""
     entry = _pending(app).get(ident)
-    if entry is None or entry[0].done() or not isinstance(allow, bool):
+    from litetui.approval_delivery import answer_open
+    if entry is None or entry[0].done() or not isinstance(allow, bool) or not answer_open(app, ident):
         return False
     entry[0].set_result(allow)
     return True
@@ -97,7 +99,7 @@ def record(app, status: str, name: str, source: str | None, ident: str = "none")
                        id=ident, status=status)
 
 
-def _message(app, ident: str, name: str, args, decision, source, timeout: float) -> str:
+def _message(app, ident: str, name: str, args, decision, source, timeout: float, *, approver: str) -> str:
     seat = app.seat
     try:
         shown = json.dumps(args, ensure_ascii=False, default=str)
@@ -110,6 +112,7 @@ def _message(app, ident: str, name: str, args, decision, source, timeout: float)
             f"during a {source or 'unlabelled'} turn\n"
             f"Danger: {danger}; why: {decision.reason}\n"
             f"Input: {shown}\n"
+            f"[DELIVERY requester={seat.agent_id} approver={approver}]\n"
             f"Answer by inbox with exactly one line: APPROVE {ident}  or  DENY {ident}\n"
             f"No answer within {timeout:.0f} s = the turn stops and this is logged.")
 
@@ -126,6 +129,7 @@ def current_spawner(app) -> str | None:
 
 async def ask_spawner(app, name: str, args, decision, source) -> str:
     """approved | denied | timeout | absent. Logged either way."""
+    created_at = time.monotonic()
     spawner = current_spawner(app)
     timeout = timeout_s(app)
     ident = "appr-" + uuid.uuid4().hex[:12]
@@ -141,25 +145,62 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
         seat = getattr(app, "seat", None)
         # Unregistered means no inbox poller, so no answer could ever arrive. The
         # registry refusing the id (`send` exit != 0) is the "absent" signal.
-        sent = (spawner is not None and seat is not None and getattr(seat, "registered", False)
-                and await asyncio.to_thread(seat.send, spawner,
-                                            _message(app, ident, name, args, decision, source, timeout)))
-        if not sent:
+        message = (_message(app, ident, name, args, decision, source, timeout, approver=spawner)
+                   if spawner else "")
+        if not (spawner and seat and getattr(seat, "registered", False)):
             status = "absent"
         else:
-            app._system(f"asked {(spawner or 'unavailable')[:8]} (the spawning agent) to approve {name} "
-                        f"({ident}); waiting up to {timeout:.0f} s")
-            try:
-                log = app.query_one("#chat-log")
-            except (AttributeError, NoMatches, ScreenStackError):
-                pass  # Headless/unmounted tests still use the spawner inbox.
-            else:
+            from litetui import approval_delivery
+            answer_deadline = created_at + timeout
+            app._relay_answer_deadlines = getattr(app, "_relay_answer_deadlines", {})
+            app._relay_answer_deadlines[ident] = answer_deadline
+            # Deadline processing runs BEFORE and independently of transport/UI.
+            waiting = asyncio.create_task(approval_delivery.wait_for_answer(
+                app, future, approver=spawner, ident=ident, message=message,
+                timeout=timeout, created_at=created_at))
+
+            async def setup():
+                nonlocal control
+                initial_deadline = min(answer_deadline, created_at + 30.0)
+                remaining = initial_deadline - time.monotonic()
+                sent = False
+                if remaining > 0:
+                    try:
+                        sent = await asyncio.wait_for(asyncio.to_thread(
+                            seat.send, spawner, message, approval_request=(ident, spawner),
+                            deadline=initial_deadline), remaining)
+                    except (TimeoutError, OSError):
+                        pass
+                if not sent:
+                    # Preserve immediate transport refusal, but not a late setup
+                    # outcome that would overwrite a settled/expired request.
+                    if time.monotonic() < initial_deadline and not future.done():
+                        future.set_result("absent")
+                    return
+                approval_delivery.stage(ident, "sent")
+                if future.done() or time.monotonic() >= answer_deadline:
+                    return
+                app._system(f"asked {spawner[:8]} (the spawning agent) to approve {name} "
+                            f"({ident}); original deadline is {timeout:.0f}s from creation")
+                try:
+                    log = app.query_one("#chat-log")
+                except (AttributeError, NoMatches, ScreenStackError):
+                    return
                 control = HumanApproval(ident, name)
                 await log.mount(control)
+
+            setup_task = asyncio.create_task(setup())
             try:
-                status = "approved" if await asyncio.wait_for(future, timeout) else "denied"
+                answer = await waiting
+                status = "absent" if answer == "absent" else "approved" if answer else "denied"
             except TimeoutError:
                 status = "timeout"
+            finally:
+                for task in (setup_task, waiting):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(setup_task, waiting, return_exceptions=True)
+                app._relay_answer_deadlines.pop(ident, None)
     finally:
         app._end_wait(wait_token)
         pending.pop(ident, None)
@@ -180,9 +221,13 @@ def take_answer(app, msg: dict) -> bool:
     if match is None:
         return False
     entry = _pending(app).get(match.group(2))
-    if entry is None or msg.get("from") != entry[1] or entry[0].done():
+    from litetui.approval_delivery import answer_open
+    if (entry is None or msg.get("from") != entry[1] or entry[0].done()
+            or not answer_open(app, match.group(2))):
         return False
     entry[0].set_result(match.group(1) == "APPROVE")
+    from litetui import approval_delivery
+    approval_delivery.stage(match.group(2), "responded")
     return True
 
 

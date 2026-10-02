@@ -2691,19 +2691,20 @@ class LiteTUI(App):
             route = seat_authority.confirm_route(self)
             rule = tool_policy.inbox_turn_rule(route, getattr(self, "_spawner_id", None))
             content = f"{text}\n\n{rule}"
+        from litetui import approval_delivery
+        ident = approval_delivery.request_id(msg)
+        item = {"content": content, "text": text, "tool_profile": profile, "source": "harness"}
+        if ident:
+            item["approval_request_id"] = ident
+            approval_delivery.stage(ident, "received")
         if self._chat_running():
-            # HELD, never appended: an appended mid-turn message lands where
-            # nothing announces it and the model trusts its inbox tool over its
-            # own context, so it goes unread. Inbox mail always QUEUES -- it must
-            # never cancel work in flight.
-            # Why: Docs/adr/0001-mid-turn-mail-is-held-not-appended.md
+            # Held until a safe input boundary, never cancellation or inert
+            # context injection. Approval requests precede routine backlog.
             self._user_bubble(text, False, queued=True)
-            self._pending_input.append(
-                {"content": content, "text": text, "tool_profile": profile, "source": "harness"}
-            )
+            approval_delivery.enqueue(self._pending_input, item, ident)
             return
         self._user_bubble(text, False)
-        hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": "harness"})
+        hook_host.start_prompt(self, item)
 
     def _fire_job(self, job, *, manual: bool = False) -> None:
         from litetui.shared_state import Lease, OwnershipError

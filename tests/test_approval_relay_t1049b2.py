@@ -67,7 +67,7 @@ def log(monkeypatch):
 
 def _wire_send(a, sent, ok=True):
     a.seat.registered = True
-    a.seat.send = lambda to, body: sent.append((to, body)) or ok
+    a.seat.send = lambda to, body, **metadata: sent.append((to, body)) or ok
 
 
 async def _until_sent(sent, limit=5.0):

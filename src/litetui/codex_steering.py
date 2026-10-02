@@ -47,7 +47,7 @@ class SteeringLedger:
             "state": "queued",
             "item": {
                 key: copy.deepcopy(item[key])
-                for key in ("content", "text", "source", "tool_profile", "operation_id")
+                for key in ("content", "text", "source", "tool_profile", "operation_id", "approval_request_id")
                 if key in item
             },
         }

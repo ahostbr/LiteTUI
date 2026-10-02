@@ -173,7 +173,7 @@ def _liteharness_exe() -> str | None:
     return None
 
 
-def _cli(args: list[str], *, timeout: int):
+def _cli(args: list[str], *, timeout: float):
     """THE ONE DOOR to the liteharness CLI. Every subprocess in this module
     goes through here, so the disabled-path check lives in ONE place.
 
@@ -394,18 +394,7 @@ class Seat:
         """
         if not self.registered:
             return None
-        try:
-            row = json.loads((AGENTS_DIR / f"{self.agent_id}.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(row, dict) or row.get("agent_id") != self.agent_id:
-            return None
-        parent = row.get("spawned_by")
-        if (not isinstance(parent, str) or not parent or parent != parent.strip()
-                or parent == self.agent_id or parent.startswith("-")
-                or any(char.isspace() or char in "/\\\\:" for char in parent)):
-            return None
-        return parent
+        return registered_spawner(self.agent_id)
 
     def registry_name(self, root: Path | None = None) -> str | None:
         """Name held by this seat's agent id, independent of conversation metadata."""
@@ -617,7 +606,8 @@ class Seat:
                 out.append(msg)
         return out
 
-    def send(self, to: str, body: str) -> bool:
+    def send(self, to: str, body: str, *, approval_request: tuple[str, str] | None = None,
+             deadline: float | None = None) -> bool:
         """Reply into the fleet. Uses --body-file: an inline double-quoted
         message runs backticks as shell commands and still reports success.
 
@@ -628,6 +618,18 @@ class Seat:
         """
         if harness_disabled():
             return False
+        flags = []
+        if approval_request is not None:
+            from litetui.approval_delivery import REQUEST_TYPE, request_id
+            if not self.registered or resolve_agent(to)[0] != to or to == self.agent_id:
+                return False
+            ident, approver = approval_request
+            metadata = json.dumps({"kind": REQUEST_TYPE, "id": ident,
+                                   "requester": self.agent_id, "approver": approver})
+            if request_id({"type": "QUESTION", "thread_id": metadata,
+                           "from": self.agent_id, "to": to}) != ident:
+                return False
+            flags = ["--type", "QUESTION", "--thread-id", metadata]
         try:
             tmp = INBOX_ROOT.parent / f".litetui_send_{uuid.uuid4().hex}.txt"
             tmp.write_text(body, encoding="utf-8")
@@ -635,12 +637,15 @@ class Seat:
                 # NO --priority flag: this CLI has no such option, and unknown tokens
                 # fall through into the message body — combined with --body-file that
                 # is "both given" -> exit 1. Every send would fail for it.
+                budget = 30.0 if deadline is None else min(30.0, deadline - time.monotonic())
+                if budget <= 0:
+                    return False
                 r = _cli(
                     ["send", to,
-                     "--body-file", str(tmp), "--from", self.agent_id],
-                    timeout=30,
+                     "--body-file", str(tmp), "--from", self.agent_id, *flags],
+                    timeout=budget,
                 )
-                return r.returncode == 0
+                return r.returncode == 0 and (deadline is None or time.monotonic() < deadline)
             finally:
                 try:
                     tmp.unlink()
@@ -701,6 +706,25 @@ HARNESS_TOOL_SPEC = tool_schemas.load("harness")
 
 
 AGENTS_DIR = Path.home() / ".liteharness" / "agents"
+
+
+def registered_spawner(agent_id: str) -> str | None:
+    """Read current launch lineage by exact id, never a name or cached edge."""
+    if (not isinstance(agent_id, str) or not agent_id or agent_id.startswith("-")
+            or any(char.isspace() or char in "/\\\\:" for char in agent_id)):
+        return None
+    try:
+        row = json.loads((AGENTS_DIR / f"{agent_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(row, dict) or row.get("agent_id") != agent_id:
+        return None
+    parent = row.get("spawned_by")
+    if (not isinstance(parent, str) or not parent or parent != parent.strip()
+            or parent == agent_id or parent.startswith("-")
+            or any(char.isspace() or char in "/\\\\:" for char in parent)):
+        return None
+    return parent
 
 
 def other_live_litetui(self_id: str | None = None) -> str | None:

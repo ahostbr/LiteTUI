@@ -205,6 +205,11 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
                 app._codex_delivery_bubbles = {}
             app._codex_delivery_bubbles[entry["id"]] = item["bubble"]
     app._append(message)
+    ident = item.get("approval_request_id")
+    if ident:
+        from litetui import approval_delivery
+        # Admission is model-input injection, not proof of provider processing.
+        approval_delivery.stage(ident, "injected")
     if not entry or entry["state"] == "accepted":
         _mark_delivered(item)
     return True
