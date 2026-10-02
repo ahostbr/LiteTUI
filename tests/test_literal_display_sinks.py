@@ -181,11 +181,12 @@ async def test_model_field_help_external_details_are_literal(monkeypatch, origin
     monkeypatch.setattr(llm_backend, "configured_flags", lambda _settings:
         frozenset({"unrelated-flag"}) if origin == "installed-build" else frozenset())
     monkeypatch.setattr(llm_backend, "configured_build", lambda _settings: PAYLOAD)
+    filename = "projector[broken=$true].gguf"
     monkeypatch.setattr(ModelConfigBody, "_sibling_projector", lambda _self:
-        (None, [PAYLOAD + ".gguf", "other.gguf"]) if origin == "projector-filenames" else (None, []))
+        (None, [filename, "other.gguf"]) if origin == "projector-filenames" else (None, []))
     async with app.run_test(size=(120, 50)) as pilot:
         app.push_screen(ModelConfigScreen("model"))
         await pilot.pause()
         help_lines = [widget.render().plain for widget in app.screen.query(".set-help")]
-        expected = PAYLOAD if origin == "installed-build" else Path(PAYLOAD + ".gguf").name
+        expected = PAYLOAD if origin == "installed-build" else filename
         assert any(expected in text for text in help_lines)
