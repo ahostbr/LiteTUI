@@ -306,7 +306,9 @@ def test_C1_the_child_reads_its_approval_deadline_from_its_launcher(monkeypatch,
 async def test_C1_an_unbounded_rpc_approval_waits_and_says_so(monkeypatch):
     monkeypatch.setenv(tool_approval.APPROVAL_TIMEOUT_ENV, "0")
     emitted = []
-    host = SimpleNamespace(_rpc_emit=emitted.append, _active_tool_profile=INTERACTIVE)
+    host = _seat(spawner=None, rpc=True)
+    host._rpc_emit = emitted.append
+    store = host.store
     decision = tool_policy.PolicyDecision(tool_policy.CONFIRM, INTERACTIVE, frozenset(), "why")
 
     async def answer_late():
@@ -314,9 +316,15 @@ async def test_C1_an_unbounded_rpc_approval_waits_and_says_so(monkeypatch):
         tool_approval.resolve_over_rpc(host, emitted[0]["id"], True)
 
     late = asyncio.create_task(answer_late())
-    answer = await tool_approval.approve_over_rpc(host, "bash", DESTRUCTIVE, decision)
-    await late
-    assert bool(answer) is True and emitted[0]["timeout_s"] is None
+    try:
+        answer = await tool_approval.approve_over_rpc(host, "bash", DESTRUCTIVE, decision)
+        await late
+        assert bool(answer) is True and emitted[0]["timeout_s"] is None
+    finally:
+        if not late.done():
+            late.cancel()
+        await asyncio.gather(late, return_exceptions=True)
+        store.release()
 
 
 @pytest.mark.asyncio
