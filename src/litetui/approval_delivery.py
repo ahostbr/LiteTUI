@@ -90,6 +90,10 @@ def visible_state(app, ident: str, status: str, text: str) -> None:
     """Persist state on the request's conversation, and show it without a turn."""
     conversation = getattr(app, "conversation", [])
     record = getattr(app, "_approval_authority_records", {}).get(ident)
+    if record:
+        from litetui.approval_authority import context_valid
+        if not context_valid(app, ident):
+            return
     indices = ([record["conversation_index"]] if record and record.get("conversation_index") is not None
                else range(len(conversation) - 1, -1, -1))
     for index in indices:
@@ -155,6 +159,10 @@ async def wait_for_answer(app, future, *, approver: str, ident: str,
                 pass
             if time.monotonic() >= answer_deadline:
                 raise TimeoutError
+            if frozen:
+                from litetui.approval_authority import context_valid
+                if not context_valid(app, ident):
+                    return False
             if future.done():
                 return future.result()
             if target in (approver, getattr(app.seat, "agent_id", None)):

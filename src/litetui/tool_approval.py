@@ -330,7 +330,9 @@ def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False)
         deadline = record["authority"].deadline
         if deadline is not None and approval_authority.time.monotonic() >= deadline:
             return False
-    approval_authority.settle(app, approval_id, outcome="approved" if allow else "denied")
+    if record is not None and not approval_authority.settle(
+            app, approval_id, outcome="approved" if allow else "denied"):
+        return False
     fut.set_result(ALWAYS if (allow and remember) else (ONCE if allow else DENIED))
     return True
 
@@ -359,7 +361,8 @@ def take_spawner_answer(app, msg: dict) -> bool:
     if not approval_authority.settle(app, ident, outcome="approved" if allow else "denied",
                                      answerer_id=msg.get("from")):
         return False
-    return resolve_over_rpc(app, ident, allow)
+    future.set_result(ONCE if allow else DENIED)
+    return True
 
 
 async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
@@ -390,17 +393,17 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     timeout = approval_timeout_s() if timeout is None else (None if timeout <= 0 else timeout)
     approval_id = "appr-" + uuid4().hex[:12]
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
-    _approval_registry(app)[approval_id] = fut
     spawners = getattr(app, "_rpc_approval_spawners", None)
     if spawners is None:
         spawners = app._rpc_approval_spawners = {}
     from litetui import approval_authority, approval_relay, seat_authority
 
-    spawners[approval_id] = approval_relay.current_spawner(app)
-    approval_authority.create(app, approval_id, approver=spawners[approval_id],
-                              route=seat_authority.confirm_route(app), timeout=timeout)
     status = "cancelled"
     try:
+        _approval_registry(app)[approval_id] = fut
+        spawners[approval_id] = approval_relay.current_spawner(app)
+        approval_authority.create(app, approval_id, approver=spawners[approval_id],
+                                  route=seat_authority.confirm_route(app), timeout=timeout)
         app._rpc_emit({
             "type": "tool_approval_requested",
             "id": approval_id,
@@ -411,12 +414,16 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             "timeout_s": timeout,
         })
         try:
-            return await asyncio.wait_for(fut, timeout)
+            answer = await asyncio.wait_for(fut, timeout)
+            return answer if approval_authority.context_valid(app, approval_id) else None
         except TimeoutError:
             status = "timeout"
             return None
         except asyncio.CancelledError:
             return None
+    except approval_authority.ApprovalAuditError:
+        status = "audit-error"
+        return None
     finally:
         _approval_registry(app).pop(approval_id, None)
         spawners.pop(approval_id, None)

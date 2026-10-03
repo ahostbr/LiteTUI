@@ -83,7 +83,8 @@ def take_human_answer(app, ident: str, allow: bool) -> bool:
     if entry is None or entry[0].done() or not isinstance(allow, bool) or not answer_open(app, ident):
         return False
     from litetui import approval_authority
-    approval_authority.settle(app, ident, outcome="approved" if allow else "denied")
+    if not approval_authority.settle(app, ident, outcome="approved" if allow else "denied"):
+        return False
     entry[0].set_result(allow)
     return True
 
@@ -138,16 +139,17 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     ident = "appr-" + uuid.uuid4().hex[:12]
     future = asyncio.get_running_loop().create_future()
     pending = _pending(app)
-    pending[ident] = (future, spawner)
     from litetui import approval_authority, seat_authority
-    authority = approval_authority.create(app, ident, approver=spawner, route=seat_authority.confirm_route(app),
-                                          timeout=timeout, created_at=created_at)
     # Dijkstra K1(c): logged in the finally, so a wait cancelled by Esc, stop() or
     # the Claude bridge's deadline still leaves its line ("cancelled").
     status = "cancelled"
     control = None
-    wait_token = app._begin_wait((spawner or 'unavailable')[:8], "approval")
+    wait_token = None
     try:
+        pending[ident] = (future, spawner)
+        authority = approval_authority.create(app, ident, approver=spawner, route=seat_authority.confirm_route(app),
+                                              timeout=timeout, created_at=created_at)
+        wait_token = app._begin_wait((spawner or 'unavailable')[:8], "approval")
         seat = getattr(app, "seat", None)
         # Unregistered means no inbox poller, so no answer could ever arrive. The
         # registry refusing the id (`send` exit != 0) is the "absent" signal.
@@ -184,7 +186,8 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
                         future.set_result("absent")
                     return
                 approval_delivery.stage(ident, "sent")
-                if future.done() or time.monotonic() >= answer_deadline:
+                if (future.done() or time.monotonic() >= answer_deadline
+                        or not approval_authority.context_valid(app, ident)):
                     return
                 app._system(f"asked {spawner[:8]} (the spawning agent) to approve {name} "
                             f"({ident}); original deadline is {timeout:.0f}s from creation")
@@ -198,7 +201,8 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
             setup_task = asyncio.create_task(setup())
             try:
                 answer = await waiting
-                status = "absent" if answer == "absent" else "approved" if answer else "denied"
+                status = ("cancelled" if not approval_authority.context_valid(app, ident)
+                          else "absent" if answer == "absent" else "approved" if answer else "denied")
             except TimeoutError:
                 status = "timeout"
             finally:
@@ -207,10 +211,13 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
                         task.cancel()
                 await asyncio.gather(setup_task, waiting, return_exceptions=True)
                 app._relay_answer_deadlines.pop(ident, None)
+    except approval_authority.ApprovalAuditError:
+        status = "audit-error"
     finally:
-        app._end_wait(wait_token)
         pending.pop(ident, None)
         approval_authority.close(app, ident, status)
+        if wait_token is not None:
+            app._end_wait(wait_token)
         if control is not None and control.is_mounted:
             await control.remove()
         record(app, status, name, source, ident)

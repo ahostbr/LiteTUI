@@ -20,6 +20,8 @@ def decide(command):
     'Get-ChildItem src; git log -4 --oneline; if(Test-Path x.jsonl){Get-Content x.jsonl}',
     "if (Test-Path 'x y.jsonl') { Get-Content 'x y.jsonl' } else { Get-ChildItem src }",
     "if(Test-Path -LiteralPath 'x.jsonl'){Get-Content 'x.jsonl'}",
+    "if(Test-Path -Path '-ErrorVariable:x'){Get-Content y}",
+    "if(Test-Path -LiteralPath '-ev:x'){Get-Content y}",
     'Set-Location own; node -e "console.log(1)"',
     'Get-ChildItem | Select-Object -First 5', 'git status',
 ])
@@ -54,6 +56,11 @@ def test_receiving_command_and_every_branch_keep_danger(command):
     'if(Test-Path x){Get-Content x -PipelineV y}',
     'if(Test-Path x){Get-Content x -ov y}',
     'if(Test-Path x){Get-Content x -InformationV y}',
+    'if(Test-Path -ErrorVariable:x){Get-Content y}',
+    'if(Test-Path -OutVariable:x){Get-Content y}',
+    'if(Test-Path -ev:x){Get-Content y}',
+    'if(Test-Path -Path -ErrorVariable:x){Get-Content y}',
+    'if(Test-Path -LiteralPath -ev:x){Get-Content y}',
 ])
 def test_near_miss_still_asks(command):
     assert decide(command).action == tp.CONFIRM

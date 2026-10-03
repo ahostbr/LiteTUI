@@ -91,23 +91,49 @@ def _records(app) -> dict:
     return records
 
 
+class ApprovalAuditError(RuntimeError):
+    """Persistence failed: the pending action must not run."""
+
+
+def context_valid(app, ident: str) -> bool:
+    """Strict origin binding. Append is safe; replacement/reordering is not."""
+    record = _records(app).get(ident)
+    if record is None or record['outcome'] == 'audit-error':
+        return False
+    store = getattr(app, '_store', None)
+    if (getattr(app, 'conversation', None) is not record['conversation']
+            or store is not record['store']
+            or (getattr(store, 'convo_id', None), getattr(store, 'convo_path', None)) != record['store_identity']):
+        return False
+    index = record['conversation_index']
+    conversation = record['conversation']
+    return index is None or (0 <= index < len(conversation)
+                             and conversation[index] is record['message'])
+
+
 def _audit(app, ident: str, record: dict) -> None:
-    # Existing conversation persistence, no new journal/replay mechanism.
-    index = record.get('conversation_index')
-    conversation = getattr(app, 'conversation', [])
-    if isinstance(index, int) and 0 <= index < len(conversation):
-        message = conversation[index]
-        if message.get('role') == 'user':
-            state = message.setdefault('approval_delivery', {}).setdefault(ident, {})
-            authority = record['authority']
-            state.update({'approver_id': authority.approver,
-                          'frozen_ancestor_ids': list(authority.ancestors),
-                          'human_only': authority.human_only,
-                          'created_wall_time': record['created_wall_time'],
-                          'answerer_id': record.get('answerer_id'),
-                          'outcome': record['outcome']})
-            if hasattr(app, '_edit'):
-                app._edit(index, 'Approval authority state updated')
+    # Never persist an old action through a new conversation's store.
+    if not context_valid(app, ident) or record['conversation_index'] is None:
+        return
+    index = record['conversation_index']
+    message = record['message']
+    states = message.setdefault('approval_delivery', {})
+    previous = states.get(ident)
+    authority = record['authority']
+    states[ident] = {**(previous or {}), 'approver_id': authority.approver,
+                    'frozen_ancestor_ids': list(authority.ancestors),
+                    'human_only': authority.human_only,
+                    'created_wall_time': record['created_wall_time'],
+                    'answerer_id': record.get('answerer_id'), 'outcome': record['outcome']}
+    try:
+        if hasattr(app, '_edit'):
+            app._edit(index, 'Approval authority state updated')
+    except (OSError, ValueError):
+        if previous is None:
+            states.pop(ident, None)
+        else:
+            states[ident] = previous
+        raise
 
 
 def create(app, ident: str, *, approver: str | None, route: str | None,
@@ -120,19 +146,30 @@ def create(app, ident: str, *, approver: str | None, route: str | None,
     ancestors = frozen_ancestors(approver, requester) if not human_only and _id(approver) and _id(requester) else ()
     authority = ApprovalAuthority(requester or '', None if human_only else approver, ancestors,
                                   created, None if timeout is None else created + timeout, human_only)
-    conversation = getattr(app, 'conversation', [])
+    conversation = getattr(app, 'conversation', None)
+    if conversation is None:
+        conversation = app.conversation = []
+    # Materialize the existing lazy repository before binding; _edit otherwise
+    # creates it during the first audit and would invalidate a None binding.
+    store = getattr(app, 'store', getattr(app, '_store', None))
     index = next((i for i in range(len(conversation) - 1, -1, -1)
                   if conversation[i].get('role') == 'user'), None)
     record = {'authority': authority, 'outcome': 'pending', 'created_wall_time': time.time(),
-              'conversation_index': index}
+              'conversation_index': index, 'conversation': conversation,
+              'message': conversation[index] if index is not None else None,
+              'store': store, 'store_identity': (getattr(store, 'convo_id', None), getattr(store, 'convo_path', None))}
     _records(app)[ident] = record
-    _audit(app, ident, record)
+    try:
+        _audit(app, ident, record)
+    except (OSError, ValueError) as exc:
+        _records(app).pop(ident, None)
+        raise ApprovalAuditError('Approval creation audit failed; action remains gated') from exc
     return authority
 
 
 def can_answer(app, ident: str, msg: dict) -> bool:
     record = _records(app).get(ident)
-    if record is None or record['outcome'] != 'pending' or harness._expired(msg):
+    if record is None or record['outcome'] != 'pending' or not context_valid(app, ident) or harness._expired(msg):
         return False
     authority = record['authority']
     now = time.monotonic()
@@ -149,13 +186,21 @@ def can_answer(app, ident: str, msg: dict) -> bool:
 def settle(app, ident: str, *, outcome: str, answerer_id: str | None = None) -> bool:
     """Called on the event loop together with future resolution; one answer wins."""
     record = _records(app).get(ident)
-    if record is None or record['outcome'] != 'pending':
+    if record is None or record['outcome'] != 'pending' or not context_valid(app, ident):
         return False
     record.update(outcome=outcome, answerer_id=answerer_id)
-    _audit(app, ident, record)
+    try:
+        _audit(app, ident, record)
+    except (OSError, ValueError):
+        # Do not approve the future after a failed durable edit. The creator's
+        # normal timeout/cancellation finally removes this revoked record.
+        record.update(outcome='audit-error', answerer_id=None)
+        return False
     return True
 
 
 def close(app, ident: str, outcome: str) -> None:
-    settle(app, ident, outcome=outcome)
-    _records(app).pop(ident, None)
+    try:
+        settle(app, ident, outcome=outcome)
+    finally:
+        _records(app).pop(ident, None)

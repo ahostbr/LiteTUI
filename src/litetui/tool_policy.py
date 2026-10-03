@@ -856,7 +856,7 @@ def _powershell_common_literals(command: str) -> str:
                 continue
         if not command[statement_start:i].strip() and re.match(r"(?i)if\s*\(", command[i:]):
             # All delimiters inside these finite token/body forms are quoted.
-            path = r"(?:" + _PS_PLAIN_STRING + r"|[A-Za-z0-9_./\\:-]+)"
+            path = r"(?:" + _PS_PLAIN_STRING + r"|[A-Za-z0-9_./\\:][A-Za-z0-9_./\\:-]*)"
             body = r"(?:" + _PS_PLAIN_STRING + r"|[^'\"{}])*"
             guard = re.match(r"(?is)if\s*\(\s*Test-Path\s+(?:(?:-Path|-LiteralPath)\s+)?(" + path
                              + r")\s*\)\s*\{(" + body + r")\}\s*(?:else\s*\{(" + body + r")\})?", command[i:])
