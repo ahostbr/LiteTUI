@@ -48,6 +48,8 @@ def arm(tmp_path, monkeypatch):
         row.write_text(json.dumps({"agent_id": app.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
 
     reparent(OLD)
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin', actual_edit=True)
     calls, logs = [], []
     monkeypatch.setattr(runtime_log, "record", lambda event, **kw: logs.append((event, kw)))
     monkeypatch.setattr(harness, "harness_disabled", lambda: False)

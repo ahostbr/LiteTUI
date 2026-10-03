@@ -15,12 +15,15 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(seat_authority, 'confirm_route', lambda app: 'spawner')
     monkeypatch.setattr(approval_relay, 'current_spawner', lambda app: 'leader')
     writes = []
-    return SimpleNamespace(seat=SimpleNamespace(agent_id='worker', name='Worker', registered=True),
+    app = SimpleNamespace(seat=SimpleNamespace(agent_id='worker', name='Worker', registered=True),
         conversation=[{'role': 'user', 'content': 'origin'}],
         _store=SimpleNamespace(convo_id='origin', convo_path='origin/convo.jsonl'),
         _edit=lambda *args: writes.append(args), writes=writes,
         settings=SimpleNamespace(relay_approval_timeout_s=0.15),
         _begin_wait=lambda *args: 1, _end_wait=lambda *args: None, _system=lambda *args: None)
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin')
+    return app
 
 
 async def launch(app, channel):

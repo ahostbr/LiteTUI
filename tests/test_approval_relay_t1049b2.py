@@ -51,6 +51,8 @@ def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
     a._rpc = rpc
     a._approval_host = host
     a._system = lambda *_: None
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(a, harness.AGENTS_DIR / a.seat.agent_id, actual_edit=True)
     return a
 
 

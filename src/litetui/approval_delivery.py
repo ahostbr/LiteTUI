@@ -91,8 +91,8 @@ def visible_state(app, ident: str, status: str, text: str) -> None:
     conversation = getattr(app, "conversation", [])
     record = getattr(app, "_approval_authority_records", {}).get(ident)
     if record:
-        from litetui.approval_authority import context_valid
-        if not context_valid(app, ident):
+        from litetui.approval_authority import persistence_ready
+        if not persistence_ready(app, ident):
             return
     indices = ([record["conversation_index"]] if record and record.get("conversation_index") is not None
                else range(len(conversation) - 1, -1, -1))
@@ -135,9 +135,14 @@ async def wait_for_answer(app, future, *, approver: str, ident: str,
     if deadlines is None:
         deadlines = app._relay_answer_deadlines = {}
     deadlines[ident] = answer_deadline
+    async def before(deadline):
+        if ident in getattr(app, "_approval_authority_records", {}):
+            from litetui import approval_authority
+            return await approval_authority.wait_for_answer(app, ident, future, limit=deadline)
+        return await _answer_before(future, deadline)
     try:
         if timeout < ESCALATE_AFTER_S:
-            return await _answer_before(future, answer_deadline)
+            return await before(answer_deadline)
         authority_record = getattr(app, "_approval_authority_records", {}).get(ident)
         frozen = authority_record["authority"] if authority_record else None
         # Standalone legacy delivery remains notification-only. Production
@@ -154,14 +159,14 @@ async def wait_for_answer(app, future, *, approver: str, ident: str,
             transport_deadline = min(answer_deadline, escalation_at - state_budget)
             dispatch_at = transport_deadline - transport_budget
             try:
-                return await _answer_before(future, dispatch_at)
+                return await before(dispatch_at)
             except TimeoutError:
                 pass
             if time.monotonic() >= answer_deadline:
                 raise TimeoutError
             if frozen:
-                from litetui.approval_authority import context_valid
-                if not context_valid(app, ident):
+                from litetui.approval_authority import persistence_ready
+                if not persistence_ready(app, ident):
                     return False
             if future.done():
                 return future.result()
@@ -192,6 +197,6 @@ async def wait_for_answer(app, future, *, approver: str, ident: str,
                           f"Approval {ident}: escalation notification "
                           + (f"sent to {target[:8]} (transport only; model receipt unconfirmed)."
                              if sent else "delivery failed or unconfirmed at deadline; request remains gated."))
-        return await _answer_before(future, answer_deadline)
+        return await before(answer_deadline)
     finally:
         deadlines.pop(ident, None)

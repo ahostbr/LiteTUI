@@ -201,8 +201,10 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
             setup_task = asyncio.create_task(setup())
             try:
                 answer = await waiting
-                status = ("cancelled" if not approval_authority.context_valid(app, ident)
-                          else "absent" if answer == "absent" else "approved" if answer else "denied")
+                state = app._approval_authority_records[ident]['outcome']
+                status = ("audit-error" if state == 'audit-error' else
+                          "cancelled" if not approval_authority.persistence_ready(app, ident) else
+                          "absent" if answer == "absent" else "approved" if answer else "denied")
             except TimeoutError:
                 status = "timeout"
             finally:
@@ -257,6 +259,10 @@ def stop_line(app, name: str, status: str) -> str:
     # of the request that just finished. Do not attribute its outcome to either.
     return {
         "denied": f"[stopped — the request's spawning agent denied {name}]",
+        "cancelled": (f"[stopped — approval for {name} lost its original context or was cancelled; "
+                      "not approved; action was not run]"),
+        "audit-error": (f"[stopped — approval audit for {name} could not be durably recorded; "
+                        "not approved; action was not run]"),
         "timeout": (f"[stopped — the request's spawning agent did not answer the approval "
                     f"for {name} within {timeout_s(app):.0f}s; refused and logged]"),
         "absent": (f"[stopped — the current spawning agent is not reachable (invalid presence, not registered, "

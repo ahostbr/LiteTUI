@@ -25,6 +25,8 @@ def seat(monkeypatch, tmp_path):
     sent = []
     app.seat.send = lambda to, body, **metadata: sent.append((to, body)) or True
     monkeypatch.setattr(runtime_log, "record", lambda *args, **kwargs: True)
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin', actual_edit=True)
     return app, sent
 
 

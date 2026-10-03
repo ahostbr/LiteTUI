@@ -21,6 +21,8 @@ def context(tmp_path, monkeypatch):
         (tmp_path / f'{ident}.json').write_text(json.dumps({'agent_id': ident, 'spawned_by': parent}))
     app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER), conversation=[{'role': 'user', 'content': 'x'}],
                           _edit=lambda *args: None)
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin')
     return app, clock, tmp_path
 
 
@@ -205,6 +207,8 @@ async def test_rpc_completion_records_reason_and_cannot_reopen(tmp_path, monkeyp
     events = []
     app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER), _rpc_emit=events.append,
                           conversation=[{'role': 'user'}], _edit=lambda *args: None)
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin')
     task = asyncio.create_task(tool_approval.approve_over_rpc(app, 'shell', {}, SimpleNamespace(reason='x'), timeout=0.02))
     await asyncio.sleep(0)
     ident = events[0]['id']

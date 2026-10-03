@@ -123,6 +123,8 @@ async def test_unanswered_escalates_once_without_changing_reply_authority(
     # Legacy standalone scheduling does not itself create answer authority.
     from litetui import approval_authority
     (tmp_path / f"{APPROVER}.json").write_text(json.dumps({"agent_id": APPROVER}))
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin')
     approval_authority.create(app, IDENT, approver=APPROVER, route="spawner", timeout=1.0)
     assert not approval_relay.take_answer(app, {"from": GRANDPARENT, "body": f"APPROVE {IDENT}"})
     assert not future.done()
@@ -394,6 +396,8 @@ async def test_creation_clock_escalates_while_initial_setup_stalls(tmp_path, mon
         _system=lambda text: None, _begin_wait=lambda *args: None, _end_wait=lambda token: None,
         _edit=lambda *args: persisted.append(time.monotonic()))
     decision = SimpleNamespace(danger="test", capabilities=set(), reason="test only")
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, harness.AGENTS_DIR / 'origin')
     task = asyncio.create_task(approval_relay.ask_spawner(app, "test_tool", {}, decision, "harness"))
     try:
         await asyncio.wait_for(escalated.wait(), 0.8)
@@ -444,6 +448,8 @@ async def test_creation_expiry_and_cancellation_clear_pending_setup(monkeypatch,
     decision = SimpleNamespace(danger="test", capabilities=set(), reason="test only")
     monkeypatch.setattr(approval_relay, "record", lambda app, status, *args: outcomes.append(status))
     started = time.monotonic()
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, harness.AGENTS_DIR / 'origin')
     task = asyncio.create_task(approval_relay.ask_spawner(app, "test_tool", {}, decision, "harness"))
     try:
         await asyncio.wait_for(entered.wait(), 0.5)

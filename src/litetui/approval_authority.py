@@ -6,6 +6,7 @@ not cryptographic authentication. Scheduling metadata grants no answer rights.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
@@ -107,14 +108,56 @@ def context_valid(app, ident: str) -> bool:
         return False
     index = record['conversation_index']
     conversation = record['conversation']
-    return index is None or (0 <= index < len(conversation)
-                             and conversation[index] is record['message'])
+    return (index is not None and 0 <= index < len(conversation)
+            and conversation[index] is record['message'])
+
+
+def persistence_ready(app, ident: str) -> bool:
+    """Existing repository's error latch and no-write modes are load-bearing."""
+    if not context_valid(app, ident) or not callable(getattr(app, '_edit', None)):
+        return False
+    store = _records(app)[ident]['store']
+    return (store is not None and getattr(store, 'persist_error', 'missing') is None
+            and getattr(store, 'convo_path', None) is not None
+            and getattr(store, 'pending', None) is False
+            and getattr(store, 'loading', None) is False)
+
+
+async def wait_for_answer(app, ident: str, future, *, limit: float | None = None):
+    """Observe revocation even without a deadline; never cancel a cadence wait.
+
+    One local creator loop, no background watcher. The original monotonic
+    deadline is absolute; a valid human timeout=0 wait remains indefinite.
+    """
+    record = _records(app)[ident]
+    deadline = record['authority'].deadline
+    if limit is not None:
+        deadline = limit if deadline is None else min(deadline, limit)
+    while True:
+        if not persistence_ready(app, ident):
+            return None
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError
+        if future.done():
+            result = future.result()
+            if not persistence_ready(app, ident):
+                return None
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError
+            return result
+        interval = 0.05 if deadline is None else min(0.05, deadline - time.monotonic())
+        if interval <= 0:
+            raise TimeoutError
+        try:
+            await asyncio.wait_for(asyncio.shield(future), interval)
+        except TimeoutError:
+            continue
 
 
 def _audit(app, ident: str, record: dict) -> None:
     # Never persist an old action through a new conversation's store.
-    if not context_valid(app, ident) or record['conversation_index'] is None:
-        return
+    if not persistence_ready(app, ident):
+        raise ApprovalAuditError('Approval audit origin or persistence signal is unavailable')
     index = record['conversation_index']
     message = record['message']
     states = message.setdefault('approval_delivery', {})
@@ -126,9 +169,10 @@ def _audit(app, ident: str, record: dict) -> None:
                     'created_wall_time': record['created_wall_time'],
                     'answerer_id': record.get('answerer_id'), 'outcome': record['outcome']}
     try:
-        if hasattr(app, '_edit'):
-            app._edit(index, 'Approval authority state updated')
-    except (OSError, ValueError):
+        app._edit(index, 'Approval authority state updated')
+        if not persistence_ready(app, ident):
+            raise ApprovalAuditError('Approval audit was not durably accepted by its bound repository')
+    except (OSError, ValueError, ApprovalAuditError):
         if previous is None:
             states.pop(ident, None)
         else:
@@ -161,7 +205,7 @@ def create(app, ident: str, *, approver: str | None, route: str | None,
     _records(app)[ident] = record
     try:
         _audit(app, ident, record)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, ApprovalAuditError) as exc:
         _records(app).pop(ident, None)
         raise ApprovalAuditError('Approval creation audit failed; action remains gated') from exc
     return authority
@@ -169,7 +213,7 @@ def create(app, ident: str, *, approver: str | None, route: str | None,
 
 def can_answer(app, ident: str, msg: dict) -> bool:
     record = _records(app).get(ident)
-    if record is None or record['outcome'] != 'pending' or not context_valid(app, ident) or harness._expired(msg):
+    if record is None or record['outcome'] != 'pending' or not persistence_ready(app, ident) or harness._expired(msg):
         return False
     authority = record['authority']
     now = time.monotonic()
@@ -186,12 +230,12 @@ def can_answer(app, ident: str, msg: dict) -> bool:
 def settle(app, ident: str, *, outcome: str, answerer_id: str | None = None) -> bool:
     """Called on the event loop together with future resolution; one answer wins."""
     record = _records(app).get(ident)
-    if record is None or record['outcome'] != 'pending' or not context_valid(app, ident):
+    if record is None or record['outcome'] != 'pending' or not persistence_ready(app, ident):
         return False
     record.update(outcome=outcome, answerer_id=answerer_id)
     try:
         _audit(app, ident, record)
-    except (OSError, ValueError):
+    except (OSError, ValueError, ApprovalAuditError):
         # Do not approve the future after a failed durable edit. The creator's
         # normal timeout/cancellation finally removes this revoked record.
         record.update(outcome='audit-error', answerer_id=None)

@@ -53,6 +53,8 @@ def make_app(rpc: bool = False):
     a._fetch_ctx_window = lambda: None
     a.bg_tasks = {}
     a._rpc = rpc
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(a, harness.AGENTS_DIR / a.seat.agent_id, actual_edit=True)
     a.emitted: list = []
     a._rpc_emit = a.emitted.append
     return a

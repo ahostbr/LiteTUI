@@ -56,6 +56,8 @@ async def test_frozen_outbound_two_notifications_despite_reparenting_and_failure
     sent = []
     app = SimpleNamespace(seat=SimpleNamespace(agent_id='worker', send=lambda to, body, **kw: sent.append((to, kw)) or False),
                           conversation=[{'role': 'user'}], _edit=lambda *args: None, _system=lambda *args: None)
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, registry / 'origin')
     frozen = authority.create(app, IDENT, approver='leader', route='spawner', timeout=1.5)
     (registry / 'leader.json').write_text(json.dumps({'agent_id': 'leader', 'spawned_by': 'replacement'}))
     with pytest.raises(TimeoutError):

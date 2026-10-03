@@ -414,8 +414,8 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             "timeout_s": timeout,
         })
         try:
-            answer = await asyncio.wait_for(fut, timeout)
-            return answer if approval_authority.context_valid(app, approval_id) else None
+            answer = await approval_authority.wait_for_answer(app, approval_id, fut)
+            return answer if approval_authority.persistence_ready(app, approval_id) else None
         except TimeoutError:
             status = "timeout"
             return None
