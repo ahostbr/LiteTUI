@@ -241,3 +241,97 @@ async def test_relay_outer_cancel_after_answer_never_grants(real_app, monkeypatc
     assert not app._approval_authority_records
     assert not approval_relay.take_answer(app,
         {'to': app.seat.agent_id, 'from': 'leader', 'body': f'APPROVE {ident}'})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('answer_timeout', [1, 60])
+async def test_relay_early_transport_wait_timeout_preserves_answer_window(
+        real_app, monkeypatch, answer_timeout):
+    import threading
+    import time
+
+    app = real_app
+    monkeypatch.setattr(seat_authority, 'confirm_route', lambda app: 'spawner')
+    app.seat.registered = True
+    app.settings.relay_approval_timeout_s = answer_timeout
+    app._begin_wait = lambda *args: None
+    app._end_wait = lambda *args: None
+    entered = asyncio.Event()
+    injected = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    metadata = []
+    transport_tasks = []
+    original_wait_for = asyncio.wait_for
+    original_to_thread = asyncio.to_thread
+
+    def send(to, body, **options):
+        metadata.append(options)
+        loop.call_soon_threadsafe(entered.set)
+        release.wait(2)
+        return False
+
+    app.seat.send = send
+
+    async def early_transport_timeout(awaitable, timeout):
+        frame = getattr(awaitable, 'cr_frame', None)
+        if (getattr(awaitable, 'cr_code', None) is original_to_thread.__code__
+                and frame is not None and frame.f_locals.get('func') is send):
+            transport_tasks.append(asyncio.create_task(awaitable))
+            await original_wait_for(entered.wait(), 0.5)
+            injected.set()
+            raise TimeoutError  # Deterministic early wait expiry, not send False.
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, 'wait_for', early_transport_timeout)
+    task = asyncio.create_task(approval_relay.ask_spawner(app, 'shell', {},
+        SimpleNamespace(reason='test', danger='test'), 'harness'))
+    try:
+        await original_wait_for(injected.wait(), 0.5)
+        await asyncio.sleep(0)  # Let setup exit; the actual observer must remain.
+        ident = next(iter(app._relay_pending))
+        record = app._approval_authority_records[ident]
+        deadline = record['authority'].deadline
+        assert time.monotonic() < deadline
+        assert metadata[0]['deadline'] == record['authority'].created_at + min(answer_timeout, 30)
+        assert not task.done() and not app._relay_pending[ident][0].done()
+        release.set()
+        assert await original_wait_for(transport_tasks[0], 0.5) is False
+        await asyncio.sleep(0)
+        assert not task.done() and not app._relay_pending[ident][0].done(), 'late False published absent'
+        assert app._approval_authority_records[ident]['authority'].deadline == deadline
+        if answer_timeout > 30:
+            assert approval_relay.take_answer(app,
+                {'to': app.seat.agent_id, 'from': 'leader', 'body': f'APPROVE {ident}'})
+            assert await original_wait_for(task, 0.5) == 'approved'
+        else:
+            assert await original_wait_for(task, 1.5) == 'timeout'
+        assert not app._relay_pending and not app._relay_answer_deadlines
+        assert not app._approval_authority_records
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, *transport_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('negative', ['false', 'oserror'])
+async def test_relay_real_predeadline_transport_negative_remains_absent(real_app, monkeypatch, negative):
+    app = real_app
+    monkeypatch.setattr(seat_authority, 'confirm_route', lambda app: 'spawner')
+    app.seat.registered = True
+    app.settings.relay_approval_timeout_s = 1
+    app._begin_wait = lambda *args: None
+    app._end_wait = lambda *args: None
+
+    def send(*args, **kwargs):
+        if negative == 'oserror':
+            raise OSError('transport unavailable')
+        return False
+
+    app.seat.send = send
+    assert await asyncio.wait_for(approval_relay.ask_spawner(app, 'shell', {},
+        SimpleNamespace(reason='test', danger='test'), 'harness'), 0.5) == 'absent'
+    assert not app._relay_pending and not app._relay_answer_deadlines
+    assert not app._approval_authority_records

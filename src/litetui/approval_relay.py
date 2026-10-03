@@ -177,7 +177,11 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
                         sent = await asyncio.wait_for(asyncio.to_thread(
                             seat.send, spawner, message, approval_request=(ident, spawner),
                             deadline=initial_deadline, approval_ancestors=authority.ancestors), remaining)
-                    except (TimeoutError, OSError):
+                    except TimeoutError:
+                        # Transport expiry is not a negative delivery result.
+                        # Exit setup only; the original answer deadline remains.
+                        return
+                    except OSError:
                         pass
                 if not sent:
                     # Preserve immediate transport refusal, but not a late setup
