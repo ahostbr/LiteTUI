@@ -123,6 +123,13 @@ def persistence_ready(app, ident: str) -> bool:
             and getattr(store, 'loading', None) is False)
 
 
+def raise_if_cancelled() -> None:
+    """Python3.11 wait_for can consume cancellation when its future is done."""
+    task = asyncio.current_task()
+    if task is not None and task.cancelling() > 0:
+        raise asyncio.CancelledError
+
+
 async def wait_for_answer(app, ident: str, future, *, limit: float | None = None):
     """Observe revocation even without a deadline; never cancel a cadence wait.
 
@@ -134,6 +141,7 @@ async def wait_for_answer(app, ident: str, future, *, limit: float | None = None
     if limit is not None:
         deadline = limit if deadline is None else min(deadline, limit)
     while True:
+        raise_if_cancelled()
         if not persistence_ready(app, ident):
             return None
         if deadline is not None and time.monotonic() >= deadline:
@@ -144,6 +152,7 @@ async def wait_for_answer(app, ident: str, future, *, limit: float | None = None
                 return None
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError
+            raise_if_cancelled()
             return result
         interval = 0.05 if deadline is None else min(0.05, deadline - time.monotonic())
         if interval <= 0:

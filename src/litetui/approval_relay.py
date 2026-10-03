@@ -201,6 +201,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
             setup_task = asyncio.create_task(setup())
             try:
                 answer = await waiting
+                approval_authority.raise_if_cancelled()
                 state = app._approval_authority_records[ident]['outcome']
                 status = ("audit-error" if state == 'audit-error' else
                           "cancelled" if not approval_authority.persistence_ready(app, ident) else
@@ -223,6 +224,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
         if control is not None and control.is_mounted:
             await control.remove()
         record(app, status, name, source, ident)
+    approval_authority.raise_if_cancelled()
     if status == "approved":
         app._system(f"approval received for {name} ({ident})")
     return status

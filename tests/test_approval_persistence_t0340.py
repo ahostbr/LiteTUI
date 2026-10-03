@@ -213,3 +213,31 @@ async def test_actual_supervised_child_with_no_durable_origin_is_refused(real_ap
     assert await asyncio.wait_for(app.approve_for_child(request), 0.5) is False
     assert not app.events
     assert_clean(app)
+
+
+@pytest.mark.asyncio
+async def test_relay_outer_cancel_after_answer_never_grants(real_app, monkeypatch):
+    app = real_app
+    monkeypatch.setattr(seat_authority, 'confirm_route', lambda app: 'spawner')
+    app.seat.registered = True
+    app.settings.relay_approval_timeout_s = 1
+    app._begin_wait = lambda *args: None
+    app._end_wait = lambda *args: None
+    sent = []
+    app.seat.send = lambda to, body, **metadata: sent.append(metadata['approval_request'][0]) or True
+    task = asyncio.create_task(approval_relay.ask_spawner(app, 'shell', {},
+        SimpleNamespace(reason='test', danger='test'), 'harness'))
+    for _ in range(100):
+        if sent:
+            break
+        await asyncio.sleep(0.002)
+    ident = sent[0]
+    assert approval_relay.take_answer(app,
+        {'to': app.seat.agent_id, 'from': 'leader', 'body': f'APPROVE {ident}'})
+    assert task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not app._relay_pending
+    assert not app._approval_authority_records
+    assert not approval_relay.take_answer(app,
+        {'to': app.seat.agent_id, 'from': 'leader', 'body': f'APPROVE {ident}'})

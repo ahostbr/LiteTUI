@@ -415,6 +415,7 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
         })
         try:
             answer = await approval_authority.wait_for_answer(app, approval_id, fut)
+            approval_authority.raise_if_cancelled()
             return answer if approval_authority.persistence_ready(app, approval_id) else None
         except TimeoutError:
             status = "timeout"
