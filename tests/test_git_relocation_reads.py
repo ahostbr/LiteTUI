@@ -58,6 +58,8 @@ _OID_B = '3b60a4d999886ce48991449c6ff5728a130d418d'
 @pytest.mark.parametrize('shell', [None, 'powershell', 'bash'])
 @pytest.mark.parametrize('command,workspace', [
     (_KEM_CHAIN, 'E:/SAS/ShadowsAndShurikens'),
+    ('pwd; command -v lst; git -C E:/SAS/ShadowsAndShurikens status --porcelain; '
+     'git -C E:/SAS/ShadowsAndShurikens branch --show-current', 'E:/SAS/ShadowsAndShurikens'),
     (_ANCESTRY_CHAIN, 'C:/Projects/.scratch/T0343/YouTubeThemeGammaSol/LiteSuite'),
 ])
 def test_t0340_exact_relocated_read_chains_are_not_schedule_writes(command, workspace, shell):
