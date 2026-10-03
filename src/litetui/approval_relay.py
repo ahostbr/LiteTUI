@@ -8,8 +8,9 @@ an agent-launched LiteGUI's CONFIRM -> "No, launching agent".
 Initial ancestry is recorded ONLY from the marker envelope
 (LITETUI_SPAWN_IDENTITY=1 + LITEHARNESS_SPAWNED_BY), never from an inherited env
 (Dijkstra M1). Each new request resolves the registered seat's current spawned_by;
-its pending reply authority is frozen to that destination, so re-registration
-changes future requests only. Missing/invalid presence never uses cached ancestry.
+its pending reply authority freezes that destination and up to two registered
+ancestors (eligible at60/120s). Re-registration changes future requests only.
+Missing/invalid presence never uses cached ancestry.
 ⚠️ FORGEABLE, stated (B4): local presence is only as trustworthy as its writer;
 `send --from` is not
 validated and every local agent can read ~/.liteharness, so the from + nonce check
@@ -27,8 +28,8 @@ import re
 import time
 import uuid
 
-from textual.containers import Horizontal
 from textual.app import ScreenStackError
+from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.widgets import Button, Static
 
@@ -81,6 +82,8 @@ def take_human_answer(app, ident: str, allow: bool) -> bool:
     from litetui.approval_delivery import answer_open
     if entry is None or entry[0].done() or not isinstance(allow, bool) or not answer_open(app, ident):
         return False
+    from litetui import approval_authority
+    approval_authority.settle(app, ident, outcome="approved" if allow else "denied")
     entry[0].set_result(allow)
     return True
 
@@ -136,6 +139,9 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     future = asyncio.get_running_loop().create_future()
     pending = _pending(app)
     pending[ident] = (future, spawner)
+    from litetui import approval_authority, seat_authority
+    authority = approval_authority.create(app, ident, approver=spawner, route=seat_authority.confirm_route(app),
+                                          timeout=timeout, created_at=created_at)
     # Dijkstra K1(c): logged in the finally, so a wait cancelled by Esc, stop() or
     # the Claude bridge's deadline still leaves its line ("cancelled").
     status = "cancelled"
@@ -168,7 +174,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
                     try:
                         sent = await asyncio.wait_for(asyncio.to_thread(
                             seat.send, spawner, message, approval_request=(ident, spawner),
-                            deadline=initial_deadline), remaining)
+                            deadline=initial_deadline, approval_ancestors=authority.ancestors), remaining)
                     except (TimeoutError, OSError):
                         pass
                 if not sent:
@@ -204,6 +210,7 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     finally:
         app._end_wait(wait_token)
         pending.pop(ident, None)
+        approval_authority.close(app, ident, status)
         if control is not None and control.is_mounted:
             await control.remove()
         record(app, status, name, source, ident)
@@ -213,19 +220,26 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
 
 
 def take_answer(app, msg: dict) -> bool:
-    """Consume `msg` only if it answers a PENDING request, from the agent that
-    request went to. Anything else stays ordinary mail, so nothing is eaten."""
+    """Consume only a pending request's eligible frozen exact-ID answer.
+
+    Everything else stays ordinary mail; body prose grants no authority.
+    """
     # Dijkstra SHOULD: LiteSuite's orchestrator writes payload.text, not body.
     text = msg.get("body") or (msg.get("payload") or {}).get("text") or ""
     match = _ANSWER.match(str(text))
     if match is None:
         return False
     entry = _pending(app).get(match.group(2))
+    from litetui import approval_authority
     from litetui.approval_delivery import answer_open
-    if (entry is None or msg.get("from") != entry[1] or entry[0].done()
+    if (entry is None or entry[0].done() or not approval_authority.can_answer(app, match.group(2), msg)
             or not answer_open(app, match.group(2))):
         return False
-    entry[0].set_result(match.group(1) == "APPROVE")
+    allow = match.group(1) == "APPROVE"
+    if not approval_authority.settle(app, match.group(2), outcome="approved" if allow else "denied",
+                                     answerer_id=msg.get("from")):
+        return False
+    entry[0].set_result(allow)
     from litetui import approval_delivery
     approval_delivery.stage(match.group(2), "responded")
     return True

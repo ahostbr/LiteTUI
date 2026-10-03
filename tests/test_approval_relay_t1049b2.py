@@ -32,6 +32,8 @@ def disposable_presence(tmp_path, monkeypatch):
 
 
 def _registered_parent(a, parent):
+    if parent:
+        (harness.AGENTS_DIR / f"{parent}.json").write_text(json.dumps({"agent_id": parent}), encoding="utf-8")
     a.seat.registered = True
     (harness.AGENTS_DIR / f"{a.seat.agent_id}.json").write_text(
         json.dumps({"agent_id": a.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
@@ -80,7 +82,7 @@ async def _until_sent(sent, limit=5.0):
 
 async def _reply(a, sent, verb):
     ident = await _until_sent(sent)
-    a._receive_mail({"from": SPAWNER, "body": f"{verb} {ident}"})
+    a._receive_mail({"to": a.seat.agent_id, "from": SPAWNER, "body": f"{verb} {ident}"})
 
 
 # ── K1: the Claude bridge (claude_tools._decide) ────────────────────────────
@@ -136,7 +138,9 @@ async def test_SHOULD_an_answer_written_as_payload_text_is_read():
     a = _seat()
     future = asyncio.get_running_loop().create_future()
     approval_relay._pending(a)["appr-0123456789ab"] = (future, SPAWNER)
-    assert approval_relay.take_answer(a, {"from": SPAWNER, "payload": {"text": "APPROVE appr-0123456789ab"}})
+    from litetui import approval_authority
+    approval_authority.create(a, "appr-0123456789ab", approver=SPAWNER, route="spawner", timeout=600)
+    assert approval_relay.take_answer(a, {"to": a.seat.agent_id, "from": SPAWNER, "payload": {"text": "APPROVE appr-0123456789ab"}})
     assert future.result() is True
 
 

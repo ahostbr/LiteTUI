@@ -803,6 +803,93 @@ def _command_view(command: str, shell: str | None = None, *, path_launch: bool =
     return scan(0)[0]
 
 
+_PS_PLAIN_STRING = r"(?:'(?:[^']|'')*'|\"[^\"$`]*\")"
+_PS_READ_CMDLETS = frozenset({
+    "get-content", "get-childitem", "get-item", "test-path", "select-string", "select-object",
+})
+
+
+def _powershell_common_literals(command: str) -> str:
+    """T0340 represent only literal argument arrays and a finite Test-Path guard.
+
+    Not a PowerShell evaluator: unsupported forms remain unchanged and meet the
+    existing unknown-shape gate. Both branches are inspected, never executed.
+    """
+    out: list[str] = []
+    i = 0
+    quote = ""
+    statement_start = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "`" and quote == '"' and i + 1 < len(command):
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and command[i:i + 2] == "''":
+                    out.append("'")
+                    i += 2
+                    continue
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+        if ch == "`" and i + 1 < len(command):
+            out.extend(command[i:i + 2])
+            i += 2
+            continue
+        if command[i:i + 2] == "@(" and (i == 0 or command[i - 1].isspace()):
+            match = re.match(r"@\(\s*(" + _PS_PLAIN_STRING + r"(?:\s*,\s*" + _PS_PLAIN_STRING + r")*)\s*\)", command[i:])
+            prefix = command[statement_start:i]
+            recipients = deny_floor.shell_commands(prefix, "powershell")
+            if (match and len(recipients) == 1 and recipients[0]["words"]
+                    and not recipients[0]["words"][0][0].startswith(("$", "@"))
+                    and recipients[0]["words"][0][0] != "."
+                    and (i + len(match[0]) == len(command) or command[i + len(match[0])] in " ;|\r\n")):
+                # Keep quoted literal argv, replace only commas/array delimiters.
+                literals = re.findall(_PS_PLAIN_STRING, match[1])
+                out.append(" ".join(literals))
+                i += len(match[0])
+                continue
+        if not command[statement_start:i].strip() and re.match(r"(?i)if\s*\(", command[i:]):
+            # All delimiters inside these finite token/body forms are quoted.
+            path = r"(?:" + _PS_PLAIN_STRING + r"|[A-Za-z0-9_./\\:-]+)"
+            body = r"(?:" + _PS_PLAIN_STRING + r"|[^'\"{}])*"
+            guard = re.match(r"(?is)if\s*\(\s*Test-Path\s+(?:(?:-Path|-LiteralPath)\s+)?(" + path
+                             + r")\s*\)\s*\{(" + body + r")\}\s*(?:else\s*\{(" + body + r")\})?", command[i:])
+            if guard and (i + len(guard[0]) == len(command) or command[i + len(guard[0])] in ";\r\n"):
+                branches = [guard[2], *( [guard[3]] if guard[3] is not None else [])]
+                ordinary = True
+                for branch in branches:
+                    shaped, unknown = _powershell_shape(branch)
+                    parts = deny_floor.shell_commands(shaped, "powershell")
+                    for part in parts:
+                        argv = [word[0] for word in part["words"]]
+                        if (unknown or not part["complete"] or part["redirects"] or not argv
+                                or argv[0].lower() not in _PS_READ_CMDLETS
+                                or any("$" in arg or "`" in arg for arg in argv[1:])
+                                or any(arg.startswith('-') and any(
+                                    name.startswith(arg[1:].lower().split(':')[0])
+                                    for name in ('outvariable', 'ov', 'pipelinevariable', 'pv',
+                                                 'errorvariable', 'ev', 'warningvariable', 'wv',
+                                                 'informationvariable', 'iv')) for arg in argv[1:])):
+                            ordinary = False
+                    if not parts:
+                        ordinary = False
+                if ordinary:
+                    out.append(";".join(branches))
+                    i += len(guard[0])
+                    continue
+        out.append(ch)
+        if ch in ";\r\n":
+            statement_start = i + 1
+        i += 1
+    return "".join(out)
+
+
 def _powershell_shape(command: str) -> tuple[str, bool]:
     """Approval-only view of literal PS operators; never changes the floor's input.
 
@@ -873,7 +960,7 @@ _PS_SCALAR = re.compile(r"(?:\$[A-Za-z_]\w*|\$env:[A-Za-z_]\w*|[-+]?\d+(?:\.\d+)
 
 
 def _powershell_parts(command: str) -> tuple[list[dict], bool]:
-    normalized, unknown = _powershell_shape(command)
+    normalized, unknown = _powershell_shape(_powershell_common_literals(command))
     parts = deny_floor.shell_commands(normalized, "powershell")
     result: list[dict] = []
     for part in parts:

@@ -324,15 +324,22 @@ def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False)
     fut = _approval_registry(app).get(approval_id)
     if fut is None or fut.done():
         return False
+    from litetui import approval_authority
+    record = getattr(app, "_approval_authority_records", {}).get(approval_id)
+    if record is not None:
+        deadline = record["authority"].deadline
+        if deadline is not None and approval_authority.time.monotonic() >= deadline:
+            return False
+    approval_authority.settle(app, approval_id, outcome="approved" if allow else "denied")
     fut.set_result(ALWAYS if (allow and remember) else (ONCE if allow else DENIED))
     return True
 
 
 def take_spawner_answer(app, msg: dict) -> bool:
-    """Consume only addressed, unexpired mail from this RPC request's spawner.
+    """Consume addressed unexpired mail from an eligible frozen exact ID.
 
-    Registration/presence edits cannot change an already pending permission.
-    The ordinary RPC host answer path remains separate and unchanged.
+    Registration edits cannot change a pending permission or its60/120s clock.
+    The ordinary human RPC host answer path remains separate.
     """
     from litetui import approval_relay, harness
 
@@ -343,10 +350,16 @@ def take_spawner_answer(app, msg: dict) -> bool:
     match = approval_relay._ANSWER.fullmatch(str(text).strip())
     if match is None:
         return False
-    spawner = getattr(app, "_rpc_approval_spawners", {}).get(match.group(2))
-    if not spawner or msg.get("from") != spawner:
+    from litetui import approval_authority
+    ident = match.group(2)
+    future = _approval_registry(app).get(ident)
+    if future is None or future.done() or not approval_authority.can_answer(app, ident, msg):
         return False
-    return resolve_over_rpc(app, match.group(2), match.group(1) == "APPROVE")
+    allow = match.group(1) == "APPROVE"
+    if not approval_authority.settle(app, ident, outcome="approved" if allow else "denied",
+                                     answerer_id=msg.get("from")):
+        return False
+    return resolve_over_rpc(app, ident, allow)
 
 
 async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
@@ -381,9 +394,12 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     spawners = getattr(app, "_rpc_approval_spawners", None)
     if spawners is None:
         spawners = app._rpc_approval_spawners = {}
-    from litetui import approval_relay
+    from litetui import approval_authority, approval_relay, seat_authority
 
     spawners[approval_id] = approval_relay.current_spawner(app)
+    approval_authority.create(app, approval_id, approver=spawners[approval_id],
+                              route=seat_authority.confirm_route(app), timeout=timeout)
+    status = "cancelled"
     try:
         app._rpc_emit({
             "type": "tool_approval_requested",
@@ -396,8 +412,12 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
         })
         try:
             return await asyncio.wait_for(fut, timeout)
-        except (TimeoutError, asyncio.CancelledError):
+        except TimeoutError:
+            status = "timeout"
+            return None
+        except asyncio.CancelledError:
             return None
     finally:
         _approval_registry(app).pop(approval_id, None)
         spawners.pop(approval_id, None)
+        approval_authority.close(app, approval_id, status)

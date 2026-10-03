@@ -120,11 +120,15 @@ async def test_unanswered_escalates_once_without_changing_reply_authority(
     if sends:
         assert sends[0][0] == GRANDPARENT and "Notification only" in sends[0][1]
     assert app._relay_pending[IDENT][1] == APPROVER
+    # Legacy standalone scheduling does not itself create answer authority.
+    from litetui import approval_authority
+    (tmp_path / f"{APPROVER}.json").write_text(json.dumps({"agent_id": APPROVER}))
+    approval_authority.create(app, IDENT, approver=APPROVER, route="spawner", timeout=1.0)
     assert not approval_relay.take_answer(app, {"from": GRANDPARENT, "body": f"APPROVE {IDENT}"})
     assert not future.done()
-    assert approval_relay.take_answer(app, {"from": APPROVER, "body": f"DENY {IDENT}"})
+    assert approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"DENY {IDENT}"})
     assert await waiting is False
-    assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {IDENT}"})
+    assert not approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"APPROVE {IDENT}"})
     assert said
 
 
@@ -333,7 +337,7 @@ async def test_expired_reply_cannot_set_pending_future_or_human_override():
     future = asyncio.get_running_loop().create_future()
     app = SimpleNamespace(_relay_pending={IDENT: (future, APPROVER)},
         _relay_answer_deadlines={IDENT: time.monotonic() - 1})
-    assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {IDENT}"})
+    assert not approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"APPROVE {IDENT}"})
     assert not approval_relay.take_human_answer(app, IDENT, True)
     assert not future.done()
 
@@ -359,6 +363,7 @@ async def test_creation_clock_escalates_while_initial_setup_stalls(tmp_path, mon
     monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.6)
     (tmp_path / f"{APPROVER}.json").write_text(json.dumps(
         {"agent_id": APPROVER, "spawned_by": GRANDPARENT}), encoding="utf-8")
+    (tmp_path / f"{GRANDPARENT}.json").write_text(json.dumps({"agent_id": GRANDPARENT}))
     release = threading.Event()
     escalated = asyncio.Event()
     mounted = asyncio.Event()
@@ -401,7 +406,7 @@ async def test_creation_clock_escalates_while_initial_setup_stalls(tmp_path, mon
             await asyncio.sleep(0.002)
         assert persisted and persisted[0] - started < 0.65
         ident = next(iter(app._relay_pending))
-        assert approval_relay.take_answer(app, {"from": APPROVER, "body": f"DENY {ident}"})
+        assert approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"DENY {ident}"})
         assert await task == "denied"
         assert not app._relay_pending and not app._relay_answer_deadlines
     finally:
@@ -455,7 +460,7 @@ async def test_creation_expiry_and_cancellation_clear_pending_setup(monkeypatch,
             assert time.monotonic() - started < 0.2, "setup delay inflated original expiry"
         assert outcomes == [outcome]
         assert not app._relay_pending and not app._relay_answer_deadlines
-        assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {ident}"})
+        assert not approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"APPROVE {ident}"})
         assert not approval_relay.take_human_answer(app, ident, True)
         release.set()
         assert await asyncio.to_thread(finished.wait, 0.5)

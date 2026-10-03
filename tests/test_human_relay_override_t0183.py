@@ -4,13 +4,16 @@ import re
 
 import pytest
 
-from litetui import app as app_mod, approval_relay, runtime_log, tool_policy
+from litetui import app as app_mod, approval_relay, harness, runtime_log, tool_policy
 from litetui.tool_policy import INTERACTIVE
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 
 
-def seat(monkeypatch):
+def seat(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setattr(harness, "AGENTS_DIR", tmp_path)
+    (tmp_path / f"{SPAWNER}.json").write_text(json.dumps({"agent_id": SPAWNER}))
     app = app_mod.LiteTUI()
     app.settings.tool_policy_profile = INTERACTIVE
     app._active_tool_profile = INTERACTIVE
@@ -18,8 +21,9 @@ def seat(monkeypatch):
     app._owner_seat = False
     app._spawner_id = SPAWNER
     app.seat.registered = True
+    (tmp_path / f"{app.seat.agent_id}.json").write_text(json.dumps({"agent_id": app.seat.agent_id, "spawned_by": SPAWNER}))
     sent = []
-    app.seat.send = lambda to, body: sent.append((to, body)) or True
+    app.seat.send = lambda to, body, **metadata: sent.append((to, body)) or True
     monkeypatch.setattr(runtime_log, "record", lambda *args, **kwargs: True)
     return app, sent
 
@@ -55,7 +59,7 @@ async def waiting(app, sent, tmp_path):
 @pytest.mark.parametrize("button, approved", [(".human-approval-allow", True),
                                              (".human-approval-deny", False)])
 async def test_local_click_settles_exact_wait_and_disappears(monkeypatch, tmp_path, button, approved):
-    app, sent = seat(monkeypatch)
+    app, sent = seat(monkeypatch, tmp_path)
     async with app.run_test() as pilot:
         task, control = await waiting(app, sent, tmp_path)
         target = app.query_one(button)
@@ -75,7 +79,7 @@ async def test_local_click_settles_exact_wait_and_disappears(monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_wrong_and_late_id_cannot_override_and_agent_sender_still_checked(monkeypatch, tmp_path):
-    app, sent = seat(monkeypatch)
+    app, sent = seat(monkeypatch, tmp_path)
     async with app.run_test() as pilot:
         task, control = await waiting(app, sent, tmp_path)
         assert not approval_relay.take_human_answer(app, "appr-000000000000", True)

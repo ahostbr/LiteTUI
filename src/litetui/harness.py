@@ -660,7 +660,7 @@ class Seat:
         return out
 
     def send(self, to: str, body: str, *, approval_request: tuple[str, str] | None = None,
-             deadline: float | None = None) -> bool:
+             deadline: float | None = None, approval_ancestors: tuple[str, ...] | None = None) -> bool:
         """Reply into the fleet. Uses --body-file: an inline double-quoted
         message runs backticks as shell commands and still reports success.
 
@@ -677,10 +677,13 @@ class Seat:
             if not self.registered or resolve_agent(to)[0] != to or to == self.agent_id:
                 return False
             ident, approver = approval_request
-            metadata = json.dumps({"kind": REQUEST_TYPE, "id": ident,
-                                   "requester": self.agent_id, "approver": approver})
+            fields: dict[str, object] = {"kind": REQUEST_TYPE, "id": ident,
+                      "requester": self.agent_id, "approver": approver}
+            if approval_ancestors is not None:
+                fields["frozen_ancestors"] = list(approval_ancestors)
+            metadata = json.dumps(fields)
             if request_id({"type": "QUESTION", "thread_id": metadata,
-                           "from": self.agent_id, "to": to}) != ident:
+                           "from": self.agent_id, "to": to}, outbound_ancestors=approval_ancestors) != ident:
                 return False
             flags = ["--type", "QUESTION", "--thread-id", metadata]
         try:

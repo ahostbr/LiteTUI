@@ -38,6 +38,8 @@ def disposable_presence(tmp_path, monkeypatch):
 
 
 def _registered_parent(a, parent):
+    (harness.AGENTS_DIR / f"{parent}.json").write_text(
+        json.dumps({"agent_id": parent, "spawned_by": None}), encoding="utf-8")
     a.seat.registered = True
     (harness.AGENTS_DIR / f"{a.seat.agent_id}.json").write_text(
         json.dumps({"agent_id": a.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
