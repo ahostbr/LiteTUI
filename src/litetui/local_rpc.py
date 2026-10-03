@@ -229,12 +229,17 @@ class LocalRpc:
             if not isinstance(cmd_id, str) or not 1 <= len(cmd_id) <= 128:
                 raise ValueError("Command requires a bounded string id")
             operation = cmd.get("type")
-            if not isinstance(operation, str) or not operation.startswith("gui.") or operation[4:] not in OPERATIONS:
+            from litetui import prompt_commands
+            prompt_operation = operation in prompt_commands.LOCAL_OPERATIONS if isinstance(operation, str) else False
+            if not isinstance(operation, str) or (not prompt_operation and (
+                    not operation.startswith("gui.") or operation[4:] not in OPERATIONS)):
                 raise ValueError("Operation is not available through local attachment")
             from litetui.gui_rpc import async_dispatch
             try:
-                # start_server and this coroutine run on the app's existing UI loop.
-                result = await async_dispatch(self.app, cmd)
+                # Private prompt operations are deliberately absent from GUI/stdout RPC.
+                # Both dispatchers run on the existing owner's app loop after auth.
+                result = (await prompt_commands.dispatch(self.app, cmd) if prompt_operation
+                          else await async_dispatch(self.app, cmd))
                 response = {"type": "response", "id": cmd_id, "ok": True, "result": result}
             except Exception as exc:
                 response = {"type": "response", "id": cmd_id, "ok": False, "error": str(exc)}

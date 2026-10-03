@@ -22,4 +22,11 @@ holding just that one file moved EVERY read to a directory missing the other
 five -- and ``textfmt.load_prompt`` reads them unguarded. Taking this docstring
 at its word crashed on ``compact.md``. Reads now go through
 ``paths.prompt_file()``, which resolves PER FILE.
+
+T0338: an explicitly selected conversation's ``prompts/<name>.md`` wins
+before repo/package text for ordinary-instructions, seat-instructions, compact,
+card-summary and wake-after-compact ONLY. Security/ownership/tool/messaging
+prompts and unknown names are global-only; a scoped copy is explicitly refused.
+Mutable text is checked at each actual turn boundary, not frozen at import.
+Reset retains revisions and an inactive metadata tombstone, never deletes text.
 """

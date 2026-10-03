@@ -50,7 +50,7 @@ _REPO_PROMPTS = ROOT / "prompts"
 PROMPTS_DIR = _PKG_PROMPTS
 
 
-def prompt_file(name: str) -> Path:
+def prompt_file(name: str, *, convo_dir: Path | None = None) -> Path:
     """The prompt named `name`, repo-root copy winning PER FILE (T582).
 
     The anchor used to be all-or-nothing: a repo-root `prompts/` holding ONLY
@@ -64,6 +64,12 @@ def prompt_file(name: str) -> Path:
     Per-file makes that docstring's promise ("override any file") true, and a
     partial override stays partial.
     """
+    from litetui.prompt_overrides import filename, scoped_file
+    name = filename(name)
+    if convo_dir is not None:
+        scoped = scoped_file(convo_dir, name)
+        if scoped is not None:
+            return scoped
     repo = _REPO_PROMPTS / name
     return repo if repo.is_file() else PROMPTS_DIR / name
 

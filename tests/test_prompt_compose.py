@@ -60,7 +60,8 @@ def _reference(a) -> str:
         )
         if unresolved:
             raise ValueError(f"reference found unresolved placeholders: {unresolved}")
-        base = base.strip()
+        # T0338 split preserves the former BASE bytes/order before every other section.
+        base = base.strip() + "\n\n" + paths.prompt_file("ordinary-instructions.md").read_text(encoding="utf-8").strip()
     # T558: plan mode rides slot 5, between BASE and MEMORY. Built here
     # INDEPENDENTLY of the app, like every other arm of this reference.
     if getattr(a, "_plan_mode", False) and paths.PLAN_PROMPT_FILE.exists():

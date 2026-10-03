@@ -53,7 +53,7 @@ def _cmd_new(app, name: str, arg: str) -> None:
 def _cmd_system(app, name: str, arg: str) -> None:
     if arg:
         if app.conversation and app.conversation[0]["role"] == "system":
-            app.conversation[0]["content"] = arg
+            app.conversation[0] = {"role": "system", "content": arg}
         else:
             app.conversation.insert(
                 0, {"role": "system", "content": arg}

@@ -196,7 +196,7 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
-    def fix_system_prompt(self, segment_id: str, text: str) -> str:
+    def fix_system_prompt(self, segment_id: str, text: str, *, host_policy_version: int | None = None) -> str:
         """Record the segment's system prompt the first time, and return the recorded one.
 
         Fixed for the life of the segment, except the process-specific harness identity
@@ -206,6 +206,10 @@ class ClaudeLedger:
         segment = self._require_segment(segment_id)
         if not segment.get("system_prompt"):
             segment["system_prompt"] = text
+            # Host provenance is recorded only at first construction, never
+            # inferred from text or retrofitted to an existing/native segment.
+            if host_policy_version == 1 and type(host_policy_version) is int and not segment.get("session_id"):
+                segment["host_policy_version"] = 1
             self._save()
         return segment["system_prompt"]
 

@@ -1882,7 +1882,7 @@ class LiteTUI(App):
                 paths.SYSTEM_PROMPT_FILE,
                 root=paths.ROOT,
                 user_name=self.settings.user_name,
-            ).strip(),
+            ).strip() + "\n\n" + self._ordinary_prompt_text("ordinary-instructions").strip(),
             enabled=lambda: paths.SYSTEM_PROMPT_FILE.exists(),
         )
         # T558. Gated on the mode, so LEAVING plan mode drops the instruction —
@@ -3685,6 +3685,15 @@ class LiteTUI(App):
                 "— it holds for this session only"
             )
 
+    def _ordinary_prompt_text(self, name: str, *, fresh: bool = False) -> str:
+        from litetui import prompt_overrides
+        return prompt_overrides.text_for(self, name + ".md", fresh=fresh)
+
+    def _with_ordinary_instructions(self, floor: str) -> str:
+        # BASE already preserves the original floor + ordinary byte order.
+        seat = self._ordinary_prompt_text("seat-instructions")
+        return floor + ("\n\n[LiteTUI seat instructions]\n" + seat if seat else "")
+
     def _system_prompt_text(self) -> str:
         """systemprompt.md + the store block + the tools block, in that order.
 
@@ -3693,12 +3702,21 @@ class LiteTUI(App):
         itself lives in the registry (PROMPT_ORDER slots); host sections are
         registered in __init__, the skills index by the skills plugin.
         """
-        return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
+        return self._with_ordinary_instructions(self.plugins.compose_prompt()) + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
+
+    def _host_prompt_message(self) -> dict:
+        base = self._system_prompt_text()
+        floor = prompt_compiler.compile_prompt_file(
+            paths.SYSTEM_PROMPT_FILE, root=paths.ROOT, user_name=self.settings.user_name).strip()
+        return {"role": "system", "content": base, "litetui_prompt_owner": 1,
+                "litetui_prompt_base": base, "litetui_prompt_ordinary_start": len(floor) + 2,
+                "litetui_ordinary_text": self._ordinary_prompt_text("ordinary-instructions").strip(),
+                "litetui_seat_text": self._ordinary_prompt_text("seat-instructions")}
 
     def _load_system_prompt(self) -> None:
-        base = self._system_prompt_text()
-        if base:
-            self._append({"role": "system", "content": base})
+        message = self._host_prompt_message()
+        if message["content"]:
+            self._append(message)
 
     # ── Store injection ──────────────────────────────────────────
     #
@@ -3788,7 +3806,56 @@ class LiteTUI(App):
         """The conversation as sent. The index and store ride in message 0, injected once."""
         self._inject_index_once()
         self._inject_store_once()
-        return list(self.conversation)
+        from litetui import prompt_overrides
+        if getattr(self, "_prompt_snapshot", None) is None:
+            prompt_overrides.refresh(self)
+        messages = list(self.conversation)
+        for index, message in enumerate(messages):
+            if message.get("litetui_prompt_owner") != 1:
+                continue
+            original = message.get("litetui_prompt_base")
+            old_ordinary = message.get("litetui_ordinary_text")
+            old_seat = message.get("litetui_seat_text")
+            content = message["content"]
+            if not isinstance(original, str) or not content.startswith(original):
+                raise prompt_overrides.PromptError("Host prompt was replaced; cannot safely rewrite ordinary guidance")
+            start = message.get("litetui_prompt_ordinary_start")
+            if start is None and old_ordinary:
+                needle = "\n\n" + old_ordinary
+                if original.count(needle) == 1:
+                    start = original.index(needle) + 2
+            if (not isinstance(start, int) or not isinstance(old_ordinary, str)
+                    or original[start:start + len(old_ordinary)] != old_ordinary):
+                raise prompt_overrides.PromptError("Ambiguous host ordinary instruction boundary")
+            ordinary = self._ordinary_prompt_text("ordinary-instructions").strip()
+            replaced = (original[:start] + ordinary + ("\n\n" if not old_ordinary and ordinary else "")
+                        + original[start + len(old_ordinary):])
+            if old_seat:
+                recap = "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
+                ending = "\n\n[LiteTUI seat instructions]\n" + old_seat + recap
+                if not replaced.endswith(ending):
+                    raise prompt_overrides.PromptError("Ambiguous host seat instruction boundary")
+                replaced = replaced[:-len(ending)] + recap
+            seat = self._ordinary_prompt_text("seat-instructions")
+            if seat:
+                replaced += "\n\n[LiteTUI seat instructions]\n" + seat
+            messages[index] = {**message, "content": replaced + content[len(original):]}
+        if not any(m.get("litetui_prompt_owner") == 1 for m in messages):
+            # Old/custom transcripts have no trustworthy replacement boundary.
+            # Preserve them bytewise; explicit scoped ordinary configuration gets
+            # a separate host-authored current-guidance message, including reset.
+            names = {"ordinary-instructions.md", "seat-instructions.md"}
+            snapshot = self._prompt_snapshot
+            configured = bool(names & snapshot.overridden) or (
+                self.convo_dir is not None and any(
+                    prompt_overrides.metadata(self.convo_dir, name) is not None for name in names))
+            if configured:
+                position = 1 if messages and messages[0].get("role") == "system" else 0
+                messages.insert(position, {"role": "system", "content": prompt_overrides.native_context(self)})
+        # Host bookkeeping must never reach OpenAI-compatible wire messages.
+        return [{k: v for k, v in message.items() if not k.startswith("litetui_prompt_")
+                 and k not in {"litetui_ordinary_text", "litetui_seat_text"}}
+                for message in messages]
 
     # \u2500\u2500 Persistence (.convos/<uuid>/convo.jsonl) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     #
@@ -4431,7 +4498,7 @@ class LiteTUI(App):
         if self.conversation and self.conversation[0].get("role") == "system":
             # Rebuilt through the single builder. Hand-rolling it here is how
             # the store block gets dropped on the first Ctrl+T.
-            self.conversation[0]["content"] = self._system_prompt_text()
+            self.conversation[0] = self._host_prompt_message()
             self._edit(0, "tools toggled")  # one message, not the whole list
         state = "ON (bash, read, write, web_fetch)" if self.tools_enabled else "OFF"
         self._system(f"Tools {state} — Ctrl+T to toggle")
@@ -4633,7 +4700,7 @@ class LiteTUI(App):
             return False
         self._plan_mode = on
         if self.conversation and self.conversation[0].get("role") == "system":
-            self.conversation[0]["content"] = self._system_prompt_text()
+            self.conversation[0] = self._host_prompt_message()
             self._edit(0, "plan mode toggled")  # one message, not the whole list
         if announce:
             # 🔴 THE KEY IS READ FROM THE BINDING, NEVER TYPED HERE (T573).
@@ -7237,7 +7304,7 @@ class LiteTUI(App):
                 model=model or self.model_id or "local-model",
                 messages=[{
                     "role": "user",
-                    "content": CARD_SUMMARY_PROMPT.replace("{answer}", answer),
+                    "content": self._ordinary_prompt_text("card-summary", fresh=True).replace("{answer}", answer),
                 }],
                 # Reuses the compact budget rather than minting another literal,
                 # same reasoning as the tool-summary fold.
@@ -8727,7 +8794,7 @@ class LiteTUI(App):
         self._interrupted_compact_resume = None
         self.self_compaction.pending = None
         if (self.conversation and self.conversation[-1].get("role") == "user"
-                and self.conversation[-1].get("content") != WAKE_AFTER_COMPACT):
+                and self.conversation[-1].get("content") != self._ordinary_prompt_text("wake-after-compact")):
             self.self_compaction.progress()
         # 🔴 RE-READ THE WINDOW AT TURN START, NOT ONLY AT TURN END.
         #
@@ -9740,9 +9807,10 @@ class LiteTUI(App):
             self._system(why)
             return
         self._materialise_convo()
-        self._user_bubble(WAKE_AFTER_COMPACT, False)
+        wake = self._ordinary_prompt_text("wake-after-compact", fresh=True)
+        self._user_bubble(wake, False)
         self._hooks_suppressed = True
-        self._append({"role": "user", "content": WAKE_AFTER_COMPACT})
+        self._append({"role": "user", "content": wake})
         self._stream()
 
     def _record_native_usage(self, usage) -> None:
@@ -9847,6 +9915,7 @@ class LiteTUI(App):
                                   kept_recent=len(tail))
             return
 
+        compact_prompt = self._ordinary_prompt_text("compact", fresh=True)
         compact_started = time.perf_counter()
         trigger_tokens = self.ctx_used
         before_chars = self._msg_chars(self.conversation)
@@ -9854,7 +9923,7 @@ class LiteTUI(App):
         card = CompactionCard(
             plan=(f"{len(head)} messages \u2192 summary \u00b7 keeping the "
                   f"last {len(tail)} verbatim \u00b7 {before_chars:,} chars before"),
-            prompt_text=COMPACT_PROMPT + (f"\n\n{extra}" if extra else ""),
+            prompt_text=compact_prompt + (f"\n\n{extra}" if extra else ""),
             auto=auto,
         )
         # AWAITED: mount() only schedules composition. The first stream
@@ -9869,7 +9938,7 @@ class LiteTUI(App):
         self._scroll_down()
 
         ask = list(head) + [
-            {"role": "user", "content": COMPACT_PROMPT + (f"\n\n{extra}" if extra else "")}
+            {"role": "user", "content": compact_prompt + (f"\n\n{extra}" if extra else "")}
         ]
         if system:
             # Merge the live store in, so it can see what memory.md already

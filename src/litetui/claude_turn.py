@@ -77,15 +77,21 @@ def system_prompt_for(app, segment):
     if segment.get("session_id"):
         return None
     tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
-    parts = [app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
+    from litetui import paths, prompt_compiler
+    floor = prompt_compiler.compile_prompt_file(paths.SYSTEM_PROMPT_FILE, root=paths.ROOT,
+                                                user_name=getattr(app.settings, "user_name", "")).strip()
+    parts = [app.plugins.compose_prompt(replace={PROMPT_ORDER["BASE"]: floor,
+                                                PROMPT_ORDER["TOOLS"]: tools,
+                                                PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
     parts.append(appsvc.index_block(app, cwd=segment["workspace"]).strip())
     parts.append(appsvc.store_block(app).strip())
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
         parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
     parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
     parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
+    parts.append("[LiteTUI ordinary instructions are host-supplied per turn; mutable-policy version 1]")
     text = "\n\n".join(p for p in parts if p)
-    return ledger_for(app).fix_system_prompt(segment["id"], text)
+    return ledger_for(app).fix_system_prompt(segment["id"], text, host_policy_version=1)
 
 
 #: The CLI's own words for a context that no longer fits (read out of CLI 2.1.281).
@@ -324,7 +330,11 @@ def accept_input(app, item):
         # T1043: an unlabelled item is recorded "unlabelled", never as an
         # attended "queued" that a later replay would inherit.
         metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source") or "unlabelled", item.get("operation_id"))
-    app._claude_active_input = {**item, **metadata}
+    from litetui import prompt_overrides
+    snapshot = getattr(app, "_prompt_snapshot", None)
+    if snapshot is None or snapshot.directory != getattr(app, "convo_dir", None):
+        snapshot = prompt_overrides.refresh(app)
+    app._claude_active_input = {**item, **metadata, "_litetui_prompt_snapshot": snapshot}
     return {"id": metadata["_claude_entry"]["id"], "segment_id": metadata["_claude_segment"], "state": "prepared"}
 
 
@@ -546,9 +556,17 @@ async def stream_turn(app):
             else:
                 app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, item["content"])
             return
-        ledger.update_delivery(entry_id, "submitted")
+        from litetui import prompt_overrides
+        snapshot = item.get("_litetui_prompt_snapshot") or prompt_overrides.refresh(app)
+        recorded = ledger.segment(segment["id"]) or segment
+        versioned = type(recorded.get("host_policy_version")) is int and recorded["host_policy_version"] == 1
+        if not versioned and snapshot.overridden & {"ordinary-instructions.md", "seat-instructions.md"}:
+            raise RuntimeError("This legacy Claude session has higher-priority ordinary instructions. "
+                               "Input remains unsent; explicitly use /claude new before applying scoped ordinary prompts.")
+        context = prompt_overrides.native_context(app, snapshot=snapshot) if versioned else ""
+        ledger.update_delivery(entry_id, "submitted", litetui_ordinary_context=context)
         submitted = True
-        await session.query(entry_id, item["content"])
+        await session.query(entry_id, context + item["content"])
         clock = claude_cache.clock_for(app, segment["id"])
         clock.model, clock.effort = app.model_id, effort or "default"
 

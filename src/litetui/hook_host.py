@@ -186,6 +186,12 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
     materialise = getattr(app, "_materialise_convo", None)
     if materialise is not None:
         materialise()
+    from litetui import prompt_overrides
+    try:
+        prompt_overrides.refresh(app)
+    except (prompt_overrides.PromptError, OSError) as exc:
+        app._system(f"Prompt configuration error; input held unsent: {exc}")
+        return False
     message = {"role": "user", "content": item["content"]}
     if getattr(getattr(app, "backend", None), "owns_native_turns", False):
         from litetui.claude_turn import UncertainDelivery, accept_input, hold_input
