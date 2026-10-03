@@ -285,6 +285,19 @@ def apply(directory: Path, command: dict) -> tuple[dict, str]:
                      "notification_sent": sent}, "Prompt request historically applied; not replayed")
         if command["notification_sent"] is not None:
             raise prompts.PromptError("Cannot acknowledge a prompt that was not applied")
+        # Publication uncertainty belongs to the whole conversation, not just
+        # the requested id/name. Preserve all evidence before a fresh mutation.
+        applied_ids = {r.get("request_id") for r in rows if r.get("phase") == "applied"}
+        intent_ids = {r.get("request_id") for r in rows if r.get("phase") == "intent"}
+        if intent_ids - applied_ids:
+            raise prompts.PromptError("Prior prompt request has uncertain publication; inspect audit, do not retry blindly")
+        retained_folder = prompts.checked(folder / "revisions")
+        if retained_folder.exists():
+            for retained_revision in retained_folder.iterdir():
+                prompts.checked(retained_revision)
+                if (not retained_revision.is_file() or retained_revision.suffix != ".json"
+                        or retained_revision.stem not in intent_ids):
+                    raise prompts.PromptError("Retained revision exists without audit intent; pre-publication outcome uncertain, inspect before new request")
         if any(r.get("request_id") == command["id"] for r in rows):
             raise prompts.PromptError("Prior prompt request has uncertain publication; inspect audit, do not retry blindly")
         name = command["name"]
@@ -323,7 +336,8 @@ def apply(directory: Path, command: dict) -> tuple[dict, str]:
             publish(folder / name, after)
         append_audit(directory, {**row, "phase": "applied"})
         notice = f"Prompt {command['action']} applied: {name}; leader {command['actor']}; reason: {command['reason']}; request {command['id']}. Effective next turn."
-        return {"status": "APPLIED", "request_id": command["id"], "global_sha": row["global_sha"]}, notice
+        return {"status": "APPLIED_NOTIFICATION_UNKNOWN", "notification_sent": None,
+                "request_id": command["id"], "global_sha": row["global_sha"]}, notice
 
 
 def inspect(directory: Path, name: str, *, diff: bool) -> str:

@@ -3843,15 +3843,21 @@ class LiteTUI(App):
         if not any(m.get("litetui_prompt_owner") == 1 for m in messages):
             # Old/custom transcripts have no trustworthy replacement boundary.
             # Preserve them bytewise; explicit scoped ordinary configuration gets
-            # a separate host-authored current-guidance message, including reset.
+            # host-authored guidance appended to a first system request copy, including reset.
             names = {"ordinary-instructions.md", "seat-instructions.md"}
             snapshot = self._prompt_snapshot
             configured = bool(names & snapshot.overridden) or (
                 self.convo_dir is not None and any(
                     prompt_overrides.metadata(self.convo_dir, name) is not None for name in names))
             if configured:
-                position = 1 if messages and messages[0].get("role") == "system" else 0
-                messages.insert(position, {"role": "system", "content": prompt_overrides.native_context(self)})
+                systems = [i for i, m in enumerate(messages) if m.get("role") == "system"]
+                guidance = prompt_overrides.native_context(self)
+                if systems:
+                    if systems != [0] or not isinstance(messages[0].get("content"), str):
+                        raise prompt_overrides.PromptError("Scoped guidance requires one initial string system message; input held unsent")
+                    messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + guidance}
+                else:
+                    messages.insert(0, {"role": "system", "content": guidance})
         # Host bookkeeping must never reach OpenAI-compatible wire messages.
         return [{k: v for k, v in message.items() if not k.startswith("litetui_prompt_")
                  and k not in {"litetui_ordinary_text", "litetui_seat_text"}}

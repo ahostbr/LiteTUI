@@ -112,7 +112,7 @@ def test_branch_global_drift_and_audit_dedup(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "_REPO_PROMPTS", repo)
     cmd = command(tmp_path, "compact.md", "seat v1\n")
     result, _ = commands.apply(tmp_path, cmd)
-    assert result["status"] == "APPLIED"
+    assert result["status"] == "APPLIED_NOTIFICATION_UNKNOWN" and result["notification_sent"] is None
     result, _ = commands.apply(tmp_path, cmd)
     assert result["status"] == "APPLIED_NOTIFICATION_UNKNOWN"
     (repo / "compact.md").write_text("global v2\n")

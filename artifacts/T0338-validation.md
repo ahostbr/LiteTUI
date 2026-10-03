@@ -20,7 +20,8 @@ Narrow allowlist resolver and per-turn snapshots, owner-side publication with
 retained revisions/audit, default floor/ordinary split preserving original order.
 Fresh native Claude fixes only floor and records explicit host policy provenance;
 current ordinary guidance rides real query separately from original user ledger.
-Legacy ordinary/seat mutations refuse before writes; no automatic rotation.
+Legacy ordinary/seat SET mutations refuse before writes; reset remains an allowed
+withdrawal, never an introduction of scoped guidance. No automatic rotation.
 
 ## Evolution Assessment
 Historical requests dedup without reapply/resend; current_revision discloses
@@ -30,8 +31,8 @@ Torn audits/orphan retained snapshots are preserved and require local inspection
 there is deliberately no recovery/retry framework. POSIX directory fsync is used;
 Windows claims file flush/atomic rename, not extra power-loss durability.
 OS-user capability trust is not cryptographic actor auth or a hostile-user sandbox.
-Old generic/custom transcripts preserve their system bytes and get separate host
-request-copy guidance only for explicit scoped configuration/tombstones; native
+Old generic/custom transcripts preserve stored system bytes and append host
+guidance to the first outgoing system request copy for explicit scoped configuration/tombstones; native
 legacy Claude never takes this fallback. Earlier native history remains history.
 
 ## Validation

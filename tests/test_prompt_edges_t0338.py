@@ -146,12 +146,12 @@ def test_host_rebuild_wire_keys_and_custom_legacy_guidance(tmp_path):
     app.conversation[0] = {"role": "system", "content": custom}
     wire = app._request_messages()
     assert wire[0]["content"].startswith(custom)
-    assert "host supplied, not user-authored" in wire[1]["content"]
-    assert "current ordinary" in wire[1]["content"]
-    assert len(app.conversation) + 1 == len(wire)
+    assert "host supplied, not user-authored" in wire[0]["content"]
+    assert "current ordinary" in wire[0]["content"]
+    assert len(app.conversation) == len(wire)
     commands.apply(app.convo_dir, command(app.convo_dir, action="reset", text=""))
     prompts.refresh(app)
-    assert "## Engineering practices" in app._request_messages()[1]["content"]
+    assert "## Engineering practices" in app._request_messages()[0]["content"]
 
 
 def test_empty_ordinary_host_boundary_is_reloadable():
@@ -252,7 +252,8 @@ async def test_local_notice_failure_preserves_applied_result(owners):
     cmd = {**request(worker), "type": commands.APPLY, "actor": leader.seat.agent_id,
            "notification_sent": None}
     result = await commands.dispatch(worker, cmd)
-    assert result["status"] == "APPLIED" and result["local_notice_failed"] is True
+    assert result["status"] == "APPLIED_NOTIFICATION_UNKNOWN" and result["notification_sent"] is None
+    assert result["local_notice_failed"] is True
 
 
 @pytest.mark.asyncio

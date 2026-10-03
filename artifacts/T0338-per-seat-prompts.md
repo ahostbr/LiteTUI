@@ -28,7 +28,12 @@ outcomes. If a request times out, inspect the target audit using the printed UUI
 never blindly submit a new request. An explicit `--request-id` deduplicates a
 confirmed mutation, not inbox delivery. A duplicate does not silently resend mail.
 There is no exactly-once notification claim. Intent without applied evidence
-refuses a retry pending inspection. Notification acknowledgements are bound to
+blocks every fresh mutation in that conversation, across request IDs and mutable
+names, pending inspection. Retained revisions without audit intent also block
+fresh mutation under the same audit lock. Historical duplicate lookups and valid
+ACKs remain allowed without replay. The first owner APPLY explicitly returns
+`APPLIED_NOTIFICATION_UNKNOWN` with `notification_sent: null`; only a successful
+fingerprint-bound notification ACK produces `APPLIED`. Notification acknowledgements are bound to
 the entire original request fingerprint and cannot mutate or replay it.
 
 ## Scope and immutable floor
@@ -72,9 +77,12 @@ are refreshed independently without replacing an in-flight main snapshot.
 Generic request copies replace only explicitly host-owned ordinary text, keeping
 stored transcript, custom system messages, index and memory snapshots intact.
 Legacy/custom generic transcripts without host provenance are never guessed or
-stripped: explicit scoped configuration adds a separate host-authored current
-system-guidance request copy, including reset. Earlier ordinary guidance remains
-in that transcript as history, so these seats cannot claim bytewise replacement.
+stripped: explicit scoped configuration appends host-authored current guidance to
+the FIRST system message in the outgoing request copy only, including reset. Its
+custom prefix and stored transcript remain unchanged. If no system exists, one
+is inserted first. Multiple, noninitial or nonstring system rows explicitly refuse
+scoped guidance rather than violating single-system model templates. Earlier
+ordinary guidance remains history, so these seats cannot claim bytewise replacement.
 Codex uses its existing instruction digest / additionalContext wire seam.
 
 Fresh Claude native sessions contain the immutable floor ONLY, with current

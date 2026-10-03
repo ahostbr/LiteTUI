@@ -150,7 +150,8 @@ async def test_explicit_fresh_claude_transition(owners):
     fresh = ledger.select_segment(str(worker.convo_dir), new=True)
     assert fresh["id"] != segment["id"]
     result = await commands.dispatch(worker, cmd)
-    assert result["status"] == "APPLIED" and ledger.selected["id"] == fresh["id"]
+    assert result["status"] == "APPLIED_NOTIFICATION_UNKNOWN" and result["notification_sent"] is None
+    assert ledger.selected["id"] == fresh["id"]
 
 
 class Writer:
@@ -188,5 +189,6 @@ async def test_private_auth_gate_actual_owner_dispatch(owners):
     assert w.frames[0]["ok"] is False and not (worker.convo_dir / "prompts").exists()
     w = Writer()
     await rpc._client(reader({"agent_id": worker.seat.agent_id, "nonce": "fixture", "token": rpc.secret}, cmd), w)
-    assert w.frames[-1]["ok"] and w.frames[-1]["result"]["status"] == "APPLIED"
+    assert w.frames[-1]["ok"] and w.frames[-1]["result"]["status"] == "APPLIED_NOTIFICATION_UNKNOWN"
+    assert w.frames[-1]["result"]["notification_sent"] is None
     assert "prompts.apply" not in local_rpc.OPERATIONS  # not an open GUI operation
