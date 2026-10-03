@@ -246,7 +246,7 @@ def test_audit_stays_on_creation_conversation(context):
 @pytest.mark.parametrize('route', ['own', 'hand', 'unknown'])
 async def test_relay_creation_cannot_override_human_route(context, monkeypatch, route):
     from litetui import seat_authority
-    app, clock, _ = context
+    app, _clock, _ = context
     app.seat.name = 'worker'
     app.seat.registered = True
     monkeypatch.setattr(approval_relay, 'current_spawner', lambda app: APPROVER)

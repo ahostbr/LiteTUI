@@ -6,7 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from litetui import approval_authority, approval_relay, harness, seat_authority, tool_approval, tool_policy
+from litetui import (
+    approval_authority,
+    approval_relay,
+    harness,
+    seat_authority,
+    tool_approval,
+    tool_policy,
+)
 from litetui.app import LiteTUI
 from litetui.conversation import ConversationRepository
 

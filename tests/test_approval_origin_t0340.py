@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from litetui import approval_delivery, approval_relay, harness, seat_authority, tool_approval
+from litetui import (
+    approval_delivery,
+    approval_relay,
+    harness,
+    seat_authority,
+    tool_approval,
+)
 
 
 @pytest.fixture
