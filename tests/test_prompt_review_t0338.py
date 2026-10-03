@@ -14,7 +14,7 @@ from test_prompt_overrides_t0338 import command, layer
 
 
 def evidence(directory):
-    return {str(p.relative_to(directory)): p.read_bytes()
+    return {p.relative_to(directory).as_posix(): p.read_bytes()
             for p in directory.rglob("*") if p.is_file() and not p.name.endswith(".lock")}
 
 
