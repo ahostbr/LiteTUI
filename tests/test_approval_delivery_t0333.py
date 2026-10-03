@@ -449,7 +449,8 @@ async def test_creation_expiry_and_cancellation_clear_pending_setup(monkeypatch,
     monkeypatch.setattr(approval_relay, "record", lambda app, status, *args: outcomes.append(status))
     started = time.monotonic()
     from approval_store_fixture_t0340 import bind_origin
-    bind_origin(app, harness.AGENTS_DIR / 'origin')
+    (harness.AGENTS_DIR / f"{APPROVER}.json").write_text(json.dumps({"agent_id": APPROVER}), encoding="utf-8")
+    bind_origin(app, harness.AGENTS_DIR / 'origin', actual_edit=True)
     task = asyncio.create_task(approval_relay.ask_spawner(app, "test_tool", {}, decision, "harness"))
     try:
         await asyncio.wait_for(entered.wait(), 0.5)
