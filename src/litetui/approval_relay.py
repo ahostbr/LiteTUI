@@ -118,7 +118,9 @@ def _message(app, ident: str, name: str, args, decision, source, timeout: float,
             f"Input: {shown}\n"
             f"[DELIVERY requester={seat.agent_id} approver={approver}]\n"
             f"Answer by inbox with exactly one line: APPROVE {ident}  or  DENY {ident}\n"
-            f"No answer within {timeout:.0f} s = the turn stops and this is logged.")
+            f"If no answer within {timeout:.0f} s, the turn stops and this is logged:\n"
+            "This request was not run and will not be retried automatically. "
+            "A new request for the same operation is allowed and gets its own approval.")
 
 
 def timeout_s(app) -> float:
@@ -270,7 +272,9 @@ def stop_line(app, name: str, status: str) -> str:
         "audit-error": (f"[stopped — approval audit for {name} could not be durably recorded; "
                         "not approved; action was not run]"),
         "timeout": (f"[stopped — the request's spawning agent did not answer the approval "
-                    f"for {name} within {timeout_s(app):.0f}s; refused and logged]"),
+                    f"for {name} within {timeout_s(app):.0f}s; refused and logged] "
+                    "This request was not run and will not be retried automatically. "
+                    "A new request for the same operation is allowed and gets its own approval."),
         "absent": (f"[stopped — the current spawning agent is not reachable (invalid presence, not registered, "
                    f"or the harness is off); {name} was not run; refused and logged]"),
         "no_spawner": (f"[stopped — an agent launched this LiteTUI without naming itself "

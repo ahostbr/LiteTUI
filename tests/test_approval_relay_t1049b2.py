@@ -87,6 +87,49 @@ async def _reply(a, sent, verb):
     a._receive_mail({"to": a.seat.agent_id, "from": SPAWNER, "body": f"{verb} {ident}"})
 
 
+# ── T0340: timeout wording is request-scoped, not an operation ban ─────────
+
+TIMEOUT_REQUEST_NOTICE = (
+    "This request was not run and will not be retried automatically. "
+    "A new request for the same operation is allowed and gets its own approval."
+)
+
+
+@pytest.mark.parametrize("timeout", [600, 42])
+def test_timeout_stop_line_allows_a_new_request_but_not_automatic_retry(timeout):
+    a = SimpleNamespace(settings=SimpleNamespace(relay_approval_timeout_s=timeout))
+    assert approval_relay.stop_line(a, "powershell", "timeout") == (
+        "[stopped — the request's spawning agent did not answer the approval "
+        f"for powershell within {timeout}s; refused and logged] "
+        + TIMEOUT_REQUEST_NOTICE
+    )
+    # The timeout clarification must not weaken an explicit denial.
+    assert approval_relay.stop_line(a, "powershell", "denied") == (
+        "[stopped — the request's spawning agent denied powershell]"
+    )
+
+
+@pytest.mark.parametrize("timeout", [600, 42])
+def test_relay_message_conditions_request_scoped_notice_on_no_answer(timeout):
+    a = SimpleNamespace(seat=SimpleNamespace(name="worker", agent_id="worker-id"))
+    decision = SimpleNamespace(danger="write", reason="confirmation", capabilities=frozenset())
+    message = approval_relay._message(
+        a, "appr-0123456789ab", "powershell", {"command": "operation"},
+        decision, "typed", timeout, approver=SPAWNER,
+    )
+    assert message == (
+        "[APPROVAL appr-0123456789ab] worker (worker-i) asks to run powershell "
+        "during a typed turn\n"
+        "Danger: write; why: confirmation\n"
+        'Input: {"command": "operation"}\n'
+        f"[DELIVERY requester=worker-id approver={SPAWNER}]\n"
+        "Answer by inbox with exactly one line: APPROVE appr-0123456789ab  "
+        "or  DENY appr-0123456789ab\n"
+        f"If no answer within {timeout} s, the turn stops and this is logged:\n"
+        + TIMEOUT_REQUEST_NOTICE
+    )
+
+
 # ── K1: the Claude bridge (claude_tools._decide) ────────────────────────────
 
 def _bridge(a, tmp_path):
