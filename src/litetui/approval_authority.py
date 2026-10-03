@@ -108,6 +108,8 @@ def context_valid(app, ident: str) -> bool:
         return False
     index = record['conversation_index']
     conversation = record['conversation']
+    if conversation is None:
+        return False
     return (index is not None and 0 <= index < len(conversation)
             and conversation[index] is record['message'])
 
