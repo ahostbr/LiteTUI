@@ -441,10 +441,17 @@ async def test_creation_expiry_and_cancellation_clear_pending_setup(monkeypatch,
             return False
         finally:
             finished.set()
-    app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER, name="Worker",
-        registered=True, current_spawner=lambda: APPROVER, send=send),
-        settings=SimpleNamespace(relay_approval_timeout_s=0.08),
-        _system=notices.append, _begin_wait=lambda *args: None, _end_wait=lambda token: None)
+    from test_approval_over_rpc import make_app
+    app = make_app()
+    app.seat.agent_id = REQUESTER
+    app.seat.name = "Worker"
+    app.seat.registered = True
+    app.seat.current_spawner = lambda: APPROVER
+    app.seat.send = send
+    app.settings.relay_approval_timeout_s = 0.08
+    app._system = notices.append
+    app._begin_wait = lambda *args: None
+    app._end_wait = lambda value: None
     decision = SimpleNamespace(danger="test", capabilities=set(), reason="test only")
     monkeypatch.setattr(approval_relay, "record", lambda app, status, *args: outcomes.append(status))
     started = time.monotonic()
