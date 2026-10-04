@@ -175,14 +175,14 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         ("seed", "stop"), scope="defaults", keywords=("seed", "repeat", "stop strings", "deterministic"),
     ),
     _section(
-        "agent", "Agent loop", "agent-codex-routing", "Codex subagents · global",
-        "One child-model default shared by all Codex instances, read on each call.",
-        ("codex_subagent_model",), scope="device", keywords=("Codex", "global", "subagent", "child"),
+        "agent", "Agent loop", "agent-subagent-routing", "Subagents · global route",
+        "One backend and model shared by all instances; conversation overrides win.",
+        ("subagent_route", "allow_local_subagents"), scope="device", keywords=("Codex", "Claude", "global", "subagent", "child", "local"),
     ),
     _section(
         "agent", "Agent loop", "agent-routing", "Side-call routing",
         "Point background work at the right resident model.",
-        ("subagent_model", "tool_summary_model"), scope="conversation", keywords=("subagent", "side call", "summary", "child"),
+        ("subagent_route_override", "subagent_model", "tool_summary_model"), scope="conversation", keywords=("subagent", "side call", "summary", "child"),
     ),
     _section(
         "agent", "Agent loop", "agent-execution", "Execution limits",

@@ -273,10 +273,12 @@ class Settings:
     #: the big one has its own LM Studio slots, so summaries and extractions run
     #: there without touching the parent's pool.
     subagent_model: str | None = None
-    #: Shared Codex host-subagent default. Explicit None follows each parent's
-    #: model; legacy conversation subagent_model is used only before this global
-    #: preference is first saved. Local-backend routing remains conversation-owned.
-    codex_subagent_model: str | None = None
+    #: One route shared by all instances; null follows the parent backend/model.
+    subagent_route: dict | None = None
+    #: null inherits global, {} explicitly follows parent, route overrides global.
+    subagent_route_override: dict | None = None
+    #: Expert-only local dispatch; never permits loading a model for a child.
+    allow_local_subagents: bool = False
     #: T640 — the model the `llm-tool-summ` fold's throwaway side call goes to.
     #: None = the model you are talking to, which is what it always did.
     #:
@@ -594,6 +596,13 @@ def load(root: Path | None = None) -> Settings:
     """Defaults, then the settings file, then the environment."""
     s = Settings()
     p = settings_path(root)
+    from litetui.subagent_routing import migrate_global_file
+    try:
+        migrate_global_file(p)
+    except (OSError, ValueError):
+        # Startup retains the existing tolerant-load contract. Child dispatch
+        # uses SettingsService's strict live read and reports malformed routing.
+        pass
     if p.exists():
         try:
             data = json.loads(p.read_text(encoding="utf-8"))

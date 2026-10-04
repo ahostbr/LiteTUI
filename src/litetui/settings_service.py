@@ -104,12 +104,17 @@ class SettingsService:
         spec = SETTING_SPECS.get(key)
         if spec is None or spec.scope != SettingScope.DEVICE:
             raise ValueError(f'Not a device preference: {key}')
-        raw, _ = _read(st.settings_path(self.root))
+        from litetui.subagent_routing import migrate_global_file
+        path = st.settings_path(self.root)
+        migrate_global_file(path)
+        raw, _ = _read(path)
         default = getattr(st.Settings(), key)
         return key in raw, st._coerce(key, raw.get(key, default), default)
 
     def snapshot(self, conversation_id, overrides=None):
         paths = self._paths(conversation_id)
+        from litetui.subagent_routing import migrate_global_file
+        migrate_global_file(paths['global'])
         global_raw, global_rev = _read(paths['global'])
         convo, convo_rev = _read(paths['conversation'])
         saved = st.Settings()
@@ -125,11 +130,6 @@ class SettingsService:
         for own, key in cs.BORN_FROM.items():
             if convo.get(own) is not None:
                 setattr(saved, key, st._coerce(key, convo[own], getattr(saved, key)))
-        if 'codex_subagent_model' not in global_raw:
-            # Until first saved, Codex inherits the old conversation choice.
-            # Show that actual default in the form so choosing Follow emits
-            # an explicit global null rather than an indistinguishable no-op.
-            saved.codex_subagent_model = saved.subagent_model
         effective = deepcopy(saved)
         for key, env in st.ENV_OVERRIDES.items():
             if os.environ.get(env):
@@ -181,6 +181,9 @@ class SettingsService:
                 api_base(value)
             if change.key == 'custom_context_length' and value < 0:
                 raise ValueError('Custom context budget must be zero or positive')
+            if change.key in ('subagent_route', 'subagent_route_override'):
+                from litetui.subagent_routing import validate_route
+                validate_route(value, override=change.key == 'subagent_route_override')
             # Reject unserializable nested payloads before any destination writes.
             json.dumps(value, allow_nan=False)
             destination = 'conversation' if spec.scope == SettingScope.CONVERSATION else 'global'

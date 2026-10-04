@@ -52,12 +52,13 @@ def _read_files(paths: list) -> str:
 
 
 def _default_model(app):
-    """Codex shares one live preference; other backends retain their own routing."""
-    legacy = getattr(getattr(app, "settings", None), "subagent_model", None)
-    if getattr(getattr(app, "backend", None), "name", None) != "codex":
-        return legacy
-    present, model = settings_runtime.service_for(app).global_value("codex_subagent_model")
-    return model if present else legacy
+    from litetui.subagent_routing import resolve_route
+
+    route = resolve_route(app)
+    if route['backend'] != getattr(getattr(app, 'backend', None), 'name', 'lmstudio'):
+        raise model_transport.ProviderError(
+            f"Subagent route to {route['backend']} requires cross-backend child transport.")
+    return route['model']
 
 
 def _resolve_model(app, explicit):
@@ -194,68 +195,98 @@ def _make_runner(app):
     return tool_subagent
 
 
-def _cmd_subagent_set(app, name: str, arg: str) -> None:
-    if getattr(app.backend, "name", None) != "codex":
-        app.system_message("/subagent-set is available in Codex conversations.")
-        return
+def _save_route(app, route, *, global_default=False):
+    from litetui.settings_service import SettingChange
+    from litetui.subagent_routing import validate_route
+
+    validate_route(route, override=not global_default)
+    directory = getattr(app, 'convo_dir', None)
+    if not global_default and not directory:
+        raise ValueError('Open a conversation before setting its subagent override.')
+    service = settings_runtime.service_for(app)
+    conversation_id = directory.name if directory else '__defaults__'
+    snapshot = service.snapshot(conversation_id)
+    key = 'subagent_route' if global_default else 'subagent_route_override'
+    scope = 'device' if global_default else 'conversation'
+    changes = [SettingChange(key, route, scope)]
+    candidate = deepcopy(app.settings)
+    setattr(candidate, key, route)
+    if not global_default:
+        # Choosing inherit/default retires the old model-only override too.
+        changes.append(SettingChange('subagent_model', None, 'conversation'))
+        candidate.subagent_model = None
+    result = service.save_patch(conversation_id, changes, snapshot.revisions)
+    if not result.fully_saved:
+        raise OSError('; '.join(p.error for p in result.persistence if not p.saved))
+    settings_runtime.apply_saved_result(app, candidate, result)
+
+
+def _parse_route(app, arg, *, global_default=False):
+    from litetui.subagent_routing import validate_route
+
+    if arg.lower() == 'inherit' and not global_default:
+        return None
+    if arg.lower() == 'default':
+        return None if global_default else {}
+    parts = arg.split(maxsplit=1)
+    route = {'backend': parts[0], 'model': parts[1]} if len(parts) == 2 else {
+        'backend': app.backend.name, 'model': arg}
+    validate_route(route)
+    if route['backend'] == app.backend.name:
+        catalog = getattr(app.backend, 'models', {})
+        if catalog and route['model'] not in catalog:
+            raise ValueError(f"{route['backend']} model not available: {route['model']}")
+    return route
+
+
+def _cmd_route(app, arg, *, global_default=False):
     backend = app.backend
-    conversation = getattr(app, "convo_id", None)
-    directory = getattr(app, "convo_dir", None)
+    directory = getattr(app, 'convo_dir', None)
 
     def selected(value):
         if value is None:
             return
-        if (app.backend is not backend or getattr(app, "convo_id", None) != conversation
-                or getattr(app, "convo_dir", None) != directory):
-            app.system_message("Conversation changed; open /subagent-set again.")
+        if app.backend is not backend or getattr(app, 'convo_dir', None) != directory:
+            app.system_message('Conversation changed; open the subagent picker again.')
             return
-        model = None if value == "__follow__" else value
-        if model is not None and model not in getattr(backend, "models", {}):
-            app.system_message(f"Codex model not available: {model}. Use /reconnect to refresh.")
-            return
-        candidate = deepcopy(app.settings)
-        candidate.codex_subagent_model = model
         try:
-            from litetui.settings_service import SettingChange
-            service = settings_runtime.service_for(app)
-            conversation_id = directory.name if directory else "__defaults__"
-            snapshot = service.snapshot(conversation_id)
-            # An explicit reset must write null even if this instance already
-            # follows its parent. Diff-only persistence would omit that intent
-            # and leave another conversation's legacy default in effect.
-            result = service.save_patch(conversation_id,
-                [SettingChange("codex_subagent_model", model, "device")], snapshot.revisions)
-            if not result.fully_saved:
-                raise OSError("; ".join(p.error for p in result.persistence if not p.saved))
+            route = _parse_route(app, value, global_default=global_default)
+            _save_route(app, route, global_default=global_default)
         except (OSError, ValueError) as exc:
-            app.system_message(f"Subagent default was not saved: {exc}")
+            app.system_message(f'Subagent route was not saved: {exc}')
             return
-        settings_runtime.apply_saved_result(app, candidate, result)
-        app.system_message(f"Global Codex subagent default: {model or 'Follow current model'}. All Codex instances use it on their next subagent call; parent models unchanged.")
+        scope = 'Global' if global_default else 'Conversation override'
+        label = f"{route['backend']} / {route['model']}" if route else (
+            'Inherit global' if route is None and not global_default else 'Follow parent')
+        app.system_message(f'{scope} subagent route: {label}. Parent unchanged.')
 
     if arg.strip():
-        selected("__follow__" if arg.strip().lower() == "default" else arg.strip())
+        selected(arg.strip())
         return
-    models = getattr(backend, "models", {})
-    if not models:
-        app.system_message("No Codex models discovered yet. Use /reconnect, then /subagent-set.")
-        return
-    rows = [("__follow__", "Follow current model (no override)")]
-    rows.extend((key, key) for key in models)
-    try:
-        current = _default_model(app)
-    except (OSError, ValueError) as exc:
-        app.system_message(f"Subagent default could not be read: {exc}")
-        return
-    pick(app, "Default Codex subagent model · global", rows, selected,
-         current=current or "__follow__")
+    rows = [('default', 'Follow parent backend and model')]
+    if not global_default:
+        rows.insert(0, ('inherit', 'Inherit global subagent route'))
+    rows.extend((f'{backend.name} {key}', key) for key in getattr(backend, 'models', {}))
+    pick(app, 'Subagent route · ' + ('global' if global_default else 'this conversation'),
+         rows, selected)
+
+
+def _cmd_subagent_set(app, name, arg):
+    _cmd_route(app, arg)
+
+
+def _cmd_subagent_global(app, name, arg):
+    _cmd_route(app, arg, global_default=True)
 
 
 def _register(ctx) -> None:
     ctx.tool(SPEC, _make_runner(ctx.app), policy=NETWORK_READ_POLICY)
-    ctx.command(("/subagent-set",), _cmd_subagent_set,
-                palette="Default subagent model", group="model", order=25,
-                help="Pick the global Codex subagent model for all instances; 'default' follows each parent.")
+    ctx.command(('/subagent-set',), _cmd_subagent_set,
+                palette='Conversation subagent override', group='model', order=25,
+                help='This conversation only: [backend] model overrides global; default follows parent; inherit uses global.')
+    ctx.command(('/subagent-global',), _cmd_subagent_global,
+                palette='Global subagent route', group='model', order=26,
+                help='All instances: backend model selects route; default follows each parent.')
 
 
 PLUGIN = PluginManifest(id="subagent", register=_register)

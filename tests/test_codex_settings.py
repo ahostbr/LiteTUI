@@ -45,9 +45,7 @@ async def test_settings_explain_native_scope_and_preserve_local_values(backend):
         body = app.screen.query_one(SettingsBody)
         for name, capability in CONTROLS.items():
             widget = body.query_one(f"#f-{name}")
-            expected_disabled = (backend != "codex" if name == "codex_subagent_model"
-                                 else backend == "codex" and not capability.editable)
-            assert widget.disabled == expected_disabled, name
+            assert widget.disabled == (backend == "codex" and not capability.editable), name
         saved = body._collect()
         assert saved.temperature == 0.85
         assert saved.tool_iterations == 123

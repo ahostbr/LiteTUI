@@ -38,7 +38,7 @@
         },
         "model": {
           "type": "string",
-          "description": "Leave unset: Codex uses the shared global codex_subagent_model (legacy conversation default until first saved); other backends use the conversation subagent_model. An unavailable default falls back to your current model. Local defaults must already be loaded. An explicit model argument overrides the default."
+          "description": "Leave unset: the child uses this conversation's route override or the global subagent_route, otherwise follows the parent. A route names its own backend and model; unavailable backends refuse rather than falling back. Local defaults must already be loaded. An explicit model argument overrides the default."
         }
       },
       "required": [

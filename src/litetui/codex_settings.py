@@ -83,12 +83,8 @@ CONTROLS = {
         "Applies to LiteTUI bash/powershell tools. Native Codex commands use the engine's process lifecycle.",
     ),
     "subagent_model": Control(
-        "unsupported",
-        "Conversation-local model for other backends (legacy Codex fallback). Use the global Codex subagent model or /subagent-set for Codex.",
-    ),
-    "codex_subagent_model": Control(
         "host",
-        "Global model for LiteTUI's Codex subagent tool across all instances. Changes apply on the next child call without a restart. Blank follows each parent's model; native Codex delegation uses its own engine configuration.",
+        "Legacy conversation-local child model. Clear it to inherit the global route, or use /subagent-set inherit.",
     ),
     "tools_enabled": Control(
         "host", "Controls LiteTUI tools and the native Codex pre-tool policy gate."
@@ -131,10 +127,8 @@ def native(backend):
 
 
 def control(backend, name):
-    if name == "codex_subagent_model":
-        if getattr(backend, "name", None) == "codex":
-            return CONTROLS[name]
-        return Control("unsupported", "Global Codex-only subagent preference. This backend uses its conversation subagent model.")
+    if name in {"subagent_route", "subagent_route_override", "allow_local_subagents"}:
+        return Control("host", "LiteTUI subagent routing; global defaults are read on every child call. Conversation overrides take precedence.")
     if getattr(backend, "owns_native_turns", False):
         if name in {"tools_enabled", "tools_disabled"}:
             return Control("host", "Permission changes apply immediately to Claude calls. Advertised tool inventory is fixed for a live session; use /claude new to refresh it.")
