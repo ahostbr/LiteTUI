@@ -673,7 +673,7 @@ class SettingsBody(Widget):
                 value=current or "",
                 id=f"f-{name}",
                 allow_blank=False,
-                disabled=locked is not None,
+                disabled=locked is not None or bool(capability and not capability.editable),
             )
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
@@ -1032,6 +1032,13 @@ class SettingsBody(Widget):
                         # tab and the other did not exist. the user 2026-09-11 15:1x
                         # runs MiniCPM5-2B resident beside the big model; these
                         # are the two knobs that point work at it.
+                        yield self._section_header("agent-codex-routing")
+                        yield from self._model_pick_row(
+                            "codex_subagent_model", "Codex subagent model · global",
+                            "Follow each parent's model",
+                            "Shared by all Codex instances. Read on each child call; "
+                            "parent models and local-backend routing stay unchanged.",
+                        )
                         yield self._section_header("agent-routing")
                         yield from self._model_pick_row(
                             "subagent_model", "Subagent model",

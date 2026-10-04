@@ -95,6 +95,19 @@ class SettingsService:
                 _write(paths['conversation'], asdict(cs.born_from(inherited)))
         return self.snapshot(conversation_id)
 
+    def global_value(self, key):
+        """Read a shared preference afresh, distinguishing absent from explicit null.
+
+        Side-call dispatch uses this instead of an instance's cached Settings.
+        Parse/I/O failures propagate: they must not silently select another model.
+        """
+        spec = SETTING_SPECS.get(key)
+        if spec is None or spec.scope != SettingScope.DEVICE:
+            raise ValueError(f'Not a device preference: {key}')
+        raw, _ = _read(st.settings_path(self.root))
+        default = getattr(st.Settings(), key)
+        return key in raw, st._coerce(key, raw.get(key, default), default)
+
     def snapshot(self, conversation_id, overrides=None):
         paths = self._paths(conversation_id)
         global_raw, global_rev = _read(paths['global'])
@@ -112,6 +125,11 @@ class SettingsService:
         for own, key in cs.BORN_FROM.items():
             if convo.get(own) is not None:
                 setattr(saved, key, st._coerce(key, convo[own], getattr(saved, key)))
+        if 'codex_subagent_model' not in global_raw:
+            # Until first saved, Codex inherits the old conversation choice.
+            # Show that actual default in the form so choosing Follow emits
+            # an explicit global null rather than an indistinguishable no-op.
+            saved.codex_subagent_model = saved.subagent_model
         effective = deepcopy(saved)
         for key, env in st.ENV_OVERRIDES.items():
             if os.environ.get(env):

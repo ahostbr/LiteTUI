@@ -273,6 +273,10 @@ class Settings:
     #: the big one has its own LM Studio slots, so summaries and extractions run
     #: there without touching the parent's pool.
     subagent_model: str | None = None
+    #: Shared Codex host-subagent default. Explicit None follows each parent's
+    #: model; legacy conversation subagent_model is used only before this global
+    #: preference is first saved. Local-backend routing remains conversation-owned.
+    codex_subagent_model: str | None = None
     #: T640 — the model the `llm-tool-summ` fold's throwaway side call goes to.
     #: None = the model you are talking to, which is what it always did.
     #:

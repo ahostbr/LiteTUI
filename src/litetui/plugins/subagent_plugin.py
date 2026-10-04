@@ -21,12 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import urllib.request
+from copy import deepcopy
 from pathlib import Path
 
-from copy import deepcopy
-from litetui import model_transport, tool_schemas, settings_runtime
-from litetui.picker import pick
+from litetui import model_transport, settings_runtime, tool_schemas
 from litetui import tasks as tasks_mod
+from litetui.picker import pick
 from litetui.plugins import PluginManifest
 from litetui.tool_policy import NETWORK_READ_POLICY
 
@@ -49,6 +49,15 @@ def _read_files(paths: list) -> str:
         except Exception as e:  # noqa: BLE001 - tool boundary returns failures as visible results
             blocks.append(f"--- {raw} ---\n[error reading file: {type(e).__name__}: {e}]")
     return "\n\n".join(blocks)
+
+
+def _default_model(app):
+    """Codex shares one live preference; other backends retain their own routing."""
+    legacy = getattr(getattr(app, "settings", None), "subagent_model", None)
+    if getattr(getattr(app, "backend", None), "name", None) != "codex":
+        return legacy
+    present, model = settings_runtime.service_for(app).global_value("codex_subagent_model")
+    return model if present else legacy
 
 
 def _resolve_model(app, explicit):
@@ -96,7 +105,7 @@ def _resolve_model(app, explicit):
             f"Available: {', '.join(sorted(loaded)) or '(none)'}."
         )
 
-    persisted = getattr(getattr(app, "settings", None), "subagent_model", None)
+    persisted = _default_model(app)
     current = getattr(app, "model_id", None)
     for model in (persisted, current):
         if valid(model):
@@ -200,22 +209,29 @@ def _cmd_subagent_set(app, name: str, arg: str) -> None:
                 or getattr(app, "convo_dir", None) != directory):
             app.system_message("Conversation changed; open /subagent-set again.")
             return
-        if not directory:
-            app.system_message("Open a conversation before saving its subagent default.")
-            return
         model = None if value == "__follow__" else value
         if model is not None and model not in getattr(backend, "models", {}):
             app.system_message(f"Codex model not available: {model}. Use /reconnect to refresh.")
             return
         candidate = deepcopy(app.settings)
-        candidate.subagent_model = model
+        candidate.codex_subagent_model = model
         try:
-            result = settings_runtime.persist_or_raise(app, candidate)
+            from litetui.settings_service import SettingChange
+            service = settings_runtime.service_for(app)
+            conversation_id = directory.name if directory else "__defaults__"
+            snapshot = service.snapshot(conversation_id)
+            # An explicit reset must write null even if this instance already
+            # follows its parent. Diff-only persistence would omit that intent
+            # and leave another conversation's legacy default in effect.
+            result = service.save_patch(conversation_id,
+                [SettingChange("codex_subagent_model", model, "device")], snapshot.revisions)
+            if not result.fully_saved:
+                raise OSError("; ".join(p.error for p in result.persistence if not p.saved))
         except (OSError, ValueError) as exc:
             app.system_message(f"Subagent default was not saved: {exc}")
             return
         settings_runtime.apply_saved_result(app, candidate, result)
-        app.system_message(f"Conversation subagent default: {model or 'Follow current model'}. Parent model unchanged.")
+        app.system_message(f"Global Codex subagent default: {model or 'Follow current model'}. All Codex instances use it on their next subagent call; parent models unchanged.")
 
     if arg.strip():
         selected("__follow__" if arg.strip().lower() == "default" else arg.strip())
@@ -226,15 +242,20 @@ def _cmd_subagent_set(app, name: str, arg: str) -> None:
         return
     rows = [("__follow__", "Follow current model (no override)")]
     rows.extend((key, key) for key in models)
-    pick(app, "Default subagent model · this conversation", rows, selected,
-         current=app.settings.subagent_model or "__follow__")
+    try:
+        current = _default_model(app)
+    except (OSError, ValueError) as exc:
+        app.system_message(f"Subagent default could not be read: {exc}")
+        return
+    pick(app, "Default Codex subagent model · global", rows, selected,
+         current=current or "__follow__")
 
 
 def _register(ctx) -> None:
     ctx.tool(SPEC, _make_runner(ctx.app), policy=NETWORK_READ_POLICY)
     ctx.command(("/subagent-set",), _cmd_subagent_set,
                 palette="Default subagent model", group="model", order=25,
-                help="Pick this Codex conversation's subagent model; 'default' follows the parent.")
+                help="Pick the global Codex subagent model for all instances; 'default' follows each parent.")
 
 
 PLUGIN = PluginManifest(id="subagent", register=_register)
