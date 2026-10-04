@@ -165,6 +165,7 @@ async def test_footer_order_is_applied_left_to_right():
         ]
     )
     a._active_tool_profile = "autonomous"
+    a._spawned_seat, a._owner_seat = False, True  # T1049: autonomous is Ryan's own
     async with a.run_test(size=WIDE) as pilot:
         await pilot.pause()
         text = a.ctx_label_text.plain
@@ -174,8 +175,8 @@ async def test_footer_order_is_applied_left_to_right():
             text.index("616cc9c0"),
             text.index("think:"),
             text.index("unregistered"),
-            text.index("plan:"),
-            text.index(">> "),
             text.index("tok/s"),
         ]
         assert positions == sorted(positions)
+        permission = a.permission_label_text.plain
+        assert permission.index("plan:") < permission.index(">> ")

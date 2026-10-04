@@ -30,7 +30,8 @@ from litetui.ticker import NumberTicker
 from rich.text import Text
 from litetui import paths
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
-from litetui.tool_policy import AUTONOMOUS, PROFILES
+from litetui import seat_authority
+from litetui.tool_policy import PROFILES
 
 
 def _owner(widget, method: str):
@@ -445,7 +446,7 @@ class CalendarBody(Widget):
         )
 
     def _job_edited(self, job, result) -> None:
-        _apply_job_edit(self._jobs, job, result)
+        _apply_job_edit(self._jobs, job, result, app=self.app)
         self._paint()
 
     def _refresh_after(self, _result) -> None:
@@ -548,7 +549,7 @@ class CalendarScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-def _apply_job_edit(jobs: list, job, result) -> bool:
+def _apply_job_edit(jobs: list, job, result, *, app=None) -> bool:
     """The ONE place a UI edit becomes a store mutation. True = changed.
 
     `result` is a JobScreen dismissal: None (cancelled), ("save", fields),
@@ -557,10 +558,24 @@ def _apply_job_edit(jobs: list, job, result) -> bool:
     bumping `run_count` and stamping `last_fired_slot` on the live instance;
     clobbering those with the form's stale copy would erase the stamp and
     re-arm the double-fire it exists to prevent.
+
+    T1082: with `app` (every UI caller passes it), a new job's level goes
+    through schedule_level. Invalid levels are refused before the store changes.
     """
     if not result:
         return False
     verb = result[0]
+    if app is not None and verb in ("save", "delete"):
+        why = None
+        if why is None and verb == "save":
+            try:
+                result[1]["tool_profile"] = seat_authority.schedule_level(
+                    app, result[1].get("tool_profile"))
+            except ValueError as e:
+                why = str(e)
+        if why:
+            app._system(f"/job: {why}")
+            return False
     if verb == "delete":
         if job in jobs:
             jobs.remove(job)
@@ -741,7 +756,7 @@ class DayBody(Widget):
         )
 
     def _job_closed(self, job, result) -> None:
-        if _apply_job_edit(self._jobs, job, result):
+        if _apply_job_edit(self._jobs, job, result, app=self.app):
             self._refresh()
 
     def action_close(self) -> None:
@@ -849,11 +864,14 @@ class JobBody(Widget):
                 yield Switch(value=j.new_conversation if j else False,
                              id="job-newconvo")
                 yield Static("fresh conversation", classes="job-switchcap")
-            yield Static("tool authority — scheduled runs always use autonomous (nobody is there to ask)",
+            # T1082: the level is set HERE, when the schedule is created. A new job
+            # starts at this seat's level. Every level is selectable.
+            level = sched_mod.level_of(j.tool_profile) if j else seat_authority.seat_profile(self.app)
+            yield Static("tool authority for this schedule's runs — nobody is at the keyboard when it fires",
                          classes="job-cap")
             yield Select(
                 [(f"{name} — {PROFILES[name].summary}", name) for name in PROFILES],
-                value=j.tool_profile if j and j.tool_profile in PROFILES else AUTONOMOUS,
+                value=level,
                 allow_blank=False,
                 id="job-tool-profile",
             )

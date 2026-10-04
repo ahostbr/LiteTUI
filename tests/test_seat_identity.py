@@ -73,7 +73,9 @@ src = Path(harness_mod.__file__).read_text(encoding="utf-8")
 # flag itself; the NAME is now checked behaviourally below, which is what the
 # assertion was always trying to prove.
 reg = src.split("def _presence_argv", 1)[1].split("def deregister", 1)[0]
-chk("--takeover is passed", '"--takeover"' in reg)
+# T1027: --takeover is GONE. Its 600 s liveness bar evicted a holder whose pid
+# was alive but quiet for 700 s; a plain register still reclaims a dead corpse.
+chk("--takeover is NOT passed", '"--takeover"' not in reg)
 chk("...and the requested name is still passed with it",
     "--name" in harness_mod.Seat(agent_id="i", name="Asked", model="m")._presence_argv())
 chk("...and it is the name that was ASKED for",

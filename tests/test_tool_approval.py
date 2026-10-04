@@ -54,6 +54,13 @@ def _probe_app(monkeypatch):
     tui.settings.tool_deny = []
     saved = []
     monkeypatch.setattr("litetui.app.settings_mod.save", lambda s, root=None: saved.append(s))
+    # deaa71a (2026-09-20): `_remember_tool_rule` persists through
+    # settings_runtime.persist_or_raise, which saves tool_always_allow at
+    # CONVERSATION scope through the settings service and never reaches
+    # settings_mod.save. Stub the door it does use, so "persisted" and "'once'
+    # persisted nothing" are measured again rather than passing on an empty list.
+    monkeypatch.setattr("litetui.app.settings_runtime.persist_or_raise",
+                        lambda app, s: saved.append(s))
     calls = []
     tui.plugins.add_tool(
         "test",

@@ -158,14 +158,6 @@ def _register(ctx) -> None:
         group="automation",
         order=40,
     )
-    ctx.palette_row(
-        "Browser monitor",
-        "Visit web targets, measure load/health, feed a Grafana dashboard.",
-        lambda: None,
-        group="automation",
-        order=40,
-        tag="/monitor demo",
-    )
 
 
 PLUGIN = PluginManifest(id="monitor", register=_register)

@@ -18,6 +18,7 @@ unchanged. See PLAN.md §6 — a line count is one metric of three.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, fields as fields_of
@@ -40,6 +41,8 @@ from litetui import plugins as plugins_mod
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
+from textual.content import Content
+from textual.style import Style
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.geometry import Region
 from textual.screen import ModalScreen
@@ -311,7 +314,7 @@ class UserMessage(Vertical):
         marker = "▸" if self.collapsed else "▾"
         label = self.message_header or ("You · queued" if self.queued else "You")
         preview = f" · {self.preview}" if self.collapsed and self.preview else ""
-        self.border_title = f"{marker} {label}{preview}"
+        self.border_title = Text(f"{marker} {label}{preview}")
 
     def set_collapsed(self, value: bool) -> None:
         self.set_class(value, "collapsed")
@@ -431,6 +434,8 @@ class ThinkingBlock(Vertical):
         self._settled: int | None = None   # the server's own count, once known
         self._frozen: tuple | None = None   # (elapsed, tokens, avg) once done
         self._marker = "\u25be"      # expand glyph, kept in sync by set_expanded
+        self._compact = False
+        self._explicit_expansion = False
         self.text = Static("", id="thinking-text")
         self.scroll = VerticalScroll(self.text, classes="thinking-body")
 
@@ -438,15 +443,31 @@ class ThinkingBlock(Vertical):
         yield ThinkingHeader()
         yield self.scroll
 
+    def on_mount(self) -> None:
+        self.set_compact(bool(getattr(self.app, "_compact_mode", False)))
+
     @property
     def expanded(self) -> bool:
         return self.has_class("expanded")
 
-    def set_expanded(self, value: bool) -> None:
+    def set_compact(self, value: bool) -> None:
+        self._compact = value
+        if not getattr(self, "_explicit_expansion", False):
+            self.set_expanded(not value, explicit=False)
+        self.repaint_header(None)
+
+    def set_expanded(self, value: bool, *, explicit: bool = True) -> None:
+        if explicit:
+            self._explicit_expansion = True
         if value:
             self.add_class("expanded")
         else:
             self.remove_class("expanded")
+        if getattr(self, "_compact", False):
+            if value:
+                self.remove_class("compact-folded")
+            else:
+                self.add_class("compact-folded")
         marker = "\u25be" if value else "\u25b8"
         self._marker = marker
         # A finished block keeps its readout across toggles (the user): the frozen
@@ -484,6 +505,8 @@ class ThinkingBlock(Vertical):
         self._buffer += token
         self._toks += 1
         self._chars += len(token)
+        if self._compact:
+            self.repaint_header(None)
         # This never scrolled the VerticalScroll it owns, so the trace grew
         # below the fold with the viewport pinned at the top. Measure BEFORE
         # the content grows: afterwards we are no longer at the bottom by
@@ -556,6 +579,13 @@ class ThinkingBlock(Vertical):
         `tokens` is the reasoning-delta count for the turn (T079). Same
         discipline as tps: passed in, never fetched, and defaulted so every
         existing caller and double keeps working untouched."""
+        if getattr(self, "_compact", False) and not self.expanded and self._t0 is not None:
+            from litetui.fmt import fmt_dur
+            lines = [line.strip(" #*\t") for line in self._buffer.splitlines() if line.strip()]
+            current = lines[-1][:65] if lines else "Thinking"
+            duration = fmt_dur(time.monotonic() - self._t0) if self._t0 else ""
+            self._set_header(f"{self._marker} ◌ think {current} {duration}")
+            return
         if self._t0 is None:
             return
         self._set_header(thinking_header_text(
@@ -659,8 +689,14 @@ class _FoldHeader(Static):
     """Clickable header for a FoldBlock."""
 
     def __init__(self, label: str) -> None:
-        super().__init__(f"\u25b8 {label}", classes="thinking-header")
+        super().__init__(f"\u25b8 {label}", classes="thinking-header", markup=False)
         self.label = label
+
+    def focus_on_click(self) -> bool:
+        # A focused prompt expands from 3 to 5 rows. Focusing this header on
+        # mouse-down would blur/slim the prompt before mouse-up, moving the row
+        # and losing Textual's click. Ctrl+B still focuses it by keyboard.
+        return False
 
     def on_click(self) -> None:
         # No event.stop() here, deliberately. A FoldBlock is only ever mounted
@@ -744,7 +780,7 @@ class CompactionCard(Vertical):
         # so a backend that never streams progress (Codex) shows the plain clock.
         self._prefill: tuple[float, int, int] | None = None
         self._title = Static(self._title_text(), classes="compaction-title")
-        self._plan = Static(plan, classes="compaction-plan")
+        self._plan = Static(plan, classes="compaction-plan", markup=False)
         self.prompt_fold = FoldBlock("Compaction prompt", prompt_text)
         self.body = AnswerBody("")
         self.status = Static("", classes="compaction-status")
@@ -841,8 +877,9 @@ class AssistantMessage(Vertical):
     make that unlike the ThinkingBlock next door:
 
     * The header is the widget's own ``border_title``, not a child row, so it
-      survives when every child is hidden. A child header would disappear
-      together with the body it exists to re-open.
+      survives when every child is hidden. Its folded Speak/Stop segment routes
+      to the same response-owned button as the expanded card. A child header
+      would disappear together with the body it exists to re-open.
     * Folding is driven by a POSITIVE ``collapsed`` class. Textual 8.0.2 has no
       ``:not()`` pseudo-class - it raises TokenError naming the nine it does
       accept - so the ``.thinking-block.expanded .thinking-body`` shape cannot
@@ -855,6 +892,8 @@ class AssistantMessage(Vertical):
 
     def __init__(self) -> None:
         super().__init__(classes="assistant-msg")
+        from litetui.response_speech import ResponseSpeakButton
+        self.speak_button = ResponseSpeakButton(self)
         self.thinking: ThinkingBlock | None = None
         self.body = AnswerBody("...", id="answer-body")
         self.stop_line = Static("", classes="turn-stop-line")
@@ -870,10 +909,29 @@ class AssistantMessage(Vertical):
         self.summary_done: bool = False   # asked once, whatever came back
 
     def compose(self) -> ComposeResult:
-        from litetui.response_speech import ResponseSpeakButton
+        if self.thinking is not None:
+            yield self.thinking   # set before this card composed; see set_thinking
         yield self.body
         yield self.stop_line
-        yield ResponseSpeakButton(self)
+        yield self.speak_button
+
+    def set_thinking(self, block: "ThinkingBlock") -> None:
+        """Put `block` above the answer, replacing any trace already shown.
+
+        🔴 THE ONE DOOR, because the card may not have composed yet (T1031). A
+        card is mounted without an await (app._assistant_bubble), and a Claude
+        turn opens a new one after every tool card; the next thinking delta
+        arrived in the same tick and `mount(block, before=self.body)` died
+        with "Unable to find relative location of AnswerBody(id='answer-body')
+        because it has no parent" -- killing every think:high turn that used a
+        tool. Until compose runs, the block is kept here and compose yields it.
+        """
+        old, self.thinking = self.thinking, block
+        if self.body.parent is None:
+            return  # not composed yet: compose() yields self.thinking
+        self.mount(block, before=self.body)
+        if old is not None and old is not block and old.parent is not None:
+            old.remove()   # after the new one is up, so the trace never blinks out
 
     # -- header ------------------------------------------------------------
     #
@@ -897,7 +955,26 @@ class AssistantMessage(Vertical):
         return f"{marker} {label}"
 
     def refresh_header(self) -> None:
-        self.border_title = self._header_text()
+        if self.speak_button.is_mounted:
+            self.speak_button.refresh_playback()
+        header = Content(self._header_text())
+        if self.collapsed and self.speak_button.header_label:
+            # Put the control before the summary so truncation cannot hide it.
+            # Literal Content keeps model-supplied markup out of the click span.
+            marker, label = self._header_text().split(' ', 1)
+            header = Content.assemble(
+                marker + ' ',
+                (self.speak_button.header_label,
+                 Style(underline=True) + Style.from_meta({'response_speak': True})),
+                ' · ' + label,
+            )
+        if self.border_title != header.markup:
+            self.border_title = header
+
+    def on_response_speak_button_state_changed(self, event) -> None:
+        event.stop()
+        if self.collapsed:
+            self.refresh_header()
 
     def set_model_name(self, name: str | None) -> None:
         self.model_name = (name or "").strip()
@@ -950,7 +1027,11 @@ class AssistantMessage(Vertical):
         # the card's content, where a click means "select text", not "fold".
         if event.y == 0:
             event.stop()
-            self.set_collapsed(not self.collapsed)
+            if self.collapsed and event.style.meta.get('response_speak'):
+                self.speak_button.toggle_playback()
+                self.refresh_header()
+            else:
+                self.set_collapsed(not self.collapsed)
 
     def set_stop_line(self, text: str | None) -> None:
         """Settle the bubble without putting display text in answer markdown."""
@@ -985,6 +1066,43 @@ class ToolMessage(FoldBlock):
         # Construction already seeds a plain header. Rich styling arrives on
         # mount's first elapsed tick; assigning Rich Text before mount asks
         # Textual for an app console that does not exist yet.
+        self._compact = False
+        self._explicit_expansion = False
+
+    def _trace_compact(self, operation: str) -> None:
+        if os.environ.get("LITETUI_COMPACT_TRACE") != "1":
+            return
+        from litetui import runtime_log
+        try:
+            app_compact = bool(getattr(self.app, "_compact_mode", False))
+        except Exception:
+            app_compact = False
+        runtime_log.record("compact_tool", site="widget", operation=operation,
+                           id=str(id(self)), name=self.tool_name,
+                           status=f"{int(self._compact)}:{int(self.expanded)}:{int(self._explicit_expansion)}",
+                           ok=app_compact)
+
+    def set_compact(self, value: bool) -> None:
+        self._trace_compact("set_before")
+        if value == self._compact:
+            self._trace_compact("set_unchanged")
+            return
+        self._compact = value
+        if not value and self.header.has_focus:
+            self.app.query_one("#message-input").focus()
+        self.header.can_focus = value
+        self.set_class(value, "compact-tool")
+        self.set_class(value and not self.expanded, "compact-folded")
+        if self._result is not None and not self._explicit_expansion:
+            super().set_expanded(False)
+            self.set_class(value, "compact-folded")
+        self._refresh_header()
+        self._trace_compact("set_after")
+
+    def on_mount(self) -> None:
+        self._trace_compact("mount_before")
+        self.set_compact(bool(getattr(self.app, "_compact_mode", False)))
+        self._trace_compact("mount_after")
 
     @staticmethod
     def _one_line(value: str) -> str:
@@ -997,6 +1115,14 @@ class ToolMessage(FoldBlock):
         return summary
 
     def _header_content(self, marker: str) -> Text:
+        if self._compact and not self.expanded:
+            from litetui.compact_tools import summary
+            duration = fmt_dur(time.monotonic() - self._t0) if self._result is None else (
+                fmt_dur(self._took) if self._took is not None else "?s")
+            line = summary(self.tool_name, self._args, self._result, self._ok,
+                           max(8, self.size.width or 44) - 2, duration)
+            if line is not None:
+                return Text(line.replace("▸ ", f"{marker} ", 1), overflow="ellipsis", no_wrap=True)
         color = self._tool_name_color()
         parts = [(f"{marker} \U0001F527 {self.tool_name}", f"bold {color}")]
         summary = self._arg_summary()
@@ -1037,11 +1163,15 @@ class ToolMessage(FoldBlock):
 
     def set_result(self, result: str, ok: bool, *, elapsed: float | None = None,
                    duration_unknown: bool = False) -> None:
+        self._trace_compact("result_before")
         self._result = result
         self._ok = ok
         self._took = None if duration_unknown else time.monotonic() - self._t0 if elapsed is None else elapsed
-        self.set_expanded(False)
+        if not self._explicit_expansion:
+            super().set_expanded(False)
+            self.set_class(self._compact, "compact-folded")
         self._update_display()
+        self._trace_compact("result_after")
 
     def _tick(self) -> None:
         """Refresh live elapsed without changing the user's fold state."""
@@ -1061,7 +1191,9 @@ class ToolMessage(FoldBlock):
         # hidden. Once a result lands it follows FoldBlock's shared toggle.
         if self._result is None and not value:
             return
+        self._explicit_expansion = True
         super().set_expanded(value)
+        self.set_class(self._compact and not value, "compact-folded")
 
     def _update_display(self) -> None:
         self._refresh_header()
@@ -1176,29 +1308,8 @@ class ConfirmStop(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class PaletteButton(Static):
-    """The command palette's ONLY route, and the reason it is a mouse target.
-
-    the user, liteask a-5d6c1ca0 (2026-09-10 21:3x): "Keep plan on Ctrl+P, move the
-    palette -- palette via click only".
-
-    🔴 BEFORE THIS THE PALETTE HAD NO ROUTE AT ALL (T573). Textual opens it
-    from COMMAND_PALETTE_BINDING and nothing else -- nothing in this tree calls
-    `action_command_palette` or pushes the screen -- so when 9660da1 bound
-    ctrl+p to plan mode with priority=True, the binding did not override the
-    palette, it DELETED it. Fourteen of the fifteen arms in
-    tests/test_command_palette.py kept passing throughout, because they call the
-    provider rows directly; only the one that drives the real UI noticed.
-    A feature whose every route runs through one keybinding has no route at all
-    the day something else claims that key.
-    """
-
-    def on_click(self) -> None:
-        self.app.action_command_palette()
-
-
 class PauseButton(Static):
-    """/pause as a mouse target, next to the palette button (the user, 2026-09-18:
+    """/pause as a mouse target (the user, 2026-09-18:
     "add a onscreen button also kinda like the tool cancel one"). Same body as
     the command and the footer chip: `action_toggle_pause`, one definition."""
 
@@ -1249,43 +1360,56 @@ class MicButton(Static):
 class ContextFooter(Footer):
     """Textual's Footer plus a live context-window readout on the right."""
 
-    # NOT U+2630 (T1003). Rich sizes the trigram at 2 cells, a terminal draws it
-    # in 1, so every repaint that started mid-button tore it into "coommands".
-    PALETTE_LABEL = "≡ commands"
-
     def on_resize(self, _event) -> None:
-        """Re-fit after this footer has received its new layout width."""
-        palette_width = 12
-        buttons = list(self.query(".footer-buttons"))
-        button_width = max((button.size.width for button in buttons), default=0)
-        if button_width:
-            palette_width = button_width
-        self.app._footer_available_width = max(0, self.size.width - palette_width - 1)
+        self._on_resize_for_compact()
+
+    def _on_resize_for_compact(self) -> None:
+        """Refit status to the actual first-row region, not a guessed screen width."""
+        try:
+            hints = self.query_one(".compact-footer-hints")
+            reserved = hints.region.width if hints.display else 0
+        except Exception:
+            reserved = 0
+        self.app._footer_available_width = max(0, self.size.width - reserved - 1)
         self.call_after_refresh(self.app._refresh_ctx_label)
 
     def compose(self) -> ComposeResult:
-        yield from super().compose()
-        # CLASS, not id. Footer recomposes (Textual removes its children and
-        # re-runs compose), and a fixed `id` on a recomposed child raises
-        # DuplicateIds the moment the removal has not landed before the mount.
-        # That crashed the whole app; duplicate CLASSES are legal, so the worst
-        # case degrades to a stale label instead of a traceback.
-        label = Static("", classes="ctx-label")
         app = self.app
-        if hasattr(app, "ctx_label_text"):
-            label.content = app.ctx_label_text
-        yield label
-        # AFTER the label, deliberately: two widgets docked to the same
-        # edge stack in compose order, so the one yielded LAST sits
-        # innermost -- and the label is the one that must keep the far
-        # right, where the context readout has always been.
-        # ONE docked container for both buttons. `dock: right` does not stack:
-        # a second right-docked sibling lands on the SAME cells and, composed
-        # last, wins the hit test - the palette button rendered and could not
-        # be clicked (test_every_clickable_footer_widget_owns_its_own_cells).
-        # Inside a Horizontal each button owns its own cells.
-        with Horizontal(classes="footer-buttons"):
-            yield PaletteButton(self.PALETTE_LABEL, classes="palette-button")
+        with Horizontal(classes="footer-first-row"):
+            status = Static("", classes="ctx-label")
+            if hasattr(app, "ctx_label_text"):
+                status.content = app.ctx_label_text
+            yield status
+            yield Static("^G view · ^B select · ^E open", classes="compact-footer-hints")
+        with Horizontal(classes="footer-second-row"):
+            permission = Static("", classes="permission-label")
+            if hasattr(app, "permission_label_text"):
+                permission.content = app.permission_label_text
+            yield permission
+            yield TaskManagerToggle()
+            meters = Static("", classes="footer-meters")
+            if hasattr(app, "footer_meters_text"):
+                meters.content = app.footer_meters_text
+            yield meters
+            with Horizontal(classes="footer-hints"):
+                yield from super().compose()
+
+
+class TaskManagerToggle(Static):
+    """Owns its lower-row cells; a click cannot hit a neighbor's control."""
+
+    def __init__(self) -> None:
+        super().__init__("", classes="task-manager-toggle")
+
+    def on_mount(self) -> None:
+        self.sync()
+
+    def sync(self) -> None:
+        self.update("meters:on" if self.app.settings.footer_task_manager else "meters:off")
+
+    def on_click(self, event) -> None:
+        event.stop()
+        self.app.toggle_footer_task_manager()
 
 
 class LiteTUICommands(Provider):
@@ -1294,8 +1418,7 @@ class LiteTUICommands(Provider):
     The stock palette knows five Textual commands and nothing about this
     app — 90% of what LiteTUI does was undiscoverable from the palette before
     these rows existed. (It USED to open on ctrl+p; that key is plan mode since
-    T558, and the palette opens from the footer's "commands" button — the user,
-    liteask a-5d6c1ca0.) Each row
+    T558, and the palette opens by clicking Textual's HeaderIcon. Each row
     here carries the SAME command string the dispatcher handles, invoked
     through the same `_handle_command` the keyboard uses, so the palette can
     never grow behaviour of its own. A drift test walks this table against
@@ -1336,15 +1459,21 @@ class LiteTUICommands(Provider):
                 self._describe(r.help, r.tag or None),
                 r.run,
             ))
-        rows.sort(key=lambda row: row[0])
+        # Keep group labels for discovery, but order by the actual command
+        # title. The two frequent entries lead regardless of their group.
+        pinned = {"Settings": 0, "Theme": 1}
+        rows.sort(key=lambda row: (
+            0 if row[2] in pinned else 1,
+            pinned.get(row[2], 0),
+            row[2].casefold(),
+            row[2],
+        ))
 
-        # The group name leads the title. Textual's palette has no section
-        # headers, so this is what makes the grouping visible -- and it makes
-        # search BETTER rather than worse: typing "backend" now surfaces the
-        # whole family together instead of one row that happens to say it.
+        # Lead with the title so the visible rows read alphabetically. The
+        # trailing group remains part of the searchable text.
         labels = plugins_mod.PALETTE_GROUP_LABELS
         return [
-            (f"{labels.get(group, group.title())}  \u203a  {title}", help_text, run)
+            (f"{title} · {labels.get(group, group.title())}", help_text, run)
             for _key, group, title, help_text, run in rows
         ]
 
@@ -1356,14 +1485,32 @@ class LiteTUICommands(Provider):
             return text
         return f"{text}   {token}" if text else token
 
+    @staticmethod
+    def _dim_group(display):
+        """Dim the group suffix without erasing fuzzy-match highlighting."""
+        start = display.plain.rfind(" · ")
+        return (
+            display.stylize_before(Style.parse("dim"), start + 3)
+            if start >= 0 else display
+        )
+
     async def discover(self) -> Hits:
         """The list shown before any query is typed — full feature roll."""
         for title, help_text, run in self._commands():
-            yield DiscoveryHit(title, run, help=help_text)
+            yield DiscoveryHit(self._dim_group(Content(title)), run,
+                               text=title, help=help_text)
 
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
-        for title, help_text, run in self._commands():
-            score = matcher.match(title)
-            if score > 0:
-                yield Hit(score, matcher.highlight(title), run, help=help_text)
+        matches = [
+            (title, help_text, run)
+            for title, help_text, run in self._commands()
+            if matcher.match(title) > 0
+        ]
+        # Textual sorts hits by score across providers. Assign descending
+        # scores in our display order, rather than letting fuzzy relevance
+        # reorder the matches; unmatched pinned commands are never included.
+        for index, (title, help_text, run) in enumerate(matches):
+            yield Hit(1 - index / (len(matches) + 1),
+                      self._dim_group(matcher.highlight(title)), run,
+                      text=title, help=help_text)

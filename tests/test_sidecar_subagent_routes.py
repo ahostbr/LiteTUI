@@ -22,6 +22,8 @@ def test_sidecar_exposes_route_override_and_expert_flag_on_any_backend(tmp_path)
             assert result['fields'][key]['scope'] == scope
             assert result['fields'][key]['settings_control']
             assert result['fields'][key]['control']['editable']
+            assert result['ui']['fields'][key]['description']
+            assert any(key in section['fields'] for section in result['ui']['sections'])
 
 
 def test_structured_route_patch_is_shared_and_override_stays_scoped(tmp_path):

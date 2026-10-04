@@ -821,3 +821,20 @@ def test_cli_model_wins_during_resume_before_connection(tmp_path, available):
     assert a.backend.name == 'codex'
     assert cs_mod.path_for(d).read_bytes() == before
     assert not any('falls back' in text for text in a.said)
+
+
+def test_conversation_interpreter_setting_restores_without_mutating_defaults(tmp_path):
+    d = _dir(tmp_path)
+    defaults = st.Settings(tool_trusted_interpreters=['C:/explicit/python.exe'])
+    cs_mod.save(d, cs_mod.born_from(defaults))
+    defaults.tool_trusted_interpreters = []
+    a = _App(defaults, d)
+    a._adopt_convo_settings(born=False)
+    assert a.settings.tool_trusted_interpreters == ['C:/explicit/python.exe']
+    assert defaults.tool_trusted_interpreters == []
+    stored = cs_mod.load(d)
+    stored.execution['tool_trusted_interpreters'] = 'C:/not-a-list/python.exe'
+    cs_mod.save(d, stored)
+    a = _App(defaults, d)
+    a._adopt_convo_settings(born=False)
+    assert a.settings.tool_trusted_interpreters == []

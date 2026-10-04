@@ -15,7 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from litetui import sanitize
+from litetui import paths, sanitize, tool_context
 from litetui.codex_runtime import RuntimeActivity
 from litetui.codex_workspace import workspace
 from litetui.model_transport import ProviderError, _chunk, collect
@@ -24,6 +24,7 @@ from litetui.model_transport import ProviderError, _chunk, collect
 class AppServer:
     def __init__(self, *, config_overrides=()):
         self.config_overrides = tuple(config_overrides)
+        self.execution_workspace = None
         self.environment = {}
         self.native_bridge = None
         self.async_questions = None
@@ -78,7 +79,10 @@ class AppServer:
                     if len(vendors) == 1
                     else [node, str(entry), "app-server"]
                 )
-            for override in self.config_overrides:
+            from litetui.codex_mcp import config_overrides
+            # Workspace-scoped registrations must win over the shared global
+            # config and earlier caller overrides. No shared file is modified.
+            for override in (*self.config_overrides, *config_overrides(self.execution_workspace or workspace())):
                 args.extend(["-c", override])
             self.events = asyncio.Queue()
             self.runtime_activity = RuntimeActivity()
@@ -270,9 +274,9 @@ class AppServerTransport:
         self.process = None
         self.initialized = False
 
-    async def create(self, *, purpose: str = "turn", **kwargs):
-        """`purpose` names what the call is for and never reaches the
-        wire — see model_transport.ModelTransport.create (T821)."""
+    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
+        """`purpose` and `retry_notice` never reach the wire — see
+        model_transport.ModelTransport.create (T821, T1019)."""
         if (
             self.app is not None
             and not kwargs.get("stream")
@@ -505,7 +509,10 @@ class AppServerTransport:
                         output, success = await self.app._execute_tool(
                             name, params.get("arguments", {})
                         )
-                output = sanitize.redact_secrets(sanitize.strip_escapes(str(output)))
+                output = tool_context.cap_tool_result(
+                    sanitize.redact_secrets(sanitize.strip_escapes(str(output))),
+                    getattr(self.app, "convo_dir", None), paths.data_root(), name,
+                )
                 if not getattr(self.app, "_rpc", False):
                     sanitize.reset_terminal_modes()
             else:
@@ -647,6 +654,8 @@ class AppServerTransport:
 
     async def _stream(self, kwargs):
         async with self.lock:
+            if isinstance(self.server, AppServer):
+                self.server.execution_workspace = workspace(self.app)
             if isinstance(self.server, AppServer) and self.server.native_bridge is None:
                 from litetui.codex_hook_bridge import NativeHookBridge
 

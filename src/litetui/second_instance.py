@@ -22,11 +22,12 @@ from __future__ import annotations
 def needs_vram_confirmation(*, sibling: str | None, already_loaded: bool) -> bool:
     """True when a load must ask first.
 
-    `sibling` is the name of another live LiteTUI (None when we are alone), and
+    `sibling` is the name of another live local-model LiteTUI (None when none is
+    present), and
     `already_loaded` says whether the server is ALREADY serving this model.
 
-    ⚠️ ALONE MEANS NO PROMPT EVEN FOR A SWAP. A single instance swapping models
-    replaces its own weights; there is no second set and nothing to warn about.
+    ⚠️ NO LOCAL SIBLING MEANS NO PROMPT EVEN FOR A SWAP. A single local
+    instance swapping models replaces its own weights; there is no second set.
     Prompting there would be the noise that teaches someone to stop reading.
     """
     if sibling is None:
@@ -54,7 +55,7 @@ def warning_text(sibling: str, model: str, *, needs_restart: bool = False) -> st
     return (
         f"Another LiteTUI instance is running ({sibling}).\n\n"
         f"Loading a different model puts a second model in VRAM and can OOM "
-        f"depending on your setup. {sibling} is using this server too.\n\n"
+        f"depending on your setup. {sibling} also uses local model capacity.\n\n"
         f"Load {model} anyway?"
     )
 

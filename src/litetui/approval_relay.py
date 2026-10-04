@@ -1,0 +1,283 @@
+"""T1049-B: a locked seat's CONFIRM goes to the agent that SPAWNED it, by inbox.
+
+Ryan (a-29047520): "must be handled by their leaders, their clawed leaders".
+Ryan (04169351): "whatever agent spawned the light qi instance should be babysitting it".
+Ryan (6e280dd4): a typed CONFIRM in an agent-launched seat -> "The launching agent";
+an agent-launched LiteGUI's CONFIRM -> "No, launching agent".
+
+Initial ancestry is recorded ONLY from the marker envelope
+(LITETUI_SPAWN_IDENTITY=1 + LITEHARNESS_SPAWNED_BY), never from an inherited env
+(Dijkstra M1). Each new request resolves the registered seat's current spawned_by;
+its pending reply authority freezes that destination and up to two registered
+ancestors (eligible at60/120s). Re-registration changes future requests only.
+Missing/invalid presence never uses cached ancestry.
+⚠️ FORGEABLE, stated (B4): local presence is only as trustworthy as its writer;
+`send --from` is not
+validated and every local agent can read ~/.liteharness, so the from + nonce check
+below stops accidents (a stray or late reply), not a malicious local agent.
+
+Only an APPROVE continues. A DENY, no answer within `relay_approval_timeout_s`, and
+a spawner the registry does not know all STOP the turn, and every outcome is logged
+to runtime.jsonl as "approval_relay" (Marquee S1(b)), a cancelled wait included.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import time
+import uuid
+
+from textual.app import ScreenStackError
+from textual.containers import Horizontal
+from textual.css.query import NoMatches
+from textual.widgets import Button, Static
+
+from litetui import runtime_log
+
+#: Set ONLY by a launcher whose rpc host relays approvals (agent_supervisor).
+#: Process-only: popped at startup, like LITETUI_OWNER. As forgeable as the marker.
+APPROVAL_HOST_ENV = "LITETUI_APPROVAL_HOST"
+SPAWNED_BY_ENV = "LITEHARNESS_SPAWNED_BY"
+
+_ANSWER = re.compile(r"\s*(APPROVE|DENY)\s+(appr-[0-9a-f]{12})\b")
+_INPUT_LIMIT = 2048
+
+
+class HumanApproval(Static):
+    """Local seat control for one pending relay request; never an inbox answer."""
+
+    DEFAULT_CSS = """
+    HumanApproval { height: auto; border: round $warning; padding: 0 1; }
+    HumanApproval Horizontal { height: auto; }
+    HumanApproval Button { margin-right: 1; }
+    """
+
+    def __init__(self, ident: str, name: str) -> None:
+        super().__init__(classes="human-approval")
+        self.ident = ident
+        self.tool_name = name
+
+    def compose(self):
+        yield Static(f"{self.tool_name} ({self.ident}) — human override", markup=False)
+        with Horizontal():
+            yield Button("Deny", variant="error", classes="human-approval-deny")
+            yield Button("Approve", variant="warning", classes="human-approval-allow")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.has_class("human-approval-deny"):
+            allow = False
+        elif event.button.has_class("human-approval-allow"):
+            allow = True
+        else:
+            return
+        event.stop()
+        if take_human_answer(self.app, self.ident, allow):
+            self.remove()
+
+
+def take_human_answer(app, ident: str, allow: bool) -> bool:
+    """Only this local UI call resolves the exact pending request, once."""
+    entry = _pending(app).get(ident)
+    from litetui.approval_delivery import answer_open
+    if entry is None or entry[0].done() or not isinstance(allow, bool) or not answer_open(app, ident):
+        return False
+    from litetui import approval_authority
+    if not approval_authority.settle(app, ident, outcome="approved" if allow else "denied"):
+        return False
+    entry[0].set_result(allow)
+    return True
+
+
+def _pending(app) -> dict:
+    pending = getattr(app, "_relay_pending", None)
+    if pending is None:
+        pending = app._relay_pending = {}
+    return pending
+
+
+def record(app, status: str, name: str, source: str | None, ident: str = "none") -> None:
+    """One "approval_relay" line per outcome, approvals included."""
+    runtime_log.record("approval_relay", site="app.authorize", component="relay",
+                       operation=str(source or "unlabelled"), name=str(name),
+                       id=ident, status=status)
+
+
+def _message(app, ident: str, name: str, args, decision, source, timeout: float, *, approver: str) -> str:
+    seat = app.seat
+    try:
+        shown = json.dumps(args, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        shown = repr(args)
+    if len(shown) > _INPUT_LIMIT:
+        shown = shown[:_INPUT_LIMIT] + " ...(truncated)"
+    danger = getattr(decision, "danger", None) or ", ".join(sorted(decision.capabilities))
+    return (f"[APPROVAL {ident}] {seat.name} ({seat.agent_id[:8]}) asks to run {name} "
+            f"during a {source or 'unlabelled'} turn\n"
+            f"Danger: {danger}; why: {decision.reason}\n"
+            f"Input: {shown}\n"
+            f"[DELIVERY requester={seat.agent_id} approver={approver}]\n"
+            f"Answer by inbox with exactly one line: APPROVE {ident}  or  DENY {ident}\n"
+            f"If no answer within {timeout:.0f} s, the turn stops and this is logged:\n"
+            "This request was not run and will not be retried automatically. "
+            "A new request for the same operation is allowed and gets its own approval.")
+
+
+def timeout_s(app) -> float:
+    return float(getattr(getattr(app, "settings", None), "relay_approval_timeout_s", 600) or 600)
+
+
+def current_spawner(app) -> str | None:
+    """Only current own presence can grant inbox reply authority."""
+    seat = getattr(app, "seat", None)
+    return seat.current_spawner() if seat is not None else None
+
+
+async def ask_spawner(app, name: str, args, decision, source) -> str:
+    """approved | denied | timeout | absent. Logged either way."""
+    created_at = time.monotonic()
+    spawner = current_spawner(app)
+    timeout = timeout_s(app)
+    ident = "appr-" + uuid.uuid4().hex[:12]
+    future = asyncio.get_running_loop().create_future()
+    pending = _pending(app)
+    from litetui import approval_authority, seat_authority
+    # Dijkstra K1(c): logged in the finally, so a wait cancelled by Esc, stop() or
+    # the Claude bridge's deadline still leaves its line ("cancelled").
+    status = "cancelled"
+    control = None
+    wait_token = None
+    try:
+        pending[ident] = (future, spawner)
+        authority = approval_authority.create(app, ident, approver=spawner, route=seat_authority.confirm_route(app),
+                                              timeout=timeout, created_at=created_at)
+        wait_token = app._begin_wait((spawner or 'unavailable')[:8], "approval")
+        seat = getattr(app, "seat", None)
+        # Unregistered means no inbox poller, so no answer could ever arrive. The
+        # registry refusing the id (`send` exit != 0) is the "absent" signal.
+        message = (_message(app, ident, name, args, decision, source, timeout, approver=spawner)
+                   if spawner else "")
+        if not (spawner and seat and getattr(seat, "registered", False)):
+            status = "absent"
+        else:
+            from litetui import approval_delivery
+            answer_deadline = created_at + timeout
+            app._relay_answer_deadlines = getattr(app, "_relay_answer_deadlines", {})
+            app._relay_answer_deadlines[ident] = answer_deadline
+            # Deadline processing runs BEFORE and independently of transport/UI.
+            waiting = asyncio.create_task(approval_delivery.wait_for_answer(
+                app, future, approver=spawner, ident=ident, message=message,
+                timeout=timeout, created_at=created_at))
+
+            async def setup():
+                nonlocal control
+                initial_deadline = min(answer_deadline, created_at + 30.0)
+                remaining = initial_deadline - time.monotonic()
+                sent = False
+                if remaining > 0:
+                    try:
+                        sent = await asyncio.wait_for(asyncio.to_thread(
+                            seat.send, spawner, message, approval_request=(ident, spawner),
+                            deadline=initial_deadline, approval_ancestors=authority.ancestors), remaining)
+                    except TimeoutError:
+                        # Transport expiry is not a negative delivery result.
+                        # Exit setup only; the original answer deadline remains.
+                        return
+                    except OSError:
+                        pass
+                if not sent:
+                    # Preserve immediate transport refusal, but not a late setup
+                    # outcome that would overwrite a settled/expired request.
+                    if time.monotonic() < initial_deadline and not future.done():
+                        future.set_result("absent")
+                    return
+                approval_delivery.stage(ident, "sent")
+                if (future.done() or time.monotonic() >= answer_deadline
+                        or not approval_authority.context_valid(app, ident)):
+                    return
+                app._system(f"asked {spawner[:8]} (the spawning agent) to approve {name} "
+                            f"({ident}); original deadline is {timeout:.0f}s from creation")
+                try:
+                    log = app.query_one("#chat-log")
+                except (AttributeError, NoMatches, ScreenStackError):
+                    return
+                control = HumanApproval(ident, name)
+                await log.mount(control)
+
+            setup_task = asyncio.create_task(setup())
+            try:
+                answer = await waiting
+                approval_authority.raise_if_cancelled()
+                state = app._approval_authority_records[ident]['outcome']
+                status = ("audit-error" if state == 'audit-error' else
+                          "cancelled" if not approval_authority.persistence_ready(app, ident) else
+                          "absent" if answer == "absent" else "approved" if answer else "denied")
+            except TimeoutError:
+                status = "timeout"
+            finally:
+                for task in (setup_task, waiting):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(setup_task, waiting, return_exceptions=True)
+                app._relay_answer_deadlines.pop(ident, None)
+    except approval_authority.ApprovalAuditError:
+        status = "audit-error"
+    finally:
+        pending.pop(ident, None)
+        approval_authority.close(app, ident, status)
+        if wait_token is not None:
+            app._end_wait(wait_token)
+        if control is not None and control.is_mounted:
+            await control.remove()
+        record(app, status, name, source, ident)
+    approval_authority.raise_if_cancelled()
+    if status == "approved":
+        app._system(f"approval received for {name} ({ident})")
+    return status
+
+
+def take_answer(app, msg: dict) -> bool:
+    """Consume only a pending request's eligible frozen exact-ID answer.
+
+    Everything else stays ordinary mail; body prose grants no authority.
+    """
+    # Dijkstra SHOULD: LiteSuite's orchestrator writes payload.text, not body.
+    text = msg.get("body") or (msg.get("payload") or {}).get("text") or ""
+    match = _ANSWER.match(str(text))
+    if match is None:
+        return False
+    entry = _pending(app).get(match.group(2))
+    from litetui import approval_authority
+    from litetui.approval_delivery import answer_open
+    if (entry is None or entry[0].done() or not approval_authority.can_answer(app, match.group(2), msg)
+            or not answer_open(app, match.group(2))):
+        return False
+    allow = match.group(1) == "APPROVE"
+    if not approval_authority.settle(app, match.group(2), outcome="approved" if allow else "denied",
+                                     answerer_id=msg.get("from")):
+        return False
+    entry[0].set_result(allow)
+    from litetui import approval_delivery
+    approval_delivery.stage(match.group(2), "responded")
+    return True
+
+
+def stop_line(app, name: str, status: str) -> str:
+    # The launch id (or a fresh presence read) may differ from the destination
+    # of the request that just finished. Do not attribute its outcome to either.
+    return {
+        "denied": f"[stopped — the request's spawning agent denied {name}]",
+        "cancelled": (f"[stopped — approval for {name} lost its original context or was cancelled; "
+                      "not approved; action was not run]"),
+        "audit-error": (f"[stopped — approval audit for {name} could not be durably recorded; "
+                        "not approved; action was not run]"),
+        "timeout": (f"[stopped — the request's spawning agent did not answer the approval "
+                    f"for {name} within {timeout_s(app):.0f}s; refused and logged] "
+                    "This request was not run and will not be retried automatically. "
+                    "A new request for the same operation is allowed and gets its own approval."),
+        "absent": (f"[stopped — the current spawning agent is not reachable (invalid presence, not registered, "
+                   f"or the harness is off); {name} was not run; refused and logged]"),
+        "no_spawner": (f"[stopped — an agent launched this LiteTUI without naming itself "
+                       f"(LITETUI_SPAWN_IDENTITY=1 + {SPAWNED_BY_ENV}), so nobody can approve "
+                       f"{name}; refused and logged (T1049)]"),
+    }[status]

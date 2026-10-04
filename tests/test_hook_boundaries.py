@@ -103,13 +103,15 @@ async def test_human_hook_denial_stops_turn_but_test_panel_does_not(app, tmp_pat
     async def refuse(*args, **kwargs):
         return DENIED
     monkeypatch.setattr("litetui.app.show_dialog", refuse)
-    app._active_tool_profile = tool_policy.INTERACTIVE
+    # STRICT, not INTERACTIVE: interactive now asks only for dangerous commands
+    # (c65b006), so an ordinary `python hook.py` raises no approval to deny.
+    app._active_tool_profile = tool_policy.STRICT
     result, ok = await app._execute_tool("hook_probe", {})
     assert not ok and app._stop_requested
     app._stop_requested = False
     hook = app.hook_config.read("project")[0]
     before = list(app.conversation)
-    result = await hook_host.invoke(app, hook, {"event": "tool_before"}, tool_policy.INTERACTIVE, testing=True)
+    result = await hook_host.invoke(app, hook, {"event": "tool_before"}, tool_policy.STRICT, testing=True)
     assert not result.allowed
     assert not app._stop_requested and app.conversation == before
 

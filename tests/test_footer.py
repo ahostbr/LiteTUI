@@ -39,6 +39,8 @@ class FakeSeat:
 
 class FakeApp:
     ctx_label_text = app_mod.LiteTUI.ctx_label_text
+    permission_label_text = app_mod.LiteTUI.permission_label_text
+    footer_display_order = app_mod.LiteTUI.footer_display_order
     # Renamed when the early-return bug was fixed: the old _append_tps could be
     # skipped entirely when the context window had not resolved.
     _append_tps_into = appsvc.append_tps_into
@@ -60,7 +62,7 @@ class FakeApp:
         # The bookkeeping behind it moved to turnstats.TpsState (T070 O4-c).
         self.tps = tps
         if width is not None:
-            self._footer_available_width = width - 12 - 1
+            self._footer_available_width = width - 1
 
 
 CONVO = "4f3a1c9d-2b7e-4a11-9c30-8e5f6d1b2a44"
@@ -83,22 +85,21 @@ print("   ", line)
 chk("76 columns keeps the seat", "OpenBolt" in line)
 chk("76 columns keeps the context percent", "27%" in line)
 chk("76 columns keeps the reasoning effort", "think:high" in line)
-chk("narrow text drops the conversation before protected fields", "4f3a1c9d" not in line)
-chk("narrow text fits beside the 12-cell palette and one-cell gap",
-    narrow.ctx_label_text.cell_len <= 63)
+chk("narrow status retains conversation when it fits", "4f3a1c9d" in line)
+chk("narrow status fits the 75-cell label",
+    narrow.ctx_label_text.cell_len <= 75)
 
-# At 75 total columns only 62 remain. All protected facts still fit with the
-# compact separator; `ctx` is the last optional field dropped before that set.
+# At 75 total columns, the status line has 74 cells; permission is separate.
 tighter = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO, 27000, 100000,
                   tps=42.3, width=75)
 tighter._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
 tighter_line = tighter.ctx_label_text.plain
-chk("75 columns keeps all five protected facts",
-    all(field in tighter_line for field in (
-        ">> autonomous on", "plan:off", "OpenBolt", "think:high", "27%",
-    )))
-chk("context counts are the last optional field dropped", "ctx " not in tighter_line)
-chk("75-column text fits its 62-cell label", tighter.ctx_label_text.cell_len <= 62)
+chk("75 columns keeps status and permission facts",
+    all(field in tighter_line for field in ("OpenBolt", "think:high", "27%"))
+    and ">> autonomous on" in tighter.permission_label_text.plain
+    and "plan:off" in tighter.permission_label_text.plain)
+chk("context counts remain when the second line frees space", "ctx " in tighter_line)
+chk("75-column status fits its 74-cell label", tighter.ctx_label_text.cell_len <= 74)
 
 for seat_name, width in (
     ("Marquee-Dijkstra5", 76),
@@ -109,14 +110,13 @@ for seat_name, width in (
                         27000, 100000, tps=42.3, width=width)
     long_seat._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
     long_line = long_seat.ctx_label_text.plain
-    limit = width - 13
-    chk(f"{seat_name!r} at {width} keeps all five protected facts",
-        all(field in long_line for field in (
-            ">> autonomous on", "plan:off", "think:high", "27%", "…",
-        )))
-    chk(f"{seat_name!r} at {width} keeps an ellipsized seat prefix",
-        long_line.split(" · ")[2].endswith("…")
-        and long_line.split(" · ")[2] != "…")
+    limit = width - 1
+    chk(f"{seat_name!r} at {width} keeps status and permission facts",
+        all(field in long_line for field in ("think:high", "27%", seat_name))
+        and ">> autonomous on" in long_seat.permission_label_text.plain
+        and "plan:off" in long_seat.permission_label_text.plain)
+    chk(f"{seat_name!r} at {width} retains its full name when it fits",
+        seat_name in long_line)
     chk(f"{seat_name!r} at {width} fits", long_seat.ctx_label_text.cell_len <= limit)
 
 # At this intermediate width compact separators alone are enough. No optional
@@ -125,10 +125,10 @@ compact_only = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO,
                        27000, 100000, tps=42.3, width=121)
 compact_only._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
 compact_line = compact_only.ctx_label_text.plain
-chk("separator compaction happens before optional fields are dropped",
+chk("intermediate width retains optional fields before dropping them",
     all(field in compact_line for field in (
         "42.3 tok/s", "4f3a1c9d", "ctx 27,000", "OpenBolt", "think:high",
-    )) and "  ·  " not in compact_line)
+    )))
 
 wide = FakeApp(FakeSeat(True, "OpenBolt"), "high", CONVO, 27000, 100000,
                tps=42.3, width=200)
@@ -136,9 +136,10 @@ wide._active_tool_profile = app_mod.tool_policy.AUTONOMOUS
 wide_line = wide.ctx_label_text.plain
 chk("wide width leaves every configured field unchanged",
     all(field in wide_line for field in (
-        ">> autonomous on", "plan:off", "OpenBolt", "think:high",
-        "4f3a1c9d", "ctx 27,000 / 100,000", "27%", "42.3 tok/s",
-    )))
+        "OpenBolt", "think:high", "4f3a1c9d",
+        "ctx 27,000 / 100,000", "27%", "42.3 tok/s",
+    )) and ">> autonomous on" in wide.permission_label_text.plain
+    and "plan:off" in wide.permission_label_text.plain)
 
 print("\n=== 🔴 an UNREGISTERED seat must not claim a name ===")
 t = FakeApp(FakeSeat(False), None, CONVO).ctx_label_text.plain

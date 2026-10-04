@@ -30,14 +30,16 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import json
 import os
+import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-from litetui import router_record, row_store
+from litetui import paths, router_record, row_store
 
 #: Set by the runner around the tool call; `core_tools._run_shell` reads it to
 #: park the child on the TASK instead of the one foreground cancel slot, so a
@@ -49,7 +51,13 @@ PROCESS_SLOT: contextvars.ContextVar = contextvars.ContextVar("litetui_process_s
 # Stop and a late process attachment must agree which side owns the kill.
 _PROCESS_LOCK = threading.Lock()
 
+#: The task store. Since T0132 it lives at `<CONVO_DIR>/<convo id>/STORE`, one
+#: per conversation. `<data root>/STORE` is the LEGACY shared file: read for
+#: migration, never written by this code (seats on older code still write it).
 STORE = "background-tasks.json"
+#: Written LAST by `topup`: which state of the legacy file this conversation has
+#: already been topped up from.
+MIGRATED = ".tasks-migrated.json"
 LOG_DIR = ("output", "tasks")
 
 RUNNING = "running"
@@ -430,14 +438,145 @@ def save(tasks, root: Path | str) -> None:
     row_store.write(Path(root) / STORE, [t.to_row() for t in tasks], prefix=".tasks-")
 
 
-def load(root: Path | str) -> dict[str, Task]:
-    """The store, with a running row marked LOST only if its owner is gone.
+class StoreNotBorn(Exception):
+    """A row belongs to a conversation with no directory to keep it in.
 
-    Called at boot. The premise is unchanged and still true: a task cannot
-    survive the app that started it, because the shell runner puts the child in
-    a kill-on-close Job Object. What changed is WHOSE boot may say so — see
-    `Task.owner_pid`. A row with no pid predates the field and keeps the old
-    answer.
+    Not an OSError, so a caller can tell "this row has no home" from "the disk
+    failed". `save_by_convo` RAISES it; `LiteTUI._save_background` REPORTS it
+    (runtime log plus one system line, once per distinct failure, never silent)
+    rather than raising, because that method also runs from the completion
+    worker and a raise there would skip the wake. It is the tripwire behind the
+    materialise in `_execute_tool` / `_start_background`: `row_store.write` would
+    mkdir a missing conversation directory, and a half-born `.convos/<id>/`
+    litters /resume. Refusing is loud; skipping would lose a row.
+    """
+
+
+def convo_store_dir(convo_id: str) -> Path:
+    """The directory holding one conversation's store. It must already exist."""
+    if not convo_id or convo_id in (".", "..") or Path(convo_id).name != convo_id:
+        raise StoreNotBorn(f"no task store for conversation id {convo_id!r}")
+    d = Path(paths.CONVO_DIR) / convo_id
+    if not d.is_dir():
+        raise StoreNotBorn(f"conversation {convo_id} has no directory yet; its task rows have nowhere to go")
+    return d
+
+
+def save_by_convo(tasks) -> None:
+    """Persist each row into the store of the conversation that STARTED it.
+
+    A row's `convo_id` never changes, and a task can finish long after the user
+    resumed another conversation, so the destination follows the row and not
+    whatever is current. One conversation failing does not stop the others being
+    saved; the first failure is raised afterwards, `StoreNotBorn` before OSError.
+    """
+    groups: dict[str, list[Task]] = {}
+    for t in tasks:
+        groups.setdefault(t.convo_id, []).append(t)
+    failures: list[Exception] = []
+    for convo_id, rows in groups.items():
+        try:
+            save(rows, convo_store_dir(convo_id))
+        except (StoreNotBorn, OSError) as e:
+            failures.append(e)
+    if failures:
+        raise next((f for f in failures if isinstance(f, StoreNotBorn)), failures[0])
+
+
+def _write_marker(marker: Path, sig: dict, copied: int) -> None:
+    payload = json.dumps({"source": STORE, **sig, "copied": copied, "ts": time.time()})
+    fd, tmp = tempfile.mkstemp(dir=str(marker.parent), prefix=".tasks-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(payload)
+        os.replace(tmp, marker)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _marker_sig(marker: Path) -> dict | None:
+    try:
+        raw = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return {"size": raw.get("size"), "mtime_ns": raw.get("mtime_ns")}
+
+
+def topup(convo_dir: Path | str, legacy_root: Path | str) -> int:
+    """Copy this conversation's rows out of the legacy shared file. Returns how many.
+
+    🔴 COPY-ONLY, AND ON EVERY BIND. The legacy file is opened for READING and
+    nothing else: no write, no rename, no delete, and not its `.lock` - seats on
+    older code keep writing it until they are relaunched, and one that resumes
+    this conversation AFTER it was migrated appends its rows there. A one-shot
+    copy would strand them, so the marker records the file's (size, mtime_ns)
+    and a changed file is simply copied from again.
+
+    The copy is id-keyed under one lock (`row_store.add_missing`): idempotent,
+    concurrent-writer safe, and a row already in the conversation's store wins.
+    The marker is written LAST, so a crash re-runs the copy rather than skipping
+    it. A directory that does not exist is left alone (a top-up never creates
+    one); a legacy file that cannot be read leaves no marker and is retried.
+    """
+    convo_dir = Path(convo_dir)
+    legacy = Path(legacy_root) / STORE
+    if not convo_dir.is_dir():
+        return 0
+    try:
+        st = legacy.stat()
+        raw = json.loads(legacy.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return 0
+    sig = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    marker = convo_dir / MIGRATED
+    if _marker_sig(marker) == sig:
+        return 0
+    mine = ([r for r in raw if isinstance(r, dict) and r.get("convo_id") == convo_dir.name]
+            if isinstance(raw, list) else [])
+    copied = row_store.add_missing(convo_dir / STORE, mine, prefix=".tasks-") if mine else 0
+    _write_marker(marker, sig, copied)
+    return copied
+
+
+def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str) -> None:
+    """Bring one conversation's rows into `held`: top up, load, merge.
+
+    Rows of other conversations already in `held` are untouched (a task started
+    before a /resume is still ours to kill and to finish). A row THIS instance
+    started keeps its in-memory object: it carries the live child handle, which
+    no disk copy can, and it is at least as new as the disk. Everything else the
+    store says replaces what `held` had.
+
+    ⚠️ BIND ONLY ADDS. Nothing is evicted when the user resumes another
+    conversation, so `held` (the app's `bg_tasks`) accumulates every row of every
+    conversation this process has bound or started, finished history included.
+    Consumers that take `bg_tasks.values()` unfiltered (the GUI state snapshot and
+    `tasks.list`) therefore show that whole set - NOT rows of conversations never
+    resumed here, which the pre-T0132 boot-time load did show. `/tasks` and the
+    rpc `tasks.list` filter to the current conversation (`host_tasks_for_app`).
+    """
+    topup(convo_dir, legacy_root)
+    for task_id, task in load(convo_dir).items():
+        ours = held.get(task_id)
+        if ours is not None and ours.owner_instance == _INSTANCE_ID:
+            continue
+        held[task_id] = task
+
+
+def load(root: Path | str) -> dict[str, Task]:
+    """One store directory's rows, a running one marked LOST only if its owner is gone.
+
+    Called through `bind`, for the conversation being bound. The premise is
+    unchanged and still true: a task cannot survive the app that started it,
+    because the shell runner puts the child in a kill-on-close Job Object. What
+    changed is WHOSE bind may say so - see `Task.owner_pid` and `_owner_alive`.
+    A row with no pid predates the field and keeps the old answer.
     """
     p = Path(root) / STORE
     out: dict[str, Task] = {}
@@ -466,27 +605,26 @@ def load(root: Path | str) -> dict[str, Task]:
 
 
 def _owner_alive(task: Task) -> bool:
-    """Is the instance that started this task still running? Asked at BOOT.
+    """Is the instance that started this task still running?
 
-    🔴 OUR OWN PID ON A DISK ROW MEANS THE PID WAS REUSED, NOT THAT WE OWN IT.
-    `load` runs once, from `LiteTUI.__init__` (app.py:1216) — the only caller in
-    the package — so this process has not started a task yet and cannot be the
-    owner of anything already in the file. Windows hands pids out again, so the
-    row belongs to a DEAD predecessor that happened to hold this number. Without
-    this line `pid_is_live` answers True about us, that row stays `running` for
-    the life of the instance, and it does so again on every future boot that
+    🔴 THIS INSTANCE'S OWN ROWS ARE ALIVE; OUR PID ON SOMEONE ELSE'S ROW IS NOT.
+    Bind reloads a conversation's store mid-session, so a `running` row we
+    started ourselves is now something `load` can meet, and `_INSTANCE_ID` (minted
+    per process, stamped on every row we create) is what says it is ours.
+
+    A row carrying our PID but not our instance id, or no instance id at all, is
+    a DEAD predecessor that held this number: Windows hands pids out again.
+    Without that rule `pid_is_live` answers True about us, the row stays
+    `running` for the life of the instance, and again on every future boot that
     draws the same pid. (Sentinel, message 94cedaec.)
-
-    ⚠️ THE WHOLE RULE RESTS ON "AT BOOT". If `load` were ever called mid-session
-    it would mark this instance's own live tasks LOST. `test_load_is_called_once
-    _at_construction_and_nowhere_else` pins that, because the day someone adds a
-    reload is the day this line silently starts lying.
 
     `pid_is_live` treats an unopenable pid as ALIVE (access denied is not death),
     which is the right direction here too: a wrong "alive" costs a row that stays
     `running` until the next boot, and a wrong "dead" tells the human their task
     was killed while it is still producing output in the other window.
     """
+    if task.owner_instance == _INSTANCE_ID:
+        return True
     if task.owner_pid is None or task.owner_pid == os.getpid():
         return False
     if task.owner_created is not None:

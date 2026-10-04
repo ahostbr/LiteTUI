@@ -22,16 +22,19 @@ else:
     print(json.dumps({'type':'agent_ready', 'status':'ready', 'child_id':'child',
       'conversation_id':'convo', 'token':os.environ['CHILD_TOKEN'],
       'workspace':os.getcwd(), 'backend':'codex', 'model':os.environ['CHILD_MODEL'],
-      'tool_profile':'autonomous', 'reasoning_effort':None, 'thinking_level':None,
+      'tool_profile':'interactive', 'reasoning_effort':None, 'thinking_level':None,
       'pid':os.getpid(), 'process_created':process_creation_identity(os.getpid())}), flush=True)
     line = sys.stdin.readline()
     if line:
         print(json.dumps({'type':'accepted', 'command':json.loads(line)}), flush=True)
     sys.stdin.read()
 ''')
-    # Use the actual interpreter, not Windows venv redirector (which has a
-    # different PID). Production launcher must resolve that distinction too.
-    return [getattr(sys, '_base_executable', sys.executable), str(path)], {'CHILD_MODEL': model, 'CHILD_TOKEN': 'secret', 'SILENT': '1' if silent else '0'}
+    # Launch exactly as production does: python_child_argv uses the base
+    # interpreter (not the Windows venv redirector, which has a different PID),
+    # with -S plus a bootstrap that restores the parent's sys.path. The bare base
+    # interpreter cannot import litetui, so the child would die before printing.
+    from litetui.agent_supervisor import python_child_argv
+    return python_child_argv(script=path), {'CHILD_MODEL': model, 'CHILD_TOKEN': 'secret', 'SILENT': '1' if silent else '0'}
 
 
 @pytest.mark.asyncio
@@ -73,7 +76,7 @@ async def test_actual_child_gets_no_prompt_until_authenticated(tmp_path):
     from litetui.agent_supervisor import AgentProcess
     argv, env = child(tmp_path)
     process = AgentProcess()
-    await process.start(argv, cwd=tmp_path, env=env)
+    await process.start(argv, cwd=tmp_path, env=env, gated=True)
     try:
         with pytest.raises(LaunchBlocked, match='ready'):
             await process.send_prompt('premature')
@@ -93,7 +96,7 @@ async def test_bad_or_missing_handshake_closes_owned_child(tmp_path, silent, mod
     from litetui.agent_supervisor import AgentProcess
     argv, env = child(tmp_path, silent=silent, model=model)
     process = AgentProcess()
-    await process.start(argv, cwd=tmp_path, env=env)
+    await process.start(argv, cwd=tmp_path, env=env, gated=True)
     with pytest.raises(LaunchBlocked):
         await process.handshake(spec(tmp_path), child_id='child', conversation_id='convo',
                                 token='secret', workspace=str(tmp_path), timeout=.3 if silent else 5)

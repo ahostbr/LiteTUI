@@ -48,6 +48,7 @@ from textual.widgets import (
     Switch,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 
 # THE MODULE, not the names. `from ... import PROFILES` binds at import
@@ -76,6 +77,7 @@ from litetui.settings_ui_model import (
     SettingsSectionSpec,
     search_settings,
 )
+from litetui.literal_display import literal_options
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 THINKING_CHOICES = [
@@ -478,7 +480,16 @@ class SettingsBody(Widget):
         self.call_after_refresh(self._capture_initial_state)
 
     def _capture_initial_state(self) -> None:
-        self._initial_state = self._canonical_state(self.get_state())
+        # Scheduled by on_mount for after the first refresh. A dialog dismissed
+        # before that refresh has already pruned its form (Textual removes children
+        # first), so there is nothing to capture: leave the empty baseline, which
+        # reads as not dirty.
+        from textual.css.query import NoMatches
+        try:
+            state = self.get_state()
+        except NoMatches:
+            return
+        self._initial_state = self._canonical_state(state)
 
     @staticmethod
     def _canonical_state(state: dict) -> dict:
@@ -650,7 +661,7 @@ class SettingsBody(Widget):
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
-                choices,
+                literal_options(choices),
                 value=getattr(self._start, name),
                 id=f"f-{name}",
                 allow_blank=False,
@@ -672,7 +683,7 @@ class SettingsBody(Widget):
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
-                choices,
+                literal_options(choices),
                 value=current or "",
                 id=f"f-{name}",
                 allow_blank=False,
@@ -718,7 +729,7 @@ class SettingsBody(Widget):
                         with Vertical(classes="set-row"):
                             yield Label("Default model", classes="set-label")
                             yield Select(
-                                model_choices,
+                                literal_options(model_choices),
                                 value=self._start.default_model or "",
                                 id="f-default_model",
                                 allow_blank=False,
@@ -977,7 +988,7 @@ class SettingsBody(Widget):
                                 "it. Applies on save.", classes="set-help")
                         with Vertical(classes="set-row"):
                             yield Button("Download voice-in model", id="voice-dl-stt")
-                            yield Static("", id="voice-status", classes="set-help")
+                            yield Static("", id="voice-status", classes="set-help", markup=False)
                 with TabPane("Generation", id="tab-generation"):
                     with VerticalScroll(classes="set-scroll"):
 
@@ -1132,6 +1143,27 @@ class SettingsBody(Widget):
                             "before any allow rule, so a refusal written here cannot be "
                             "overridden by allowing the same thing.",
                             placeholder="none",
+                        )
+                        with Vertical(classes="set-row"):
+                            yield Label("Trusted interpreter paths", classes="set-label")
+                            yield TextArea(
+                                "\n".join(self._start.tool_trusted_interpreters),
+                                id="f-tool_trusted_interpreters",
+                                classes="set-input",
+                            )
+                            yield Static(
+                                "One exact absolute path per line, for this conversation only. "
+                                "Empty means no additional trust. Skips foreign-program "
+                                "confirmation for these identities only, not danger or deny "
+                                "rules. Linked paths and invalid entries grant no trust.",
+                                classes="set-help",
+                            )
+                        yield from self._text_row(
+                            "relay_approval_timeout_s", "Spawner approval wait (seconds)",
+                            "A LiteTUI launched by an agent asks THAT agent, by inbox, "
+                            "before a sensitive action. With no answer in this many "
+                            "seconds the turn stops and the refusal is logged (T1049).",
+                            placeholder="600",
                         )
                         yield self._section_header("agent-tools")
                         yield from self._text_row(
@@ -1291,7 +1323,7 @@ class SettingsBody(Widget):
                             "theme_name", "Theme", _theme_choices(self._start.custom_themes),
                             "Dark built-ins, the LiteSuite ports (matrix, lite-suite, "
                             "amber-ledger...), the ten-gray SHADES, and your customs. "
-                            "the footer's \u2261 commands button still has a quick-select; either way the pick "
+                            "the header's command-palette icon still has a quick-select; either way the pick "
                             "survives a restart.",
                         )
                         yield self._section_header("theme-custom")
@@ -1360,9 +1392,9 @@ class SettingsBody(Widget):
                         )
                         yield from self._switch_row(
                             "sidecar_enabled", "Prefer optional native sidecar",
-                            "When installed, open the sidecar for settings and calendar; "
-                            "Textual remains the fallback if it cannot launch. "
-                            "The preview build is not connected yet.",
+                            "When on, /settings opens the native sidecar window; if "
+                            "it cannot launch, Textual opens instead and the reason "
+                            "is shown.",
                         )
                         yield self._section_header("interface-footer")
                         yield Static("FOOTER", classes="set-subhead")
@@ -1409,10 +1441,21 @@ class SettingsBody(Widget):
                             "Whether the prompt cache is warm and its hit rate. On Claude, also "
                             "the time left before it expires. Shown on the Claude and Codex backends.",
                         )
+                        yield from self._switch_row(
+                            "footer_task_manager", "Live task manager",
+                            "Real CPU, RAM, GPU/VRAM, disk and network meters in the footer. "
+                            "The footer switch also controls sampling.",
+                        )
+                        yield from self._switch_row(
+                            "footer_show_key_hints", "Keyboard shortcut hints",
+                            "The ^G view / ^B select / ^E open hints and the key-binding row in the footer.",
+                        )
                         yield from self._text_row(
                             "footer_order", "Footer order (left to right)",
                             "Comma-separated ids. Use authority, plan, seat, think, "
-                            "bg, agents, convo, ctx, pct, cache, and tps. The switches "
+                            "bg, agents, convo, ctx, pct, cache, and tps. Telemetry always "
+                            "follows meters:on on the second row; its saved order id is kept "
+                            "for compatibility. The switches "
                             "above control visibility; authority and plan stay "
                             "available because they are interactive status controls. "
                             "Unknown or repeated ids are ignored and missing ids "
@@ -1427,7 +1470,7 @@ class SettingsBody(Widget):
             # "#set-error" meant action_save()'s query_one() always found the
             # DOM-first one (buried in the Interface tab), so a save error
             # raised while on any OTHER tab wrote to a Static nobody could see.
-            yield Static("", id="set-error")
+            yield Static("", id="set-error", markup=False)
             with Horizontal(id="set-buttons"):
                 yield Button("Save", variant="primary", id="set-save")
                 yield Button("Cancel", id="set-cancel")
@@ -1572,6 +1615,11 @@ class SettingsBody(Widget):
                     setattr(out, name, val)
                 continue
 
+            if name == "tool_trusted_interpreters" and isinstance(widget, TextArea):
+                # One path per line; spaces, backslashes and commas are data.
+                # Preserve malformed nonempty lines so the classifier fails closed.
+                setattr(out, name, widget.text.splitlines() if widget.text else [])
+                continue
             raw = str(widget.value)
             try:
                 if "list[str]" in t:
@@ -1687,6 +1735,9 @@ class SettingsBody(Widget):
         for w in list(self.query(Input)) + list(self.query(Select)) + list(self.query(Switch)):
             if w.id and not w.id.startswith("hook-"):
                 out[w.id] = w.value
+        for w in self.query(TextArea):
+            if w.id == "f-tool_trusted_interpreters":
+                out[w.id] = w.text
         out["_hooks_editor"] = self.query_one(HooksEditor).get_state()
         return out
 
@@ -1699,7 +1750,11 @@ class SettingsBody(Widget):
             if not found:
                 continue          # a control this host does not render
             try:
-                found.first().value = value
+                widget = found.first()
+                if isinstance(widget, TextArea):
+                    widget.load_text(value)
+                else:
+                    widget.value = value
             except Exception:
                 continue          # a Select whose options no longer hold it
 
@@ -1747,7 +1802,10 @@ class SettingsBody(Widget):
             if value is None and isinstance(widget, Select):
                 value = ""
             try:
-                widget.value = value
+                if isinstance(widget, TextArea):
+                    widget.load_text("\n".join(value))
+                else:
+                    widget.value = value
             except (AttributeError, TypeError, ValueError):
                 # A host-specific choice list may not expose a factory value;
                 # persistence still receives the explicit target patch.

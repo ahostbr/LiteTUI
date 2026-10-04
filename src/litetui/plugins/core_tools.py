@@ -183,9 +183,18 @@ def bash_exe() -> str | None:
 #:     reads from an exit code -- grep's 1-means-no-match vs 2-means-error is
 #:     the classic. $LASTEXITCODE holds the real number, so it is re-exited.
 #:  2. A FAILING CMDLET EXITS 0. It is a non-terminating error, not a failed
-#:     exit. $ErrorActionPreference='Stop' would fix it by changing how the
-#:     USER'S command behaves, which is too high a price; the $Error.Count
-#:     delta detects the same thing and changes nothing.
+#:     exit. The $Error.Count delta below turns it into exit 1.
+#:  3. 🔴 A FAILED STATEMENT MUST STOP THE REST (T1026). This used to be
+#:     refused as changing the user's command too much, and the price of NOT
+#:     paying it was measured on 2026-09-26: `$home='<scratch>'; Remove-Item
+#:     $home -Recurse ...` -- the assignment to read-only $HOME failed, the
+#:     script went on, and the delete ran against the real profile. So
+#:     $ErrorActionPreference='Stop' is set INSIDE the block (not before
+#:     `$PSStyle`, which is $null on Windows PowerShell 5.1 and would itself
+#:     throw): the first error ends the command with exit 1. Ceiling: under
+#:     Windows PowerShell 5.1 a native command's stderr redirected with 2>&1
+#:     now also aborts; 5.1 runs only when no pwsh is found (powershell_exe
+#:     tries pwsh first), and pwsh 7.2+ does not raise on native stderr.
 #:
 #: `$?` is deliberately NOT used: it is reset by the very `if` that reads it,
 #: and it does not go False for a non-terminating error anyway. Both were
@@ -195,7 +204,7 @@ def bash_exe() -> str | None:
 PS_WRAPPER = (
     "$PSStyle.OutputRendering='PlainText'; $global:LASTEXITCODE=0; "
     "$__e=$Error.Count; "
-    "& {{ {command} }}; "
+    "& {{ $ErrorActionPreference='Stop'; {command} }}; "
     "if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} "
     "elseif ($Error.Count -gt $__e) {{ exit 1 }} else {{ exit 0 }}"
 )
@@ -355,7 +364,11 @@ def tool_write(args: dict) -> str:
     try:
         if p.parent and not p.parent.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        from litetui.file_endings import normalize, write_ending
+        rendered = normalize(content, write_ending(p))
+        # Explicit raw text IO: Windows must not translate LF a second time.
+        with p.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(rendered)
     except Exception as e:
         return f"[error] write failed: {type(e).__name__}: {e}"
     file_state.record_read(p)  # feed edit's guard: the model just wrote every byte

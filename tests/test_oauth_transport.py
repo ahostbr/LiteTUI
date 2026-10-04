@@ -109,6 +109,65 @@ def test_codex_history_conversion_does_not_mutate():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("history_shape", ["later-user-turn", "user-stop"])
+async def test_resumed_missing_tool_output_request_is_accepted(tmp_path, history_shape):
+    from litetui.conversation import ConversationRepository
+
+    messages = [
+        {"role": "system", "content": "Resume diagnostic"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_done", "function": {"name": "read", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_done", "content": "saved result"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_interrupted", "function": {"name": "write", "arguments": "{}"}},
+        ], "provider_metadata": {
+            "provider": "codex", "model": "gpt-test",
+            "items": [{"type": "reasoning", "id": "rs_saved",
+                       "encrypted_content": "opaque", "summary": []}],
+        }},
+    ]
+    if history_shape == "later-user-turn":
+        messages.append({"role": "user", "content": "Inbox arrived after the saved call"})
+    # A user stop returns after persisting the call, leaving no output and no
+    # later message. Resume must repair that shape without claiming a crash.
+    transcript = tmp_path / "convo.jsonl"
+    transcript.write_text(json.dumps({"type": "snapshot", "messages": messages}) + "\n")
+    _, resumed = ConversationRepository.read(transcript)
+    before = json.dumps(resumed)
+
+    def handle(request):
+        items = json.loads(request.content)["input"]
+        calls = {i["call_id"] for i in items if i.get("type") == "function_call"}
+        outputs = {i["call_id"]: i["output"] for i in items
+                   if i.get("type") == "function_call_output"}
+        if calls - outputs.keys():
+            return httpx.Response(400, json={"error": {"message": "No tool output found"}})
+        assert outputs["call_done"] == "saved result"
+        annotation = outputs["call_interrupted"]
+        assert annotation == (
+            "[litetui transport] no tool output was recorded for this call; "
+            "outcome UNKNOWN. Verify any side effects before retrying."
+        )
+        assert not any(cause in annotation.lower()
+                       for cause in ("ended", "died", "crash", "killed"))
+        interrupted = next(n for n, i in enumerate(items)
+                           if i.get("call_id") == "call_interrupted")
+        assert items[interrupted + 1]["type"] == "function_call_output"
+        assert any(i.get("id") == "rs_saved" for i in items)
+        return httpx.Response(200, text='data: {"type":"response.completed",'
+                              '"response":{"output":[]}}\n\n')
+
+    transport = mt.OAuthTransport(
+        "codex", credential_path=auth_file(tmp_path),
+        http_transport=httpx.MockTransport(handle),
+    )
+    await transport.create(model="gpt-test", messages=resumed, stream=False)
+    assert json.dumps(resumed) == before
+    assert ConversationRepository.read(transcript)[1] == messages
+
+
+@pytest.mark.asyncio
 async def test_codex_stream_tool_and_usage(tmp_path):
     events = [
         {
@@ -371,6 +430,7 @@ async def test_cloud_backend_uses_cli_capabilities_and_rejects_local_controls(
     tmp_path, monkeypatch
 ):
     from litetui.llm_backend import BackendError, make_backend
+    from litetui.oauth_backend import OAuthBackend
     from litetui.settings import Settings
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
@@ -402,8 +462,9 @@ async def test_cloud_backend_uses_cli_capabilities_and_rejects_local_controls(
     assert await backend.model_info("gpt-test") == (90000, "vlm", True)
     with pytest.raises(BackendError):
         await backend.load("gpt-test")
-    with pytest.raises(BackendError):
-        make_backend(Settings(backend="claude"))
+    # Claude became a first-class SDK backend in 67a1469, so the factory no longer
+    # refuses it; the contract that survives is that it is never the Codex OAuth path.
+    assert not isinstance(make_backend(Settings(backend="claude")), OAuthBackend)
     with pytest.raises(mt.ProviderError, match="reasoning effort"):
         await mt.OAuthTransport("codex", models=backend.models).create(
             model="gpt-test", messages=[], extra_body={"reasoning_effort": "ultra"}

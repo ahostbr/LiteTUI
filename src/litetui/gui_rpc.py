@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal, get_args, get_origin, get_type_hints
 
 from litetui import settings_runtime
-from litetui import llm_backend, paths, tasks
+from litetui import llm_backend, paths, seat_authority, tasks
 from litetui import settings as settings_mod
 from litetui.shared_state import DATA_VERSION, Lease, OwnershipError, check_data_version
 
@@ -50,6 +50,8 @@ OPERATIONS = (
     "models.load", "models.unload", "models.config", "models.configure",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
+    "thinking.set", "context.set", "backend.set", "models.capabilities",
+    "engine.start", "engine.stop", "engine.status",
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
@@ -88,15 +90,19 @@ def _idle(app):
         raise ValueError("A management operation is active; wait for it before changing this resource")
 
 
-def _session_path(session_id):
+def _session_path(session_id, app=None):
+    session = getattr(app, "_agent_session", None)
+    if session is not None:
+        from litetui.storage_catalog import owned_transcript
+        return owned_transcript(session, session_id)
     if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
         raise ValueError("Invalid session_id")
     return paths.CONVO_DIR / session_id / "convo.jsonl"
 
 
-def _read_session(session_id):
+def _read_session(session_id, app=None):
     from litetui.conversation import ConversationRepository
-    path = _session_path(session_id)
+    path = _session_path(session_id, app)
     meta, messages = ConversationRepository.read(path)
     return {"session_id": session_id, "meta": meta, "messages": messages}
 
@@ -193,20 +199,33 @@ def _validate_model_fields(values, rows):
 def _conversations(app, action, cmd):
     from litetui.conversation import ConversationRepository
     if action == "list":
+        session = getattr(app, '_agent_session', None)
+        if session is not None:
+            from litetui.storage_catalog import conversations
+            rows = conversations(session.store.data_root, agent_id=session.authority.agent_id)
+            result = []
+            for location in rows:
+                meta, msgs = ConversationRepository.read(location.transcript)
+                result.append({"session_id": location.conversation_id,
+                    "agent_id": location.agent_id, "agent_name": location.agent_name,
+                    "title": ConversationRepository.label(meta, msgs), "meta": meta,
+                    "message_count": len(msgs), "updated_at": location.transcript.stat().st_mtime})
+            return result
         return [{"session_id": meta.get("id") or path.parent.name,
                  "title": ConversationRepository.label(meta, msgs), "meta": meta,
                  "message_count": len(msgs), "updated_at": path.stat().st_mtime}
                 for path, meta, msgs in ConversationRepository.list_all()]
     session_id = cmd.get("session_id") or getattr(app, "convo_id", "")
     if action == "read":
-        if session_id == getattr(app, "convo_id", "") and not _session_path(session_id).exists():
+        if session_id == getattr(app, "convo_id", "") and not _session_path(session_id, app).exists():
             result = {"session_id": session_id, "meta": {"id": session_id}, "messages": copy.deepcopy(app.conversation)}
         else:
-            result = _read_session(session_id)
+            result = _read_session(session_id, app)
         result["read_only"] = False
-        if session_id != getattr(app, "convo_id", ""):
+        if (getattr(app, '_agent_session', None) is None
+                and session_id != getattr(app, "convo_id", "")):
             try:
-                with Lease(_session_path(session_id).parent / ".session.lease"):
+                with Lease(_session_path(session_id, app).parent / ".session.lease"):
                     pass
             except OwnershipError:
                 result["read_only"] = True
@@ -216,15 +235,15 @@ def _conversations(app, action, cmd):
     if action == "create":
         app._handle_command("/new")
         app._materialise_convo()
-        return _read_session(app.convo_id)
+        return _read_session(app.convo_id, app)
     if action == "open":
-        path = _session_path(session_id)
+        path = _session_path(session_id, app)
         if not path.is_file():
             raise ValueError("Conversation does not exist")
         app._resume(path)
         if app.convo_id != session_id:
             raise ValueError("Conversation could not be resumed")
-        return _read_session(session_id)
+        return _read_session(session_id, app)
     if session_id != app.convo_id:
         raise ValueError("Open this conversation before editing it")
     app.store.acquire()
@@ -254,7 +273,7 @@ def _conversations(app, action, cmd):
         raise ValueError(f"Unsupported conversation action: {action}")
     if app.store.persist_error:
         raise OSError(app.store.persist_error)
-    return _read_session(session_id)
+    return _read_session(session_id, app)
 
 
 def _jobs(app, action, cmd):
@@ -272,6 +291,9 @@ def _jobs(app, action, cmd):
         job = next((j for j in app.jobs if j.id == cmd.get("job_id")), None)
         if job is None:
             raise ValueError("Unknown job_id")
+        why = seat_authority.withheld(app, scheduler.level_of(job.tool_profile))
+        if why:
+            raise ValueError(f"Job {job.id} not run: {why}")  # T1082: at its level or not at all
         delivered = app._fire_job(job, manual=True)
         if not delivered:
             raise ValueError("Job was not delivered: scheduler is paused, owned elsewhere, or its durable stamp failed")
@@ -279,9 +301,16 @@ def _jobs(app, action, cmd):
     candidate = list(app.jobs)
     if action == "create":
         payload = dict(cmd.get("job", {}))
+        # T1082: a loop created here (LiteGUI's loop form, a human in a live instance)
+        # records the level of the turn it was created in and takes none; a cron job
+        # records its creator's pick through schedule_level (none = this seat's level).
         if payload.get("kind") == "loop":
-            job = scheduler.Job.loop(prompt=payload["prompt"], interval_minutes=payload["interval_minutes"], owner_convo_id=app.convo_id)
+            if "tool_profile" in payload:
+                raise ValueError(seat_authority.LOOP_REFUSAL)
+            job = scheduler.Job.loop(prompt=payload["prompt"], interval_minutes=payload["interval_minutes"],
+                                     owner_convo_id=app.convo_id, tool_profile=seat_authority.loop_level(app))
         else:
+            payload["tool_profile"] = seat_authority.schedule_level(app, payload.get("tool_profile"))
             job = scheduler.Job(**payload)
             job.cron()
         if not job.prompt.strip():
@@ -310,8 +339,70 @@ def _jobs(app, action, cmd):
     return [asdict(job) for job in app.jobs]
 
 
+def _owned_memory_path(session, name):
+    from litetui.agent_store import MEMORY_FILES, StoreError, _unlinked, valid_name
+    if not isinstance(name, str):
+        raise ValueError("name must identify an agent memory, soul, or handoff file")
+    if name not in MEMORY_FILES:
+        parts = name.split('/')
+        if len(parts) < 2 or parts[0] != 'memories' or not parts[-1].endswith('.md'):
+            raise ValueError("name must identify an agent memory, soul, or handoff file")
+        for part in parts[1:]:
+            valid_name(part)
+        if any(part in ('.', '..') for part in parts):
+            raise StoreError('Memory path escapes the selected agent')
+    # Check original path and ancestors, never resolve away link evidence.
+    return _unlinked(session.memory_root / name)
+
+
+def _owned_memory(app, session, action, cmd):
+    from litetui.agent_store import MEMORY_FILES, _unlinked
+    _session_path(cmd.get("session_id") or app.convo_id, app)
+    directory = session.memory_root
+    if action == "list":
+        candidates = [_unlinked(directory / name) for name in sorted(MEMORY_FILES)]
+        memories = _unlinked(directory / 'memories')
+        if memories.exists():
+            # Never traverse reparse points. This also checks empty directories,
+            # which a file-only glob would otherwise silently skip.
+            for root, dirs, files in os.walk(memories, followlinks=False):
+                for name in dirs:
+                    _unlinked(Path(root) / name)
+                for name in files:
+                    path = _unlinked(Path(root) / name)
+                    if name.endswith('.md'):
+                        candidates.append(_owned_memory_path(session, path.relative_to(directory).as_posix()))
+        return [{"name": path.relative_to(directory).as_posix(), "bytes": path.stat().st_size}
+                for path in candidates if path.is_file()]
+    name = cmd.get("name")
+    path = _owned_memory_path(session, name)
+    if action == "read":
+        return {"name": name, "text": path.read_text(encoding="utf-8") if path.exists() else ""}
+    if action != "write":
+        raise ValueError("Unsupported memory action")
+    _idle(app)
+    text = cmd.get("text")
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    session.authority
+    path = _owned_memory_path(session, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _unlinked(path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp"))
+    with temporary.open('x', encoding='utf-8') as handle:
+        handle.write(text)
+    session.authority
+    _owned_memory_path(session, name)
+    _unlinked(temporary).replace(path)
+    return {"name": name, "text": text}
+
+
 def _memory(app, action, cmd):
-    directory = _session_path(cmd.get("session_id") or app.convo_id).parent
+    session = getattr(app, '_agent_session', None)
+    if session is not None:
+        return _owned_memory(app, session, action, cmd)
+    requested = cmd.get("session_id") or app.convo_id
+    selected = _session_path(requested, app).parent
+    directory = session.memory_root if session is not None else selected
     if action == "list":
         return [{"name": str(p.relative_to(directory)).replace("\\", "/"), "bytes": p.stat().st_size}
                 for p in directory.rglob("*.md")]
@@ -324,9 +415,14 @@ def _memory(app, action, cmd):
     if action == "read":
         return {"name": name, "text": path.read_text(encoding="utf-8") if path.exists() else ""}
     _idle(app)
-    if directory != app.convo_dir:
+    if session is None and directory != app.convo_dir:
         raise ValueError("Open this conversation before changing its memory")
-    app.store.acquire()
+    if session is not None:
+        session.authority
+        from litetui.agent_store import _unlinked
+        _unlinked(path)
+    else:
+        app.store.acquire()
     text = cmd.get("text")
     if not isinstance(text, str):
         raise TypeError("text must be a string")
@@ -353,7 +449,9 @@ def dispatch(app, cmd):
                 "capabilities": list(OPERATIONS), "operations": [f"gui.{name}" for name in OPERATIONS]}
     if operation == "state":
         return {"session_id": app.convo_id, "busy": app._chat_running() or bool(getattr(app, "_gui_management_busy", False)), "mode": "plan" if app._plan_mode else "normal",
-                "tool_profile": app.chosen_tool_profile, "model": app._rpc_model_state(),
+                # T1049 (Dijkstra F1): the LOCKED seat profile. LiteGUI echoes this on
+                # every prompt (App.tsx:144); the raw choice made a locked seat refuse every Send.
+                "tool_profile": seat_authority.seat_profile(app), "model": app._rpc_model_state(),
                 "settings": _settings(app), "conversations": _conversations(app, "list", {}),
                 "jobs": _jobs(app, "list", {}), "tasks": [t.to_row() for t in app.bg_tasks.values()],
                 "ownership": {"writable": app.store.owned, "data_version": DATA_VERSION},
@@ -362,6 +460,30 @@ def dispatch(app, cmd):
                 "pending_approvals": [getattr(app, "_gui_approval_details", {}).get(key, {"id": key}) for key, future in getattr(app, "_approval_waiters", {}).items() if not future.done()],
                 "pending_questions": [{"type": "user_input_requested", "id": key, "questions": [s.to_dict() for s in value[2]]} for key, value in getattr(app, "_rpc_pending_asks", {}).items() if not value[0].is_set()],
                 "pending_model_loads": [{"request_id": key, **value["details"]} for key, value in getattr(app, "_gui_model_pending", {}).items()]}
+    if operation == "thinking.set":
+        _idle(app)
+        from litetui.thinking_capabilities import set_thinking, thinking_capabilities
+        set_thinking(app, cmd.get("level"))
+        return {"level": app.thinking_level, "capabilities": thinking_capabilities(app)}
+    if operation == "models.capabilities":
+        from litetui.thinking_capabilities import thinking_capabilities
+        backend = cmd.get("backend") or app.backend.name
+        model = cmd.get("model") or app.model_id
+        if backend == "claude" and backend != app.backend.name:
+            from litetui.model_capabilities import offline_capabilities
+            return offline_capabilities(backend, model)
+        if backend != app.backend.name:
+            raise ValueError("Requested backend catalogue is not connected; capability unavailable")
+        if model == app.model_id:
+            thinking = thinking_capabilities(app)
+        else:
+            reader = getattr(app.backend, "reasoning_levels", None)
+            if not callable(reader) or model not in getattr(app.backend, "models", {}):
+                raise ValueError("Requested model capability is unavailable in the connected catalogue")
+            levels = reader(model)
+            thinking = {"levels": ["default", *("off" if x == "none" else x for x in levels)],
+                        "source": "connected backend model metadata"}
+        return {"backend": backend, "model": model, "thinking": thinking}
     domain, action = operation.split(".", 1)
     if domain == "prompt":
         message, behavior = cmd.get("message"), cmd.get("behavior", "normal")
@@ -533,7 +655,12 @@ def dispatch(app, cmd):
             arg = str(cmd.get("objective", "")).strip() if action == "create" else action
             if not arg:
                 raise ValueError("objective must be nonempty")
-            goal_loop.goal_command(app, arg)
+            # T1043: the goal's origin; with gui.hello this reads "gui".
+            app._command_source = "rpc"
+            try:
+                goal_loop.goal_command(app, arg)
+            finally:
+                app._command_source = None
         goal = goal_loop.load_goal(app.convo_dir)
         return asdict(goal) if goal else None
     if domain == "calendar":
@@ -579,7 +706,7 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    blocking = operation in {"gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -597,6 +724,46 @@ async def async_dispatch(app, cmd):
 
 async def _async_dispatch(app, cmd):
     operation = cmd["type"]
+    if operation == "gui.backend.set":
+        _idle(app)
+        candidate = _validate(app, {"backend": cmd.get("name")})
+        settings_runtime.persist_or_raise(app, candidate)
+        app.settings = candidate
+        return await _async_dispatch(app, {"type": "gui.models.reconnect"})
+    if operation == "gui.context.set":
+        _idle(app)
+        value = cmd.get("context")
+        if type(value) is not int or value < 1:
+            raise ValueError("context must be a positive integer")
+        if getattr(app.backend, "remote", False):
+            raise ValueError("The remote backend owns its context window")
+        if not app.model_id:
+            raise ValueError("Select a model before setting context")
+        # Same backend.load owner as apply_context_length; do not swallow load failure.
+        await app.backend.load(app.model_id, ctx=value)
+        app._fetch_ctx_window()
+        return {"requested": value, "model": app._rpc_model_state(), "completed": True}
+    if operation.startswith("gui.engine."):
+        _idle(app)
+        backend = app.backend
+        if backend.name != "ninfer":
+            raise ValueError("engine operations require the NInfer backend")
+        action = operation.rsplit(".", 1)[1]
+        if action == "status":
+            return {"status": backend.engine_status()}
+        if action == "start":
+            result = await backend.start_engine()
+            return {"result": result, "status": backend.engine_status()}
+        if action == "stop":
+            from litetui import agent_preparation
+            if not backend.begin_stop():
+                raise ValueError("NInfer engine start/stop is already active")
+            try:
+                result = await agent_preparation.await_preparation(backend.stop_engine)
+                return {"result": result, "status": backend.engine_status()}
+            finally:
+                backend.end_stop()
+        raise ValueError("Unsupported engine operation")
     if operation == "gui.conversations.open":
         result = dispatch(app, cmd)
         conversation = app.conversation
@@ -670,7 +837,10 @@ async def _async_dispatch(app, cmd):
                 await app.backend.apply_load_settings(key, load)
             return {"slug": key, "saved": True, "load_applied": bool(cmd.get("apply_load", False)),
                     "load": load, "inference": inference}
-        await getattr(app.backend, action)(key)
+        ctx = cmd.get("ctx")
+        if ctx is not None and (action != "load" or type(ctx) is not int or ctx < 1):
+            raise ValueError("ctx is supported only for load and must be a positive integer")
+        await getattr(app.backend, action)(key, **({"ctx": ctx} if ctx is not None else {}))
         app.connect()
         return {"slug": key, "action": action, "completed": True}
     if operation == "gui.tools.execute":
@@ -681,7 +851,7 @@ async def _async_dispatch(app, cmd):
         if app.plugins.dispatch_for(name) is None:
             raise ValueError("Unknown tool name")
         prior = app._active_tool_profile
-        app._active_tool_profile = app.chosen_tool_profile
+        app._active_tool_profile = seat_authority.seat_profile(app)
         try:
             text, ok = await app._execute_tool(name, dict(args))
             return {"name": name, "ok": ok, "result": text}

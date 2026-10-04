@@ -24,9 +24,13 @@ see it, and "absent" is the answer that stops you looking.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from litetui import app as app_mod
 from litetui import paths
@@ -47,6 +51,9 @@ PROMPT = (
 class _Seat:
     def __init__(self, agent_id=NEW, name="LiteTUI", tier="worker"):
         self.agent_id, self.name, self.tier = agent_id, name, tier
+
+    def registry_name(self):
+        return None
 
 
 def _app(prompt=PROMPT, seat=None):
@@ -86,7 +93,8 @@ def test_it_preserves_everything_else_in_the_prompt():
 def test_CONTROL_an_already_correct_prompt_is_left_alone():
     # Without this, "make it match" is satisfied by rewriting on every call,
     # which would mark the conversation dirty and rewrite the store forever.
-    a = _app(prompt=PROMPT.replace(OLD, NEW))
+    a = _app()
+    a.conversation[0]["content"] = a._fleet_identity_sentence() + "Keep my own edit."
     assert a._sync_fleet_identity() is False
 
 
@@ -105,7 +113,8 @@ def test_it_survives_a_different_name_and_tier():
     a = _app(seat=_Seat(agent_id=NEW, name="CyanWedge", tier="leader"))
     assert a._sync_fleet_identity() is True
     body = a.conversation[0]["content"]
-    assert f"CyanWedge (id {NEW}, tier leader)" in body
+    assert "CyanWedge" in body
+    assert NEW in body and "tier leader" in body
     assert OLD not in body
 
 
@@ -116,17 +125,104 @@ def test_no_system_message_is_not_a_crash():
     assert a._sync_fleet_identity() is False
 
 
-def test_the_resume_path_actually_CALLS_the_sync():
-    """The seven tests above prove the FUNCTION is right. They say nothing about
-    whether anything invokes it — and an unwired repair is the defect, not the
-    fix. `_resume` is the path that replays a system message written by another
-    process, so it is the one that must call this.
+def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkeypatch):
+    """Exercise the resume contract rather than parsing its source.
+
+    `_resume_cli_conversation` now precedes `_resume`; splitting on the text
+    ``def _resume`` therefore inspected the helper instead of the resume method
+    and reported this already-wired behavior as missing.
     """
-    src = Path(app_mod.__file__).read_text(encoding="utf-8")
-    resume = src.split("def _resume", 1)[1].split("\n    def ", 1)[0]
-    assert "_sync_fleet_identity()" in resume, (
-        "resume replays the previous process's fleet id and never corrects it"
+    monkeypatch.setenv("LITEHARNESS_HOME", str(tmp_path / "harness-home"))
+    folder = tmp_path / "saved"
+    folder.mkdir()
+    path = folder / "convo.jsonl"
+    path.write_text(
+        '{"type":"meta","v":3,"id":"saved"}\n'
+        + json.dumps({
+            "type": "snapshot",
+            "messages": [{"role": "system", "content": PROMPT}],
+        })
+        + "\n",
+        encoding="utf-8",
     )
+    app = app_mod.LiteTUI()
+    app.seat = _Seat()
+    app._render_resumed = lambda path: None
+
+    assert app._resume(path, startup=True)
+    body = app.conversation[0]["content"]
+    assert NEW in body
+    assert OLD not in body
+    edits = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+             if json.loads(line).get("type") == "edit" and json.loads(line).get("index") == 0]
+    assert edits, "resume rewrote only memory; on-disk index 0 still names the dead seat"
+    saved = edits[-1]["message"]["content"]
+    assert saved.count("You are registered in the LiteHarness fleet") == 1
+    assert NEW in saved and OLD not in saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", [PROMPT, PROMPT.replace(OLD, NEW),
+                                    "You are a helpful assistant."])
+async def test_registered_monitor_keeps_polling_and_heartbeat_after_identity_sync(
+        prompt, monkeypatch):
+    """Changed, already-correct, and absent sentences all reach the poll loop."""
+    from litetui import harness
+
+    monkeypatch.setattr(app_mod, "_INBOX_SETTLE_S", 0)
+    monkeypatch.setattr(harness, "POLL_SECONDS", 0)
+    monkeypatch.setattr(harness, "HEARTBEAT_EVERY", 1)
+    app = app_mod.LiteTUI()
+    app._connect = lambda: None
+    app._fetch_ctx_window = lambda: None
+    seen = []
+
+    class FakeSeat:
+        name, agent_id, tier, registered = "LiteTUI", NEW, "worker", False
+        error = None
+        model = None
+        thinking_level = None
+
+        def register(self):
+            self.registered = True
+            return True
+
+        def poll(self):
+            seen.append("poll")
+            return []
+
+        def refresh_name(self):
+            return False
+
+        def heartbeat(self):
+            seen.append("heartbeat")
+            return True
+
+    app.seat = FakeSeat()
+    app._resumed_seat_name = None
+    app._update_header = lambda: None
+    app._system = lambda text: None
+    app._append_to_system = lambda text: app.conversation.__setitem__(
+        0, {**app.conversation[0], "content": app.conversation[0]["content"] + text})
+    app.conversation = [{"role": "system", "content": prompt}]
+
+    task = asyncio.create_task(app_mod.LiteTUI._inbox_monitor.__wrapped__(app))
+    try:
+        await asyncio.wait_for(_wait_for_heartbeat(seen), 2)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    body = app.conversation[0]["content"]
+    assert seen[:2] == ["poll", "heartbeat"]
+    assert body.count("You are registered in the LiteHarness fleet") == 1
+    assert app._fleet_identity_sentence() in body
+    assert OLD not in body
+
+
+async def _wait_for_heartbeat(seen):
+    while "heartbeat" not in seen:
+        await asyncio.sleep(0.01)
 
 
 def test_registration_replaces_rather_than_appending_a_second_line():
@@ -142,3 +238,34 @@ def test_registration_replaces_rather_than_appending_a_second_line():
     assert "_sync_fleet_identity()" in reg, (
         "registration can still append a second identity line onto a resumed prompt"
     )
+
+
+def test_fleet_sentence_labels_the_registered_id_as_inbox_sender():
+    sentence = _app()._fleet_identity_sentence()
+    assert NEW in sentence
+    assert "your inbox/sender id (use it for any from=/--from)" in sentence
+
+
+def test_harness_guidance_distinguishes_automatic_and_external_senders():
+    guidance = app_mod.load_prompt("harness-capabilities")
+    assert "sender is set automatically" in guidance
+    assert "external" in guidance
+    assert "registered agent id" in guidance
+    assert "conversation id" in guidance
+
+
+def test_resume_migrates_legacy_label_even_when_agent_id_is_current():
+    a = _app(prompt=PROMPT.replace(OLD, NEW))
+    assert a._sync_fleet_identity() is True
+    assert a._fleet_identity_sentence() in a.conversation[0]["content"]
+    assert "your inbox/sender id" in a.conversation[0]["content"]
+
+
+def test_resume_updates_new_sender_label_without_leaving_the_old_id():
+    a = _app(seat=_Seat(agent_id=OLD))
+    a.conversation[0]["content"] = a._fleet_identity_sentence() + "Keep my own edit."
+    a.seat = _Seat()
+    assert a._sync_fleet_identity() is True
+    assert OLD not in a.conversation[0]["content"]
+    assert a._fleet_identity_sentence() in a.conversation[0]["content"]
+    assert a.conversation[0]["content"].endswith("Keep my own edit.")

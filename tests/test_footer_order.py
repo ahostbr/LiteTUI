@@ -8,6 +8,7 @@ import pytest
 from textual.app import App
 from textual.widgets import Input
 
+from litetui import app as app_mod
 from litetui import settings as settings_mod
 from litetui.settings import Settings
 from litetui.settings_screen import SettingsBody, SettingsScreen
@@ -18,8 +19,8 @@ def test_footer_order_defaults_and_repairs_partial_values():
     assert settings_mod.normalize_footer_order(
         ["tps", "think", "think", "not-a-field"]
     ) == [
-        "tps", "think", "authority", "plan", "seat", "bg", "agents",
-        "convo", "ctx", "pct", "cache",
+        "tps", "think", "pct", "ctx", "seat", "convo", "model",
+        "cache", "telemetry", "bg", "agents", "authority", "plan",
     ]
 
 
@@ -30,9 +31,65 @@ def test_settings_load_repairs_an_old_or_hand_edited_footer_order(tmp_path):
     )
     loaded = settings_mod.load(tmp_path)
     assert loaded.footer_order == [
-        "ctx", "seat", "authority", "plan", "think", "bg", "agents",
-        "convo", "pct", "cache", "tps",
+        "ctx", "seat", "pct", "convo", "model", "think", "cache",
+        "tps", "telemetry", "bg", "agents", "authority", "plan",
     ]
+
+
+def test_saved_t1113_default_migrates_telemetry_into_status_line(tmp_path):
+    former_default = [
+        "pct", "ctx", "seat", "convo", "model", "think", "cache",
+        "tps", "bg", "agents", "authority", "plan",
+    ]
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"footer_order": former_default}), encoding="utf-8",
+    )
+    assert settings_mod.load(tmp_path).footer_order == list(settings_mod.FOOTER_ORDER_DEFAULT)
+    assert settings_mod.FOOTER_ORDER_DEFAULT.index("telemetry") < settings_mod.FOOTER_ORDER_DEFAULT.index("authority")
+
+
+@pytest.mark.parametrize(
+    "saved_order",
+    [
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps"],
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "cache", "tps"],
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps", "cache"],  # exact shared-file list
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps", "cache", "model"],
+        ["authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "cache", "tps", "model"],
+    ],
+)
+@pytest.mark.asyncio
+async def test_historical_default_loads_and_renders_context_first(tmp_path, saved_order):
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"footer_order": saved_order}), encoding="utf-8"
+    )
+    loaded = settings_mod.load(tmp_path)
+    assert loaded.footer_order == list(settings_mod.FOOTER_ORDER_DEFAULT)
+    app = app_mod.LiteTUI()
+    app._connect = lambda: None
+    app._fetch_ctx_window = lambda: None
+    app._apply_context_length = lambda: None
+    app.settings = loaded
+    app.ctx_used, app.ctx_max = 23_133, 120_064
+    async with app.run_test(size=(200, 24)) as pilot:
+        await pilot.pause()
+        footer = app.ctx_label_text.plain
+        assert footer.index("19%") < footer.index("ctx ") < footer.index("unregistered"), footer
+
+
+def test_custom_complete_footer_order_is_preserved_on_load(tmp_path):
+    custom = ["seat", "ctx", "pct", "think", "convo", "tps", "cache",
+              "bg", "agents", "authority", "plan", "model"]
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"footer_order": custom}), encoding="utf-8"
+    )
+    # Kept as the user ordered it; a field added later (T1115 telemetry) is appended.
+    assert settings_mod.load(tmp_path).footer_order == custom + ["telemetry"]
 
 
 @pytest.mark.asyncio
@@ -50,5 +107,5 @@ async def test_interface_exposes_and_collects_footer_order():
         saved = body._collect()
         assert saved.footer_order == [
             "tps", "pct", "ctx", "convo", "think", "seat", "plan",
-            "authority", "bg", "agents", "cache",
+            "authority", "model", "cache", "telemetry", "bg", "agents",
         ]

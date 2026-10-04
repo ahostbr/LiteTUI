@@ -190,10 +190,10 @@ def complete_child(app, payload, *, explicit_model=None, explicit_backend=None):
                     _, enabled = service_for(app).global_value('allow_local_subagents')
                     await admit_local(backend, route['model'], enabled)
                     if route['backend'] == 'lmstudio':
-                        try:
-                            model_transport._refuse_unsupported_local_lm(backend)
-                        except Exception as exc:
-                            raise ChildError('LM Studio local subagents are unsupported until the usage/lease protocol lands; a resident check cannot prevent request-time JIT loading after eviction') from exc
+                        # Fresh children have no parent resource-admission hook.
+                        # Their JIT refusal must not depend on a parent rollout
+                        # switch or a resident snapshot that can race eviction.
+                        raise ChildError('LM Studio local subagents are unsupported until the usage/lease protocol lands; a resident check cannot prevent request-time JIT loading after eviction')
                 except ValueError as exc:
                     raise ChildError(str(exc)) from exc
                 # Never call ensure_chat_ready on a local child: some providers

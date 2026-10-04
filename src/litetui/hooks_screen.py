@@ -12,6 +12,7 @@ from textual.widgets import Button, Input, Label, Select, Static, Switch, TextAr
 
 from litetui import hook_host
 from litetui import lifecycle_hooks as hooks
+from litetui.literal_display import literal_options
 from litetui.side_panel import SwapButton, close_dialog
 
 # One declaration builds and reads the form (the settings theme-token pattern).
@@ -50,7 +51,7 @@ class HooksEditor(VerticalScroll):
         self._broken_bytes = None
 
     def compose(self):
-        yield Static("", id="hook-status")
+        yield Static("", id="hook-status", markup=False)
         yield Label("Edit scope — project IDs override global IDs, including disabled entries")
         yield Select([("Project", "project"), ("Global", "global")], value="project", allow_blank=False, id="hook-scope")
         yield Select([], prompt="Choose a hook", id="hook-select")
@@ -69,7 +70,7 @@ class HooksEditor(VerticalScroll):
         for name, label, default in HOOK_FIELDS:
             yield Label(label)
             yield Input(default, id=f"hook-field-{name}")
-        yield Static("", id="hook-error")
+        yield Static("", id="hook-error", markup=False)
         yield TextArea("", id="hook-repair-json")
         yield Button("Save repaired file JSON", id="hook-repair")
         with Horizontal():
@@ -78,7 +79,7 @@ class HooksEditor(VerticalScroll):
         yield Label("Test event JSON — Test executes this script with the normal approval policy")
         yield TextArea(json.dumps({"event": "tool_before", "source": "typed", "data": {"tool": "read", "args": {}}}, indent=2), id="hook-sample")
         yield Button("Test script", variant="warning", id="hook-test")
-        yield Static("", id="hook-result")
+        yield Static("", id="hook-result", markup=False)
         yield Label("Rejected prompts remain in the transcript and here until this app exits")
         yield Select([], prompt="Rejected prompt", id="hook-rejected")
         yield Button("Resubmit selected prompt", id="hook-resubmit")
@@ -117,7 +118,7 @@ class HooksEditor(VerticalScroll):
     def refresh_rows(self):
         self._loading = True
         selector = self.query_one("#hook-select", Select)
-        selector.set_options([(f"{h.id} · {h.mode} · {'enabled' if h.enabled else 'disabled'}", h.id) for h in self.rows])
+        selector.set_options(literal_options([(f"{h.id} · {h.mode} · {'enabled' if h.enabled else 'disabled'}", h.id) for h in self.rows]))
         selector.value = self.selected if self.selected else Select.NULL
         state = self.app.hook_config.snapshot()
         effective = "; ".join(f"{h.scope}/{h.id} ({'enabled' if h.enabled else 'disabled'})" for h in state.hooks)
@@ -125,9 +126,9 @@ class HooksEditor(VerticalScroll):
             f"Global: {self.app.hook_config.global_path}\nProject: {self.app.hook_config.project_path}\n"
             + ("Hooks OFF (LITETUI_HOOKS=off)" if state.disabled else state.error or "Effective: " + (effective or "none")))
         rejected = getattr(self.app, "rejected_prompts", [])
-        self.query_one("#hook-rejected", Select).set_options([
+        self.query_one("#hook-rejected", Select).set_options(literal_options([
             (f"{i + 1}: {str(p['content'])[:90]} — {p['reason'][:90]}", i)
-            for i, p in enumerate(rejected)])
+            for i, p in enumerate(rejected)]))
         self._loading = False
 
     def load_form(self):

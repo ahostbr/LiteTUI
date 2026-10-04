@@ -86,16 +86,10 @@ def _scripted_create(rounds):
 
 
 def off_local_lm_studio(a):
-    """Run the host compaction path on a backend the product still sends to.
+    """Keep legacy compaction fixtures on the custom backend they model.
 
-    b5f1f40 (2026-09-21, WS3) refuses LOCAL LM Studio inference before any
-    HTTP, because LM Studio JIT-loads a model into VRAM on the request itself;
-    `test_a_local_lm_studio_compaction_is_refused_and_changes_nothing` below
-    defends that. The app these tests build boots on LM Studio, so after WS3
-    every compaction here failed with "BLOCKED" before reaching the card, the
-    meter or the wake it exists to test. A custom server is not request-JIT and
-    not VRAM-gated; the client is rebound as the app's own factory does, so
-    for_app's stale-pair guard (also WS3) is satisfied, not bypassed.
+    The custom server is not request-JIT or VRAM-gated. Rebind the client as
+    the app's factory does so for_app's stale-pair guard remains satisfied.
     """
     from litetui import model_transport
     from litetui.custom_backend import CustomBackend
@@ -377,9 +371,7 @@ def test_the_request_actually_streams():
 
 
 def test_a_local_lm_studio_compaction_is_refused_and_changes_nothing():
-    """WS3 (b5f1f40) on the compaction path: a local LM Studio request JIT-loads
-    VRAM, so the compaction is refused before any request, says so on the card
-    and in the chat, and leaves the conversation exactly as it was."""
+    """Explicit WS3 admission still refuses LM Studio JIT before any request."""
     async def body():
         create, calls = _scripted_create([[_Chunk(content="s")]])
         a = app_mod.LiteTUI()
@@ -391,6 +383,7 @@ def test_a_local_lm_studio_compaction_is_refused_and_changes_nothing():
         a._system = lambda msg, *x, **k: said.append(str(msg))
         from litetui.llm_backend import LMStudioBackend
         assert isinstance(a.backend, LMStudioBackend), "premise: the app boots on LM Studio"
+        a.backend.resource_admission = object()  # explicit unfinished WS3 admission
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             before = list(a.conversation)

@@ -36,6 +36,9 @@ async def test_native_output_resize_retains_reader_position_and_fold(monkeypatch
         app._scroll_down(reader_acted=True)
         await pilot.pause()
         assert log.scroll_y > 5
+        # Unlock following before reading history: a locked viewport is meant
+        # to return to the latest output when final output changes its height.
+        app.action_toggle_scroll_lock()
         log.scroll_to(y=5, animate=False, force=True)
         await pilot.pause()
         assert log.scroll_y == 5

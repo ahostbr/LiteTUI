@@ -39,6 +39,7 @@ from litetui import paths  # noqa: F401 — path anchors come from ONE home (plu
 from litetui import settings as settings_mod
 from litetui.picker import pick
 from litetui.plugins import PluginManifest
+from litetui.literal_display import literal_options
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
 
 
@@ -76,7 +77,8 @@ def switch_model(app, target: str) -> bool:
     """
     if target not in app.available_models:
         return False
-    settings_runtime.save_selection_defaults(backend=app.backend.name, default_model=target)
+    # model_id remembers this conversation's choice; startup defaults are
+    # deliberately unchanged, including when reselecting the current model.
     # This control is a newer explicit choice than the process's --model.
     _retire_cli_model(app, target)
     if target == app.model_id:
@@ -164,12 +166,16 @@ def _pick_ninfer_artifact(app) -> None:
         if not choice:
             return
         import dataclasses
-        app._on_settings_saved(
-            dataclasses.replace(app.settings, ninfer_artifact=choice))
-        result = getattr(app, '_settings_save_result', None)
-        if result is not None and any(not p.saved for p in result.persistence):
-            return
-        settings_runtime.save_selection_defaults(backend="ninfer", ninfer_artifact=choice)
+        candidate = dataclasses.replace(app.settings, ninfer_artifact=choice)
+        if getattr(app, 'convo_dir', None) is None:
+            # No conversation yet: do not let /settings' global fallback turn
+            # this instance-only /model choice into a startup preference.
+            app.settings = candidate
+        else:
+            app._on_settings_saved(candidate)
+            result = getattr(app, '_settings_save_result', None)
+            if result is not None and any(not p.saved for p in result.persistence):
+                return
         app.system_message(
             f"NInfer artifact set to {Path(choice).stem} — /engine start to serve it."
         )
@@ -212,12 +218,13 @@ def _cmd_reconnect(app, name: str, arg: str) -> None:
 
 # ── /backend ─────────────────────────────────────────────────────────────────
 
-def _switch_backend(app, choice: str) -> None:
+def _switch_backend(app, choice: str, *, make_default: bool = False) -> None:
     if getattr(app, "_chat_running", lambda: False)():
         app.system_message("Finish or stop the current turn before switching backends.")
         return
     if choice == app.backend.name and not getattr(app, '_resume_backend_error', None):
-        settings_runtime.save_selection_defaults(backend=choice, backend_chosen=True)
+        if make_default:
+            settings_runtime.save_selection_defaults(backend=choice, backend_chosen=True)
         app.system_message(f"Already on {choice}")
         return
     # The SEQUENCE moved to `App.apply_backend_change` so /settings could reach
@@ -227,7 +234,7 @@ def _switch_backend(app, choice: str) -> None:
     # module, which `test_app_never_imports_a_plugin_module` enforces.
     # The guards above stay here, where the user typed the command.
     app.apply_backend_change(choice)
-    if app.backend.name == choice:
+    if make_default and app.backend.name == choice:
         settings_runtime.save_selection_defaults(backend=choice, backend_chosen=True)
 
 
@@ -400,9 +407,15 @@ def backend_rows(app) -> list[tuple[str, str]]:
 
 
 def _cmd_backend(app, name: str, arg: str) -> None:
-    choice = arg.strip().lower()
+    tokens = arg.strip().lower().split()
+    make_default = "--default" in tokens
+    choices = [token for token in tokens if token != "--default"]
+    if len(choices) > 1 or tokens.count("--default") > 1:
+        app.system_message("Usage: /backend [--default] [backend]")
+        return
+    choice = choices[0] if choices else ""
     if choice in llm_backend.BACKEND_NAMES or choice in model_transport.OAUTH_PROVIDERS:
-        _switch_backend(app, choice)
+        _switch_backend(app, choice, make_default=make_default)
         return
     if choice:
         app.system_message(f"Unknown backend {choice!r} — {', '.join(llm_backend.BACKEND_NAMES)}")
@@ -411,9 +424,10 @@ def _cmd_backend(app, name: str, arg: str) -> None:
 
     def _picked(choice: str | None) -> None:
         if choice:
-            _switch_backend(app, choice)
+            _switch_backend(app, choice, make_default=make_default)
 
-    pick(app, "Select the engine", rows, _picked, current=app.backend.name)
+    title = "Select the default engine" if make_default else "Select the engine for this conversation"
+    pick(app, title, rows, _picked, current=app.backend.name)
 
 
 # ── /load /unload ────────────────────────────────────────────────────────────
@@ -866,7 +880,7 @@ class ModelConfigBody(Widget):
 
         with Vertical(id="set-box"):
             engine = engine_label
-            yield Static(f"Model: {self._key}  ·  {engine}", id="set-title")
+            yield Static(f"Model: {self._key}  ·  {engine}", id="set-title", markup=False)
             yield Static(
                 "Esc cancels · Ctrl+S applies (a loaded model reloads — "
                 "evicts resident weights)",
@@ -876,11 +890,11 @@ class ModelConfigBody(Widget):
                 with TabPane("Info", id="mc-info"):
                     with VerticalScroll(classes="set-scroll"):
                         if row is not None:
-                            yield Static(f"Source: {row.source}", classes="set-help")
+                            yield Static(f"Source: {row.source}", classes="set-help", markup=False)
                             if row.path:
-                                yield Static(f"Path: {row.path}", classes="set-help")
+                                yield Static(f"Path: {row.path}", classes="set-help", markup=False)
                             for extra_path in row.extra_paths:
-                                yield Static(f"Also at: {extra_path}", classes="set-help")
+                                yield Static(f"Also at: {extra_path}", classes="set-help", markup=False)
                             if row.modalities:
                                 mods = ", ".join(row.modalities)
                                 # 🔴 DECLARED vs EFFECTIVE. `row.modalities` is
@@ -893,7 +907,7 @@ class ModelConfigBody(Widget):
                                         load_cfg.get("mmproj")):
                                     mods += "  ->  text only (projector: none)"
                                 yield Static(f"Modalities: {mods}",
-                                             classes="set-help")
+                                             classes="set-help", markup=False)
                             yield Static(
                                 "Loaded" if row.loaded else "Not loaded (its ctx "
                                 "number, if shown, is a ceiling — not a window)",
@@ -979,7 +993,7 @@ class ModelConfigBody(Widget):
                                 note=note,
                             )
                         for label, why in _NA_ON_LLAMA:
-                            yield Static(f"{label}: {why}", classes="set-help")
+                            yield Static(f"{label}: {why}", classes="set-help", markup=False)
 
                 with TabPane("Inference", id="mc-infer"):
                     with VerticalScroll(classes="set-scroll"):
@@ -1043,7 +1057,7 @@ class ModelConfigBody(Widget):
                         yield Label("Presets", classes="set-label")
                         preset_names = sorted(app.settings.llama_presets)
                         yield Select(
-                            [("(apply a saved preset…)", "")] + [(n, n) for n in preset_names],
+                            literal_options([("(apply a saved preset…)", "")] + [(n, n) for n in preset_names]),
                             value="",
                             id="mc-preset-apply",
                             allow_blank=False,
@@ -1059,7 +1073,7 @@ class ModelConfigBody(Widget):
             # (`#set-error` in settings_screen.py:605 carries a comment about
             # being yielded unconditionally so `query_one` always finds it —
             # same reason here.)
-            yield Static("", id="mc-error")
+            yield Static("", id="mc-error", markup=False)
             # Outside the tabs, on its own line: this dialog has no button row
             # to sit in, and a control inside one TabPane would vanish when the
             # user changed tab — visible on Info, gone on Load.
@@ -1074,16 +1088,16 @@ class ModelConfigBody(Widget):
             if kind == "tri":
                 choices = [(blank_label, ""), ("on", "true"), ("off", "false")]
                 value = "" if current is None else ("true" if current else "false")
-                yield Select(choices, value=value, id=wid,
+                yield Select(literal_options(choices), value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "spec-select":
                 choices = [("unset (legacy / server default)", ""), *extra]
-                yield Select(choices, value=current or "", id=wid,
+                yield Select(literal_options(choices), value=current or "", id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "select":
                 choices = [(blank_label, "")] + [(c, c) for c in extra]
                 value = current if current in (extra or []) else ""
-                yield Select(choices, value=value, id=wid,
+                yield Select(literal_options(choices), value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             else:
                 shown = "" if current is None else str(current)
@@ -1091,7 +1105,7 @@ class ModelConfigBody(Widget):
                 yield Input(value=shown, placeholder=placeholder or "unset",
                             id=wid, disabled=disabled, classes="set-input")
             if note:
-                yield Static(note, classes="set-help")
+                yield Static(note, classes="set-help", markup=False)
 
     # -- state carry across a live host swap --------------------------------
 
@@ -1433,7 +1447,7 @@ def _register(ctx) -> None:
     ctx.command(
         ("/backend",), _cmd_backend,
         palette="Switch backend",
-        help="Choose a local engine, custom endpoint, Codex, or Claude Agent.",
+        help="Choose this conversation's backend; --default also sets the startup default.",
         group="backend",
         order=50,
     )

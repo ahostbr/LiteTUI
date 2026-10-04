@@ -25,7 +25,8 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
             raise LaunchBlocked('Parent ownership changed during child preparation')
         settings = getattr(app, 'settings', None)
         profile = getattr(app, '_active_tool_profile', None) or getattr(settings, 'tool_policy_profile', None)
-        if profile is not None and profile != spec.tool_profile:
+        from litetui.agent_launcher import delegated_profile
+        if profile is not None and delegated_profile(profile) != spec.tool_profile:
             raise LaunchBlocked('Parent authority changed during child preparation')
 
     def notify(event):
@@ -33,8 +34,18 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
         # parent might be in a tool round. The timer owns idle application.
         receipts.replay_from_inbox(parent, inbox=inbox, registry=registry)
 
+    # T1049-B: the child's CONFIRMs come back to THIS parent (plan §5, gate
+    # d47235da): a human's keypress is never timed out, at Ryan's own parent AND at
+    # a hand-launch modal (Dijkstra H1, 18be505a); a locked parent asks its spawner.
+    # The child waits as long as its parent will.
+    from litetui import approval_relay, seat_authority
+    human = seat_authority.confirm_route(app) in ("own", "hand")
+    approval_timeout = 0 if human else int(approval_relay.timeout_s(app)) + 60
     return await run_prepared_child(spec, process, registry=registry, inbox=inbox,
         parent=parent, child_id=child_id, workspace=workspace, data_root=data_root,
         branch=branch, evidence=evidence, supported_levels=supported_levels,
         notify=notify, limit=limit, timeout=timeout, parent_conversation=conversation,
-        prepare=prepare, before_start=before_start)
+        prepare=prepare, before_start=before_start,
+        # getattr: a partial app double has no relay, and keeps the old
+        # "requires a human relay" refusal (every real LiteTUI has the method).
+        on_approval=getattr(app, "approve_for_child", None), approval_timeout=approval_timeout)

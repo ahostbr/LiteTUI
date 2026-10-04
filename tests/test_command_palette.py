@@ -21,8 +21,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as m
 from textual.widgets import Select
+from textual.widgets._header import HeaderIcon
 from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
-from litetui.widgets import ContextFooter, PaletteButton
+from litetui.widgets import ContextFooter
 from textual.command import CommandPalette
 from litetui import paths
 from litetui import scheduler as sched_mod
@@ -52,18 +53,10 @@ def _run(coro):
 
 
 def _table(app):
-    """The provider's table, with the group prefix stripped off the title.
-
-    Rows render as "Backend  >  Switch model" since the palette was grouped
-    (2026-08-22) -- Textual has no section headers, so the group name leads the
-    title. Every assertion in this file is about the ROW: that it exists, and
-    that running it reaches the right handler. Matching the decorated label
-    instead would make each of them a test of the prefix, which is already
-    covered by tests/test_palette_groups.py.
-    """
+    """The provider's table with its trailing group label removed."""
     provider = m.LiteTUICommands(app.screen)
     return [
-        (title.split("›")[-1].strip(), help_text, run)
+        (title.split(" · ")[0], help_text, run)
         for title, help_text, run in provider._commands()
     ]
 
@@ -76,8 +69,8 @@ def test_the_provider_is_registered_on_the_app():
     assert m.LiteTUICommands in m.LiteTUI.COMMANDS, (
         "a Provider class nobody registers is not in any palette"
     )
-    # And the stock providers survive — extending must not replace.
-    assert len(m.LiteTUI.COMMANDS) > 1
+    # The stock Theme row is replaced by our registry row, not duplicated.
+    assert m.LiteTUI.COMMANDS == {m.LiteTUICommands}
 
 
 def test_the_palette_covers_the_features_it_was_missing():
@@ -160,6 +153,58 @@ def test_search_finds_the_calendar_and_scores_it():
     _run(body())
 
 
+def test_pinned_and_alphabetical_order_with_and_without_search():
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)):
+            provider = m.LiteTUICommands(a.screen)
+            titles = [t for t, _h, _r in _table(a)]
+            assert titles[:2] == ["Settings", "Theme"]
+            assert titles[2:] == sorted(titles[2:], key=str.casefold)
+
+            hits = [h async for h in provider.search("the")]
+            matched = [h.text.split(" · ")[0] for h in hits]
+            assert matched[0] == "Theme"
+            assert "Settings" not in matched  # unrelated pinned rows stay filtered
+            assert matched[1:] == sorted(matched[1:], key=str.casefold)
+            settings_hits = [h async for h in provider.search("set")]
+            assert settings_hits[0].text.split(" · ")[0] == "Settings"
+            assert [h.score for h in hits] == sorted(
+                (h.score for h in hits), reverse=True
+            ), "Textual's score sort must retain our ordering"
+
+            unrelated = [h async for h in provider.search("calendar")]
+            assert "Settings" not in [h.text.split(" · ")[0] for h in unrelated]
+            assert "Theme" not in [h.text.split(" · ")[0] for h in unrelated]
+
+            family = [h async for h in provider.search("backend")]
+            assert family and all("Backend" in h.text for h in family)
+            assert any(h.text.startswith("Switch backend · ") for h in family)
+            # The suffix is dim in discovery and search, while matched group
+            # characters keep their fuzzy highlight above that base style.
+            display = family[0].match_display
+            group_start = display.plain.index(" · ") + 3
+            assert display.get_style_at_offset(group_start).dim
+            assert display.get_style_at_offset(group_start).reverse
+            discovered = [h async for h in provider.discover()]
+            assert discovered[0].display.get_style_at_offset(
+                discovered[0].text.index(" · ") + 3
+            ).dim
+    _run(body())
+
+
+def test_theme_row_delegates_to_textual_theme_picker():
+    async def body():
+        a = make_app()
+        async with a.run_test(size=(190, 48)) as pilot:
+            run = next(run for title, _help, run in _table(a) if title == "Theme")
+            run()
+            await pilot.pause()
+            assert isinstance(a.screen, CommandPalette)
+            assert "ThemeProvider" in [type(p).__name__ for p in a.screen._providers]
+    _run(body())
+
+
 def test_search_for_nonsense_finds_nothing():
     async def body():
         a = make_app()
@@ -229,18 +274,14 @@ def test_running_the_tools_row_opens_the_list_and_does_NOT_toggle():
 
 
 def test_the_real_palette_reaches_our_rows():
-    """click the footer button, type, enter — the stock palette UI on OUR rows.
+    """Click the header icon, type, enter — the stock palette UI on OUR rows.
 
-    🔴 THIS DROVE ctrl+p UNTIL T573, AND THE EXPECTATION IS STALE BY RULING,
-    NOT BY ACCIDENT. T558 (9660da1) took ctrl+p for plan mode and the palette
-    lost its only route; the user chose which one keeps the key — liteask
-    a-5d6c1ca0, 2026-09-10 21:3x: "Keep plan on Ctrl+P, move the palette —
-    palette via click only". So the door this arm drives moved on purpose.
+    Ctrl+P remains plan mode; Textual's header icon is the mouse route.
     """
     async def body():
         a = make_app()
         async with a.run_test(size=(190, 48)) as pilot:
-            await pilot.click(PaletteButton)
+            await pilot.click(HeaderIcon)
             await pilot.pause()
             for ch in "calendar":
                 await pilot.press(ch)
@@ -345,109 +386,28 @@ def test_the_palette_is_reachable_at_all():
     async def body():
         a = make_app()
         async with a.run_test(size=(190, 48)) as pilot:
-            await pilot.click(PaletteButton)
+            await pilot.click(HeaderIcon)
             for _ in range(20):
                 await pilot.pause()
                 if isinstance(a.screen, CommandPalette):
                     break
             assert isinstance(a.screen, CommandPalette), (
-                "clicking the footer button did not open the palette; the screen "
+                "clicking the header icon did not open the palette; the screen "
                 f"stack is {[type(s).__name__ for s in a.screen_stack]}"
             )
     _run(body())
 
 
-def test_the_palette_button_is_a_button_not_a_bar():
-    """`width: auto` on .palette-button, pinned.
-
-    Without it `dock: right` alone gives the button the FULL footer width — it
-    still works, because it is composed last and wins the hit test, so every
-    behavioural arm above stays green while a bold 190-column bar sits across
-    the footer. Appearance was the thing no arm here could see, which is
-    exactly how it shipped unnoticed in the label beside it (that one is
-    Region(x=0, width=190) to this day and is NOT changed by this commit).
-    """
+def test_footer_has_no_commands_button_and_header_opens_palette():
     async def body():
         a = make_app()
         async with a.run_test(size=(190, 48)) as pilot:
-            # ⚠️ GEOMETRY IS AWAITED, NOT READ ON THE NEXT LINE. This arm
-            # failed once inside the full-file run and passed alone: layout had
-            # not settled on the first pause, so it measured the pre-layout
-            # width. A single pause is a bet on how loaded the box is, which is
-            # the same trap T565 was about -- wait for the value to exist.
-            button = a.screen.query_one(PaletteButton)
-            # Two separate questions, and conflating them is what made this arm
-            # flaky: FIRST wait for layout to have happened at all (region is
-            # 0x0 until it has), THEN judge the size. The bound is generous
-            # because the slow case is real -- the first run after an edit
-            # recompiles the module and startup takes measurably longer, which
-            # is how this failed twice while passing 3x on the runs after.
-            for _ in range(200):
-                if button.region.width:
-                    break
-                await pilot.pause()
-            assert button.region.width, (
-                "the palette button never got a layout pass, so its size says "
-                "nothing; this is a harness problem, not a width problem"
-            )
-            assert 0 < button.region.width < 40, (
-                f"the palette button is {button.region.width} columns wide; "
-                "it should size to its label, not span the footer"
-            )
-    _run(body())
-
-
-def test_every_clickable_footer_widget_owns_its_own_cells():
-    """A control that does not own its cells is a control nobody can click.
-
-    🔴 THIS IS THE INVARIANT, NOT "nothing overlaps" (T578). Overlap is not
-    satisfiable here and the card was wrong to ask for it: `.ctx-label` is
-    Region(x=0, width=190) — the full footer row — and `dock: right` on a
-    sibling does not stack, it places both against the same edge, so the label
-    and the palette button cover the same cells BY DESIGN. Adding `width: auto`
-    to the label does not fix that either; measured, the label becomes
-    Region(x=103, width=87) and still covers the button at 176..190.
-
-    What keeps the button clickable is that `ContextFooter` composes it LAST, so
-    it wins the hit test on the cells they share — which was an undocumented
-    ordering constraint until this arm. The next clickable chip composed BEFORE
-    the label would render, report visible and display True, hold a non-zero
-    region, and never receive a click; no behavioural arm can see that, because
-    the widget is perfect and only the hit test disagrees.
-
-    So the question asked here is the one a mouse asks: for every cell of every
-    clickable child, who does `get_widget_at` say is there?
-    """
-    async def body():
-        a = make_app()
-        async with a.run_test(size=(190, 48)) as pilot:
-            # Layout first and judged separately — a region is 0x0 until it has
-            # happened, and cell ownership before then means nothing.
-            for _ in range(200):
-                if a.screen.query_one(PaletteButton).region.width:
-                    break
-                await pilot.pause()
             footer = a.screen.query_one(ContextFooter)
-            # DESCENDANTS, not children: the two footer buttons live in one
-            # right-docked Horizontal (widgets.ContextFooter.compose - two
-            # right-docked siblings share cells), and an arm that enumerated
-            # children only would measure nothing and say so.
-            clickable = [c for c in footer.query("*")
-                         if hasattr(type(c), "on_click") and c.region.area]
-            assert clickable, (
-                "no clickable footer widget was found laid out; this arm is "
-                "measuring nothing"
-            )
-            for widget in clickable:
-                stolen = []
-                for x in range(widget.region.x, widget.region.right):
-                    hit = a.screen.get_widget_at(x, widget.region.y)
-                    if hit and hit[0] is not widget:
-                        stolen.append((x, type(hit[0]).__name__))
-                assert not stolen, (
-                    f"{type(widget).__name__} {widget.region} does not own "
-                    f"{len(stolen)} of its cells — {stolen[:4]} — so a click "
-                    "there goes to the other widget. Compose it after the "
-                    "widget that covers it, or stop that widget covering it."
-                )
+            assert "commands" not in " ".join(str(w.content) for w in footer.query("Static"))
+            await pilot.click(HeaderIcon)
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(a.screen, CommandPalette):
+                    break
+            assert isinstance(a.screen, CommandPalette)
     _run(body())
