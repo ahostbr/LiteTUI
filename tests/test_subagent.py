@@ -334,4 +334,3 @@ class TestRunner:
             run({"prompt": "hello", "model": "small-child"})
 
         assert captured["body"]["model"] == "small-child"
-
