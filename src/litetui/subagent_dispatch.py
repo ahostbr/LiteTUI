@@ -17,6 +17,7 @@ from litetui.settings_runtime import service_for
 from litetui.subagent_routing import LOCAL_BACKENDS, resolve_route
 
 CHILD_TIMEOUT = 600
+CLEANUP_TIMEOUT = 30
 
 
 def _safe_error(error):
@@ -33,12 +34,19 @@ class ChildError(model_transport.ProviderError):
 
 
 async def _close(backend):
-    close = getattr(backend, 'close', None)
-    if close is not None:
-        await close()
-    server = getattr(backend, 'app_server', None)
-    if server is not None:
-        await server.close()
+    errors = []
+    resources = [backend, getattr(backend, 'app_server', None)]
+    for resource in resources:
+        close = getattr(resource, 'close', None)
+        if close is None:
+            continue
+        try:
+            async with asyncio.timeout(CLEANUP_TIMEOUT):
+                await close()
+        except Exception as exc:  # noqa: BLE001 - close every owned resource before reporting
+            errors.append(_safe_error(exc))
+    if errors:
+        raise ChildError('; '.join(errors))
 
 
 async def _execute(backend, payload):
@@ -65,7 +73,10 @@ async def _openai(backend, payload):
         request['reasoning_effort'] = effort
     # ClinePass refreshes its own credentials at request time. FreeBackend's
     # HTTP client owns the FreeRouter and cannot route into a paid endpoint.
-    key = getattr(backend, 'api_key_provider', None) or backend.api_key()
+    key = getattr(backend, 'api_key_provider', None)
+    if key is None:
+        provider = getattr(backend, 'api_key', None)
+        key = provider() if callable(provider) else 'litetui'
     options = {'base_url': backend.base_url(), 'api_key': key, 'max_retries': 0, 'timeout': 600}
     http_client = getattr(backend, 'http_client', None)
     if callable(http_client):
@@ -101,8 +112,16 @@ async def _claude(backend, payload):
         if levels:
             options['effort'] = levels[0]
     with tempfile.TemporaryDirectory(prefix='litetui-claude-child-') as cwd:
-        session = ClaudeSession(await backend._options(cwd=cwd, **options))
+        sdk_options = await backend._options(cwd=cwd, **options)
+        if payload.get('max_tokens') is not None:
+            # Supported Claude Code child-process setting, not a process-wide
+            # environment mutation. Preserve the backend's cache/safety env.
+            sdk_options.env = {**sdk_options.env,
+                               'CLAUDE_CODE_MAX_OUTPUT_TOKENS': str(payload['max_tokens'])}
+        session = ClaudeSession(sdk_options)
         text, usage = [], {}
+        completed = False
+        failure = None
         try:
             async with asyncio.timeout(CHILD_TIMEOUT):
                 await session.start()
@@ -116,14 +135,24 @@ async def _claude(backend, payload):
                     elif kind == 'ResultMessage':
                         if getattr(message, 'is_error', False):
                             raise ChildError('Claude child reported an unsuccessful result; check Claude auth/provider availability')
+                        completed = True
                         usage = getattr(message, 'usage', None) or {}
                         if not text and getattr(message, 'result', None):
                             text.append(message.result)
+                if not completed:
+                    raise ChildError('Claude child stream ended without a terminal result')
+        except Exception as exc:
+            failure = exc
+            raise
         finally:
-            await session.close()
-            errors = session.lifecycle.cleanup_errors
-            if errors:
-                raise ChildError('Claude child cleanup failed; an owned session could not close cleanly')
+            # ClaudeSession owns its bounded subprocess cleanup/escalation.
+            try:
+                await session.close()
+                if session.lifecycle.cleanup_errors:
+                    raise ChildError('an owned session could not close cleanly')
+            except Exception as exc:
+                detail = f'; initial failure: {_safe_error(failure)}' if failure else ''
+                raise ChildError(f'Claude child cleanup failed: {_safe_error(exc)}{detail}') from exc
     return {'choices': [{'message': {'content': '\n'.join(text), 'reasoning_content': ''}}],
             'usage': {'completion_tokens': usage.get('output_tokens')}}
 
@@ -152,22 +181,39 @@ def complete_child(app, payload, *, explicit_model=None, explicit_backend=None):
     request = dict(payload, model=route['model'])
 
     async def run():
+        failure = None
         try:
             if route['backend'] in LOCAL_BACKENDS:
-                raise ChildError('Local subagent admission is not enabled yet')
-            ready = getattr(backend, 'ensure_chat_ready', None)
-            if ready:
-                await ready(route['model'])
+                from litetui.subagent_local import admit_local
+                try:
+                    # Refresh the flag too: another window can revoke it.
+                    _, enabled = service_for(app).global_value('allow_local_subagents')
+                    await admit_local(backend, route['model'], enabled)
+                    if route['backend'] == 'lmstudio':
+                        try:
+                            model_transport._refuse_unsupported_local_lm(backend)
+                        except Exception as exc:
+                            raise ChildError('LM Studio local subagents are unsupported until the usage/lease protocol lands; a resident check cannot prevent request-time JIT loading after eviction') from exc
+                except ValueError as exc:
+                    raise ChildError(str(exc)) from exc
+                # Never call ensure_chat_ready on a local child: some providers
+                # implement it by loading, which would undo admission above.
             else:
-                await backend.ensure_running()
+                ready = getattr(backend, 'ensure_chat_ready', None)
+                if ready:
+                    await ready(route['model'])
+                else:
+                    await backend.ensure_running()
             result = await _execute(backend, request)
             return dict(result, backend=route['backend'], model=route['model'])
         except Exception as exc:
+            failure = exc
             raise ChildError(f"{route['backend']} subagent: {_safe_error(exc)}") from exc
         finally:
             try:
                 await _close(backend)
             except Exception as exc:
-                raise ChildError(f"{route['backend']} subagent cleanup: {_safe_error(exc)}") from exc
+                detail = f'; initial failure: {_safe_error(failure)}' if failure else ''
+                raise ChildError(f"{route['backend']} subagent cleanup: {_safe_error(exc)}{detail}") from exc
 
     return asyncio.run(run())

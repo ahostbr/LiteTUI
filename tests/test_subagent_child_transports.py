@@ -77,7 +77,7 @@ async def test_claude_child_is_isolated_no_tools_and_closes_owned_session(monkey
     terminal.usage = {'output_tokens': 9}
     class Session:
         def __init__(self, options):
-            captured['options'] = options
+            captured['options'] = vars(options)
             self.lifecycle = SimpleNamespace(cleanup_errors=[])
         async def start(self):
             captured['started'] = True
@@ -89,14 +89,15 @@ async def test_claude_child_is_isolated_no_tools_and_closes_owned_session(monkey
         async def close(self):
             captured['closed'] = True
     async def options(**kwargs):
-        return kwargs
+        return SimpleNamespace(env={'CACHE': 'kept'}, **kwargs)
     monkeypatch.setattr(claude_session, 'ClaudeSession', Session)
     backend = SimpleNamespace(name='claude', _options=options, reasoning_levels=lambda _: ['low', 'high'])
-    result = await dispatch._claude(backend, {'model': 'sonnet', 'reasoning_effort': 'high',
+    result = await dispatch._claude(backend, {'model': 'sonnet', 'reasoning_effort': 'high', 'max_tokens': 1234,
                                            'messages': [{'role': 'system', 'content': 'private system'},
                                                         {'role': 'user', 'content': 'private child prompt'}]})
     assert result['choices'][0]['message']['content'] == 'Claude child answer'
     assert result['usage']['completion_tokens'] == 9
+    assert captured['options']['env'] == {'CACHE': 'kept', 'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '1234'}
     assert captured['options']['tools'] == []
     assert captured['options']['permission_mode'] == 'dontAsk'
     assert captured['options']['effort'] == 'high'
@@ -126,7 +127,7 @@ async def test_claude_deadline_covers_start_and_query_and_closes(stage, monkeypa
         async def close(self):
             closed.append(True)
     async def options(**kwargs):
-        return kwargs
+        return SimpleNamespace(env={'CACHE': 'kept'}, **kwargs)
     monkeypatch.setattr(claude_session, 'ClaudeSession', Session)
     monkeypatch.setattr(dispatch, 'CHILD_TIMEOUT', 0.01)
     backend = SimpleNamespace(_options=options)
@@ -148,3 +149,47 @@ def test_runner_uses_cross_backend_result_label_without_parent_change(tmp_path, 
     assert 'Codex uses its minimum' in result
     assert host.model_id == 'opus'
     assert host.backend.name == 'claude'
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['raise', 'hang'])
+async def test_cleanup_attempts_server_even_if_backend_fails(failure, monkeypatch):
+    import asyncio
+
+    closed = []
+    async def backend_close():
+        if failure == 'hang':
+            await asyncio.Event().wait()
+        raise RuntimeError('private failure')
+    async def server_close():
+        closed.append(True)
+    backend = SimpleNamespace(close=backend_close, app_server=SimpleNamespace(close=server_close))
+    monkeypatch.setattr(dispatch, 'CLEANUP_TIMEOUT', 0.01)
+    with pytest.raises(dispatch.ChildError):
+        await dispatch._close(backend)
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_claude_stream_without_terminal_is_failure_and_closes(monkeypatch):
+    from litetui import claude_session
+
+    closed = []
+    class Session:
+        lifecycle = SimpleNamespace(cleanup_errors=[])
+        def __init__(self, options):
+            pass
+        async def start(self):
+            pass
+        async def query(self, id, prompt):
+            pass
+        async def events(self):
+            if False:
+                yield
+        async def close(self):
+            closed.append(True)
+    async def options(**kwargs):
+        return SimpleNamespace(**kwargs)
+    monkeypatch.setattr(claude_session, 'ClaudeSession', Session)
+    with pytest.raises(dispatch.ChildError, match='terminal result'):
+        await dispatch._claude(SimpleNamespace(_options=options), {'model': 'sonnet', 'messages': []})
+    assert closed == [True]

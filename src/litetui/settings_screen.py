@@ -1052,7 +1052,8 @@ class SettingsBody(Widget):
                         yield from self._switch_row(
                             "allow_local_subagents", "Allow local subagents · expert only",
                             "Use only if you know what you're doing: local subagents can run you out of GPU memory. "
-                            "Children never load models; the selected model must already be resident and nothing may be loading.",
+                            "Children never load models; the selected model must already be resident and nothing may be loading. "
+                            "Local LM Studio remains unsupported until its usage/lease protocol lands.",
                         )
                         yield from self._text_row(
                             "subagent_route_override", "Conversation subagent override",

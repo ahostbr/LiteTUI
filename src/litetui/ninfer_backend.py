@@ -802,6 +802,11 @@ class NInferBackend(_VramGate):
 
         return _merged_overrides(self._settings, key)
 
+    def subagent_model_states(self) -> dict[str, str]:
+        # NInfer serves exactly one startup-loaded artifact; an unfinished
+        # startup cannot answer its model endpoint and therefore fails closed.
+        return {row.key: 'loaded' for row in self._list_sync()}
+
     def loaded_models(self) -> list[str]:
         """Ids resident right now. Read-only; starts nothing.
 

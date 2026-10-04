@@ -70,6 +70,16 @@ class CustomBackend:
     async def list_models(self):
         return await asyncio.to_thread(self._rows)
 
+    def subagent_model_states(self):
+        body = self._get('/models')
+        rows = body.get('data') if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise BackendError('Cannot verify custom server model status')
+        # Generic OpenAI /models does not promise residency. A model id alone
+        # is never enough to grant local child admission.
+        return {row['id']: (row.get('status') or {}).get('value', 'unknown')
+                for row in rows if isinstance(row, dict) and isinstance(row.get('id'), str)}
+
     def loaded_models(self):
         return [r.key for r in self._rows() if r.loaded]
 
