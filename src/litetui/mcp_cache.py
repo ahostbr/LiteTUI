@@ -40,7 +40,7 @@ class ToolCache:
         try:
             doc = json.loads(self._path(root, name).read_text(encoding="utf-8"))
             tools = doc["tools"]
-            if (doc["key"] == cache_key(root, cfg) and isinstance(tools, list)
+            if (doc["key"] == cache_key(root, cfg) and isinstance(tools, list) and tools
                     and all(isinstance(t, dict) and isinstance(t.get("name"), str)
                             and isinstance(t.get("inputSchema", {}), dict) for t in tools)):
                 return tools
@@ -49,6 +49,8 @@ class ToolCache:
         return None
 
     def write(self, root: Path, name: str, cfg: dict, tools: list[dict]) -> None:
+        if not tools:
+            return  # an empty list is not a discovered inventory
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self._path(root, name)
         temporary = None

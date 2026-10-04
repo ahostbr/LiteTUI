@@ -16,3 +16,13 @@ def server_selection(value: str | None) -> frozenset[str] | None:
 
 def selected(name: str, servers: frozenset[str] | None) -> bool:
     return servers is None or name in servers
+
+
+def warn_unknown(servers: frozenset[str] | None, configured) -> None:
+    """A misspelled invocation subset must not silently look like an empty project."""
+    import warnings
+    if servers is not None:
+        unknown = servers - set(configured)
+        if unknown:
+            warnings.warn("Unknown seat MCP server(s): " + ", ".join(sorted(unknown)),
+                          RuntimeWarning, stacklevel=2)

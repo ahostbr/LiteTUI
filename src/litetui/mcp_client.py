@@ -807,6 +807,7 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         #: SHORT lock guarding the claim flag only, so a second caller discovers
         #: "busy" instantly instead of waiting behind a long operation.
         self._claim_lock = threading.Lock()
+        self._claim_changed = threading.Condition(self._claim_lock)
         #: Non-blocking exclusion claim: exactly one lifecycle op (connect/
         #: disconnect/reconnect/reconcile) at a time. A second caller reports
         #: busy rather than blocking or cancelling the first.
@@ -863,12 +864,17 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         (reconcile/add/remove reuse it without re-claiming)."""
         cfg_paths = config_files(self.root)
         servers, file_errors = read_server_configs(cfg_paths)
-        self.configs = servers
+        from litetui.mcp_seat import warn_unknown
+        warn_unknown(self.seat_servers, servers)
+        pending = {}
+        for name, sc in servers.items():
+            if self._can_defer(name, sc):
+                pending[name] = self.cache.read(self.root, name, sc) or []
+        # Cache I/O takes place before the atomic routing snapshot swap.
         with self._servers_lock:
-            self._lazy_tools.clear()
-            self._lazy_pending.clear()
-        for name in servers:
-            self.defer_start(name)
+            self.configs = servers
+            self._lazy_tools = pending
+            self._lazy_pending = set(pending)
         self.failures.update(file_errors)
         return servers
 
@@ -900,11 +906,14 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         from litetui.mcp_seat import selected
         return selected(name, self.seat_servers) and self.enabled(name)
 
+    def _can_defer(self, name: str, sc) -> bool:
+        return not (self._closing or name in self._lazy_suppressed or not self.lazy
+                or not self.allowed(name) or not isinstance(sc, dict)
+                or sc.get("disabled") or not sc.get("command") or name in self.servers)
+
     def defer_start(self, name: str) -> bool:
         sc = self.configs.get(name)
-        if (self._closing or name in self._lazy_suppressed or not self.lazy
-                or not self.allowed(name) or not isinstance(sc, dict)
-                or sc.get("disabled") or not sc.get("command") or name in self.servers):
+        if not self._can_defer(name, sc):
             return False
         tools = self.cache.read(self.root, name, sc) or []
         with self._servers_lock:
@@ -917,13 +926,22 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             return sorted(name for name in self._lazy_pending if self.allowed(name))
 
     def load_tools(self, query: str, hits: list[dict]) -> str | None:
-        """Start cached selections, or discover a cold server by exact name."""
+        """Start matched tools; discover cold inventories on an unmatched search."""
         wanted = {s["function"]["name"] for s in hits}
-        for name in self.lazy_names():
+        names = self.lazy_names()
+        exact_server = query.strip() in names
+        for name in names:
             prefix = f"mcp__{name}__"
-            if query.strip() != name and not any(n.startswith(prefix) for n in wanted):
+            with self._servers_lock:
+                cold = not self._lazy_tools.get(name)
+            q = query.strip()
+            explicit = q.lower().startswith("select:")
+            selected = any(n.startswith(prefix) for n in wanted)
+            if explicit:
+                selected = selected or any(n.strip().startswith(prefix) for n in q[7:].split(","))
+            if q != name and not selected and not (cold and not hits and not explicit and not exact_server):
                 continue
-            err = self.connect(name)
+            err = self._connect_lazy(name)
             if err:
                 return f"[error] mcp {name}: {err}"
         return None
@@ -983,7 +1001,7 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             self._lazy_suppressed.discard(name)
             self._lazy_pending.discard(name)
             self._lazy_tools.pop(name, None)
-        if sc.get("command"):
+        if sc.get("command") and srv.tools:
             try:
                 self.cache.write(self.root, name, sc, srv.tools)
             except (OSError, ValueError, TypeError) as exc:
@@ -1054,8 +1072,25 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             return True
 
     def _release_claim(self) -> None:
-        with self._claim_lock:
+        with self._claim_changed:
             self._maint_active = False
+            self._claim_changed.notify_all()
+
+    def _connect_lazy(self, name: str) -> str | None:
+        """Tool startup waits behind maintenance; explicit lifecycle verbs stay fail-fast."""
+        with self._claim_changed:
+            if not self._claim_changed.wait_for(lambda: not self._maint_active, CALL_TIMEOUT):
+                return "timed out waiting for MCP maintenance"
+            self._maint_active = True
+        try:
+            with self._op_lock:
+                with self._servers_lock:
+                    available = name in self.servers or name in self._lazy_pending
+                if not available:
+                    return "server disconnected while waiting for MCP startup"
+                return self._connect_locked(name)
+        finally:
+            self._release_claim()
 
     def connect(self, name: str) -> str | None:
         """Public: claim-guarded single connect. Raises MCPBusy if a maintenance
@@ -1277,7 +1312,7 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                     if not available or not self.allowed(server):
                         raise MCPError("server disconnected or excluded by this seat")
                     if server not in self.servers:
-                        err = self.connect(server)
+                        err = self._connect_lazy(server)
                         if err:
                             raise MCPError(err)
                     srv = self.servers[server]

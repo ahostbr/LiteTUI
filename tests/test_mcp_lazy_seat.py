@@ -112,7 +112,6 @@ def test_cold_cache_discovers_only_explicit_server(setup):
     manager = MCPManager(root, lazy=True)
     manager.load()
     reg = registry(manager)
-    assert "no deferred" in _run(reg, {"query": "inspect"}, manager)
     assert starts == []
     assert "Loaded 1" in _run(reg, {"query": "srv"}, manager)
     assert starts == ["srv"]
@@ -160,7 +159,7 @@ def test_failed_lazy_load_not_reported_as_loaded(setup, monkeypatch):
     manager = MCPManager(root, lazy=True)
     manager.cache.write(root, "srv", cfg, TOOLS)
     manager.load()
-    monkeypatch.setattr(manager, "connect", lambda name: "test startup failed")
+    monkeypatch.setattr(manager, "_connect_lazy", lambda name: "test startup failed")
     reg = registry(manager)
     result = _run(reg, {"query": "select:mcp__srv__inspect"}, manager)
     assert result.startswith("[error]") and "test startup failed" in result
@@ -230,3 +229,115 @@ def test_cache_stamps_args_in_configured_server_cwd(tmp_path):
     key = cache_key(tmp_path, cfg)
     script.write_text("changed-size")
     assert cache_key(tmp_path, cfg) != key
+
+
+@pytest.mark.parametrize("names", [("srv", "srv"), ("srv", "other")])
+def test_parallel_first_calls_wait_and_all_succeed(setup, monkeypatch, names):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    root, cfg, starts = setup
+    entered, release = threading.Event(), threading.Event()
+    class SlowServer(FakeServer):
+        def start(self):
+            super().start()
+            entered.set()
+            assert release.wait(5)
+    monkeypatch.setattr(MCPManager, "_build", lambda self, name, cfg: SlowServer(name, starts))
+    manager = MCPManager(root, lazy=True)
+    manager.load()
+    calls = [manager.dispatch_for(f"mcp__{name}__inspect") for name in names]
+    waiting = threading.Event()
+    original_wait = manager._claim_changed.wait_for
+    def observe_wait(*args):
+        if manager._maint_active:
+            waiting.set()
+        return original_wait(*args)
+    monkeypatch.setattr(manager._claim_changed, "wait_for", observe_wait)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(calls[0], {})
+        assert entered.wait(5)
+        second = pool.submit(calls[1], {})
+        try:
+            assert waiting.wait(5), "second first-call must overlap startup"
+        finally:
+            release.set()
+        assert first.result(5) == '["inspect", {}]'
+        assert second.result(5) == '["inspect", {}]'
+    assert sorted(starts) == sorted(set(names))
+    manager.stop_all()
+
+
+def test_cold_keyword_search_discovers_and_caches_once(setup):
+    root, cfg, starts = setup
+    manager = MCPManager(root, lazy=True)
+    manager.load()
+    reg = registry(manager)
+    assert "Loaded 2" in _run(reg, {"query": "inspect"}, manager)
+    assert sorted(starts) == ["other", "srv"]
+    for name in ("srv", "other"):
+        assert manager.cache.read(root, name, cfg) == TOOLS
+    manager.stop_all()
+    warm = MCPManager(root, lazy=True)
+    warm.load()
+    assert len(warm.tool_specs()) == 2
+    assert len(starts) == 2  # warm discovery never starts the processes
+    warm.stop_all()
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_unknown_selected_server_warns(setup, native):
+    root, cfg, starts = setup
+    selection = frozenset({"typo"})
+    with pytest.warns(RuntimeWarning, match="Unknown seat MCP server.*typo"):
+        if native:
+            config_overrides(root, selection)
+        else:
+            manager = MCPManager(root, seat_servers=selection, lazy=True)
+            manager.load()
+    assert starts == []
+
+
+def test_empty_inventory_remains_cold(setup, monkeypatch):
+    root, cfg, starts = setup
+    class EmptyServer(FakeServer):
+        tools = []
+        def __init__(self, name, starts):
+            super().__init__(name, starts)
+            self.tools = []
+    monkeypatch.setattr(MCPManager, "_build", lambda self, name, cfg: EmptyServer(name, starts))
+    manager = MCPManager(root, lazy=True)
+    manager.load()
+    assert manager.connect("srv") is None
+    assert manager.cache.read(root, "srv", cfg) is None
+    manager.cache.write(root, "other", cfg, [])
+    assert manager.cache.read(root, "other", cfg) is None
+    manager.stop_all()
+
+
+def test_pending_inventory_reload_keeps_routing_until_atomic_swap(setup, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    root, cfg, starts = setup
+    manager = MCPManager(root, lazy=True)
+    manager.cache.write(root, "srv", cfg, TOOLS)
+    manager.load()
+    entered, release = threading.Event(), threading.Event()
+    original = manager.cache.read
+    def slow_read(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+    monkeypatch.setattr(manager.cache, "read", slow_read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reload = pool.submit(manager.reload_configs)
+        assert entered.wait(5)
+        # The old snapshot remains visible during disk reads.
+        call = manager.dispatch_for("mcp__srv__inspect")
+        assert call is not None
+        assert manager.tool_specs()[0]["function"]["name"] == "mcp__srv__inspect"
+        invocation = pool.submit(call, {})
+        release.set()
+        reload.result(5)
+        assert invocation.result(5) == '["inspect", {}]'
+    assert starts == ["srv"]
+    manager.stop_all()

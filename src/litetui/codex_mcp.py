@@ -67,11 +67,13 @@ def _toml(value) -> str:
 
 
 def config_overrides(cwd: Path, seat_servers: frozenset[str] | None = None) -> tuple[str, ...]:
-    from litetui.mcp_seat import selected
+    from litetui.mcp_seat import selected, warn_unknown
     path = project_config(cwd)
     if path is None:
+        warn_unknown(seat_servers, ())
         return tuple(f"mcp_servers.{name}.enabled=false" for name in PROJECT_SERVERS)
     servers = _servers(path) or {}
+    warn_unknown(seat_servers, servers)
     overrides = []
     names = dict.fromkeys((*PROJECT_SERVERS, *(servers if seat_servers is not None else ())))
     for name in names:
