@@ -59,3 +59,44 @@ def test_corrupt_owned_catalog_does_not_create_index(tmp_path):
     with pytest.raises(StoreError):
         search.build_index()
     assert not Path(search.DB_PATH).exists()
+
+
+@pytest.mark.parametrize('verb', ['query', 'show', 'raw', 'plugin-index-query'])
+def test_direct_cli_refreshes_owned_source_once(tmp_path, monkeypatch, capsys, verb):
+    import sys
+    search = engine(tmp_path)
+    legacy = transcript(tmp_path / '.convos' / CID, 'legacyword')
+    search.build_index()
+    before = legacy.read_bytes()
+    with create(tmp_path, 'QuietHelm', agent_id=AID, backend='codex', model='fixture', thinking_level='high') as session:
+        owned = transcript(session.conversation_directory(CID), 'owned-word')
+        os.utime(owned, ns=(legacy.stat().st_atime_ns, legacy.stat().st_mtime_ns))
+        assert owned.stat().st_size == legacy.stat().st_size
+        args = {'query': ['owned-word'], 'show': ['--show', CID],
+                'raw': ['--raw', CID, 'owned-word'],
+                'plugin-index-query': ['--index', 'owned-word']}[verb]
+        monkeypatch.setattr(sys, 'argv', ['convo_search', *args])
+        capsys.readouterr()
+        search.main()
+        output = capsys.readouterr()
+        assert 'owned-word' in output.out
+        assert 'legacyword' not in output.out
+        assert 'indexed ' not in output.out
+        assert output.err.count('indexed ') == 1
+    assert legacy.read_bytes() == before
+    assert {p.name for p in legacy.parent.iterdir()} == {'convo.jsonl'}
+
+
+@pytest.mark.parametrize('args', [[], ['--raw', CID]])
+def test_empty_or_invalid_cli_does_not_create_index(tmp_path, monkeypatch, capsys, args):
+    import sys
+    search = engine(tmp_path)
+    monkeypatch.setattr(sys, 'argv', ['convo_search', *args])
+    if args:
+        with pytest.raises(SystemExit) as error:
+            search.main()
+        assert error.value.code == 2
+    else:
+        search.main()
+        assert 'usage:' in capsys.readouterr().out
+    assert not list(tmp_path.iterdir())

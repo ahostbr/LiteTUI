@@ -256,20 +256,8 @@ def build_index(force=False):
             conn.execute('DELETE FROM msgs_fts WHERE convo_id=?', (cid,))
             conn.execute('DELETE FROM convos WHERE id=?', (cid,))
     conn.commit()
-    print(f"indexed {len(convos)} convos, {total} new message rows in {time.time() - t0:.1f}s -> {DB_PATH}")
+    print(f"indexed {len(convos)} convos, {total} new message rows in {time.time() - t0:.1f}s -> {DB_PATH}", file=sys.stderr)
     conn.close()
-
-
-class _Path:
-    def __init__(self, path):
-        self.full = path
-        self.name = os.path.basename(os.path.dirname(path))
-
-    def __fspath__(self):
-        return self.full
-
-    def stat(self):
-        return os.stat(self.full)
 
 
 def open_db():
@@ -444,23 +432,20 @@ def main():
     ap.add_argument("--index", action="store_true", help="incremental index pass, then exit (or before a search)")
     ap.add_argument('--root', type=Path, help='configured durable data root (owned plus read-only archives)')
     args = ap.parse_args()
+    if args.raw and not args.query:
+        ap.error('--raw requires the search pattern as the query argument')
+    if not any((args.query, args.show, args.raw, args.stats, args.index, args.reindex)):
+        ap.print_help()
+        return
     global ROOT, DB_PATH
     if args.root is not None:
         ROOT = args.root.resolve()
         DB_PATH = str(ROOT / '.conversation-search.db')
-    catalog_paths()  # fail closed on corrupt/ambiguous owned catalog even for existing index
-
-    if args.reindex:
-        build_index(force=True)
+    # Every lookup observes the current catalog/source revision, including direct
+    # CLI query/show/raw calls. --index plus a query remains one incremental pass.
+    build_index(force=args.reindex)
+    if args.reindex or (args.index and not any((args.query, args.show, args.raw, args.stats))):
         return
-    if not os.path.exists(DB_PATH):
-        print("no index yet — building…")
-        build_index()
-
-    if args.index:
-        build_index()
-        if not args.query:
-            return
     conn = open_db()
     try:
         if args.stats:

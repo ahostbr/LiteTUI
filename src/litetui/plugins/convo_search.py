@@ -1,13 +1,11 @@
 """convo_search — fleet-ranked search over every LiteHarness conversation.
 
 The engine is the standalone CLI `tools/convo_search.py` (T888): a stdlib-only
-SQLite FTS5 index over the raw .convos transcript layer, maintained
-incrementally. This plugin is a thin dispatch into that CLI so any agent seat
-in this checkout can search the whole fleet's memory without knowing the
-path. Administrative verbs (--index/--reindex) are deliberately NOT exposed
-as tool parameters: rebuilds are a human/maintenance act on the 77MB index,
-not a model decision — the search path is read-only (READ_POLICY) and
-auto-builds the index once if the db is missing.
+SQLite FTS5 index over owned .agents/<Name>/conversations transcripts plus
+read-only legacy archives, maintained incrementally under the configured data
+root. Every lookup refreshes the catalog once; source files are never mutated.
+This plugin dispatches into that CLI without inventing a second storage root.
+Administrative rebuilds (--reindex) are not exposed as tool parameters.
 """
 import subprocess
 import sys

@@ -4,11 +4,11 @@ the user, 2026-09-12 (a-62edbbe0): *"we fix this with per convo settings files j
 that save backend model liteharness-info think level when on codex and
 everything llama and lmstudio support / need for their specifics"*.
 
-🔴 A SIBLING FILE, `.convos/<id>/settings.json`, NOT A BLOCK IN THE TRANSCRIPT.
+🔴 A SIBLING FILE, `.agents/<Name>/conversations/<id>/settings.json`, NOT
+A BLOCK IN THE TRANSCRIPT. Legacy `.convos/<id>/settings.json` is read-only.
 Three reasons, in the order that decided it:
-  1. THE DIRECTORY IS ALREADY THE UNIT. `handoff.md`, `memory.md`, `soul.md` and
-     `memories/` are all siblings of `convo.jsonl` today, so /resume and the
-     handoff flow already carry the directory rather than the transcript.
+  1. THE DIRECTORY IS THE CONVERSATION UNIT. Agent memory.md, soul.md,
+     handoff.md and memories/ now belong to the parent agent home, not a child.
   2. `convo.jsonl` IS APPEND-ONLY. A setting that changes needs last-write-wins;
      putting mutable state in an append log means the current value is "whatever
      the final record happened to say", and every reader replays the log to
@@ -18,10 +18,11 @@ Three reasons, in the order that decided it:
      one on" from inside the transcript would make listing N conversations cost
      the size of N transcripts, for a field the row wants to show.
 
-⚠️ BORN FROM THE GLOBAL DEFAULTS, THEN INDEPENDENT. A new conversation copies
-`settings.json`'s values once; after that a change inside a conversation writes
-HERE and never back to the global file. The global file keeps being the defaults
-plus the knobs that are genuinely app-wide (theme, seat name, dialog style).
+⚠️ Historical conversation snapshots are not execution authority. The owned
+agent home settings.json supplies backend/model/thinking. Normal selection
+changes publish there first; conversation settings retain the contextual knobs
+and historical snapshot. The global file supplies ordinary defaults/app-wide
+preferences and is not rewritten by conversation execution changes.
 """
 
 from __future__ import annotations

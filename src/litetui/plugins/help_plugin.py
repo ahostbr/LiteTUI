@@ -14,7 +14,6 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
-from litetui import paths
 from litetui.settings import THINKING_LEVELS
 from litetui.plugins import PluginManifest
 from litetui.side_panel import SwapButton, close_dialog, present_dialog
@@ -145,9 +144,10 @@ def _cmd_help(app, name: str, arg: str) -> None:
         "drag    select text  |  Ctrl+Shift+C  copy the selection\n"
         "Shift+drag  select with the TERMINAL instead (system clipboard) —\n"
         "        the app captures the mouse, so a plain drag never reaches it\n"
-        f"store: {paths.CONVO_DIR.name}/<uuid>/ holds convo.jsonl, memory.md,\n"
-        f"       soul.md, handoff.md and {paths.MEMORIES_DIR}/ — the agent is told\n"
-        "       its own path in the system prompt and manages them itself\n"
+        "store: .agents/<Name>/ holds memory.md, soul.md, handoff.md and memories/\n"
+        "       conversations/<uuid>/ holds convo.jsonl and conversation settings\n"
+        "       .convos/<uuid>/ is a read-only legacy archive\n"
+        "       the agent is told its owned home path in the system prompt\n"
         "footer: live context usage — ctx used / window"
     )
     present_dialog(app, partial(HelpBody, text), partial(HelpScreen, text))
