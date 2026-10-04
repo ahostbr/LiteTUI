@@ -24,6 +24,8 @@ DESIGN NOTES
 
 from __future__ import annotations
 
+import json
+
 from copy import deepcopy
 from dataclasses import fields, replace
 from functools import partial
@@ -605,6 +607,7 @@ class SettingsBody(Widget):
             help_text = capability.help
         value = getattr(self._start, name)
         shown = "" if value is None else (
+            json.dumps(value) if isinstance(value, dict) else
             ",".join(value) if isinstance(value, list) else str(value)
         )
         with Vertical(classes="set-row"):
@@ -684,7 +687,7 @@ class SettingsBody(Widget):
                 value=current or "",
                 id=f"f-{name}",
                 allow_blank=False,
-                disabled=locked is not None,
+                disabled=locked is not None or bool(capability and not capability.editable),
             )
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
@@ -1043,6 +1046,31 @@ class SettingsBody(Widget):
                         # tab and the other did not exist. the user 2026-09-11 15:1x
                         # runs MiniCPM5-2B resident beside the big model; these
                         # are the two knobs that point work at it.
+                        yield self._section_header("agent-subagent-routing")
+                        from litetui.llm_backend import visible_backends
+                        route = self._start.subagent_route or {}
+                        with Vertical(classes="set-row"):
+                            yield Label("Global subagent backend", classes="set-label")
+                            yield Select(
+                                [("Follow parent", "")] + [(label, key) for key, label in visible_backends()],
+                                value=route.get("backend", ""), id="f-subagent_route", allow_blank=False,
+                            )
+                            yield Label("Global subagent model", classes="set-label")
+                            yield Input(value=route.get("model", ""), id="subagent-route-model",
+                                        placeholder="Exact model id for the selected backend")
+                            yield Static("Shared by all instances. Follow parent resets the global route; "
+                                         "a conversation override still wins.", classes="set-help")
+                        yield from self._switch_row(
+                            "allow_local_subagents", "Allow local subagents · expert only",
+                            "Use only if you know what you're doing: local subagents can run you out of GPU memory. "
+                            "Children never load models; the selected model must already be resident and nothing may be loading. "
+                            "Local LM Studio remains unsupported until its usage/lease protocol lands.",
+                        )
+                        yield from self._text_row(
+                            "subagent_route_override", "Conversation subagent override",
+                            'Blank = no new route override; {} = follow parent; or {"backend":"codex","model":"model-id"}. '
+                            "To inherit global, also clear the legacy subagent model below, or use /subagent-set inherit.",
+                        )
                         yield self._section_header("agent-routing")
                         yield from self._model_pick_row(
                             "subagent_model", "Subagent model",
@@ -1552,6 +1580,24 @@ class SettingsBody(Widget):
                 continue
 
             t = typemap[name]
+            if name == "subagent_route":
+                backend = widget.value
+                model = self.query_one("#subagent-route-model", Input).value.strip()
+                route = {"backend": backend, "model": model} if backend else None
+                from litetui.subagent_routing import validate_route
+                validate_route(route)
+                out.subagent_route = route
+                continue
+            if name == "subagent_route_override":
+                try:
+                    raw = str(widget.value).strip()
+                    route = json.loads(raw) if raw else None
+                    from litetui.subagent_routing import validate_route
+                    validate_route(route, override=True)
+                except ValueError as exc:
+                    raise ValueError(f"subagent_route_override: {exc}") from exc
+                out.subagent_route_override = route
+                continue
             if isinstance(widget, Switch):
                 setattr(out, name, bool(widget.value))
                 continue
@@ -1740,6 +1786,11 @@ class SettingsBody(Widget):
                 continue
             widget = found.first()
             value = deepcopy(getattr(target, name))
+            if name == "subagent_route":
+                self.query_one("#subagent-route-model", Input).value = (value or {}).get("model", "")
+                value = (value or {}).get("backend", "")
+            elif name == "subagent_route_override":
+                value = json.dumps(value) if value is not None else ""
             # An optional-string Select's UNSET state is its blank "" option, not
             # a raw None. The mount already knows this (_model_pick_row and the
             # default_model Select both build `value=current or ""`) and so does

@@ -84,7 +84,7 @@ CONTROLS = {
     ),
     "subagent_model": Control(
         "host",
-        "Model for the LiteTUI subagent tool. Codex native delegation, including Ultra, uses its own engine configuration.",
+        "Legacy conversation-local child model. Clear it to inherit the global route, or use /subagent-set inherit.",
     ),
     "tools_enabled": Control(
         "host", "Controls LiteTUI tools and the native Codex pre-tool policy gate."
@@ -127,6 +127,8 @@ def native(backend):
 
 
 def control(backend, name):
+    if name in {"subagent_route", "subagent_route_override", "allow_local_subagents"}:
+        return Control("host", "LiteTUI subagent routing; global defaults are read on every child call. Conversation overrides take precedence.")
     if getattr(backend, "owns_native_turns", False):
         if name in {"tools_enabled", "tools_disabled"}:
             return Control("host", "Permission changes apply immediately to Claude calls. Advertised tool inventory is fixed for a live session; use /claude new to refresh it.")

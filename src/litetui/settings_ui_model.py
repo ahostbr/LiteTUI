@@ -98,6 +98,9 @@ def _friendly_label(name: str) -> str:
 # The one-line effect of each control. Neither section copy nor a key-to-title
 # transform can say what a numeric budget costs or what a permission changes.
 FIELD_DESCRIPTIONS = {
+    "subagent_route": "One child backend and exact model shared by all instances; conversation overrides win. Follow parent clears the global route.",
+    "subagent_route_override": "Conversation child route: inherit the global route, follow the parent, or select a backend and model. Clear the legacy subagent model to inherit.",
+    "allow_local_subagents": "Expert only: local children can exhaust GPU memory. Never loads models; requires the sole resident model and nothing loading. LM Studio remains unsupported until its usage/lease protocol lands.",
     "default_model": "The model selected when a conversation connects to its engine.",
     "pin_default_model": "Always switch back to your usual model on connect; off only picks it when none is loaded.",
     "default_context_length": "Tokens loaded for the context window; a larger window can cost VRAM and speed.",
@@ -348,9 +351,14 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         ("seed", "stop"), scope="defaults", keywords=("seed", "repeat", "stop strings", "deterministic"),
     ),
     _section(
+        "agent", "Agent loop", "agent-subagent-routing", "Subagents · global route",
+        "One backend and model shared by all instances; conversation overrides win.",
+        ("subagent_route", "allow_local_subagents"), scope="device", keywords=("Codex", "Claude", "global", "subagent", "child", "local"),
+    ),
+    _section(
         "agent", "Agent loop", "agent-routing", "Side-call routing",
         "Point background work at the right resident model.",
-        ("subagent_model", "tool_summary_model"), scope="conversation", keywords=("subagent", "side call", "summary", "child"),
+        ("subagent_route_override", "subagent_model", "tool_summary_model"), scope="conversation", keywords=("subagent", "side call", "summary", "child"),
     ),
     _section(
         "agent", "Agent loop", "agent-execution", "Execution limits",

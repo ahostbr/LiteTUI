@@ -1382,6 +1382,13 @@ class LlamaCppBackend(_VramGate):
         rows.sort(key=lambda r: r.key)
         return rows
 
+    def subagent_model_states(self) -> dict[str, str]:
+        """Read-only admission evidence; never ensure_running or load."""
+        if self._probe_shape() == _SHAPE_SINGLE:
+            return {row.key: 'loaded' if row.loaded else 'unloaded' for row in self._single_rows()}
+        return {key: info.get('status', {}).get('value', 'unknown')
+                for key, info in self._server_models().items()}
+
     def _server_models(self) -> dict[str, dict]:
         try:
             data = _http_json(f"{self.host()}/models")
@@ -1938,6 +1945,19 @@ class LMStudioBackend(_VramGate):
                     return int(loaded_len), m.get("type"), True
                 return int(m.get("max_context_length") or 0) or None, m.get("type"), False
         return None
+
+    def subagent_model_states(self) -> dict[str, str]:
+        """Live native state retains loading, which loaded_models omits."""
+        states = {}
+        for row in self._native_models():
+            key = row.get('id')
+            if not key:
+                continue
+            state = row.get('state') or (row.get('status') or {}).get('value')
+            if state is None:
+                state = 'loaded' if row.get('loaded_context_length') else 'unknown'
+            states[key] = state
+        return states
 
     def loaded_models(self) -> list[str]:
         """Ids LM Studio has RESIDENT right now. Read-only, starts no load.
