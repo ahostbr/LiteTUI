@@ -12,7 +12,7 @@ from pathlib import Path
 from litetui import paths, tool_policy
 
 NATIVE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "AskUserQuestion", "TodoWrite"]
-HOST_TOOLS = frozenset({"chrome", "pccontrol", "studio", "listen", "harness", "convo_search", "skill", "view_image"})
+HOST_TOOLS = frozenset({"chrome", "pccontrol", "studio", "listen", "harness", "convo_search", "skill", "view_image", "subagent"})
 
 
 def _deadlines():

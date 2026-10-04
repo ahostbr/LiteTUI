@@ -5,6 +5,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from litetui import tasks as tasks_mod
 from litetui import tool_schemas
 
@@ -21,6 +23,26 @@ class _FakeResp:
 
     def __exit__(self, *a):
         pass
+
+
+@pytest.fixture(autouse=True)
+def completion_boundary(monkeypatch):
+    # These tests cover prompt/file construction and result rendering, not
+    # provider admission. Actual routing and transports are exercised in
+    # test_subagent_routes/dispatch/child_transports/local_guard.
+    import urllib.request
+
+    from litetui import subagent_dispatch
+    from litetui.plugins import subagent_plugin
+
+    def complete(app, payload, *, explicit_model=None, explicit_backend=None):
+        model = explicit_model or getattr(app.settings, 'subagent_model', None) or app.model_id
+        wire = dict(payload, model=model)
+        req = urllib.request.Request('http://test.invalid/v1/chat/completions',
+                                     data=json.dumps(wire).encode())
+        with subagent_plugin.urllib.request.urlopen(req, timeout=600) as response:
+            return dict(json.loads(response.read()), model=model, backend='lmstudio')
+    monkeypatch.setattr(subagent_dispatch, 'complete_child', complete)
 
 
 class TestSchema:
@@ -313,97 +335,3 @@ class TestRunner:
 
         assert captured["body"]["model"] == "small-child"
 
-    def test_an_explicit_UNLOADED_model_is_refused_without_a_request(self):
-        """T611. This arm used to assert the opposite: `model: "named-one"`
-        with nothing of that name loaded went straight to urlopen, and LM
-        Studio JIT-loads whatever a request names. The id is written by the
-        PARENT MODEL mid-turn, so "the user asked for it" was never true of
-        this path - and it was the one way left to reach a cold load after
-        T609 closed the defaults."""
-        from litetui.plugins.subagent_plugin import _make_runner
-        app = self._make_app(model="big-parent")
-        app.settings.subagent_model = "small-child"
-        sent = []
-
-        def fake_urlopen(req, timeout=None):
-            sent.append(json.loads(req.data)["model"])
-            return _FakeResp({"choices": [{"message": {"content": "ok"}}], "usage": {}})
-
-        run = _make_runner(app)
-        with patch("litetui.plugins.subagent_plugin.urllib.request.urlopen", fake_urlopen):
-            result = run({"prompt": "hello", "model": "named-one"})
-
-        assert sent == [], "a request left naming a model LM Studio would load"
-        assert "named-one" in result and "[error]" in result, result
-
-class TestBackendModelSelection:
-    def _run(self, remote, persisted, current, available, explicit=None):
-        from litetui.plugins.subagent_plugin import _make_runner
-        app = SimpleNamespace(
-            backend=SimpleNamespace(name="codex" if remote else "lmstudio", remote=remote,
-                                    models={key: {} for key in available}),
-            model_id=current,
-            model_rows={key: SimpleNamespace(loaded=loaded) for key, loaded in available.items()},
-            settings=SimpleNamespace(subagent_model=persisted, compact_max_tokens=100),
-        )
-        captured = []
-        def complete(app, payload, **kwargs):
-            captured.append(payload["model"])
-            return {"choices": [{"message": {"content": "ok"}}]}
-        args = {"prompt": "hello"}
-        if explicit:
-            args["model"] = explicit
-        with patch("litetui.plugins.subagent_plugin.model_transport.complete_sidecall", complete):
-            result = _make_runner(app)(args)
-        return captured, result
-
-    def test_codex_ignores_persisted_local_slot(self):
-        calls, result = self._run(True, "minicpm5-2b-q4", "gpt-6-astra", {"gpt-6-astra": True})
-        assert calls == ["gpt-6-astra"]
-        assert "[error]" not in result
-
-    def test_local_ignores_persisted_codex_model(self):
-        calls, result = self._run(False, "gpt-6-astra", "local-main", {"local-main": True})
-        assert calls == ["local-main"]
-        assert "[error]" not in result
-
-    def test_local_unloaded_child_is_not_requested(self):
-        calls, _ = self._run(False, "unloaded-child", "local-main",
-                             {"local-main": True, "unloaded-child": False})
-        assert calls == ["local-main"]
-
-    def test_valid_persisted_codex_child_wins(self):
-        calls, _ = self._run(True, "gpt-child", "gpt-main", {"gpt-child": True, "gpt-main": True})
-        assert calls == ["gpt-child"]
-
-    def test_explicit_model_wins(self):
-        calls, _ = self._run(True, "gpt-child", "gpt-main", {"gpt-main": True}, explicit="gpt-explicit")
-        assert calls == ["gpt-explicit"]
-
-    def test_no_valid_codex_model_returns_existing_error_without_request(self):
-        calls, result = self._run(True, "local-child", "local-main", {})
-        assert calls == []
-        assert result == "[error] ProviderError: Select a Codex model for the subagent with /model or its model argument."
-
-    def test_residency_is_refreshed_between_calls(self):
-        from litetui.plugins.subagent_plugin import _make_runner
-        residents = ["local-child", "local-main"]
-        app = SimpleNamespace(
-            backend=SimpleNamespace(remote=False, loaded_models=lambda: list(residents)),
-            model_id="local-main",
-            model_rows={"local-child": SimpleNamespace(loaded=True)},
-            settings=SimpleNamespace(subagent_model="local-child", compact_max_tokens=100),
-        )
-        calls = []
-        def complete(app, payload, **kwargs):
-            calls.append(payload["model"])
-            return {"choices": [{"message": {"content": "ok"}}]}
-        runner = _make_runner(app)
-        with patch("litetui.plugins.subagent_plugin.model_transport.complete_sidecall", complete):
-            runner({"prompt": "first"})
-            residents.remove("local-child")
-            runner({"prompt": "second"})
-            app.backend = SimpleNamespace(remote=True, models={"gpt-main": {}})
-            app.model_id = "gpt-main"
-            runner({"prompt": "third"})
-        assert calls == ["local-child", "local-main", "gpt-main"]

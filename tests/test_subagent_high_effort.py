@@ -52,12 +52,13 @@ def test_runner_passes_explicit_sol_and_high_without_changing_parent() -> None:
     app = _remote_app()
     captured = {}
 
-    def complete(_app, payload, **_kwargs):
+    def complete(_app, payload, **kwargs):
+        payload = dict(payload, model=kwargs["explicit_model"])
         captured.update(payload)
         return {"choices": [{"message": {"content": "ok"}}]}
 
     with patch(
-        "litetui.plugins.subagent_plugin.model_transport.complete_sidecall",
+        "litetui.subagent_dispatch.complete_child",
         complete,
     ):
         result = _make_runner(app)(

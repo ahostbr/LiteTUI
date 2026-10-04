@@ -124,10 +124,8 @@ def _make_runner(app):
         if not prompt:
             return "[error] prompt is required"
         system = (args.get("system") or "").strip() or None
-        try:
-            model = _resolve_model(app, (args.get("model") or "").strip())
-        except Exception as e:  # noqa: BLE001 - tool boundary returns failures as visible results
-            return f"[error] {type(e).__name__}: {e}"
+        explicit_model = (args.get("model") or "").strip() or None
+        explicit_backend = (args.get("backend") or "").strip() or None
         think = bool(args.get("think", False))
         effort = (args.get("reasoning_effort") or "").strip().lower() or None
         file_paths = args.get("files") or []
@@ -144,7 +142,6 @@ def _make_runner(app):
         messages.append({"role": "user", "content": user_content})
 
         payload: dict = {
-            "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
             "stream": False,
@@ -158,7 +155,10 @@ def _make_runner(app):
             payload["reasoning_effort"] = "none"
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         try:
-            data = model_transport.complete_sidecall(app, payload, opener=urllib.request.urlopen)
+            from litetui.subagent_dispatch import complete_child
+            data = complete_child(app, payload, explicit_model=explicit_model,
+                                  explicit_backend=explicit_backend)
+            model = data.get("model", explicit_model or getattr(app, "model_id", "?"))
         except Exception as e:  # noqa: BLE001 - tool boundary returns failures as visible results
             return f"[error] {type(e).__name__}: {e}"
 
@@ -166,7 +166,7 @@ def _make_runner(app):
         msg = choice.get("message") or {}
         text = (msg.get("content") or "").strip()
         if (
-            getattr(getattr(app, "backend", None), "remote", False)
+            data.get("backend") == "codex"
             and effort is None
             and not think
         ):

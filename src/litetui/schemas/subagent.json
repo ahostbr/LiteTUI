@@ -36,6 +36,11 @@
           "enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
           "description": "Optional explicit child-only reasoning level. Use high with model gpt-5.6-sol when High reasoning is required. The selected model must advertise the requested level; unsupported levels fail instead of silently falling back. This does not change the parent turn."
         },
+        "backend": {
+          "type": "string",
+          "enum": ["codex", "claude", "free", "cline", "lmstudio", "llamacpp", "ninfer", "custom"],
+          "description": "Optional child-only backend with an explicit model. Otherwise use the saved route. Never changes the parent. Local backends require the expert toggle and an already resident model."
+        },
         "model": {
           "type": "string",
           "description": "Leave unset: the child uses this conversation's route override or the global subagent_route, otherwise follows the parent. A route names its own backend and model; unavailable backends refuse rather than falling back. Local defaults must already be loaded. An explicit model argument overrides the default."
