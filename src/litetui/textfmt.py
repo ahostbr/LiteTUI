@@ -58,6 +58,7 @@ TOOL_DENIED_REQUIRED: dict[str, tuple[str, ...]] = {
     "unknown-tool": ("name",),
     "no-metadata": ("name",),
     "profile": ("name", "reason"),
+    "approval-timeout": ("name", "reason"),
     "by-user": ("name",),
     "no-host": ("name",),
     "tool-disabled": ("name",),
@@ -72,6 +73,7 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
         "This is the active authority profile refusing, not the user — do not "
         "ask them to approve it and do not retry."
     ),
+    "approval-timeout": "[approval timeout] {name}: Nothing ran and nothing changed. {reason}",
     "no-host": (
         "[no answer] {name} needed approval and the request was sent to the "
         "host, which never answered. Nothing ran and nothing changed. This is "

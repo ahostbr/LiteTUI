@@ -35,6 +35,11 @@ whose authority it cannot describe, so nothing ran and nothing changed.
 active authority profile refusing, not the user — do not ask them to approve
 it and do not retry.
 
+## approval-timeout
+<!-- placeholders: {name}, {reason} -->
+
+[approval timeout] {name}: Nothing ran and nothing changed. {reason}
+
 ## by-user
 <!-- placeholders: {name} -->
 

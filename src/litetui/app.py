@@ -3147,7 +3147,8 @@ class LiteTUI(App):
                     self._stop_requested = True
                     self._stop_reason = reason
                     self._stop_cause = "approval"  # turn_end stopReason "approval" (B2)
-                return tool_denied("profile", name=name, reason=reason), False
+                denial_kind = "approval-timeout" if status == "timeout" else "profile"
+                return tool_denied(denial_kind, name=name, reason=reason), False
             # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
             # refuse this ONE action in words, and let the rest of the turn go on.
             if route != "host" and source in tool_policy.UNATTENDED_SOURCES:

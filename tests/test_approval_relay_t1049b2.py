@@ -148,9 +148,87 @@ async def test_K1a_a_spawner_DENY_through_the_claude_bridge_stops_the_turn_and_l
     replying = asyncio.create_task(_reply(a, sent, "DENY"))
     refusal = await _bridge(a, tmp_path)._decide("Bash", DESTRUCTIVE, tool_policy.SHELL_POLICY)
     await replying
-    assert refusal and "denied Bash" in refusal
+    from litetui.textfmt import tool_denied
+    assert refusal == tool_denied(
+        "profile", name="Bash", reason=approval_relay.stop_line(a, "Bash", "denied"))
+    assert "do not retry" in refusal.lower()
+    assert TIMEOUT_REQUEST_NOTICE not in refusal
     assert a._stop_requested and a._stop_cause == "approval"
     assert [kw["status"] for kw in log] == ["denied"]
+
+
+@pytest.mark.parametrize("prompt_state", ["shipped", "missing", "broken"])
+@pytest.mark.asyncio
+async def test_timeout_final_model_response_is_request_scoped(log, tmp_path, monkeypatch, prompt_state):
+    from litetui import paths, textfmt
+    a = _seat()
+    if prompt_state != "shipped":
+        prompts = tmp_path / "prompts"
+        prompts.mkdir()
+        if prompt_state == "broken":
+            # Missing required reason must select the safe timeout fallback,
+            # not a profile refusal with a blanket retry ban.
+            (prompts / "tool-denied.md").write_text(
+                "## approval-timeout\n\n{name}: do not retry\n", encoding="utf-8")
+        monkeypatch.setattr(paths, "PROMPTS_DIR", prompts)
+    a._hook_source = "scheduled"
+    a.settings.relay_approval_timeout_s = 0.08
+    sent = []
+    _wire_send(a, sent)
+    try:
+        # Real unanswered relay -> authorization -> final native denial envelope.
+        # Only transport is inert; the pre-tool hook never dispatches a command.
+        from litetui.claude_tools import ClaudeTools
+        a.backend = SimpleNamespace(segment_id="timeout-test")
+        bridge = ClaudeTools(a, a.backend, "timeout-test", workspace=tmp_path)
+        result = await bridge.pre_tool({"tool_name": "Bash", "tool_input": DESTRUCTIVE}, "call-test", None)
+        refusal = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert result == {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": refusal,
+        }}
+        assert sent and len(sent) == 1
+        assert [kw["status"] for kw in log] == ["timeout"]
+        assert refusal == (
+            "[approval timeout] Bash: Nothing ran and nothing changed. "
+            + approval_relay.stop_line(a, "Bash", "timeout")
+        )
+        assert refusal.endswith(TIMEOUT_REQUEST_NOTICE)
+        assert "do not retry" not in refusal.lower()
+        assert a._stop_requested and a._stop_cause == "approval"
+        assert a._stop_reason == approval_relay.stop_line(a, "Bash", "timeout")
+        assert not approval_relay._pending(a)
+        # Sibling policy-denial rendering remains unchanged even on fallback.
+        expected = (textfmt._tool_denied_sections()["profile"] if prompt_state == "shipped"
+                    else textfmt.TOOL_DENIED_FALLBACK["profile"])
+        expected = " ".join(expected.replace("{name}", "Bash").replace("{reason}", "floor denial").split())
+        assert textfmt.tool_denied("profile", name="Bash", reason="floor denial") == expected
+        assert "do not retry" in expected.lower()
+    finally:
+        a.store.release()
+
+
+@pytest.mark.asyncio
+async def test_immutable_floor_final_response_keeps_retry_ban(log, tmp_path):
+    from litetui.claude_tools import ClaudeTools
+    from litetui.textfmt import tool_denied
+    a = _seat()
+    a.backend = SimpleNamespace(segment_id="floor-test")
+    args = {"command": "rm -rf /"}
+    decision = tool_policy.evaluate(INTERACTIVE, tool_policy.SHELL_POLICY, args,
+                                    tmp_path, tool_name="Bash", shell="bash")
+    assert decision.action == tool_policy.DENY and "DENY FLOOR" in decision.reason
+    try:
+        result = await ClaudeTools(a, a.backend, "floor-test", workspace=tmp_path).pre_tool(
+            {"tool_name": "Bash", "tool_input": args}, "call-floor", None)
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert reason == tool_denied("profile", name="Bash", reason=decision.reason)
+        assert "do not retry" in reason.lower()
+        assert TIMEOUT_REQUEST_NOTICE not in reason
+        assert log == []  # immutable refusals never ask for approval
+    finally:
+        a.store.release()
 
 
 def test_K1b_the_claude_deadline_outlasts_the_relay_timeout_not_315s():
