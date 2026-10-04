@@ -46,6 +46,8 @@ USAGE = (
 _STATE_NOTE = {
     "connected": "",
     "stopped": "declared, not running",
+    "not started (lazy)": "starts on tool load/call; query tool_search with the server name",
+    "excluded": "not available to this seat (--mcp-servers)",
     "disabled": "disabled: true in the config",
     "failed": "",
     "orphan": "running but no longer declared — a restart will not bring it back",

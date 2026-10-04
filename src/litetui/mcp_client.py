@@ -785,7 +785,15 @@ class MCPManager:
     """Loads mcp.json / .mcp.json (see config_files), starts each server —
 stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, seat_servers=None, lazy=False):
+        from litetui.mcp_cache import ToolCache
+        self.seat_servers = seat_servers
+        self.enabled = lambda name: True
+        self.lazy = lazy
+        self._lazy_tools: dict[str, list[dict]] = {}
+        self._lazy_pending: set[str] = set()
+        self._lazy_suppressed: set[str] = set()  # a human disconnect survives inventory reload
+        self.cache = ToolCache(root / ".mcp-tool-cache")
         self.root = root
         self.servers: dict[str, "MCPServer | HTTPMCPServer"] = {}
         self.failures: dict[str, str] = {}
@@ -856,6 +864,11 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         cfg_paths = config_files(self.root)
         servers, file_errors = read_server_configs(cfg_paths)
         self.configs = servers
+        with self._servers_lock:
+            self._lazy_tools.clear()
+            self._lazy_pending.clear()
+        for name in servers:
+            self.defer_start(name)
         self.failures.update(file_errors)
         return servers
 
@@ -880,7 +893,40 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         for name, sc in self.configs.items():
             if not isinstance(sc, dict) or sc.get("disabled"):
                 continue
-            self.connect(name)
+            if self.allowed(name) and not self.defer_start(name):
+                self.connect(name)
+
+    def allowed(self, name: str) -> bool:
+        from litetui.mcp_seat import selected
+        return selected(name, self.seat_servers) and self.enabled(name)
+
+    def defer_start(self, name: str) -> bool:
+        sc = self.configs.get(name)
+        if (self._closing or name in self._lazy_suppressed or not self.lazy
+                or not self.allowed(name) or not isinstance(sc, dict)
+                or sc.get("disabled") or not sc.get("command") or name in self.servers):
+            return False
+        tools = self.cache.read(self.root, name, sc) or []
+        with self._servers_lock:
+            self._lazy_pending.add(name)
+            self._lazy_tools[name] = tools
+        return True
+
+    def lazy_names(self) -> list[str]:
+        with self._servers_lock:
+            return sorted(name for name in self._lazy_pending if self.allowed(name))
+
+    def load_tools(self, query: str, hits: list[dict]) -> str | None:
+        """Start cached selections, or discover a cold server by exact name."""
+        wanted = {s["function"]["name"] for s in hits}
+        for name in self.lazy_names():
+            prefix = f"mcp__{name}__"
+            if query.strip() != name and not any(n.startswith(prefix) for n in wanted):
+                continue
+            err = self.connect(name)
+            if err:
+                return f"[error] mcp {name}: {err}"
+        return None
 
     # ── lifecycle ───────────────────────────────────────────────────────────
     def _connect_locked(self, name: str) -> str | None:
@@ -892,6 +938,8 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         not be silent either: a tool that never appears is indistinguishable
         from one the model simply chose not to call.
         """
+        if not self.allowed(name):
+            return f"server {name!r} excluded by this seat MCP selection"
         if self._closing:
             # A connect racing after stop_all would start a server nothing will
             # ever stop. Refuse rather than leak it.
@@ -932,6 +980,14 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             return self.failures[name]
         with self._servers_lock:
             self.servers[name] = srv
+            self._lazy_suppressed.discard(name)
+            self._lazy_pending.discard(name)
+            self._lazy_tools.pop(name, None)
+        if sc.get("command"):
+            try:
+                self.cache.write(self.root, name, sc, srv.tools)
+            except (OSError, ValueError, TypeError) as exc:
+                runtime_log.record_error("mcp_cache_write_failed", detail=str(exc))
         self.failures.pop(name, None)          # a success clears the old error
         self.late_failures.discard(name)
         return None
@@ -957,6 +1013,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         mean a transient disconnect quietly rewrote the user's config.
         """
         with self._servers_lock:
+            self._lazy_suppressed.add(name)
+            self._lazy_pending.discard(name)
+            self._lazy_tools.pop(name, None)
             srv = self.servers.pop(name, None)
         # T0124: a stopped server is no longer owed a retry.
         self.late_failures.discard(name)
@@ -1083,13 +1142,19 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                                           if name in self.servers
                                           else "failed: invalid config entry (not an object)")
                         continue
-                    if sc.get("disabled"):
+                    if sc.get("disabled") or not self.allowed(name):
+                        with self._servers_lock:
+                            self._lazy_pending.discard(name)
+                            self._lazy_tools.pop(name, None)
                         # A declared-but-disabled server must match load()'s policy:
                         # not running. Disconnect it if it is.
                         if name in self.servers:
                             outcomes[name] = _drop(name)
                         continue
                     if name not in self.servers:
+                        if self.defer_start(name):
+                            outcomes[name] = "not started (lazy)"
+                            continue
                         err = self._connect_locked(name)
                         outcomes[name] = "connected" if err is None else f"failed: {err}"
                     elif prior_cfg.get(name) != sc:
@@ -1102,6 +1167,10 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                         outcomes[name] = "reconnected" if err is None else f"failed (outage): {err}"
                 for name in sorted((prior_set & set(self.servers)) - new_set):
                     outcomes[name] = _drop(name)
+                with self._servers_lock:
+                    for name in set(self._lazy_pending) - new_set:
+                        self._lazy_pending.discard(name)
+                        self._lazy_tools.pop(name, None)
                 return outcomes
         finally:
             self._release_claim()
@@ -1142,8 +1211,12 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                     None if srv.tools else "connected, but listed 0 tools")
             elif name in self.failures:
                 state, error = "failed", self.failures.get(name)
+            elif not self.allowed(name):
+                state, error = "excluded", None
             elif sc.get("disabled"):
                 state, error = "disabled", None
+            elif name in self.lazy_names():
+                state, error = "not started (lazy)", None
             else:
                 state, error = "stopped", None
             http = bool(sc.get("url") and not sc.get("command"))
@@ -1159,12 +1232,18 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             )
         return rows
 
+    def _inventories(self):
+        with self._servers_lock:
+            inventories = {name: srv.tools for name, srv in self.servers.items() if self.allowed(name)}
+            inventories.update({name: tools for name, tools in self._lazy_tools.items()
+                                if name not in inventories and name in self._lazy_pending
+                                and self.allowed(name)})
+        return inventories
+
     def tool_specs(self) -> list[dict]:
         specs: list[dict] = []
-        with self._servers_lock:
-            servers = list(self.servers.items())    # snapshot; no size-change race
-        for sname, srv in servers:
-            for t in srv.tools:
+        for sname, tools in self._inventories().items():
+            for t in tools:
                 tname = t.get("name")
                 if not tname:
                     continue
@@ -1181,35 +1260,40 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
                 )
         return specs
 
-    def dispatch(self) -> dict:
-        table = {}
+    def dispatch_for(self, name: str):
+        # Looking up policy/dispatch must never start a server. The returned
+        # callable starts it only AFTER the host's authorization door.
         with self._servers_lock:
-            servers = list(self.servers.items())    # snapshot; closures bind these refs
-        for sname, srv in servers:
-            for t in srv.tools:
-                tname = t.get("name")
-                if not tname:
-                    continue
+            names = list(dict.fromkeys((*self.servers, *self._lazy_pending)))
+        for sname in names:
+            prefix = f"mcp__{sname}__"
+            if not name.startswith(prefix) or not self.allowed(sname):
+                continue
+            tool = name[len(prefix):]
+            def call(args, server=sname, tool=tool):
+                try:
+                    with self._servers_lock:
+                        available = server in self.servers or server in self._lazy_pending
+                    if not available or not self.allowed(server):
+                        raise MCPError("server disconnected or excluded by this seat")
+                    if server not in self.servers:
+                        err = self.connect(server)
+                        if err:
+                            raise MCPError(err)
+                    srv = self.servers[server]
+                    if not any(t.get("name") == tool for t in srv.tools):
+                        raise MCPError(f"unknown tool {tool!r}")
+                    return srv.call(tool, args)
+                except Exception as exc:
+                    runtime_log.record("mcp_tool_failed", site="mcp.dispatch", component="mcp",
+                                       server=server, name=tool, error_type=type(exc).__name__)
+                    return f"[error] mcp {server}/{tool}: {type(exc).__name__}: {exc}"
+            return call
+        return None
 
-                def _make(_srv=srv, _tool=tname):
-                    def _call(args: dict) -> str:
-                        try:
-                            return _srv.call(_tool, args)
-                        except Exception as e:
-                            runtime_log.record(
-                                "mcp_tool_failed",
-                                site="mcp.dispatch",
-                                component="mcp",
-                                server=_srv.name,
-                                name=_tool,
-                                error_type=type(e).__name__,
-                            )
-                            return f"[error] mcp {_srv.name}/{_tool}: {type(e).__name__}: {e}"
-
-                    return _call
-
-                table[f"mcp__{sname}__{tname}"] = _make()
-        return table
+    def dispatch(self) -> dict:
+        return {s["function"]["name"]: self.dispatch_for(s["function"]["name"])
+                for s in self.tool_specs()}
 
     def status_line(self) -> str:
         with self._servers_lock:

@@ -60,6 +60,10 @@ def main() -> None:
     parser.add_argument("--cognitive-file", type=str, default=None,
                         help="canonical cognitive architecture file selected by the LiteSuite bridge")
     parser.add_argument("--cwd", type=str, default=None, help="change working directory before start")
+    parser.add_argument("--mcp-servers", default="all",
+                        help="seat-only project MCP selection: all, none, or comma-separated names")
+    parser.add_argument("--mcp-start", choices=("lazy", "eager"), default="lazy",
+                        help="host stdio MCP startup (native Codex owns its own startup)")
     parser.add_argument(
         "--tool-profile",
         type=str,
@@ -82,6 +86,8 @@ def main() -> None:
     args = parser.parse_args()
     try:
         launch_options = from_args(args)
+        from litetui.mcp_seat import server_selection
+        mcp_servers = server_selection(args.mcp_servers)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -155,6 +161,8 @@ def main() -> None:
             initial_backend=args.backend,
             initial_thinking=args.reasoning_effort or args.thinking_level,
             launch_options=launch_options,
+            mcp_servers=mcp_servers,
+            mcp_lazy=args.mcp_start == "lazy",
             tool_profile=args.tool_profile or ("autonomous" if args.rpc else None),
             plan_mode=args.mode == "plan",
             convo_id=args.convo,

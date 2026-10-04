@@ -66,27 +66,32 @@ def _toml(value) -> str:
     raise ValueError(f"Unsupported MCP config value: {type(value).__name__}")
 
 
-def config_overrides(cwd: Path) -> tuple[str, ...]:
+def config_overrides(cwd: Path, seat_servers: frozenset[str] | None = None) -> tuple[str, ...]:
+    from litetui.mcp_seat import selected
     path = project_config(cwd)
     if path is None:
         return tuple(f"mcp_servers.{name}.enabled=false" for name in PROJECT_SERVERS)
     servers = _servers(path) or {}
     overrides = []
-    for name in PROJECT_SERVERS:
-        if name not in servers:
+    names = dict.fromkeys((*PROJECT_SERVERS, *(servers if seat_servers is not None else ())))
+    for name in names:
+        if name not in servers or not selected(name, seat_servers):
             overrides.append(f"mcp_servers.{name}.enabled=false")
             continue
         entry = servers[name]
-        if not isinstance(entry, dict) or not entry.get("command"):
-            raise ValueError(f"{path}: {name} needs a stdio command")
+        if not isinstance(entry, dict) or not (entry.get("command") or entry.get("url")):
+            raise ValueError(f"{path}: {name} needs a stdio command or HTTP URL")
         # Claude's autoApprove is not a Codex field. Codex recursively overlays
         # these fields: project command/args/env keys win, undeclared global
         # timeout/env/filter keys remain. This does not promise table replacement.
         # Use the declaring project's cwd, even for a linked worktree.
         cfg = {key: entry[key] for key in (
             "command", "args", "env", "env_vars", "startup_timeout_sec",
-            "tool_timeout_sec", "enabled_tools", "disabled_tools",
+            "tool_timeout_sec", "enabled_tools", "disabled_tools", "url",
+            "bearer_token_env_var", "http_headers", "env_http_headers",
         ) if key in entry}
-        cfg.update(cwd=str(path.parent), enabled=not bool(entry.get("disabled")))
+        cfg.update(enabled=not bool(entry.get("disabled")))
+        if entry.get("command"):
+            cfg["cwd"] = str(path.parent)
         overrides.append(f"mcp_servers.{name}={_toml(cfg)}")
     return tuple(overrides)
