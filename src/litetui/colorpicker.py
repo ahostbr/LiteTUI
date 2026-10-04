@@ -443,7 +443,7 @@ class ColorPickerBody(Widget):
             self._h, self._s, self._v = hex_to_hsv(event.value)
             self._repaint()
         except ValueError:
-            self.notify(f"Not a #RRGGBB hex: {event.value!r}", severity="warning")
+            self.notify(f"Not a #RRGGBB hex: {event.value!r}", severity="warning", markup=False)
 
     def action_nudge(self, direction: str) -> None:
         # One PAINTED cell, not one full-size cell: in a 36-column panel a

@@ -22,6 +22,15 @@ class LaunchSpec:
     launch: dict | None = None
 
 
+def delegated_profile(parent_profile):
+    """The profile a managed child runs: T1049, Owner's clause 2a (rpc children fall
+    under the autonomy lock). A child is never autonomous, and it could not be:
+    it carries no owner mark, so it would report interactive and fail its
+    handshake. An autonomous parent delegates INTERACTIVE; any other parent its own."""
+    from litetui.tool_policy import AUTONOMOUS, INTERACTIVE
+    return INTERACTIVE if parent_profile == AUTONOMOUS else parent_profile
+
+
 def validate_request(request, *, parent_profile, depth):
     if not isinstance(request, dict):
         raise LaunchBlocked('Launch request must be an object')
@@ -40,11 +49,12 @@ def validate_request(request, *, parent_profile, depth):
     from litetui.tool_policy import PROFILES
     if parent_profile not in PROFILES:
         raise LaunchBlocked('Unknown parent policy')
-    profile = request.get('tool_profile', parent_profile)
+    delegated = delegated_profile(parent_profile)
+    profile = request.get('tool_profile', delegated)
     # Profiles are not a simple numeric hierarchy: strict and interactive
     # have different approval semantics. Without explicit delegation, require
     # the same profile rather than guessing that one is universally weaker.
-    if profile != parent_profile:
+    if profile != delegated:
         raise LaunchBlocked('Child policy must match parent delegation')
     headed = request.get('headed', False)
     if type(headed) is not bool:
@@ -112,7 +122,8 @@ def validate_process_identity(event, *, owned_pid, probe=None):
         raise LaunchBlocked('Child identity unknown or PID reused')
     return True
 
-async def start_headless_child(spec, process, *, workspace, data_root, supported_levels, on_ready=None):
+async def start_headless_child(spec, process, *, workspace, data_root, supported_levels, on_ready=None,
+                               approval_timeout=None):
     """Wire validated hosted invocation to contained startup and authenticated RPC.
 
     Internal only: caller must prepare isolated workspace, persistent storage,
@@ -147,9 +158,14 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
             raise LaunchBlocked(str(exc)) from exc
         args += to_argv(options)
     try:
-        await process.start_python(module='litetui.cli', args=args, cwd=target,
-                                   env={'LITETUI_DATA_ROOT': str(root),
-                                        'LITETUI_AGENT_DEPTH': str(spec.child_depth)})
+        # T1049-B: this parent's supervisor answers the child's approvals
+        # (confirm_route "host"), on a deadline the parent sets: "0" = none (an
+        # owner parent, Owner's keypress), else its relay timeout + 60 s.
+        env = {'LITETUI_DATA_ROOT': str(root), 'LITETUI_AGENT_DEPTH': str(spec.child_depth),
+               'LITETUI_APPROVAL_HOST': '1'}
+        if approval_timeout is not None:
+            env['LITETUI_APPROVAL_TIMEOUT_S'] = str(approval_timeout)
+        await process.start_python(module='litetui.cli', args=args, cwd=target, env=env)
         ready = await process.rpc_handshake(spec, workspace=str(target))
         if on_ready is not None:
             on_ready(ready)

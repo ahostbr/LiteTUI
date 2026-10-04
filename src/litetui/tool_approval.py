@@ -31,6 +31,23 @@ from litetui.tool_policy import PolicyDecision, approval_preview
 #: host can show a countdown and does not have to guess when its answer
 #: stops being wanted.
 APPROVAL_TIMEOUT_S = 300.0
+#: T1049-B (plan S2, clock C1): set by agent_launcher.start_headless_child on a
+#: supervised child. "0" = no deadline (an OWNER parent's keypress, Orchestrator
+#: d47235da: never a timeout-deny); otherwise the parent's relay timeout + 60 s.
+APPROVAL_TIMEOUT_ENV = "LITETUI_APPROVAL_TIMEOUT_S"
+
+
+def approval_timeout_s() -> float | None:
+    """This process's approval deadline; None = unbounded. Read at call time."""
+    import os
+    raw = os.environ.get(APPROVAL_TIMEOUT_ENV)
+    if raw is None or raw == "":
+        return APPROVAL_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return APPROVAL_TIMEOUT_S  # a malformed value keeps the bounded default
+    return None if value <= 0 else value
 
 
 
@@ -307,7 +324,44 @@ def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False)
     fut = _approval_registry(app).get(approval_id)
     if fut is None or fut.done():
         return False
+    from litetui import approval_authority
+    record = getattr(app, "_approval_authority_records", {}).get(approval_id)
+    if record is not None:
+        deadline = record["authority"].deadline
+        if deadline is not None and approval_authority.time.monotonic() >= deadline:
+            return False
+    if record is not None and not approval_authority.settle(
+            app, approval_id, outcome="approved" if allow else "denied"):
+        return False
     fut.set_result(ALWAYS if (allow and remember) else (ONCE if allow else DENIED))
+    return True
+
+
+def take_spawner_answer(app, msg: dict) -> bool:
+    """Consume addressed unexpired mail from an eligible frozen exact ID.
+
+    Registration edits cannot change a pending permission or its60/120s clock.
+    The ordinary human RPC host answer path remains separate.
+    """
+    from litetui import approval_relay, harness
+
+    seat_id = getattr(getattr(app, "seat", None), "agent_id", None)
+    if not seat_id or msg.get("to") != seat_id or harness._expired(msg):
+        return False
+    text = msg.get("body") or (msg.get("payload") or {}).get("text") or ""
+    match = approval_relay._ANSWER.fullmatch(str(text).strip())
+    if match is None:
+        return False
+    from litetui import approval_authority
+    ident = match.group(2)
+    future = _approval_registry(app).get(ident)
+    if future is None or future.done() or not approval_authority.can_answer(app, ident, msg):
+        return False
+    allow = match.group(1) == "APPROVE"
+    if not approval_authority.settle(app, ident, outcome="approved" if allow else "denied",
+                                     answerer_id=msg.get("from")):
+        return False
+    future.set_result(ONCE if allow else DENIED)
     return True
 
 
@@ -334,11 +388,22 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     # READ AT CALL TIME, not bound as a default: a module constant captured
     # in a signature cannot be changed by anything, including an arm that
     # needs the timeout to be short enough to measure.
-    timeout = APPROVAL_TIMEOUT_S if timeout is None else timeout
+    # T1049-B: None = this process's deadline (approval_timeout_s); <= 0 = none at
+    # all (an owner parent relaying a child's CONFIRM to Owner's keypress).
+    timeout = approval_timeout_s() if timeout is None else (None if timeout <= 0 else timeout)
     approval_id = "appr-" + uuid4().hex[:12]
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
-    _approval_registry(app)[approval_id] = fut
+    spawners = getattr(app, "_rpc_approval_spawners", None)
+    if spawners is None:
+        spawners = app._rpc_approval_spawners = {}
+    from litetui import approval_authority, approval_relay, seat_authority
+
+    status = "cancelled"
     try:
+        _approval_registry(app)[approval_id] = fut
+        spawners[approval_id] = approval_relay.current_spawner(app)
+        approval_authority.create(app, approval_id, approver=spawners[approval_id],
+                                  route=seat_authority.confirm_route(app), timeout=timeout)
         app._rpc_emit({
             "type": "tool_approval_requested",
             "id": approval_id,
@@ -349,8 +414,18 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             "timeout_s": timeout,
         })
         try:
-            return await asyncio.wait_for(fut, timeout)
-        except (TimeoutError, asyncio.CancelledError):
+            answer = await approval_authority.wait_for_answer(app, approval_id, fut)
+            approval_authority.raise_if_cancelled()
+            return answer if approval_authority.persistence_ready(app, approval_id) else None
+        except TimeoutError:
+            status = "timeout"
             return None
+        except asyncio.CancelledError:
+            return None
+    except approval_authority.ApprovalAuditError:
+        status = "audit-error"
+        return None
     finally:
         _approval_registry(app).pop(approval_id, None)
+        spawners.pop(approval_id, None)
+        approval_authority.close(app, approval_id, status)

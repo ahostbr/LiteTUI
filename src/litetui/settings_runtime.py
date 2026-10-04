@@ -118,8 +118,8 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
     return result
 
 
-def persist_or_raise(app, candidate):
-    result = persist_settings(app, candidate)
+def persist_or_raise(app, candidate, *, baseline=None):
+    result = persist_settings(app, candidate, baseline=baseline)
     failures = [p.error for p in result.persistence if not p.saved]
     if failures:
         raise OSError('; '.join(failures))
@@ -127,7 +127,7 @@ def persist_or_raise(app, candidate):
 
 
 def save_selection_defaults(**choices):
-    """Explicit picker choices also become startup defaults, immediately.
+    """Publish explicitly requested startup defaults (e.g. /backend --default).
 
     Start from disk and force only these keys into the atomic merge. Never
     copy a conversation's unrelated overrides or launch environment to defaults.

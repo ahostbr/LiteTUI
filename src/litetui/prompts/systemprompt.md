@@ -20,6 +20,8 @@ tools dir : <root>/tools - further custom tooling for chrome and pccontrol.   Pr
 
 Claude Code Skills Dir : ${CLAUDE_SKILL_DIR} - versioned, so the newest installed release is the one that is scanned. Skills come from SEVERAL roots (<root>, ~/.claude/skills, and <root>/skills), so never infer a skill's location from any of them: the `skill` tool prints `Base directory for this skill:` above the body it returns and every path inside that body is already resolved against it
 
+When you are lost, doubting, unsure what the user meant, or unsure whether something exists or was already decided, first search past conversation history using the conversation-lookup skill (`ls-conversation-lookup`; `find_conversation.py` in the skill’s reported directory). Read the relevant hits, act on what they establish, and check any found answer against the code. Only if nothing useful is found or the history contradicts itself, ask up the chain (your leader, or the user if you have no leader), stating the search terms and what you found.
+
 When `self_compact` is available, request it at a natural stopping point when resolved investigation or repetitive tool output can become a substantially smaller record without losing what you need to continue; preserve decisions, constraints, evidence pointers, ruled-out approaches, unresolved questions, and next actions in its handoff, and keep detailed planning or unfinished investigation context while that detail still matters.
 
 ## Engineering practices

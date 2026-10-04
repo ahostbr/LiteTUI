@@ -33,7 +33,8 @@ from litetui import app as m  # noqa: E402
 from litetui import widgets  # noqa: E402
 
 ROWS = 34
-FOOTER_ROW = f"\x1b[{ROWS};"  # the cursor move that starts a write on the footer row
+# T1113: status is the upper row of the two-row footer.
+FOOTER_ROW = f"\x1b[{ROWS - 1};"  # the cursor move that starts a write on the footer row
 
 
 class CaptureDriver(HeadlessDriver):
@@ -65,6 +66,16 @@ def footer_writes(a) -> str:
     return "".join(w for w in a.writes if FOOTER_ROW in w)
 
 
+def footer_text(a) -> str:
+    """What the footer writes SAY, escape sequences removed. The capture driver
+    splits a write every ~16 cells with a cursor move to the NEXT cell, so the
+    drawn text is contiguous while the raw bytes are not: a literal search in the
+    raw writes missed "thin|k:high" once the text before it changed length
+    (T1049: "|| interactive on" is one cell longer than ">> autonomous on")."""
+    import re
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", footer_writes(a))
+
+
 def terminal_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
@@ -77,7 +88,7 @@ async def test_footer_glyphs_are_measured_the_way_a_terminal_draws_them() -> Non
     a = make_app()
     async with a.run_test(size=(120, ROWS), headless=False) as pilot:
         await pilot.pause(0.5)
-        labels = [str(a.query_one(".palette-button").content)]
+        labels = [str(w.content) for w in a.query(".pause-button, .mic-button")]
     labels += [widgets.PauseButton.LABEL_RUN, widgets.PauseButton.LABEL_PAUSED,
                widgets.MicButton.LABEL_IDLE, widgets.MicButton.LABEL_REC]
     for label in labels:
@@ -97,6 +108,10 @@ def test_no_text_still_names_the_trigram_button():
 
 @pytest.mark.asyncio
 async def test_an_idle_footer_neither_recomposes_nor_repaints(monkeypatch) -> None:
+    # A real machine may change; a stable measured reading must not repaint.
+    from litetui import footer_telemetry
+    monkeypatch.setattr(footer_telemetry.Sampler, "sample", lambda self:
+                        footer_telemetry.Reading(cpu=25, ram=50))
     recomposes = []
     real = widgets.ContextFooter.recompose
 
@@ -125,7 +140,10 @@ async def test_an_idle_footer_neither_recomposes_nor_repaints(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_a_real_change_still_repaints_the_footer() -> None:
+async def test_a_real_change_still_repaints_the_footer(monkeypatch) -> None:
+    from litetui import footer_telemetry
+    monkeypatch.setattr(footer_telemetry.Sampler, "sample", lambda self:
+                        footer_telemetry.Reading(cpu=25, ram=50))
     a = make_app()
     async with a.run_test(size=(120, ROWS), headless=False) as pilot:
         a.ctx_max = 200_000
@@ -134,13 +152,19 @@ async def test_a_real_change_still_repaints_the_footer() -> None:
         a.writes.clear()
         a.ctx_used = 54_321
         await pilot.pause(0.5)
-        assert "54,321" in footer_writes(a)
+        assert "54,321" in footer_text(a)
         a.writes.clear()
         a.ctx_used = 180_000  # crosses 90%: the percent AND its colour change
         await pilot.pause(0.5)
-        assert "90%" in footer_writes(a)
+        assert "90%" in footer_text(a)
         a.writes.clear()
         a.thinking_level = "high"
         a._refresh_ctx_label()
         await pilot.pause(0.5)
-        assert "think:high" in footer_writes(a)
+        assert "think:high" in footer_text(a)
+        # NEGATIVE: the instrument reads only what was written. Nothing changed,
+        # so nothing is written, and think:high must not be found.
+        a.writes.clear()
+        a._refresh_ctx_label()
+        await pilot.pause(0.5)
+        assert "think:high" not in footer_text(a)

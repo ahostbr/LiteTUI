@@ -38,8 +38,13 @@ def replay(app, metadata, seen):
         seen.add(key)
         if record.get("kind") == "agentMessage":
             if record.get("result"):
+                from litetui.recap import split_recap
+                shown, recap = split_recap(record["result"], final=True)
                 card = app._assistant_bubble()
-                card.body.set_markdown(record["result"])
+                card.set_answer(shown)
+                if recap:
+                    card.recap = recap
+                    card.set_summary(recap)
             continue
         if record.get("kind") == "plan":
             card = FoldBlock(record.get("name", "Codex plan"), record.get("result", ""), expanded=False)

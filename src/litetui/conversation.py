@@ -197,7 +197,10 @@ class ConversationRepository:
     # An instance owns ONE conversation store. The class-level readers above
     # stay static: they answer questions about any path, instance or not.
 
-    def __init__(self, on_error=None):
+    def __init__(self, on_error=None, *, agent_session=None):
+        # Borrow child-held agent ownership; releasing/changing conversations
+        # NEVER releases this process-wide lease. No launch activation here.
+        self.agent_session = agent_session
         self.convo_id: str = ""
         self.convo_dir: Path | None = None
         self.convo_path: Path | None = None
@@ -215,9 +218,11 @@ class ConversationRepository:
 
     def stage(self, convo_id: str) -> None:
         """Pick the id and the paths. Touch no disk."""
+        directory = (self.agent_session.conversation_directory(convo_id)
+                     if self.agent_session is not None else paths.CONVO_DIR / convo_id)
         self.release()
         self.convo_id = convo_id
-        self.convo_dir = paths.CONVO_DIR / convo_id
+        self.convo_dir = directory
         self.convo_path = self.convo_dir / TRANSCRIPT_NAME
         self.pending = True
 
@@ -229,6 +234,11 @@ class ConversationRepository:
         also stops a later write from materialising the RESUMED store as if it
         were new.
         """
+        if self.agent_session is not None:
+            expected = self.agent_session.conversation_directory(convo_id) / TRANSCRIPT_NAME
+            if Path(path) != expected:
+                from litetui.agent_store import StoreError
+                raise StoreError("Resume transcript disagrees with owned agent")
         self.acquire(path.parent)
         self.pending = False
         self.convo_path = path
@@ -244,10 +254,19 @@ class ConversationRepository:
         directory = directory or self.convo_dir
         if directory is None:
             return
+        if self.agent_session is not None:
+            from litetui.agent_store import StoreError, _unlinked
+            expected = self.agent_session.conversation_directory(directory.name)
+            if directory != expected:
+                raise StoreError("Conversation lies outside the owned agent")
+            _unlinked(directory / ".session.lease")
+            root = self.agent_session.store.data_root  # explicit, never nesting-derived
+        else:
+            root = directory.parent.parent  # unchanged legacy compatibility
         target = directory / ".session.lease"
         if self._lease is not None and self._lease.path == target:
             return
-        check_data_version(directory.parent.parent)
+        check_data_version(root)
         lease = Lease(target).acquire()
         self.release()
         self._lease = lease
@@ -275,10 +294,22 @@ class ConversationRepository:
             return
         try:
             self.acquire()
-            (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
+            root = (self.agent_session.memory_root
+                    if self.agent_session is not None else self.convo_dir)
+            if self.agent_session is not None:
+                from litetui.agent_store import _unlinked
+                _unlinked(root / paths.MEMORIES_DIR)
+            (root / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
             for fname, seed in CONVO_SEED_FILES.items():
-                f = self.convo_dir / fname
-                if not f.exists():  # never clobber a resumed store
+                f = root / fname
+                if self.agent_session is not None:
+                    _unlinked(f)
+                    try:
+                        with f.open("x", encoding="utf-8") as handle:
+                            handle.write(seed)
+                    except FileExistsError:
+                        pass  # agent memory survives every new conversation
+                elif not f.exists():  # unchanged legacy seed behavior
                     f.write_text(seed, encoding="utf-8")
         except OSError as e:
             self._raise_to_app(e)
@@ -422,6 +453,18 @@ class ConversationRepository:
             **({"agent_id": seat_id} if seat_id is not None else {}),
         })
 
+    def _validate_owned_transcript(self) -> None:
+        """Borrowed agent capability plus exact conversation/lease/file binding."""
+        if self.agent_session is None:
+            return  # preserve legacy receipt ownership contract
+        from litetui.agent_store import StoreError, _unlinked
+        directory = self.agent_session.conversation_directory(self.convo_id)
+        if (self.convo_dir != directory or self.convo_path != directory / TRANSCRIPT_NAME
+                or not self.owned or self._lease.path != directory / '.session.lease'):
+            raise StoreError('Transcript disagrees with owned agent conversation')
+        _unlinked(self.convo_path)
+        _unlinked(self._lease.path)
+
     def commit_child_message(self, completion_id: str, message: dict) -> bool:
         """Append one idempotent receipt message and fsync before acceptance.
 
@@ -432,6 +475,7 @@ class ConversationRepository:
         import os
         from litetui.agent_inbox import _identity
         _identity(completion_id)
+        self._validate_owned_transcript()  # before even the coordinated lock write
         if (not self.owned or self.pending or self.loading or self.convo_path is None
                 or not self.convo_path.is_file()):
             raise ValueError('Child receipt requires an owned materialized conversation')
@@ -441,6 +485,7 @@ class ConversationRepository:
         payload = (json.dumps(record, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
         from litetui.shared_state import coordinated_write
         with coordinated_write(self.convo_path):
+            self._validate_owned_transcript()
             with self.convo_path.open('r+b') as stream:
                 for line in stream:
                     try:
@@ -451,6 +496,7 @@ class ConversationRepository:
                         if prior.get('message') != message:
                             raise ValueError('Child receipt history conflict')
                         # A previous fsync may have failed after a complete write.
+                        self._validate_owned_transcript()
                         stream.flush()
                         os.fsync(stream.fileno())
                         return True
@@ -459,6 +505,7 @@ class ConversationRepository:
                     stream.seek(-1, 2)
                     if stream.read(1) != b'\n':
                         payload = b'\n' + payload
+                self._validate_owned_transcript()
                 stream.seek(0, 2)
                 stream.write(payload)
                 stream.flush()

@@ -253,11 +253,15 @@ HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
             'server_command': [sys.executable, str(script), '{port}'],
             'context_length': 4096, 'max_tokens': 32, 'timeout': 30}},
         parent_profile='autonomous', depth=0)
+    # T1049 (Owner's clause 2a): a child is never autonomous; an autonomous parent
+    # delegates interactive, and the child's handshake reports exactly that.
+    assert spec.tool_profile == 'interactive'
     process = AgentProcess()
     try:
         ready = await start_headless_child(spec, process, workspace=tmp_path,
                                           data_root=root, supported_levels=['off'])
         assert ready['backend'] == 'custom'
+        assert ready['tool_profile'] == 'interactive'
         assert ready['context_length'] == 4096
         result = await process.collect_turn(timeout=15)
         assert result['summary'] == 'fixture ok', (result, list(process.diagnostics))

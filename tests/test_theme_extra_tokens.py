@@ -213,6 +213,7 @@ async def test_footer_colours_round_trip_and_preserve_warnings(tmp_path) -> None
     assert not set(themes_mod.THEME_FOOTER_TOKENS) & invalid.variables.keys()
 
     a = make_app()
+    a._spawned_seat, a._owner_seat = False, True  # T1049: the autonomous footer is Owner's own
     a.seat = SimpleNamespace(registered=True, name="OpenBolt")
     a.ctx_used, a.ctx_max, a.ctx_loaded = 27000, 100000, True
     a.convo_id = "4f3a1c9d-2b7e-4a11-9c30-8e5f6d1b2a44"

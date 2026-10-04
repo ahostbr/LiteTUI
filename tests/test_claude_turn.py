@@ -132,6 +132,14 @@ class FakeBubble:
     def mount(self, child, before=None):
         self.mounted.append(child)
 
+    def set_thinking(self, block):
+        """AssistantMessage.set_thinking's contract (T1031): replace, then
+        remove the block it replaced."""
+        old, self.thinking = self.thinking, block
+        self.mounted.append(block)
+        if old is not None and old is not block:
+            old.remove()
+
 
 class FakeSession:
     def __init__(self, messages=(), block=False):
@@ -141,6 +149,9 @@ class FakeSession:
         self._block = block
         self.queried = []
         self.interrupted = 0
+
+    async def get_context_usage(self):
+        return {"maxTokens": 200_000, "rawMaxTokens": 200_000, "totalTokens": 1000}
 
     async def set_model(self, model):
         pass
@@ -566,9 +577,8 @@ def test_the_think_level_reaches_claude_as_its_effort():
 
 
 @pytest.mark.asyncio
-async def test_the_window_comes_from_the_result_frame_and_is_not_cleared_by_message_frames(tmp_path):
-    """Live: message frames carry no window, the result frame's modelUsage does.
-    The footer read "ctx 11,264 / ?" and autocompact could never fire."""
+async def test_session_window_is_not_overwritten_by_cumulative_result_models(tmp_path):
+    """A past 1M model or subagent must not override this session's 200k limit."""
     app = turn_app(tmp_path, messages=["a", "b", "c"])
     app.ctx_max, app.ctx_loaded = 1_000_000, True          # known from an earlier turn
     message = ClaudeUsage(source="message", input_tokens=10, context_tokens=9500)
@@ -576,7 +586,7 @@ async def test_the_window_comes_from_the_result_frame_and_is_not_cleared_by_mess
     app._events = [[ClaudeEvent(kind="usage", usage=message)],
                    [ClaudeEvent(kind="usage", usage=result)], [result_event()]]
     await stream_turn(app)
-    assert (app.ctx_used, app.ctx_max, app.ctx_loaded) == (9500, 1_000_000, True)
+    assert (app.ctx_used, app.ctx_max, app.ctx_loaded) == (9500, 200_000, True)
 
 
 @pytest.mark.asyncio
@@ -695,7 +705,7 @@ def ledger_for_path(app):
 def _compaction_watch(app, due):
     scheduled, commands = [], []
     app.call_after_refresh = scheduled.append
-    app._autocompact_due = lambda: due
+    app._autocompact_due = lambda: due if app.ctx_used and app.ctx_used > 1000 else None
     app._maybe_autocompact = lambda: commands.append("maybe")
     app._handle_command = commands.append
     return scheduled, commands
@@ -703,8 +713,7 @@ def _compaction_watch(app, due):
 
 @pytest.mark.asyncio
 async def test_crossing_the_threshold_mid_turn_compacts_at_the_turn_end_whatever_it_ended_on(tmp_path):
-    """Plan claude-backend-litetui-identity, phase 4: LiteTUI's threshold is checked on the
-    usage frames mid-turn, not only after a normal stop; the turn is never cut short."""
+    """Threshold interruption still persists partial work before scheduled maintenance."""
     app = turn_app(tmp_path, messages=["m1", "m2", "m3", "m4"])   # one SDK message per event batch
     scheduled, commands = _compaction_watch(app, due=91)
     usage = ClaudeUsage(source="message", input_tokens=10, context_tokens=910_000)
@@ -930,6 +939,18 @@ def test_card_texts_split_back_exactly_even_with_blank_lines_inside():
 def test_a_turn_saved_before_card_positions_replays_the_old_way():
     from litetui.claude_turn import split_card_texts
     assert split_card_texts({"activities": []}, "text") is None
+
+
+@pytest.mark.asyncio
+async def test_recap_chunks_never_escape_claude_rpc_or_display(tmp_path):
+    chunks = ['Answer. ', '<re', 'cap>Did work\nTests green</recap>']
+    app = turn_app(tmp_path, messages=['m'] * len(chunks))
+    app._events = [[ClaudeEvent(kind='text_delta', text=c, message_id='m1')] for c in chunks]
+    app._record_recap = lambda recap: None
+    await stream_turn(app)
+    wire = ''.join(e['text'] for e in app.emitted if e.get('type') == 'text_delta')
+    assert wire == app.bubble.answer == 'Answer.'
+    assert app.bubble.recap == 'Did work / Tests green'
 
 
 def test_lengths_that_do_not_add_up_are_refused_not_guessed():

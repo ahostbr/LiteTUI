@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from litetui import row_store
-from litetui.tool_policy import AUTONOMOUS
+from litetui.tool_policy import INTERACTIVE, PROFILES
 
 #: How often the app polls. Cron resolves to the minute, so anything under 60s
 #: is enough; 20s keeps a job's fire within a third of a minute of its slot
@@ -233,22 +233,17 @@ class Job:
     run_count: int = 0
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     label: str = ""
-    #: 🔴 VESTIGIAL SINCE T085 -- NOT CONSULTED WHEN THE JOB FIRES.
-    #: the user: "just change it so schedule only runs auto mode". `app._fire_job`
-    #: resolves to `autonomous` outright, because a scheduled task fires when
-    #: nobody is at the keyboard and a level that stops to ask would hang
-    #: instead of running.
+    #: 🔴 THE JOB'S AUTHORITY AGAIN (T1082), READ WHEN IT FIRES. Owner: "we need
+    #: new settings to set this at the time u create the schedule". Every creation
+    #: site records it through `seat_authority.schedule_level` (a /loop through
+    #: `loop_level`), and `app._fire_job` runs the job at it or skips it
+    #: (`seat_authority.withheld`). This supersedes T085's hardcoded autonomous, so
+    #: this field was vestigial from T085 until T1082.
     #:
-    #: ⚠️ THIS FIELD'S WHOLE STORY IS ONE EVENING, so the git history reads
-    #: straight: it WAS the per-job authority; a ruling made the global setting
-    #: govern and it went dead; a ruling brought it back; this ruling removed
-    #: the choice altogether. Every one of those comments was true when written.
-    #:
-    #: Kept because it still round-trips through save/load and a test asserts
-    #: that. Removing it is safe (`load` filters to `__dataclass_fields__`, so
-    #: old job files keep parsing) but it is a schema change and belongs in its
-    #: own commit rather than in an authority change.
-    tool_profile: str = AUTONOMOUS
+    #: The default is INTERACTIVE, not the old AUTONOMOUS, so a creation path that
+    #: bypasses the helper fails narrow. Read it through `level_of`: a stored name
+    #: that is no level (the removed "scheduled") runs interactive.
+    tool_profile: str = INTERACTIVE
     #: ``cron`` keeps the historical path. ``loop`` is a fixed cadence owned
     #: by one conversation and is polled by the SAME monitor.
     kind: str = "cron"
@@ -263,7 +258,7 @@ class Job:
         prompt: str,
         interval_minutes: int,
         owner_convo_id: str,
-        tool_profile: str = AUTONOMOUS,
+        tool_profile: str = INTERACTIVE,
         now: datetime | str | None = None,
     ) -> "Job":
         if interval_minutes < 1:
@@ -302,6 +297,14 @@ class Job:
         if len(name) > 46:
             name = name[:45] + "…"
         return f"{self.id}  {state}  {self.schedule:<16}  x{self.run_count:<4} {name}"
+
+
+def level_of(value) -> str:
+    """A recorded level as a level (T1082, ruling R2). A stored name that is no level
+    (the removed "scheduled", or a hand edit) runs INTERACTIVE, the landing the chat
+    setting gets (settings._selectable_profile). Mapped on every read, never rewritten
+    on load, the same way that setting migrates."""
+    return value if value in PROFILES else INTERACTIVE
 
 
 def slot_of(when: datetime) -> str:

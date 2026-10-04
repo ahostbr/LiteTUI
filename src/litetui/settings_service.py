@@ -95,8 +95,26 @@ class SettingsService:
                 _write(paths['conversation'], asdict(cs.born_from(inherited)))
         return self.snapshot(conversation_id)
 
+    def global_value(self, key):
+        """Read a shared preference afresh, distinguishing absent from explicit null.
+
+        Side-call dispatch uses this instead of an instance's cached Settings.
+        Parse/I/O failures propagate: they must not silently select another model.
+        """
+        spec = SETTING_SPECS.get(key)
+        if spec is None or spec.scope != SettingScope.DEVICE:
+            raise ValueError(f'Not a device preference: {key}')
+        from litetui.subagent_routing import migrate_global_file
+        path = st.settings_path(self.root)
+        migrate_global_file(path)
+        raw, _ = _read(path)
+        default = getattr(st.Settings(), key)
+        return key in raw, st._coerce(key, raw.get(key, default), default)
+
     def snapshot(self, conversation_id, overrides=None):
         paths = self._paths(conversation_id)
+        from litetui.subagent_routing import migrate_global_file
+        migrate_global_file(paths['global'])
         global_raw, global_rev = _read(paths['global'])
         convo, convo_rev = _read(paths['conversation'])
         saved = st.Settings()
@@ -163,6 +181,9 @@ class SettingsService:
                 api_base(value)
             if change.key == 'custom_context_length' and value < 0:
                 raise ValueError('Custom context budget must be zero or positive')
+            if change.key in ('subagent_route', 'subagent_route_override'):
+                from litetui.subagent_routing import validate_route
+                validate_route(value, override=change.key == 'subagent_route_override')
             # Reject unserializable nested payloads before any destination writes.
             json.dumps(value, allow_nan=False)
             destination = 'conversation' if spec.scope == SettingScope.CONVERSATION else 'global'

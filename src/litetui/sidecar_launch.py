@@ -1,7 +1,8 @@
 """Parent-owned optional sidecar preview lifecycle.
 
-No settings or scheduler authority crosses this connection yet. The child is
-only a presentation preview; never replace a Textual editor with it.
+Two writes cross this connection, each only under a grant the child learns in
+hello: a settings patch (settings_write) and a cron job creation (jobs_write, T1082).
+The parent validates and writes both; never replace a Textual editor with it.
 """
 from __future__ import annotations
 
@@ -35,6 +36,10 @@ class SidecarWindow:
         # answer 2026-09-24: "Yes, make it editable (full parity)"). The child
         # learns it in hello and only then renders editors.
         self.settings_write = False
+        # T1082 R4: the page may ask the parent to create a CRON job (job_create). Off
+        # unless the owner grants it; the levels offered are capped by the parent, not
+        # by this grant (Dijkstra f0ae21c1).
+        self.jobs_write = False
         self.on_rejected_frame: Callable[[str], object] = lambda reason: runtime_log.record(
             "sidecar_frame_rejected", site="sidecar_launch.reader", component="sidecar", reason=reason,
         )
@@ -80,6 +85,15 @@ class SidecarWindow:
                             self.on_event(frame)
                         else:
                             self.on_rejected_frame("settings_write_disabled")
+                    elif frame["command"] == "job_create":
+                        if self.jobs_write and self.on_event is not None:
+                            self.on_event(frame)
+                        else:
+                            self.on_rejected_frame("jobs_write_disabled")
+                    elif frame["command"] == "settings_request" and self.on_event is not None:
+                        # Read-only: the page switched to Settings in a window
+                        # opened on another view, which was never sent them.
+                        self.on_event(frame)
                     else:
                         self.on_rejected_frame("unknown_command")
             except (OSError, RuntimeError, ValueError) as exc:
@@ -155,7 +169,8 @@ class SidecarWindow:
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, close_fds=True, env=env)
             self._start_reader(self.process)
-            result = self._exchange("hello", {"settings_write": self.settings_write})
+            result = self._exchange("hello", {"settings_write": self.settings_write,
+                                              "jobs_write": self.jobs_write})
             if result.get("version") != sidecar_protocol.VERSION or result.get("ready") is not True:
                 raise ValueError("Incompatible sidecar handshake")
         except (OSError, ValueError, RuntimeError, TimeoutError) as exc:

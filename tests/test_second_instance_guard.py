@@ -39,9 +39,11 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     alive: set[int] = set()
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: pid in alive)
 
-    def add(agent_id: str, *, cli: str = "litetui", pid: int, name: str, live: bool) -> None:
+    def add(agent_id: str, *, cli: str = "litetui", backend: str | None = None,
+            pid: int, name: str, live: bool) -> None:
         (d / f"{agent_id}.json").write_text(
-            json.dumps({"agent_id": agent_id, "cli": cli, "session_pid": pid, "name": name}),
+            json.dumps({"agent_id": agent_id, "cli": cli, "backend": backend,
+                        "session_pid": pid, "name": name}),
             encoding="utf-8",
         )
         if live:
@@ -56,8 +58,32 @@ def test_no_other_instance_when_the_registry_is_empty(registry) -> None:
 
 
 def test_a_live_sibling_is_found_by_name(registry) -> None:
-    registry("22222222-2222-2222-2222-222222222222", pid=4242, name="OpenBolt", live=True)
+    registry("22222222-2222-2222-2222-222222222222", backend="lmstudio",
+             pid=4242, name="OpenBolt", live=True)
     assert harness.other_live_litetui(SELF_ID) == "OpenBolt"
+
+
+def test_cloud_seats_do_not_trigger_a_local_model_warning(registry) -> None:
+    for index, backend in enumerate(("codex", "claude", "cline", "free"), 1):
+        registry(f"{index:08d}-2222-2222-2222-222222222222", backend=backend,
+                 pid=4200 + index, name=backend, live=True)
+    assert harness.other_live_litetui(SELF_ID) is None
+    registry("99999999-2222-2222-2222-222222222222", backend="ninfer",
+             pid=4299, name="LocalEngine", live=True)
+    assert harness.other_live_litetui(SELF_ID) == "LocalEngine"
+
+
+@pytest.mark.asyncio
+async def test_app_load_gate_allows_local_load_beside_cloud_seat(registry) -> None:
+    from types import SimpleNamespace
+
+    from litetui.app import LiteTUI
+
+    registry("22222222-2222-2222-2222-222222222222", backend="codex",
+             pid=4242, name="CloudSeat", live=True)
+    app = SimpleNamespace(seat=SimpleNamespace(agent_id=SELF_ID),
+                          backend=SimpleNamespace(model_info=lambda _model: None))
+    assert await LiteTUI._vram_gate_allows(app, "local-model") is True
 
 
 def test_a_DEAD_row_is_not_a_sibling(registry) -> None:

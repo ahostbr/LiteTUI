@@ -38,6 +38,17 @@ def ledger_for(app):
 CLAUDE_TOOLS_OFF = "\nTools are off in LiteTUI, so you have none this session. Only the user can turn them on (Ctrl+T).\n"
 
 
+#: Claude writes identity at a paragraph's start. Match only complete single-line
+#: sentences there (including adjacent duplicates), never inline quoted examples
+#: or incomplete user prose that runs into an identity in the next paragraph.
+CLAUDE_FLEET_LINE_RE = re.compile(
+    r"^(?:You are registered in the LiteHarness fleet as [^(\r\n]+\("
+    r"(?:id |your inbox/sender id \(use it for any from=/--from\): )"
+    r"[0-9a-fA-F-]{36}, tier [a-z]+\)\. )+",
+    re.MULTILINE,
+)
+
+
 def system_prompt_for(app, segment):
     """The system prompt a Claude session of `segment` runs under: LiteTUI's, not Claude Code's.
 
@@ -48,8 +59,9 @@ def system_prompt_for(app, segment):
     and the LiteTUI note that makes a compaction request trusted.
 
     Built ONCE per segment and recorded (ledger.fix_system_prompt): a resume carries
-    the same prefix. A segment already bound to a native session before this existed
-    returns None and keeps the preset it was created with.
+    the same prefix except its harness identity, refreshed for the registered seat.
+    A segment already bound to a native session before this existed returns None
+    and keeps the preset it was created with.
     """
     from litetui import appsvc
     from litetui.claude_backend import APPEND, seeded_append
@@ -58,14 +70,19 @@ def system_prompt_for(app, segment):
 
     segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
     if segment.get("system_prompt"):
+        if getattr(getattr(app, "seat", None), "registered", False):
+            return ledger_for(app).refresh_system_prompt_identity(
+                segment["id"], app._fleet_identity_sentence(), CLAUDE_FLEET_LINE_RE)
         return segment["system_prompt"]
     if segment.get("session_id"):
         return None
     tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
     parts = [app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
+    parts.append(appsvc.index_block(app, cwd=segment["workspace"]).strip())
     parts.append(appsvc.store_block(app).strip())
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
         parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
+    parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
     parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
     text = "\n\n".join(p for p in parts if p)
     return ledger_for(app).fix_system_prompt(segment["id"], text)
@@ -77,7 +94,48 @@ OVERFLOW = re.compile(r"prompt is too long|context limit reached|exceed context 
 OVERFLOW_SENTENCE = ("Claude's context window is full, so this turn could not finish. LiteTUI is compacting "
                      "the conversation now; send your message again once it is done. If the compaction "
                      "itself fails, /claude new starts a fresh session.")
-MIDTURN_SENTENCE = "Context passed LiteTUI's compaction threshold mid-turn; LiteTUI compacts when this turn ends."
+MIDTURN_SENTENCE = "Context passed LiteTUI's compaction threshold mid-turn; pausing to compact, then resume."
+
+
+class ContextUnavailable(RuntimeError):
+    """Metadata read failed, not the healthy session or its unsent delivery."""
+
+
+async def measure_context(app, session):
+    """Read the serving window after model selection, before spending its budget.
+
+    Result modelUsage can include other models (subagents or a previous model).
+    Its largest window is not the window this request will run in. If this
+    read fails, refuse the send rather than retain yesterday's larger window.
+    """
+    app.ctx_max, app.ctx_loaded = None, False
+    try:
+        usage = await session.get_context_usage()
+    except Exception as exc:
+        raise ContextUnavailable(f"Claude context usage unavailable; input is held for /claude continue: {exc}") from exc
+    window = usage.get("maxTokens") if isinstance(usage, dict) else None
+    if type(window) is not int or window <= 0:
+        raise ContextUnavailable("Claude context usage omitted the effective window; input is held for /claude continue.")
+    app.ctx_max, app.ctx_loaded = window, True
+    used = usage.get("totalTokens")
+    if type(used) is int and used >= 0:
+        app.ctx_used = used
+    else:
+        app.ctx_used = None
+    app._refresh_ctx_label()
+
+
+def resume_current(app, resume):
+    """Only the interrupted input may authorize its maintenance continuation."""
+    backend, convo, segment_id, item, _ = resume
+    if app.backend is not backend or app.convo_id != convo:
+        return False
+    selected = ledger_for(app).selected
+    return (selected is not None and selected["id"] == segment_id
+            and getattr(app, "_claude_active_input", None) is item
+            and not getattr(app, "_turn_abandoned", False)
+            and not getattr(app, "_stop_requested", False)
+            and not getattr(app, "_pending_input", []))
 
 
 def after_turn(app, reason, failure, crossed):
@@ -88,7 +146,16 @@ def after_turn(app, reason, failure, crossed):
     """
     if not hasattr(app, "call_after_refresh"):
         return
-    if failure and OVERFLOW.search(failure):
+    resume = getattr(app, "_claude_compact_resume", None)
+    if resume is not None:
+        def compact_interrupted():
+            if resume_current(app, resume) and not app._chat_running():
+                app._compact_is_auto = True
+                app._handle_command("/compact")
+            else:
+                app._claude_compact_resume = None
+        app.call_after_refresh(compact_interrupted)
+    elif failure and OVERFLOW.search(failure):
         app._system(OVERFLOW_SENTENCE)
 
         def force():
@@ -100,25 +167,46 @@ def after_turn(app, reason, failure, crossed):
         app.call_after_refresh(app._maybe_autocompact)
 
 
-#: How long a new session waits for the harness seat's first register attempt
-#: (app._inbox_monitor: a 2 s settle, then a registry write).
-SEAT_WAIT_S = 15.0
+#: How long a session waits for the harness seat's first register attempt
+#: (app._inbox_monitor: a 2 s settle, up to a launch option's timeout + 5 s, then a
+#: registry write). It ends the wait whether the register succeeded or failed.
+SEAT_WAIT_S = 45.0
+#: A wait that lasts this long is announced once, so it does not read as a hung session.
+SEAT_NOTICE_S = 2.0
+
+
+def _seat_pending(app):
+    """The seat has not finished its first register attempt AND something will still make it.
+
+    Only the harness plugin starts the inbox monitor that sets `_seat_started`; with the
+    plugin disabled or failed at activate, nothing ever will, so waiting would only stall.
+    """
+    if getattr(app, "_seat_started", True):
+        return False
+    status = getattr(getattr(app, "plugins", None), "status", None)
+    return not isinstance(status, dict) or status.get("harness") == "active"
 
 
 async def prompt_for_new_session(app, segment):
     """system_prompt_for, after the harness seat's first register attempt has ended.
 
-    The prompt is fixed for the segment's life, and so is the session's tool inventory.
-    A session opened in the first seconds after launch, before the seat registered,
-    would carry neither the harness identity nor the harness tool for as long as it
-    lives. The host re-syncs its own system message when the seat lands late; a fixed
-    Claude prompt cannot, so a NEW segment waits for it (bounded) instead.
+    The session's tool inventory is fixed when it opens, and the harness tool is only
+    offered once the seat registered. A session opened in the first seconds after
+    launch would therefore lack the harness tool for as long as it lives, and a NEW
+    segment's prompt would also lack the harness identity. The host re-syncs its own
+    system message when the seat lands late; a fixed Claude session cannot, so EVERY
+    open waits for it (bounded) - a RESUMED segment too (T0249): it is the relaunch
+    case, where the session id and the recorded prompt already exist, that raced the
+    seat and lost its harness tool.
     """
-    fresh = ledger_for(app).segment(segment["id"]) or segment
-    if not fresh.get("system_prompt") and not fresh.get("session_id"):
-        deadline = time.monotonic() + SEAT_WAIT_S
-        while not getattr(app, "_seat_started", True) and time.monotonic() < deadline:
-            await asyncio.sleep(0.1)
+    began = time.monotonic()
+    deadline = began + SEAT_WAIT_S
+    announced = False
+    while _seat_pending(app) and time.monotonic() < deadline:
+        if not announced and time.monotonic() - began >= SEAT_NOTICE_S:
+            announced = True
+            app._system("waiting for the harness seat to register…")
+        await asyncio.sleep(0.1)
     return system_prompt_for(app, segment)
 
 
@@ -149,6 +237,28 @@ def inline_images(app, content, saved=None):
     return "\n\n".join([t for t in texts if t] + notes), paths_
 
 
+class UncertainDelivery(ValueError):
+    """Admission is held until the user settles a previous Claude delivery."""
+
+
+def _hold_notice(app, item, text):
+    if item.get("_claude_hold_notice") != text:
+        item["_claude_hold_notice"] = text
+        app._system(text)
+
+
+def hold_input(app, item, refusal):
+    """Keep unsent input in memory, bound to its original conversation/segment.
+
+    No durable entry is prepared and no delivery evidence is changed. The idle
+    queue gate keeps this item held until explicit recovery; it cannot migrate.
+    """
+    segment = ledger_for(app).selected
+    held = {**item, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
+    app._pending_input.append(held)
+    _hold_notice(app, held, f"Queued Claude input is held; nothing was sent. {refusal}")
+
+
 def prepare_input(app, content, profile, source, operation_id=None):
     if not isinstance(content, str):
         raise TypeError("Claude image attachments are not enabled yet; send text instead.")
@@ -165,7 +275,7 @@ def prepare_input(app, content, profile, source, operation_id=None):
         # The same gate as below, on the segment being LEFT: once another is selected,
         # /claude status and resolve can no longer reach its uncertain entries.
         if any(e["state"] != "prepared" for e in ledger.pending(segment["id"])):
-            raise ValueError(f"The Claude session in {previous} has an uncertain delivery, so a new one in "
+            raise UncertainDelivery(f"The Claude session in {previous} has an uncertain delivery, so a new one in "
                              f"{here} was not started. Relaunch from {previous} and use /claude resolve "
                              "(or /claude continue) to settle it first; nothing was sent.")
         segment = ledger.select_segment(here)
@@ -173,34 +283,47 @@ def prepare_input(app, content, profile, source, operation_id=None):
     active = getattr(app, "_claude_active_input", {}).get("_claude_entry", {}).get("id") if app._chat_running() else None
     unresolved = [e for e in ledger.pending(segment["id"]) if e["state"] != "prepared" and e["id"] != active]
     if unresolved:
-        raise ValueError("Claude delivery is uncertain. Inspect saved history, then /claude resolve to settle it without replay, /claude continue to send what is still only prepared, or /claude new for a fresh session; no input is replayed automatically.")
+        raise UncertainDelivery("Claude delivery is uncertain. Inspect saved history, then /claude resolve to settle it without replay, /claude continue to send what is still only prepared, or /claude new for a fresh session; no input is replayed automatically.")
     entry = ledger.prepare(segment["id"], content, profile, source, operation_id=operation_id)
     return {"_claude_entry": entry, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
 
 
 def queue_ready(app, item):
-    if not item.get("_claude_entry"):
-        return True
+    if not item.get("_claude_segment"):
+        if not getattr(getattr(app, "backend", None), "owns_native_turns", False):
+            return True
+        selected = ledger_for(app).selected
+        if selected is None:
+            return True
+        # Unlabelled startup mail can already be queued before Claude admission.
+        # Bind/check it BEFORE the idle flush pops it, preserving FIFO on hold.
+        item.update(_claude_segment=selected["id"], _claude_conversation=app.convo_id)
     if (app.backend.name != "claude" or item.get("_claude_conversation") != app.convo_id):
-        app._system("Queued Claude input is held for its original conversation/session.")
+        _hold_notice(app, item, "Queued Claude input is held for its original conversation/session.")
         return False
     selected = ledger_for(app).selected
     if not selected or item["_claude_segment"] != selected["id"]:
-        app._system("Queued Claude input is held for its original session segment.")
+        _hold_notice(app, item, "Queued Claude input is held for its original session segment.")
+        return False
+    if not item.get("_claude_entry") and selected["workspace"] != launch_workspace(app):
+        _hold_notice(app, item, "Queued Claude input is held for its original workspace; relaunch there to continue.")
         return False
     if any(e["state"] != "prepared" for e in ledger_for(app).pending(selected["id"])):
-        app._system("Queued Claude input is held: an earlier delivery is uncertain; /claude status.")
+        _hold_notice(app, item, "Queued Claude input is held: an earlier delivery is uncertain; inspect /claude status, then /claude resolve and /claude continue. Nothing was sent or replayed.")
         return False
     if getattr(app.backend, "session", None) is not None and app.backend.session.lifecycle.failure:
-        app._system("Claude session failed; queued input is held, not replayed.")
+        _hold_notice(app, item, "Claude session failed; queued input is held, not replayed.")
         return False
+    item.pop("_claude_hold_notice", None)
     return True
 
 
 def accept_input(app, item):
     metadata = {key: value for key, value in item.items() if key.startswith("_claude_")}
-    if not metadata:
-        metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source", "queued"), item.get("operation_id"))
+    if not metadata.get("_claude_entry"):
+        # T1043: an unlabelled item is recorded "unlabelled", never as an
+        # attended "queued" that a later replay would inherit.
+        metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source") or "unlabelled", item.get("operation_id"))
     app._claude_active_input = {**item, **metadata}
     return {"id": metadata["_claude_entry"]["id"], "segment_id": metadata["_claude_segment"], "state": "prepared"}
 
@@ -355,6 +478,7 @@ async def stream_turn(app):
     app._active_turn_started_at = started
     app._stop_requested = False
     app._stop_reason = None
+    app._stop_cause = None
     app._turn_stop_line_settled = False
     app._turn_abandoned = False
     app.tps = None
@@ -372,6 +496,8 @@ async def stream_turn(app):
     # Each card's streamed text is drawn by its own StreamSink: one render and
     # one scroll per frame, Markdown from the first frame (stream_sink.py).
     sinks = {}
+    from litetui.recap import RecapStream, split_recap
+    recap_streams = {}  # each answer card owns the projection shared by its pane and RPC
     tool_card_index = {}   # tool id -> the card it followed; its result keeps it
     tool_below = False
     tool_cards = {}
@@ -379,6 +505,8 @@ async def stream_turn(app):
     thinking = None
     thinking_text = ""
     crossed = False   # LiteTUI's compaction threshold, seen on a usage frame this turn
+    app._claude_compact_resume = None
+    interrupted_for_compact = False
     terminal = False
     submitted = False
     monitor = None
@@ -403,6 +531,21 @@ async def stream_turn(app):
         effort = effort_for(app)
         session, bridge, normalizer = await session_for(app, backend, segment, effort)
         require_current_segment()  # Startup/model control awaited; ownership may have changed.
+        await measure_context(app, session)
+        require_current_segment()
+        if getattr(app, "_autocompact_due", lambda: None)() is not None:
+            # The input never reached Claude. Keep it prepared until a summary
+            # succeeds, so a failed compact leaves /claude continue recoverable.
+            terminal = True
+            reason = "cancelled"
+            if item["_claude_entry"].get("operation_id") is not None:
+                app._system("Claude input is held unsent: context needs compaction, but this RPC operation "
+                            "cannot transfer across sessions. Inspect /claude status, then /claude new and resend "
+                            "as a NEW RPC operation_id. The old input stays saved without replay; "
+                            "/claude continue cannot reduce this session's full context.")
+            else:
+                app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, item["content"])
+            return
         ledger.update_delivery(entry_id, "submitted")
         submitted = True
         await session.query(entry_id, item["content"])
@@ -442,6 +585,20 @@ async def stream_turn(app):
                 sinks[card] = StreamSink(app, card)
             return sinks[card]
 
+        def show_answer(card, *, replace=False, message_id=None):
+            answer = card_text(card)  # the same join rule used for replay and persistence
+            stream = recap_streams.setdefault(card, RecapStream())
+            if replace or not answer.startswith(stream.raw):
+                stream = recap_streams[card] = RecapStream()
+                stream.feed(answer)
+                app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
+                               "message_id": message_id, "text": stream.visible})
+            else:
+                visible_delta = stream.feed(answer[len(stream.raw):])
+                if visible_delta:
+                    app._rpc_emit({"type": "text_delta", "text": visible_delta})
+            sink_for(card).show(stream.visible)
+
         def stop_live_clocks():
             # The elapsed clock repaints the first card's body every 250ms until
             # told to stop; left running it overwrote streamed text all turn.
@@ -463,24 +620,25 @@ async def stream_turn(app):
                     stop_live_clocks()
                     message_texts[key] = message_texts.get(key, "") + event.text
                     text = _joined(message_texts)
-                    sink_for(card).show(card_text(card))
-                    app._rpc_emit({"type": "text_delta", "text": event.text})
+                    show_answer(card)
                 elif event.kind == "message":
                     key = event.message_id or "current"
                     if event.reconcile == "append":
                         message_texts[key] = message_texts.get(key, "") + event.text
                         if event.text:
-                            app._rpc_emit({"type": "text_delta", "text": event.text})
+                            card = card_for(key)
+                            show_answer(card)
                     else:
                         message_texts[key] = event.text
-                        app._rpc_emit({"type": "native_text_snapshot", "provider": "claude", "message_id": key, "text": event.text})
+                        # Publish the sanitized snapshot after updating the card.
                     text = _joined(message_texts)
                     # A snapshot with no text (a tool-only message) opens no card;
                     # one that corrects text re-renders the card that shows it.
                     if message_texts[key] or any(key in keys for _, keys in cards):
                         card = card_for(key)
                         stop_live_clocks()
-                        sink_for(card).show(card_text(card))
+                        if event.reconcile == "replace":
+                            show_answer(card, replace=True, message_id=key)
                 elif event.kind in {"thinking_delta", "thinking"}:
                     from litetui.widgets import ThinkingBlock
                     card_for(event.message_id or "current")
@@ -496,19 +654,18 @@ async def stream_turn(app):
                         # ThinkingBlock only appends (widgets.py:454) and owns
                         # no setter, so the authoritative trace is rebuilt into
                         # a fresh block rather than concatenated onto a wrong
-                        # prefix. Mounted before the old one is removed so the
-                        # trace never blinks out of the transcript.
-                        stale_block, thinking = thinking, ThinkingBlock()
-                        widget.thinking = thinking
+                        # prefix. set_thinking mounts it before removing the old
+                        # one, so the trace never blinks out of the transcript.
+                        thinking = ThinkingBlock()
                         app._thinking_live = thinking
-                        widget.mount(thinking, before=widget.body)
-                        stale_block.remove()
+                        widget.set_thinking(thinking)
                         thinking.append(thinking_text)
                     elif thinking is None and app.settings.show_thinking:
                         thinking = ThinkingBlock()
-                        widget.thinking = thinking
                         app._thinking_live = thinking
-                        widget.mount(thinking, before=widget.body)
+                        # `widget` may be a card card_for opened THIS tick, not yet
+                        # composed (T1031): set_thinking handles both.
+                        widget.set_thinking(thinking)
                         # The whole trace, not this one event: a block created
                         # late (show_thinking turned on mid-turn, or a snapshot
                         # arriving with no deltas before it) still owns
@@ -557,30 +714,24 @@ async def stream_turn(app):
                         ledger.note_cache(segment["id"], clock.used_at, app.model_id)
                         claude_cache.ensure_ticker(app)
                         app._refresh_ctx_label()
-                    if event.usage and event.usage.max_context_tokens:
-                        # WINDOW FIRST. `ctx_used` is a reactive and
-                        # `watch_ctx_used` reads `ctx_max` to render
-                        # "used/total" — assigning it first fired the watcher
-                        # against the previous window (None on the first
-                        # observation, so the footer said "unknown"), and a
-                        # reactive does not re-fire for an unchanged value.
-                        # 🔴 The window rides on the RESULT frame
-                        # (modelUsage.contextWindow); message frames carry
-                        # none. Reading it only from message frames set None
-                        # on every turn: the footer said "ctx 11,264 / ?"
-                        # (live, 2026-09-24) and LiteTUI's autocompact, which
-                        # needs a window, could never fire. Kept once known.
-                        app.ctx_max = event.usage.max_context_tokens
-                        app.ctx_loaded = True
+                    # The preflight serving window is authoritative, not
+                    # cumulative result modelUsage across unrelated models.
                     if event.usage and event.usage.source == "message":
                         app.ctx_used = event.usage.context_tokens
                         if not crossed and getattr(app, "_autocompact_due", lambda: None)() is not None:
                             crossed = True
                             app._system(MIDTURN_SENTENCE)
+                            if not app._stop_requested:
+                                interrupted_for_compact = True
+                                bridge.stop()
+                                await session.interrupt()
                     if event.usage and (event.usage.source == "message" or event.usage.max_context_tokens):
                         app._refresh_ctx_label()
                     app._rpc_emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
                 elif event.kind in {"diagnostic", "notice", "rate_limit", "task", "session", "user_text"}:
+                    # Native Claude rate_limit is a status transition (including allowed_warning),
+                    # not a confirmed retry-begin/retry-end. Keep it diagnostic: claiming a
+                    # WAITING banner here would invent a blocked state with no reliable exit.
                     app._rpc_emit({"type": "native_event", "provider": "claude", "kind": event.kind,
                                    "detail": event.detail, "data": event.data})
                     if event.kind == "diagnostic":
@@ -592,12 +743,19 @@ async def stream_turn(app):
                     failure = event.detail or "Claude reported an error"
                 elif event.kind == "result":
                     terminal = True
-                    reason = "error" if event.is_error or failure else ("cancelled" if app._stop_requested else "stop")
+                    reason = "error" if event.is_error or failure else (
+                        ("approval" if getattr(app, "_stop_cause", None) == "approval" else "cancelled")
+                        if app._stop_requested or interrupted_for_compact else "stop")
+                    if reason == "approval":  # T1049-B2: the host reads why (Dijkstra 79e113ce (3))
+                        failure = app._stop_reason
                     ledger.update_delivery(entry_id, "terminal", stop_reason=reason)
                     if event.is_error:
                         failure = event.detail or event.text or failure or "Claude turn failed"
         if not terminal:
             raise RuntimeError("Claude ended without a terminal result; delivery is uncertain")
+    except ContextUnavailable as exc:
+        failure = str(exc)
+        reason = "error"
     except BaseException as exc:
         failure = str(exc) or type(exc).__name__
         reason = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
@@ -641,7 +799,25 @@ async def stream_turn(app):
                           for _, keys in cards]
             for (card, _), card_answer in zip(cards, card_texts):
                 # sinks.get: a turn can fail before sink_for exists.
-                (sinks.get(card) or StreamSink(app, card)).finish(card_answer)
+                stream = recap_streams.get(card)
+                if stream is not None:
+                    if card_answer != stream.raw:
+                        # Native reconciliation can append a message after a tool
+                        # without a text delta. Reproject the saved card text.
+                        stream = recap_streams[card] = RecapStream()
+                        stream.feed(card_answer)
+                        app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
+                                       "message_id": None, "text": stream.visible})
+                    final_delta = stream.finish()
+                    if final_delta:
+                        app._rpc_emit({"type": "text_delta", "text": final_delta})
+                    shown, recap = stream.visible, stream.recap
+                else:
+                    shown, recap = split_recap(card_answer, final=True)
+                (sinks.get(card) or StreamSink(app, card)).finish(shown)
+                if recap:
+                    card.recap = recap
+                    app._record_recap(recap)
             native = {
                 "segment_id": item["_claude_segment"], "session_id": (segment or {}).get("session_id"), "delivery_id": entry_id,
                 "activities": activity_records, "message_ids": list(message_texts),
@@ -658,6 +834,9 @@ async def stream_turn(app):
         widget.settled = True
         app._settle_turn_stop_line(widget, started_at=started, final_tps=None, stopped=reason != "stop")
         app._emit_turn_end(reason, None, error=failure)
+        if (interrupted_for_compact and terminal and not failure
+                and not app._stop_requested and not app._turn_abandoned):
+            app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, None)
         after_turn(app, reason, failure, crossed)
 
 
@@ -759,8 +938,13 @@ def replay_activity(app, metadata, content=None):
     answers = []
     for index, card_text in enumerate(texts):
         if card_text:
+            from litetui.recap import split_recap
+            shown, recap = split_recap(card_text, final=True)
             bubble = app._assistant_bubble()
-            bubble.set_answer(card_text)
+            bubble.set_answer(shown)
+            if recap:
+                bubble.recap = recap
+                bubble.set_summary(recap)
             bubble.settled = True
             answers.append(bubble)
         _replay_tools(app, [a for a in activities if a.get("card") == index], ToolMessage)

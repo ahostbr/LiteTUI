@@ -27,9 +27,13 @@ import re
 import sqlite3
 import sys
 import time
+from pathlib import Path
 
-ROOT = r"C:\Projects\LiteTUI\.convos"
-DB_PATH = r"C:\Projects\LiteTUI\tools\convo_search.db"
+# Match LiteTUI's opt-in data root while keeping this standalone tool usable
+# without importing the application's dependencies. No machine identity default.
+_DATA_ROOT = Path(os.environ.get("LITETUI_DATA_ROOT") or Path(__file__).resolve().parents[1]).expanduser().resolve()
+ROOT = str(_DATA_ROOT / ".convos")
+DB_PATH = str(_DATA_ROOT / "tools" / "convo_search.db")
 MAX_MSG_CHARS = 100_000  # cap per message stored in the index (raw stays on disk)
 
 SCHEMA = """
@@ -210,8 +214,7 @@ def index_convo(conn, path, force=False):
 
 
 def build_index(force=False):
-    conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMA)
+    conn = open_db()
     convos = sorted(os.listdir(ROOT))
     t0 = time.time()
     total = 0
@@ -237,6 +240,7 @@ class _Path:
 
 
 def open_db():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
     return conn

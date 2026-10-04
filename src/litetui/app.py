@@ -22,6 +22,7 @@ from litetui import convo_settings as convo_settings_mod
 # ConPTY structural-modifier filter before any app/driver instance is built.
 win32_input.install()
 from litetui import harness as harness_mod
+from litetui import approval_relay
 from litetui import second_instance
 from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
@@ -39,7 +40,7 @@ from litetui import model_residency, model_transport
 from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
-from litetui import runtime_log
+from litetui import runtime_log, spawner_errors
 from litetui.friendly_errors import present
 from litetui.conversation import (
     CONVO_SEED_FILES,
@@ -80,6 +81,7 @@ from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
 # ThinkingBlock. The re-export is what makes O0 a move instead of a break.
 # ⚠️ It buys a shorter app.py and nothing else: same API surface, same method
 # count on LiteTUI, same plugin reach-through.
+from litetui.now_card import NowCard
 from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AnswerBody,
     AssistantMessage,
@@ -111,8 +113,8 @@ from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
 from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
-from litetui import tool_policy
-from litetui.turn_engine import TurnEngine, _resolve_reasoning_effort
+from litetui import seat_authority, tool_policy
+from litetui.turn_engine import TurnEngine, side_call_reasoning_effort
 from litetui import thinking_probe
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -272,7 +274,7 @@ LITETUI_SPLASH = (
     #
     # It does not enumerate now. `/backend` renders the live list, which cannot
     # fall behind because it IS the registry.
-    "      local-only coding agent \u00b7 /backend to choose an engine \u00b7 /help\n"
+    "      a self-evolving, open-source TUI in pure Python \u00b7 /backend to choose an engine \u00b7 /help\n"
 )
 
 
@@ -666,6 +668,22 @@ class ChatLog(VerticalScroll):
 #: (wrapped, idle) poll phase quickly instead of blocking the suite on real time;
 #: production keeps the full settle.
 _INBOX_SETTLE_S = 2.0
+#: T0124: pauses before each retry of a started MCP server that listed no tools.
+MCP_RETRY_DELAYS = (5.0, 15.0, 45.0)
+
+
+def _sync_seat_resolution(app) -> None:
+    """T1025: the seat reports what THIS process resolved -- the model the next
+    request goes to and the thinking level it carries (the same expression the rpc
+    `ready` event reports) -- never what the convo file or a launch flag said.
+    Four sources disagree on a resumed seat (T1027); only this one is what runs."""
+    app.seat.model = app.model_id or "unknown"
+    # T1043 (Dijkstra E1): the effort the request SENDS, /modelcfg override
+    # included -- one function with the fleet floor's own judgement.
+    app.seat.thinking_level = seat_authority.effective_thinking(app)
+    # T1027: and the ENGINE it resolved -- a seat asked for local that the pin
+    # put on codex read as ungoverned without it (Carmack8 d3c3d40c).
+    app.seat.backend = getattr(getattr(app, "backend", None), "name", None)
 
 
 class LiteTUI(App):
@@ -674,27 +692,13 @@ class LiteTUI(App):
     TITLE = "LiteTUI"
     SUB_TITLE = "Connecting..."
 
-    # The stock providers (theme, keys, quit...) plus ours.
-    COMMANDS = App.COMMANDS | {LiteTUICommands}
+    # Below 80 columns the screen carries `-narrow` and the chat cards drop
+    # their bubble indents (see `.-narrow` in CSS). T1048.
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (80, "-wide")]
 
-    def get_system_commands(self, screen):
-        """Keep Textual's Theme picker. Everything else is ours, and grouped.
-
-        The stock provider also offers Keys, Maximize, Screenshot, Quit and
-        Bell. All of those now exist as real commands in our own palette, with
-        a group, a plain-English description and a slash command -- yielding
-        them here as well would show each of them twice, in two different
-        vocabularies, which is worse than the ungrouped list this replaces.
-
-        Theme is the exception and is deliberately kept: it opens Textual's own
-        picker, we do not reimplement it, and /settings promises in writing
-        that "ctrl+p still has a quick-select". Dropping the stock provider
-        wholesale would have quietly broken that promise -- the reason this is
-        a filter rather than a deletion.
-        """
-        for command in super().get_system_commands(screen):
-            if command.title == "Theme":
-                yield command
+    # Our registry owns all palette rows, including Theme (delegated to
+    # Textual's existing action_change_theme). No duplicate stock provider.
+    COMMANDS = {LiteTUICommands}
 
     CSS = """
     Screen {
@@ -739,6 +743,15 @@ class LiteTUI(App):
     }
 
     #chat-log {
+        /* 100%, NOT the inherited 1fr (T1048). Textual's vertical layout
+           resolves a child's fr WIDTH against the screen minus the LARGEST
+           horizontal margin of any sibling (layouts/vertical.py resolve_margin),
+           so PromptBox's `margin: 0 1` cost the log 2 dead columns on the
+           right at every width (measured: log 43 wide in a 45-column screen).
+           A percentage resolves against the container minus the widget's OWN
+           margin, so PromptBox carries `width: 100%` for the same reason:
+           while #skill-ac (`margin: 0 2`) is open it would lose 2 more. */
+        width: 100%;
         height: 1fr;
         padding: 1 1;
         scrollbar-size: 1 1;
@@ -847,6 +860,12 @@ class LiteTUI(App):
         display: block;
     }
 
+    .compact-profile NowCard { display: block; }
+    .compact-profile .tool-msg.compact-tool.compact-folded { margin: 0; height: 1; }
+    .compact-profile .tool-msg.compact-tool.compact-folded .thinking-header { padding: 0; height: 1; }
+    .compact-profile .thinking-block.compact-folded { margin-bottom: 0; height: 1; border: none; }
+    .compact-profile .thinking-block.compact-folded .thinking-header { padding: 0; height: 1; }
+
     .tool-msg {
         height: auto;
         margin: 0 2;
@@ -870,6 +889,50 @@ class LiteTUI(App):
         display: block;
     }
 
+    /* NARROW: below 80 columns (HORIZONTAL_BREAKPOINTS), T1048. The 8-cell
+       bubble indents and 2-cell padding above are sized for a wide terminal;
+       at 45 columns they left the answer 24 columns of text (measured,
+       .scratch/t1048/capture.py). Here every card spans the log, and the
+       log's edges line up with the prompt box: 1 cell left, the scrollbar
+       gutter right, reserved so the edge does not jump when a scrollbar
+       appears. FULL SHORTHANDS, NOT LONGHANDS: in Textual a `margin-left`
+       in one rule resets that rule's other three edges to 0 (styles builder
+       `_process_space_partial` starts from (0,0,0,0)), so a longhand here
+       silently deleted every card's top margin and vertical padding. The
+       folded cards therefore need their own narrow rule. Who is speaking
+       stays readable from fill, border colour and title, not the indent.
+       the user, 2026-09-26: "thers a large gap to the right of the messages". */
+    .-narrow #chat-log {
+        padding: 1 0 1 1;
+        scrollbar-gutter: stable;
+    }
+
+    .-narrow .user-msg, .-narrow .assistant-msg {
+        margin: 1 0 0 0;
+        padding: 1 1;
+    }
+
+    .-narrow .user-msg.collapsed, .-narrow .assistant-msg.collapsed {
+        padding: 0 1;
+    }
+
+    .-narrow .tool-msg {
+        margin: 0;
+    }
+
+    .-narrow .tool-body {
+        padding: 0 1 1 1;
+    }
+
+    .-narrow .cancel-tool {
+        /* Still under the timer: tool margin 0 + tool-body padding 1. */
+        margin: 0 0 0 1;
+    }
+
+    .-narrow .system-msg {
+        margin: 0 1;
+    }
+
     #image-indicator {
         height: auto;
         display: none;
@@ -886,31 +949,36 @@ class LiteTUI(App):
         margin: 0 1 1 1;
     }
 
-    .ctx-label {
-        dock: right;
+    ContextFooter { height: 2; layout: vertical; }
+    .footer-first-row, .footer-second-row { height: 1; width: 100%; }
+    .ctx-label { height: 1; width: auto; max-width: 100%; overflow: hidden; padding-right: 1; background: $footer-background; }
+    .compact-footer-hints { display: none; width: auto; height: 1; }
+    .compact-profile .compact-footer-hints { display: block; }
+    .footer-hints { width: 1fr; height: 1; overflow: hidden; }
+    .compact-profile .footer-hints { display: none; }
+    .hide-key-hints .compact-footer-hints, .hide-key-hints .footer-hints { display: none; }
+    .permission-label {
+        dock: none;
+        width: auto;
+        height: 1;
         padding-right: 1;
         background: $footer-background;
     }
-
-    /* The palette's only door (T573). WITHOUT `dock` THIS IS A ZERO-WIDTH
-       WIDGET: Footer gives an undocked child no space, so the button
-       mounted, rendered, reported visible=True display=True, and measured
-       Size(0, 0) -- its on_click worked when called directly and could
-       never be reached by an actual click. Docked, it sizes to content. */
-    .footer-buttons {
-        dock: right;
+    .task-manager-toggle {
+        dock: none;
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        background: $footer-background;
+        color: $accent;
+    }
+    .task-manager-toggle:hover { background: $accent 40%; }
+    .footer-meters {
+        dock: none;
         width: auto;
         height: 1;
         background: $footer-background;
     }
-
-    .palette-button {
-        width: auto;
-        padding: 0 2 0 1;
-        background: $footer-background;
-        text-style: bold;
-    }
-
     .pause-button {
         width: auto;
         padding: 0 1;
@@ -1466,6 +1534,9 @@ class LiteTUI(App):
         Binding("shift+tab", "cycle_tool_profile", "Authority",
                 priority=True, show=False),
         Binding("ctrl+p", "toggle_plan_mode", "Plan", priority=True, show=False),
+        Binding("ctrl+g", "toggle_compact_view", "Compact view", priority=True),
+        Binding("ctrl+b", "select_previous_tool", "Select tool", priority=True),
+        Binding("ctrl+e", "expand_recent_tool", "Expand tool"),
     ]
 
     pending_image: reactive[str | None] = reactive(None)
@@ -1487,10 +1558,22 @@ class LiteTUI(App):
         tool_profile: str | None = None,
         plan_mode: bool = False,
         convo_id: str | None = None,
+        agent_session=None,
         **app_kwargs,
     ):
+        self._agent_session = agent_session
+        self._owned_registration_lock = asyncio.Lock()
+        self._owned_launch_error = None
+        if agent_session is not None:
+            agent_session.authority  # child owns agent before mutable startup
         super().__init__(**app_kwargs)
         self._rpc = rpc
+        self.last_recap = None
+        self._now_turn_active_at: float | None = None
+        self._retry_wait_token: object | None = None
+        self._compact_mode = False
+        self._compact_override = None
+        self._compact_resize_timer = None
         self._first_prompt = first_prompt
         self._cli_system_prompt = system_prompt
         self._cli_initial_model = initial_model
@@ -1517,9 +1600,23 @@ class LiteTUI(App):
         # opens something the user was not pointing at. An id that is no longer
         # in the list simply drops the selection, which is visible.
         self._footer_nav: str | None = None
+        self._footer_telemetry = None
+        self._footer_history = []
+        self._footer_sampler = None
+        self._footer_sample_timer = None
+        self._footer_sample_pending = False
         self._cli_convo_id = convo_id
         # Every knob, loaded once: defaults < settings.json < environment.
         self.settings: Settings = settings_mod.load()
+        if agent_session is not None:
+            from litetui.agent_launch_context import apply_settings
+            apply_settings(agent_session, self.settings)
+            authority = agent_session.authority
+            initial_backend, initial_model = authority.backend, authority.model
+            initial_thinking = authority.thinking_level
+            self._cli_initial_backend = initial_backend
+            self._cli_initial_model = initial_model
+            self._cli_thinking_level = initial_thinking
         self._invocation_saved_values = {}
         self._launch_overrides = {}
         if launch_options is not None:
@@ -1580,7 +1677,8 @@ class LiteTUI(App):
         # The STORE owns where this conversation lives and how it is written.
         # The properties below keep `self.convo_id` and friends resolving, so
         # nothing that reads them had to change.
-        self.store = ConversationRepository(on_error=self._report_persist_error)
+        self.store = ConversationRepository(on_error=self._report_persist_error,
+                                            agent_session=agent_session)
         # Staged-but-not-created. See _new_convo / _materialise_convo.
         self.last_usage: dict | None = None
         self._stop_requested = False  # Esc-to-stop, checked inside the stream loop
@@ -1606,6 +1704,7 @@ class LiteTUI(App):
         # cleared at the START of the next turn and is about the turn in
         # flight; this outlives the turn so the ping can read it.
         self._turn_abandoned = False
+        self._interrupted_compact_resume: tuple | None = None
         # Elapsed-time display while a turn is in flight (pre-token) and while
         # tool calls run. The repaint is a task on the worker's own event loop
         # (interleaves with the stream); the display string is render_progress.
@@ -1621,8 +1720,11 @@ class LiteTUI(App):
         #: Flushed one per turn end — consecutive role:"user" messages are a
         #: chat-template gamble some models refuse, so each gets its own turn.
         self._pending_input: list = []
-        # Background tool tasks (T499). Rows still running at boot come back LOST.
-        self.bg_tasks: dict = tasks_mod.load(paths.data_root())
+        # Background tool tasks (T499). Empty at boot: the store lives with its
+        # conversation (T0132), and no conversation is bound until /resume
+        # (`_bind_task_store`) - a staged one has no directory and no rows.
+        self.bg_tasks: dict = {}
+        self._task_store_reported: set = set()
         #: Host authority for the turn currently consuming tools. Human turns
         #: start from settings; cron/inbox turns explicitly replace it with a
         #: narrower profile. The model never writes this field.
@@ -1701,18 +1803,65 @@ class LiteTUI(App):
         if self.settings.mcp_enabled:
             self.mcp.reload_configs()
         self._mcp_dispatch = self.mcp.dispatch()
+        # T1043 (Owner, form 4): was this seat SPAWNED by a launcher? Read BEFORE
+        # spawned_seat_identity, which consumes the marker. Owner's own instance
+        # (not spawned) is exempt from the fleet floor for the turns HE drives;
+        # see seat_authority.floor_applies.
+        self._spawned_marker = os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
+        # T1043 finding F: "not spawned" is NOT "Owner's own" (fleet seats launched by
+        # typing `litetui` into a pane carry no marker). Owner's own launchers set
+        # LITETUI_OWNER=1. POPPED, so no shell, tool or child of this process
+        # inherits it. PROCESS-ONLY, never saved per conversation: it says who is
+        # at the keyboard of THIS process, so a fleet agent that resumes one of
+        # Owner's conversations is enforced.
+        self._owner_seat = seat_authority.owner_mark_valid(os.environ)
+        os.environ.pop(harness_mod.OWNER_MARKER, None)
+        # Inside a LiteSuite terminal the mark is also checked for bridge taint,
+        # lazily at turn time (seat_authority.is_owner): a constructor must not
+        # block on a socket.
+        self._pty_term = (os.environ.get(seat_authority.PTY_TERM_VAR) or None) if self._owner_seat else None
+        # T1049-B: who babysits this seat's CONFIRMs (approval_relay). The spawner
+        # comes ONLY from the marker envelope (Dijkstra M1: an inherited
+        # CLAUDE_CODE_SESSION_ID or SPAWNED_BY names whoever launched Electron, or a
+        # dead id). "Agent-launched" is the owner test's own markers, read BEFORE the
+        # write below. Both env vars are POPPED (Dijkstra E2): a tool shell's nested
+        # marked launch must not adopt this seat's leader, and a nested --rpc child
+        # must not route to this seat's host. Nothing is lost: `liteharness register`
+        # (cmd_register) never wrote spawned_by from a LiteTUI env (Marquee 26d5b28c).
+        self._spawner_id = ((os.environ.get(approval_relay.SPAWNED_BY_ENV) or "").strip() or None
+                            if self._spawned_marker else None)
+        self._agent_launched = any(os.environ.get(name) for name in seat_authority.AGENT_SHELL_MARKERS)
+        self._approval_host = os.environ.get(approval_relay.APPROVAL_HOST_ENV) == "1"
+        for name in (approval_relay.SPAWNED_BY_ENV, approval_relay.APPROVAL_HOST_ENV):
+            os.environ.pop(name, None)
+        # Every tool shell and child this process starts runs inside an agent.
+        os.environ[harness_mod.AGENT_SHELL_MARKER] = "1"
+        #: Marker OR a conversation born spawned (convo "seat_spawned"; set on
+        #: every open in _adopt_convo_settings). Dijkstra S1, T1043 cycle 2.
+        self._spawned_seat = self._spawned_marker
         # A seat in the fleet, like any other agent. Registration is
         # deferred to the first poll tick so the roster shows the real
         # model rather than the empty string it holds before _connect.
+        self._launch_seat_name = (
+            (os.environ.get("LITEHARNESS_AGENT_NAME") or os.environ.get("LITETUI_SEAT_NAME") or "").strip()
+            if self._spawned_marker else ""
+        )
         seat_id, seat_name, seat_tier = harness_mod.spawned_seat_identity(
             (self.settings.seat_name or "").strip() or "LiteTUI"
         )
+        if agent_session is not None:
+            seat_id, seat_name = agent_session.authority.agent_id, agent_session.authority.name
         self.seat = harness_mod.Seat(
             agent_id=seat_id,
             name=seat_name,
             model="",
             tier=seat_tier,
+            canvas_session=os.environ.get("LITESUITE_CANVAS_SESSION") if self._spawned_marker else None,
+            leaf_id=os.environ.get("LITESUITE_LEAF_ID") if self._spawned_marker else None,
+            agent_session=agent_session,
         )
+        self.seat.spawned_by = self._spawner_id
+        self._spawner_errors = spawner_errors.SpawnerErrorReporter()
         self._seat_started = False
         self._resumed_seat_name: str | None = None
         self._seat_claim_lock = asyncio.Lock()
@@ -1746,7 +1895,8 @@ class LiteTUI(App):
         )
         self.plugins.add_prompt_section(
             "host", _ord["MEMORY"],
-            lambda: memory_prompt(self.convo_id, self.convo_dir),
+            lambda: memory_prompt(self.convo_id, self._agent_session.memory_root
+                                  if self._agent_session is not None else self.convo_dir),
             enabled=lambda: self.convo_dir is not None,
         )
         self.plugins.add_prompt_section(
@@ -1807,6 +1957,7 @@ class LiteTUI(App):
         yield Header()
         # No cancel control here any more: it is mounted next to the tool it
         # kills, by _tool_begin. See CancelToolButton.
+        yield NowCard(id="now-card")
         yield ChatLog(id="chat-log")
         yield Static(
             "  Image attached — Ctrl+X to remove", id="image-indicator"
@@ -1818,6 +1969,149 @@ class LiteTUI(App):
         from litetui.input_controls import PromptBox
         yield PromptBox()
         yield ContextFooter()
+
+    def _apply_compact_profile(self) -> None:
+        width = self.size.width
+        if self._compact_override is not None:
+            compact = self._compact_override
+        elif self._compact_mode:
+            compact = width < 101
+        else:
+            compact = width < 100 if not getattr(self, "_compact_initialized", False) else width <= 93
+        self._compact_initialized = True
+        if os.environ.get("LITETUI_COMPACT_TRACE") == "1":
+            try:
+                base_count = len(self.screen_stack[0].query(ToolMessage))
+                active_count = len(self.query(ToolMessage))
+                screen_name = type(self.screen).__name__
+            except Exception:
+                base_count, active_count, screen_name = -1, -1, "unavailable"
+            runtime_log.record("compact_profile", site="app", operation="resize",
+                               count=active_count, messages=base_count,
+                               status=f"{int(self._compact_mode)}to{int(compact)}",
+                               name=screen_name, duration_ms=width,
+                               channel=str(self._compact_override).lower())
+        if compact == self._compact_mode:
+            return
+        self._compact_mode = compact
+        self.set_class(compact, "compact-profile")
+        try:
+            self.query_one(ContextFooter)._on_resize_for_compact()
+        except Exception:
+            pass
+        for tool in self.query(ToolMessage):
+            tool.set_compact(compact)
+        for thinking in self.query(ThinkingBlock):
+            thinking.set_compact(compact)
+        self._paint_now()
+        try:
+            self.query_one("PromptBox").sync_compact()
+        except Exception:
+            pass
+
+    def on_resize(self, _event) -> None:
+        timer = self._compact_resize_timer
+        if timer is not None:
+            timer.stop()
+        self._compact_resize_timer = self.set_timer(0.1, self._apply_compact_profile)
+
+    def action_toggle_compact_view(self) -> None:
+        self._compact_override = not self._compact_mode
+        self._apply_compact_profile()
+
+    def action_select_previous_tool(self) -> None:
+        if not self._compact_mode:
+            return
+        tools = list(self.query(ToolMessage))
+        if not tools:
+            return
+        focused = self.focused
+        selected = next((i for i, tool in enumerate(tools) if tool.header is focused), len(tools))
+        tool = tools[(selected - 1) % len(tools)]
+        tool.header.focus()
+        tool.scroll_visible()
+
+    def action_expand_recent_tool(self) -> None:
+        # Ctrl+B selects older rows without stealing the prompt's history keys.
+        tools = list(self.query(ToolMessage))
+        if tools:
+            tool = next((tool for tool in tools if tool.header is self.focused), tools[-1])
+            tool.set_expanded(not tool.expanded)
+            tool.scroll_visible()
+
+    def _retry_notice(self, text: str) -> None:
+        self._system(text)
+        if "429" in text or "rate limited" in text.lower():
+            if self._retry_wait_token is None:
+                self._retry_wait_token = self._begin_wait("provider", "rate-limit retry")
+        else:
+            # A later non-429 retry supersedes the earlier rate-limit wait.
+            self._clear_retry_wait()
+
+    def _now_card(self) -> NowCard | None:
+        try:
+            return self.screen_stack[0].query_one(NowCard)
+        except Exception:
+            return None  # startup, teardown, or no mounted base card
+
+    def _clear_retry_wait(self) -> None:
+        token, self._retry_wait_token = self._retry_wait_token, None
+        self._end_wait(token)
+
+    def _begin_wait(self, owner: str, reason: str) -> object | None:
+        import threading
+        if threading.get_ident() != self._thread_id:
+            if self._loop is None or self._loop.is_closed():
+                return None  # teardown: no UI remains to update
+            try:
+                return self.call_from_thread(self._begin_wait, owner, reason)
+            except RuntimeError as exc:
+                if str(exc) != "Event loop is closed":
+                    raise
+                return None  # loop closed after the preflight check
+        self._elapsed.ensure_running()
+        card = self._now_card()
+        return card.begin_wait(owner, reason) if card is not None else None
+
+    def _end_wait(self, token: object | None) -> None:
+        if token is None:
+            return
+        import threading
+        if threading.get_ident() != self._thread_id:
+            if self._loop is None or self._loop.is_closed():
+                return  # teardown: no UI remains to update
+            try:
+                self.call_from_thread(self._end_wait, token)
+            except RuntimeError as exc:
+                if str(exc) != "Event loop is closed":
+                    raise
+                # Loop closed between preflight and dispatch: no UI remains.
+            return
+        card = self._now_card()
+        if card is not None:
+            card.end_wait(token)
+
+    def _paint_now(self) -> None:
+        card = self._now_card()
+        if card is None:
+            return
+        seat = getattr(self, "seat", None)
+        tools = getattr(self, "_inflight_tools", ())
+        # Only the learned, non-native projection used by the answer bubble
+        # qualifies as an ETA; native turns and cache-only samples do not.
+        eta = None
+        if (self._now_turn_active_at is not None
+                and self._elapsed.body is not None
+                and not hasattr(self.backend, "app_server")
+                and self._eta.prefill_readout() is None):
+            tokens = self._eta.estimate_tokens()
+            rate = self._eta.learned_rate()
+            if tokens and rate and rate > 0:
+                eta = tokens / rate
+        card.repaint(agent_id=getattr(seat, "agent_id", None),
+                     tool=tools[-1] if tools else None,
+                     thinking=getattr(self, "_thinking_live", None),
+                     elapsed=self._now_turn_active_at, eta=eta)
 
     def _splash(self) -> None:
         """The launch wordmark. First thing drawn, before the backend answers.
@@ -1863,6 +2157,13 @@ class LiteTUI(App):
             return False
 
     def on_mount(self) -> None:
+        self.set_class(not self.settings.footer_show_key_hints, "hide-key-hints")
+        self.call_after_refresh(self._apply_compact_profile)
+        # The fast elapsed loop retires after one idle second; board assignment
+        # can change with no turn or keypress. Read the board at its slow cadence.
+        self.set_interval(1.0, self._paint_now)
+
+        self._sync_footer_sampler()
         state = hook_host.snapshot(self)
         if state.disabled:
             self._system("Hooks disabled by LITETUI_HOOKS=off")
@@ -2073,59 +2374,94 @@ class LiteTUI(App):
         reorders `_shutdown`, that arm goes red rather than this silently
         becoming a no-op.
         """
-        self._gui_quitting = True
-        # Block NEW model loads on every retained backend admission session BEFORE any
-        # await below can yield the loop — a load dispatched during async teardown
-        # would reserve capacity we are about to stop tracking. begin_close ONLY: no
-        # release, no unload (that needs confirmed quiescence, a separate slice). The
-        # returned report is retained for a shutdown diagnostic, never a cleanup claim.
-        from litetui import resource_session_lifecycle
-        self._shutdown_admission_report = resource_session_lifecycle.begin_shutdown(self)
-        delivery = getattr(self, '_child_delivery_timer', None)
-        if delivery is not None:
-            delivery.stop()
-        operations = getattr(self, '_agent_operations', None)
-        if operations is not None:
-            await operations.close()
-        await self._settle_before_teardown()
-        from litetui.launch_options import stop_custom
-        await asyncio.to_thread(stop_custom, self)
-        sidecar = getattr(self, "_sidecar_preview", None)
-        if sidecar is not None:
-            await asyncio.to_thread(sidecar.close)
-        backend = getattr(self, "backend", None)
-        native = getattr(backend, "owns_native_turns", False)
-        # 🔴 THIS BRANCH USED TO SIT INSIDE `if backend.name == "codex"`, WHICH
-        # NO CLAUDE BACKEND CAN EVER SATISFY (ClaudeBackend.name is "claude").
-        # It read as the exit path for native runtimes and was dead code, so a
-        # normal app exit never closed the owned claude.exe at all.
-        if backend is not None and not native and getattr(backend, "name", None) == "codex":
-            if hasattr(backend, "app_server"):
-                await backend.app_server.close()
-            else:
-                backend.shutdown()
-        # Owned cleanup outlives the backend that started it: switching away
-        # from Claude leaves its close task on the app, so exit settles the
-        # accumulated handles whether or not Claude is still selected.
-        if native or getattr(self, "_claude_closing", None):
-            from litetui.claude_backend import close_native, settle_close
-            close_native(self, backend)
-            for failure in await settle_close(self):
-                # Straight to the sink, not to chat: the widget tree is being
-                # pruned around this call, so a _system line can raise or land
-                # on a screen nobody will see again — and a cleanup failure is
-                # exactly the thing that must outlive the window.
-                runtime_log.record_error("claude_cleanup_failed", detail=failure)
-        await super()._shutdown()
+        try:
+            self._gui_quitting = True
+            # Block NEW model loads on every retained backend admission session BEFORE any
+            # await below can yield the loop — a load dispatched during async teardown
+            # would reserve capacity we are about to stop tracking. begin_close ONLY: no
+            # release, no unload (that needs confirmed quiescence, a separate slice). The
+            # returned report is retained for a shutdown diagnostic, never a cleanup claim.
+            from litetui import resource_session_lifecycle
+            self._shutdown_admission_report = resource_session_lifecycle.begin_shutdown(self)
+            delivery = getattr(self, '_child_delivery_timer', None)
+            if delivery is not None:
+                delivery.stop()
+            operations = getattr(self, '_agent_operations', None)
+            if operations is not None:
+                await operations.close()
+            await self._settle_before_teardown()
+            from litetui.launch_options import stop_custom
+            await asyncio.to_thread(stop_custom, self)
+            sidecar = getattr(self, "_sidecar_preview", None)
+            if sidecar is not None:
+                await asyncio.to_thread(sidecar.close)
+            backend = getattr(self, "backend", None)
+            native = getattr(backend, "owns_native_turns", False)
+            # 🔴 THIS BRANCH USED TO SIT INSIDE `if backend.name == "codex"`, WHICH
+            # NO CLAUDE BACKEND CAN EVER SATISFY (ClaudeBackend.name is "claude").
+            # It read as the exit path for native runtimes and was dead code, so a
+            # normal app exit never closed the owned claude.exe at all.
+            if backend is not None and not native and getattr(backend, "name", None) == "codex":
+                if hasattr(backend, "app_server"):
+                    await backend.app_server.close()
+                else:
+                    backend.shutdown()
+            # Owned cleanup outlives the backend that started it: switching away
+            # from Claude leaves its close task on the app, so exit settles the
+            # accumulated handles whether or not Claude is still selected.
+            if native or getattr(self, "_claude_closing", None):
+                from litetui.claude_backend import close_native, settle_close
+                close_native(self, backend)
+                for failure in await settle_close(self):
+                    # Straight to the sink, not to chat: the widget tree is being
+                    # pruned around this call, so a _system line can raise or land
+                    # on a screen nobody will see again — and a cleanup failure is
+                    # exactly the thing that must outlive the window.
+                    runtime_log.record_error("claude_cleanup_failed", detail=failure)
+            await super()._shutdown()
+        finally:
+            await self._release_owned_storage()
+
+    async def _release_owned_storage(self) -> None:
+        session = getattr(self, '_agent_session', None)
+        if session is None:
+            self.store.release()
+            return
+        # No child task can be cancelled before its first step. The caller is
+        # the durable rendezvous, ignoring cancellation only until ordered release.
+        cancelled = False
+        while True:
+            try:
+                await self._owned_registration_lock.acquire()
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+        try:
+            if not getattr(self, '_owned_storage_released', False):
+                self._owned_storage_released = True
+                try:
+                    self.store.release()
+                finally:
+                    session.release()
+        finally:
+            self._owned_registration_lock.release()
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def on_unmount(self) -> None:
-        from litetui import voice_backend
-        voice_backend.stop()
-        self._hook_shutting_down = True
-        hook_host.leave_conversation(self)
-        hook_host.queue_lifecycle(self, "app_shutdown")
-        await hook_host.drain_lifecycle(self)
-        self.store.release()
+        try:
+            local_rpc = getattr(self, '_local_rpc', None)
+            if local_rpc is not None:
+                await local_rpc.close()
+            self._stop_footer_sampler()
+            from litetui import voice_backend
+            voice_backend.stop()
+            self._hook_shutting_down = True
+            hook_host.leave_conversation(self)
+            hook_host.queue_lifecycle(self, "app_shutdown")
+            await hook_host.drain_lifecycle(self)
+        finally:
+            await self._release_owned_storage()
 
     @work(exclusive=True, group="mcp")
     async def _mcp_connect(self) -> None:
@@ -2146,6 +2482,7 @@ class LiteTUI(App):
         disabled = set(self.settings.mcp_disabled_servers or ())
         failed: list[str] = []
         connected: list[str] = []
+        dialled: list[str] = []
         for name, sc in list(self.mcp.configs.items()):
             # The denylist is applied by NOT DIALLING, where it used to connect
             # and then stop. mcp.json stays the single source of what EXISTS —
@@ -2155,6 +2492,7 @@ class LiteTUI(App):
             if name in disabled or not isinstance(sc, dict) or sc.get("disabled"):
                 continue
             err = await asyncio.to_thread(self.mcp.connect, name)
+            dialled.append(name)
             (failed if err else connected).append(f"{name}: {err}" if err else name)
 
         if connected:
@@ -2172,6 +2510,112 @@ class LiteTUI(App):
             self.system_message(f"mcp: {', '.join(connected)}")
         for line in failed:
             self.system_message(f"[!] mcp {line}")
+        await self._mcp_retry_toolless(dialled)
+
+    def _mcp_retry_wanted(self, name: str, *, toolless: bool = False) -> bool:
+        """T0124. Asked before EVERY reconnect and every announce: the wait is up to 45 s,
+        and a /mcp disconnect, a disable or a config edit in that time is a human decision.
+        Declared and enabled; with `toolless`, also still started-without-tools."""
+        sc = self.mcp.configs.get(name)
+        if (not self.settings.mcp_enabled or not isinstance(sc, dict) or sc.get("disabled")
+                or name in (self.settings.mcp_disabled_servers or ())):
+            return False
+        return self.mcp.toolless_started(name) if toolless else True
+
+    async def _mcp_retry_toolless(self, names: list[str]) -> None:
+        """T0124 (was T1097): a server that STARTED and never listed its tools is retried
+        with backoff, then named. Otherwise the seat stays silently toolless.
+
+        Measured 2026-09-27 (mcp.log): three VibeUE proxies started 15:33:27/31/35,
+        each answered LiteTUI's `tools/list` ~8 ms after start, and the proxy only
+        discovers its upstream tools on a later CallToolRequest - two seats did that
+        (15:34:10, 15:34:56); the third had nothing to call, so it never would.
+        `start()` took that first list as final and nothing looked again.
+
+        Only servers that answered `initialize` are retried (`toolless_started`); a
+        refused connect never started and is already announced above. Each retry is
+        `reconnect` - a fresh object, the existing verb - so no new lifecycle path.
+        """
+        from litetui.plugin_reload_activity import idle_infra_phase
+        pending = [n for n in names if self.mcp.toolless_started(n)]
+        for delay in MCP_RETRY_DELAYS:
+            if not pending:
+                return
+            with idle_infra_phase(self):           # asleep is not busy: /mcp stop must work
+                await asyncio.sleep(delay)
+            for name in list(pending):
+                if not self._mcp_retry_wanted(name, toolless=True):
+                    pending.remove(name)           # a human stop or a config change wins
+                    continue
+                try:
+                    err = await asyncio.to_thread(self.mcp.reconnect, name)
+                except mcp_client.MCPBusy:
+                    continue                       # a /mcp verb holds the slot; next round
+                if not err and self.mcp.tool_count(name):
+                    pending.remove(name)
+                    self.rebuild_mcp_dispatch()
+                    if self._mcp_retry_wanted(name) and self.mcp.tool_count(name):
+                        self._update_header()
+                        self.system_message(f"mcp: {name} ({self.mcp.tool_count(name)} tools) after retry")
+                elif not self.mcp.toolless_started(name):
+                    pending.remove(name)           # now a hard failure, not a toolless start
+                    self.system_message(f"[!] mcp {name}: {err}")
+        for name in pending:
+            self.system_message(
+                f"[!] mcp {name}: started but listed no tools after "
+                f"{len(MCP_RETRY_DELAYS)} retries; /mcp to reconnect")
+
+    async def _register_owned_startup(self) -> bool:
+        """One strict receipt before a ready event or launch prompt, never races."""
+        session = getattr(self, '_agent_session', None)
+        if session is None:
+            return True
+        async with self._owned_registration_lock:
+            if self._owned_launch_error:
+                self._cli_launch_error = self._owned_launch_error
+                return False
+            try:
+                session.authority
+                if not self.seat.registered:
+                    import threading
+                    finished = threading.Event()
+                    outcome = []
+                    def register_thread():
+                        try:
+                            outcome.append((True, self.seat.register()))
+                        except BaseException as exc:
+                            outcome.append((False, exc))
+                        finally:
+                            finished.set()
+                    # No cancellable asyncio wrapper can declare this thread done.
+                    thread = threading.Thread(target=register_thread, daemon=True)
+                    thread.start()
+                    cancelled = False
+                    while not finished.is_set():
+                        try:
+                            await asyncio.sleep(0.01)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                    thread.join()
+                    if cancelled:
+                        raise asyncio.CancelledError
+                    succeeded, value = outcome[0]
+                    if not succeeded:
+                        raise value
+                    if not value:
+                        raise OSError(str(self.seat.error))
+                session.authority
+                return True
+            except (ValueError, OSError) as exc:
+                self._owned_launch_error = 'Owned agent registration blocked: ' + str(exc)
+                self._cli_launch_error = self._owned_launch_error
+                # A failed child does not retain the agent indefinitely. Drop
+                # conversation capability first; every later owned writer refuses.
+                try:
+                    self.store.release()
+                finally:
+                    session.release()
+                return False
 
     @work(exclusive=True, group="inbox")
     async def _inbox_monitor(self) -> None:
@@ -2183,14 +2627,31 @@ class LiteTUI(App):
         claims ONLY messages addressed to this seat.
         """
         await asyncio.sleep(_INBOX_SETTLE_S)  # let _connect settle so the model is known
-        self.seat.model = self.model_id or "unknown"
-        ok = await asyncio.to_thread(self.seat.register)
+        # T1025: a --model/--thinking-level launch is applied before it is reported,
+        # the same wait the rpc `ready` event makes.
+        done = getattr(self, "_cli_args_done", None)
+        if done is not None:
+            try:
+                await asyncio.wait_for(
+                    done.wait(), getattr(getattr(self, "_launch_options", None), "timeout", 30) + 5)
+            except TimeoutError:
+                pass
+        _sync_seat_resolution(self)
+        ok = (await self._register_owned_startup()
+              if getattr(self, '_agent_session', None) is not None
+              else await asyncio.to_thread(self.seat.register))
         self._seat_started = True
-        if ok and self._resumed_seat_name:
+        if ok and self._resumed_seat_name and self.seat.name != self._resumed_seat_name:
             async with self._seat_claim_lock:
                 await asyncio.to_thread(self.seat.claim_name, self._resumed_seat_name)
             self._refresh_ctx_label()
         if ok:
+            from litetui.local_rpc import LocalRpc
+            self._local_rpc = LocalRpc(self)
+            try:
+                await self._local_rpc.start()
+            except Exception as exc:
+                self._system(f'Local CLI attachment unavailable: {type(exc).__name__}')
             self._system(
                 f"harness seat online · {self.seat.name} · {self.seat.agent_id[:8]}"
             )
@@ -2212,12 +2673,15 @@ class LiteTUI(App):
             # Same approach as _inject_store_once: extend conversation[0].
             # Replace a stale line from a previous process before appending a
             # second one — a resumed conversation already carries one.
-            if self._sync_fleet_identity():
-                return
-            self._append_to_system(
-                self._fleet_identity_sentence()
-                + load_prompt("harness-capabilities")
-            )
+            self._sync_fleet_identity()
+            # A correct sentence returns False too; inspect the resulting prompt,
+            # not the 'changed' flag, before adding a missing one.
+            if not (self.conversation and self._fleet_identity_sentence()
+                    in str(self.conversation[0].get("content") or "")):
+                self._append_to_system(
+                    self._fleet_identity_sentence()
+                    + load_prompt("harness-capabilities")
+                )
         else:
             # Say so once. A seat nobody can reach that reports nothing is
             # indistinguishable from one that is simply idle.
@@ -2275,7 +2739,7 @@ class LiteTUI(App):
                     await asyncio.sleep(harness_mod.POLL_SECONDS)
                     msgs = await asyncio.to_thread(self.seat.poll)
                 for m in msgs:
-                    self._deliver_inbox(m)
+                    self._receive_mail(m)
 
                 # A CLI takeover can rename this live seat between heartbeats.
                 # Read-only identity sync is cheap and repaints the footer here,
@@ -2292,9 +2756,18 @@ class LiteTUI(App):
                     # and reporting one would paint the transcript every minute
                     # that liteharness happened to be busy.
                     with idle_infra_phase(self):
+                        _sync_seat_resolution(self)  # a /model or /think since the last beat
                         await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
+
+    def _receive_mail(self, msg: dict) -> None:
+        """T1049-B: an answer to a pending [APPROVAL] resumes its turn and is not
+        delivered. T0210 also admits addressed answers to pending RPC widgets
+        from their recorded spawner; anything else is ordinary mail."""
+        if not (approval_relay.take_answer(self, msg)
+                or tool_approval.take_spawner_answer(self, msg)):
+            self._deliver_inbox(msg)
 
     def _deliver_inbox(self, msg: dict) -> None:
         """Show the message, then WAKE the agent with it as a user turn.
@@ -2311,33 +2784,45 @@ class LiteTUI(App):
         # workspace_write denial while Settings showed autonomous. A control
         # that names a case it does not govern is worse than no control.
         #
-        # The turn keeps the CHOSEN profile, whole. the user 2026-09-24: "remove
-        # scheduled completely" -- mail no longer degrades to a read-only
-        # floor. Nobody is here to answer a modal, so only a CONFIRM becomes a
-        # refusal (`_authorize_action`, tool_policy.UNATTENDED_SOURCES), and
-        # the model is told that rule up front so it plans around it instead
-        # of retrying.
-        profile = self.settings.tool_policy_profile
+        # The turn keeps the CHOSEN profile, whole. Mail no longer degrades to
+        # a read-only floor. A CONFIRM follows the seat's existing route: a
+        # spawner or host can answer, while an unrelayed unattended turn refuses.
+        # Tell the model that actual route before it plans around the action.
+        # T1027: the SEAT's profile (a launch flag outranks the file); accept_prompt
+        # narrows it again at the moment the turn starts.
+        profile = seat_authority.seat_profile(self)
         content = text
         if tool_policy.PROFILES.get(profile) and tool_policy.PROFILES[profile].confirm:
-            content = f"{text}\n\n{tool_policy.INBOX_TURN_RULE}"
+            route = seat_authority.confirm_route(self)
+            rule = tool_policy.inbox_turn_rule(route, getattr(self, "_spawner_id", None))
+            content = f"{text}\n\n{rule}"
+        from litetui import approval_delivery
+        ident = approval_delivery.request_id(msg)
+        item = {"content": content, "text": text, "tool_profile": profile, "source": "harness"}
+        if ident:
+            item["approval_request_id"] = ident
+            approval_delivery.stage(ident, "received")
         if self._chat_running():
-            # HELD, never appended: an appended mid-turn message lands where
-            # nothing announces it and the model trusts its inbox tool over its
-            # own context, so it goes unread. Inbox mail always QUEUES -- it must
-            # never cancel work in flight.
-            # Why: Docs/adr/0001-mid-turn-mail-is-held-not-appended.md
+            # Held until a safe input boundary, never cancellation or inert
+            # context injection. Approval requests precede routine backlog.
             self._user_bubble(text, False, queued=True)
-            self._pending_input.append(
-                {"content": content, "text": text, "tool_profile": profile, "source": "harness"}
-            )
+            approval_delivery.enqueue(self._pending_input, item, ident)
             return
         self._user_bubble(text, False)
-        hook_host.start_prompt(self, {"content": content, "tool_profile": profile, "source": "harness"})
+        hook_host.start_prompt(self, item)
 
     def _fire_job(self, job, *, manual: bool = False) -> None:
         from litetui.shared_state import Lease, OwnershipError
         if getattr(self, "_gui_schedules_paused", False):
+            return
+        # T1082 (Dijkstra S1): a seat that cannot grant the job's level says so and
+        # returns BEFORE the lease. The tick is 20 s against a one-minute slot, so a
+        # skipping seat that held the lease could make Owner's last attempt in the
+        # slot lose it. The in-lease re-check is in _fire_job_owned (the disk row
+        # may differ from this candidate).
+        why = None if manual else seat_authority.withheld(self, sched_mod.level_of(job.tool_profile))
+        if why:
+            LiteTUI._say_withheld(self, job, why)
             return
         try:
             with Lease(paths.data_root() / ".scheduler.lease"):
@@ -2364,11 +2849,21 @@ class LiteTUI(App):
                                 setattr(job, field, disk[field])
                         if not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
                             return
-                return LiteTUI._fire_job_owned(self, job)
+                return LiteTUI._fire_job_owned(self, job, manual=manual)
         except OwnershipError:
             return  # another scheduler owns this tick
 
-    def _fire_job_owned(self, job) -> bool | None:
+    def _say_withheld(self, job, why: str) -> None:
+        """Say a skipped job ONCE per job per slot: a due job is re-offered on every
+        20 s tick, and one line a minute is enough to say why it is not running."""
+        slot = sched_mod.slot_of(datetime.now())  # noqa: DTZ005 - scheduler local wall time
+        if getattr(self, "_withheld_slot", None) != slot:
+            self._withheld_slot, self._withheld_said = slot, set()
+        if job.id not in self._withheld_said:
+            self._withheld_said.add(job.id)
+            self._system(f"{getattr(job, 'kind', 'cron')} {job.label or job.id} not run here: {why}")
+
+    def _fire_job_owned(self, job, *, manual: bool = False) -> bool | None:
         """Deliver a job as a real user turn, holding if one is running.
 
         The slot is stamped and PERSISTED BEFORE delivery, not after. If the
@@ -2378,6 +2873,17 @@ class LiteTUI(App):
         in a log that only records successes.
         """
         now = datetime.now()
+        # T1082: the level this job RECORDED at creation. Checked before
+        # prepare_fire and the stamp, so a skipped job keeps its slot, run_count
+        # and next_run_at for an instance that can run it (C5).
+        level = sched_mod.level_of(job.tool_profile)
+        why = seat_authority.withheld(self, level)
+        if why:
+            if manual:
+                self._system(f"{job.label or job.id} not run: {why}")
+                return False
+            LiteTUI._say_withheld(self, job, why)
+            return None
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
         if blocked:
             try:
@@ -2398,27 +2904,25 @@ class LiteTUI(App):
 
         label = job.label or job.id
         text = job.prompt
-        # 🔴 A SCHEDULED TURN IS ALWAYS AUTONOMOUS. HARDCODED ON PURPOSE.
-        # T085, the user: "just change it so schedule only runs auto mode ... light
-        # warning when setting that it must run auto for this reason".
+        # 🔴 A SCHEDULED TURN RUNS AT THE LEVEL ITS JOB RECORDED WHEN IT WAS CREATED.
+        # T1082, Owner: "we need new settings to set this at the time u create the
+        # schedule ... it runs at the scheduled level". This supersedes T085 ("just
+        # change it so schedule only runs auto mode"), which hardcoded AUTONOMOUS here.
         #
-        # THE REASON IS HERE because a hardcoded profile, on a path that used
-        # to read a setting, otherwise reads as a mistake: a scheduled task
-        # fires when nobody is at the keyboard. A level that stops to ASK has
-        # nobody to ask, so it would not run -- it would sit on a modal until
-        # someone came back. Choosing a level here is choosing between "runs"
-        # and "hangs", which is not a choice worth offering.
+        # ⚠️ THIS LINE HAS NOW HELD FOUR VALUES: the job's own field, then
+        # `settings.tool_policy_profile`, then T085's AUTONOMOUS, now the job's field
+        # again. The conversation setting still does NOT reach here: changing how
+        # autonomous the CHAT is must not silently change what a saved automation
+        # may do.
         #
-        # ⚠️ THIS LINE HAS HELD THREE VALUES IN ONE EVENING: the job's own
-        # field, then `settings.tool_policy_profile` (the user's first ruling),
-        # now this. None was wrong when written. The conversation setting
-        # deliberately does NOT reach here any more -- changing how autonomous
-        # the CHAT is must not silently change what every saved automation may
-        # do.
+        # Nobody is at the keyboard when it fires, so the level decides WHICH actions
+        # CONFIRM, and `_authorize_action`'s confirm_route decides WHO answers: in
+        # Owner's own seat they are refused (tool_policy.UNATTENDED_SOURCES); in an
+        # agent-spawned seat they go to the launching agent (T1049-B).
         #
         # 📌 Inbox mail is NOT a job -- it reads the chat's profile and only
         # its confirms are refused (tool_policy.UNATTENDED_SOURCES).
-        profile = tool_policy.AUTONOMOUS
+        profile = level
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         header = f"{source} {label} \u00b7 {job.schedule}"
 
@@ -2441,13 +2945,13 @@ class LiteTUI(App):
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
         """What this tool result contributes to the CONVERSATION (tool_context).
 
-        The tool bubble always shows the raw result — this changes only what
-        the model re-reads on every subsequent turn. The raw is never
-        destroyed: both processing modes park it in a sidecar file under the
-        conversation's own directory and the placeholder carries the path, so
-        the model can `read` it back on demand. Every early return here is the
-        raw itself — the fail-safe direction is the one that keeps everything.
+        The tool bubble shows the raw result. Conversation output over the
+        hard ceiling is excerpted with a pointer to the complete sidecar,
+        regardless of the selected mode; smaller output keeps the mode's
+        existing mask/summarise/verbatim behavior.
         """
+        if len(raw) > tool_context.TOOL_RESULT_CAP:
+            return tool_context.cap_tool_result(raw, self.convo_dir, paths.data_root(), name)
         plan = tool_context.plan_tool_result(
             self.settings.tool_context_mode,
             name,
@@ -2507,7 +3011,12 @@ class LiteTUI(App):
                 # literal: it is already tuned for the local-model failure
                 # where reasoning eats a small budget before any output.
                 max_tokens=self.settings.compact_max_tokens,
-                extra_body={"reasoning_effort": "low"},
+                extra_body={"reasoning_effort": side_call_reasoning_effort(
+                    "low", self.backend.name, fold_model,
+                    self.settings.lmstudio_graded_thinking_models,
+                    self.backend.reasoning_levels(fold_model)
+                    if hasattr(self.backend, "reasoning_levels") else (),
+                )},
             )
             summary = (resp.choices[0].message.content or "").strip()
             why_no_summary = "side call returned an empty summary"
@@ -2544,8 +3053,49 @@ class LiteTUI(App):
         """Resolve a tool name across all three sources, static first."""
         return self.plugins.dispatch_for(name)
 
-    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True):
+    async def approve_for_child(self, event) -> bool:
+        """T1049-B2: a supervised child's tool_approval_requested, answered by THIS
+        parent's route (plan §5, gate Orchestrator d47235da). Owner's own parent asks
+        him with NO deadline: his modal, or his GUI host. A locked parent asks its
+        spawner by inbox, or its own host when it is itself supervised; a parent
+        with no route refuses. Every outcome is logged (operation "child")."""
+        name = str(event.get("tool") or "tool")
+        args = event.get("input")
+        decision = tool_policy.PolicyDecision(
+            tool_policy.CONFIRM, str(event.get("profile") or ""), frozenset(),
+            str(event.get("why") or "a supervised child asks"))
+        route = seat_authority.confirm_route(self)
+        if route == "spawner":
+            return await approval_relay.ask_spawner(self, name, args, decision, "child") == "approved"
+        if route == "refuse":
+            approval_relay.record(self, "no_spawner", name, "child")
+            return False
+        wait_token = self._begin_wait("host" if self._rpc else "you", "approval")
+        try:
+            if self._rpc:
+                # 0 = no deadline: Owner's keypress is never timed out (d47235da).
+                answer = await tool_approval.approve_over_rpc(
+                    self, name, args, decision, timeout=0 if route == "own" else None)
+            elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
+                from litetui.claude_turn import approval_dialog
+                answer = await approval_dialog(self, name, args, decision)
+            else:
+                answer = await show_dialog(
+                    self, partial(ToolApprovalBody, name, args, decision),
+                    modal_factory=partial(ToolApprovalScreen, name, args, decision))
+        finally:
+            self._end_wait(wait_token)
+        approval_relay.record(self, "no_host" if answer is None else "approved" if answer else "denied",
+                              name, "child")
+        return bool(answer)
+
+    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False):
         """Shared policy and approval door for tools and hook processes."""
+        # T1085: FIRST, before evaluate, the floor, the relay and the modal. Only
+        # Owner's own seat may directly write a data root's jobs.json; ownership is
+        # not a profile cap or a spawner's to APPROVE (T1133 caps stay removed).
+        if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy):
+            return tool_denied("profile", name=name, reason=why), False
         decision = tool_policy.evaluate(
             # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
             # this turn holds, the answer is the least authority -- never the
@@ -2559,18 +3109,51 @@ class LiteTUI(App):
             args,
             workspace or paths.ROOT,
             tool_name=name,
+            shell=name.lower() if name.lower() in ("powershell", "bash") else None,
             active_conversation=getattr(self, 'convo_dir', None),
+            # Opt-in only: launcher lifecycle binding is a separate stage.
+            # AgentSession verifies ownership; never read this root from args.
+            active_agent_memory_root=(self._agent_session.memory_root
+                                      if getattr(self, '_agent_session', None) is not None else None),
             always_allow=frozenset(self.settings.tool_always_allow or ()),
             deny=frozenset(self.settings.tool_deny or ()),
+            trusted_interpreters=getattr(self.settings, "tool_trusted_interpreters", ()),
+            seat_name=getattr(getattr(self, "seat", None), "name", None),
         )
         if decision.action == tool_policy.DENY:
             return tool_denied("profile", name=name, reason=decision.reason), False
         if decision.action == tool_policy.CONFIRM:
             if not allow_prompt:
                 return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
+            # A non-owner seat routes any CONFIRM here independently of profile.
+            # T1049-B routes by seat_authority.confirm_route. The ONE turn source read
+            # here is `_hook_source` (Dijkstra D1).
+            source = getattr(self, "_hook_source", None)
+            route = seat_authority.confirm_route(self)
+            if route in ("spawner", "refuse"):
+                status = ("no_spawner" if route == "refuse" else
+                          await approval_relay.ask_spawner(self, name, args, decision, source))
+                if route == "refuse":
+                    approval_relay.record(self, status, name, source)
+                if status == "approved":
+                    return None
+                # Only an APPROVE continues on a relay path (Marquee S1(b)): an
+                # unattended turn that cannot get approval ends, rather than retry.
+                # REGARDLESS of stop_on_denial (Dijkstra K1(a)): the Claude bridge
+                # passes False and would otherwise let the turn go on. The ONE
+                # exemption is the hook Test button, which runs no turn.
+                reason = approval_relay.stop_line(self, name, status)
+                if not hook_test:
+                    self._stop_requested = True
+                    self._stop_reason = reason
+                    self._stop_cause = "approval"  # turn_end stopReason "approval" (B2)
+                denial_kind = "approval-timeout" if status == "timeout" else "profile"
+                return tool_denied(denial_kind, name=name, reason=reason), False
             # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
             # refuse this ONE action in words, and let the rest of the turn go on.
-            if getattr(self, "_hook_source", None) in tool_policy.UNATTENDED_SOURCES:
+            if route != "host" and source in tool_policy.UNATTENDED_SOURCES:
+                if route == "hand":  # Marquee Q1: Owner's unmarked launch gains the log only
+                    approval_relay.record(self, "no_spawner", name, source)
                 return tool_denied("profile", name=name, reason=tool_policy.unattended_refusal(decision)), False
             # Sidebar or modal, decided by the setting. `show_dialog` — not
             # `open_dialog` — because this frame ALREADY awaits, and the whole
@@ -2586,23 +3169,34 @@ class LiteTUI(App):
             # the user, 2026-09-10: "i want the approvals to route threw frontier
             # chat GUI".
             if self._rpc:
-                answer = await tool_approval.approve_over_rpc(
-                    self, name, args, decision
-                )
+                wait_token = self._begin_wait("host", "approval")
+                try:
+                    answer = await tool_approval.approve_over_rpc(
+                        self, name, args, decision
+                    )
+                finally:
+                    self._end_wait(wait_token)
                 # None is NOT DENIED. See approve_over_rpc: one is a person
                 # choosing, the other is a host that never spoke, and they
                 # owe the model different sentences.
                 unanswered = answer is None
+                if route == "host":  # T1049-B: every relay outcome is logged
+                    approval_relay.record(self, "no_host" if unanswered else
+                                          "approved" if answer else "denied", name, source)
             else:
-                if getattr(getattr(self, "backend", None), "owns_native_turns", False):
-                    from litetui.claude_turn import approval_dialog
-                    answer = await approval_dialog(self, name, args, decision)
-                else:
-                    answer = await show_dialog(
-                        self,
-                        partial(ToolApprovalBody, name, args, decision),
-                        modal_factory=partial(ToolApprovalScreen, name, args, decision),
-                    )
+                wait_token = self._begin_wait("you", "approval")
+                try:
+                    if getattr(getattr(self, "backend", None), "owns_native_turns", False):
+                        from litetui.claude_turn import approval_dialog
+                        answer = await approval_dialog(self, name, args, decision)
+                    else:
+                        answer = await show_dialog(
+                            self,
+                            partial(ToolApprovalBody, name, args, decision),
+                            modal_factory=partial(ToolApprovalScreen, name, args, decision),
+                        )
+                finally:
+                    self._end_wait(wait_token)
                 unanswered = False
             # `not answer` covers three cases on purpose: DENIED, and None from
             # a screen dismissed without a value, and any future falsy answer.
@@ -2621,6 +3215,8 @@ class LiteTUI(App):
                 # otherwise reports "reached N tool iterations" for ANY early
                 # break — see _stop_reason.
                 self._stop_requested = True
+                if route == "host":  # a supervised child: its host reads the reason (B2)
+                    self._stop_cause = "approval"
                 if unanswered:
                     # SAY IT. A timeout that reads as "you denied" would tell
                     # the model a person refused, and a person who refused is
@@ -2807,6 +3403,22 @@ class LiteTUI(App):
         # the user: "not everything should be backgroundable"): the flag on any other
         # tool is dropped, and the auto-promotion below never applies to it.
         may_bg = tasks_mod.backgroundable(name)
+        # 🔴 A BACKGROUNDABLE TOOL'S HOME MUST EXIST BEFORE ANY SIDE EFFECT (T0132).
+        # Auto-promotion hands over a call that is ALREADY RUNNING, and a
+        # materialise failure at `_start_background` would then leave that work
+        # untracked: no row, no wake, no `/tasks kill`. So the conversation is
+        # born HERE, before the awaitable exists, and a failure comes back as an
+        # ordinary tool failure with nothing started. Only tools whose schema
+        # declares `background` pay this (a staged seat that runs a foreground
+        # shell now gets its directory); reads, edits and MCP calls do not.
+        # `_start_background` keeps its own call as the defence for a creator
+        # reached some other way.
+        if may_bg:
+            try:
+                self._materialise_convo()
+            except Exception as e:
+                return (f"[error] {name} not started: its conversation could not be created "
+                        f"({type(e).__name__}: {e})"), False
         background = may_bg and isinstance(args, dict) and bool(args.pop("background", False))
         if isinstance(args, dict):
             args.pop("background", None)
@@ -2871,6 +3483,17 @@ class LiteTUI(App):
 
     def _start_background(self, name: str, args: dict, aw, promoted_after: float | None = None,
                           process_slot=None) -> str:
+        # 🔴 THE ROW'S HOME MUST EXIST BEFORE THE ROW DOES (T0132). Every turn
+        # starter materialises the conversation first, but two routes reach a
+        # tool with it still STAGED: `gui.tools.execute` (no turn at all) and
+        # `/skill` (streams without materialising). A store save into a staged
+        # conversation would mkdir a half-born `.convos/<id>/`, and skipping the
+        # save would drop an accepted row. `_execute_tool` already materialised
+        # BEFORE the call started (so a failure there starts nothing); this call
+        # is the idempotent defence at the ONE creator for any route that does
+        # not pass through it. Visible consequence: a conversation directory
+        # appears when the first background-capable tool runs on a fresh seat.
+        self._materialise_convo()
         task = tasks_mod.new_task(name, args, getattr(self, "convo_id", ""))
         task._pending_process_handoff = not promoted_after or process_slot is not None
         if promoted_after:
@@ -2942,13 +3565,54 @@ class LiteTUI(App):
         waits sees a stale chip for as long as it waits.
         """
         try:
-            tasks_mod.save(self.bg_tasks.values(), paths.data_root())
-        except OSError:
-            pass  # an unwritable store must not stop the task
+            tasks_mod.save_by_convo(self.bg_tasks.values())
+        except (tasks_mod.StoreNotBorn, OSError) as e:
+            # The task must keep running, so this does not raise - but it is
+            # never silent: an accepted row that cannot be kept is the failure
+            # T0132 exists to make loud. `_start_background` materialises first,
+            # so StoreNotBorn here means a creator stopped doing that.
+            self._report_task_store_error(e)
         # AFTER the save, and deliberately not inside the try: a store that
         # cannot be written is a reason to keep going, not a reason to leave the
         # footer lying about what is running.
         self._refresh_ctx_label()
+
+    def _report_task_store_error(self, e: Exception) -> None:
+        """Say once per distinct failure that task rows are not being kept.
+
+        Once, because a store that has gone away fails on every transition and a
+        repeat would bury the conversation - the same rule as
+        `ConversationRepository.note_error`. The runtime log keeps every word.
+        """
+        key = (type(e).__name__, str(e))
+        if key in self._task_store_reported:
+            return
+        self._task_store_reported.add(key)
+        runtime_log.record_error("task_store_unwritable", detail=f"{type(e).__name__}: {e}", exc=e)
+        try:
+            self._system(
+                f"[task store] background task rows are not being saved: {type(e).__name__}: {e}. "
+                "The task keeps running, but its row may not survive a restart."
+            )
+        except Exception:
+            pass  # not mounted yet; the runtime log has it
+
+    def _bind_task_store(self) -> None:
+        """Load the bound conversation's task rows (T0132). Called by `_resume`.
+
+        A STAGED conversation has no directory, hence no rows and nothing to
+        migrate: it is bound by `_materialise_convo` creating an empty store on
+        the first save. A resumed one tops up from the legacy shared file
+        (copy-only, every time - see `tasks.topup`) and merges its rows into
+        `bg_tasks`, leaving tasks this process runs for other conversations alone.
+        """
+        d = self.convo_dir
+        if d is None or not d.is_dir():
+            return
+        try:
+            tasks_mod.bind(self.bg_tasks, d, paths.data_root())
+        except OSError as e:
+            self._report_task_store_error(e)
 
     def _kill_background(self, task_id: str) -> str | None:
         """Kill one background task. Returns None when it was killed, otherwise
@@ -3030,7 +3694,7 @@ class LiteTUI(App):
         itself lives in the registry (PROMPT_ORDER slots); host sections are
         registered in __init__, the skills index by the skills plugin.
         """
-        return self.plugins.compose_prompt()
+        return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
 
     def _load_system_prompt(self) -> None:
         base = self._system_prompt_text()
@@ -3050,11 +3714,13 @@ class LiteTUI(App):
     # per exchange.
 
     def _read_store_file(self, name: str, cap: int) -> str:
-        # A staged conversation has no directory yet, so there is nothing to
-        # read. Deliberately does NOT materialise: reading must not create.
-        if self.convo_dir is None or getattr(self, "_convo_pending", False):
+        # New conversations borrow existing agent memory before first turn.
+        # Legacy staged conversations have no memory yet. Reads never materialise.
+        session = getattr(self, "_agent_session", None)
+        if session is None and (self.convo_dir is None or getattr(self, "_convo_pending", False)):
             return ""
-        p = self.convo_dir / name
+        root = session.memory_root if session is not None else self.convo_dir
+        p = root / name
         try:
             # errors="replace" ON PURPOSE: a store file that carries a stray
             # non-UTF-8 byte (e.g. a cp1252 em dash, 0x97, written by an
@@ -3098,8 +3764,30 @@ class LiteTUI(App):
         if not self._convo_loading:
             self._edit(0, "store injected once")
 
+    def _inject_index_once(self) -> None:
+        """Merge the cwd repo's AGENT_INDEX.md into the system message, once.
+
+        Detected by INDEX_HEADER in message 0, not by a flag, so a resumed convo
+        keeps the snapshot it was given (never refreshed) and /clear's fresh
+        system message gets its own. Independent of the store latch on purpose:
+        an empty store must not stop the index, and the index must not stop a
+        later memory write from being picked up.
+        """
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            return
+        current = self.conversation[0].get("content", "")
+        if not isinstance(current, str) or appsvc.INDEX_HEADER in current:
+            return
+        block = appsvc.index_block(self)
+        if not block:
+            return
+        self.conversation[0] = {**self.conversation[0], "content": current + block}
+        if not self._convo_loading:
+            self._edit(0, "project index injected once")
+
     def _request_messages(self) -> list[dict]:
-        """The conversation as sent. The store rides in message 0, injected once."""
+        """The conversation as sent. The index and store ride in message 0, injected once."""
+        self._inject_index_once()
         self._inject_store_once()
         return list(self.conversation)
 
@@ -3148,6 +3836,8 @@ class LiteTUI(App):
         """Claim the saved conversation name without blocking the UI thread."""
         if not self._seat_started or not self.seat.registered:
             return  # initial registration will pick up the pending resume
+        if self.seat.name == name:
+            return  # already holds the registry name
         async with self._seat_claim_lock:
             if self.convo_id != convo_id or self._resumed_seat_name != name:
                 return
@@ -3220,6 +3910,10 @@ class LiteTUI(App):
 
     def _append(self, msg: dict, *, usage: dict | None = None) -> None:
         """Append to the live conversation AND to disk. Single choke point."""
+        if msg.get("role") == "tool":
+            msg = {**msg, "content": tool_context.cap_tool_result(
+                str(msg.get("content") or ""), getattr(self, "convo_dir", None), paths.data_root(), msg.get("name") or "tool"
+            )}
         self.conversation.append(msg)
         if usage is not None:
             self.store.record_msg(msg, usage=usage, model=self.model_id)
@@ -3418,8 +4112,10 @@ class LiteTUI(App):
             if (not isinstance(requested, str) or requested in ('.', '..')
                     or any(c in requested for c in '/\\:')):
                 raise ValueError('Expected a conversation ID, not a path')
-            root = paths.CONVO_DIR.resolve()
-            target = (root / requested / 'convo.jsonl').resolve()
+            session = getattr(self, '_agent_session', None)
+            root = (session.memory_root / 'conversations' if session is not None else paths.CONVO_DIR).resolve()
+            target = (session.conversation_directory(requested) / 'convo.jsonl'
+                      if session is not None else (root / requested / 'convo.jsonl').resolve())
             if target.parent.parent != root or not target.is_file():
                 raise ValueError('Conversation does not exist in this data root')
             if not self._resume(target, startup=True):
@@ -3433,6 +4129,14 @@ class LiteTUI(App):
         return True
 
     def _resume(self, path: Path, *, startup: bool = False) -> bool:
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                expected = self._agent_session.conversation_directory(path.parent.name) / 'convo.jsonl'
+                if path != expected:
+                    raise ValueError('Resume target is outside the selected agent')
+            except (ValueError, OSError) as exc:
+                self._system(str(exc))
+                return False
         try:
             meta, msgs = ConversationRepository.read(path)
         except OSError as e:
@@ -3449,6 +4153,10 @@ class LiteTUI(App):
             self._system(f"{path.name} holds no messages — not resuming.")
             return False
 
+        if (getattr(self, '_agent_session', None) is not None
+                and meta.get('id') not in (None, path.parent.name)):
+            self._system('Transcript identity disagrees with its owned conversation folder')
+            return False
         try:
             self.store.acquire(path.parent)
         except OSError as exc:
@@ -3471,9 +4179,16 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
+        self._bind_task_store()
         saved_name = meta.get("agent_name")
-        self._resumed_seat_name = saved_name.strip() if isinstance(saved_name, str) and saved_name.strip() else None
-        if self._resumed_seat_name:
+        saved_name = saved_name.strip() if isinstance(saved_name, str) else ""
+        owned = getattr(self, '_agent_session', None)
+        registry_name = owned.authority.name if owned is not None else self.seat.registry_name()
+        self._resumed_seat_name = (registry_name if owned is not None else
+                                  self._launch_seat_name or registry_name or saved_name or None)
+        if registry_name and not self._launch_seat_name and registry_name != self.seat.name:
+            self.seat.name = registry_name  # footer reflects the existing claim immediately
+        if self._resumed_seat_name and self._resumed_seat_name != registry_name:
             self._claim_resumed_seat_name(self._resumed_seat_name, self.convo_id)
         from litetui.codex_steering import restore_queue
         restore_queue(self)
@@ -3503,7 +4218,9 @@ class LiteTUI(App):
         # it verbatim tells the model to answer mail as an id nothing can
         # deliver to. Rewrite that one sentence; leave the rest alone.
         self._sync_fleet_identity()
-        (self.convo_dir / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
+        memory_root = (self._agent_session.memory_root
+                       if getattr(self, '_agent_session', None) is not None else self.convo_dir)
+        (memory_root / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
         self._render_resumed(path)
         self._native_history_worker = None
@@ -3570,15 +4287,20 @@ class LiteTUI(App):
                 native_text = native_text or split_card_texts(
                     m.get("claude_native") or {}, text) is not None
                 if text and not native_text:
+                    from litetui.recap import split_recap
+                    shown, recap = split_recap(text, final=True)
                     w = self._assistant_bubble()
-                    w.set_answer(text)
+                    w.set_answer(shown)
+                    if recap:
+                        w.recap = recap
+                        w.set_summary(recap)
                     # A restored turn is finished by definition, so it can fold
                     # like any other. Its summary comes from the store, and
                     # summary_done stops the reopen from re-asking the model for
                     # a line it already has - the user asked for exactly that.
                     w.settled = True
                     stored = restored_summaries.get(self._card_summary_key(text))
-                    if stored:
+                    if stored and not recap:
                         w.set_summary(stored)
                         w.summary_done = True
                     assistants += 1
@@ -3590,7 +4312,7 @@ class LiteTUI(App):
                 from litetui.claude_turn import replay_activity
                 for w in replay_activity(self, m["claude_native"], text):
                     stored = restored_summaries.get(self._card_summary_key(w.answer_text))
-                    if stored:
+                    if stored and not getattr(w, "recap", None):
                         w.set_summary(stored)
                         w.summary_done = True
                     assistants += 1
@@ -3600,10 +4322,12 @@ class LiteTUI(App):
         note = f", {tools} tool result(s) restored to context but not redrawn" if tools else ""
         if native_tools:
             note += f", {native_tools} Codex tool card(s) restored"
-        mem_dir = self.convo_dir / paths.MEMORIES_DIR
+        memory_root = (self._agent_session.memory_root
+                       if getattr(self, '_agent_session', None) is not None else self.convo_dir)
+        mem_dir = memory_root / paths.MEMORIES_DIR
         n_mem = len(list(mem_dir.glob("*.md"))) if mem_dir.exists() else 0
         store = ", ".join(
-            f for f in CONVO_SEED_FILES if (self.convo_dir / f).exists()
+            f for f in CONVO_SEED_FILES if (memory_root / f).exists()
         ) or "none"
         self._system(
             f"Resumed {self.convo_id}\n"
@@ -3959,7 +4683,8 @@ class LiteTUI(App):
             # keeps Tab from walking out of a pending approval -- the app
             # binding is priority, so nothing else would stop it.
             return
-        self.set_tool_profile(tool_policy.cycle(self.settings.tool_policy_profile), source=source)
+        nxt = tool_policy.cycle(self.settings.tool_policy_profile)
+        self.set_tool_profile(nxt, source=source)
 
     def set_tool_profile(self, profile: str, *, announce: bool = True, source: str = "wire") -> bool:
         """Authority to an EXPLICIT profile. False when the name is unknown.
@@ -3986,6 +4711,9 @@ class LiteTUI(App):
                            operation=source.replace(" ", "-"))
         self.settings.tool_policy_profile = profile
         self._active_tool_profile = profile
+        # T1027: a choice made after launch supersedes --tool-profile, the way
+        # /model supersedes --model (retire_cli_model).
+        self._cli_tool_profile = None
         # 🔴 THE ONE PLACE A PROFILE IS CHOSEN (T695), so the one place it is
         # remembered per conversation. The other eight writers of
         # `_active_tool_profile` are transient — see `chosen_tool_profile`.
@@ -4073,13 +4801,14 @@ class LiteTUI(App):
         self._backend = value
         self._resume_backend_error = None
         self._remember_for_this_convo("backend", getattr(value, "name", None))
-        # Install fail-closed local-model admission on the new backend. Idempotent
-        # and install-only: it never releases the OLD backend's leases here, which
-        # would free capacity the old engine may still hold (release requires
-        # confirmed quiescence and is a separate coordinated slice). codex and any
-        # non-_VramGate backend are left untouched.
-        from litetui import resource_admission_install
-        resource_admission_install.install_on(self, value)
+        # An explicitly injected WS3 admission bundle installs on the new
+        # backend. Any old session keeps its leases until confirmed teardown.
+        # WS3 admission has no production demand resolver yet. Installing its
+        # placeholder rejects every local load, so keep it for explicitly
+        # injected admission bundles until the resolver is ready.
+        if getattr(self, "_admission_bundle", None) is not None:
+            from litetui import resource_admission_install
+            resource_admission_install.install_on(self, value)
 
     @property
     def thinking_level(self) -> str | None:
@@ -4200,9 +4929,34 @@ class LiteTUI(App):
         if born:
             from litetui.settings_runtime import without_invocation
             cs = convo_settings_mod.born_from(without_invocation(self, self.settings))
+            # T1027: the engine a flag launched is a FACT about this transcript,
+            # not a grant, so the file records it — else a resume of a seat
+            # launched `--backend claude` ran Codex (.convos/ec62c953, measured).
+            # Authority stays T695: a flag's profile is born only when STRICTER
+            # (a restriction is not a grant, Orchestrator 0118549d).
+            identity = {
+                "backend": getattr(self, "_cli_initial_backend", None),
+                "default_model": getattr(self, "_cli_initial_model", None) and (
+                    self._model_id or self._cli_initial_model),
+                "thinking_level": getattr(self, "_cli_thinking_level", None),
+            }
+            flag = seat_authority.launch_flag(self)
+            if flag:
+                identity["tool_policy_profile"] = seat_authority.narrower(flag, cs.tool_policy_profile)
+            for key, value in identity.items():
+                if value:
+                    cs.execution[key] = value
+                    setattr(cs, "model" if key == "default_model" else key, value)
             cs.seat_name = getattr(self.seat, "name", None)
             cs.seat_id = getattr(self.seat, "agent_id", None)
             cs.seat_tier = getattr(self.seat, "tier", None)
+            # T1043 S1: "spawned" is a fact of the conversation, born with it.
+            # NOT seat_id: that is written for EVERY born convo (above), and an
+            # unspawned one gets harness.process_agent_id.
+            marker = getattr(self, "_spawned_marker", None)
+            if marker is not None:
+                cs.seat_spawned = marker
+                self._spawned_seat = marker
             self._convo_settings = cs
             try:
                 convo_settings_mod.save(self.convo_dir, cs)
@@ -4211,7 +4965,22 @@ class LiteTUI(App):
             return
 
         cs = convo_settings_mod.load(self.convo_dir)
+        if getattr(self, '_agent_session', None) is not None:
+            from litetui.agent_launch_context import apply_settings
+            apply_settings(self._agent_session, self.settings)
+            authority = self._agent_session.authority
+            cs.backend, cs.model = authority.backend, authority.model
+            cs.thinking_level = authority.thinking_level
+            cs.reasoning_effort = authority.thinking_level if authority.backend == 'codex' else None
+            cs.execution = {**cs.execution, 'backend': authority.backend,
+                            'default_model': authority.model, 'thinking_level': authority.thinking_level}
         self._convo_settings = cs
+        # T1043 S1: a conversation born in a spawned seat stays one when it is
+        # relaunched without the marker. Owner resuming a fleet conversation
+        # himself is therefore enforced too: it IS a fleet conversation.
+        marker = getattr(self, "_spawned_marker", None)
+        if marker is not None:
+            self._spawned_seat = marker or getattr(cs, "seat_spawned", None) is True
         from copy import deepcopy
         from litetui.settings_scope import SETTING_SPECS, SettingScope
         self.settings = deepcopy(self.settings)
@@ -4223,12 +4992,18 @@ class LiteTUI(App):
         for key, env in settings_mod.ENV_OVERRIDES.items():
             if os.environ.get(env):
                 setattr(self.settings, key, settings_mod._coerce(key, os.environ[env], getattr(self.settings, key)))
+        if getattr(self, '_agent_session', None) is not None:
+            # Environment and legacy conversation snapshots cannot replace the
+            # selected agent's backend/model/thinking authority.
+            apply_settings(self._agent_session, self.settings)
         for diagnostic in getattr(cs, '_diagnostics', ()):
             self._system(f'Conversation settings warning: {diagnostic}')
         for key, value in getattr(self, '_launch_overrides', {}).items():
             if key in self._invocation_saved_values:
                 self._invocation_saved_values[key] = deepcopy(getattr(self.settings, key))
                 setattr(self.settings, key, deepcopy(value))
+        if getattr(self, '_agent_session', None) is not None:
+            apply_settings(self._agent_session, self.settings)
         current_backend = getattr(self, '_backend', None)
         if current_backend is not None and hasattr(current_backend, 'set_settings'):
             current_backend.set_settings(self.settings)
@@ -4240,12 +5015,23 @@ class LiteTUI(App):
             env = settings_mod.ENV_OVERRIDES.get(key)
             if env and os.environ.get(env):
                 setattr(effective_cs, own, getattr(self.settings, key))
+        if getattr(self, '_agent_session', None) is not None:
+            effective_cs.backend, effective_cs.model = authority.backend, authority.model
+            effective_cs.thinking_level = authority.thinking_level
+            effective_cs.reasoning_effort = cs.reasoning_effort
         if getattr(self, '_cli_initial_backend', None):
             saved = getattr(self, '_invocation_saved_values', {})
             saved['backend'] = cs.backend or cs.execution.get('backend', saved.get('backend', self.settings.backend))
             self._invocation_saved_values = saved
             effective_cs.backend = self._cli_initial_backend
             self.settings.backend = self._cli_initial_backend
+        # T1027: a resume never switches engine SILENTLY. An explicit launch
+        # still wins; it just has to say what it overrode.
+        recorded = cs.backend or cs.execution.get("backend")
+        if recorded and effective_cs.backend and recorded != effective_cs.backend:
+            self._system(
+                f"⚠ This conversation ran on {recorded}; this launch switches it to "
+                f"{effective_cs.backend}. Resume without --backend (or LITETUI_BACKEND) to keep {recorded}.")
         self._adopt_convo_backend(effective_cs)
         if getattr(getattr(self, '_backend', None), 'name', None) != previous_backend:
             # The previous engine's catalog says nothing about this engine.
@@ -4259,7 +5045,12 @@ class LiteTUI(App):
             else None
         )
         model = cli_model or convo_settings_mod.resolved(effective_cs, self.settings, "model")
-        if not cli_model and model and self.available_models and model not in self.available_models:
+        recorded_model = cs.model or cs.execution.get("default_model")
+        if recorded_model and model and model != recorded_model:
+            self._system(
+                f"⚠ This conversation ran on {recorded_model}; this launch switches it to {model}.")
+        if (getattr(self, '_agent_session', None) is None and not cli_model
+                and model and self.available_models and model not in self.available_models):
             # 🔴 SAID OUT LOUD, NOT SWALLOWED. A conversation can name a model
             # the server no longer has — it was uninstalled, or this is another
             # machine. Falling back silently would answer in a different model's
@@ -4362,8 +5153,9 @@ class LiteTUI(App):
         else:
             close_native(self, previous)
         self._backend = new_backend
-        from litetui import resource_admission_install
-        resource_admission_install.install_on(self, new_backend)
+        if getattr(self, "_admission_bundle", None) is not None:
+            from litetui import resource_admission_install
+            resource_admission_install.install_on(self, new_backend)
 
     async def _vram_gate_allows(self, model: str) -> bool:
         """May this load proceed? Asks the human when it would add weights.
@@ -4598,6 +5390,11 @@ class LiteTUI(App):
                 # already resident; it must be an explicit act, never a side
                 # effect of connecting.
                 self._system(f"Connected — model: {self.model_id}")
+                # T1043: a reconnect can land on the pin below the fleet floor.
+                # Launch flags are judged once they are applied (_apply_cli_args).
+                done = getattr(self, "_cli_args_done", None)
+                if done is None or done.is_set():
+                    seat_authority.warn_if_below_floor(self)
                 if resume_path is not None and hasattr(self.backend, "app_server"):
                     self._native_history_worker = self._refresh_native_history(resume_path)
                 self._startup_history_path = None
@@ -4713,6 +5510,9 @@ class LiteTUI(App):
 
     def _rpc_emit(self, data: dict) -> None:
         """Emit one JSON event on stdout (no-op outside --rpc)."""
+        if data.get("type") == "turn_start":
+            self._now_turn_active_at = self._active_turn_started_at
+            self._paint_now()
         if not self._rpc:
             return
         from litetui.rpc import rpc_emit
@@ -4808,6 +5608,8 @@ class LiteTUI(App):
                 await asyncio.wait_for(done.wait(), getattr(getattr(self, '_launch_options', None), 'timeout', 30) + 5)
             except TimeoutError:
                 self._cli_launch_error = 'Launch configuration did not settle in time'
+        if getattr(self, '_agent_session', None) is not None:
+            await self._register_owned_startup()
         from litetui.version import __version__
 
         # T594: resolve BEFORE announcing, so `ready` names the model that
@@ -4815,11 +5617,13 @@ class LiteTUI(App):
         note = ""
         if getattr(self, "_rpc", False):   # doubles predate this seam
             action, model, why = self._headless_model_decision()
-            if action == "substitute" and model:
+            if action == "substitute" and model and getattr(self, '_agent_session', None) is None:
                 self._model_id = model
                 note = why
-            elif action == "refuse":
+            elif action == "refuse" or (action == "substitute" and getattr(self, "_agent_session", None) is not None):
                 note = why
+                if getattr(self, "_agent_session", None) is not None:
+                    self._cli_launch_error = "Selected agent model is not ready; no identity fallback is permitted"
         from litetui.task_supervisor import process_creation_identity
         from litetui.gui_rpc import OPERATIONS
         self._rpc_emit({
@@ -4935,7 +5739,9 @@ class LiteTUI(App):
                 await asyncio.sleep(0.5)
             if getattr(self, '_launch_options', None) is not None:
                 await asyncio.wait_for(self._connect_done.wait(), self._launch_options.timeout + 5)
-            self._cli_launch_error = None
+            self._cli_launch_error = getattr(self, '_owned_launch_error', None)
+            if self._cli_launch_error:
+                return
             if getattr(self, '_launch_options', None) is not None and not self._gui_connection_success:
                 self._cli_launch_error = 'Backend connection/startup failed; launch prompt blocked'
                 return
@@ -4993,6 +5799,9 @@ class LiteTUI(App):
                 if not info or not info[2] or not info[0] or info[0] < requested_ctx:
                     raise llm_backend.BackendError(f'Requested {requested_ctx} context tokens, but the backend did not confirm that capacity')
                 self.ctx_max, _model_type, self.ctx_loaded = info
+            if (getattr(self, '_agent_session', None) is not None
+                    and not await self._register_owned_startup()):
+                return
             if self._cli_system_prompt:
                 self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
             if self._first_prompt:
@@ -5009,8 +5818,66 @@ class LiteTUI(App):
             done = getattr(self, '_cli_args_done', None)
             if done is not None:
                 done.set()
+            seat_authority.warn_if_below_floor(self)
 
     # ── Context window readout (footer) ───────────────────────
+
+    def _stop_footer_sampler(self) -> None:
+        timer = self._footer_sample_timer
+        if timer is not None:
+            timer.stop()
+            self._footer_sample_timer = None
+        self._footer_sampler = None
+        self._footer_telemetry = None
+        self._footer_history.clear()
+
+    def _sync_footer_sampler(self) -> None:
+        """Only an enabled footer has a timer; slow sensors run in a thread."""
+        if not self.settings.footer_task_manager:
+            self._stop_footer_sampler()
+            self._refresh_ctx_label()
+            return
+        if self._footer_sample_timer is not None:
+            return
+        try:
+            from litetui.footer_telemetry import Sampler
+        except ImportError as exc:
+            # psutil missing from a stale env: no meters, never a seat that can't mount.
+            self._system(f"Task manager off: {exc}. Reinstall LiteTUI's dependencies to enable it.")
+            return
+        self._footer_sampler = Sampler()
+        self._footer_sample_timer = self.set_interval(2.0, self._sample_footer)
+        self._sample_footer()
+
+    def _sample_footer(self) -> None:
+        if self._footer_sample_pending or not self.settings.footer_task_manager:
+            return
+        self._footer_sample_pending = True
+        sampler = self._footer_sampler
+
+        async def run() -> None:
+            import asyncio
+            try:
+                reading = await asyncio.to_thread(sampler.sample)
+                if self.settings.footer_task_manager and sampler is self._footer_sampler:
+                    self._footer_telemetry = reading
+                    # Repeated measurements do not shift the graph or repaint.
+                    if not self._footer_history or reading != self._footer_history[-1]:
+                        self._footer_history.append(reading)
+                        del self._footer_history[:-6]
+                    self._refresh_ctx_label()
+            except (OSError, ValueError, RuntimeError):
+                # A failed sensor isn't a measured zero; try again next tick.
+                pass
+            finally:
+                self._footer_sample_pending = False
+
+        asyncio.create_task(run())
+
+    def toggle_footer_task_manager(self) -> None:
+        from dataclasses import replace
+        self._on_settings_saved(replace(
+            self.settings, footer_task_manager=not self.settings.footer_task_manager))
 
     def footer_display_order(self) -> list[str]:
         """The normalized left-to-right order used by every footer surface."""
@@ -5193,6 +6060,9 @@ class LiteTUI(App):
             else:
                 add("seat", "no seat", "#5c6370")
 
+        if getattr(self, "model_id", ""):
+            add("model", str(self.model_id), "#7d8799")
+
         if s.footer_show_thinking:
             add("think", f"think:{self.thinking_level or 'default'}", "#5c6370", chip="think")
 
@@ -5275,22 +6145,18 @@ class LiteTUI(App):
             for key in settings_mod.normalize_footer_order(
                 getattr(s, "footer_order", None)
             )
-            if key in chunks_by_key
+            if key in chunks_by_key and key not in ("authority", "plan")
         ]
-
         # The footer owns the usable width. During its first compose it is
-        # mounted but its children are not, so use the measured palette width
-        # when available and its stable 12-cell footprint otherwise. The label's
-        # CSS right padding consumes the remaining one cell. FakeApp unit tests
-        # have no query/size at all; in that unmounted world width is unknown
-        # and the full historical text is returned unchanged.
+        # mounted but its children are not, so use the width from the footer's
+        # resize event when available. The label's CSS padding takes one cell.
+        # FakeApp unit tests have no query/size; unmounted width is unknown.
         available = getattr(self, "_footer_available_width", None)
 
         # Drop low-value fields until the protected visual-cron facts fit.
-        # Display order never changes; only membership does. Authority, plan,
-        # seat identity, thinking effort and context percent are protected: a
-        # narrow spawned-agent pane needs all five to identify the seat and
-        # confirm that its requested effort actually took effect. Calculate
+        # Display order never changes; only membership does. Seat identity,
+        # thinking effort and context percent are protected on the status line;
+        # authority and plan live on the second line. Calculate
         # against Rich cell widths (not len()) so wide glyphs cannot reintroduce
         # clipping.
         render_sep = sep
@@ -5306,7 +6172,7 @@ class LiteTUI(App):
             if width() > available:
                 render_sep = " · "
 
-            for drop_key in ("tps", "convo", "bg", "agents", "cache", "ctx"):
+            for drop_key in ("tps", "bg", "agents", "cache", "model", "convo", "ctx"):
                 if width() <= available:
                     break
                 chunks = [(key, chunk) for key, chunk in chunks if key != drop_key]
@@ -5350,6 +6216,65 @@ class LiteTUI(App):
             t.append(chunk)
         return t
 
+    @property
+    def permission_label_text(self) -> Text:
+        """Resolved permission mode and plan state on the line below status."""
+        profile = getattr(self, "_active_tool_profile", None)
+        level = profile_text(profile)
+        plan_on = bool(getattr(self, "_plan_mode", False))
+        nav = getattr(self, "_footer_nav", None)
+        chunks = {
+            "plan": Text("plan:on" if plan_on else "plan:off",
+                         "reverse bold" if nav == "plan" else
+                         ("bold #bb9af7" if plan_on else "#5c6370")),
+        }
+        if level:
+            chunks["authority"] = Text(
+                level, "reverse bold" if nav == "authority" else
+                ("#7d8799" if tool_policy.stops_you(profile) else "#7aa2f7")
+            )
+        text = Text()
+        for key in self.footer_display_order():
+            if key in chunks:
+                if text.plain:
+                    text.append("  ·  ", "#5c6370")
+                text.append(chunks[key])
+        return text
+
+    @property
+    def footer_meters_text(self) -> Text:
+        """Measured meters on the lower row, after the independent on/off switch."""
+        reading = getattr(self, "_footer_telemetry", None)
+        if not self.settings.footer_task_manager or reading is None:
+            return Text()
+        from litetui.footer_telemetry import meter
+
+        separator = "  ·  "
+        # The second row owns its own width. Reserve permission text and its
+        # one-cell padding, the clickable toggle and its two-cell padding, and
+        # the separator before admitting any whole meter. The status row never
+        # participates in this budget.
+        available = getattr(self, "_footer_available_width", None)
+        if available is not None:
+            available -= (self.permission_label_text.cell_len + 1
+                          + len("meters:on") + 2 + Text(separator).cell_len)
+            if available <= 0:
+                return Text()
+        history = getattr(self, "_footer_history", [])
+        candidates = meter(reading, 180, history)
+        result = Text()
+        for label, color in candidates:
+            cost = Text(label).cell_len + (3 if result.plain else 0)
+            if available is not None and cost > available:
+                break  # Priority order: CPU, GPU, NET, RAM, VRAM, DISK.
+            if result.plain:
+                result.append(" · ", "#5c6370")
+            result.append(label, color)
+            if available is not None:
+                available -= cost
+        if result.plain:
+            result = Text(separator, "#5c6370") + result
+        return result
 
     def _rpc_emit_usage(self, used: int | None) -> None:
         """Tell the host how full the window is. No-op outside `--rpc`.
@@ -5410,7 +6335,7 @@ class LiteTUI(App):
         # behind; update every match instead so a transient duplicate is
         # cosmetic rather than an exception on a hot reactive path.
         try:
-            labels = list(self.query(".ctx-label"))
+            labels = list(self.query(".ctx-label, .permission-label, .footer-meters"))
         except Exception:
             # No screen on the stack yet. _update_header and the conversation
             # setup both run before mount, and self.query() RAISES in that
@@ -5419,8 +6344,10 @@ class LiteTUI(App):
             return
         if not labels:
             return  # footer not composed yet; it reads the value when it composes
-        text = self.ctx_label_text
         for label in labels:
+            text = (self.permission_label_text if label.has_class("permission-label")
+                    else self.footer_meters_text if label.has_class("footer-meters")
+                    else self.ctx_label_text)
             # T1003: the setter repaints even when nothing changed, and idle
             # timers (cache ticker, Codex events, on_resize) call this constantly.
             if label.content != text:
@@ -5532,13 +6459,16 @@ class LiteTUI(App):
     #: duplicated. Anchored on both ends: a bare "id <uuid>" would also match
     #: ids quoted inside the conversation.
     _FLEET_LINE_RE = re.compile(
-        r"You are registered in the LiteHarness fleet as [^(]*\(id [0-9a-fA-F-]{36}, tier [a-z]+\)\. ",
+        r"You are registered in the LiteHarness fleet as [^(]*\("
+        r"(?:id |your inbox/sender id \(use it for any from=/--from\): )"
+        r"[0-9a-fA-F-]{36}, tier [a-z]+\)\. ",
     )
 
     def _fleet_identity_sentence(self) -> str:
         return (
             f"You are registered in the LiteHarness fleet as "
-            f"{self.seat.name} (id {self.seat.agent_id}, tier {self.seat.tier}). "
+            f"{self.seat.name} (your inbox/sender id (use it for any from=/--from): "
+            f"{self.seat.agent_id}, tier {self.seat.tier}). "
         )
 
     def _sync_fleet_identity(self) -> bool:
@@ -5568,6 +6498,8 @@ class LiteTUI(App):
         if not n:
             return False   # no line yet; the registration path appends it
         self.conversation[0]["content"] = fixed
+        if not getattr(self, "_convo_loading", False):
+            self._edit(0, "fleet identity corrected")
         return True
 
 
@@ -5729,6 +6661,29 @@ class LiteTUI(App):
         tps = self.tps or 0.0
         self._glassbox(channel, min(1.0, tps / 60.0), tps_text(tps) if tps else "")
 
+    def _report_spawner_error(self, text: str, activity: str) -> None:
+        seat = getattr(self, "seat", None)
+        if seat is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(asyncio.to_thread(
+                    self._spawner_errors.send, seat, getattr(self, "convo_id", None),
+                    text, activity,
+                ))
+            except Exception:
+                pass  # a diagnostic must never break the UI or recursively report
+
+    @staticmethod
+    def _is_error_message(text: str) -> bool:
+        return bool(re.search(
+            r"\b(error|failed|failure|crash|could not|cannot|refused|unable to)\b", text, re.I
+        ))
+
+    def notify(self, message, *, severity="information", markup=False, **kwargs):
+        if severity == "error":
+            self._report_spawner_error(str(message), "notification")
+        return super().notify(message, severity=severity, markup=markup, **kwargs)
+
     def system_message(self, text: str) -> None:
         """Post a system line into the chat log — **the supported way for a
         plugin to say something to the user.**
@@ -5751,6 +6706,9 @@ class LiteTUI(App):
         **in scope** to replace it with. Ask "is X reachable from every call
         site?" before scheduling any "seal it behind X" step.
         """
+        if self._is_error_message(text):
+            activity = "compaction" if text.startswith("Compact failed") else "system message"
+            self._report_spawner_error(text, activity)
         shown = present(text, self.settings.error_message_style)
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(shown), classes="system-msg"))
@@ -5780,7 +6738,7 @@ class LiteTUI(App):
         w = UserMessage("\n".join(parts), queued=queued, image_path=image_path, header=header)
         # A message that silently waits is indistinguishable from one that was
         # dropped — the title is the visibility.
-        w.border_title = header or ("You · queued" if queued else "You")
+        w.border_title = Text(header or ("You · queued" if queued else "You"))
         log.mount(w)
         self._scroll_down()
         return w
@@ -5843,8 +6801,13 @@ class LiteTUI(App):
                 self.system_message(gpu_gate.why_not())
                 return
         from dataclasses import replace
-        s = replace(self.settings, backend=choice, backend_chosen=True)
-        settings_runtime.persist_or_raise(self, s)
+        s = replace(self.settings, backend=choice)
+        # Switching this seat is not choosing startup defaults. backend_chosen
+        # belongs to globals; only /backend --default may publish that intent.
+        # Before a conversation exists, keep the choice in memory instead of
+        # letting the persistence adapter fall back to the global file.
+        if getattr(self, 'convo_dir', None) is not None:
+            settings_runtime.persist_or_raise(self, s, baseline=self.settings)
         self.settings = s
         # Deliberately NOT shutting the old engine down: a mid-session flip that
         # evicted the resident model would make flipping back cost a full reload.
@@ -5919,6 +6882,23 @@ class LiteTUI(App):
     def watch_tps(self, value: float | None) -> None:
         self._refresh_ctx_label()
 
+    def _record_recap(self, recap: str) -> None:
+        """Publish latest final recap, preserving the registry's existing keys."""
+        self.last_recap = recap
+        card = self._now_card()
+        if card is not None:
+            card.last = recap
+            self._paint_now()
+        seat = getattr(self, "seat", None)
+        if not getattr(seat, "registered", False) or not getattr(seat, "agent_id", None):
+            return
+        path = Path.home() / ".liteharness" / "agents" / f"{seat.agent_id}.json"
+        try:
+            if not harness_mod.merge_recap_presence(path, seat.agent_id, recap):
+                self._system("Recap could not be saved to seat presence; the answer is intact.")
+        except OSError as exc:
+            self._system(f"Recap could not be saved to seat presence: {exc}")
+
     def _settle_turn_stop_line(
         self,
         widget: AssistantMessage | None,
@@ -5944,7 +6924,10 @@ class LiteTUI(App):
         # unrelated behaviour.
         if widget is not None:
             widget.settled = True
-            self._kick_card_summary(widget)
+            if getattr(widget, "recap", None):
+                widget.set_summary(widget.recap)
+            else:
+                self._kick_card_summary(widget)
         line = format_turn_stop_line(
             started_at=started_at,
             final_tps=final_tps,
@@ -5959,6 +6942,8 @@ class LiteTUI(App):
             widget = self._assistant_bubble()
             widget.body.styles.display = "none"
             widget.settled = True
+        if getattr(widget, "recap", None):
+            line += " · " + widget.recap
         widget.set_stop_line(line)
         self._scroll_down()
 
@@ -5988,6 +6973,7 @@ class LiteTUI(App):
             # up for a call the app does not consider in flight.
             self._glassbox_tool(getattr(tool, "tool_name", "") or "tool")
         self._elapsed.ensure_running()
+        self._paint_now()
 
     def _attach_cancel_button(self, tool, _retry: bool = False) -> None:
         """Put a cancel control directly after `tool`, whenever that becomes possible.
@@ -6014,8 +7000,12 @@ class LiteTUI(App):
             self._cancel_buttons.pop(tool, None)
 
     def _tool_end(self, tool) -> None:
+        card = self._now_card()
+        if card is not None:
+            card.last = tool._header_content("▸").plain
         if tool in self._inflight_tools:
             self._inflight_tools.remove(tool)
+        self._paint_now()
         btn = self._cancel_buttons.pop(tool, None)
         if btn is not None:
             try:
@@ -6047,6 +7037,7 @@ class LiteTUI(App):
         while True:
             await asyncio.sleep(0.25)
             now = time.monotonic()
+            self._paint_now()
             card = self._compact_card
             card_live = card is not None and card._took is None
             active = (
@@ -6054,6 +7045,8 @@ class LiteTUI(App):
                 or self._inflight_tools
                 or self._thinking_live is not None
                 or card_live
+                or bool(getattr(self._now_card(), "wait", None))
+                or self._now_turn_active_at is not None
             )
             # The cancel button tracks the SLOT, not the tool bubble — and not
             # child liveness: a populated slot means communicate() may still be
@@ -6226,9 +7219,12 @@ class LiteTUI(App):
         convenience; it must never be able to break a finished turn.
         """
         try:
-            # Reasoning OFF through the backend's own knob, not a literal:
-            # lmstudio omits the field, llamacpp wants "none" (T539).
-            effort = _resolve_reasoning_effort("off", self.backend.name)
+            levels = (self.backend.reasoning_levels(model)
+                      if hasattr(self.backend, "reasoning_levels") else ())
+            effort = side_call_reasoning_effort(
+                "off", self.backend.name, model,
+                self.settings.lmstudio_graded_thinking_models, levels,
+            )
             extra = {"reasoning_effort": effort} if effort else {}
             resp = await model_transport.for_app(self).create(
                 # 🔴 NOT PART OF THE TURN (T821). This side call used to be
@@ -6943,6 +7939,7 @@ class LiteTUI(App):
     @on(Input.Changed, "#message-input")
     def _skill_ac_changed(self, event: Input.Changed) -> None:
         self.sync_skill_autocomplete(event.value)
+        self.query_one("PromptBox").sync_compact()
 
     def sync_skill_autocomplete(self, value: str) -> None:
         """Show the picker only while a bare slash NAME is being typed.
@@ -7131,7 +8128,13 @@ class LiteTUI(App):
             pass
 
         if text.startswith("/"):
-            self._handle_command(text)
+            # T1043: who issued this command (a /goal records it as its origin,
+            # seat_authority.command_origin). Scoped to this dispatch only.
+            self._command_source = source
+            try:
+                self._handle_command(text)
+            finally:
+                self._command_source = None
             return
 
         # Check if input names an image file (optionally followed by a prompt)
@@ -7204,10 +8207,15 @@ class LiteTUI(App):
             self._refuse_submit("message_over_budget", oversize)
             return
 
-        profile = self.chosen_tool_profile
+        profile = seat_authority.seat_profile(self)
         claude_metadata = {}
         if getattr(self.backend, "owns_native_turns", False):
-            from litetui.claude_turn import inline_images, prepare_input
+            from litetui.claude_turn import (
+                UncertainDelivery,
+                hold_input,
+                inline_images,
+                prepare_input,
+            )
             try:
                 content, saved = inline_images(self, content, image_path)
                 if saved:
@@ -7216,6 +8224,13 @@ class LiteTUI(App):
                         self._system("Claude sees an attached image only by opening its file, and tools are off; turn them on to let it look.")
                 claude_metadata = prepare_input(self, content, profile, source,
                     getattr(self, "_gui_next_operation_id", None) if source == "rpc" else None)
+            except UncertainDelivery as exc:
+                hold_input(self, {"content": content, "text": text, "tool_profile": profile,
+                    "source": source, "operation_id": getattr(self, "_gui_next_operation_id", None)
+                    if source == "rpc" else None}, exc)
+                self.pending_image = None
+                self._refuse_submit("claude_admission", str(exc))
+                return
             except (ValueError, TypeError, OSError, RuntimeError) as exc:
                 self._system(str(exc))
                 self._refuse_submit("claude_admission", str(exc))
@@ -7358,6 +8373,32 @@ class LiteTUI(App):
         return ("refuse", None, why)
 
 
+    def _validate_owned_execution(self) -> None:
+        if getattr(self, '_agent_session', None) is not None:
+            authority = self._agent_session.authority
+            if getattr(self.backend, 'name', None) != authority.backend:
+                raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
+            builder = getattr(self, '_effective_request_overrides', None)
+            overrides = builder() if builder is not None else {}
+            effective_level = overrides.get('reasoning_effort') or getattr(self, '_thinking_level', None)
+            from litetui.turn_engine import TurnEngine
+            graded = getattr(getattr(self, 'settings', None), 'lmstudio_graded_thinking_models', ())
+            expected_wire = TurnEngine.resolve_reasoning_effort(authority.thinking_level,
+                authority.backend, authority.model, graded)
+            actual_wire = TurnEngine.resolve_reasoning_effort(effective_level,
+                authority.backend, authority.model, graded)
+            if authority.backend == 'claude':
+                from litetui.claude_turn import effort_for
+                from types import SimpleNamespace
+                expected = SimpleNamespace(backend=self.backend, model_id=authority.model,
+                    thinking_level=authority.thinking_level,
+                    settings=SimpleNamespace(model_infer_overrides={}))
+                expected_wire, actual_wire = effort_for(expected), effort_for(self)
+            if actual_wire != expected_wire:
+                raise llm_backend.BackendError('Effective request effort disagrees with owned agent authority')
+            if self.model_id != authority.model:
+                raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
+
     async def _ensure_chat_ready(self, *, timeout: float | None = None) -> None:
         """Ask, in plain words, whether model_id can serve a turn RIGHT NOW.
 
@@ -7386,16 +8427,26 @@ class LiteTUI(App):
         a missing capability must mean "no opinion", never AttributeError
         mid-turn.
         """
+        if getattr(self, '_agent_session', None) is not None:
+            if not await self._register_owned_startup():
+                raise llm_backend.BackendError(self._owned_launch_error)
         if getattr(self, "_startup_resume_error", None):
             raise llm_backend.BackendError(self._startup_resume_error)
         if getattr(self, "_resume_backend_error", None):
             raise llm_backend.BackendError(self._resume_backend_error)
         if getattr(self, "_resume_connection_error", None):
             raise llm_backend.BackendError(self._resume_connection_error)
+        if getattr(self, '_agent_session', None) is not None:
+            LiteTUI._validate_owned_execution(self)
+            loaded = {r.key for r in getattr(self, 'model_rows', {}).values() if r.loaded}
+            if loaded and self._agent_session.authority.model not in loaded:
+                raise llm_backend.BackendError('Selected agent model is not loaded; no identity fallback is permitted')
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam
             action, model, why = self._headless_model_decision()
+            if (action == "substitute" and getattr(self, '_agent_session', None) is not None):
+                action, model, why = 'refuse', None, 'Selected agent model is not loaded; no identity fallback is permitted'
             if action == "refuse":
                 self._rpc_emit({"type": "error", "kind": "model_not_loaded",
                                 "message": why})
@@ -7577,6 +8628,8 @@ class LiteTUI(App):
         "no figure" -- and a host that sees the key absent cannot tell those
         from a version that never sent it.
         """
+        self._now_turn_active_at = None
+        self._paint_now()
         self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
                         "tps": tps, "tpsSource": tps_source, **extra})
 
@@ -7646,6 +8699,12 @@ class LiteTUI(App):
             await self._await_mcp_maintenance()
         except TurnDeferred:
             return STREAM_DEFERRED
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                LiteTUI._validate_owned_execution(self)
+            except (ValueError, OSError, llm_backend.BackendError) as exc:
+                self._system(str(exc))
+                return
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import stream_turn
             await stream_turn(self)
@@ -7661,10 +8720,12 @@ class LiteTUI(App):
         # Cleared with the flag it explains. A reason that outlived its turn
         # would attribute THIS turn's ending to the last turn's cause.
         self._stop_reason = None
+        self._stop_cause = None
         # A turn is starting, so nothing is abandoned any more. Cleared HERE
         # rather than where the ping reads it: a mark that only ever latched
         # would kill loop mode for the rest of the session after one Esc.
         self._turn_abandoned = False
+        self._interrupted_compact_resume = None
         self.self_compaction.pending = None
         if (self.conversation and self.conversation[-1].get("role") == "user"
                 and self.conversation[-1].get("content") != WAKE_AFTER_COMPACT):
@@ -7741,8 +8802,8 @@ class LiteTUI(App):
                 # We only TEST here. Starting the compaction from inside
                 # this worker would cancel this worker: _compact is
                 # exclusive in the same "chat" group as _stream. So break
-                # and schedule it for after we exit; wake_after_compact
-                # then resumes the task.
+                # and schedule it for after we exit; its one-shot
+                # continuation then resumes this interrupted task.
                 #
                 # `_iteration and` skips iteration 0 deliberately: nothing
                 # has been spent yet on this turn, and a turn STARTED by
@@ -7762,6 +8823,9 @@ class LiteTUI(App):
             # One render and one scroll per frame for this round's answer.
             from litetui.stream_sink import StreamSink
             sink = StreamSink(self, widget)
+            from litetui.recap import RecapStream
+            recap_stream = RecapStream()
+            recap = None
             self._eta.clear_prefill()  # NInfer prefill %, this request only
             thinking: ThinkingBlock | None = None
             text_full = ""
@@ -7798,7 +8862,11 @@ class LiteTUI(App):
                 # No timeout here — the user is watching and asked for this
                 # turn, so a model that is loading is worth waiting out.
                 await self._ensure_chat_ready()
-                stream = await model_transport.for_app(self).create(**kwargs)
+                # A closure, not the bound method: test fakes deepcopy their
+                # kwargs, and deepcopying a bound method copies the whole app.
+                stream = await model_transport.for_app(self).create(
+                    retry_notice=self._retry_notice, **kwargs
+                )
             except Exception as e:
                 runtime_log.record(
                     "turn_stream_failed",
@@ -7812,6 +8880,7 @@ class LiteTUI(App):
                     detail=f"{type(e).__name__}: {e}",
                     exc=e,
                 )
+                self._clear_retry_wait()
                 self._elapsed.stop_body()
                 self._thinking_done()
                 # T688 F: if the app that owned our attached llama.cpp router has
@@ -7837,6 +8906,7 @@ class LiteTUI(App):
                     style="bold red"
                 )
                 widget.border_title = "Error"
+                self._report_spawner_error(str(widget.body.content), "model response")
                 self._settle_turn_stop_line(
                     widget,
                     started_at=turn_started_at,
@@ -7849,6 +8919,7 @@ class LiteTUI(App):
 
             try:
                 async for chunk in stream:
+                    self._clear_retry_wait()  # A retry has actually resumed output, not merely opened a socket.
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     u = getattr(chunk, "usage", None)
                     # T806: llama.cpp-compatible engines publish their OWN
@@ -7962,8 +9033,9 @@ class LiteTUI(App):
                             self._thinking_live = thinking
                             # The card declares `thinking` and nothing set it,
                             # so a thinking-only card could not title itself.
-                            widget.thinking = thinking
-                            widget.mount(thinking, before=widget.body)
+                            # set_thinking also survives a card that has not
+                            # composed yet (T1031).
+                            widget.set_thinking(thinking)
                             # Discrete event -> unconditional. See _scroll_down.
                             # AFTER the refresh, not during it: mount() has not
                             # been measured yet, so scrolling in this frame targets
@@ -7995,8 +9067,10 @@ class LiteTUI(App):
                         self._thinking_done()
                         self._elapsed.stop_body()
                         text_full += delta.content
-                        self._rpc_emit({"type": "text_delta", "text": delta.content})
-                        sink.show(text_full)
+                        visible_delta = recap_stream.feed(delta.content)
+                        if visible_delta:
+                            self._rpc_emit({"type": "text_delta", "text": visible_delta})
+                        sink.show(recap_stream.visible)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
                         # chunk is already in hand, and the dialog promises that
@@ -8086,6 +9160,7 @@ class LiteTUI(App):
                     style="bold red"
                 )
                 widget.border_title = "Error"
+                self._report_spawner_error(str(widget.body.content), "model response")
                 self._settle_turn_stop_line(
                     widget,
                     started_at=turn_started_at,
@@ -8099,6 +9174,7 @@ class LiteTUI(App):
                                      error=takeover or _plain_backend_error(e, self.backend))
                 return
             finally:
+                self._clear_retry_wait()  # Cancellation, exhausted retries, and empty streams clear the banner.
                 if hasattr(stream, "close"):
                     await stream.close()
 
@@ -8112,7 +9188,13 @@ class LiteTUI(App):
                 # card summary is made from. Summarising the rendered widget
                 # instead would summarise a Markdown object; summarising the
                 # reasoning would describe work the card never shows.
-                sink.finish(text_full)
+                final_delta = recap_stream.finish()
+                if final_delta:
+                    self._rpc_emit({"type": "text_delta", "text": final_delta})
+                sink.finish(recap_stream.visible)
+                # The completion hook may reject this draft or this may be a
+                # tool round. Keep recap pending until the terminal acceptance gate.
+                recap = recap_stream.recap
             else:
                 sink.cancel()
                 # Pure tool turn (or empty): don't leave a "..." bubble behind.
@@ -8159,7 +9241,10 @@ class LiteTUI(App):
                 # cannot tell a finished card from a draft the completion
                 # hook just rejected, and a rejected draft never gets a line.
                 terminal_widget.settled = True
-                self._kick_card_summary(terminal_widget)
+                if getattr(terminal_widget, "recap", None):
+                    terminal_widget.set_summary(terminal_widget.recap)
+                else:
+                    self._kick_card_summary(terminal_widget)
 
             if self._stop_requested:
                 self._system(
@@ -8195,6 +9280,9 @@ class LiteTUI(App):
                 await self.plugins.finalize_turn()
                 if not getattr(self, "_hooks_suppressed", False):
                     await hook_host.dispatch(self, "completion_after", {"answer": text_full or ""})
+                if recap and terminal_widget is not None:
+                    terminal_widget.recap = recap
+                    self._record_recap(recap)
                 self._settle_turn_stop_line(
                     terminal_widget,
                     started_at=turn_started_at,
@@ -8245,6 +9333,12 @@ class LiteTUI(App):
                 # model — the same string serves both, and a secret on screen is
                 # a secret in the screenshot.
                 result = sanitize.redact_secrets(result)
+                if not self._stop_requested and (not ok or result.startswith((
+                    "[error]", "[denied]", "[hook denied]", "[policy denied]",
+                    "[policy denied by user]", "[refused]", "[tool reported an error]",
+                    "[loop-break]",
+                ))):
+                    self._report_spawner_error(result, f"{name} tool")
                 sanitize.reset_terminal_modes()
                 if msg is not None:
                     msg.set_result(present(result, self.settings.error_message_style, surface="tool")
@@ -8327,6 +9421,7 @@ class LiteTUI(App):
                 else "[pausing to compact between tool iterations]"
             )
             self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            self._interrupted_compact_resume = (self.backend, self.convo_id, self._active_turn_started_at)
             self.call_after_refresh(self._maybe_autocompact)
             return
 
@@ -8343,7 +9438,15 @@ class LiteTUI(App):
                 final_tps=final_turn_tps,
                 stopped=True,
             )
-            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            # T1049-B2 (Dijkstra 79e113ce (3)): a stop caused by an approval outcome
+            # (a relay or a supervising host said no, or nobody answered) is its own
+            # stopReason carrying the reason, so a parent reports a FAILED child with
+            # it, never a bare "cancelled". An Esc stays "cancelled".
+            if getattr(self, "_stop_cause", None) == "approval":
+                self._emit_turn_end("approval", final_turn_tps, final_turn_tps_source,
+                                    error=self._stop_reason)
+            else:
+                self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
             return
 
         self._settle_turn_stop_line(
@@ -8425,6 +9528,9 @@ class LiteTUI(App):
             return False
         if self._pending_input[0].get("_codex_entry"):
             return False  # Native delivery is reconciled by the idle queue path.
+        from litetui.claude_turn import queue_ready
+        if not queue_ready(self, self._pending_input[0]):
+            return False
         # ONE per boundary, FIFO -- never the whole queue. Consecutive role:user
         # turns are a chat-template gamble and qwen's template 500s on some
         # shapes, which is exactly why _flush_pending_input has always sent one
@@ -8433,8 +9539,8 @@ class LiteTUI(App):
         # model this app is usually pointed at. The rest ride the next round,
         # and rounds are plentiful.
         item = self._pending_input.pop(0)
-        hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
-        return True
+        # T1043: False when the fleet floor refused it (retained, not delivered).
+        return hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
 
     def _flush_pending_input(self) -> None:
         """Send the oldest held message once the chat group is idle.
@@ -8581,8 +9687,26 @@ class LiteTUI(App):
         to remember the flush."""
         if getattr(event.worker, "group", None) != "chat":
             return
+        if (getattr(event.worker, "name", None) == "_stream"
+                and event.state == WorkerState.ERROR):
+            # An unexpected error bypasses _stream's normal turn_end exits.
+            # Do not leave the compact seat claiming a turn still responds.
+            self._now_turn_active_at = None
+            self._elapsed.stop_body()
+            self._paint_now()
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             self.call_after_refresh(self._flush_pending_input)
+
+    def _continue_interrupted_compact(self, continuation: tuple | None) -> None:
+        """One-shot maintenance continuation, scoped to the interrupted turn."""
+        if continuation is None or self._interrupted_compact_resume is not continuation:
+            return
+        backend, convo, started = continuation
+        self._interrupted_compact_resume = None
+        if (self.backend is not backend or self.convo_id != convo
+                or self._active_turn_started_at != started or self._stop_requested):
+            return
+        self._wake_after_compact()  # existing stop, queued-input, busy and authority guards
 
     def _wake_after_compact(self) -> None:
         """The post-compaction ping: one user message that says "resume the
@@ -8609,6 +9733,12 @@ class LiteTUI(App):
             # compaction gets scheduled (see _stream's stop branch). ABANDONED
             # only — a turn that merely ENDED still wakes, which is the whole
             # feature. Cleared at the next turn's start, never here.
+            return
+        # T1043 (Dijkstra B2): this ping calls _stream itself, so it meets the
+        # fleet floor itself. Said once; nothing appended, no turn started.
+        why = seat_authority.floor_refusal(self, "compact-wake")
+        if why is not None:
+            self._system(why)
             return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)
@@ -8655,6 +9785,12 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                LiteTUI._validate_owned_execution(self)
+            except (ValueError, OSError, llm_backend.BackendError) as exc:
+                self._system(str(exc))
+                return
         if getattr(self.backend, "owns_native_turns", False):
             # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.
@@ -8666,6 +9802,7 @@ class LiteTUI(App):
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
             self._stop_reason = None
+            self._stop_cause = None
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()
@@ -8678,6 +9815,10 @@ class LiteTUI(App):
         # Keep _turn_abandoned: maintenance must not revive stopped user work.
         self._stop_requested = False
         self._stop_reason = None
+        self._stop_cause = None
+        continuation = getattr(self, "_interrupted_compact_resume", None)
+        # Consume on failure/refusal; successful maintenance re-arms its callback.
+        self._interrupted_compact_resume = None
         # Read-and-clear FIRST: the early returns below must also consume
         # the flag, or an aborted autocompact marks the next MANUAL one auto.
         auto = getattr(self, "_compact_is_auto", False)
@@ -8907,7 +10048,7 @@ class LiteTUI(App):
                         "role": "tool",
                         "tool_call_id": slot["id"] or f"call_{i}",
                         "name": fname,
-                        "content": str(result),
+                        "content": tool_context.cap_tool_result(str(result), self.convo_dir, paths.data_root(), fname),
                     })
                 timing["tools_s"] = time.perf_counter() - tools_started
                 card.record_round(timing)
@@ -9084,7 +10225,10 @@ class LiteTUI(App):
             )
             self._clear_screen(note=summary_note)
 
-        if self.settings.wake_after_compact or handoff is not None:
+        if continuation is not None:
+            self._interrupted_compact_resume = continuation
+            self.call_after_refresh(self._continue_interrupted_compact, continuation)
+        elif self.settings.wake_after_compact or handoff is not None:
             # SCHEDULED, never called: see _wake_after_compact for why a
             # direct self._stream() here would cancel this very compact.
             # Success path only - a failed compact produced no summary, and
@@ -9100,6 +10244,13 @@ class LiteTUI(App):
         old = self.settings
         self._settings_persist_error = None
         self.settings = new
+        if new.footer_show_key_hints != old.footer_show_key_hints:
+            self.set_class(not new.footer_show_key_hints, "hide-key-hints")
+            self.query_one(ContextFooter)._on_resize_for_compact()
+        if new.footer_task_manager != old.footer_task_manager:
+            self._sync_footer_sampler()
+            for control in self.query(".task-manager-toggle"):
+                control.sync()
         if not new.tts_enabled:
             from litetui import voice_backend
             voice_backend.stop()
@@ -9297,12 +10448,12 @@ class LiteTUI(App):
         # visibly and flushes as a real turn; idle it sends now.
         if self._chat_running():
             self._user_bubble(text, True, queued=True)
-            self._pending_input.append({"content": content, "text": text,
-                                        "tool_profile": self.chosen_tool_profile})
+            self._pending_input.append({"content": content, "text": text, "source": "typed",
+                                        "tool_profile": seat_authority.seat_profile(self)})
             return
         self._materialise_convo()
         self._user_bubble(text, True)
-        hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": self.chosen_tool_profile})
+        hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": seat_authority.seat_profile(self)})
 
     def _handle_command(self, cmd: str) -> None:
         parts = cmd.split(maxsplit=1)

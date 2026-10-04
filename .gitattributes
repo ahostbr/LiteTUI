@@ -1,0 +1,3 @@
+# Vendored canonical policy bytes must survive checkout and git archive unchanged.
+src/litetui/deny_floor.py text eol=lf
+src/litetui/fleet_policy.py text eol=lf

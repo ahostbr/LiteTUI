@@ -46,10 +46,17 @@ from _settle import settle_until
 from litetui import app as m
 from litetui import tool_policy
 from litetui.side_panel import DialogController, SidePanel
-from litetui import textfmt
+from litetui import seat_authority
 from litetui.textfmt import profile_text
 from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 from litetui.widgets import ConfirmStopBody
+
+
+def _ryans(a):
+    """T1049: an app that holds autonomous models OWNER'S OWN instance, the only
+    one that may (owner-marked, not spawned). conftest clears the mark."""
+    a._spawned_seat, a._owner_seat, a._pty_term = False, True, None
+    return a
 
 
 def make_app(profile=AUTONOMOUS):
@@ -178,7 +185,7 @@ def test_the_cycle_visits_every_SELECTABLE_profile_and_returns():
 
 @pytest.mark.asyncio
 async def test_the_footer_names_the_level_and_follows_a_cycle():
-    a = make_app(AUTONOMOUS)
+    a = _ryans(make_app(AUTONOMOUS))
     async with a.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         assert profile_text(AUTONOMOUS) in a.ctx_label_text.plain
@@ -196,8 +203,8 @@ async def test_the_footer_names_the_level_and_follows_a_cycle():
 async def test_the_footer_shows_the_RESOLVED_level_not_the_stored_one(monkeypatch):
     """They differ per turn, and the resolved one is what governs tools.
 
-    Settings says `interactive`; a cron fire resolves to autonomous because
-    nobody is there to answer a modal (T085). The footer must say what is in
+    Settings says `interactive`; a cron fire resolves to its job's recorded level,
+    here autonomous (T1082, which superseded T085's hardcode). The footer must say what is in
     force, which is the entire product requirement behind "show this in the
     footer".
 
@@ -210,13 +217,14 @@ async def test_the_footer_shows_the_RESOLVED_level_not_the_stored_one(monkeypatc
     """
     from litetui import scheduler
     monkeypatch.setattr(m.sched_mod, "save", lambda *_a, **_k: None)
-    a = make_app(INTERACTIVE)
+    a = _ryans(make_app(INTERACTIVE))
     a._chat_running = lambda: False
     a._user_bubble = lambda *x, **k: None
     a._append = lambda *x, **k: None
     a._stream = lambda *x, **k: None
     async with a.run_test(size=(120, 45)) as pilot:
-        job = scheduler.Job(prompt="nightly", schedule="@daily")
+        # T1082: the job's recorded level governs; this one recorded autonomous.
+        job = scheduler.Job(prompt="nightly", schedule="@daily", tool_profile=AUTONOMOUS)
         a.jobs[:] = [job]
         a._fire_job(job)
         await pilot.pause()
@@ -340,24 +348,20 @@ def test_the_binding_is_declared_WITH_priority():
 
 # -- T085: the light warning, and the migration that stops a crash --------
 
-def test_the_creation_note_states_the_REASON_not_just_the_rule():
-    """the user asked for a "light warning when setting that it must run auto for
-    this reason". The reason IS the request.
-
-    A note that only says "scheduled tasks run in auto mode" is a fact the
-    reader can do nothing with. This asserts the mechanism is present -- that
-    nobody may be there, and that asking would therefore wait -- because that
-    is what lets someone predict a case nobody wrote down.
-    """
-    note = textfmt.SCHEDULED_AUTO_NOTE.lower()
-    assert "auto" in note
+def test_the_creation_note_states_the_LEVEL_and_who_answers():
+    """T1082 superseded T085's "light warning ... it must run auto": a schedule now
+    runs at the level recorded when it was created. The note still states the
+    MECHANISM: the level, and what happens to an action that needs approval when
+    nobody is at the keyboard (in Owner's own seat it is refused)."""
+    a = _ryans(make_app(INTERACTIVE))
+    note = seat_authority.schedule_note(a, INTERACTIVE)
+    assert "runs interactive" in note
     assert "keyboard" in note, "the note does not say WHY (nobody is there)"
-    assert "wait" in note or "hang" in note, (
-        "the note does not say what would go wrong instead"
-    )
+    assert "refused" in note, "the note does not say what happens instead"
+    assert "no action asks" in seat_authority.schedule_note(a, AUTONOMOUS)
     # LIGHT: one sentence, no shouting, not a confirmation prompt.
     assert note.count(".") == 0, "more than one sentence"
-    assert textfmt.SCHEDULED_AUTO_NOTE == textfmt.SCHEDULED_AUTO_NOTE.lstrip(), "padded"
+    assert note == note.lstrip(), "padded"
 
 
 def test_BOTH_creation_paths_show_the_note(monkeypatch, tmp_path):
@@ -375,7 +379,8 @@ def test_BOTH_creation_paths_show_the_note(monkeypatch, tmp_path):
 
     goal_loop.loop_command(app, "15m check the deploy")
     assert said, "/loop said nothing"
-    assert textfmt.SCHEDULED_AUTO_NOTE in said[-1], (
+    note = seat_authority.schedule_note(app, app.jobs[-1].tool_profile)  # T1082
+    assert note in said[-1], (
         f"/loop did not show the note: {said[-1]!r}"
     )
 
@@ -386,7 +391,7 @@ def test_BOTH_creation_paths_show_the_note(monkeypatch, tmp_path):
     monkeypatch.setattr(cron_mod.sched_mod, "save", lambda jobs, root=None: None)
     svc.add("@daily summarise yesterday")
     assert said, "/cron said nothing"
-    assert textfmt.SCHEDULED_AUTO_NOTE in said[-1], (
+    assert seat_authority.schedule_note(app, svc.jobs[-1].tool_profile) in said[-1], (
         f"/cron did not show the note: {said[-1]!r}"
     )
 

@@ -53,7 +53,14 @@ from litetui.tool_policy import (
 ROOT = paths.ROOT
 
 
-def _mail_app(profile_name: str):
+def _ryans(app):
+    """T1049: these arms are about OWNER'S OWN instance (owner-marked, not
+    spawned), the only one that may run autonomous. conftest clears the mark."""
+    app._spawned_seat, app._owner_seat, app._pty_term = False, True, None
+    return app
+
+
+def _mail_app(profile_name: str, *, route: str | None = None):
     """Drive the REAL `_deliver_inbox`; return the app, the model-bound
     messages and the user bubbles it produced.
 
@@ -62,7 +69,17 @@ def _mail_app(profile_name: str):
     whether anything calls it that way -- the green-that-cannot-run this
     codebase already paid for once in T079.
     """
-    app = LiteTUI()
+    app = _ryans(LiteTUI())
+    if route == "spawner":
+        app._owner_seat = False
+        app._spawned_seat = True
+        app._agent_launched = True
+        app._spawner_id = "leader-id"
+    elif route == "refuse":
+        app._owner_seat = False
+        app._spawned_seat = True
+        app._agent_launched = True
+        app._spawner_id = None
     app._connect = lambda: None
     app.settings.tool_policy_profile = profile_name
     app._chat_running = lambda: False
@@ -179,7 +196,7 @@ async def test_an_unattended_CONFIRM_is_refused_in_words_never_a_modal(
         raise AssertionError(f"{name}/{source} opened a modal nobody can answer")
 
     monkeypatch.setattr(app_mod, "show_dialog", _no_modal)
-    app = LiteTUI()
+    app = _ryans(LiteTUI())
     app._active_tool_profile = name
     app._hook_source = source
     refusal = await app._authorize_action(
@@ -205,6 +222,36 @@ def test_an_explicitly_chosen_interactive_KEEPS_interactive_unattended():
     sent = appended[-1]["content"]
     assert sent.endswith("\n\n" + tool_policy.INBOX_TURN_RULE)
     assert tool_policy.INBOX_TURN_RULE not in bubbles[-1]
+
+
+def test_spawned_inbox_turn_names_its_approval_relay():
+    print("IMPORTED_APP=" + __import__("litetui.app", fromlist=["__file__"]).__file__)
+    _app, appended, bubbles = _mail_app(INTERACTIVE, route="spawner")
+    sent = appended[-1]["content"]
+    assert "sent to leader-id for approval; attempt it and wait for the answer" in sent
+    assert "will be refused this turn" not in sent
+    assert sent not in bubbles
+
+
+def test_spawnerless_inbox_keeps_refusal_guidance():
+    _app, appended, _bubbles = _mail_app(INTERACTIVE, route="refuse")
+    assert appended[-1]["content"].endswith(tool_policy.INBOX_TURN_RULE)
+
+
+def test_hosted_inbox_turn_names_host_relay():
+    app = _ryans(LiteTUI())
+    app._owner_seat = False
+    app._spawned_seat = True
+    app._agent_launched = True
+    app._rpc = True
+    app._approval_host = True
+    app._connect = lambda: None
+    app.settings.tool_policy_profile = INTERACTIVE
+    app._chat_running = lambda: True
+    app._pending_input = []
+    app._user_bubble = lambda *a, **k: None
+    app._deliver_inbox({"from": "host", "priority": "normal", "body": "go"})
+    assert "sent to your host for approval; attempt it and wait for the answer" in app._pending_input[-1]["content"]
 
 
 def test_an_autonomous_mail_turn_carries_no_rule_it_cannot_break():
@@ -252,29 +299,32 @@ def test_a_path_escaping_the_store_is_not_self_store():
     assert decision.action == CONFIRM, "a `..` escape out of .convos was allowed silently"
 
 
-# -- T085: EVERY SCHEDULED TURN RUNS AUTO ----------------------------------
+# -- T1082: A SCHEDULED TURN RUNS AT THE LEVEL ITS JOB RECORDED -------------
 #
-# ⚠️ THIS SECTION HAS BEEN REWRITTEN TWICE IN ONE EVENING and the churn is the
-# point of the comment. the user ruled, in order:
+# ⚠️ THIS SECTION HAS NOW BEEN REWRITTEN THREE TIMES, and the churn is the point of
+# the comment. The user ruled, in order:
 #   1. "cron and loops run at same set profile level"      -> read the setting
 #   2. "select either auto mode or interactive" per job    -> read the job
-#   3. "just change it so schedule only runs auto mode"    -> autonomous, always
-# Each earlier version was correct when written. (3) is the live one, and it is
-# strictly simpler: it deletes the question "what does an interactive job do at
-# 3am", which is the question that would otherwise need attendance detection.
+#   3. "just change it so schedule only runs auto mode"    -> autonomous, always (T085)
+#   4. "we need new settings to set this at the time u create the schedule ...
+#      it runs at the scheduled level"                      -> read the job (T1082)
+# Each earlier version was correct when written. (4) is the live one. The 3am
+# question (3) deleted is answered by the routing: a CONFIRM on a scheduled turn
+# never builds a modal (tool_policy.UNATTENDED_SOURCES): in Owner's own seat it is
+# refused, and in an agent-spawned seat it goes to the launching agent (T1049-B).
 
 def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
-    """Drive the REAL `_fire_job` and return the profile it stamped.
+    """Drive the REAL `_fire_job` in Owner's own seat and return the profile it
+    stamped.
 
-    `setting` defaults to something OTHER than autonomous, and `job_level` can
-    be set to something else again, so an assertion of `autonomous` cannot be
-    satisfied by either source leaking through — it can only pass if the fire
-    path resolves to autonomous on its own.
+    `setting` and `job_level` are chosen per arm so the three candidate origins
+    (the chat setting, the job's recorded level, T085's retired AUTONOMOUS)
+    differ, and an asserted level can only have come from the one it names.
     """
     from litetui import scheduler
     from litetui import app as app_mod
 
-    app = LiteTUI()
+    app = _ryans(LiteTUI())
     app._connect = lambda: None
     app.settings.tool_policy_profile = setting
     app._chat_running = lambda: False
@@ -293,40 +343,46 @@ def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
     return app._active_tool_profile
 
 
-def test_a_scheduled_turn_runs_AUTO_and_may_write_the_workspace(monkeypatch):
-    """the user: "just change it so schedule only runs auto mode"."""
-    stamped = _fired_by_a_job(monkeypatch)
+def test_a_job_recorded_AUTONOMOUS_runs_auto_and_may_write_the_workspace(monkeypatch):
+    """Owner's own job, recorded autonomous, runs autonomous. It was T085's
+    `test_a_scheduled_turn_runs_AUTO_...` for EVERY job."""
+    stamped = _fired_by_a_job(monkeypatch, job_level=AUTONOMOUS)
     assert stamped == AUTONOMOUS
     assert _write_outside_the_store(stamped).action == ALLOW
 
 
 def test_the_global_setting_does_NOT_reach_a_scheduled_turn(monkeypatch):
     """Changing how autonomous the CHAT is must not change what every saved
-    automation may do. Asserted at BOTH ends of the range so this cannot pass
-    by the setting happening to agree."""
-    assert _fired_by_a_job(monkeypatch, setting=STRICT) == AUTONOMOUS
-    assert _fired_by_a_job(monkeypatch, setting=INTERACTIVE) == AUTONOMOUS
+    automation may do (still true under T1082). Asserted at BOTH ends of the
+    range, the job's level differing from the setting each time."""
+    assert _fired_by_a_job(monkeypatch, setting=STRICT, job_level=AUTONOMOUS) == AUTONOMOUS
+    assert _fired_by_a_job(monkeypatch, setting=AUTONOMOUS, job_level=STRICT) == STRICT
 
 
-def test_a_stale_per_job_level_does_NOT_reach_a_scheduled_turn(monkeypatch):
-    """`Job.tool_profile` still exists and still round-trips, so an old job
-    file can carry any value. It is vestigial and must not govern."""
-    assert _fired_by_a_job(monkeypatch, job_level=STRICT) == AUTONOMOUS
-    assert _fired_by_a_job(monkeypatch, job_level=INTERACTIVE) == AUTONOMOUS
+def test_the_per_job_level_GOVERNS_a_scheduled_turn(monkeypatch):
+    """INVERTED by T1082. It was `test_a_stale_per_job_level_does_NOT_reach_...`,
+    when `Job.tool_profile` was vestigial. With the setting AUTONOMOUS (the old
+    hardcode's value too), a narrower level can only have come from the job."""
+    assert _fired_by_a_job(monkeypatch, setting=AUTONOMOUS, job_level=STRICT) == STRICT
+    assert _fired_by_a_job(monkeypatch, setting=AUTONOMOUS, job_level=INTERACTIVE) == INTERACTIVE
 
 
 def test_a_scheduled_turn_can_never_construct_a_modal(monkeypatch):
-    """The reason the answer is `autonomous` rather than a choice: nobody is
-    there to answer. Autonomous is safe here BECAUSE its confirm set is empty,
-    not because of its name — pinned so a later edit to the profile is caught."""
-    stamped = _fired_by_a_job(monkeypatch)
+    """Nobody is there to answer. An AUTONOMOUS job is safe BECAUSE its confirm set
+    is empty, not because of its name (pinned so a later edit to the profile is
+    caught). A job at any other level reaches `_authorize_action` as a "scheduled"
+    turn, an UNATTENDED source, which refuses or relays a CONFIRM and never builds
+    a modal (T1082 took away the guarantee that every job is autonomous)."""
+    stamped = _fired_by_a_job(monkeypatch, job_level=AUTONOMOUS)
     assert not tool_policy.PROFILES[stamped].confirm
     decision = evaluate(stamped, tool_policy.MCP_UNKNOWN_POLICY, {"x": 1}, ROOT)
     assert decision.action != tool_policy.CONFIRM
+    assert "scheduled" in tool_policy.UNATTENDED_SOURCES
 
 
-def test_an_old_job_file_carrying_the_dead_key_still_loads(tmp_path):
-    """The knob stays on disk for now, so loading must not regress."""
+def test_an_old_job_file_keeps_the_level_it_recorded(tmp_path):
+    """The key was dead from T085 until T1082, and is live again: loading must keep
+    it as recorded."""
     import json
     from litetui import scheduler
 
@@ -335,3 +391,4 @@ def test_an_old_job_file_carrying_the_dead_key_still_loads(tmp_path):
     ]), encoding="utf-8")
     jobs = scheduler.load(tmp_path)
     assert len(jobs) == 1 and jobs[0].prompt == "p"
+    assert jobs[0].tool_profile == "autonomous"

@@ -19,8 +19,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from litetui import paths, scheduler, textfmt
-from litetui.tool_policy import AUTONOMOUS, INTERACTIVE
+from litetui import paths, scheduler, seat_authority
+from litetui.tool_policy import INTERACTIVE
 
 GOAL_FILENAME = "goal.json"
 _INTERVAL = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
@@ -49,6 +49,10 @@ class GoalState:
     missing_evidence: list[str] = field(default_factory=list)
     no_progress_count: int = 0
     tool_profile: str = INTERACTIVE
+    #: T1043: who issued the /goal (seat_authority.command_origin): "typed",
+    #: "gui", "rpc", ... Owner's own loops are exempt from the fleet floor in his
+    #: own instance; "" (a goal saved before this field) is enforced.
+    started_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -310,6 +314,9 @@ class GoalRuntime:
             "text": continuation,
             "tool_profile": state.tool_profile,
             "goal_continuation": True,
+            # T1043: the SOURCE carries the loop's origin, because the codex
+            # steering ledger keeps "source" and drops "goal_continuation".
+            "source": seat_authority.goal_source(state),
         })
 
 
@@ -322,11 +329,19 @@ def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
             "text": text,
             "tool_profile": state.tool_profile,
             "goal_continuation": True,
+            "source": seat_authority.goal_source(state),
         })
+        return
+    # T1043: this path calls _stream itself, so it meets the fleet floor itself.
+    from litetui import hook_host
+    if hook_host.refuse_below_floor(app, {"content": text, "text": text,
+                                          "tool_profile": state.tool_profile,
+                                          "goal_continuation": True,
+                                          "source": seat_authority.goal_source(state)}):
         return
     app._user_bubble(text, False)
     app._append({"role": "user", "content": text})
-    app._active_tool_profile = state.tool_profile
+    app._active_tool_profile = seat_authority.turn_profile(app, "goal", state.tool_profile)
     app._stream()
 
 
@@ -375,7 +390,8 @@ def goal_command(app: Any, arg: str) -> None:
     app._materialise_convo()
     state = GoalState(
         objective=arg,
-        tool_profile=getattr(app.settings, "tool_policy_profile", INTERACTIVE),
+        tool_profile=seat_authority.seat_profile(app),
+        started_by=seat_authority.command_origin(app),
     )
     save_goal(app.convo_dir, state)
     _deliver_goal_turn(
@@ -390,7 +406,7 @@ def _loop_jobs(app: Any) -> list[scheduler.Job]:
     return [job for job in app.jobs if getattr(job, "kind", "cron") == "loop"]
 
 
-def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> None:
+def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> str | None:
     """Pause or resume one loop, and persist it.
 
     🔴 EXTRACTED SO THE GUI CANNOT GROW A SECOND COPY. Resuming is not just a
@@ -405,12 +421,14 @@ def set_loop_enabled(app: Any, job: scheduler.Job, on: bool) -> None:
             datetime.now() + timedelta(minutes=job.interval_minutes)
         ).isoformat(timespec="seconds")
     scheduler.save(app.jobs, paths.data_root())
+    return None
 
 
-def remove_loop(app: Any, job: scheduler.Job) -> None:
-    """Delete one loop, and persist it. Same reason as `set_loop_enabled`."""
+def remove_loop(app: Any, job: scheduler.Job) -> str | None:
+    """Delete one loop and persist it."""
     app.jobs.remove(job)
     scheduler.save(app.jobs, paths.data_root())
+    return None
 
 
 def loop_command(app: Any, arg: str) -> None:
@@ -458,11 +476,12 @@ def loop_command(app: Any, arg: str) -> None:
             return
         job = hits[0]
         if verb.lower() in {"clear", "rm", "remove"}:
-            remove_loop(app, job)
-            app._system(f"/loop removed {job.id}")
+            why = remove_loop(app, job)
+            app._system(f"/loop: {why}" if why else f"/loop removed {job.id}")
         else:
-            set_loop_enabled(app, job, verb.lower() == "resume")
-            app._system(f"/loop {job.id} {'resumed' if job.enabled else 'paused'}")
+            why = set_loop_enabled(app, job, verb.lower() == "resume")
+            app._system(f"/loop: {why}" if why else
+                        f"/loop {job.id} {'resumed' if job.enabled else 'paused'}")
         return
     interval_token, _, prompt = arg.partition(" ")
     try:
@@ -474,15 +493,19 @@ def loop_command(app: Any, arg: str) -> None:
         app._system("/loop: a prompt is required after the interval")
         return
     app._materialise_convo()
+    # T1082: a loop inherits the level of the turn it was created in (Owner: "loops
+    # inherit the setting they were created on"). /loop takes no level, so a loop's
+    # level is never set directly.
+    level = seat_authority.loop_level(app)
     job = scheduler.Job.loop(
         prompt=prompt.strip(),
         interval_minutes=minutes,
         owner_convo_id=app.convo_id,
-        tool_profile=AUTONOMOUS,
+        tool_profile=level,
     )
     app.jobs.append(job)
     scheduler.save(app.jobs, paths.data_root())
     app._system(
         f"/loop added {job.id} · every {minutes}m\n  {job.prompt}\n"
-        f"  {textfmt.SCHEDULED_AUTO_NOTE}"
+        f"  {seat_authority.schedule_note(app, level)}"
     )

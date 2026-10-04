@@ -37,7 +37,13 @@ from rich.text import Text
 
 from litetui import claude_cache
 from litetui.claude_backend import COMPACT_MARKER
-from litetui.claude_turn import effort_for, launch_workspace, ledger_for, session_for
+from litetui.claude_turn import (
+    effort_for,
+    launch_workspace,
+    ledger_for,
+    resume_current,
+    session_for,
+)
 
 #: Said in the cache warning for a user-triggered /compact.
 COMPACT_COLD = ("Compacting ends this Claude session: Claude writes a summary, and your next message "
@@ -65,11 +71,19 @@ def request(extra: str = "") -> str:
 
 async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None) -> None:
     """Summarise with Claude, then continue in a fresh session seeded with it."""
+    # Consume once even on refusal/failure. Maintenance must not arm a later
+    # unrelated /compact to resurrect this task.
+    resume = getattr(app, "_claude_compact_resume", None)
+    app._claude_compact_resume = None
+    if resume is not None and not resume_current(app, resume):
+        resume = None
     prompt = request(extra)
     from litetui.claude_backend import settle_close
     from litetui.widgets import CompactionCard, ToolMessage
 
     backend = app.backend
+    conversation_id = app.convo_id
+    active_input = getattr(app, "_claude_active_input", None)
     ledger = ledger_for(app)
     segment = ledger.selected
     if segment is None or (not segment.get("session_id") and backend.session is None):
@@ -81,6 +95,13 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         app._emit_compaction("failed", tokens_before=app.ctx_used,
                              tokens_before_exact=app.ctx_used is not None)
         return
+    def held_for_original_segment():
+        # Only the proven-unsent preflight input may transfer. Every other
+        # admission (including RPC) must retain its original selected owner.
+        transferable = (resume[3]["_claude_entry"]["id"]
+                        if resume is not None and resume[4] is not None else None)
+        return any(entry["id"] != transferable for entry in ledger.pending(segment["id"]))
+
     if not auto:
         # The same gate as a model or effort switch (claude_cache.confirm_cold).
         clock = claude_cache.clock_for(app, segment["id"])
@@ -123,6 +144,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
             segment = ledger.bind_session(segment["id"], session.session_id)
         await session.query(f"compact-{uuid.uuid4().hex}", prompt)
         texts = {}
+        terminal = False
         async for message in session.events():
             if app._stop_requested:
                 bridge.stop()
@@ -161,11 +183,21 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                         ledger.note_cache(segment["id"], clock.used_at, app.model_id)
                 elif event.kind == "error":
                     failure = event.detail or "Claude reported an error"
-                elif event.kind == "result" and event.is_error:
-                    failure = event.detail or event.text or failure or "Claude compaction turn failed"
-                elif event.kind == "result" and event.text:
-                    summary = event.text   # the turn's final answer: authoritative
+                elif event.kind == "result":
+                    terminal = True
+                    if event.is_error:
+                        failure = event.detail or event.text or failure or "Claude compaction turn failed"
+                    elif event.text:
+                        summary = event.text   # the turn's final answer: authoritative
+        if not terminal:
+            failure = "Claude summary ended without a terminal result; no continuation was admitted"
         card.thinking_done()
+        selected = ledger.selected
+        if (app.backend is not backend or app.convo_id != conversation_id
+                or not selected or selected["id"] != segment["id"]):
+            failure = "conversation/session changed during compaction"
+        if held_for_original_segment():
+            failure = "New or held Claude input takes priority; its original session remains selected."
         if app._stop_requested:
             failure = "stopped"
     except Exception as exc:  # noqa: BLE001 - a failed compaction changes nothing
@@ -187,7 +219,32 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         await backend.close()
     except Exception as exc:  # noqa: BLE001 - reported; the new segment still owns the summary
         app._system(f"Claude cleanup after compaction: {exc}")
-    ledger.select_segment(segment.get("workspace") or launch_workspace(app), new=True, seed=seed)
+    selected = ledger.selected
+    if (app.backend is not backend or app.convo_id != conversation_id
+            or not selected or selected["id"] != segment["id"]):
+        app._system("Compaction owner changed during cleanup; no new session or continuation was selected.")
+        app._emit_compaction("failed", tokens_before=tokens_before,
+                             tokens_before_exact=tokens_before is not None)
+        return
+    if held_for_original_segment():
+        app._autocompact_failed_at = app.ctx_used
+        card.fail("deferred — original input/session retained")
+        app._system("Compaction deferred: new or held input arrived during cleanup. Its original session "
+                    "remains selected; idle delivery or /claude continue can resume it without transfer.")
+        app._emit_compaction("failed", tokens_before=tokens_before,
+                             tokens_before_exact=tokens_before is not None)
+        return
+    next_segment = ledger.select_segment(segment.get("workspace") or launch_workspace(app), new=True, seed=seed)
+    held_input = None
+    if resume is not None and resume[4] is not None:
+        # Proven unsent (preflight), never a delivered/RPC replay. Persist the
+        # fresh admission FIRST: cancellation now leaves /claude continue able
+        # to recover it, even when a new user message wins the scheduled race.
+        original = resume[3]
+        entry = original["_claude_entry"]
+        fresh = ledger.prepare(next_segment["id"], entry["content"], entry["profile"], entry["source"])
+        held_input = {**original, "_claude_entry": fresh, "_claude_segment": next_segment["id"]}
+        ledger.update_delivery(entry["id"], "terminal", stop_reason="not_sent_compaction")
 
     pair = [
         {"role": "user", "content": "[Summary of earlier conversation, which has been compacted away]\n\n" + seed},
@@ -227,12 +284,28 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     if app.settings.clear_screen_after_compact:
         app._clear_screen(note="Compacted into a summary; the next message starts a fresh Claude session "
                                "carrying it. The full transcript is still on disk in this conversation's file.")
-    if app.settings.wake_after_compact or handoff is not None:
-        # Through the submit door, not _wake_after_compact: a Claude turn must
-        # be ADMITTED (claude_turn.prepare_input) before it can be sent.
+    if resume is not None or app.settings.wake_after_compact or handoff is not None:
+        # Admission, never replay: delivered tools may already have effects.
+        # Bind this one-shot callback to the fresh segment and original input.
         from litetui.app import WAKE_AFTER_COMPACT
-        app.call_after_refresh(lambda: app._chat_running() or app._submit_text(
-            WAKE_AFTER_COMPACT, alt_chord=False, source="compact"))
+        item = resume[3] if resume is not None else active_input
+        continuation = (backend, conversation_id, next_segment["id"], item, None)
+        text = resume[4] if resume is not None and resume[4] is not None else WAKE_AFTER_COMPACT
+        fired = False
+
+        def continue_once():
+            nonlocal fired
+            if fired:
+                return
+            fired = True
+            if resume_current(app, continuation) and not app._chat_running():
+                if held_input is not None:
+                    app._pending_input.append(held_input)
+                    app._flush_pending_input()
+                else:
+                    app._submit_text(text, alt_chord=False, source="compact")
+
+        app.call_after_refresh(continue_once)
 
 
 def native_compaction(app, event) -> None:

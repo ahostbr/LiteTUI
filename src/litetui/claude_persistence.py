@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -198,15 +199,41 @@ class ClaudeLedger:
     def fix_system_prompt(self, segment_id: str, text: str) -> str:
         """Record the segment's system prompt the first time, and return the recorded one.
 
-        Fixed for the life of the segment, like its seed: every open and every resume
-        of its native session carries the same prefix, so the prompt cache holds, and
-        a store change reaches Claude at the next session rather than mid-session.
+        Fixed for the life of the segment, except the process-specific harness identity
+        (refresh_system_prompt_identity). Store and tool text stay fixed so a store
+        change reaches Claude at the next segment rather than mid-session.
         """
         segment = self._require_segment(segment_id)
         if not segment.get("system_prompt"):
             segment["system_prompt"] = text
             self._save()
         return segment["system_prompt"]
+
+    def refresh_system_prompt_identity(self, segment_id: str, sentence: str,
+                                       pattern: re.Pattern[str]) -> str:
+        """Repair only the identity in an existing prompt after seat registration.
+
+        Replace the first identity and remove duplicates; append a missing one.
+        Every byte outside those sentences stays recorded, including user edits,
+        the store snapshot and tool inventory. An unchanged identity does not write.
+        """
+        segment = self._require_segment(segment_id)
+        body = segment["system_prompt"]
+        matches = list(pattern.finditer(body))
+        if matches:
+            pieces: list[str] = []
+            end = 0
+            for i, match in enumerate(matches):
+                pieces.extend((body[end:match.start()], sentence if i == 0 else ""))
+                end = match.end()
+            pieces.append(body[end:])
+            fixed = "".join(pieces)
+        else:
+            fixed = body + "\n\n" + sentence
+        if fixed != body:
+            segment["system_prompt"] = fixed
+            self._save()
+        return fixed
 
     def note_cache(self, segment_id: str, used_at: float, model: str | None) -> None:
         """Remember when this segment last read or wrote Claude's prompt cache, and
@@ -335,6 +362,11 @@ class ClaudeLedger:
                     f"Claude ledger {self.file} has a malformed segment {id}"
                 )
             for entry in segment["entries"]:
+                # Legacy persisted origin, not a default for new submissions.
+                from litetui.legacy_goal_source import normalize_persisted_goal_source
+
+                if "source" in entry:
+                    entry["source"] = normalize_persisted_goal_source(entry["source"])
                 if entry.get("state") in IN_FLIGHT:
                     entry["uncertain_from"] = entry["state"]
                     entry["state"] = UNCERTAIN

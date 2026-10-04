@@ -12,6 +12,7 @@ import base64
 import copy
 import json
 import os
+import random
 import sys
 import time
 import urllib.request
@@ -36,8 +37,19 @@ class ProviderError(BackendError):
     """Safe to render/log: bounded sanitized diagnostics, never raw bodies/auth."""
 
 
-_CODEX_RETRY_DELAYS = (0.5, 1.0)
-_CODEX_TRANSIENT_STATUSES = {500, 502, 503, 504}
+class RetryableProviderError(ProviderError):
+    """A transient provider failure that may safely replay this model request."""
+
+
+_CODEX_RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 32.0)
+# Side calls (fold, card summary, goal verdict, compaction) show no retry
+# notice, so they get the first two ceilings only: at most 6 s of silence.
+_CODEX_SIDE_CALL_RETRIES = 2
+# 501 and 505 never recover on a retry (T1019 ruling).
+_CODEX_TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
+# Substrings of error.code / error.type; together they cover usage_limit,
+# usage_limit_reached, quota, insufficient_quota and *_credits_depleted.
+_CODEX_USAGE_LIMIT_MARKERS = ("usage_limit", "quota", "credits_depleted")
 _CONNECTION_FAILURES = (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
                         httpx.RemoteProtocolError)
 
@@ -64,6 +76,42 @@ async def _close_http(resource, provider: str, label: str, *, completed: bool = 
         if primary_error is None and not completed:
             raise failure from None
 
+def _provider_error(event: dict) -> dict:
+    response = event.get("response")
+    response = response if isinstance(response, dict) else {}
+    error = response.get("error") or event.get("error")
+    return error if isinstance(error, dict) else event
+
+
+def _provider_error_code(event: dict) -> str:
+    code = _provider_error(event).get("code")
+    return str(code).strip().lower() if isinstance(code, (str, int)) else ""
+
+
+def _is_rate_limit_429(raw: bytes) -> bool:
+    """A 429 retries only when its body NAMES a code or type and neither is a
+    usage limit. No body, an unparseable one, or one naming nothing fails at
+    once as before T1019: quota cannot be told from rate there, and a quota
+    failure reported after a minute of retries is the worse error."""
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    error = _provider_error(body) if isinstance(body, dict) else {}
+    names = [value.strip().lower() for key in ("code", "type")
+             if isinstance(value := error.get(key), str) and value.strip()]
+    return bool(names) and not any(
+        marker in name for name in names for marker in _CODEX_USAGE_LIMIT_MARKERS
+    )
+
+
+def _is_retryable_stream_failure(provider: str, event: dict) -> bool:
+    if provider != "codex":
+        return False
+    code = _provider_error_code(event)
+    return code == "server_is_overloaded"
+
+
 def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
     """Only known error fields cross the boundary, not input/output or headers.
 
@@ -84,8 +132,7 @@ def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
 
     response = event.get("response")
     response = response if isinstance(response, dict) else {}
-    error = response.get("error") or event.get("error")
-    error = error if isinstance(error, dict) else event
+    error = _provider_error(event)
     incomplete = response.get("incomplete_details") or event.get("incomplete_details")
     incomplete = incomplete if isinstance(incomplete, dict) else {}
     fields = [("code", error.get("code")), ("message", error.get("message")),
@@ -98,7 +145,7 @@ def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
 
 
 class ModelTransport(Protocol):
-    async def create(self, *, purpose: str = "turn", **kwargs): ...
+    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs): ...
 
 
 @dataclass(frozen=True)
@@ -183,6 +230,12 @@ def _metadata(message: dict, provider: str, model: str) -> list:
     return []
 
 
+_CODEX_MISSING_TOOL_OUTPUT = (
+    "[litetui transport] no tool output was recorded for this call; "
+    "outcome UNKNOWN. Verify any side effects before retrying."
+)
+
+
 def codex_request(kwargs: dict) -> dict:
     model = kwargs["model"]
     items, instructions = [], []
@@ -229,10 +282,27 @@ def codex_request(kwargs: dict) -> dict:
                     "arguments": call["function"]["arguments"],
                 }
             )
+    # Saved calls can lack outputs after a user stop or a process interruption.
+    # The missing result alone establishes neither the cause nor the outcome.
+    # Resume (and compaction) must not replay that dangling call to Responses:
+    # it rejects the whole request, even when later user turns follow the call.
+    # Repair only the outgoing items; keep the durable transcript unchanged and
+    # never imply the tool did not run or retry a potentially side-effecting call.
+    output_ids = {item["call_id"] for item in items
+                  if item.get("type") == "function_call_output"}
+    paired_items = []
+    for item in items:
+        paired_items.append(item)
+        if item.get("type") == "function_call" and item["call_id"] not in output_ids:
+            paired_items.append({
+                "type": "function_call_output",
+                "call_id": item["call_id"],
+                "output": _CODEX_MISSING_TOOL_OUTPUT,
+            })
     body = {
         "model": model,
         "instructions": "\n\n".join(instructions),
-        "input": items,
+        "input": paired_items,
         "store": False,
         "stream": True,
         "include": ["reasoning.encrypted_content"],
@@ -394,9 +464,13 @@ def _usage(raw, provider):
 
 
 class ResponseStream:
-    def __init__(self, response, client, provider, model, tools, *, retry=None, secrets=()):
+    def __init__(
+        self, response, client, provider, model, tools, *, retry=None,
+        secrets=(), hold_calls=False,
+    ):
         self.response, self.client = response, client
         self._retry = retry
+        self._hold_calls = hold_calls
         self._completed = False
         self._secrets = secrets
         self.provider, self.model = provider, model
@@ -410,30 +484,70 @@ class ResponseStream:
         finally:
             await _close_http(self.client, self.provider, "client", completed=self._completed)
 
+    def _interrupted(self):
+        return _logged_provider_error(
+            f"{self.provider.title()} connection was interrupted. "
+            "The response was not replayed; check any completed tool effects before retrying."
+        )
+
+    async def _resend(self, cause):
+        """Run the retry, and state a transport failure of the retry itself.
+
+        T0092 (was T1041). The retry is awaited inside an `except` handler of
+        __aiter__, and a sibling `except` clause never sees what a handler
+        raises - so a timeout out of the retry's send() (not in
+        _CONNECTION_FAILURES, so send() lets it through) left as a raw httpx
+        exception. Timeouts stay un-retried, as on the first attempt.
+        """
+        try:
+            return await self._retry(cause)
+        except httpx.HTTPError:
+            raise self._interrupted() from None
+
     async def __aiter__(self):
         # This is one completion request, not a turn replay. Once ANY chunk
-        # escapes (including reasoning/tool deltas), retries are forbidden.
+        # escapes, retries are forbidden. Text and reasoning escape live;
+        # tool-call chunks are held until response.completed (T1019), because
+        # a call is the one payload a replay could run twice. Overload arrives
+        # before any output, so it still retries.
         emitted = False
         try:
             while True:
+                held = []
                 try:
                     async for chunk in self._iter_response():
+                        if self._hold_calls and chunk.choices[0].delta.tool_calls:
+                            held.append(chunk)
+                            continue
+                        if self._completed:
+                            for call in held:
+                                yield call
+                            held.clear()
                         emitted = True
                         yield chunk
                     return
-                except _CONNECTION_FAILURES:
-                    if not emitted and self._retry is not None:
-                        self.response = await self._retry()
+                except RetryableProviderError as error:
+                    if emitted or self._retry is None:
+                        raise ProviderError(str(error)) from None
+                    try:
+                        self.response = await self._resend("overloaded")
+                    except ProviderError as exhausted:
+                        raise ProviderError(
+                            f"{exhausted} Last provider failure: {error}"
+                        ) from None
+                    continue
+                except httpx.HTTPError as error:
+                    if self._completed:
+                        # The answer is whole; a reset after response.completed
+                        # is a close failure, not a lost response (T1019 F3).
+                        _logged_provider_error(
+                            f"{self.provider.title()} response close failed ({type(error).__name__})."
+                        )
+                        return
+                    if isinstance(error, _CONNECTION_FAILURES) and not emitted and self._retry is not None:
+                        self.response = await self._resend("connection reset")
                         continue
-                    raise _logged_provider_error(
-                        f"{self.provider.title()} connection was interrupted. "
-                        "The response was not replayed; check any completed tool effects before retrying."
-                    ) from None
-                except httpx.HTTPError:
-                    raise _logged_provider_error(
-                        f"{self.provider.title()} connection was interrupted. "
-                        "The response was not replayed; check any completed tool effects before retrying."
-                    ) from None
+                    raise self._interrupted() from None
         finally:
             await self.close()
 
@@ -456,7 +570,10 @@ class ResponseStream:
                         raise TypeError("event must be an object")
                     kind = e.get("type", "")
                     if kind in ("error", "response.failed", "response.incomplete"):
-                        raise _stream_failure(self.provider, e, self._secrets)
+                        failure = _stream_failure(self.provider, e, self._secrets)
+                        if _is_retryable_stream_failure(self.provider, e):
+                            raise RetryableProviderError(str(failure)) from None
+                        raise failure
                     if self.provider == "codex":
                         idx = e.get("output_index", 0)
                         if kind == "response.output_text.delta":
@@ -695,8 +812,8 @@ class OAuthTransport:
             )
         return headers
 
-    async def create(self, *, purpose: str = "turn", **kwargs):
-        """`purpose` NAMES WHAT THIS CALL IS FOR, and it never reaches the wire.
+    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
+        """`purpose` and `retry_notice` name local behavior; neither reaches the wire.
 
         🔴 T821. A test counted `create` calls to assert how many COMPLETIONS
         one turn costs. It was right on 2026-09-12 (4e873f7) and red by
@@ -738,17 +855,29 @@ class OAuthTransport:
         # Mutable so a refreshed token is also scrubbed from later SSE errors.
         secrets = [credentials.access, credentials.account_id]
 
-        async def pause_for_retry(*, status=None):
+        budget = len(_CODEX_RETRY_DELAYS) if purpose == "turn" else _CODEX_SIDE_CALL_RETRIES
+
+        async def pause_for_retry(cause: str):
+            """`cause` names the failure in the notice and the final error:
+            "overloaded", "rate limited (HTTP 429)", "server error (HTTP n)",
+            "connection failed" or "connection reset"."""
             nonlocal retries
-            if self.provider != "codex" or retries >= len(_CODEX_RETRY_DELAYS):
-                if status is not None:
-                    message = f"{self.provider.title()} server error (HTTP {status}), retried {retries} times. Try again later."
-                else:
-                    message = (f"{self.provider.title()} connection was interrupted before output, "
+            provider = self.provider.title()
+            if self.provider != "codex" or retries >= budget:
+                if cause.startswith("connection"):
+                    message = (f"{provider} connection was interrupted before output, "
                                f"retried {retries} times. Check the connection and retry.")
+                else:
+                    message = f"{provider} {cause}, retried {retries} times. Try again later."
                 raise _logged_provider_error(message) from None
-            delay = _CODEX_RETRY_DELAYS[retries]
+            ceiling = _CODEX_RETRY_DELAYS[retries]
+            # Full jitter, uniform over [ceiling/2, ceiling], so clients do not
+            # synchronise. The 2/4/8/16/32 s ceilings and ~5 attempts are the
+            # T1019 card's spec (Orchestrator f43c6985), not the 0.154 reference's.
+            delay = random.uniform(ceiling / 2, ceiling)
             retries += 1
+            if retry_notice is not None:
+                retry_notice(f"{provider} {cause}; retrying in {max(1, round(delay))}s…")
             await asyncio.sleep(delay)
 
         # Only the agent loop's own requests belong to the turn. A side call
@@ -772,7 +901,7 @@ class OAuthTransport:
                 except _CONNECTION_FAILURES:
                     if self.provider != "codex":
                         raise
-                    await pause_for_retry()
+                    await pause_for_retry("connection failed")
                     continue
                 if response.status_code == 401:
                     await _close_http(response, self.provider, "response")
@@ -785,9 +914,19 @@ class OAuthTransport:
                     continue
                 if not response.is_success:
                     status = response.status_code
+                    retryable = self.provider == "codex" and status in _CODEX_TRANSIENT_STATUSES
+                    if retryable and status == 429:
+                        try:
+                            retryable = _is_rate_limit_429(await response.aread())
+                        except httpx.HTTPError:
+                            # The body was cut off: a connection failure, not a verdict.
+                            await _close_http(response, self.provider, "response")
+                            await pause_for_retry("connection reset")
+                            continue
                     await _close_http(response, self.provider, "response")
-                    if self.provider == "codex" and status in _CODEX_TRANSIENT_STATUSES:
-                        await pause_for_retry(status=status)
+                    if retryable:
+                        kind = "rate limited" if status == 429 else "server error"
+                        await pause_for_retry(f"{kind} (HTTP {status})")
                         continue
                     if status == 429:
                         raise ProviderError(
@@ -807,10 +946,10 @@ class OAuthTransport:
                     turn.update(key=self.turn_key, value=captured)
                 return response
 
-        async def retry_response():
+        async def retry_response(cause):
             # The parser has closed the failed response before invoking us.
             # Shares the budget with pre-header retries: no nested amplification.
-            await pause_for_retry()
+            await pause_for_retry(cause)
             return await send()
 
         try:
@@ -819,6 +958,7 @@ class OAuthTransport:
                 response, client, self.provider, kwargs["model"], kwargs.get("tools") or [],
                 retry=retry_response if self.provider == "codex" else None,
                 secrets=secrets,
+                hold_calls=self.provider == "codex",
             )
             return result if kwargs.get("stream", False) else await collect(result)
         except BaseException as error:
@@ -831,20 +971,24 @@ class OAuthTransport:
 
 
 def _refuse_unsupported_local_lm(backend, *, remote_marker=None):
-    """Fail-closed request-level guard for LM Studio's JIT-on-inference (WS3).
+    """WS3 request guard when its admission hook is explicitly installed.
 
     LM Studio JIT-loads a cold model into local VRAM on the FIRST inference
     request itself — not through our load path — so the request IS a load. A
     resident snapshot is not a safe bypass (the model can evict between the
     check and the request), and a safe per-request usage admission does not exist
-    yet. So a LOCAL LM Studio inference is refused BEFORE any HTTP, unconditionally
-    (cold, warm, or even once calibration exists), with an actionable reason and
-    NO stream/lifecycle wrapper. A trusted REMOTE endpoint (its VRAM is not ours)
-    passes; an UNKNOWN locality blocks. Other backends (llama, ninfer, codex) are
-    not request-JIT — their loads are gated at the load/spawn path — so they pass.
+    yet. With WS3 admission active, a LOCAL LM Studio inference is refused
+    before HTTP. Production leaves unfinished WS3 admission uninstalled, so
+    normal LM Studio turns continue. Explicit loads use the existing confirmation.
+    A trusted REMOTE endpoint passes; UNKNOWN locality blocks when WS3 is on.
     """
     from litetui.llm_backend import LMStudioBackend
     if not isinstance(backend, LMStudioBackend):
+        return
+    # The WS3 request guard belongs to WS3 admission. Production does not
+    # install that admission until its usage/lease resolver can admit a load;
+    # otherwise this provisional guard rejects even an existing local model.
+    if getattr(backend, "resource_admission", None) is None:
         return
     from litetui.resource_admission_install import classify_locality
     from litetui.model_resource_session import AdmissionBlocked
@@ -873,14 +1017,38 @@ class OpenAITransport:
         self.backend = backend
         self.remote_marker = remote_marker
 
-    async def create(self, *, purpose: str = "turn", **kwargs):
+    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
         _refuse_unsupported_local_lm(self.backend, remote_marker=self.remote_marker)
         kwargs = dict(kwargs)
         kwargs["messages"] = [
             {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
             for m in kwargs["messages"]
         ]
-        return await self.client.chat.completions.create(**kwargs)
+        try:
+            return await self.client.chat.completions.create(**kwargs)
+        except Exception as error:
+            # Some routed models advertise no capability and reject 'none' only
+            # at request time. Retry this precise refusal once, never a generic 400.
+            body = getattr(error, "body", None)
+            detail = str(body) if body is not None else str(error)
+            extra = kwargs.get("extra_body") or {}
+            mandatory = "Reasoning is mandatory for this endpoint and cannot be disabled"
+            if (purpose == "turn" or getattr(error, "status_code", None) != 400
+                    or mandatory not in detail or extra.get("reasoning_effort") != "none"):
+                raise
+            from litetui.turn_engine import side_call_reasoning_effort
+            backend = self.backend
+            levels_fn = getattr(backend, "reasoning_levels", None)
+            levels = levels_fn(kwargs["model"]) if callable(levels_fn) else ()
+            allowed = [level for level in levels if level != "none"] or ["low"]
+            kwargs["extra_body"] = {
+                **extra,
+                "reasoning_effort": side_call_reasoning_effort(
+                    "off", getattr(backend, "name", ""), kwargs["model"],
+                    supported_levels=allowed,
+                ),
+            }
+            return await self.client.chat.completions.create(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -988,7 +1156,8 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
                 finally:
                     await server.close()
             else:
-                result = await OAuthTransport(backend.name).create(**request)
+                # A subagent is not the parent turn: side-call budget, no turn state.
+                result = await OAuthTransport(backend.name).create(purpose="subagent", **request)
             msg = result.choices[0].message
             return {
                 "choices": [
@@ -1031,8 +1200,7 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
             return result.model_dump()
 
         return asyncio.run(routed())
-    # Local sync sidecall: refuse LM Studio JIT-on-inference BEFORE the urllib
-    # request (synchronous raise, no event loop needed).
+    # The WS3 JIT guard, when enabled, refuses before urllib.
     _refuse_unsupported_local_lm(backend)
     url = backend.base_url() if backend else app.settings.lm_host.rstrip("/") + "/v1"
     req = urllib.request.Request(

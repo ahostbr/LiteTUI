@@ -11,7 +11,7 @@ every pane on the canvas — terminals, browsers, editor, media. Use it instead
 of guessing what is on screen or reaching for desktop automation when a route
 exists.
 
-Source of truth: `C:\Projects\LiteSuite\apps\desktop\src\litesuite\services\agent-bridge.ts`
+Source of truth in your LiteSuite checkout: `apps/desktop/src/litesuite/services/agent-bridge.ts`
 — if a call misbehaves, read the handler before retrying blindly.
 
 ## Auth (every request)
@@ -75,7 +75,8 @@ $r = Invoke-WebRequest -Uri 'http://127.0.0.1:7423/browser/screenshot' -Method P
       -Body $body -UseBasicParsing
 $j = $r.Content | ConvertFrom-Json
 $b64 = $j.dataUrl.Substring(22)   # strip "data:image/png;base64," (exactly 22 chars)
-[IO.File]::WriteAllBytes('C:\Projects\LiteTUI\temp-working-dir\shot.png', [Convert]::FromBase64String($b64))
+$shot = Join-Path $env:TEMP 'litesuite-bridge-shot.png'
+[IO.File]::WriteAllBytes($shot, [Convert]::FromBase64String($b64))
 ```
 
 Then **open the file with `view_image`** — a screenshot you never look at is a

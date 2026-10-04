@@ -1,5 +1,34 @@
 # LiteTUI
 
+## Agent-local CLI control
+
+A registered seat from this build can advertise an authenticated loopback
+JSONL endpoint using the existing GUI management dispatcher. Interactive and
+`--rpc` seats share these operations; existing stdio clients are unchanged.
+This code half adds the server and capability reader only. The corresponding
+LiteHarness CLI adapter and live attachment proof are separate work; do not
+assume the installed CLI exposes these verbs. No spawn, resume, replacement,
+or reparenting operation is added to this endpoint.
+
+The per-seat token is kept under the seat's data root in an owner-only file
+(0600 on POSIX, protected user-only DACL on Windows). Presence advertises only
+its path and runtime identity, never the token. If protection or ownership
+cannot be established, attachment is unavailable rather than unauthenticated.
+This is **OS-user-local control**, not protection from another process running
+as the same user. No remote listener, automatic replacement or authority
+reparenting is provided. A timeout after dispatch has an ambiguous outcome:
+inspect state and do not automatically retry a mutating command.
+
+`litetui --capabilities --backend B --model M` reads only LiteTUI's existing
+pinned Claude catalogue or Codex model cache (no app, network, refresh or model
+startup). Unknown offline capability fails loudly; Haiku does not support
+`high`. Connected capability requests use the backend's catalogue and refuse
+unknown models rather than guessing. There is no second CLI-owned model list.
+Model load/context and engine start use their existing backend owners and VRAM
+guards; local attachment does not bypass them. Unsupported remote load/context
+or non-NInfer engine operations are errors, not successful no-ops. Positive
+model/engine operations require separate runtime authorization and validation.
+
 A terminal chat client and agent harness for **local** LLMs. Textual TUI,
 streaming, tool use, vision, per-conversation memory, and compaction.
 
@@ -75,7 +104,7 @@ need no Claude extra. Anthropic's permission requirements for offering subscript
 login in third-party products remain a separate distribution gate; a local smoke
 test is not distribution approval.
 
-**Claude owns its agent loop, tools, native context and automatic compaction.**
+**Claude owns its agent loop, tools and native context; LiteTUI owns compaction.**
 LiteTUI renders text/thinking and native activity, persists session references and
 input delivery, and supplies guarded host services through in-process MCP.
 Native calls pass mandatory `PreToolUse` policy checks; host calls pass the existing
@@ -89,8 +118,29 @@ LiteTUI dispatcher. Questions and approvals work in TUI and JSONL RPC.
 - Returning to Claude resumes the selected Claude segment. Other-provider history
   is **not** imported. Busy prompts are durably queued for their original segment.
 
+LiteTUI reads Claude's effective session window before sending, rather than treating
+all model IDs as 1M or using another model's cumulative usage. It pauses native tool
+turns at the configured auto-compaction threshold, drains the interrupted turn,
+summarises, and admits one continuation in the fresh session. Existing local-backend
+tool-loop pauses also resume once. User stop, newer input, and changed owners win;
+failed or uncertain turns are never automatically replayed. This interrupted-turn
+recovery does not enable the optional `wake_after_compact` preference: ordinary
+manual compaction still follows that preference.
+
+A failed window measurement holds the input unsent and keeps the session alive;
+`/claude continue` retries once the metadata service recovers. A preflight-held,
+non-RPC input remains prepared if summarising fails. On success, its original
+content, profile and source become a fresh prepared input, recoverable through
+`/claude continue` even if the automatic continuation is cancelled. Already delivered
+work receives a resume instruction, not a replay of the original prompt or tools.
+An RPC input with an `operation_id` is not transferred between sessions: when already
+above threshold, inspect `/claude status`, run `/claude new`, then resend as a **new**
+RPC operation ID. The old held input remains saved without replay; `/claude continue`
+cannot shrink that full session. A session already beyond its hard limit may also
+refuse the summary request; no success or automatic recovery is claimed in that case.
+
 Native agents/background launches, image attachments, host goal-loop followups,
-legacy subagent/summary calls, manual `/compact`, raw native slash passthrough and
+legacy subagent/summary calls, raw native slash passthrough and
 local loading/context/sampling controls are not enabled. Unsupported calls are
 refused rather than sent through an OpenAI fallback. Unknown context/usage remains
 unknown; cumulative cost is not described as per-turn cost.
@@ -184,8 +234,8 @@ raw history stays on disk behind the marker.
 |---|---|
 | `/new` `/clear` | start a new conversation (new folder on disk) |
 | `/system <text>` | set the system prompt |
-| `/model [n]` | show or switch model |
-| `/backend` | switch engine — LM Studio or llama.cpp. The conversation survives |
+| `/model [n\|name]` | show or switch this conversation's model; startup defaults stay unchanged |
+| `/backend [--default] [name]` | switch this conversation's backend; only `--default` also changes the startup default |
 | `/load` `/unload` | put a model into memory, or free it |
 | `/modelcfg` | per-model Info / Load / Inference screen (see below) |
 | `/think [level]` | `off · minimal · low · medium · high · xhigh · unset` |
@@ -345,11 +395,11 @@ in one window survives a theme change in the other. Env-sourced fields
 save: the file records what you *chose*, so unsetting a variable must not
 silently revert the knob.
 
-⚠️ **`background-tasks.json` is not merged this way yet.** It is a list store, and
-two instances editing tasks can still drop each other's rows (measured: A's row
-gone after B saves). Merging it needs a rule for deletion that a plain
-read-merge-write cannot give — a removed row would be resurrected from disk — so
-it is its own change, not a line here.
+⚠️ **`background-tasks.json` no longer lives in the data root.** Each conversation
+keeps its own at `.convos/<id>/background-tasks.json`, so two windows only meet in
+a store when they share a conversation (which the session lease forbids). The old
+shared file is read, never written, and a conversation copies its rows out of it
+when it is resumed; task output logs still live in `output/tasks/`.
 
 ⚠️ **The model ceiling is shared too.** The llama.cpp router holds at most
 `--models-max` models and that limit belongs to whichever instance started it, so
@@ -480,6 +530,22 @@ Instead it reads the maildir directly under one rule:
 Anything addressed elsewhere is left in `new/` exactly as found — unread,
 unmoved, unclaimed. Expired messages (past `ttl_minutes`) are cleared without
 delivery; the agent's own echo is skipped.
+
+### Approval replies and explicit authority changes
+
+A pending RPC approval widget also accepts an addressed inbox line
+`APPROVE appr-<id>` or `DENY appr-<id>` from the spawner recorded when that request
+started. It resolves once, never remembers permission; a wrong sender, addressee,
+unknown/expired id or duplicate cannot grant approval. The RPC host's own answer
+path is unchanged. Ordinary mail is still delivered as a turn.
+
+Spawner authority is captured from the launch identity envelope at process startup,
+not read back from registry metadata. Editing `spawned_by` in a presence row or
+re-registering a running seat does **not** grant another leader approval authority.
+After a leader restart, changing that authority is an explicit security action:
+use the supported `liteharness spawn --resume <id> --kill-old --spawned-by <newleader>`
+flow to start the resumed seat with the new launcher identity. There is no automatic
+parent-lineage redirect, registry takeover or fallback to a different approver.
 
 ## Tests
 

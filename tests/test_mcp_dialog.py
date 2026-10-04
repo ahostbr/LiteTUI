@@ -84,11 +84,9 @@ async def _settle(pilot, n: int = 8):
 
 
 async def _reach_idle(app, pilot, body, tries: int = 120):
-    """Advance to a GENUINELY idle app: materialise the staged conversation (the
-    real born step — store.pending stays a blocker, so we clear it honestly, not
-    by faking the flag) and pause until the boot infra (inbox seat monitor) has
-    left its blocking registration and the dialog's own gate is clear."""
-    app._materialise_convo()
+    """Advance to genuine idle without materialising the staged conversation:
+    wait until boot infra leaves its blocking registration and the dialog's
+    own gate is clear. Persistence staging is not user/model activity."""
     for _ in range(tries):
         if body._gate(app) is None:
             return
@@ -293,23 +291,29 @@ async def test_a_button_on_native_codex_is_refused(monkeypatch, tmp_path):
 
 # ── the narrow idle-infra classification, proven in the real mounted app ──────
 @pytest.mark.asyncio
-async def test_gate_blocks_before_the_conversation_is_materialised(monkeypatch, tmp_path):
-    """A fresh app's staged conversation is unborn (store.pending) — the gate
-    MUST block until boot completes, and the button must not mutate."""
+async def test_idle_staged_conversation_can_mutate_without_materialising(monkeypatch, tmp_path):
+    """Fresh-seat dialog actions reach the manager without creating a phantom convo."""
     app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
+    directory = app.store.convo_dir
+    srv = app.mcp.servers["web"]
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
-        assert body._gate(app) is not None            # blocked: store still pending
+        await _reach_idle(app, pilot, body)
+        assert app.store.pending is True
+        assert not directory.exists()
         body.query_one("#mcp-act-0-disconnect").press()
-        await _settle(pilot)
-        assert app.mcp.servers["web"].stopped == 0     # did NOT reach the manager
+        await _drain(app, pilot)
+        assert srv.stopped == 1
+        assert "web" not in app.mcp.servers
+        assert {row["name"] for row in app.mcp.describe()} == {"web"}
+        assert app.store.pending is True
+        assert not directory.exists()
 
 
 @pytest.mark.asyncio
 async def test_idle_background_phases_allow_a_mutation(monkeypatch, tmp_path):
-    """cron.monitor and the inbox poll are in their WRAPPED idle phase and the
-    conversation is materialised — the gate is clear even though those infra
-    workers exist and are nonterminal."""
+    """cron.monitor and the inbox poll are in their WRAPPED idle phase — the
+    gate is clear even though those infra workers exist and are nonterminal."""
     app = _app(monkeypatch, tmp_path, {"web": {"url": "http://h/mcp"}})
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)

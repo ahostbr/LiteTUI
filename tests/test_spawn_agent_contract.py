@@ -11,7 +11,7 @@ def test_defaults_headless_worktree_and_no_recursive_spawn():
     spec = validate_request(request(), parent_profile='autonomous', depth=0)
     assert spec.headed is False
     assert spec.workspace_mode == 'worktree'
-    assert spec.tool_profile == 'autonomous'
+    assert spec.tool_profile == 'interactive'   # T1049 2a: an autonomous parent delegates interactive
     assert spec.child_depth == 1
     assert spec.model == 'gpt-6-astra'
 
@@ -42,12 +42,13 @@ def test_handshake_checks_nonce_and_actual_effective_configuration():
     spec = validate_request(request(), parent_profile='autonomous', depth=0)
     expected = dict(child_id='child', conversation_id='convo', token='secret', workspace='C:/fixture')
     event = {'type': 'agent_ready', **expected, 'backend': 'codex', 'model': 'gpt-6-astra',
-             'tool_profile': 'autonomous', 'reasoning_effort': None, 'thinking_level': None,
+             'tool_profile': 'interactive', 'reasoning_effort': None, 'thinking_level': None,
              'pid': 123, 'process_created': 'stamp', 'status': 'ready'}
     assert validate_handshake(spec, event, **expected) is True
     for field, value in [('token', 'forged'), ('backend', 'ninfer'), ('model', 'fallback'),
                          ('conversation_id', 'wrong'), ('pid', True), ('process_created', ''),
-                         ('tool_profile', 'scheduled'), ('status', 'connecting')]:
+                         ('tool_profile', 'scheduled'), ('tool_profile', 'autonomous'),
+                         ('status', 'connecting')]:
         with pytest.raises(LaunchBlocked):
             validate_handshake(spec, {**event, field: value}, **expected)
 

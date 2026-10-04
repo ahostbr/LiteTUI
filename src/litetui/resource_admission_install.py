@@ -1,4 +1,4 @@
-"""Install fail-closed local-model admission on a backend, classified by LOCALITY.
+"""Install opt-in WS3 local-model admission, classified by LOCALITY.
 
 Admission gates a load that consumes THIS host's VRAM. Classification is by
 LOCALITY, never ownership — the two are independent, and ownership (a spawned
@@ -10,8 +10,8 @@ process handle) governs only unload authority, never the admit decision:
   engine we did not spawn still consumes this host's capacity.
 - an explicitly-marked (trusted runtime/config) REMOTE endpoint is passed through:
   host admission is not applicable and no host-memory coverage is claimed. There
-  is no production remote-marker config yet, so in production a non-loopback host
-  is UNKNOWN and blocks.
+  is no remote-marker config yet, so a non-loopback host is UNKNOWN and blocks
+  when this hook is installed.
 - anything else (UNKNOWN locality, an unknown backend shape, or ANY classification
   error) BLOCKS the load.
 
@@ -21,8 +21,8 @@ Sessions are PER-BACKEND: each backend gets its own ModelResourceSession over th
 app's single shared coordinator/owner/store, and the app keeps a registry of them
 for the eventual (separate) teardown slice — a backend never inherits another
 backend's session. This module does not compute an identity and does not release a
-lease: the resolver is injected and returns None today, so local loads block -- an
-explicit, actionable diagnostic state, NOT a production-ready admission claim.
+lease: its placeholder resolver returns None today, so local loads block when
+explicitly installed. LiteTUI's production app does not install this hook yet.
 """
 from __future__ import annotations
 

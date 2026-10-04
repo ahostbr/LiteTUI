@@ -42,14 +42,25 @@ def _host(policy, run, *, profile=INTERACTIVE, approve=ONCE):
         # 1146f68 (rpc T3) emits a tool_call at the seam; the double
         # predates it. Recorded, not swallowed — see test_tools_disabled.
         _rpc_emit=lambda data: None,
+        # T0132: `_execute_tool` births the conversation before a backgroundable
+        # tool starts; this double is a seat whose conversation already exists.
+        _materialise_convo=lambda: None,
         # T594 put a headless gate on the turn path; this double is not a
         # headless child, and getattr's default cannot help a SimpleNamespace
         # that raises rather than returning a default.
         _rpc=False,
+        # T1049-B: a seat nobody launched as an agent (confirm_route "hand"), so the
+        # modal this host answers is the door it reaches; the double's unknown
+        # launch would otherwise take the fail-safe "refuse" route.
+        _agent_launched=False,
         _active_tool_profile=profile,
         _dispatch_for=lambda _name: run,
         plugins=_Policies(policy),
         push_screen_wait=confirm,
+        # T1124 tracks visible approval waits; this headless policy host has
+        # no card, so the wait lifecycle has no UI work to perform.
+        _begin_wait=lambda owner, reason: None,
+        _end_wait=lambda token: None,
         # Standing allow/deny rules are read straight off settings, by the same
         # reasoning as tools_enabled above: a missing rule set must not mean
         # "no rules apply" by accident. Defaults are empty, so this host models
@@ -134,13 +145,19 @@ async def test_interactive_non_destructive_shell_call_needs_no_host_decision():
 
 
 @pytest.mark.asyncio
-async def test_interactive_destructive_shell_call_still_requires_one_host_decision():
+async def test_interactive_destructive_shell_call_still_requires_one_host_decision(monkeypatch, tmp_path):
     """The INTERACTIVE escape hatch: a DESTRUCTIVE-arg call still confirms,
     even though ordinary shell is allowed. classify_shell matches the
     destructive pattern and returns destructive_irreversible, which IS in
     INTERACTIVE's confirm set — so one approval of `git status` never
     authorises `rm -rf`.
+
+    T0246: the host's workspace is paths.ROOT, and a seat sitting in a linked
+    worktree OWNS that tree (its commands there no longer prompt). This test pins
+    the prompt for a workspace that is NOT the seat's worktree, so it must not
+    depend on where the repository happens to be checked out.
     """
+    monkeypatch.setattr(app_mod.paths, "ROOT", tmp_path)
     calls = []
     host, screens = _host(
         SHELL_POLICY,
@@ -157,14 +174,18 @@ async def test_interactive_destructive_shell_call_still_requires_one_host_decisi
 
 
 @pytest.mark.asyncio
-async def test_denied_modal_and_unattended_confirm_never_execute(tmp_path):
+async def test_denied_modal_and_unattended_confirm_never_execute(monkeypatch, tmp_path):
     """Was `..._and_scheduled_profile_never_execute`. The `scheduled` read-only
     floor is gone (the user 2026-09-24: "remove scheduled completely it makes no
     sense to me ... make interactive ask only for dangerous cmds any deletions
     or zip expansions weird procc runs that arent its tools and dangerous cmds
     threw PS and bash"). Its replacement is asserted here: an unattended turn
     KEEPS interactive -- ordinary calls run -- and only a CONFIRM, which nobody
-    can answer, is refused in words, with no modal."""
+    can answer, is refused in words, with no modal.
+
+    T0246: judged against a workspace that is not the seat's own worktree (see
+    the sibling test), so a checkout inside a linked worktree cannot change it."""
+    monkeypatch.setattr(app_mod.paths, "ROOT", tmp_path)
     called = []
     host, screens = _host(
         WRITE_POLICY,
@@ -200,8 +221,15 @@ async def test_denied_modal_and_unattended_confirm_never_execute(tmp_path):
     assert unattended_screens == []
 
 
-def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypatch):
-    """A scheduled turn resolves to AUTONOMOUS, ignoring both other sources.
+def test_a_cron_turn_runs_at_its_JOBS_recorded_level_whatever_the_conversation_is_set_to(monkeypatch):
+    """A scheduled turn resolves to the level its JOB recorded, ignoring both other
+    sources.
+
+    📌 T1082 (Owner, liteask a-a203e2c0: "we need new settings to set this at the
+    time u create the schedule ... it runs at the scheduled level") RENAMED IT A
+    THIRD TIME and supersedes T085's hardcode. The three-distinct-sources premise
+    below is what lets the assertion name the new origin: STRICT can only have
+    come from the job's field.
 
     ⚠️ RENAMED TWICE NOW, AND THE SECOND RENAME IS THE INTERESTING ONE.
     It was `test_cron_profile_rides_...` when `job.tool_profile` decided; then
@@ -235,7 +263,8 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
     assert job.tool_profile == STRICT, "premise: the job's own answer differs"
 
     settings = Settings()
-    # ASK-FIRST, so a delivered AUTONOMOUS can only have come from the hardcode.
+    # ASK-FIRST, so a delivered STRICT can only have come from the job (T1082),
+    # and a delivered AUTONOMOUS only from T085's retired hardcode.
     settings.tool_policy_profile = INTERACTIVE
     assert len({INTERACTIVE, AUTONOMOUS, STRICT}) == 3, "premise: all three differ"
 
@@ -246,9 +275,10 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Owner's own
     )
     app_mod.LiteTUI._fire_job(queued, job)
-    assert queued._pending_input[0]["tool_profile"] == AUTONOMOUS
+    assert queued._pending_input[0]["tool_profile"] == STRICT
 
     streamed = []
     idle = SimpleNamespace(
@@ -258,12 +288,13 @@ def test_a_cron_turn_is_AUTONOMOUS_whatever_the_conversation_is_set_to(monkeypat
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Owner's own
         _append=lambda msg: streamed.append(msg),
         _stream=lambda: streamed.append("stream"),
         _active_tool_profile=INTERACTIVE,
     )
     app_mod.LiteTUI._fire_job(idle, job)
-    assert idle._active_tool_profile == AUTONOMOUS
+    assert idle._active_tool_profile == STRICT
     assert streamed[-1] == "stream"
 
 
@@ -288,7 +319,9 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
     profile the scheduled path resolved.
     """
     monkeypatch.setattr(app_mod.sched_mod, "save", lambda *_a, **_k: None)
-    job = scheduler.Job(prompt="inspect", schedule="@daily")
+    # T1082: the job's own recorded level decides now, so this job records
+    # autonomous, in Owner's own seat (T1049: nowhere else runs it).
+    job = scheduler.Job(prompt="inspect", schedule="@daily", tool_profile=AUTONOMOUS)
 
     settings = Settings()
     settings.tool_policy_profile = INTERACTIVE  # the human asked to be asked
@@ -303,6 +336,7 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
         _append=lambda _msg: None,
         _stream=lambda: None,
         _active_tool_profile=INTERACTIVE,
+        _spawned_seat=False, _owner_seat=True,
     )
     app_mod.LiteTUI._fire_job(idle, job)
 
@@ -345,3 +379,45 @@ def test_midturn_queue_adopts_the_delivered_items_profile():
     assert app_mod.LiteTUI._deliver_queued_input(host)
     assert host._active_tool_profile == STRICT
     assert appended == [{"role": "user", "content": "scheduled"}]
+
+
+@pytest.mark.asyncio
+async def test_a_seat_s_own_worktree_command_runs_without_a_modal_but_a_stranger_s_does_not(monkeypatch, tmp_path):
+    """T0246 end to end through `_authorize_action`: the host's seat NAME is what
+    names which `.worktrees/<Seat>-*` tree is the seat's own."""
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    wt = main / ".worktrees" / "Seat-T1"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/Seat-T1\n", encoding="utf-8")
+    monkeypatch.setattr(app_mod.paths, "ROOT", main)
+    command = f"cd {str(wt).replace(chr(92), '/')} && rm -rf dist"
+
+    calls = []
+    host, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
+                          profile=INTERACTIVE, approve=DENIED)
+    host.seat = SimpleNamespace(name="Seat")
+    result, ok = await app_mod.LiteTUI._execute_tool(host, "bash", {"command": command})
+    assert ok and screens == [] and calls == [{"command": command}]
+
+    calls.clear()
+    stranger, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
+                              profile=INTERACTIVE, approve=DENIED)
+    stranger.seat = SimpleNamespace(name="Someone")
+    result, ok = await app_mod.LiteTUI._execute_tool(stranger, "bash", {"command": command})
+    assert not ok and len(screens) == 1 and calls == []
+
+
+@pytest.mark.asyncio
+async def test_configured_identity_reaches_backend_tool_door(tmp_path, monkeypatch):
+    from litetui import trusted_executables
+    exe = tmp_path / 'known' / 'python.exe'
+    exe.parent.mkdir()
+    exe.write_bytes(b'fixture, never executed')
+    monkeypatch.setattr(trusted_executables, 'is_installed_tool', lambda path: False)
+    calls = []
+    host, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or 'mocked')
+    host.settings.tool_trusted_interpreters = [str(exe)]
+    result, ok = await app_mod.LiteTUI._execute_tool(host, 'bash', {'command': f'"{exe}" script.py'})
+    assert (result, ok) == ('mocked', True)
+    assert len(calls) == 1 and screens == []

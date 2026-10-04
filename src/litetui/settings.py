@@ -51,17 +51,8 @@ ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max
 # editor. Authority and plan are intentionally included: they remain always
 # visible, but their position is still part of the user's left-to-right layout.
 FOOTER_ORDER_DEFAULT: tuple[str, ...] = (
-    "authority",
-    "plan",
-    "seat",
-    "think",
-    "bg",
-    "agents",
-    "convo",
-    "ctx",
-    "pct",
-    "cache",
-    "tps",
+    "pct", "ctx", "seat", "convo", "model", "think",
+    "cache", "tps", "telemetry", "bg", "agents", "authority", "plan",
 )
 
 
@@ -75,6 +66,26 @@ def normalize_footer_order(value: Any) -> list[str]:
     """
     if not isinstance(value, (list, tuple)):
         value = ()
+    # Older defaults were persisted and later fields were appended on load.
+    # Migrate those untouched prefixes, including their auto-appended fields,
+    # without changing a user's reordered preference.
+    former_defaults = (
+        ("authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "tps"),
+        ("authority", "plan", "seat", "think", "bg", "agents",
+         "convo", "ctx", "pct", "cache", "tps"),
+        # T1113's default, saved to the shared settings.json before "telemetry" (T1115).
+        ("pct", "ctx", "seat", "convo", "model", "think",
+         "cache", "tps", "bg", "agents", "authority", "plan"),
+    )
+    for former in former_defaults:
+        suffix = value[len(former):]
+        if (tuple(value[:len(former)]) == former
+                and all(isinstance(item, str) and item in FOOTER_ORDER_DEFAULT
+                        and item not in former for item in suffix)
+                and len(suffix) == len(set(suffix))):
+            value = FOOTER_ORDER_DEFAULT
+            break
     known = set(FOOTER_ORDER_DEFAULT)
     seen: set[str] = set()
     result: list[str] = []
@@ -267,12 +278,22 @@ class Settings:
     #: T517 — a FOREGROUND tool call still running after this many seconds is moved
     #: to a background task on its own (the result arrives later as a message). 0 = never.
     tool_auto_background_s: int = 30
+    #: T1049-B: seconds a locked seat waits for its SPAWNING agent to answer an
+    #: [APPROVAL] inbox message before the turn stops and is logged (Marquee
+    #: f4d49382: 600 s, no answer = deny). Read by approval_relay.timeout_s.
+    relay_approval_timeout_s: int = 600
     #: T538 — the model the subagent tool sends its child to when the call names
     #: none. None = the parent's own model. the user 2026-09-08 21:4x: "run it with
     #: the 27b using the 2B Q4 as its subagents" — a small model loaded beside
     #: the big one has its own LM Studio slots, so summaries and extractions run
     #: there without touching the parent's pool.
     subagent_model: str | None = None
+    #: One route shared by all instances; null follows the parent backend/model.
+    subagent_route: dict | None = None
+    #: null inherits global, {} explicitly follows parent, route overrides global.
+    subagent_route_override: dict | None = None
+    #: Expert-only local dispatch; never permits loading a model for a child.
+    allow_local_subagents: bool = False
     #: T640 — the model the `llm-tool-summ` fold's throwaway side call goes to.
     #: None = the model you are talking to, which is what it always did.
     #:
@@ -319,6 +340,10 @@ class Settings:
     #: before any allow rule: a refusal the human wrote down wins over
     #: everything. No UI writes this yet -- settings.json only, by hand.
     tool_deny: list[str] = field(default_factory=list)
+    #: Human-configured exact absolute interpreter paths; conversation-scoped.
+    #: Empty by default. No basename/directory trust and no linked paths. Stored
+    #: in the conversation execution settings; never inferred from venv metadata.
+    tool_trusted_interpreters: list[str] = field(default_factory=list)
     #: Per-tool denylist by tool NAME — the boxes unticked in `/tools`.
     #: A DENYLIST and not an allowlist, mirroring `mcp_disabled_servers`: with
     #: an allowlist a newly registered tool is INVISIBLE until someone notices
@@ -486,6 +511,14 @@ class Settings:
     footer_show_tps: bool = True
     #: Claude prompt-cache health and time left on it, e.g. "cache warm 97% 52m" (T911).
     footer_show_cache: bool = True
+    #: Live machine meters on footer line 2. OFF by default (Owner 2026-09-27: "turn this off in
+    #: light UI though. Uh, make a setting to toggle that"); /settings and the meters:on/off click
+    #: turn it on.
+    footer_task_manager: bool = False
+    #: Keyboard-shortcut hints in the footer (^G view · ^B select · ^E open, and the
+    #: binding row). OFF by default (Owner 2026-09-30: "stop showing these keyboard
+    #: shortcuts by default make it a toggle and set it off for now").
+    footer_show_key_hints: bool = False
     #: Footer item ids in left-to-right order. Visibility remains controlled by
     #: the switches above; omitted/unknown ids are repaired on load/save.
     footer_order: list[str] = field(
@@ -561,6 +594,9 @@ def _coerce(name: str, raw: Any, current: Any) -> Any:
         return current
     if name == "tool_policy_profile" and raw == "scheduled":
         return _selectable_profile(raw)  # removed 2026-09-24; migrates on every read
+    if name == "tool_trusted_interpreters":
+        # Unlike ordinary string lists, never coerce malformed input into trust.
+        return raw.copy() if isinstance(raw, list) and all(isinstance(x, str) for x in raw) else []
     t = str(ftype)
     try:
         if raw is None:
@@ -590,6 +626,13 @@ def load(root: Path | None = None) -> Settings:
     """Defaults, then the settings file, then the environment."""
     s = Settings()
     p = settings_path(root)
+    from litetui.subagent_routing import migrate_global_file
+    try:
+        migrate_global_file(p)
+    except (OSError, ValueError):
+        # Startup retains the existing tolerant-load contract. Child dispatch
+        # uses SettingsService's strict live read and reports malformed routing.
+        pass
     if p.exists():
         try:
             data = json.loads(p.read_text(encoding="utf-8"))

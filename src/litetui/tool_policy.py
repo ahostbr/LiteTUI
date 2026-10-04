@@ -11,18 +11,13 @@ become side effects of the operation they are supposed to guard.
 """
 from __future__ import annotations
 
-import re
 import json
+import re
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
 
-# THE MODULE, not the name. `from litetui.paths import CONVO_DIR` binds at
-# import time, and the store is REDIRECTED by many tests (and could be by any
-# future caller) — a snapshot would silently classify against a directory that
-# is no longer the store. Same late-binding trap as the profile choices.
-from litetui import paths
-
+from litetui import deny_floor, worktree_scope
 
 # The required vocabulary.  A tool may carry more than one capability: shell
 # execution is process_execution, and a command that formats a disk is also
@@ -84,9 +79,13 @@ class ToolPolicy:
     classify_args: Classifier | None = None
     confirm_always: bool = False
 
-    def classify(self, args: Mapping[str, object], workspace: Path) -> frozenset[str]:
+    def classify(self, args: Mapping[str, object], workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> frozenset[str]:
         caps = set(self.capabilities)
-        if self.classify_args is not None:
+        if self.classify_args is classify_shell:
+            caps.update(classify_shell(args, workspace, shell=shell, trusted_interpreters=trusted_interpreters))
+        elif self.classify_args is classify_fleet_mcp:
+            caps.update(classify_fleet_mcp(args, workspace, trusted_interpreters=trusted_interpreters))
+        elif self.classify_args is not None:
             caps.update(self.classify_args(args, workspace))
         unknown = caps - CAPABILITIES
         if unknown:
@@ -129,17 +128,16 @@ class PolicyDecision:
         return self.action == CONFIRM
 
 
-# Interactive asks ONLY for the danger table (the user, 2026-09-24: "make
-# interactive ask only for dangerous cmds any deletions or zip expansions weird
-# procc runs that arent its tools and dangerous cmds threw PS and bash").
-# Its own tools, file writes anywhere, desktop control and ordinary commands run
-# without asking; `destructive_irreversible` is what DANGER_TABLE (and a
-# pccontrol launch, and an MCP tool's undeclared effects) classify as dangerous.
+# T0116: default/interactive asks only for destructive shell actions. Read-only
+# ordinary commands and program launches never ask merely because of their
+# executable's location. Undeclared MCP effects retain their separate gate.
+# Rare/unrepresented shell forms ask (Owner: "Ship, rare shapes ask").
+# Explicit human-selected strict supervision is deliberately MORE asking.
 INTERACTIVE_PROFILE = ToolProfile(
     INTERACTIVE,
     allow=frozenset(CAPABILITIES - {DESTRUCTIVE_IRREVERSIBLE}),
     confirm=frozenset({DESTRUCTIVE_IRREVERSIBLE}),
-    summary="acts freely, asks before deleting, extracting, launching programs or dangerous commands",
+    summary="ordinary read-only commands never ask; destructive actions and rare/unrepresented shell forms ask",
 )
 
 # Strict supervision confirms every sensitive action, including ordinary
@@ -155,7 +153,7 @@ STRICT_PROFILE = ToolProfile(
         DESKTOP_CONTROL,
         DESTRUCTIVE_IRREVERSIBLE,
     }),
-    summary="confirm every command and sensitive action",
+    summary="extra human-selected supervision: confirms even read-only commands and sensitive actions",
 )
 
 #: Everything, unattended, no questions. The point of the row: the user killed his
@@ -170,7 +168,8 @@ STRICT_PROFILE = ToolProfile(
 #: meaning what it says.
 #:
 #: ⚠️ THIS PROFILE HAS NO CONFIRM STEP OF ITS OWN. A standing `deny` rule
-#: still wins — the deny gate runs before the profile is consulted at all.
+#: still wins — the deny gate runs before the profile is consulted at all —
+#: and so does the deny floor (deny_floor.py, T1026), which no rule can lift.
 #:
 #: Autonomous is intentionally the unattended, no-approval profile. The
 #: interactive profile owns confirmation of sensitive capabilities; autonomous
@@ -245,6 +244,18 @@ INBOX_TURN_RULE = (
     "launching programs that aren't your tools, dangerous system commands -- "
     "will be refused this turn. Leave those for a person and say so.]"
 )
+
+
+def inbox_turn_rule(route: str, spawner_id: str | None = None) -> str:
+    """Tell an inbox-woken seat where its existing CONFIRM route actually leads."""
+    if route in ("spawner", "host"):
+        destination = spawner_id if route == "spawner" and spawner_id else "your host"
+        return (
+            "[This turn came from the inbox; nobody is at the keyboard. Act normally. "
+            "Anything that needs approval will be sent to " + destination +
+            " for approval; attempt it and wait for the answer.]"
+        )
+    return INBOX_TURN_RULE
 
 
 def unattended_refusal(decision: PolicyDecision) -> str:
@@ -328,8 +339,12 @@ def evaluate(
     *,
     tool_name: str = "",
     active_conversation: Path | None = None,
+    active_agent_memory_root: Path | None = None,
     always_allow: frozenset[str] = frozenset(),
     deny: frozenset[str] = frozenset(),
+    shell: str | None = None,
+    seat_name: str | None = None,
+    trusted_interpreters: object = (),
 ) -> PolicyDecision:
     """Return the host action for one proposed tool call.
 
@@ -355,10 +370,23 @@ def evaluate(
     That is the fail-safe direction.
     """
     profile = PROFILES.get(profile_name)
-    capabilities = policy.classify(args or {}, Path(workspace).resolve())
+    capabilities = policy.classify(args or {}, Path(workspace).resolve(), shell=shell,
+                                   trusted_interpreters=trusted_interpreters)
     if policy.classify_args is classify_write:
-        capabilities = frozenset(policy.capabilities) | frozenset(classify_write(args or {}, Path(workspace).resolve(), active_conversation=active_conversation))
+        capabilities = frozenset(policy.capabilities) | frozenset(classify_write(
+            args or {}, Path(workspace).resolve(), active_conversation=active_conversation,
+            active_agent_memory_root=active_agent_memory_root))
     names = ", ".join(sorted(capabilities))
+    # 🔴 THE DENY FLOOR RUNS FIRST: before the profile, before any standing
+    # rule, for every turn source. Every turn (typed, inbox, cron, goal loop,
+    # RPC) reaches its tools through this function, so the floor holds
+    # whichever profile string the turn carries (T1027: an inbox turn and a
+    # typed turn can disagree on it) and adds no prompt: it only refuses.
+    # Only the core PowerShell command route proves its interpreter. An MCP
+    # name / agent-supplied shell field must never gain this exemption.
+    floor_shell = "powershell" if tool_name == "powershell" and policy is SHELL_POLICY else None
+    if floor := _floor(args, workspace, shell=floor_shell):
+        return PolicyDecision(DENY, profile_name, capabilities, floor, danger=DELETION)
     if profile is None:
         return PolicyDecision(
             DENY,
@@ -399,7 +427,24 @@ def evaluate(
                 capabilities,
                 f"allowed by a standing rule for {key}",
             )
-        what = _danger_of(policy, args or {}, Path(workspace).resolve())
+        # T0246: a shell command confined to the seat's OWN worktree needs no human on
+        # `interactive` (Owner: "cmds inside its worktree that arent removal of the
+        # tree... it should never need approval"). After the floor and the standing
+        # rules above, so neither can be bypassed by it; and interactive only.
+        if (profile.name == INTERACTIVE and policy.classify_args is classify_shell
+                and _powershell_output_allows(args or {}, Path(workspace).resolve(), seat_name, shell)):
+            return PolicyDecision(
+                ALLOW, profile.name, capabilities,
+                "allowed: output confined to the seat's own worktree/card scratch or system TEMP",
+            )
+        if (profile.name == INTERACTIVE and policy.classify_args is classify_shell
+                and _own_worktree_allows(args or {}, Path(workspace).resolve(), seat_name, shell)):
+            return PolicyDecision(
+                ALLOW, profile.name, capabilities,
+                "allowed: confined to the seat's own worktree",
+            )
+        what = _danger_of(policy, args or {}, Path(workspace).resolve(), shell=shell,
+                          trusted_interpreters=trusted_interpreters)
         return PolicyDecision(
             CONFIRM,
             profile.name,
@@ -410,12 +455,13 @@ def evaluate(
     return PolicyDecision(ALLOW, profile.name, capabilities, f"allowed: {names}")
 
 
-def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path) -> str:
+def _danger_of(policy: ToolPolicy, args: Mapping[str, object], workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> str:
     """Which DANGER_TABLE class a confirm is for, in words a person reads."""
     if policy.classify_args is classify_shell:
-        return danger(str(args.get("command") or ""), workspace) or ""
-    if policy.classify_args is classify_pccontrol:
-        return FOREIGN_PROCESS
+        return danger(str(args.get("command") or ""), workspace, shell=shell,
+                      trusted_interpreters=trusted_interpreters) or ""
+    if policy.classify_args is classify_fleet_mcp:
+        return _fleet_danger(args, workspace, trusted_interpreters) or ""
     if policy.confirm_always:
         return UNDECLARED
     return ""
@@ -459,24 +505,37 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def classify_write(args: Mapping[str, object], workspace: Path, *, active_conversation: Path | None = None) -> Iterable[str]:
-    """Three answers, not two: the agent's own store, the workspace, elsewhere.
+def classify_write(args: Mapping[str, object], workspace: Path, *,
+                   active_conversation: Path | None = None,
+                   active_agent_memory_root: Path | None = None) -> Iterable[str]:
+    """Narrow host-owned memory permission, never authority from tool args.
 
-    🔴 THE SELF-STORE CHECK MUST COME FIRST, because `.convos` lives INSIDE the
-    workspace — asking "is it in the workspace?" first would answer yes for
-    every self-store write and the third case would be unreachable.
-
-    The host supplies the active conversation directory. Only its memory index,
-    soul, handoff, and memories subtree qualify; unknown context grants no
-    self-store exception. Configuration and transcript remain ordinary writes.
-
-    Escapes are handled by `_resolve_path`, which resolves before either test:
-    `.convos/<id>/../../src/x.py` resolves out of the store and is classified
-    as the workspace write it actually is.
+    An agent memory root comes only from the host's validated owned AgentSession.
+    When supplied it REPLACES legacy conversation memory permission; transcripts,
+    settings, catalog and sibling conversations never become SELF_STORE. Absent
+    agent context preserves the existing legacy conversation behavior.
+    Linked/reparse agent memory paths fail closed, including ancestors. Resolution
+    and ownership checks are not a TOCTOU filesystem sandbox.
     """
     target = _resolve_path(args.get("path"), workspace)
-    if active_conversation is not None:
+    if active_agent_memory_root is not None:
+        from litetui.agent_store import StoreError, _unlinked
+        try:
+            own = _unlinked(Path(active_agent_memory_root)).resolve()
+            raw = Path(str(args.get("path") or "")).expanduser()
+            checked = _unlinked(raw if raw.is_absolute() else workspace / raw)
+            try:
+                if checked.lstat().st_nlink > 1:
+                    raise StoreError("Hardlinked agent memory is not self-store")
+            except FileNotFoundError:
+                pass
+        except (OSError, StoreError):
+            return (WORKSPACE_WRITE,) if _inside(target, workspace) else (EXTERNAL_WRITE,)
+    elif active_conversation is not None:
         own = Path(active_conversation).resolve()
+    else:
+        own = None
+    if own is not None:
         if target in {own / name for name in ('memory.md', 'soul.md', 'handoff.md')} or _inside(target, own / 'memories'):
             return (SELF_STORE,)
     return (WORKSPACE_WRITE,) if _inside(target, workspace) else (EXTERNAL_WRITE,)
@@ -488,6 +547,23 @@ def classify_write(args: Mapping[str, object], workspace: Path, *, active_conver
 #: that are also ordinary words need it.
 _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
                  r"|\s(?:-c|-command|/c)\s+[\"'])")
+
+#: T1098 — reuse the SAME command-position definition as every `_C` danger
+#: row. A shell can execute 'format', "rm" or \rm; only the executable token
+#: at a command position is unwrapped, never a quoted argument to printf/echo.
+_QUOTED_COMMAND = re.compile(
+    r"(?ix)" + _CMD_POSITION
+    + r"(?:(?P<slash>\\)(?P<bare>[a-z0-9][\w.-]*)|"
+    + r"(?P<quote>['\"])(?P<quoted>[a-z0-9][\w.-]*)(?P=quote))(?=[\s;&|()]|$)"
+)
+
+
+def _unwrap_command_verbs(command: str) -> str:
+    def unwrap(match: re.Match[str]) -> str:
+        prefix_group, verb_group = ("slash", "bare") if match.group("slash") else ("quote", "quoted")
+        return command[match.start():match.start(prefix_group)] + match.group(verb_group)
+
+    return _QUOTED_COMMAND.sub(unwrap, command)
 
 #: 🔴 EVERY MATCH IS NOW AN UNSKIPPABLE PROMPT, so this pattern is held to
 #: BOTH polarities. Before the floor a false positive cost an extra confirm
@@ -501,6 +577,11 @@ _CMD_POSITION = (r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*"
 #:   `npm run format:check`, `git log --format=%h` and `printf 'format'`.
 #:   `format` now has to be at a command position; a disk wipe is
 #:   `format C:`, never the third word of a script name.
+#:
+#:   T1094, Owner 1ed3b84: interactive asks only for dangerous commands.
+#:   Python's `\b` accepts the hyphen in PowerShell Verb-Noun names as an end
+#:   of word: Format-Table, Kill-Process and Del-Item were false prompts.
+#:   Bare command names must end before both word characters AND hyphens.
 #:
 #:   MISSES, FIXED. `rm -rf` with no target (the trailing `\s+` made the
 #:   argument mandatory) and the long flags `rm --recursive --force`. Both
@@ -554,13 +635,14 @@ _C = _CMD_POSITION
 #: ordinary command (the `format` lesson above).
 DELETION = "deletion"
 ARCHIVE = "archive expansion"
-FOREIGN_PROCESS = "launching a program that isn't one of its tools"
+UNKNOWN_SHAPE = "an unrepresented shell construct"
+OVERWRITE = "file overwrite"
 DANGEROUS = "a dangerous system command"
 UNDECLARED = "a tool whose effects aren't declared"
 
 DANGER_TABLE: tuple[tuple[str, str], ...] = (
     # ── A. deletion ─────────────────────────────────────────────────────────
-    (DELETION, _C + r"(?:rm|del|erase|rmdir|rd|ri|unlink|shred)\b"),
+    (DELETION, _C + r"(?:rm|del|erase|rmdir|rd|ri|unlink|shred)(?![\w-])"),
     (DELETION, r"\b(?:remove-item|rimraf)\b"),
     (DELETION, (r"\bgit\s+(?:clean\b|rm\b(?![^;&|]*--cached)|worktree\s+remove\b"
                 r"|branch\s+(?:[^;&|]*\s)?(?:-[a-z]*d[a-z]*|--delete)\b)")),
@@ -576,17 +658,13 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
     (ARCHIVE, _C + r"(?:gzip|xz|bzip2|zstd)\s+(?:[^;&|]*\s)?-[a-z]*d"),
     (ARCHIVE, _C + r"expand(?:\.exe)?\s+[^;&|]*(?:-f:|\.cab\b)"),
     (ARCHIVE, r"\b(?:extractall|unpack_archive)\s*\("),
-    # ── C. launching a program that isn't one of its tools ───────────────────
-    #    (plus the workspace-aware path/script check in `danger()` below)
-    (FOREIGN_PROCESS, r"\b(?:start-process|invoke-item)\b"),
-    (FOREIGN_PROCESS, _C + r"(?:saps|ii|start)\s"),
-    (FOREIGN_PROCESS, _C + r"cmd(?:\.exe)?\s+/[ck]\b"),
-    (FOREIGN_PROCESS, r"(?:^|[;|(]\s*)&\s*[\"'$]"),
-    (FOREIGN_PROCESS, _C + r"(?:pwsh|powershell)(?:\.exe)?\s+(?:[^;&|]*\s)?-f(?:ile)?\s"),
-    (FOREIGN_PROCESS, _C + r"(?:wscript|cscript|mshta|rundll32|regsvr32|msiexec|runas|psexec(?:64)?)\b"),
-    (FOREIGN_PROCESS, r"\bschtasks\b[^;&|]*/create\b|\bregister-scheduledtask\b"),
+    # Actual file writers, not mere executable launches.
+    (OVERWRITE, _C + r"(?:set-content|add-content|out-file|tee|new-item|copy-item|move-item|cp|mv|copy|move|sed\s+-i)(?![\w-])"),
     # ── D. dangerous system commands ─────────────────────────────────────────
-    (DANGEROUS, _C + r"format(?:\.com)?\b"),
+    # Install/registration writes are effects, not executable-location gates.
+    (DANGEROUS, r"\bschtasks\b[^;&|]*/create\b|\bregister-scheduledtask\b"),
+    (DANGEROUS, _C + r"(?:msiexec\s+/(?:i|x|a|j)|regsvr32\b)"),
+    (DANGEROUS, _C + r"format(?:\.com)?(?![\w-])"),
     (DANGEROUS, r"\b(?:diskpart|bcdedit|takeown)\b|\bmkfs(?:\.[a-z0-9]+)?\b"),
     (DANGEROUS, _C + r"dd\s+(?:[^;&|]*\s)?of="),
     (DANGEROUS, r"\bvssadmin\s+delete\b|\bcipher(?:\.exe)?\s+/w\b|\bwevtutil\s+cl\b|\bclear-eventlog\b"),
@@ -598,9 +676,9 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
     (DANGEROUS, r"\b(?:curl|wget)\b[^;]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b"),
     (DANGEROUS, r"\b(?:iex|invoke-expression)\b"),
     (DANGEROUS, r"\b(?:shutdown|restart-computer|stop-computer)\b"),
-    (DANGEROUS, _C + r"(?:kill|pkill|killall|taskkill|tskill)\b|\bstop-process\b"),
-    (DANGEROUS, r"\bgit\s+push\b[^;&|]*(?:\s--force(?:-with-lease)?\b|(?-i:\s-f\b)|\s\+\S)"),
-    (DANGEROUS, r"\bgit\s+(?:reset\s+--hard\b|checkout\s+--\s|filter-branch\b|filter-repo\b|reflog\s+expire\b)"),
+    (DANGEROUS, _C + r"(?:kill|pkill|killall|taskkill|tskill)(?![\w-])|\bstop-process\b"),
+    (DANGEROUS, r"\bgit\s+push\b"),
+    (DANGEROUS, r"\bgit\s+(?:reset\b|checkout\b[^;&|]*\s--\s|filter-branch\b|filter-repo\b|reflog\s+expire\b)"),
     (DANGEROUS, (r"\bgit\s+restore\b(?:"
                  r"[^;&|]*(?:--worktree\b|(?-i:\s-W\b))|"
                  r"(?![^;&|]*(?:--staged\b|(?-i:\s-S\b)))\s+[^;&|]*\S"
@@ -611,37 +689,637 @@ DANGER_TABLE: tuple[tuple[str, str], ...] = (
 )
 _DANGER = tuple((label, re.compile(r"(?ix)" + pattern)) for label, pattern in DANGER_TABLE)
 
-#: A program run BY PATH, or an interpreter running a script FILE. Ordinary when
-#: the file is inside the workspace (Sentinel b362b4ed: "his project scripts
-#: aren't weird"); class C when it is anywhere else.
-_PATH_RUN = re.compile(
-    r"(?ix)" + _C + r"(?:&\s*)?[\"']?(?P<path>(?:\.{1,2}[\\/]|[a-z]:[\\/]|[\\/]|~[\\/])[^\s;&|\"']+)")
-_SCRIPT_RUN = re.compile(
-    r"(?ix)" + _C + r"(?:python3?|py|node|bun|deno|ruby|perl|php|bash|sh|zsh|pwsh|powershell)(?:\.exe)?"
-    r"(?:\s+-{1,2}[a-z][\w-]*)*\s+[\"']?(?P<path>[^\s;&|\"']+\.(?:py|js|mjs|cjs|ts|rb|pl|php|sh|bash|ps1))\b")
+# This scanner is a conservative VIEW for the danger table, not a shell parser.
+# Inert single-quoted arguments disappear, separators in double-quoted data
+# cannot manufacture command positions, but $() and backticks within double
+# quotes are recursively scanned as executable command text. Unknown/unclosed
+# quoting returns the original span (fail CLOSED, never grant it data status).
+# Unknown shell identity retains the conservative mixed-shell interpretation.
+_REAL_COMMAND = re.compile(
+    r"(?ix)(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+(?:-\S+\s+)*|\s(?:-c|-command|/c)\s+)$"
+)
+_COMMAND_PAYLOAD = re.compile(r"(?i)(?:^|\s)(?:-c|-command|/c)\s+$")
 
 
-def _outside_workspace(raw: str, workspace: Path) -> bool:
-    msys = re.match(r"^/([a-z])/(.*)$", raw, re.IGNORECASE)  # git-bash /c/Projects -> C:/Projects
-    if msys:
-        raw = f"{msys.group(1)}:/{msys.group(2)}"
-    return not _inside(_resolve_path(raw, workspace), Path(workspace).resolve())
+# Only a literal Python -c argument gets a separate path-launch view. This
+# recognizes the outer argv spelling, not Python syntax or inner launch targets.
+_PYTHON_PAYLOAD = re.compile(
+    r"(?ix)(?:^|[;&|(]\s*)(?:&\s*)?"
+    r"(?:[\"'][^\"']*[/\\]python(?:3(?:\.\d+)?)?(?:\.exe)?[\"']"
+    r"|(?:[^\s\"';&|]*[/\\])?python(?:3(?:\.\d+)?)?(?:\.exe)?)"
+    r"\s+(?:(?:-X\s+[^\s]+|-W\s+[^\s]+|-[bBEsSuUqIO]+)\s+)*-c\s+$"
+)
+# No inner-language parser: process APIs/aliases remain conservative confirms.
+_PYTHON_PROCESS = re.compile(
+    r"\bsubprocess\b|\bos\s*\.\s*(?:system|popen|spawn\w*|exec\w*|startfile)\b"
+    r"|\bimport\s+os\s+as\b|\bfrom\s+os\s+import\b"
+)
 
 
-def danger(command: str, workspace: Path) -> str | None:
+def _command_view(command: str, shell: str | None = None, *, path_launch: bool = False) -> str:
+    def scan(start: int, end: str = "", double: bool = False, depth: int = 0) -> tuple[str, int, bool]:
+        # Beyond this bound, stop masking: unknown nesting is command text,
+        # never a reason to silently allow a dangerous word in an argument.
+        if depth >= 32:
+            return command[start:], len(command), False
+        out: list[str] = []
+        i = start
+        while i < len(command):
+            ch = command[i]
+            if ch == "\\" and i + 1 < len(command) and shell != "powershell":
+                # Bash escapes the next character; unknown shell identity
+                # conservatively leaves a double-quoted span unmasked.
+                if double and command[i + 1] == '"' and shell != "bash":
+                    return "".join(out) + command[i:], len(command), False
+                out.append("  " if double else command[i:i + 2])
+                i += 2
+                continue
+            if ch == "`" and shell == "powershell":
+                # PowerShell backtick escapes one character, not a command.
+                if i + 1 < len(command):
+                    out.append("  " if double else command[i:i + 2])
+                    i += 2
+                else:
+                    out.append(ch)
+                    i += 1
+                continue
+            if end and ch == end:
+                return "".join(out), i + 1, True
+            if ch == "'" and not double:
+                payload = bool(_COMMAND_PAYLOAD.search("".join(out)))
+                bash_ansi_command = i > 0 and command[i - 1] == "$" and _REAL_COMMAND.search("".join(out[:-1]))
+                j = i + 1
+                while j < len(command) and command[j] != "'":
+                    # Bash single quotes have NO escape syntax: backslash is literal.
+                    j += 1
+                if j == len(command):
+                    return "".join(out) + command[i:], len(command), False
+                quoted = command[i:j + 1]
+                if payload and path_launch and _PYTHON_PAYLOAD.search("".join(out)):
+                    # Single-quoted shell payload has no executable substitutions.
+                    out.append(" " * len(quoted))
+                elif payload:
+                    out.append('"' + command[i + 1:j] + '"')  # quoted -c / -Command is executable code
+                elif bash_ansi_command:
+                    out.append(";" + command[i + 1:j])  # bash $'rm' can name a command
+                elif _REAL_COMMAND.search("".join(out)):
+                    out.append(quoted)  # e.g. 'format' C: is a real executable token
+                else:
+                    out.append(" " * len(quoted))
+                i = j + 1
+                continue
+            if ch == '"':
+                prefix = "".join(out)
+                executable = bool(_COMMAND_PAYLOAD.search(prefix) or _REAL_COMMAND.search(prefix))
+                python_data = path_launch and bool(_PYTHON_PAYLOAD.search(prefix))
+                inner, after, closed = scan(i + 1, '"', python_data or not executable, depth + 1)
+                if not closed:
+                    return "".join(out) + command[i:], len(command), False
+                # An inert quoted argument contributes no command verbs. Keep
+                # any executable substitutions emitted by the recursive scan.
+                out.append('"' + inner + '"')
+                i = after
+                continue
+            if ch == "$" and command[i:i + 2] == "$(":
+                inner, after, closed = scan(i + 2, ")", depth=depth + 1)
+                if not closed:
+                    return "".join(out) + command[i:], len(command), False
+                out.append("$(" + inner + ")")
+                i = after
+                continue
+            if ch == "`":
+                inner, after, closed = scan(i + 1, "`", depth=depth + 1)
+                if not closed:
+                    return "".join(out) + command[i:], len(command), False
+                # A backtick substitution starts a fresh command even inside
+                # double quotes. The semicolon is a command-position marker.
+                out.append(";" + inner + " ")
+                i = after
+                continue
+            out.append(" " if double and ch in ";&|" else (" " if double else ch))
+            i += 1
+        return "".join(out), i, not end
+
+    return scan(0)[0]
+
+
+_PS_PLAIN_STRING = r"(?:'(?:[^']|'')*'|\"[^\"$`]*\")"
+_PS_READ_CMDLETS = frozenset({
+    "get-content", "get-childitem", "get-item", "test-path", "select-string", "select-object",
+})
+
+
+def _powershell_common_literals(command: str) -> str:
+    """T0340 represent only literal argument arrays and a finite Test-Path guard.
+
+    Not a PowerShell evaluator: unsupported forms remain unchanged and meet the
+    existing unknown-shape gate. Both branches are inspected, never executed.
+    """
+    out: list[str] = []
+    i = 0
+    quote = ""
+    statement_start = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "`" and quote == '"' and i + 1 < len(command):
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and command[i:i + 2] == "''":
+                    out.append("'")
+                    i += 2
+                    continue
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+        if ch == "`" and i + 1 < len(command):
+            out.extend(command[i:i + 2])
+            i += 2
+            continue
+        if command[i:i + 2] == "@(" and (i == 0 or command[i - 1].isspace()):
+            match = re.match(r"@\(\s*(" + _PS_PLAIN_STRING + r"(?:\s*,\s*" + _PS_PLAIN_STRING + r")*)\s*\)", command[i:])
+            prefix = command[statement_start:i]
+            recipients = deny_floor.shell_commands(prefix, "powershell")
+            if (match and len(recipients) == 1 and recipients[0]["words"]
+                    and not recipients[0]["words"][0][0].startswith(("$", "@"))
+                    and recipients[0]["words"][0][0] != "."
+                    and (i + len(match[0]) == len(command) or command[i + len(match[0])] in " ;|\r\n")):
+                # Keep quoted literal argv, replace only commas/array delimiters.
+                literals = re.findall(_PS_PLAIN_STRING, match[1])
+                out.append(" ".join(literals))
+                i += len(match[0])
+                continue
+        if not command[statement_start:i].strip() and re.match(r"(?i)if\s*\(", command[i:]):
+            # All delimiters inside these finite token/body forms are quoted.
+            path = r"(?:" + _PS_PLAIN_STRING + r"|[A-Za-z0-9_./\\:][A-Za-z0-9_./\\:-]*)"
+            body = r"(?:" + _PS_PLAIN_STRING + r"|[^'\"{}])*"
+            guard = re.match(r"(?is)if\s*\(\s*Test-Path\s+(?:(?:-Path|-LiteralPath)\s+)?(" + path
+                             + r")\s*\)\s*\{(" + body + r")\}\s*(?:else\s*\{(" + body + r")\})?", command[i:])
+            if guard and (i + len(guard[0]) == len(command) or command[i + len(guard[0])] in ";\r\n"):
+                branches = [guard[2], *( [guard[3]] if guard[3] is not None else [])]
+                ordinary = True
+                for branch in branches:
+                    shaped, unknown = _powershell_shape(branch)
+                    parts = deny_floor.shell_commands(shaped, "powershell")
+                    for part in parts:
+                        argv = [word[0] for word in part["words"]]
+                        if (unknown or not part["complete"] or part["redirects"] or not argv
+                                or argv[0].lower() not in _PS_READ_CMDLETS
+                                or any("$" in arg or "`" in arg for arg in argv[1:])
+                                or any(arg.startswith('-') and any(
+                                    name.startswith(arg[1:].lower().split(':')[0])
+                                    for name in ('outvariable', 'ov', 'pipelinevariable', 'pv',
+                                                 'errorvariable', 'ev', 'warningvariable', 'wv',
+                                                 'informationvariable', 'iv')) for arg in argv[1:])):
+                            ordinary = False
+                    if not parts:
+                        ordinary = False
+                if ordinary:
+                    out.append(";".join(branches))
+                    i += len(guard[0])
+                    continue
+        out.append(ch)
+        if ch in ";\r\n":
+            statement_start = i + 1
+        i += 1
+    return "".join(out)
+
+
+def _powershell_shape(command: str) -> tuple[str, bool]:
+    """Approval-only view of literal PS operators; never changes the floor's input.
+
+    Mask only represented stream merges and the all-stream prefix. Quotes and
+    escapes protect operator-looking data. Expressions/control blocks remain
+    opaque: representing argv is not permission to evaluate PowerShell.
+    """
+    chars = list(command)
+    quote = ""
+    unknown = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if command[i:i + 2] == "''":
+                i += 2
+                continue
+            if ch == "'":
+                quote = ""
+            i += 1
+            continue
+        if ch == "`":
+            if i + 1 == len(command):
+                unknown = True
+            i += 2
+            continue
+        if ch == '"':
+            quote = "" if quote == '"' else '"'
+            i += 1
+            continue
+        if quote:
+            if command[i:i + 2] == "$(":
+                unknown = True
+            i += 1
+            continue
+        if ch == "'":
+            if i and command[i - 1] == "@":
+                unknown = True  # here-string, not an ordinary quoted token
+            quote = ch
+            i += 1
+            continue
+        if command[i:i + 2] == '@"':
+            unknown = True
+        if ch in "(){}[]" or command[i:i + 2] in {"||", "|&", "<<"}:
+            unknown = True
+        # PS merges only streams 2..6 (or all) into success stream 1.
+        merge = re.match(r"(?:[2-6]|\*)>&1(?=$|[\s;|])", command[i:])
+        if merge and (i == 0 or command[i - 1].isspace()):
+            chars[i:i + len(merge[0])] = " " * len(merge[0])
+            i += len(merge[0])
+            continue
+        if ch == ">":
+            if command[i:i + 2] == ">&":
+                unknown = True
+            if i and command[i - 1] == "*":
+                chars[i - 1] = " "
+            elif (i and command[i - 1].isdigit()
+                  and (command[i - 1] not in "123456" or (i > 1 and command[i - 2].isdigit()))):
+                unknown = True
+        if ch == "<":
+            unknown = True  # PS has no shell input redirect
+        i += 1
+    return "".join(chars), unknown or bool(quote)
+
+
+_PS_ASSIGNMENT = re.compile(r"^\s*(\$(?:env:)?[A-Za-z_]\w*)\s*=\s*(.*)$", re.IGNORECASE | re.DOTALL)
+_PS_SCALAR = re.compile(r"(?:\$[A-Za-z_]\w*|\$env:[A-Za-z_]\w*|[-+]?\d+(?:\.\d+)?|'(?:[^']|'')*'|\"(?:[^\"`]|`.)*\")", re.DOTALL)
+
+
+def _powershell_parts(command: str) -> tuple[list[dict], bool]:
+    normalized, unknown = _powershell_shape(_powershell_common_literals(command))
+    parts = deny_floor.shell_commands(normalized, "powershell")
+    result: list[dict] = []
+    for part in parts:
+        assignment = _PS_ASSIGNMENT.fullmatch(part["raw"])
+        if assignment:
+            rhs = assignment[2].strip()
+            if _PS_SCALAR.fullmatch(rhs):
+                # Scalar assignment has no command verb. It still contributes
+                # redirects, and path exemptions separately track its value.
+                part = {**part, "words": []}
+            else:
+                rhs_parts = deny_floor.shell_commands(rhs, "powershell")
+                if not rhs_parts:
+                    unknown = True
+                result.extend({**rhs_part, "ps_assignment": (assignment[1], "")} for rhs_part in rhs_parts)
+                continue
+        elif part["words"] and part["words"][0][0].startswith("$"):
+            unknown = True
+        if part["words"]:
+            head = part["words"][0][0]
+            if head.startswith(("$", "@")) or "::" in head:
+                unknown = True
+            if head.lower() == "exit" and any(not re.fullmatch(r"\$[A-Za-z_]\w*|\d+", w[0]) for w in part["words"][1:]):
+                unknown = True
+        result.append(part)
+    for part in result:
+        if part["shell"] == "powershell" and part["words"]:
+            head = part["words"][0][0]
+            if head.startswith(("$", "@")) or head == "." or "::" in head:
+                unknown = True
+    return result, unknown
+
+
+def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_interpreters: object = ()):
+    """Classify actual executable argv/redirections, never prose arguments.
+
+    The shared lexer supplies literal command boundaries and shell wrappers.
+    Known inline Python/Node code retains bounded API matching; scripts, eval,
+    aliases and dynamically computed targets remain outside this classifier.
+    """
+    # Core shell tools are Bash/PowerShell. cmd grammar is selected only by
+    # an explicit cmd wrapper or proven cmd caller, not by single-quoted prose.
+    ps_unknown = False
+    if shell == "powershell":
+        parts, ps_unknown = _powershell_parts(command)
+    else:
+        parts = deny_floor.shell_commands(command, shell or "bash")
+        if shell is None and not any(part.get("heredoc") for part in parts):
+            parts += deny_floor.shell_commands(command, "powershell")
+    # Owner: "Ship, rare shapes ask". ONE explicit fail-closed prompt guard;
+    # no claim that incomplete stream/operator representation proves inert data.
+    # The mandatory jobs floor still runs separately and before this policy.
+    view = _command_view(_powershell_shape(command)[0] if shell == "powershell" else command, shell)
+    if (ps_unknown or any(part.get("heredoc") or not part["complete"]
+            or any(op.startswith("<<") for op, _ in part["redirects"]) for part in parts)
+            or re.search(r"<<|\|\||\|&|[<>]&", view)):
+        if ps_unknown:
+            # Preserve known executable substitutions' danger label; unknown
+            # grammar still prevents any worktree/output exemption below.
+            for label, pattern in _DANGER:
+                if pattern.search(view):
+                    yield label, -5
+                    return
+        yield UNKNOWN_SHAPE, -5
+        return
+    if (any([w[0].lower() for w in part["words"][:1]] in (["sh"], ["bash"], ["iex"], ["invoke-expression"])
+            for part in parts) and "|" in command
+            and re.search(r"(?i)\b(?:curl|wget|iwr|invoke-webrequest)\b", command)):
+        yield DANGEROUS, -4
+    for part in parts:
+        argv = [word[0] for word in part["words"]]
+        if any(op.startswith(">") for op, _ in part["redirects"]):
+            yield OVERWRITE, -3
+        if part["shell"] == "bash":
+            while argv and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", argv[0]):
+                argv = argv[1:]
+        if not argv:
+            continue
+        while argv and argv[0].lower() in {"sudo", "command", "env", "xargs", "npx"}:
+            argv = argv[1:]
+            while argv and (argv[0].startswith("-") or "=" in argv[0]):
+                takes_value = argv[0] in {"-u", "-g", "--user", "--group", "-n", "-P", "-I", "-L", "--unset"}
+                argv = argv[2:] if takes_value else argv[1:]
+        if not argv:
+            continue
+        head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        head = head.lstrip("\\")
+        args = argv[1:]
+        if head == "git":
+            i = 0
+            while i < len(args):
+                if args[i] in {"-C", "-c", "--git-dir", "--work-tree"} and i + 1 < len(args):
+                    i += 2
+                elif args[i].startswith("-"):
+                    i += 1
+                else:
+                    break
+            args = args[i:]
+        if head in {"tee-object", "tee"} and part["shell"] == "powershell":
+            variable_only = (len(args) == 2 and args[0].lower() in {"-variable", "-v"}
+                             and re.fullmatch(r"[A-Za-z_]\w*", args[1]))
+            if not variable_only:
+                yield OVERWRITE, -6
+        if head in {"git", "ffprobe"} and any(a in {"-o", "--output", "-output", "-report"} or a.startswith("--output=") for a in args):
+            yield OVERWRITE, -7  # not a shell output target we can prove
+        # Operand separators cannot manufacture command positions for regexes.
+        view = " ".join([head, *(re.sub(r"[;&|\s]", "_", arg) for arg in args)])
+        for index, (label, pattern) in enumerate(_DANGER):
+            if pattern.match(view):
+                yield label, index
+        if head in {"python", "python3", "py", "node"}:
+            option = "-e" if head == "node" else "-c"
+            if option in args and args.index(option) + 1 < len(args):
+                code = args[args.index(option) + 1]
+                # This is executable language code, not a shell -c argument.
+                for index, (label, pattern) in enumerate(_DANGER):
+                    if ("shutil" in DANGER_TABLE[index][1] or "extractall" in DANGER_TABLE[index][1]) and pattern.search(code):
+                        yield label, index
+        if not part["complete"]:
+            # Malformed/unknown quoting must not hide an obvious destructive
+            # suffix. This fallback is intentionally limited to malformed input.
+            for index, (label, pattern) in enumerate(_DANGER):
+                if pattern.search(part["raw"]):
+                    yield label, index
+
+
+def danger(command: str, workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> str | None:
     """The danger CLASS of a shell command, or None when it is ordinary."""
-    for label, pattern in _DANGER:
-        if pattern.search(command):
-            return label
-    for pattern in (_SCRIPT_RUN, _PATH_RUN):
-        for match in pattern.finditer(command):
-            if _outside_workspace(match.group("path"), workspace):
-                return FOREIGN_PROCESS
+    return next((label for label, _ in _iter_danger(command, workspace, shell, trusted_interpreters)), None)
+
+
+#: T0246: which DANGER_TABLE rows a command CONFINED to the seat's own worktree may
+#: run without a prompt. An ALLOWLIST by row, so a row added later is NOT exempt
+#: until someone decides it is (pinned in tests/test_worktree_scope.py). Deleting,
+#: extracting and the explicit launch verbs are about the tree the command runs in;
+#: the git history/working-tree rows are about that tree too. NOT here, because
+#: confinement to a path says nothing about them: the system rows (registry,
+#: shutdown, kill, firewall, scheduled tasks, services, policy), force-push, and
+#: msiexec/regsvr32/runas-style launches.
+_WORKTREE_SCOPED_ANCHORS: dict[str, tuple[str, ...] | None] = {
+    DELETION: None,
+    ARCHIVE: None,
+    OVERWRITE: None,
+    DANGEROUS: (r"git\s+(?:reset", r"git\s+restore", "(?:chmod|chown)"),
+}
+_WORKTREE_SCOPED_ROWS = frozenset(
+    index for index, (label, pattern) in enumerate(DANGER_TABLE)
+    if label in _WORKTREE_SCOPED_ANCHORS
+    and (_WORKTREE_SCOPED_ANCHORS[label] is None
+         or any(anchor in pattern for anchor in _WORKTREE_SCOPED_ANCHORS[label]))
+)
+
+#: Matches that share a scoped row (or the git history row) but act on the SHARED
+#: repository, not on this tree: removing/pruning/moving a worktree (the tree
+#: itself, or someone else's), deleting a branch, rewriting history or refs.
+_NEVER_SCOPED = re.compile(
+    r"(?ix)\bgit\b[^;&|]*\b(?:worktree\s+(?:remove|prune|move)|filter-(?:branch|repo)"
+    r"|reflog\s+expire|update-ref|stash\s+(?:drop|clear))\b"
+    r"|\bgit\b[^;&|]*\bbranch\b[^;&|]*(?:\s-[a-z]*d[a-z]*\b|--delete\b)"
+)
+
+
+def _powershell_output_allows(args: Mapping[str, object], workspace: Path,
+                              seat_name: str | None, shell: str | None) -> bool:
+    """Prove output destinations only; never exempt another destructive effect.
+
+    Trusted roots come from linked-worktree identity, its own card scratch
+    parent, and the host TEMP. Variables are not evaluated: only literal scalar
+    assignments and TEMP/TMP expansions are tracked in statement order.
+    """
+    if shell != "powershell":
+        return False
+    command = str(args.get("command") or "")
+    hits = list(_iter_danger(command, workspace, shell))
+    if not hits or any(label != OVERWRITE or index not in {-3, -6} for label, index in hits):
+        return False
+    roots, variables = worktree_scope.output_context(workspace, seat_name)
+    if not roots:
+        return False
+    cwd = _resolve_path(args.get("cwd") or workspace, workspace)
+    parts, unknown = _powershell_parts(command)
+    if unknown:
+        return False
+
+    def path_value(raw: str) -> Path | None:
+        # Tokens are decoded by the literal lexer. Unknown interpolation, PS
+        # providers, wildcards, drive-relative paths and ADS stay unproved.
+        def expand(match):
+            return variables.get(match[0].lower(), match[0])
+        raw = re.sub(r"\$env:[A-Za-z_]\w*|\$[A-Za-z_]\w*", expand, raw)
+        if (not raw or any(ch in raw for ch in "$`*?[]{}\x00")
+                or re.match(r"^[A-Za-z]:[^/\\]", raw)
+                or ":" in raw[2:] or re.match(r"^[A-Za-z]{2,}:", raw)):
+            return None
+        try:
+            return _resolve_path(raw, cwd)
+        except (OSError, ValueError):
+            return None
+
+    def safe(raw: str) -> bool:
+        target = path_value(raw)
+        return target is not None and any(_inside(target, root.resolve()) for root in roots)
+
+    found = False
+    for part in parts:
+        # Decoding erases whether $ was quoted/escaped. Without full runtime
+        # expansion semantics such targets must not gain the TEMP exception.
+        if ("`" in part["raw"] or ("$" in part["raw"] and "'" in part["raw"]
+                                   and not _PS_ASSIGNMENT.fullmatch(part["raw"]))):
+            return False
+        if part.get("ps_assignment"):
+            variables[part["ps_assignment"][0].lower()] = ""
+        assignment = _PS_ASSIGNMENT.fullmatch(part["raw"])
+        if assignment:
+            # Runtime automatic/read-only variables are not ordinary storage:
+            # an assignment may fail or be overwritten by the next command.
+            if assignment[1].lower() in {
+                    "$home", "$pid", "$pshome", "$pwd", "$error", "$args", "$_", "$input",
+                    "$this", "$null", "$true", "$false", "$lastexitcode", "$psitem",
+                    "$pscommandpath", "$psscriptroot", "$myinvocation", "$psboundparameters",
+                    "$executioncontext", "$host", "$matches", "$nestedpromptlevel",
+                    "$stacktrace", "$ofs", "$shellid", "$profile", "$psversiontable",
+                    "$psculture", "$psuiculture", "$psdebugcontext", "$pscmdlet",
+                    "$iswindows", "$islinux", "$ismacos", "$iscoreclr", "$enabledexperimentalfeatures"}:
+                return False
+            literal = deny_floor.shell_commands(assignment[2], "powershell")
+            words = literal[0]["words"] if len(literal) == 1 else []
+            # Single quotes are literal, so do not expand their dollar signs.
+            value = words[0][0] if len(words) == 1 else ""
+            variables[assignment[1].lower()] = value if "$" not in value else ""
+        argv = [word[0] for word in part["words"]]
+        head = argv[0].lower() if argv else ""
+        if "\\" in head:
+            return False  # module-qualified state changes are not represented
+        # Common parameters can replace literal variables without assignment
+        # syntax. Do not speculate about cmdlet binding/abbreviations here.
+        variable_parameters = {
+            "outvariable", "pipelinevariable", "errorvariable", "warningvariable", "informationvariable",
+        }
+        for arg in argv[1:]:
+            parameter = re.split(r"[:=]", arg.lower().removeprefix("-"), maxsplit=1)[0]
+            if (arg.startswith("-") and parameter
+                    and (parameter in {"ov", "pv", "ev", "wv", "iv"}
+                         or any(name.startswith(parameter) for name in variable_parameters))):
+                return False
+        if (part["shell"] != "powershell" or head in {
+                "popd", "pop-location", "set-variable", "sv", "new-variable", "nv",
+                "set-item", "si", "new-item", "ni", "set-itemproperty", "sp",
+                "pwsh", "powershell", "cmd", "bash", "sh"}):
+            return False  # unrepresented location/environment or child-shell state
+        if head in {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}:
+            operands = argv[1:]
+            if operands and operands[0].lower() in {"-path", "-literalpath"}:
+                operands = operands[1:]
+            target = path_value(operands[0]) if len(operands) == 1 else None
+            if target is None or not target.is_dir():
+                return False  # failed cd would leave relative writes elsewhere
+            cwd = target
+        for op, word in part["redirects"]:
+            if op.startswith(">"):
+                # A single quoted $env:TEMP is a literal filename, not TEMP.
+                spelling = part["raw"]  # token offsets may belong to an RHS
+                if "$" in word[0] and ("'" in spelling):
+                    return False
+                if not safe(word[0]):
+                    return False
+                found = True
+        if head in {"tee", "tee-object"}:
+            operands = argv[1:]
+            if operands and operands[0].lower() in {"-variable", "-v"}:
+                if len(operands) != 2 or not re.fullmatch(r"[A-Za-z_]\w*", operands[1]):
+                    return False  # scoped/unsupported names may alias another variable
+                variables.pop("$" + operands[1].lower(), None)
+                continue
+            if operands and operands[0].lower() in {"-filepath", "-literalpath"}:
+                operands = operands[1:]
+            operands = [v for v in operands if v.lower() != "-append"]
+            if len(operands) != 1 or not safe(operands[0]):
+                return False
+            found = True
+    return found
+
+
+def _own_worktree_allows(args: Mapping[str, object], workspace: Path, seat_name: str | None,
+                         shell: str | None) -> bool:
+    """True when every danger this shell command hits is a scoped row AND the whole
+    command is confined to a worktree this seat owns (see worktree_scope)."""
+    command = str(args.get("command") or "")
+    hits = list(_iter_danger(command, workspace, shell))
+    if not hits:
+        return False
+    if shell == "powershell" and any(index in {-3, -6} for _, index in hits):
+        # The dedicated output proof has already failed. The older broad
+        # path scanner must not turn unproved output variables/cd into ALLOW.
+        return False
+    # The table's command-position anchor has no multiline flag, so scanning the text
+    # whole misses a command that starts a LINE. The exemption widens what is allowed,
+    # so it also judges every line on its own (heredoc bodies are data, not lines):
+    # a system row on line 2 must not ride on a scoped row on line 1. Card T0251 fixes
+    # the table itself; this stays as the exemption's own guarantee.
+    lines = worktree_scope.command_lines(command)
+    if lines is None:
+        return False
+    for line in lines:
+        hits.extend(_iter_danger(line.strip(), workspace, shell))
+    if any(index not in {-1, -3} and index not in _WORKTREE_SCOPED_ROWS for _, index in hits):
+        return False
+    if _NEVER_SCOPED.search(_command_view(command, shell)):
+        return False
+    roots = worktree_scope.own_roots(workspace, seat_name)
+    if not roots:
+        return False
+    start = workspace
+    tool_cwd = args.get("cwd")
+    if isinstance(tool_cwd, str) and tool_cwd:
+        start = workspace / tool_cwd          # an absolute cwd replaces the workspace
+    return worktree_scope.confined(command, roots, start,
+                                   deleting=any(label == DELETION for label, _ in hits))
+
+
+def _command_text(args: Mapping[str, object] | None) -> str:
+    """The command a shell call runs, as text (Codex may pass an argv list)."""
+    command = (args or {}).get("command") or ""
+    return command if isinstance(command, str) else " ".join(map(str, command))
+
+
+def _floor(args: Mapping[str, object] | None, workspace: Path, *,
+           shell: str | None = None) -> str | None:
+    """deny_floor's refusal for any call that carries a `command`, or None.
+
+    ANY POLICY, NOT ONLY SHELL_POLICY (review 2198d4ab F2): an MCP shell such
+    as litesuite-tools `shell` arrives under MCP_UNKNOWN_POLICY with the same
+    {command, cwd} arguments.
+
+    EVERY FOLDER THE COMMAND MAY RUN IN (F1): `workspace` is what the caller
+    judged against (paths.ROOT for LiteTUI's own tools), but the bash and
+    powershell tools run in Path.cwd(), the seat's --cwd, and an MCP shell may
+    name its own `cwd`. The command is refused if it is refused against any of
+    them. Reading the cwd is the one process-state read in this module.
+    """
+    command = (args or {}).get("command")
+    if not command or not isinstance(command, (str, list, tuple)):
+        return None
+    text = _command_text(args)
+    bases = [Path(workspace), Path.cwd()]
+    tool_cwd = (args or {}).get("cwd")
+    if isinstance(tool_cwd, str) and tool_cwd:
+        bases.append(Path(workspace) / tool_cwd)   # an absolute cwd replaces workspace
+    for base in dict.fromkeys(b.resolve() for b in bases):
+        # T1085: ownership-only jobs guard lives in seat_authority.
+        # core_tools.tool_powershell accepts a string and calls a PowerShell
+        # executable with -Command, shell=False. An argv-list is not that route.
+        if reason := deny_floor.refusal(text, base, jobs=False, shell=shell if isinstance(command, str) else None):
+            return reason
     return None
 
 
-def classify_shell(args: Mapping[str, object], workspace: Path) -> Iterable[str]:
-    if danger(str(args.get("command") or ""), workspace):
+def classify_shell(args: Mapping[str, object], workspace: Path, *, shell: str | None = None, trusted_interpreters: object = ()) -> Iterable[str]:
+    if danger(str(args.get("command") or ""), workspace, shell=shell, trusted_interpreters=trusted_interpreters):
         return (DESTRUCTIVE_IRREVERSIBLE,)
     return ()
 
@@ -651,9 +1329,7 @@ def classify_pccontrol(args: Mapping[str, object], _workspace: Path) -> Iterable
     if action in {"windows", "status", "screenshot"}:
         return (READ_ONLY,)
     if action == "launch":
-        # Launching an application is danger class C ("weird procc runs that
-        # arent its tools"); clicking and typing are its own desktop tools.
-        return (DESKTOP_CONTROL, PROCESS_EXECUTION, DESTRUCTIVE_IRREVERSIBLE)
+        return (DESKTOP_CONTROL, PROCESS_EXECUTION)
     return (DESKTOP_CONTROL,)
 
 
@@ -738,6 +1414,49 @@ HARNESS_POLICY = ToolPolicy(
 USER_QUESTION_POLICY = ToolPolicy(
     frozenset({READ_ONLY}), "Ask the user a question inside LiteTUI"
 )
+
+# The fleet's own MCP servers are tools, not undeclared foreign capabilities.
+FLEET_MCP_SERVERS = frozenset({"litesuite-tools", "VibeUE", "SOTS_MCP_CORE", "SOTS_BPGEN"})
+
+
+def _fleet_danger(args: Mapping[str, object], workspace: Path, trusted_interpreters: object = ()) -> str | None:
+    for key in ("command", "cmd", "script", "code"):
+        text = args.get(key)
+        if not isinstance(text, str):
+            continue
+        # A code field is executable language code, not shell argv. Retain the
+        # bounded known destructive API recognition without scanning inbox prose.
+        if key == "code":
+            for index, (label, pattern) in enumerate(_DANGER):
+                if ("shutil" in DANGER_TABLE[index][1] or "extractall" in DANGER_TABLE[index][1]) and pattern.search(text):
+                    return label
+        if what := danger(text, workspace, trusted_interpreters=trusted_interpreters):
+            return what
+    return None
+
+
+def classify_fleet_mcp(args: Mapping[str, object], workspace: Path, *, trusted_interpreters: object = ()) -> Iterable[str]:
+    """Inspect executable payload fields, not quoted data in inbox messages."""
+    if _fleet_danger(args, workspace, trusted_interpreters):
+        return (DESTRUCTIVE_IRREVERSIBLE,)
+    return ()
+
+
+FLEET_MCP_POLICY = ToolPolicy(
+    frozenset({NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION}),
+    "Fleet-owned MCP tool",
+    classify_args=classify_fleet_mcp,
+)
+
+
+def mcp_policy_for(name: str) -> ToolPolicy:
+    # Names are produced by the registry as mcp__<server identity>__<tool>.
+    # Compare that exact server component, never a substring of the tool name.
+    parts = name.split("__", 2)
+    if len(parts) == 3 and parts[0] == "mcp" and parts[1] in FLEET_MCP_SERVERS and parts[2]:
+        return FLEET_MCP_POLICY
+    return MCP_UNKNOWN_POLICY
+
 
 # MCP servers are external capability providers whose individual effects are
 # not described by LiteTUI.  They are offered, but never silently trusted.

@@ -10,8 +10,8 @@ every resume.
 THREE MODES, chosen from settings so the comparison can be made by measuring
 rather than by argument:
 
-  off             the raw output goes into the conversation. What LiteTUI has
-                  always done. The baseline the other two are measured against.
+  off             output up to the hard ceiling goes into the conversation.
+                  The baseline the other two are measured against.
 
   llm-tool-mask   the AgentPatterns "observation masking" route: the output is
                   replaced by a short placeholder naming what it was. No model
@@ -19,8 +19,8 @@ rather than by argument:
 
   llm-tool-summ   a side call summarises the output toward the task; only the
                   summary enters the conversation. Costs one prompt-eval of the
-                  raw, in a throwaway context that is never persisted — so the
-                  main conversation NEVER holds the raw, not even once.
+                  bounded output, in a throwaway context that is never persisted
+                  — so the main conversation NEVER holds oversized output.
 
 The literature genuinely disagrees about which wins. arXiv 2508.21433 argues
 simple masking matches LLM summarisation; AgentPatterns reports hard masking
@@ -39,6 +39,10 @@ answer that stops you looking.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import uuid
+
+from litetui import tasks
 
 OFF = "off"
 MASK = "llm-tool-mask"
@@ -49,6 +53,28 @@ MODES = (OFF, MASK, SUMM)
 #: smaller than the machinery around it, and a summary could easily be LONGER
 #: than what it replaces.
 DEFAULT_THRESHOLD_CHARS = 2000
+# One host-tool result must not exhaust the model context (a 2.4M-char
+# foreground result did). Ordinary output remains unchanged below 50K.
+TOOL_RESULT_CAP = 50_000
+
+
+def cap_tool_result(raw: str, convo_dir: Path | None, data_root: Path,
+                    tool_name: str = "tool") -> str:
+    """Bound model-visible output in every mode; preserve the full raw on disk."""
+    if len(raw) <= TOOL_RESULT_CAP:
+        return raw
+    if convo_dir is not None:
+        path = convo_dir / "tool-raw" / f"tool-{uuid.uuid4().hex}.txt"
+    else:
+        path = data_root.joinpath(*tasks.LOG_DIR) / f"tool-{uuid.uuid4().hex}.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(raw, encoding="utf-8", errors="replace")
+        return render_cap(tool_name, raw, path.resolve().as_posix())
+    except OSError as exc:
+        return (f"[{tool_name} output capped — {len(raw)} chars, {_line_count(raw)} lines. "
+                f"full output could not be saved ({type(exc).__name__}); excerpt only]\n"
+                f"{tasks.excerpt(raw)}")
 
 #: Tools whose output must never be masked or summarised, whatever its size.
 #: `view_image` returns image content, not prose — there is nothing to
@@ -119,6 +145,14 @@ def render_mask(tool_name: str, raw: str, pointer: str) -> str:
     return (
         f"[{tool_name} output masked — {len(raw)} chars, {_line_count(raw)} lines. "
         f"Full output: {pointer}]"
+    )
+
+
+def render_cap(tool_name: str, raw: str, pointer: str) -> str:
+    """The bounded result, with the same provenance wording as a mask."""
+    return (
+        f"[{tool_name} output capped — {len(raw)} chars, {_line_count(raw)} lines. "
+        f"Full output: {pointer}]\n{tasks.excerpt(raw)}"
     )
 
 

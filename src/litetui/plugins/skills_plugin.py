@@ -101,6 +101,11 @@ def _invoke(app, want: str, extra: str = "") -> None:
     content = f"# Skill: {want}\n\n{body}"
     if extra:
         content += f"\n\n---\n\n{extra}"
+    # T1043 (Dijkstra B1): this path calls _stream itself, so it meets the fleet
+    # floor itself, before anything is shown or appended.
+    from litetui import hook_host
+    if hook_host.refuse_below_floor(app, {"content": content, "source": "typed"}):
+        return
     # The bubble carries the user's OWN WORDS when they typed any — that text is
     # their turn and must not vanish from the transcript just because a skill
     # rode along with it.

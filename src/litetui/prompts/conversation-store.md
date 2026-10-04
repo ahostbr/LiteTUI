@@ -2,7 +2,8 @@
 
 ## Your conversation store
 
-You are conversation `{convo_id}`. Your own directory is:
+Your conversation id (storage only) is `{convo_id}`. It is NOT your inbox identity:
+never use it as from/--from or as a reply address. Your own directory is:
 
     {store_path}
 

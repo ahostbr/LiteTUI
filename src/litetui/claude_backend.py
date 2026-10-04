@@ -74,6 +74,7 @@ STATIC_MODELS = (
     "default", "opus", "opus[1m]", "fable", "fable[1m]", "sonnet", "sonnet[1m]", "haiku",
     "claude-opus-5-5", "claude-opus-5-5[1m]",
     "claude-fable-5-1", "claude-fable-5-1[1m]",
+    "claude-sonnet-5-5", "claude-sonnet-5-5[1m]",
     "claude-sonnet-5", "claude-sonnet-5[1m]",
     "claude-haiku-4-5-20251001",
 )
@@ -233,6 +234,8 @@ class ClaudeBackend:
             "cli_path": override or None,
             "setting_sources": [], "skills": [], "strict_mcp_config": True, "mcp_servers": {},
             "tools": [], "permission_mode": "dontAsk", "include_partial_messages": True,
+            # Image reads can exceed the SDK's 1 MiB stream-json line limit.
+            "max_buffer_size": 32 * 1024 * 1024,
             "verbatim_prompts": True,
             "system_prompt": {"type": "preset", "preset": "claude_code", "append": APPEND},
             "extra_args": {"no-chrome": None, "disable-slash-commands": None, "replay-user-messages": None},

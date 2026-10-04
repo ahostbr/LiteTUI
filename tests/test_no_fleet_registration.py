@@ -128,7 +128,8 @@ def test_control_registration_fires_when_not_disabled(recorder, monkeypatch):
 
     assert len(recorder.register_calls) == 1, recorder.calls
     argv = recorder.register_calls[0]
-    assert "--takeover" in argv
+    # T1027: a plain register — --takeover evicted a live, quiet holder.
+    assert "--takeover" not in argv
     assert "--session-pid" in argv
     assert str(os.getpid()) in argv, "the seat must register its OWN pid"
 

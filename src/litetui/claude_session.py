@@ -224,6 +224,15 @@ class ClaudeSession:
                             raise CommandRefused(str(exc)) from exc
                         self._terminal.clear()
                         await client.query(prompt)
+                    elif pending.kind == "context":
+                        # Keep SDK calls on its owner task. A metadata failure must
+                        # not disconnect a healthy session or reuse a stale window.
+                        try:
+                            async with asyncio.timeout(10):
+                                usage = await client.get_context_usage()
+                        except Exception as exc:
+                            raise CommandRefused(f"Claude context usage unavailable: {exc}") from exc
+                        pending.reply.set_result(usage)
                     elif pending.kind == "interrupt":
                         if self.lifecycle.active_turn:
                             await client.interrupt()
@@ -376,6 +385,10 @@ class ClaudeSession:
 
     async def query(self, turn_id, prompt):
         await self._command("query", (turn_id, prompt))
+
+    async def get_context_usage(self):
+        """The selected session's actual effective window, not a model ceiling."""
+        return await self._command("context")
 
     async def set_model(self, model):
         await self._command("model", model)

@@ -58,6 +58,7 @@ TOOL_DENIED_REQUIRED: dict[str, tuple[str, ...]] = {
     "unknown-tool": ("name",),
     "no-metadata": ("name",),
     "profile": ("name", "reason"),
+    "approval-timeout": ("name", "reason"),
     "by-user": ("name",),
     "no-host": ("name",),
     "tool-disabled": ("name",),
@@ -72,6 +73,7 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
         "This is the active authority profile refusing, not the user — do not "
         "ask them to approve it and do not retry."
     ),
+    "approval-timeout": "[approval timeout] {name}: Nothing ran and nothing changed. {reason}",
     "no-host": (
         "[no answer] {name} needed approval and the request was sent to the "
         "host, which never answered. Nothing ran and nothing changed. This is "
@@ -258,23 +260,6 @@ def is_reliable_rate_sample(prompt_tokens, first_token_s, floor: float = 0.25) -
     means the sample is not usable."""
     return (prompt_tokens is not None and prompt_tokens > 0
             and first_token_s is not None and first_token_s >= floor)
-
-
-#: Shown once when a cron job or loop is CREATED. T085, the user asked for a
-#: "light warning when setting that it must run auto for this reason".
-#:
-#: 🔴 IT STATES THE MECHANISM, NOT THE RULE. "Scheduled tasks run in auto mode"
-#: is a fact the reader can do nothing with; the REASON is the whole point and
-#: is what he asked for. Someone who knows WHY can predict the behaviour of a
-#: case nobody wrote down -- that is the difference between a rule and a
-#: mechanism.
-#:
-#: ⚠️ LIGHT. One sentence, lower-case, no banner and no confirmation step. It
-#: explains; it does not warn twice or ask.
-SCHEDULED_AUTO_NOTE = (
-    "runs in auto mode — it fires when you may not be at the keyboard, and a "
-    "mode that stops to ask would wait instead of running"
-)
 
 
 def profile_text(profile_name: str | None) -> str:

@@ -21,6 +21,11 @@ from litetui.llm_backend import BackendError, make_backend
 from litetui.settings import Settings
 
 
+def test_free_router_does_not_claim_all_models_can_disable_reasoning():
+    backend = object.__new__(ft.FreeBackend)
+    assert backend.reasoning_levels('any') == ['none', 'low']
+
+
 def _sse(text: str) -> str:
     chunk = {'id': 'c', 'object': 'chat.completion.chunk', 'created': 0, 'model': 'm',
              'choices': [{'index': 0, 'delta': {'content': text}, 'finish_reason': None}]}

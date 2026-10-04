@@ -27,6 +27,8 @@ import json
 import os
 import shutil
 import sys
+import tempfile
+import time
 from litetui import ttyguard
 import uuid
 from datetime import datetime, timezone
@@ -49,9 +51,9 @@ HEARTBEAT_EVERY = 12
 #: Set to a non-empty value to make registration a no-op.
 #:
 #: 🔴 SET THIS IN TESTS. Without it, constructing LiteTUI REGISTERS, and
-#: registration passes --takeover, which does not refuse a live holder -- so a
-#: test run EVICTS the developer's running app from the fleet registry and
-#: leaves a dead test process as the only LiteTUI row.
+#: registration passed --takeover (until T1027), which did not refuse a live
+#: holder -- so a test run EVICTED the developer's running app from the fleet
+#: registry and left a dead test process as the only LiteTUI row.
 #: The registry is live shared state and is not this repo's to write from a test.
 #: Why: Docs/adr/0002-tests-must-not-write-the-live-registry.md
 NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
@@ -59,6 +61,43 @@ NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
 
 def harness_disabled() -> bool:
     return bool(os.environ.get(NO_HARNESS_ENV, "").strip())
+
+
+def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
+    """Merge only recap fields into an existing seat row; never create a row.
+
+    Contract copied from liteharness-oss/liteharness/config.py:merge_presence_fields:
+    missing/unreadable/non-dict -> False; re-read before update, atomic temp-file
+    replace. The optional liteharness package is not installed in LiteTUI's venv.
+    """
+    if not path.exists():
+        return False
+    try:
+        row = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(row, dict) or row.get("agent_id") != agent_id:
+        return False
+    row.update({"last_recap": recap, "last_recap_at": datetime.now(timezone.utc).isoformat()})
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".recap-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(row, output, ensure_ascii=False)
+        # A purged seat must not be brought back by a pending recap write.
+        if not path.exists():
+            return False
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                return True
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(.02 * (attempt + 1))
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return False
 
 
 class _Refused:
@@ -134,7 +173,7 @@ def _liteharness_exe() -> str | None:
     return None
 
 
-def _cli(args: list[str], *, timeout: int):
+def _cli(args: list[str], *, timeout: float):
     """THE ONE DOOR to the liteharness CLI. Every subprocess in this module
     goes through here, so the disabled-path check lives in ONE place.
 
@@ -174,6 +213,14 @@ def new_agent_id() -> str:
 
 
 SPAWN_IDENTITY_MARKER = "LITETUI_SPAWN_IDENTITY"
+#: T1043 finding F: set to "1" ONLY by Owner's own launchers. POSITIVE owner
+#: identification: an instance without it meets the fleet floor on every turn.
+#: Consumed at startup (app.__init__) so no shell or child inherits it.
+OWNER_MARKER = "LITETUI_OWNER"
+#: T1043: exported by every LiteTUI into its own environment at startup, so every
+#: tool shell and child it starts is known to run inside an agent. The owner mark
+#: is VOID under it (seat_authority.owner_mark_valid).
+AGENT_SHELL_MARKER = "LITETUI_AGENT_SHELL"
 _SPAWN_IDENTITY_ENV = (
     "LITEHARNESS_AGENT_ID",
     "LITEHARNESS_AGENT_NAME",
@@ -286,57 +333,106 @@ class Seat:
     """This LiteTUI session's identity in the harness."""
 
     def __init__(self, agent_id: str, name: str, model: str,
-                 tier: str = DEFAULT_TIER, cli: str = DEFAULT_CLI):
+                 tier: str = DEFAULT_TIER, cli: str = DEFAULT_CLI,
+                 canvas_session: str | None = None, leaf_id: str | None = None,
+                 agent_session=None):
+        self._agent_session = agent_session
+        if agent_session is not None:
+            authority = agent_session.authority  # child lease before any registration
+            if (agent_id, name) != (authority.agent_id, authority.name):
+                raise ValueError("Seat identity disagrees with owned agent")
+            model = authority.model
         self.agent_id = agent_id
         self.name = name
         self.model = model or "unknown"
+        #: T1027: the engine the seat RESOLVED, reported beside the model so the
+        #: fleet floor judges what actually runs (None = not yet known).
+        self.backend: str | None = None
         self.tier = tier
         self.cli = cli
+        # T1025: the level this process RESOLVED, reported beside the model so the
+        # spawner's fleet floor checks the effective value, not a file or a flag.
+        self.thinking_level: str | None = None
+        # Captured from the explicit spawn marker envelope; never an inherited parent env.
+        self.spawned_by: str | None = None
+        # Bound to the launching canvas session, not to a cwd or a possibly
+        # inherited environment in later tool subprocesses.
+        self.canvas_session = canvas_session
+        self.leaf_id = leaf_id
+        self.rename_error: str | None = None
         self.registered = False
         self.error: str | None = None
 
     # ── registration ────────────────────────────────────────────────────────
-    def _presence_argv(self) -> list[str]:
+    def _presence_argv(self, *, include_spawner: bool = True) -> list[str]:
         """Everything both register() and heartbeat() send.
 
         ONE list, because two copies of one argv will drift — and the drift is
         invisible: a heartbeat that omitted --session-pid would refresh the
         timestamp while quietly clearing the field that decides ghost-vs-live.
         """
-        return ["register",
+        strict = []
+        if self._agent_session is not None:
+            authority = self._agent_session.authority
+            if (self.agent_id, self.name) != (authority.agent_id, authority.name):
+                raise ValueError("Owned seat identity changed")
+            self.model, self.backend = authority.model, authority.backend
+            self.thinking_level = authority.thinking_level
+            strict = ["--strict-identity"]
+        return ["register", *strict,
                 "--agent-id", self.agent_id,
                 "--cli", self.cli,
                 "--model", self.model,
                 "--tier", self.tier,
                 "--name", self.name,
+                # Always sent: "default" says the seat chose no level, and an
+                # absent field is how the floor tells an old LiteTUI apart.
+                "--thinking-level", self.thinking_level or "default",
                 # OUR OWN pid, so the fleet can tell this seat from a corpse.
                 # Both mechanisms that read presence.session_pid treat a falsy
                 # one as not-live: the takeover guard (so a running seat's name
                 # was stealable) and the janitor's dead-owner purge (so dead
                 # rows piled up -- four ghosts on the roster). Added to the CLI
                 # as an opt-in flag; requires liteharness with --session-pid.
-                "--session-pid", str(os.getpid())]
+                "--session-pid", str(os.getpid())] + [
+                    arg for flag, value in (("--backend", self.backend),
+                                            ("--spawned-by", self.spawned_by if include_spawner else None),
+                                            ("--canvas-session", self.canvas_session),
+                                            ("--leaf-id", self.leaf_id))
+                    if value for arg in (flag, value)]
 
-    def refresh_name(self, root: Path | None = None) -> bool:
-        """Adopt a rename of this agent's own registry row without claiming it.
+    def current_spawner(self) -> str | None:
+        """Current own registration, never launch metadata or a salvaged cache.
 
-        A separate CLI can rename the seat while this TUI runs. Read only our
-        agent-id file (never search by name); an absent or malformed row must
-        not replace the last verified identity. Heartbeat calls this BEFORE
-        writing presence, otherwise its stale --name immediately undoes the
-        external rename.
+        Missing/corrupt/invalid presence means no inbox approval authority. The
+        registry's send command still decides whether this destination exists.
         """
-        if not self.registered or harness_disabled():
-            return False
+        if not self.registered:
+            return None
+        return registered_spawner(self.agent_id)
+
+    def registry_name(self, root: Path | None = None) -> str | None:
+        """Owned folder truth, or legacy registry name without agent context."""
+        if self._agent_session is not None:
+            return self._agent_session.authority.name
+        if harness_disabled():
+            return None
         path = (root or Path.home() / ".liteharness") / "agents" / f"{self.agent_id}.json"
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return False
+            return None
         if not isinstance(row, dict) or row.get("agent_id") != self.agent_id:
-            return False
+            return None
         name = row.get("name")
-        if not isinstance(name, str) or not name.strip() or name == self.name:
+        return name.strip() if isinstance(name, str) and name.strip() else None
+
+    def refresh_name(self, root: Path | None = None) -> bool:
+        """Adopt a registry rename before heartbeat could overwrite it."""
+        if not self.registered:
+            return False
+        name = self.registry_name(root)
+        if not name or name == self.name:
             return False
         self.name = name
         return True
@@ -348,20 +444,68 @@ class Seat:
         must be the one the fleet accepted, not just the one we requested.
         """
         name = name.strip()
+        if self._agent_session is not None:
+            return name == self._agent_session.authority.name and self.registered
         if not name or not self.registered or harness_disabled():
             return False
         try:
-            argv = self._presence_argv()
-            argv[argv.index("--name") + 1] = name
-            result = _cli(argv + ["--takeover"], timeout=30)
+            result, got = self._register_as(name)
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
             return False
         if result.returncode != 0:
             self.error = (result.stderr or result.stdout or "").strip()[:200] or f"exit {result.returncode}"
             return False
-        self.name = _resolved_name(result.stdout) or name
+        self.name = got
         return True
+
+    def _register_as(self, base: str, *, include_spawner: bool = True):
+        """Register under `base`, or `base-2` .. `base-9` while a LIVE agent holds it.
+
+        🔴 NO --takeover (T1027). Its liveness bar is last_seen < 600 s, so it
+        evicted a holder whose pid was ALIVE but quiet for 700 s as a "dead
+        ghost" (measured against a throwaway registry, 2026-09-26). A plain
+        register refuses a live holder and still reclaims a dead-pid corpse,
+        which is all a relaunch needs. Owner (liteask a-1db0f560): "the agents
+        name is supposed to auto change if the name is taken" — so a refusal
+        becomes the next suffix; only past -9 does the seat keep the registry's
+        generated name. First come keeps it. Worst case is 9 sequential
+        registers (30 s timeout each) on the startup path.
+
+        Returns (last CLI result, the name the registry assigned).
+        """
+        argv = self._presence_argv(include_spawner=include_spawner)
+        if self._agent_session is not None:
+            if base != self._agent_session.authority.name:
+                raise ValueError("Owned agent cannot be renamed by registration")
+            result = self._agent_session.register_presence(lambda _: _cli(argv, timeout=30))
+            if result.returncode == 0:
+                authority = self._agent_session.authority
+                expected = {'agent_id': authority.agent_id, 'name': authority.name,
+                            'backend': authority.backend, 'model': authority.model,
+                            'thinking_level': authority.thinking_level, 'session_pid': os.getpid()}
+                receipts = [line.removeprefix('Folder-owned identity: ')
+                            for line in (result.stdout or '').splitlines()
+                            if line.startswith('Folder-owned identity: ')]
+                if len(receipts) != 1:
+                    raise ValueError("Registry did not confirm one exact owned identity")
+                receipt = json.loads(receipts[0])
+                if (not isinstance(receipt, dict) or receipt != expected
+                        or any(type(receipt.get(key)) is not type(value)
+                               for key, value in expected.items())):
+                    raise ValueError("Registry owned identity receipt disagrees with folder")
+            return result, base
+        at = argv.index("--name") + 1
+        got = base
+        for candidate in [base] + [f"{base}-{n}" for n in range(2, 10)]:
+            argv[at] = candidate
+            result = _cli(argv, timeout=30)
+            if result.returncode != 0:
+                return result, self.name
+            got = _resolved_name(result.stdout) or candidate
+            if got == candidate:
+                break
+        return result, got
 
     def heartbeat(self) -> bool:
         """Refresh presence so the roster keeps showing this seat.
@@ -382,20 +526,34 @@ class Seat:
 
         Failure is silent by design: a heartbeat is not news, and a poll-loop
         that reported every miss would paint the transcript. `registered` is
-        left alone -- a missed beat is not a deregistration.
+        left alone in legacy mode -- a missed beat is not a deregistration.
+        Owned mode clears stale success on failure/disable and must reestablish
+        exact folder identity before readiness can be reported again.
         """
         if not self.registered or harness_disabled():
+            if self._agent_session is not None:
+                self.registered = False
             return False
         # The monitor refreshes identity before each poll; keep this guard for
         # standalone callers so a heartbeat cannot overwrite an external rename.
-        self.refresh_name()
         try:
-            r = _cli(self._presence_argv(), timeout=30)
+            self.refresh_name()
+            # Registration may have adopted a new parent since launch. An
+            # omitted flag preserves that edge in cmd_register; a cached flag
+            # would silently undo the adoption on every heartbeat.
+            if self._agent_session is not None:
+                r, _ = self._register_as(self._agent_session.authority.name,
+                                         include_spawner=False)
+            else:
+                r = _cli(self._presence_argv(include_spawner=False), timeout=30)
             if r.returncode == 0:
-                self.name = _resolved_name(r.stdout) or self.name
+                if self._agent_session is None:
+                    self.name = _resolved_name(r.stdout) or self.name
                 return True
         except Exception:
             pass
+        if self._agent_session is not None:
+            self.registered = False  # owned mode must reestablish exact transport identity
         return False
 
     def register(self) -> bool:
@@ -410,36 +568,31 @@ class Seat:
         is TRUE. A guard that fakes registration would hide the very state it
         was added to produce.
         """
+        if self._agent_session is not None:
+            self.registered = False  # stale transport success cannot hide a failed rebind
         if harness_disabled():
             self.error = f"disabled by {NO_HARNESS_ENV}"
             return False
         try:
-            r = _cli(
-                self._presence_argv() + [
-                 # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE.
-                 #
-                 # 🔴 The agent id is DERIVED from the conversation (agent_id_for_convo,
-                 # uuid5), never minted per process. the user rejected per-process ids on
-                 # 2026-08-21 after they put a dispatched task in a DEAD MAILBOX while
-                 # `send` exited 0. Do NOT reintroduce them -- and do not re-derive them
-                 # from first principles either, which is what happens when this note is
-                 # simply deleted.
-                 #
-                 # ⚠️ --takeover does NOT protect this seat. It is documented to refuse a
-                 # live holder and measurably does not, so a second process TAKES THE NAME.
-                 # Address mail by agent_id, never by name.
-                 #
-                 # ⚠️ A live session_pid is NOT enough: last_seen is written once, so a seat
-                 # decays to [ghost] at ~10 minutes. heartbeat() is what keeps it on the
-                 # roster.
-                 #
-                 # Why: Docs/adr/0003-seat-identity-is-derived-from-the-conversation.md
-                 "--takeover"],
-                timeout=30,
-            )
+            # RECLAIM OUR OWN NAME FROM OUR OWN CORPSE — by a PLAIN register, which
+            # claims a name whose holder's pid is dead. `_register_as` says why
+            # --takeover is gone (T1027): it evicted a LIVE quiet holder.
+            #
+            # 🔴 The agent id is DERIVED from the conversation (agent_id_for_convo,
+            # uuid5), never minted per process. the user rejected per-process ids on
+            # 2026-08-21 after they put a dispatched task in a DEAD MAILBOX while
+            # `send` exited 0. Address mail by agent_id, never by name.
+            #
+            # ⚠️ A live session_pid is NOT enough: last_seen is written once, so a seat
+            # decays to [ghost] at ~10 minutes. heartbeat() is what keeps it on the
+            # roster.
+            #
+            # Why: Docs/adr/0003-seat-identity-is-derived-from-the-conversation.md
+            r, got = self._register_as(self.name)
             self.registered = r.returncode == 0
             if self.registered:
-                self.name = _resolved_name(r.stdout) or self.name
+                self.name = got
+                self.error = None
             else:
                 self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
             return self.registered
@@ -506,7 +659,8 @@ class Seat:
                 out.append(msg)
         return out
 
-    def send(self, to: str, body: str) -> bool:
+    def send(self, to: str, body: str, *, approval_request: tuple[str, str] | None = None,
+             deadline: float | None = None, approval_ancestors: tuple[str, ...] | None = None) -> bool:
         """Reply into the fleet. Uses --body-file: an inline double-quoted
         message runs backticks as shell commands and still reports success.
 
@@ -517,6 +671,21 @@ class Seat:
         """
         if harness_disabled():
             return False
+        flags = []
+        if approval_request is not None:
+            from litetui.approval_delivery import REQUEST_TYPE, request_id
+            if not self.registered or resolve_agent(to)[0] != to or to == self.agent_id:
+                return False
+            ident, approver = approval_request
+            fields: dict[str, object] = {"kind": REQUEST_TYPE, "id": ident,
+                      "requester": self.agent_id, "approver": approver}
+            if approval_ancestors is not None:
+                fields["frozen_ancestors"] = list(approval_ancestors)
+            metadata = json.dumps(fields)
+            if request_id({"type": "QUESTION", "thread_id": metadata,
+                           "from": self.agent_id, "to": to}, outbound_ancestors=approval_ancestors) != ident:
+                return False
+            flags = ["--type", "QUESTION", "--thread-id", metadata]
         try:
             tmp = INBOX_ROOT.parent / f".litetui_send_{uuid.uuid4().hex}.txt"
             tmp.write_text(body, encoding="utf-8")
@@ -524,12 +693,15 @@ class Seat:
                 # NO --priority flag: this CLI has no such option, and unknown tokens
                 # fall through into the message body — combined with --body-file that
                 # is "both given" -> exit 1. Every send would fail for it.
+                budget = 30.0 if deadline is None else min(30.0, deadline - time.monotonic())
+                if budget <= 0:
+                    return False
                 r = _cli(
                     ["send", to,
-                     "--body-file", str(tmp), "--from", self.agent_id],
-                    timeout=30,
+                     "--body-file", str(tmp), "--from", self.agent_id, *flags],
+                    timeout=budget,
                 )
-                return r.returncode == 0
+                return r.returncode == 0 and (deadline is None or time.monotonic() < deadline)
             finally:
                 try:
                     tmp.unlink()
@@ -592,15 +764,33 @@ HARNESS_TOOL_SPEC = tool_schemas.load("harness")
 AGENTS_DIR = Path.home() / ".liteharness" / "agents"
 
 
+def registered_spawner(agent_id: str) -> str | None:
+    """Read current launch lineage by exact id, never a name or cached edge."""
+    if (not isinstance(agent_id, str) or not agent_id or agent_id.startswith("-")
+            or any(char.isspace() or char in "/\\\\:" for char in agent_id)):
+        return None
+    try:
+        row = json.loads((AGENTS_DIR / f"{agent_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(row, dict) or row.get("agent_id") != agent_id:
+        return None
+    parent = row.get("spawned_by")
+    if (not isinstance(parent, str) or not parent or parent != parent.strip()
+            or parent == agent_id or parent.startswith("-")
+            or any(char.isspace() or char in "/\\\\:" for char in parent)):
+        return None
+    return parent
+
+
 def other_live_litetui(self_id: str | None = None) -> str | None:
-    """The NAME of another live LiteTUI, or None when this is the only one.
+    """The NAME of another live local-model LiteTUI, if one exists.
 
     🔴 THE REGISTRY, NOT A PROCESS SCAN. the user's ruling (a-62edbbe0): two
-    instances SHARE a model server and run in parallel, and the only thing he
-    wants guarded is a load that puts a SECOND set of weights in VRAM. So the
-    question is not "is another litetui.exe running" — LiteSuite's headless
-    children are LiteTUI too, they load models, and they are not that image.
-    A registry row with `cli == "litetui"` is every one of them.
+    instances may share a model server and run in parallel, and the only thing
+    he wants guarded is a load that puts a SECOND set of weights in VRAM. A
+    cloud-backed LiteTUI cannot add local weights. The registry includes both
+    headed and headless local seats, so a process-name scan is insufficient.
 
     ⚠️ LIVENESS IS `session_pid`, AND AN UNREADABLE ROW COUNTS AS ALIVE. A stale
     file left by a crash must not raise a modal forever; an ELEVATED sibling we
@@ -620,6 +810,11 @@ def other_live_litetui(self_id: str | None = None) -> str | None:
         except Exception:
             continue
         if data.get("cli") != "litetui":
+            continue
+        # Hosted seats cannot add model weights to this host's VRAM. Keep an
+        # unknown backend in scope for older presence rows and local custom
+        # endpoints, where skipping the warning would be an unsafe guess.
+        if data.get("backend") in {"codex", "claude", "cline", "free"}:
             continue
         aid = data.get("agent_id") or f.stem
         if self_id and aid == self_id:
@@ -688,6 +883,36 @@ def discover() -> str:
         return f"[error] discover: {type(e).__name__}: {e}"
 
 
+def _dead_name_holder_hint(seat: Seat) -> str | None:
+    """Read-only retry advice; unknown ownership is not proof of a dead holder."""
+    if harness_disabled() or not AGENTS_DIR.is_dir():
+        return None
+    dead_holder = False
+    for path in AGENTS_DIR.glob("*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None  # an unreadable row could be another live name holder
+        if not isinstance(row, dict):
+            return None
+        if str(row.get("name") or "").casefold() != seat.name.casefold():
+            continue
+        if (row.get("agent_id") or path.stem) == seat.agent_id:
+            return None  # this seat already holds the name
+        pid = row.get("session_pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return None
+        if router_record.pid_is_live(pid):
+            return None
+        dead_holder = True
+    if not dead_holder:
+        return None
+    import shlex
+    # Render only: the normal register/heartbeat argv NEVER gains --takeover.
+    command = shlex.join(["liteharness", *seat._presence_argv(), "--takeover"])
+    return f"Manual dead-holder retry: {command}"
+
+
 def run(seat, args: dict) -> str:
     """Dispatch the `harness` tool. Never raises — every path returns text."""
     # str() first: a model can emit a number or null here, and .strip() on a
@@ -705,6 +930,9 @@ def run(seat, args: dict) -> str:
         ]
         if seat.error:
             lines.append(f"error      : {seat.error}")
+        hint = _dead_name_holder_hint(seat)
+        if hint:
+            lines.append(hint)
         return "\n".join(lines)
 
     if action == "discover":

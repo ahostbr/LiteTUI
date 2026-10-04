@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from litetui import settings
+from litetui import settings, settings_service
 
 
 def test_protocol_refuses_unsupported_version():
@@ -151,9 +151,11 @@ async def test_real_app_management_persists_history_settings_memory_and_jobs(tmp
         assert extensions["plugins"]
         hooks = await async_dispatch(app, {"type": "gui.hooks.get"})
         assert "tool_before" in hooks["events"]
-        def refuse_save(_):
+        def refuse_save(*_):
             raise OSError("fixture disk failure")
-        monkeypatch.setattr(settings, "save", refuse_save)
+        # With a conversation open, persistence goes through the settings service
+        # (b93eea1), not settings.save; _write is the door that touches disk.
+        monkeypatch.setattr(settings_service, "_write", refuse_save)
         with pytest.raises(OSError, match="could not be saved"):
             await async_dispatch(app, {"type": "gui.settings.apply", "patch": {"max_tokens_chat": 2048}})
         assert app.settings.max_tokens_chat == 2048  # honest session-only outcome
@@ -210,6 +212,7 @@ async def test_correlated_host_tool_completes_and_rejects_late_result(monkeypatc
     from litetui.gui_rpc import async_dispatch, dispatch
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
     app = app_mod.LiteTUI()
+    app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Owner's own (owner-marked)
     spec = {"type": "function", "function": {"name": "roundtrip", "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}}
     await async_dispatch(app, {"type": "gui.host_tools.register", "plugin_id": "fixture", "tools": [spec]})
     requests = []
@@ -263,7 +266,7 @@ def test_two_scheduler_instances_deliver_a_slot_once(tmp_path, monkeypatch):
     monkeypatch.setattr(app_mod.hook_host, "start_prompt", lambda app, prompt: delivered.append(prompt))
     def fake(job):
         return SimpleNamespace(jobs=[job], convo_id="same", _chat_running=lambda: False,
-                               _system=lambda *_: None, _user_bubble=lambda *_: None)
+                               _system=lambda *_: None, _user_bubble=lambda *_, **__: None)
     app_mod.LiteTUI._fire_job(fake(a_job), a_job)
     app_mod.LiteTUI._fire_job(fake(b_job), b_job)
     assert len(delivered) == 1
@@ -347,6 +350,7 @@ def test_gui_midturn_submission_queues_or_interrupts_with_chosen_authority(tmp_p
     from litetui.gui_rpc import dispatch
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
     app = app_mod.LiteTUI()
+    app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Owner's own (owner-marked)
     app.settings.enter_interrupts = enter_interrupts
     app._chat_running = lambda: True
     app._user_bubble = lambda *a, **kw: None

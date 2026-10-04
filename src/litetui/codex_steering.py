@@ -38,6 +38,14 @@ class SteeringLedger:
     def __init__(self, entries, save):
         self.entries = entries
         self.save = save
+        # Read compatibility for existing conversations only. New enqueues use
+        # goal-owner; the legacy spelling is not an attended-source default.
+        from litetui.legacy_goal_source import normalize_persisted_goal_source
+
+        for entry in self.entries:
+            item = entry.get("item", {})
+            if "source" in item:
+                item["source"] = normalize_persisted_goal_source(item["source"])
 
     def enqueue(self, item, thread_id, turn_id):
         entry = {
@@ -47,7 +55,7 @@ class SteeringLedger:
             "state": "queued",
             "item": {
                 key: copy.deepcopy(item[key])
-                for key in ("content", "text", "source", "tool_profile", "operation_id")
+                for key in ("content", "text", "source", "tool_profile", "operation_id", "approval_request_id")
                 if key in item
             },
         }
@@ -126,13 +134,19 @@ class HostSteering:
         self.ledger = SteeringLedger(metadata.setdefault("steering", []), save)
 
     async def admit(self, item):
-        from litetui import hook_host
+        from litetui import hook_host, seat_authority
 
         context = {
             **hook_host.context(self.app),
             "source": item.get("source", "queued"),
             "turn_id": str(uuid.uuid4()),
         }
+        # T1043: a seat below the fleet floor steers nothing. Refused HERE,
+        # before the app-server holds it; the "denied" path retains the item.
+        why = seat_authority.floor_refusal(self.app, hook_host._turn_source(item))
+        if why is not None:
+            context["reason"] = why
+            return False, context
         if getattr(self.app, "hook_config", None) is None:
             return True, context
         await hook_host.drain_lifecycle(self.app)
@@ -140,7 +154,10 @@ class HostSteering:
             self.app,
             "prompt_before",
             {"prompt": item["content"]},
-            profile=item.get("tool_profile"),
+            # T1027: the resolved authority, like hook_host.admit_prompt; the
+            # producer's profile is only a request (Dijkstra R1).
+            profile=seat_authority.turn_profile(
+                self.app, hook_host._turn_source(item), item.get("tool_profile")),
             captured=context,
         )
         context["reason"] = result.reason
@@ -178,8 +195,11 @@ class HostSteering:
                         "reason": entry["admission"].get("reason", "Prompt refused"),
                     }
                 )
+                reason = entry["admission"].get("reason") or ""
                 self.app._system(
-                    "Queued prompt rejected by its admission hook; retained in /hooks."
+                    # T1043: a floor refusal names itself, not a hook.
+                    reason if reason.startswith("TURN REFUSED")
+                    else "Queued prompt rejected by its admission hook; retained in /hooks."
                 )
                 remove_item(queue, item)
             else:
@@ -209,7 +229,8 @@ def accept_steered(app, item):
     ):
         hook_host.accept_prompt(
             app,
-            {
+            native_accepted=True,
+            item={
                 **item,
                 "_gui_in_turn": True,
                 "_codex_metadata": {

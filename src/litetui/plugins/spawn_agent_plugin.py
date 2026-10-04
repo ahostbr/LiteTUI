@@ -9,16 +9,22 @@ from litetui.agent_capabilities import hosted_levels
 from litetui.agent_tool_bridge import make_runner
 
 SPEC = tool_schemas.load('spawn_agent')
-# A full autonomous child may invoke any available tool. Declaring only network
-# or workspace-write here would understate the delegated authority.
-POLICY = ToolPolicy(frozenset(CAPABILITIES), 'Launch a full autonomous tool-using child')
+# A full child may invoke any available tool. Declaring only network or
+# workspace-write here would understate the delegated authority.
+POLICY = ToolPolicy(frozenset(CAPABILITIES), 'Launch a full tool-using child')
 
 
 def capture_launch(app, request):
     depth = require_root_launcher()
     profile = getattr(app, '_active_tool_profile', None) or app.settings.tool_policy_profile
-    if profile != 'autonomous':
-        raise LaunchBlocked('Full child tool currently requires autonomous parent policy; approval relay is not integrated')
+    # T1049-B2: an interactive parent may spawn when its child's CONFIRMs have
+    # somewhere to go (collect_turn -> approve_for_child): Owner's own UI, its own
+    # supervising host, its spawner, or Owner's hand-launched modal. Only a parent
+    # an agent launched without naming itself has none.
+    from litetui import seat_authority
+    if profile != 'autonomous' and seat_authority.confirm_route(app) == 'refuse':
+        raise LaunchBlocked("No approval path for the child's confirms: this LiteTUI was launched "
+                            'by an agent without LITETUI_SPAWN_IDENTITY + LITEHARNESS_SPAWNED_BY (T1049)')
     if hasattr(app.backend, 'app_server'):
         raise LaunchBlocked('Native app-server parent result delivery is not integrated')
     from litetui import hook_host

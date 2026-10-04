@@ -118,10 +118,37 @@ def test_store_none_is_unreadable_busy():
     assert r.snapshot.turn_active is True
 
 
-def test_store_pending_is_busy_not_unreadable():
+def test_staged_store_is_idle_not_unreadable():
     r = _clear(store=NS(pending=True, loading=False))
-    assert r.snapshot.management_active is True and r.snapshot.turn_active is True
-    assert "app.store" not in r.unreadable
+    assert can_commit_candidate(r.snapshot) is True
+    assert r.unreadable == ()
+
+
+@pytest.mark.parametrize("state", [WorkerState.PENDING, WorkerState.RUNNING])
+def test_staged_store_does_not_hide_a_real_turn(state):
+    r = _clear(store=NS(pending=True, loading=False), workers=[_w("chat", state)])
+    assert r.snapshot.turn_active is True
+    assert can_commit_candidate(r.snapshot) is False
+
+
+@pytest.mark.parametrize("store", [NS(), NS(pending=True), NS(pending=True, loading=True)])
+def test_staged_store_loading_missing_or_active_stays_busy(store):
+    r = _clear(store=store)
+    assert r.snapshot.turn_active is True
+    assert r.snapshot.management_active is True
+    assert can_commit_candidate(r.snapshot) is False
+
+
+def test_store_loading_raising_stays_fail_closed():
+    class Store:
+        @property
+        def loading(self):
+            raise RuntimeError("unreadable")
+
+    r = _clear(store=Store())
+    assert "app.store" in r.unreadable
+    assert r.snapshot.turn_active is True
+    assert r.snapshot.management_active is True
 
 
 def test_store_loading_is_busy():
