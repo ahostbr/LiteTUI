@@ -33,7 +33,12 @@ def _store_in_tmp(tmp_path, monkeypatch):
 
 
 def make_app() -> "m.LiteTUI":
-    a = m.LiteTUI()
+    from litetui.agent_launch_context import ordinary
+    from litetui import settings
+    cfg = settings.load()
+    cfg.default_model = 'a-model'
+    session = ordinary(paths.data_root(), cfg)
+    a = m.LiteTUI(agent_session=session)
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -73,8 +78,8 @@ async def test_convos_opens_the_picker_modal(tmp_path) -> None:
             "/convos must open the picker modal, not print rows into the chat"
         )
         assert a.screen._title == "Choose an agent"
-        assert len(a.screen.query_one(OptionList).options) == 1, (
-            "the seeded conversation must be one selectable row"
+        assert len(a.screen.query_one(OptionList).options) == 2, (
+            "both the seeded agent and current owned home must be selectable rows"
         )
         await pilot.press("escape")
         await pilot.pause()
@@ -103,9 +108,12 @@ async def test_convos_with_no_savings_stays_flat(tmp_path) -> None:
         base = a.screen
         a._handle_command("/convos")
         await pilot.pause()
-        assert a.screen is base, (
-            "an empty store must not open an empty modal - say so instead"
-        )
+        assert isinstance(a.screen, PickerScreen)
+        assert a.screen._title == 'Choose an agent'
+        assert len(a.screen.query_one(OptionList).options) == 1
+        await pilot.press('enter')
+        await pilot.pause()
+        assert a.screen is base, 'the current home has no saved conversations to pick'
 
 
 @pytest.mark.asyncio

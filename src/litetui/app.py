@@ -4810,6 +4810,8 @@ class LiteTUI(App):
         # and claim; the actual release/unload needs confirmed quiescence and is a
         # separate coordinated slice. Only on a real replacement (different object);
         # a same-object reassignment is a no-op.
+        # Publish home authority before mutating runtime or closing old resources.
+        self._remember_for_this_convo("backend", getattr(value, "name", None))
         old = getattr(self, "_backend", None)
         if old is not None and old is not value:
             old_session = getattr(old, "_admission_session", None)
@@ -4817,7 +4819,6 @@ class LiteTUI(App):
                 old_session.begin_close()
         self._backend = value
         self._resume_backend_error = None
-        self._remember_for_this_convo("backend", getattr(value, "name", None))
         # An explicitly injected WS3 admission bundle installs on the new
         # backend. Any old session keeps its leases until confirmed teardown.
         # WS3 admission has no production demand resolver yet. Installing its

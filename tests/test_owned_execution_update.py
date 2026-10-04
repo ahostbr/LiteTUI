@@ -67,3 +67,37 @@ def test_missing_model_is_not_explicit_unchosen(tmp_path):
     path.write_text(json.dumps(raw))
     with pytest.raises(StoreError):
         AgentStore(tmp_path).list_agents()
+
+
+
+def test_backend_publication_failure_keeps_old_backend_and_admission_open(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from litetui import app as app_module, convo_settings
+    cfg = settings.Settings()
+    cfg.default_model = 'old-fixture'
+    with ordinary(tmp_path, cfg) as session:
+        events = []
+        old = SimpleNamespace(name=session.authority.backend,
+                              _admission_session=SimpleNamespace(begin_close=lambda: events.append('close')))
+        class Host:
+            backend = app_module.LiteTUI.backend
+            _remember_for_this_convo = app_module.LiteTUI._remember_for_this_convo
+        app = Host()
+        app._backend = old
+        app._resume_backend_error = 'retain-error'
+        app._agent_session = session
+        app.settings = cfg
+        app.convo_dir = session.conversation_directory(session.initial_conversation_id)
+        app._convo_settings = convo_settings.born_from(cfg)
+        app._system = events.append
+        before = (session.memory_root / 'settings.json').read_bytes()
+        def failed(*args):
+            raise OSError('fixture backend publication refused')
+        monkeypatch.setattr(agent_ownership.os, 'replace', failed)
+        with pytest.raises(OSError, match='backend publication refused'):
+            app.backend = SimpleNamespace(name='codex')
+        assert app.backend is old
+        assert app._resume_backend_error == 'retain-error'
+        assert 'close' not in events
+        assert session.authority.backend == old.name
+        assert (session.memory_root / 'settings.json').read_bytes() == before
