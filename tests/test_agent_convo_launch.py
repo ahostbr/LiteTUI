@@ -76,12 +76,13 @@ def test_actual_cli_uuid_only_never_falls_back_to_archive(launch_world, failure,
     assert (archive / 'convo.jsonl').read_bytes() == b'legacy archive evidence'
 
 
-def test_unnamed_managed_child_fresh_cli_unchanged(launch_world, monkeypatch):
+def test_unnamed_managed_child_fresh_cli_owns_operation_local_home(launch_world, monkeypatch):
     root, seen = launch_world
     # Actual managed transport uses no --convo; its validated operation-owned
     # root/depth does not become a blanket legacy resume exception.
     monkeypatch.setattr(sys, 'argv', ['litetui', '--backend', 'codex', '--model', 'fixture'])
     monkeypatch.setenv('LITETUI_AGENT_DEPTH', '1')
     cli.main()
-    assert len(seen) == 1 and seen[0]['agent_session'] is None
-    assert not (root / '.agents').exists()
+    assert len(seen) == 1 and seen[0]['agent_session'] is not None
+    assert (root / '.agents').is_dir()
+    assert not (root / '.convos').exists()

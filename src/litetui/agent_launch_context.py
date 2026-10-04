@@ -40,6 +40,50 @@ def create(root: Path, name: str, *, agent_id: str, backend: str,
                                     backend=backend, model=model, thinking_level=thinking_level)
 
 
+def ordinary(root: Path, settings, *, spawned_identity=None, notice=print,
+             backend=None, model=None, thinking_level=None) -> AgentSession:
+    """Open default owned seat; only standalone contention creates a new name."""
+    from uuid import uuid4
+    from litetui.agent_ownership import OwnershipError
+    store = AgentStore(root)
+    agents = store.list_agents()  # corrupt/inactive metadata remains fail-closed
+    explicit = spawned_identity is not None
+    identity, name = (spawned_identity[:2] if explicit else
+                      (None, (settings.seat_name or '').strip() or 'LiteTUI'))
+    existing = [a for a in agents if a.name.casefold() == name.casefold()]
+    if existing:
+        if explicit and existing[0].agent_id != valid_id(identity):
+            raise StoreError('Spawn identity disagrees with existing agent home')
+        try:
+            return acquire(root, name, backend=backend, model=model, thinking_level=thinking_level)
+        except OwnershipError as exc:
+            if explicit or getattr(exc.__cause__, 'errno', None) not in (13, 11, 36):
+                raise
+    elif store.agent_directory(name).exists():
+        raise StoreError('Default home is inactive; operator verification/activation required')
+    else:
+        try:
+            return AgentSession.create_fresh(store, name=name, agent_id=identity or str(uuid4()),
+                          backend=backend if backend is not None else settings.backend,
+                          model=model if model is not None else settings.default_model,
+                          thinking_level=thinking_level or settings.thinking_level, allow_unchosen=not explicit)
+        except (FileExistsError, OwnershipError):
+            if explicit:
+                raise
+        except StoreError:
+            # Another default reservation can win between catalog read and mkdir.
+            if explicit or not store.agent_directory(name).exists():
+                raise
+    identity = str(uuid4())
+    unique = 'LiteTUI-' + identity[:8]
+    session = AgentSession.create_fresh(store, name=unique, agent_id=identity,
+                     backend=backend if backend is not None else settings.backend,
+                     model=model if model is not None else settings.default_model,
+                     thinking_level=thinking_level or settings.thinking_level, allow_unchosen=True)
+    notice(f'Default agent is busy; opened {unique} in its own home.')
+    return session
+
+
 def apply_settings(session: AgentSession, settings) -> None:
     authority = session.authority
     settings.backend = authority.backend

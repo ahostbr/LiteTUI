@@ -37,7 +37,7 @@ def _truncate(out: str) -> str:
 def _run(args: dict) -> str:
     if not CLI.exists():
         return f"[error] convo_search: CLI missing at {CLI}"
-    cmd = [sys.executable, str(CLI)]
+    cmd = [sys.executable, str(CLI), '--root', str(paths.data_root()), '--index']
     if args.get("stats"):
         cmd.append("--stats")
     elif args.get("show"):

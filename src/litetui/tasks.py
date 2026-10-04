@@ -417,7 +417,7 @@ def render_list(tasks) -> str:
 # ── store ───────────────────────────────────────────────────────────────
 
 
-def save(tasks, root: Path | str) -> None:
+def save(tasks, root: Path | str, *, agent_session=None) -> None:
     """Persist through `row_store`: re-read, apply OUR delta, replace atomically.
 
     🔴 A WHOLE-FILE WRITE IS A LOST UPDATE AS SOON AS THERE ARE TWO WINDOWS.
@@ -435,7 +435,9 @@ def save(tasks, root: Path | str) -> None:
     `jobs.json`, which has three deletion paths, needs the same helper for the
     half this file does not exercise.
     """
-    row_store.write(Path(root) / STORE, [t.to_row() for t in tasks], prefix=".tasks-")
+    from litetui.owned_storage import require_conversation
+    root = require_conversation(root, agent_session)
+    row_store.write(root / STORE, [t.to_row() for t in tasks], prefix=".tasks-")
 
 
 class StoreNotBorn(Exception):
@@ -462,12 +464,7 @@ def convo_store_dir(convo_id: str, *, agent_session=None) -> Path:
         if not d.is_dir():
             raise StoreNotBorn(f'owned conversation {convo_id} has no directory yet')
         return d
-    if not convo_id or convo_id in (".", "..") or Path(convo_id).name != convo_id:
-        raise StoreNotBorn(f"no task store for conversation id {convo_id!r}")
-    d = Path(paths.CONVO_DIR) / convo_id
-    if not d.is_dir():
-        raise StoreNotBorn(f"conversation {convo_id} has no directory yet; its task rows have nowhere to go")
-    return d
+    raise StoreNotBorn('An owned agent session is required for task persistence; archives are read-only')
 
 
 def save_by_convo(tasks, *, agent_session=None) -> None:
@@ -484,7 +481,8 @@ def save_by_convo(tasks, *, agent_session=None) -> None:
     failures: list[Exception] = []
     for convo_id, rows in groups.items():
         try:
-            save(rows, convo_store_dir(convo_id, agent_session=agent_session))
+            save(rows, convo_store_dir(convo_id, agent_session=agent_session),
+                 agent_session=agent_session)
         except (StoreNotBorn, OSError) as e:
             failures.append(e)
     if failures:
@@ -516,7 +514,7 @@ def _marker_sig(marker: Path) -> dict | None:
     return {"size": raw.get("size"), "mtime_ns": raw.get("mtime_ns")}
 
 
-def topup(convo_dir: Path | str, legacy_root: Path | str) -> int:
+def topup(convo_dir: Path | str, legacy_root: Path | str, *, agent_session=None) -> int:
     """Copy this conversation's rows out of the legacy shared file. Returns how many.
 
     🔴 COPY-ONLY, AND ON EVERY BIND. The legacy file is opened for READING and
@@ -532,7 +530,8 @@ def topup(convo_dir: Path | str, legacy_root: Path | str) -> int:
     it. A directory that does not exist is left alone (a top-up never creates
     one); a legacy file that cannot be read leaves no marker and is retried.
     """
-    convo_dir = Path(convo_dir)
+    from litetui.owned_storage import require_conversation
+    convo_dir = require_conversation(convo_dir, agent_session)
     legacy = Path(legacy_root) / STORE
     if not convo_dir.is_dir():
         return 0
@@ -571,7 +570,7 @@ def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str, 
     rpc `tasks.list` filter to the current conversation (`host_tasks_for_app`).
     """
     if agent_session is None:
-        topup(convo_dir, legacy_root)
+        pass  # retained archive rows may be read, never top-up/lock/write on bind
     else:
         try:
             expected = agent_session.conversation_directory(Path(convo_dir).name)

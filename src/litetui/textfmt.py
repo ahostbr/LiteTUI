@@ -182,6 +182,29 @@ def memory_prompt(convo_id: str, folder: Path) -> str:
     )
 
 
+def refresh_store_address(prompt: str, convo_id: str, folder: Path) -> str:
+    """Replace only the host storage instruction block, preserving user/snapshot text."""
+    import re
+    header = '## Your conversation store'
+    start = prompt.find(header)
+    if start < 0:
+        return prompt + memory_prompt(convo_id, folder)
+    # Recognize the exact generated address stanza, then replace only the
+    # address occurrences in its recognizable template-sized span. Trailing
+    # unheaded user prose and snapshots are not part of our template.
+    match = re.search(r'Your conversation id \(storage only\) is `([^`]+)`.*?\n    ([^\n]+)\n',
+                      prompt[start:], re.DOTALL)
+    if match is None:
+        return prompt + memory_prompt(convo_id, folder)
+    old_id, old_folder = match.groups()
+    old_block = memory_prompt(old_id, Path(old_folder)).lstrip('\n')
+    if not prompt.startswith(old_block, start):
+        # User edited this generated block: do not erase their edits. Add the
+        # current host address separately, with no guessed deletion boundary.
+        return prompt + memory_prompt(convo_id, folder)
+    return prompt[:start] + memory_prompt(convo_id, folder).lstrip('\n') + prompt[start + len(old_block):]
+
+
 def _markdown_to_text(src: str, width: int) -> Text:
     """Markdown rendered to a styled Text.
 

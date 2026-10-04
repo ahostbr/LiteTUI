@@ -28,8 +28,39 @@ import sqlite3
 import sys
 import time
 
-ROOT = r"C:\Projects\LiteTUI\.convos"
-DB_PATH = r"C:\Projects\LiteTUI\tools\convo_search.db"
+from pathlib import Path
+
+# Direct script execution uses the package shipped with this checkout.
+if str(Path(__file__).resolve().parents[1] / 'src') not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from litetui.paths import data_root
+from litetui.storage_catalog import conversations
+from litetui.agent_store import StoreError
+
+ROOT = data_root()
+DB_PATH = str(ROOT / '.conversation-search.db')
+
+
+def catalog_paths():
+    rows = conversations(ROOT, include_archives=True)
+    selected = {}
+    for row in rows:
+        previous = selected.get(row.conversation_id)
+        if previous is not None:
+            if not previous.archive and not row.archive:
+                raise StoreError('Search conversation has ambiguous owned membership')
+            if not previous.archive:
+                continue
+        selected[row.conversation_id] = row
+    return {cid: row.transcript for cid, row in selected.items()}
+
+
+def schema(conn):
+    conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(convos)')}
+    for name, kind in (('source_path', 'TEXT'), ('mtime_ns', 'INTEGER')):
+        if name not in columns:
+            conn.execute(f'ALTER TABLE convos ADD COLUMN {name} {kind}')
 MAX_MSG_CHARS = 100_000  # cap per message stored in the index (raw stays on disk)
 
 SCHEMA = """
@@ -126,16 +157,18 @@ def parse_line(raw: bytes):
 
 
 def index_convo(conn, path, force=False):
-    convo_id = path.name
-    size = path.stat().st_size
-    row = conn.execute("SELECT file_size, byte_offset FROM convos WHERE id=?", (convo_id,)).fetchone()
+    convo_id = path.parent.name
+    stat = path.stat()
+    size = stat.st_size
+    row = conn.execute("SELECT file_size, byte_offset, source_path, mtime_ns FROM convos WHERE id=?", (convo_id,)).fetchone()
     stored_size = row[0] if row else -1
     stored_offset = row[1] if row else 0
+    changed_source = row is not None and (row[2] != str(path) or row[3] != stat.st_mtime_ns)
 
-    if not force and row and size == stored_size:
+    if not force and row and size == stored_size and not changed_source:
         return 0  # up to date
 
-    full = force or size < stored_offset or row is None
+    full = force or size < stored_offset or row is None or (changed_source and size == stored_size) or (row is not None and row[2] != str(path))
     if full:
         conn.execute("DELETE FROM messages WHERE convo_id=?", (convo_id,))
         conn.execute("DELETE FROM msgs_fts WHERE convo_id=?", (convo_id,))
@@ -167,7 +200,7 @@ def index_convo(conn, path, force=False):
                        ON CONFLICT(id) DO UPDATE SET
                          agent_name=excluded.agent_name, agent_id=excluded.agent_id,
                          model=excluded.model, created=excluded.created""",
-                    (obj.get("id") or convo_id, obj.get("agent_name"),
+                    (convo_id, obj.get("agent_name"),
                      obj.get("agent_id"), obj.get("model"), obj.get("created")),
                 )
             else:
@@ -191,10 +224,11 @@ def index_convo(conn, path, force=False):
             offset = f.tell()
 
     conn.execute(
-        """INSERT INTO convos(id, file_size, byte_offset) VALUES(?,?,?)
+        """INSERT INTO convos(id, file_size, byte_offset, source_path, mtime_ns) VALUES(?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET file_size=excluded.file_size,
-             byte_offset=excluded.byte_offset""",
-        (convo_id, size, offset),
+             byte_offset=excluded.byte_offset, source_path=excluded.source_path,
+             mtime_ns=excluded.mtime_ns""",
+        (convo_id, size, offset, str(path), stat.st_mtime_ns),
     )
     stats = conn.execute(
         """SELECT COUNT(*), SUM(LENGTH(text)) FILTER (WHERE role IN ('user','assistant')),
@@ -210,16 +244,18 @@ def index_convo(conn, path, force=False):
 
 
 def build_index(force=False):
-    conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMA)
-    convos = sorted(os.listdir(ROOT))
+    convos = catalog_paths()  # validate all owned catalog before creating index state
+    conn = open_db()
     t0 = time.time()
     total = 0
-    for name in convos:
-        p = os.path.join(ROOT, name)
-        cj = os.path.join(p, "convo.jsonl")
-        if os.path.isdir(p) and os.path.exists(cj):
-            total += index_convo(conn, _Path(cj))
+    for cid, path in convos.items():
+        total += index_convo(conn, path, force=force)
+    for (cid,) in conn.execute('SELECT id FROM convos').fetchall():
+        if cid not in convos:
+            conn.execute('DELETE FROM messages WHERE convo_id=?', (cid,))
+            conn.execute('DELETE FROM msgs_fts WHERE convo_id=?', (cid,))
+            conn.execute('DELETE FROM convos WHERE id=?', (cid,))
+    conn.commit()
     print(f"indexed {len(convos)} convos, {total} new message rows in {time.time() - t0:.1f}s -> {DB_PATH}")
     conn.close()
 
@@ -238,7 +274,7 @@ class _Path:
 
 def open_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMA)
+    schema(conn)
     return conn
 
 
@@ -362,7 +398,10 @@ def do_show(conn, prefix, maxchars=400):
 
 def do_raw(conn, prefix, pattern):
     cid = resolve_convo(conn, prefix)
-    path = os.path.join(ROOT, cid, "convo.jsonl")
+    path = catalog_paths().get(cid)
+    stored = conn.execute('SELECT source_path FROM convos WHERE id=?', (cid,)).fetchone()
+    if path is None or stored is None or stored[0] != str(path):
+        raise StoreError('Search source changed; refresh index before raw lookup')
     rx = re.compile(pattern)
     n = 0
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -403,7 +442,13 @@ def main():
     ap.add_argument("--reindex", action="store_true", help="force full rebuild")
     ap.add_argument("--stats", action="store_true")
     ap.add_argument("--index", action="store_true", help="incremental index pass, then exit (or before a search)")
+    ap.add_argument('--root', type=Path, help='configured durable data root (owned plus read-only archives)')
     args = ap.parse_args()
+    global ROOT, DB_PATH
+    if args.root is not None:
+        ROOT = args.root.resolve()
+        DB_PATH = str(ROOT / '.conversation-search.db')
+    catalog_paths()  # fail closed on corrupt/ambiguous owned catalog even for existing index
 
     if args.reindex:
         build_index(force=True)

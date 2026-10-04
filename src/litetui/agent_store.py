@@ -177,8 +177,12 @@ def _read_agent_metadata(directory: Path, *, inactive_catalog: bool = False) -> 
     execution = settings.get("execution")
     if not isinstance(execution, dict) or any(
             not isinstance(execution.get(key), str) or not execution[key].strip()
-            for key in ("backend", "model", "thinking_level")):
-        raise StoreError("Agent execution authority is incomplete")
+            for key in ('backend', 'thinking_level')):
+        raise StoreError('Agent execution authority is incomplete')
+    unchosen = execution.get('model_selection') == 'unchosen' and 'model' in execution and execution['model'] is None
+    if not unchosen and (not isinstance(execution.get('model'), str) or not execution['model'].strip()
+                         or execution.get('model_selection', 'chosen') != 'chosen'):
+        raise StoreError('Agent model authority is incomplete')
     return Agent(name, identity, directory, settings)
 
 

@@ -259,7 +259,7 @@ def _never_write_the_live_task_store(tmp_path, monkeypatch):
     real_finish = tasks_mod.finish
 
     monkeypatch.setattr(
-        tasks_mod, "save", lambda tasks, root: real_save(tasks, _swap(root))
+        tasks_mod, "save", lambda tasks, root, **kwargs: real_save(tasks, _swap(root), **kwargs)
     )
     monkeypatch.setattr(tasks_mod, "load", lambda root: real_load(_swap(root)))
     monkeypatch.setattr(

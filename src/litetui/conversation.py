@@ -171,8 +171,10 @@ class ConversationRepository:
 
     def stage(self, convo_id: str) -> None:
         """Pick the id and the paths. Touch no disk."""
-        directory = (self.agent_session.conversation_directory(convo_id)
-                     if self.agent_session is not None else paths.CONVO_DIR / convo_id)
+        if self.agent_session is None:
+            from litetui.agent_store import StoreError
+            raise StoreError('An owned agent session is required to stage a conversation')
+        directory = self.agent_session.conversation_directory(convo_id)
         self.release()
         self.convo_id = convo_id
         self.convo_dir = directory
@@ -192,7 +194,10 @@ class ConversationRepository:
             if Path(path) != expected:
                 from litetui.agent_store import StoreError
                 raise StoreError("Resume transcript disagrees with owned agent")
-        self.acquire(path.parent)
+        if self.agent_session is not None:
+            self.acquire(path.parent)
+        else:
+            self.release()  # archive browsing never creates a lease or other state
         self.pending = False
         self.convo_path = path
         self.convo_dir = path.parent
@@ -204,6 +209,9 @@ class ConversationRepository:
 
     def acquire(self, directory: Path | None = None) -> None:
         from litetui.shared_state import Lease, check_data_version
+        if self.agent_session is None:
+            from litetui.agent_store import StoreError
+            raise StoreError('An owned agent session is required to write; archives are read-only')
         directory = directory or self.convo_dir
         if directory is None:
             return
@@ -214,8 +222,6 @@ class ConversationRepository:
                 raise StoreError("Conversation lies outside the owned agent")
             _unlinked(directory / ".session.lease")
             root = self.agent_session.store.data_root  # explicit, never nesting-derived
-        else:
-            root = directory.parent.parent  # unchanged legacy compatibility
         target = directory / ".session.lease"
         if self._lease is not None and self._lease.path == target:
             return

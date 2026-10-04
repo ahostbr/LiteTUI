@@ -139,7 +139,7 @@ def load(convo_dir: Path) -> ConvoSettings:
     return cs
 
 
-def save(convo_dir: Path, cs: ConvoSettings) -> Path:
+def save(convo_dir: Path, cs: ConvoSettings, *, agent_session=None) -> Path:
     """Write atomically — temp file plus one `os.replace`.
 
     The same rule T688 established for the global settings, and for the same
@@ -149,12 +149,15 @@ def save(convo_dir: Path, cs: ConvoSettings) -> Path:
     than an error anybody could act on.
     """
     from litetui.shared_state import coordinated_write
+    from litetui.owned_storage import require_conversation
+    convo_dir = require_conversation(convo_dir, agent_session)
     with coordinated_write(path_for(convo_dir)):
-        return _save_locked(convo_dir, cs)
+        return _save_locked(convo_dir, cs, agent_session=agent_session)
 
 
-def _save_locked(convo_dir: Path, cs: ConvoSettings) -> Path:
-    d = Path(convo_dir)
+def _save_locked(convo_dir: Path, cs: ConvoSettings, *, agent_session=None) -> Path:
+    from litetui.owned_storage import require_conversation
+    d = require_conversation(convo_dir, agent_session)
     d.mkdir(parents=True, exist_ok=True)
     p = path_for(d)
     payload = {}

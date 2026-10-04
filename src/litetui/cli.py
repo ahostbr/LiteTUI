@@ -126,6 +126,21 @@ def main() -> None:
                 args.agent = store.find_agent(name=directory.parent.parent.name).name
             except (StoreError, OSError) as exc:
                 parser.error(f'Owned conversation lookup refused: {exc}; pass --agent <Name>. Legacy archives are read-only.')
+        spawned_identity = None
+        from litetui import harness as harness_mod
+        if os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == '1':
+            spawned_identity = harness_mod.spawned_seat_identity()
+        if not args.agent and not args.create_agent:
+            from litetui.agent_launch_context import ordinary
+            try:
+                from litetui.shared_state import check_data_version
+                check_data_version(data_root())
+                agent_session = ordinary(data_root(), settings, spawned_identity=spawned_identity,
+                                         backend=args.backend, model=args.model,
+                                         thinking_level=args.reasoning_effort or args.thinking_level,
+                                         notice=lambda text: print(text, file=sys.stderr))
+            except (ValueError, OSError) as exc:
+                parser.error(str(exc))
         if args.agent or args.create_agent:
             from litetui.agent_launch_context import acquire, create
             try:
@@ -185,6 +200,7 @@ def main() -> None:
             plan_mode=args.mode == "plan",
             convo_id=args.convo,
             agent_session=agent_session,
+            spawn_identity=spawned_identity,
             **app_kwargs,
         )
 
