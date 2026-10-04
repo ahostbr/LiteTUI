@@ -2213,6 +2213,8 @@ class LiteTUI(App):
                 self.settings.user_name = name
                 self.settings.user_name_asked = True
                 settings_runtime.persist_or_raise(self, self.settings)
+                if getattr(self, '_unchosen_picker_pending', False):
+                    self.call_after_refresh(self._offer_unchosen_model)
 
             self.push_screen(UserNameScreen(), _save_user_name)
         # MCP servers connect AFTER the first frame. See __init__ for why.
@@ -5308,6 +5310,27 @@ class LiteTUI(App):
 
     # ── Connection ───────────────────────────────────────────────
 
+    def _offer_unchosen_model(self) -> None:
+        """Do not race onboarding/other modal composition with a second picker."""
+        if (getattr(self, '_owned_storage_released', False) or not self.is_running
+                or self._rpc or getattr(self, '_unchosen_picker_offered', False)):
+            return
+        from litetui.agent_ownership import OwnershipError
+        from litetui.agent_store import StoreError
+        try:
+            if self._agent_session.authority.model is not None:
+                return
+        except (OwnershipError, StoreError):
+            return  # deferred callbacks cannot revive a released/stale capability
+        if not self.available_models:
+            return  # nothing selectable; explicit /model remains available
+        if len(self.screen_stack) > 1:
+            self._unchosen_picker_pending = True
+            return  # onboarding callback retries; other dialogs leave manual /model
+        self._unchosen_picker_pending = False
+        self._unchosen_picker_offered = True
+        self._handle_command('/model')
+
     @work(exclusive=True, group="init")
     async def connect(self) -> None:
         self._gui_connection_success = False
@@ -5373,8 +5396,7 @@ class LiteTUI(App):
                 self._model_id = ''
                 self._system('Choose a model with /model before sending; agent model is not chosen.')
                 if not self._rpc:
-                    from litetui.plugins.model_switch import _cmd_model
-                    self.call_after_refresh(_cmd_model, self, '/model', '')
+                    self.call_after_refresh(self._offer_unchosen_model)
             elif self.available_models:
                 self._resume_connection_error = None
                 # An explicit invocation model is the active selection for this
