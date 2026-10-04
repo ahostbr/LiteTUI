@@ -1555,6 +1555,8 @@ class LiteTUI(App):
         initial_backend: str | None = None,
         initial_thinking: str | None = None,
         launch_options=None,
+        mcp_servers: frozenset[str] | None = None,
+        mcp_lazy: bool = True,
         tool_profile: str | None = None,
         plan_mode: bool = False,
         convo_id: str | None = None,
@@ -1799,7 +1801,11 @@ class LiteTUI(App):
         # `reload_configs()` is the file read only — no network — so /settings,
         # `describe()` and the /mcp dialog still list what is DECLARED from the
         # first frame. Only the CONNECT moves, into `_mcp_connect` after mount.
-        self.mcp = mcp_client.MCPManager(paths.data_root())
+        self._mcp_servers = mcp_servers
+        self._mcp_lazy = mcp_lazy
+        self.mcp = mcp_client.MCPManager(paths.data_root(), seat_servers=mcp_servers, lazy=mcp_lazy)
+        self.mcp.enabled = lambda name: (self.settings.mcp_enabled
+                                        and name not in (self.settings.mcp_disabled_servers or ()))
         if self.settings.mcp_enabled:
             self.mcp.reload_configs()
         self._mcp_dispatch = self.mcp.dispatch()
@@ -2490,6 +2496,10 @@ class LiteTUI(App):
             # a server the user switched off no longer costs a round trip to
             # find that out.
             if name in disabled or not isinstance(sc, dict) or sc.get("disabled"):
+                continue
+            if not self.mcp.allowed(name):
+                continue
+            if self.mcp.defer_start(name):
                 continue
             err = await asyncio.to_thread(self.mcp.connect, name)
             dialled.append(name)

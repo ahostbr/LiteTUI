@@ -214,7 +214,8 @@ async def test_a_real_mcp_stop_during_the_retry_backoff_is_served_not_refused(tm
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"srv": {"command": "x"}}}), encoding="utf-8")
     monkeypatch.setattr(MCPManager, "_build", lambda self, name, sc: ScriptedServer(name, script))
     monkeypatch.setattr(app_mod, "MCP_RETRY_DELAYS", (30.0, 30.0, 30.0))
-    a = app_mod.LiteTUI()
+    # This characterizes eager startup retry; lazy seats intentionally never dial at boot.
+    a = app_mod.LiteTUI(mcp_lazy=False)
     a.available_models, a.model_id = ["a-model"], "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None

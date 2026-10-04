@@ -57,6 +57,34 @@ generated: LiteSuite's install dir, LM Studio's dirs, the HuggingFace cache and
 any custom roots, deduplicated, with voice and embedding GGUFs filtered out by
 the file's own `general.architecture` header rather than by guessing from names.
 
+## Seat-scoped MCP servers
+
+Use `litetui --mcp-servers none` for a scout/doc seat with no project MCP
+servers, or `--mcp-servers SOTS_MCP_CORE,VibeUE` for an exact named set.
+The default is `all`. This is invocation-only: it never rewrites `.mcp.json`
+or shared settings. Unknown selected names produce a startup warning rather
+than silently looking like an empty tool set. Native Codex receives process-local config overrides for
+project registrations; unrelated global Codex servers are outside this scope.
+
+Host-managed stdio servers start lazily by default. `/mcp` shows **not started
+(lazy)** until `tool_search` loads one of their tools or a tool is called.
+After the first real connection, names and schemas are cached in
+`.mcp-tool-cache/` under the data root, keyed by launch config and executable/
+argument-file timestamps. A cold or invalidated cache has no tool names yet:
+an unmatched keyword `tool_search` discovers enabled cold servers on demand,
+then answers from their live tools. This can start multiple cold servers once,
+since their tool keywords are unknowable until discovery. An exact server-name
+query or `select:mcp__server__tool` limits discovery to that server. Empty tool
+lists remain cold. Parallel first calls wait behind startup/maintenance rather
+than failing busy. HTTP servers retain their existing startup.
+`--mcp-start eager` restores eager host startup.
+
+Native Codex owns its direct MCP processes and fixed thread inventory; host
+lazy-start/cache does **not** defer those native registrations. Seat selection
+works there, but an included native server may still start at thread open.
+There is no automatic idle stop. Disconnect/reconnect are explicit lifecycle
+operations; no live project-server or RAM benchmark is implied by this feature.
+
 ## llama.cpp speculative decoding (opt-in)
 
 In `/modelcfg` → **Load** → **Speculative decoding**, choose:

@@ -33,6 +33,8 @@ from litetui.side_panel import SwapButton, close_dialog
 STATE_NOTE = {
     "connected": "serving tools to the model",
     "stopped": "declared, not running",
+    "not started (lazy)": "starts when tool_search loads its tools or a tool is called",
+    "excluded": "not available to this seat (--mcp-servers)",
     "disabled": '"disabled": true in the config',
     "failed": "tried to start and could not",
     "orphan": "running, but no longer in the config — a restart will not bring it back",
@@ -44,6 +46,8 @@ STATE_NOTE = {
 ACTIONS_FOR = {
     "connected": ("disconnect", "reconnect", "remove"),
     "stopped": ("connect", "remove"),
+    "not started (lazy)": ("connect", "disconnect", "remove"),
+    "excluded": (),
     "disabled": ("connect", "remove"),
     "failed": ("connect", "remove"),
     "orphan": ("disconnect",),

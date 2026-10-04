@@ -26,11 +26,22 @@ from litetui.tool_policy import READ_POLICY
 DEFAULT_DEFERRED = frozenset({"studio", "subagent", "listen", "pccontrol"})
 
 
-def _run(reg, args: dict) -> str:
+def _run(reg, args: dict, mcp=None) -> str:
     query = str(args.get("query") or "").strip()
     if not query:
         return "[error] tool_search: a query is required (keywords, or select:<name>)"
+    before = set(reg.activated)
     hits = reg.search_tools(query)
+    if mcp is not None:
+        try:
+            error = mcp.load_tools(query, hits)
+        except Exception as exc:
+            error = f"[error] tool_search MCP startup: {type(exc).__name__}: {exc}"
+        reg.activated = before
+        if error:
+            return error
+        # Read live schemas after starting: a cached tool can have disappeared.
+        hits = reg.search_tools(query)
     if not hits:
         names = ", ".join(sorted(s["function"]["name"] for s in reg.deferred_specs())) or "(none)"
         return f"no deferred tool matches {query!r}. Deferred names: {names}"
@@ -46,14 +57,20 @@ def _register(ctx) -> None:
     reg = app.plugins
     reg.deferred_static = DEFAULT_DEFERRED
     reg.defer_dynamic = True
-    ctx.tool(tool_schemas.load("tool_search"), lambda args: _run(reg, args), policy=READ_POLICY)
+    mcp = getattr(app, "mcp", None)
+    ctx.tool(tool_schemas.load("tool_search"), lambda args: _run(reg, args, mcp), policy=READ_POLICY)
+
+    def lazy_block():
+        names = mcp.lazy_names() if mcp is not None else []
+        return ("\nLazy MCP servers (not running): " + ", ".join(names)
+                + ". Query tool_search with an exact server name to discover its tools.\n") if names else ""
     # Names only; the schemas load through the tool above. Gated on tools_enabled
     # for the same reason the skills index is: without the tool the list would
     # advertise things the model has no way to open.
     ctx.prompt_section(
         PROMPT_ORDER["DEFERRED_TOOLS"],
-        lambda: deferred_tools_block(reg.deferred_specs()),
-        enabled=lambda: app.tools_enabled and bool(reg.deferred_specs()),
+        lambda: deferred_tools_block(reg.deferred_specs()) + lazy_block(),
+        enabled=lambda: app.tools_enabled and bool(reg.deferred_specs() or lazy_block()),
     )
 
 
