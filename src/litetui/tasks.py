@@ -517,7 +517,8 @@ def _marker_sig(marker: Path) -> dict | None:
 def topup(convo_dir: Path | str, legacy_root: Path | str, *, agent_session=None) -> int:
     """Copy this conversation's rows out of the legacy shared file. Returns how many.
 
-    🔴 COPY-ONLY, AND ON EVERY BIND. The legacy file is opened for READING and
+    🔴 EXPLICIT CAPABILITY-GATED TOPUP ONLY; BIND DOES NOT MIGRATE. The legacy
+    file is opened for READING and
     nothing else: no write, no rename, no delete, and not its `.lock` - seats on
     older code keep writing it until they are relaunched, and one that resumes
     this conversation AFTER it was migrated appends its rows there. A one-shot

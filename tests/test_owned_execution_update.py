@@ -101,3 +101,33 @@ def test_backend_publication_failure_keeps_old_backend_and_admission_open(tmp_pa
         assert 'close' not in events
         assert session.authority.backend == old.name
         assert (session.memory_root / 'settings.json').read_bytes() == before
+
+
+@pytest.mark.parametrize('field,value', [('model_id', 'new-model'), ('thinking_level', 'high')])
+def test_failed_normal_setter_keeps_exact_runtime_and_cli_state(tmp_path, monkeypatch, field, value):
+    from litetui import app as app_module, paths
+    cfg = settings.Settings(default_model='home-model', thinking_level='default')
+    monkeypatch.setattr(settings, 'load', lambda: cfg)
+    monkeypatch.setattr(paths, 'data_root', lambda: tmp_path)
+    with ordinary(tmp_path, cfg) as session:
+        app = app_module.LiteTUI(agent_session=session)
+        app._system = lambda text: None
+        app._materialise_convo()
+        app._thinking_level = None
+        app._cli_thinking_level = 'default'
+        app._cli_effective_thinking = 'default'
+        app._resume_connection_error = 'retain-error'
+        before = (app.model_id, app.thinking_level, app._cli_initial_model,
+                  app._cli_thinking_level, app._cli_effective_thinking, app._resume_connection_error)
+        home_before = (session.memory_root / 'settings.json').read_bytes()
+        def failed(*args):
+            raise OSError('fixture exact setter publication refused')
+        monkeypatch.setattr(agent_ownership.os, 'replace', failed)
+        try:
+            with pytest.raises(OSError, match='exact setter publication refused'):
+                setattr(app, field, value)
+            assert (app.model_id, app.thinking_level, app._cli_initial_model,
+                    app._cli_thinking_level, app._cli_effective_thinking, app._resume_connection_error) == before
+            assert (session.memory_root / 'settings.json').read_bytes() == home_before
+        finally:
+            app.store.release()

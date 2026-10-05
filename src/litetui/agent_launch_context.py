@@ -11,18 +11,21 @@ from litetui.agent_ownership import AgentSession
 from litetui.agent_store import AgentStore, StoreError, valid_id
 
 
+def validate_execution(session: AgentSession, *, backend=None, model=None, thinking_level=None) -> None:
+    """Matching explicit flags are harmless; divergence never becomes authority."""
+    authority = session.authority
+    for supplied, saved in ((backend, authority.backend), (model, authority.model),
+                            (thinking_level, authority.thinking_level)):
+        if supplied is not None and supplied != saved:
+            raise StoreError('Launch override disagrees with agent settings; edit agent settings explicitly')
+
+
 def acquire(root: Path, name: str, *, conversation_id: str | None = None,
             backend: str | None = None, model: str | None = None,
             thinking_level: str | None = None) -> AgentSession:
     session = AgentSession.acquire_existing(AgentStore(root), name=name)
     try:
-        authority = session.authority
-        # Explicit matching flags are harmless; divergent flags must not silently
-        # override folder truth or mutate persistent settings during a launch.
-        for supplied, saved in ((backend, authority.backend), (model, authority.model),
-                                (thinking_level, authority.thinking_level)):
-            if supplied is not None and supplied != saved:
-                raise StoreError('Launch override disagrees with agent settings; edit agent settings explicitly')
+        validate_execution(session, backend=backend, model=model, thinking_level=thinking_level)
         if conversation_id is not None:
             directory = session.conversation_directory(valid_id(conversation_id))
             if not (directory / 'convo.jsonl').is_file():

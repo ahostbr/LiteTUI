@@ -16,6 +16,13 @@ from pathlib import Path
 
 os.environ["LITETUI_NO_HARNESS"] = "1"
 
+try:
+    from e2e._owned_app import owned_session, configure_owned_app
+except ModuleNotFoundError as exc:
+    if exc.name != "e2e":
+        raise
+    from _owned_app import owned_session, configure_owned_app
+
 from litetui import app as app_mod  # noqa: E402
 from litetui import claude_backend, paths, settings  # noqa: E402
 
@@ -44,24 +51,21 @@ async def ask(auto_memory_off: bool):
         claude_backend.AUTO_MEMORY_ENV.clear()
     try:
         with tempfile.TemporaryDirectory(prefix="litetui-claude-identity-") as directory:
-            paths.CONVO_DIR = Path(directory) / "convos"
             paths.ROOT = WS
-            settings.settings_path = lambda root=None: Path(directory) / "settings.json"
-            original_load = settings.load
             cfg = settings.Settings(backend="claude", backend_chosen=True, default_model="default",
                 skills_enabled=False, mcp_enabled=False, tools_enabled=False,
                 autocompact_enabled=False, wake_after_compact=False)
-            settings.load = lambda *a, **k: cfg
-            app = app_mod.LiteTUI()
-            settings.load = original_load
-            async with app.run_test(size=(125, 42)) as pilot:
-                await settle(app, pilot)
-                app._submit_text(ASK, False)
-                await settle(app, pilot)
-                answer = app.conversation[-1].get("content") or ""
-                prompt = app._claude_ledger.selected.get("system_prompt") or ""
-                await app.backend.close()
-                return answer, prompt
+            with owned_session(directory, cfg) as session:
+                app = app_mod.LiteTUI(agent_session=session)
+                configure_owned_app(app)
+                async with app.run_test(size=(125, 42)) as pilot:
+                    await settle(app, pilot)
+                    app._submit_text(ASK, False)
+                    await settle(app, pilot)
+                    answer = app.conversation[-1].get("content") or ""
+                    prompt = app._claude_ledger.selected.get("system_prompt") or ""
+                    await app.backend.close()
+                    return answer, prompt
     finally:
         claude_backend.AUTO_MEMORY_ENV.clear()
         claude_backend.AUTO_MEMORY_ENV.update(saved_env)

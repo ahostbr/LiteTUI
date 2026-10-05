@@ -63,6 +63,22 @@ async def test_unchosen_never_executes_and_actual_model_choice_persists(tmp_path
     app.apply_context_length = lambda: None  # no real provider load in fixture
     app._rpc_emit_model_state = lambda: None
     app._convo_settings = convo_settings.born_from(cfg)
+    # Replace only the external fleet transport. The actual startup registration
+    # lock and session checks still run; NO_HARNESS otherwise correctly refuses
+    # registration and releases the lease once the inbox worker settles.
+    def registered():
+        app.seat.registered = True
+        app.seat.error = None
+        return True
+    monkeypatch.setattr(app.seat, 'register', registered)
+    monkeypatch.setattr(app.seat, 'poll', lambda: [])
+    monkeypatch.setattr(app.seat, 'refresh_name', lambda: None)
+    monkeypatch.setattr(app.seat, 'heartbeat', lambda: None)
+    from litetui.local_rpc import LocalRpc
+    async def no_external_rpc(_):
+        pass
+    monkeypatch.setattr(LocalRpc, 'start', no_external_rpc)
+    monkeypatch.setattr(LocalRpc, 'close', no_external_rpc)
     async with app.run_test(size=(100, 30)) as pilot:
         if onboarding:
             from litetui.user_name_dialog import UserNameScreen

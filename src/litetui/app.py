@@ -1569,7 +1569,9 @@ class LiteTUI(App):
         self._owned_registration_lock = asyncio.Lock()
         self._owned_launch_error = None
         if agent_session is not None:
-            agent_session.authority  # child owns agent before mutable startup
+            from litetui.agent_launch_context import validate_execution
+            validate_execution(agent_session, backend=initial_backend, model=initial_model,
+                               thinking_level='off' if initial_thinking == 'none' else initial_thinking)
         super().__init__(**app_kwargs)
         self._rpc = rpc
         self.last_recap = None
@@ -4773,9 +4775,11 @@ class LiteTUI(App):
 
     @model_id.setter
     def model_id(self, value: str) -> None:
+        self._remember_for_this_convo("model", value)
+        if getattr(self, "_convo_settings", None) is not None and value:
+            self.retire_cli_model(value)  # only after successful owned publication
         self._model_id = value
         self._resume_connection_error = None
-        self._remember_for_this_convo("model", value)
 
     def retire_cli_model(self, selected: str | None = None) -> None:
         """A deliberate model choice supersedes this process's launch choice.
@@ -4812,6 +4816,8 @@ class LiteTUI(App):
         # a same-object reassignment is a no-op.
         # Publish home authority before mutating runtime or closing old resources.
         self._remember_for_this_convo("backend", getattr(value, "name", None))
+        if getattr(self, "_convo_settings", None) is not None:
+            self._cli_initial_backend = None  # a persisted user choice retires launch defaults
         old = getattr(self, "_backend", None)
         if old is not None and old is not value:
             old_session = getattr(old, "_admission_session", None)
@@ -4837,10 +4843,10 @@ class LiteTUI(App):
 
     @thinking_level.setter
     def thinking_level(self, value: str | None) -> None:
+        self._remember_for_this_convo("thinking_level", value)
         self._cli_thinking_level = None
         self._cli_effective_thinking = None
         self._thinking_level = value
-        self._remember_for_this_convo("thinking_level", value)
         # the user wrote "think level WHEN ON CODEX" as its own item, and it is a
         # different vocabulary from LM Studio's levels — `model_switch.py:906`
         # stores it under `model_infer_overrides[model]["reasoning_effort"]`.
@@ -4913,10 +4919,6 @@ class LiteTUI(App):
                 try:
                     session.update_execution(backend=backend, model=model, thinking_level=level)
                 except (ValueError, OSError) as exc:
-                    if field == 'model':
-                        self._model_id = authority.model or ''
-                    elif field in ('thinking_level', 'reasoning_effort'):
-                        self._thinking_level = authority.thinking_level
                     self._owned_launch_error = f'Agent execution save failed: {exc}'
                     self._system(self._owned_launch_error)
                     raise
@@ -4965,6 +4967,12 @@ class LiteTUI(App):
         """
         if self.convo_dir is None:
             return
+        session = getattr(self, '_agent_session', None)
+        if session is not None:
+            from litetui.agent_launch_context import validate_execution
+            validate_execution(session, backend=getattr(self, '_cli_initial_backend', None),
+                               model=getattr(self, '_cli_initial_model', None),
+                               thinking_level=getattr(self, '_cli_thinking_level', None))
         if born:
             from litetui.settings_runtime import without_invocation
             cs = convo_settings_mod.born_from(without_invocation(self, self.settings))
@@ -5004,6 +5012,7 @@ class LiteTUI(App):
             return
 
         cs = convo_settings_mod.load(self.convo_dir)
+        snapshot_model = cs.model or cs.execution.get('default_model')
         if getattr(self, '_agent_session', None) is not None:
             from litetui.agent_launch_context import apply_settings
             apply_settings(self._agent_session, self.settings)
@@ -5119,9 +5128,15 @@ class LiteTUI(App):
         # go back into the GLOBAL per-model map because that is what the
         # backends read at load time; the conversation owns the VALUE, the map
         # is just where a backend looks it up.
-        if cs.llama_load and self._model_id:
+        compatible_load = session is None or snapshot_model == self._model_id
+        if not compatible_load and (cs.llama_load or cs.lmstudio_load):
+            self._system(f'Historical load settings for {snapshot_model!r} not applied to owned model {self._model_id!r}.')
+        if compatible_load and cs.llama_load and self._model_id:
             self.settings.llama_load_settings = {
                 **self.settings.llama_load_settings, self._model_id: dict(cs.llama_load)}
+        if compatible_load and cs.lmstudio_load and self._model_id:
+            self.settings.lmstudio_load_settings = {
+                **self.settings.lmstudio_load_settings, self._model_id: dict(cs.lmstudio_load)}
         effort = cs.reasoning_effort
         is_codex = getattr(getattr(self, "_backend", None), "name", None) == "codex"
         if is_codex and not effort:
@@ -5795,6 +5810,17 @@ class LiteTUI(App):
             """T507-T1: apply --model, --system-prompt, --prompt after connect."""
             if getattr(self, "_cli_launch_error", None):
                 return
+            session = getattr(self, '_agent_session', None)
+            if session is not None:
+                from litetui.agent_launch_context import validate_execution
+                try:
+                    validate_execution(session, backend=getattr(self, '_cli_initial_backend', None),
+                                       model=getattr(self, '_cli_initial_model', None),
+                                       thinking_level=getattr(self, '_cli_thinking_level', None))
+                except (ValueError, OSError) as exc:
+                    self._cli_launch_error = str(exc)
+                    self._system(str(exc) + '; launch prompt blocked.')
+                    return
             # Wait for connect to populate available_models (up to 10s) — or for
             # connect to have finished without any, which is the same T869 tax on
             # a second waiter: --model has nothing to apply against an empty list.

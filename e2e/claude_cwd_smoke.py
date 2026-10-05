@@ -17,6 +17,13 @@ from pathlib import Path
 
 os.environ["LITETUI_NO_HARNESS"] = "1"
 
+try:
+    from e2e._owned_app import owned_session, configure_owned_app
+except ModuleNotFoundError as exc:
+    if exc.name != "e2e":
+        raise
+    from _owned_app import owned_session, configure_owned_app
+
 from litetui import app as app_mod  # noqa: E402
 from litetui import paths, settings  # noqa: E402
 
@@ -32,25 +39,22 @@ async def settle(app, pilot, seconds=240):
 async def main():
     launched = Path.cwd().resolve()
     with tempfile.TemporaryDirectory(prefix="litetui-claude-cwd-") as directory:
-        paths.CONVO_DIR = Path(directory) / "convos"
-        settings.settings_path = lambda root=None: Path(directory) / "settings.json"
-        original_load = settings.load
         cfg = settings.Settings(backend="claude", backend_chosen=True, default_model="sonnet",
             skills_enabled=False, mcp_enabled=False, tools_enabled=True,
             autocompact_enabled=False, wake_after_compact=False)
-        settings.load = lambda *a, **k: cfg
-        app = app_mod.LiteTUI()
-        settings.load = original_load
-        async with app.run_test(size=(125, 42)) as pilot:
-            await settle(app, pilot)
-            app._submit_text("Run `pwd` with your Bash tool and reply with only its output.", False)
-            await settle(app, pilot)
-            answer = app.conversation[-1].get("content") or ""
-            segment = app._claude_ledger.selected
-            report = {"launched_from": str(launched), "segment_workspace": segment["workspace"],
-                      "answer": answer, "paths_root": str(paths.ROOT)}
-            print(json.dumps(report, indent=1))
-            await app.backend.close()
+        with owned_session(directory, cfg) as session:
+            app = app_mod.LiteTUI(agent_session=session)
+            configure_owned_app(app)
+            async with app.run_test(size=(125, 42)) as pilot:
+                await settle(app, pilot)
+                app._submit_text("Run `pwd` with your Bash tool and reply with only its output.", False)
+                await settle(app, pilot)
+                answer = app.conversation[-1].get("content") or ""
+                segment = app._claude_ledger.selected
+                report = {"launched_from": str(launched), "segment_workspace": segment["workspace"],
+                          "answer": answer, "paths_root": str(paths.ROOT)}
+                print(json.dumps(report, indent=1))
+                await app.backend.close()
     assert segment["workspace"] == str(launched), report
     assert launched.name.lower() in answer.lower(), answer
     assert str(paths.ROOT).lower() != str(launched).lower(), "launch from a folder that is not LiteTUI's own"
