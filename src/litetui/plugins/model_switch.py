@@ -80,10 +80,13 @@ def switch_model(app, target: str) -> bool:
     # model_id remembers this conversation's choice; startup defaults are
     # deliberately unchanged, including when reselecting the current model.
     # This control is a newer explicit choice than the process's --model.
-    _retire_cli_model(app, target)
-    if target == app.model_id:
-        return True
+    unchanged = target == app.model_id
+    # Publish even a same-runtime reselection: staged state may predate authority.
+    # A failed owned publication must not retire the previous launch choice.
     app.model_id = target
+    _retire_cli_model(app, target)
+    if unchanged:
+        return True
     app._model_thinking_levels = None
     from litetui import thinking_probe
 

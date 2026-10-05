@@ -4906,9 +4906,8 @@ class LiteTUI(App):
         write per assignment would rewrite the file several times per turn for
         no change at all.
 
-        ⚠️ AND A FAILURE HERE IS NOT WORTH A TURN. A read-only directory or a
-        full disk must not take down the switch the user just made; the choice
-        is already live in memory, and the file is the part that can be retried.
+        Owned publication failure propagates before runtime changes. Only a
+        historical snapshot failure remains diagnostic after publication.
         """
         # ⚠️ `getattr`, NOT A BARE READ (T695). This already tolerates
         # `_convo_settings is None`; tolerating it being ABSENT is the same
@@ -4916,11 +4915,7 @@ class LiteTUI(App):
         # is reachable from an app built without the full `__init__` (the
         # `ready` payload arms construct one that way), where the property
         # setters that used to be the only callers never ran.
-        cs = getattr(self, "_convo_settings", None)
-        if cs is None or getattr(self, "convo_dir", None) is None:
-            return
-        if getattr(cs, field, None) == value:
-            return
+        # Publish owned execution even before the first conversation snapshot.
         session = getattr(self, '_agent_session', None)
         if session is not None and field in ('backend', 'model', 'thinking_level', 'reasoning_effort'):
             authority = session.authority
@@ -4929,7 +4924,8 @@ class LiteTUI(App):
             level = (value or 'default') if field in ('thinking_level', 'reasoning_effort') else authority.thinking_level
             if model:
                 try:
-                    session.update_execution(backend=backend, model=model, thinking_level=level)
+                    if (backend, model, level) != (authority.backend, authority.model, authority.thinking_level):
+                        session.update_execution(backend=backend, model=model, thinking_level=level)
                 except (ValueError, OSError) as exc:
                     self._owned_launch_error = f'Agent execution save failed: {exc}'
                     self._system(self._owned_launch_error)
@@ -4938,6 +4934,11 @@ class LiteTUI(App):
                 apply_settings(session, self.settings)
                 if (self._owned_launch_error or '').startswith('Agent execution save failed:'):
                     self._owned_launch_error = None
+        cs = getattr(self, "_convo_settings", None)
+        if cs is None or getattr(self, "convo_dir", None) is None:
+            return
+        if getattr(cs, field, None) == value:
+            return
         setattr(cs, field, value)
         try:
             convo_settings_mod.save(self.convo_dir, cs, agent_session=self._agent_session)
