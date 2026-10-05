@@ -45,6 +45,7 @@ from textual.content import Content
 from textual.style import Style
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.geometry import Region
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widget import Widget
 # Imported for the BODY's exits. side_panel imports nothing from widgets, so
@@ -276,12 +277,18 @@ class ChatMessage(Static):
 
 
 class UserMessage(Vertical):
-    """User prompt with a compact, manually foldable header; no model call."""
+    """User prompt with the assistant card's fold latch; no model call."""
+
+    class CancelQueued(Message):
+        def __init__(self, bubble: UserMessage) -> None:
+            super().__init__()
+            self.bubble = bubble
 
     def __init__(self, text: str, queued: bool = False, image_path: str | None = None, *, header: str | None = None) -> None:
         super().__init__(classes="user-msg")
         self.body = Static(Text(text))
         self.queued = queued
+        self._autocollapsed = False
         self.message_header = header
         # When the user attached an image, we keep a stable on-disk reference so
         # the "[Image attached]" label can be re-clicked to re-open the viewer.
@@ -314,11 +321,27 @@ class UserMessage(Vertical):
         marker = "▸" if self.collapsed else "▾"
         label = self.message_header or ("You · queued" if self.queued else "You")
         preview = f" · {self.preview}" if self.collapsed and self.preview else ""
-        self.border_title = Text(f"{marker} {label}{preview}")
+        header = Content(f"{marker} {label}{preview}")
+        if self.queued:
+            # Like the assistant's folded Speak control: a border action remains
+            # visible when the body is folded, without adding a button row.
+            header = Content.assemble(
+                marker + " ",
+                ("X", Style(underline=True) + Style.from_meta({"cancel_queued": True})),
+                f" · {label}{preview}",
+            )
+        self.border_title = header
 
     def set_collapsed(self, value: bool) -> None:
         self.set_class(value, "collapsed")
         self.refresh_header()
+
+    @property
+    def settled(self) -> bool:
+        return not self.queued
+
+    def autocollapse(self) -> bool:
+        return AssistantMessage.autocollapse(self)
 
     def mark_delivered(self) -> None:
         self.queued = False
@@ -327,7 +350,10 @@ class UserMessage(Vertical):
     def on_click(self, event) -> None:
         if event.y == 0:
             event.stop()
-            self.set_collapsed(not self.collapsed)
+            if self.queued and event.style.meta.get("cancel_queued"):
+                self.post_message(self.CancelQueued(self))
+            else:
+                self.set_collapsed(not self.collapsed)
 
 
 def _at_bottom(widget, slack: int = 2) -> bool:

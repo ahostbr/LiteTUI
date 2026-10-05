@@ -2823,7 +2823,7 @@ class LiteTUI(App):
         if self._chat_running():
             # Held until a safe input boundary, never cancellation or inert
             # context injection. Approval requests precede routine backlog.
-            self._user_bubble(text, False, queued=True)
+            item["bubble"] = self._user_bubble(text, False, queued=True)
             approval_delivery.enqueue(self._pending_input, item, ident)
             return
         self._user_bubble(text, False)
@@ -2951,9 +2951,10 @@ class LiteTUI(App):
             # QUEUED, never interrupting. A scheduled prompt is the LEAST
             # urgent kind of input there is -- nobody is waiting on it, so it
             # has no business cancelling something a human asked for.
-            self._user_bubble(text, False, queued=True, header=header)
+            bubble = self._user_bubble(text, False, queued=True, header=header)
             self._pending_input.append(
-                {"content": text, "text": text, "tool_profile": profile, "source": "scheduled"}
+                {"content": text, "text": text, "bubble": bubble,
+                 "tool_profile": profile, "source": "scheduled"}
             )
             return True
         self._user_bubble(text, False, header=header)
@@ -6838,12 +6839,44 @@ class LiteTUI(App):
         # enters the body text (so it cannot leak into the transcript the model
         # re-reads); the body still shows the same "[Image attached]" label.
         w = UserMessage("\n".join(parts), queued=queued, image_path=image_path, header=header)
-        # A message that silently waits is indistinguishable from one that was
-        # dropped — the title is the visibility.
-        w.border_title = Text(header or ("You · queued" if queued else "You"))
         log.mount(w)
         self._scroll_down()
         return w
+
+    def on_user_message_cancel_queued(self, event: UserMessage.CancelQueued) -> None:
+        event.stop()
+        bubble = event.bubble
+        for index, item in enumerate(self._pending_input):
+            if item.get("bubble") is not bubble:
+                continue
+            # Only input still owned by our queue is cancellable. A native send
+            # or admission already in flight must not be advertised as undone.
+            codex = item.get("_codex_entry")
+            claude = item.get("_claude_entry")
+            if (codex and codex.get("state") not in ("queued", "next_turn")) or (
+                claude and claude.get("state") != "prepared"
+            ):
+                self.notify("Already delivering — cannot cancel", timeout=3)
+                return
+            try:
+                if codex:
+                    item["_codex_ledger"].transition(
+                        codex, "denied", admission={"reason": "Cancelled by user"}
+                    )
+                if claude:
+                    from litetui.claude_turn import ledger_for
+                    if item.get("_claude_conversation") != self.convo_id:
+                        self.notify("Queued input belongs to another conversation", timeout=3)
+                        return
+                    ledger_for(self).update_delivery(
+                        claude["id"], "terminal", stop_reason="user_cancelled_before_send"
+                    )
+            except (OSError, RuntimeError) as exc:
+                self.notify(f"Could not cancel queued input: {exc}", severity="error")
+                return
+            self._pending_input.pop(index)
+            bubble.remove()
+            return
 
     def _spill_image_for_reclick(self, b64: str) -> str | None:
         """Persist a submitted image into the conversation so it can be re-opened.
@@ -7414,7 +7447,7 @@ class LiteTUI(App):
         branch.
         """
         try:
-            cards = list(log.query(AssistantMessage))
+            cards = list(log.query("AssistantMessage, UserMessage"))
         except Exception:
             return
         if len(cards) < 2:
@@ -10551,8 +10584,8 @@ class LiteTUI(App):
         # Same held-vs-idle contract as inbox mail: mid-turn it queues
         # visibly and flushes as a real turn; idle it sends now.
         if self._chat_running():
-            self._user_bubble(text, True, queued=True)
-            self._pending_input.append({"content": content, "text": text, "source": "typed",
+            bubble = self._user_bubble(text, True, queued=True)
+            self._pending_input.append({"content": content, "text": text, "bubble": bubble, "source": "typed",
                                         "tool_profile": seat_authority.seat_profile(self)})
             return
         self._materialise_convo()
