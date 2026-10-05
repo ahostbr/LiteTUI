@@ -125,7 +125,12 @@ def main() -> None:
                 directory = store.locate_conversation(args.convo)
                 args.agent = store.find_agent(name=directory.parent.parent.name).name
             except (StoreError, OSError) as exc:
-                parser.error(f'Owned conversation lookup refused: {exc}; pass --agent <Name>. Legacy archives are read-only.')
+                parser.error(
+                    f'Owned conversation lookup refused: {exc}; pass --agent <Name> only for an existing owned child. '
+                    'Legacy archives are read-only. Export without starting the app: '
+                    'litetui --export-conversation <archive/convo.jsonl> --export-output <new.md>. '
+                    'Owned continuation requires operator-approved copy/migration with a hash-pinned manifest/merge receipt '
+                    'and quiet-seat verification before activation; --agent does not migrate an archive. No automatic copy.')
         spawned_identity = None
         from litetui import harness as harness_mod
         if os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == '1':
